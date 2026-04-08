@@ -472,6 +472,7 @@ type ResponseScanPattern struct {
 	Regex         string `yaml:"regex"`
 	Bundle        string `yaml:"-"` // set by rules loader, not from YAML
 	BundleVersion string `yaml:"-"` // set by rules loader, not from YAML
+	Compiled      bool   `yaml:"-"` // true for patterns created in Defaults()
 }
 
 // ForwardProxy configures HTTP CONNECT and absolute-URI forward proxy support.
@@ -594,6 +595,7 @@ type DLPPattern struct {
 	Action        string   `yaml:"action,omitempty"`    // reserved — not yet implemented; rejected at validation
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
+	Compiled      bool     `yaml:"-"`                   // true for patterns created in Defaults()
 }
 
 // AddressProtection configures crypto address poisoning detection.
@@ -4311,6 +4313,16 @@ func Defaults() *Config {
 				"www.recaptcha.net",
 			},
 		},
+	}
+	// Mark all compiled defaults with provenance so the standard tier source
+	// selector can distinguish them from user-supplied patterns. Set at
+	// creation time (not during merge) so provenance survives any code path
+	// that copies or reconstructs patterns.
+	for i := range cfg.DLP.Patterns {
+		cfg.DLP.Patterns[i].Compiled = true
+	}
+	for i := range cfg.ResponseScanning.Patterns {
+		cfg.ResponseScanning.Patterns[i].Compiled = true
 	}
 	return cfg
 }

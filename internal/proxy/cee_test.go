@@ -313,6 +313,7 @@ func TestCeeAdmit_EntropyBudgetWarn(t *testing.T) {
 func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -357,6 +358,7 @@ func TestCeeAdmit_FragmentDLPBlock(t *testing.T) {
 func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -406,6 +408,7 @@ func TestCeeAdmit_SingleBodyNoFragmentHit(t *testing.T) {
 	// Body DLP already catches it; double-scoring causes adaptive death spiral.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -438,6 +441,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 	// no block), then fragment fires and blocks.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -495,6 +499,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 func TestUpdateCEEStats_WithTrackerAndBuffer(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.CrossRequestDetection.Enabled = true
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
@@ -533,6 +538,7 @@ func TestUpdateCEEStats_WithTrackerAndBuffer(t *testing.T) {
 func TestUpdateCEEStats_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.CrossRequestDetection.Enabled = false
 
 	logger := audit.NewNop()
@@ -653,6 +659,7 @@ func TestCeeAdmit_KeyFragmentDLPBlock(t *testing.T) {
 	// stream in ceeAdmit. Simulates ?AKIA=1 then ?IOSFODNN7EXAMPLE=2.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -822,6 +829,7 @@ func TestCeeAdmit_PathQueryBoundarySecret(t *testing.T) {
 	// works for any input data shape.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -928,6 +936,7 @@ func TestExtractOutboundPayload_Deterministic(t *testing.T) {
 func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.CrossRequestDetection.Enabled = true
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
 	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
@@ -963,6 +972,7 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	// Reload with CEE disabled.
 	cfg2 := config.Defaults()
 	cfg2.Internal = nil
+	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.CrossRequestDetection.Enabled = false
 	sc2 := scanner.New(cfg2)
 
@@ -980,6 +990,7 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 	// Reload again with CEE re-enabled.
 	cfg3 := config.Defaults()
 	cfg3.Internal = nil
+	cfg3.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg3.CrossRequestDetection.Enabled = true
 	cfg3.CrossRequestDetection.EntropyBudget.Enabled = true
 	cfg3.CrossRequestDetection.FragmentReassembly.Enabled = true
@@ -1004,6 +1015,7 @@ func TestFetchEndpoint_CEEEntropyBlock(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.CrossRequestDetection.Enabled = true
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = true

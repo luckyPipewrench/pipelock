@@ -138,6 +138,7 @@ func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil // disable SSRF for test backend on 127.0.0.1
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	// Base mode is balanced (permissive by default).
 	cfg.Mode = config.ModeBalanced
@@ -235,6 +236,7 @@ func TestFetchEndpoint_PerAgentScanner_AgentInResponse(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -278,6 +280,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -304,6 +307,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 	cfg2 := config.Defaults()
 	cfg2.FetchProxy.TimeoutSeconds = 5
 	cfg2.Internal = nil
+	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.APIAllowlist = nil
 	cfg2.Agents = map[string]config.AgentProfile{
 		"strict-bot": {
@@ -333,6 +337,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 func TestProxy_KnownProfiles(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.Agents = map[string]config.AgentProfile{
 		"agent-a": {Mode: config.ModeStrict},
 		"agent-b": {Mode: config.ModeAudit},
@@ -384,6 +389,7 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF for test backend on 127.0.0.1
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Agents = map[string]config.AgentProfile{
@@ -506,6 +512,7 @@ func TestBudgetEnforcementFetch(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Agents = map[string]config.AgentProfile{
@@ -575,6 +582,7 @@ func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 
@@ -648,6 +656,7 @@ func TestByteBudgetBlocksFetchResponse(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Agents = map[string]config.AgentProfile{
@@ -721,6 +730,7 @@ func TestAgentListenerBinding(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	mainLn, mainErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")

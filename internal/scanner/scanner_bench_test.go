@@ -13,7 +13,8 @@ import (
 
 func benchConfig() *config.Config {
 	cfg := config.Defaults()
-	cfg.Internal = nil                            // disable SSRF (no DNS)
+	cfg.Internal = nil // disable SSRF (no DNS)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0 // disable rate limiter
 	cfg.DLP.ScanEnv = false                       // don't scan runner's env
 	return cfg

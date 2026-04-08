@@ -35,6 +35,7 @@ const (
 func testConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF for tests
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return cfg
 }
 

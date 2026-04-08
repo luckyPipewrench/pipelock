@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // Test-scoped constants for repeated string literals.
@@ -2401,5 +2402,69 @@ func TestRulesInstall_RemoteSignatureFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "signature verification") {
 		t.Errorf("error should mention signature verification, got: %v", err)
+	}
+}
+
+// ---------- rules status ----------
+
+// runStatusCmd sets up a cobra root with the rules command, writes cfgYAML to
+// a temp config file, and executes "rules status" with the given extra args.
+func runStatusCmd(t *testing.T, cfgYAML string, extraArgs ...string) string {
+	t.Helper()
+	root := &cobra.Command{Use: "pipelock"}
+	root.AddCommand(Cmd())
+
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "pipelock.yaml")
+	rulesDir := filepath.Join(dir, "rules")
+	full := "rules:\n  rules_dir: " + rulesDir + "\n" + cfgYAML
+	if err := os.WriteFile(cfgFile, []byte(full), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf strings.Builder
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	args := append([]string{"rules", "status", "--config", cfgFile}, extraArgs...)
+	root.SetArgs(args)
+
+	if err := root.Execute(); err != nil {
+		t.Fatalf("rules status failed: %v", err)
+	}
+	return buf.String()
+}
+
+func TestRulesStatus_DefaultConfig(t *testing.T) {
+	out := runStatusCmd(t, "")
+	if !strings.Contains(out, "Core:") {
+		t.Error("expected Core: line in status output")
+	}
+	if !strings.Contains(out, "compiled fallback") {
+		t.Error("expected 'compiled fallback' when no standard bundle installed")
+	}
+}
+
+func TestRulesStatus_JSON(t *testing.T) {
+	out := runStatusCmd(t, "", "--json")
+
+	var status statusReport
+	if err := json.Unmarshal([]byte(out), &status); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+	if status.Core.DLP != scanner.CoreDLPCount() {
+		t.Errorf("expected %d core DLP, got %d", scanner.CoreDLPCount(), status.Core.DLP)
+	}
+	if status.Core.Response != scanner.CoreResponseCount() {
+		t.Errorf("expected %d core response, got %d", scanner.CoreResponseCount(), status.Core.Response)
+	}
+	if status.StandardDLPSource != "compiled" {
+		t.Errorf("expected standard DLP source 'compiled', got %q", status.StandardDLPSource)
+	}
+}
+
+func TestRulesStatus_IncludeDefaultsFalse(t *testing.T) {
+	out := runStatusCmd(t, "dlp:\n  include_defaults: false\nresponse_scanning:\n  include_defaults: false\n")
+	if !strings.Contains(out, "disabled") {
+		t.Error("expected 'disabled' when include_defaults: false")
 	}
 }

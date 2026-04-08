@@ -37,6 +37,7 @@ func testRunContext() string {
 func diagTestConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return cfg
 }
 

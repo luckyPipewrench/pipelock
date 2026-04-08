@@ -43,6 +43,7 @@ func testCEEProxy(t *testing.T, ceeCfg config.CrossRequestDetection) (*httptest.
 	cfg.ApplyDefaults()
 	// Internal=nil disables SSRF checks for localhost test servers.
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	sc := scanner.New(cfg)
@@ -298,6 +299,7 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	cfg.CrossRequestDetection = ceeCfg
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	sc := scanner.New(cfg)

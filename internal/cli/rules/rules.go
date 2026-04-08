@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	domrules "github.com/luckyPipewrench/pipelock/internal/rules"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -69,10 +70,11 @@ const (
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rules",
-		Short: "Manage community rule bundles",
-		Long:  "Install, update, list, verify, diff, and remove signed rule bundles.",
+		Short: "Manage rule bundles",
+		Long:  "Install, update, list, verify, diff, remove, and inspect rule bundles.",
 	}
 	cmd.AddCommand(
+		rulesStatusCmd(),
 		rulesInstallCmd(),
 		rulesUpdateCmd(),
 		rulesListCmd(),
@@ -81,6 +83,217 @@ func Cmd() *cobra.Command {
 		rulesRemoveCmd(),
 	)
 	return cmd
+}
+
+// ---------- rules status ----------
+
+func rulesStatusCmd() *cobra.Command {
+	var (
+		configFile string
+		jsonOut    bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show rule tier status, versions, and health",
+		Long: `Display the effective state of all rule tiers: core (compiled),
+standard (bundle or compiled fallback), and community/pro bundles.
+Uses the same config resolution as runtime for accurate reporting.`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+
+			// Load full config to respect rules_dir, include_defaults,
+			// min_confidence, disabled, and trusted_keys.
+			cfg, err := loadRulesConfig(configFile)
+			if err != nil {
+				return err
+			}
+			if cfg == nil {
+				cfg = config.Defaults()
+			}
+			cfg.ApplyDefaults()
+
+			// Run the same merge path as runtime to get effective state.
+			result := domrules.MergeIntoConfig(cfg, cliutil.Version)
+
+			// Count compiled (non-bundle, non-user) patterns for standard tier fallback.
+			// Only count patterns with Compiled=true to exclude user-defined patterns.
+			var compiledDLP, compiledResp int
+			for _, p := range cfg.DLP.Patterns {
+				if p.Bundle == "" && p.Compiled {
+					compiledDLP++
+				}
+			}
+			for _, p := range cfg.ResponseScanning.Patterns {
+				if p.Bundle == "" && p.Compiled {
+					compiledResp++
+				}
+			}
+
+			status := statusReport{
+				Core: tierStatus{
+					Source:   "compiled",
+					DLP:      scanner.CoreDLPCount(),
+					Response: scanner.CoreResponseCount(),
+				},
+				StandardDLPSource:      string(result.StandardDLP),
+				StandardResponseSource: string(result.StandardResponse),
+			}
+
+			// Standard tier DLP details.
+			switch result.StandardDLP {
+			case domrules.StandardSourceBundle:
+				for _, lb := range result.Loaded {
+					if lb.Name == domrules.StandardBundleName {
+						status.StandardDLP = &tierDetail{Source: "bundle", Version: lb.Version, Count: lb.DLP}
+						break
+					}
+				}
+			case domrules.StandardSourceCompiled:
+				dlpCount := compiledDLP - scanner.CoreDLPCount()
+				if dlpCount < 0 {
+					dlpCount = 0
+				}
+				status.StandardDLP = &tierDetail{Source: "compiled fallback", Count: dlpCount}
+			case domrules.StandardSourceNone:
+				status.StandardDLP = &tierDetail{Source: "disabled"}
+			}
+
+			// Standard tier response details.
+			switch result.StandardResponse {
+			case domrules.StandardSourceBundle:
+				for _, lb := range result.Loaded {
+					if lb.Name == domrules.StandardBundleName {
+						status.StandardResponse = &tierDetail{Source: "bundle", Version: lb.Version, Count: lb.Injection}
+						break
+					}
+				}
+			case domrules.StandardSourceCompiled:
+				respCount := compiledResp - scanner.CoreResponseCount()
+				if respCount < 0 {
+					respCount = 0
+				}
+				status.StandardResponse = &tierDetail{Source: "compiled fallback", Count: respCount}
+			case domrules.StandardSourceNone:
+				status.StandardResponse = &tierDetail{Source: "disabled"}
+			}
+
+			for _, lb := range result.Loaded {
+				if lb.Name == domrules.StandardBundleName {
+					continue
+				}
+				status.Bundles = append(status.Bundles, bundleStatus{
+					Name:    lb.Name,
+					Version: lb.Version,
+					Tier:    lb.Tier,
+					DLP:     lb.DLP,
+					Inj:     lb.Injection,
+					Poison:  lb.ToolPoison,
+					Signed:  !lb.Unsigned,
+				})
+			}
+
+			for _, e := range result.Errors {
+				status.Errors = append(status.Errors, e.Name+": "+e.Reason)
+			}
+			status.Warnings = result.Warnings
+			status.Degraded = result.Degraded || len(status.Errors) > 0
+			status.Healthy = !status.Degraded
+
+			if jsonOut {
+				enc := json.NewEncoder(out)
+				enc.SetIndent("", "  ")
+				if err := enc.Encode(status); err != nil {
+					return err
+				}
+				if status.Degraded {
+					return cliutil.ExitCodeError(1, fmt.Errorf("%d bundle error(s)", len(status.Errors)))
+				}
+				return nil
+			}
+
+			_, _ = fmt.Fprintf(out, "Core:     %d DLP + %d response (compiled, immutable)\n",
+				status.Core.DLP, status.Core.Response)
+			if d := status.StandardDLP; d != nil {
+				_, _ = fmt.Fprintf(out, "Std DLP:  %d patterns (%s", d.Count, d.Source)
+				if d.Version != "" {
+					_, _ = fmt.Fprintf(out, ", v%s", d.Version)
+				}
+				_, _ = fmt.Fprintln(out, ")")
+			}
+			if r := status.StandardResponse; r != nil {
+				_, _ = fmt.Fprintf(out, "Std Resp: %d patterns (%s", r.Count, r.Source)
+				if r.Version != "" {
+					_, _ = fmt.Fprintf(out, ", v%s", r.Version)
+				}
+				_, _ = fmt.Fprintln(out, ")")
+			}
+
+			for _, b := range status.Bundles {
+				_, _ = fmt.Fprintf(out, "Bundle:   %-25s v%-12s %s (%d DLP, %d inj, %d poison)\n",
+					b.Name, b.Version, b.Tier, b.DLP, b.Inj, b.Poison)
+			}
+
+			if len(status.Errors) > 0 {
+				_, _ = fmt.Fprintln(out, "\nErrors:")
+				for _, e := range status.Errors {
+					_, _ = fmt.Fprintf(out, "  %s\n", e)
+				}
+			}
+			if len(status.Warnings) > 0 {
+				_, _ = fmt.Fprintln(out, "\nWarnings:")
+				for _, w := range status.Warnings {
+					_, _ = fmt.Fprintf(out, "  %s\n", w)
+				}
+			}
+
+			if status.Degraded {
+				_, _ = fmt.Fprintln(out, "\nDEGRADED: rule bundle verification/load failures detected. Protection may be reduced.")
+				return cliutil.ExitCodeError(1, fmt.Errorf("%d bundle error(s)", len(status.Errors)))
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&configFile, "config", "", "config file (default: auto-discovery)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "output as JSON")
+	return cmd
+}
+
+type statusReport struct {
+	Healthy                bool           `json:"healthy"`
+	Degraded               bool           `json:"degraded"`
+	Core                   tierStatus     `json:"core"`
+	StandardDLP            *tierDetail    `json:"standard_dlp"`
+	StandardResponse       *tierDetail    `json:"standard_response"`
+	StandardDLPSource      string         `json:"standard_dlp_source"`
+	StandardResponseSource string         `json:"standard_response_source"`
+	Bundles                []bundleStatus `json:"bundles,omitempty"`
+	Errors                 []string       `json:"errors,omitempty"`
+	Warnings               []string       `json:"warnings,omitempty"`
+}
+
+type tierStatus struct {
+	Source   string `json:"source"`
+	DLP      int    `json:"dlp"`
+	Response int    `json:"response"`
+}
+
+type tierDetail struct {
+	Source  string `json:"source"`
+	Version string `json:"version,omitempty"`
+	Count   int    `json:"count"`
+}
+
+type bundleStatus struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Tier    string `json:"tier"`
+	DLP     int    `json:"dlp"`
+	Inj     int    `json:"injection"`
+	Poison  int    `json:"tool_poison"`
+	Signed  bool   `json:"signed"`
 }
 
 // acquireRulesLock is defined in rules_lock_unix.go and rules_lock_windows.go.

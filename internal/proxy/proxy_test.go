@@ -85,6 +85,7 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 	// Disable SSRF check for test backend (which is on 127.0.0.1)
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -403,6 +404,7 @@ func TestFetchEndpoint_BackendError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 2
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -521,6 +523,7 @@ func setupResponseScanProxy(t *testing.T, action string) (*Proxy, *httptest.Serv
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -725,6 +728,7 @@ func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning.Enabled = false
 
@@ -772,6 +776,7 @@ func TestFetchEndpoint_ResponseScan_ExemptDomain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -820,6 +825,7 @@ func TestFetchEndpoint_ResponseScan_NonExemptDomainStillBlocked(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -864,6 +870,7 @@ func TestFetchEndpoint_ResponseScan_WildcardExemptDomain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled:       true,
@@ -907,6 +914,7 @@ func TestFetchEndpoint_ResponseScan_ExemptDomainStillBlocksDLP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
 		Name:     "test_aws_key",
@@ -979,6 +987,7 @@ func TestFetchEndpoint_ResponseScan_ExemptRedirectToNonExempt(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -1032,6 +1041,7 @@ func TestFetchEndpoint_ResponseScan_ExemptRedirectToExempt(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -1095,6 +1105,7 @@ func TestFetchEndpoint_ResponseScan_AskAllowLongContent(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -1261,6 +1272,7 @@ func TestWithApprover(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -1371,6 +1383,7 @@ func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -1414,6 +1427,7 @@ func TestFetchEndpoint_RedirectToDLPMatch(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -1458,6 +1472,7 @@ func TestFetchEndpoint_RedirectChainExceedsMax(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -1505,6 +1520,7 @@ func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	enforce := false
 	cfg.Enforce = &enforce
@@ -1556,6 +1572,7 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	// enforce=nil defaults to true
 
@@ -1605,6 +1622,7 @@ func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -1647,6 +1665,7 @@ func TestFetchEndpoint_RateLimitReturns429(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
@@ -1693,6 +1712,7 @@ func TestConnectEndpoint_RateLimitReturns429(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ForwardProxy.Enabled = true
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
@@ -1739,6 +1759,7 @@ func TestForwardHTTP_RateLimitReturns429(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.ForwardProxy.Enabled = true
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 2 // Low limit for testing
 
@@ -1789,6 +1810,7 @@ func TestFetchEndpoint_AuditMode_AllowsBlockedURL(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	enforce := false
 	cfg.Enforce = &enforce
@@ -1835,6 +1857,7 @@ func TestFetchEndpoint_AuditMode_EnforceTrue_Blocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	// enforce=nil defaults to true
 
@@ -1878,6 +1901,7 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -1910,6 +1934,7 @@ func TestProxy_Reload_SwapsConfig(t *testing.T) {
 	newCfg.Mode = "strict"
 	newCfg.FetchProxy.TimeoutSeconds = 5
 	newCfg.Internal = nil
+	newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	newCfg.APIAllowlist = nil
 	newSc := scanner.New(newCfg)
 	p.Reload(newCfg, newSc)
@@ -1940,6 +1965,7 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -1966,6 +1992,7 @@ func TestProxy_Reload_NewScannerTakesEffect(t *testing.T) {
 	newCfg := config.Defaults()
 	newCfg.FetchProxy.TimeoutSeconds = 5
 	newCfg.Internal = nil
+	newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	newCfg.APIAllowlist = nil
 	newCfg.FetchProxy.Monitoring.Blocklist = append(newCfg.FetchProxy.Monitoring.Blocklist, "*.example.com")
 	newSc := scanner.New(newCfg)
@@ -2001,6 +2028,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2022,6 +2050,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 			newCfg := config.Defaults()
 			newCfg.FetchProxy.TimeoutSeconds = 5
 			newCfg.Internal = nil
+			newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			newCfg.APIAllowlist = nil
 			newSc := scanner.New(newCfg)
 			p.Reload(newCfg, newSc)
@@ -2138,6 +2167,7 @@ func TestFetchEndpoint_BodyReadError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2168,6 +2198,7 @@ func TestProxy_StartReturnsErrorOnBadAddress(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "invalid-address-no-port" // will cause ListenAndServe to fail
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2201,6 +2232,7 @@ func TestFetchEndpoint_ReadabilityExtractError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2235,6 +2267,7 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:0" // random port
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2345,6 +2378,7 @@ func TestProxy_Start_AlreadyBound(t *testing.T) {
 	cfg.FetchProxy.Listen = addr
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2385,6 +2419,7 @@ func TestProxy_FetchViaHostname(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil // Disable SSRF so 127.0.0.1 from DNS is allowed
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	logger := audit.NewNop()
@@ -2731,6 +2766,7 @@ func TestProxy_Reload_UpdatesCurrentConfig(t *testing.T) {
 	// Create new config with different settings
 	newCfg := config.Defaults()
 	newCfg.Internal = nil
+	newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	newCfg.APIAllowlist = nil
 	newCfg.FetchProxy.UserAgent = "Updated/2.0"
 	newSc := scanner.New(newCfg)
@@ -2749,6 +2785,7 @@ func TestProxy_SessionProfiling_DomainBurst(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
@@ -2817,6 +2854,7 @@ func TestProxy_SessionProfiling_WarnMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn // warn, not block
@@ -2877,6 +2915,7 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
@@ -2955,6 +2994,7 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 func TestProxy_RecordSession_ConfigMismatchBoundedSignal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100
@@ -3027,6 +3067,7 @@ func TestProxy_RecordSession_ConfigMismatchBoundedSignal(t *testing.T) {
 func TestProxy_RecordSession_ConfigMismatchEscalatesEventually(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100
@@ -3074,6 +3115,7 @@ func TestProxy_RecordSession_ConfigMismatchEscalatesEventually(t *testing.T) {
 func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 100
@@ -3121,6 +3163,7 @@ func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 func TestProxy_Close_SessionManager(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 5
@@ -3151,6 +3194,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	// Start with profiling disabled.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = false
 
 	logger := audit.NewNop()
@@ -3170,6 +3214,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	// Reload with profiling enabled — should create session manager.
 	cfg2 := config.Defaults()
 	cfg2.Internal = nil
+	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.SessionProfiling.Enabled = true
 	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg2.SessionProfiling.DomainBurst = 5
@@ -3187,6 +3232,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 	// Reload with profiling disabled — should close and nil session manager.
 	cfg3 := config.Defaults()
 	cfg3.Internal = nil
+	cfg3.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg3.SessionProfiling.Enabled = false
 	sc3 := scanner.New(cfg3)
 	p.Reload(cfg3, sc3)
@@ -3200,6 +3246,7 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
@@ -3251,6 +3298,7 @@ func TestProxy_SessionProfiling_IPDomainBurst_HeaderRotation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
@@ -3298,6 +3346,7 @@ func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	// Enable session profiling + adaptive enforcement.
 	cfg.SessionProfiling.Enabled = true
@@ -3352,6 +3401,7 @@ func TestProxy_AdaptiveSignalBlock_InEnforceMode(t *testing.T) {
 func TestProxy_Reload_UpdatesSessionConfig(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg.SessionProfiling.DomainBurst = 5
@@ -3380,6 +3430,7 @@ func TestProxy_Reload_UpdatesSessionConfig(t *testing.T) {
 	// Reload with different MaxSessions (profiling stays enabled).
 	cfg2 := config.Defaults()
 	cfg2.Internal = nil
+	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.SessionProfiling.Enabled = true
 	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg2.SessionProfiling.DomainBurst = 10 // changed
@@ -3406,6 +3457,7 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.SessionProfiling.Enabled = true
 	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
@@ -3445,6 +3497,7 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 			defer wg.Done()
 			newCfg := config.Defaults()
 			newCfg.Internal = nil
+			newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			newCfg.SessionProfiling.Enabled = true
 			newCfg.SessionProfiling.AnomalyAction = config.ActionWarn
 			newCfg.SessionProfiling.DomainBurst = 100
@@ -3463,6 +3516,7 @@ func TestProxy_SessionMgr_ConcurrentReloadRequest(t *testing.T) {
 func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "kill switch test"
 
@@ -3507,6 +3561,7 @@ func TestKillSwitch_DeniesHTTPRequest(t *testing.T) {
 func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 
 	logger := audit.NewNop()
@@ -3537,6 +3592,7 @@ func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
 func TestKillSwitch_ExemptsMetricsEndpoint(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 
 	logger := audit.NewNop()
@@ -3567,8 +3623,9 @@ func TestKillSwitch_ExemptsMetricsEndpoint(t *testing.T) {
 func TestKillSwitch_AllowlistIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
-	cfg.KillSwitch.AllowlistIPs = []string{"127.0.0.1/32"}
+	cfg.KillSwitch.AllowlistIPs = []string{"127.0.0.0/8"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -3598,6 +3655,7 @@ func TestKillSwitch_AllowlistIP(t *testing.T) {
 func TestWithKillSwitch_NilSafe(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -3620,6 +3678,7 @@ func TestWithKillSwitch_NilSafe(t *testing.T) {
 func TestMetricsNotOnMainPort_WhenMetricsListenSet(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.MetricsListen = "0.0.0.0:19091" // non-empty = separate port
 
 	logger := audit.NewNop()
@@ -3695,6 +3754,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.FetchProxy.TimeoutSeconds = 5
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.APIAllowlist = nil
 			cfg.ResponseScanning = config.ResponseScanning{
 				Enabled: true,
@@ -3769,6 +3829,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_DeterminerBeforeModifier(t *testing.
 			cfg := config.Defaults()
 			cfg.FetchProxy.TimeoutSeconds = 5
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.APIAllowlist = nil
 			// Use defaults which include the updated Prompt Injection regex
 			cfg.ResponseScanning.Enabled = true
@@ -3828,6 +3889,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_NoFalsePositive(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -3873,6 +3935,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_ReadabilityFail_FailClosed(t *testin
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -3924,6 +3987,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_SuppressedHiddenInjection(t *testing
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -3978,6 +4042,7 @@ func TestFetchEndpoint_ResponseScan_RawHTML_WarnAction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ResponseScanning = config.ResponseScanning{
 		Enabled: true,
@@ -4111,6 +4176,7 @@ func TestHandler_ServesEndpoints(t *testing.T) {
 func TestFetchResponseHint_Enabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	v := true
 	cfg.ExplainBlocks = &v
@@ -4149,6 +4215,7 @@ func TestFetchResponseHint_Enabled(t *testing.T) {
 func TestFetchResponseHint_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	// ExplainBlocks is nil (defaults to false).
 
@@ -4185,6 +4252,7 @@ func TestFetchResponseHint_Disabled(t *testing.T) {
 func TestLoadCertCache_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.TLSInterception.Enabled = false
 
 	logger := audit.NewNop()
@@ -4220,6 +4288,7 @@ func TestLoadCertCache_ValidCA(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath
@@ -4245,6 +4314,7 @@ func TestLoadCertCache_MissingFile(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = filepath.Join(tmpDir, "nonexistent-ca.pem")
 	cfg.TLSInterception.CAKeyPath = filepath.Join(tmpDir, "nonexistent-key.pem")
@@ -4281,6 +4351,7 @@ func TestLoadCertCache_BadPEM(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath
@@ -4305,6 +4376,7 @@ func TestLoadCertCache_BadPEM(t *testing.T) {
 func TestHealthEndpoint_TLSInterceptionEnabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.TLSInterception.Enabled = true
 
@@ -4349,6 +4421,7 @@ func TestHealthEndpoint_TLSInterceptionEnabled(t *testing.T) {
 func TestProxy_KnownProfiles_NoAgents(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -4372,6 +4445,7 @@ func TestProxy_KnownProfiles_NoAgents(t *testing.T) {
 func TestProxy_ResolveAgent_NoopEdition(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -4397,6 +4471,7 @@ func TestProxy_ResolveAgent_NoopEdition(t *testing.T) {
 func TestProxy_KnownProfiles_NoopEdition(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -4420,6 +4495,7 @@ func TestProxy_KnownProfiles_NoopEdition(t *testing.T) {
 func TestProxy_Edition(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -4444,6 +4520,7 @@ func TestProxy_Edition(t *testing.T) {
 func TestProxy_Ports(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -4463,6 +4540,7 @@ func TestProxy_Ports(t *testing.T) {
 func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -4551,6 +4629,7 @@ func escalateSession(sm *SessionManager, clientIP, agent string, threshold float
 func newAdaptiveConfig(testSecret string) *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Mode = config.ModeBalanced
@@ -4727,6 +4806,7 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	cfg.Mode = config.ModeBalanced
@@ -4824,6 +4904,7 @@ func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = false
 
 	logger := audit.NewNop()
@@ -4838,6 +4919,7 @@ func TestProxy_Reload_EnablesBaselineOnSessionCreate(t *testing.T) {
 	// Reload with both session profiling and baseline enabled.
 	cfg2 := config.Defaults()
 	cfg2.Internal = nil
+	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg2.SessionProfiling.Enabled = true
 	cfg2.SessionProfiling.AnomalyAction = config.ActionWarn
 	cfg2.SessionProfiling.DomainBurst = 5
@@ -4873,6 +4955,7 @@ func TestProxy_recordDecision_WithPattern(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 
 	rec, err := recorder.New(recorder.Config{
@@ -4941,6 +5024,7 @@ func TestProxy_recordDecision_NilRecorderNoOp(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)

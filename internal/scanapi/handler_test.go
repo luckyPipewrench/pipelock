@@ -51,6 +51,7 @@ func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
 	sc := scanner.New(cfg)
 	m := metrics.New()
@@ -444,6 +445,7 @@ func TestScanURL_Blocked(t *testing.T) {
 func TestScanToolCall_PolicyDeny(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
 	cfg.MCPInputScanning.Enabled = false // isolate policy-only path
 	sc := scanner.New(cfg)
@@ -486,6 +488,7 @@ func TestScanToolCall_PolicyDeny(t *testing.T) {
 func TestScanToolCall_PolicyArgKeyScoped(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
 	cfg.MCPInputScanning.Enabled = false // isolate policy-only path
 	sc := scanner.New(cfg)

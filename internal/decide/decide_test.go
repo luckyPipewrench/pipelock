@@ -32,6 +32,7 @@ func testSetup(t *testing.T) (*config.Config, *scanner.Scanner, *policy.Config) 
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
 	cfg.Internal = nil // after ApplyDefaults to avoid repopulation
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
@@ -506,6 +507,7 @@ func TestDecide_WarnActionAllows(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
@@ -542,6 +544,7 @@ func TestDecide_EnforceOffAllows(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
@@ -581,6 +584,7 @@ func TestDecide_MixedWarnAndBlockDenies(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)
@@ -616,6 +620,7 @@ func TestDecide_MCPInputScanningDisabled(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 
 	sc := scanner.New(cfg)
 	pc := policy.New(cfg.MCPToolPolicy)

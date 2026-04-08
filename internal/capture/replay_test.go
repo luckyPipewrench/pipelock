@@ -24,7 +24,8 @@ const fakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
 func newTestScanner(t *testing.T, mutate func(*config.Config)) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
-	cfg.Internal = nil      // disable SSRF (no DNS in tests)
+	cfg.Internal = nil // disable SSRF (no DNS in tests)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false // no env leak scanning
 	if mutate != nil {
 		mutate(cfg)
@@ -37,6 +38,7 @@ func newTestScanner(t *testing.T, mutate func(*config.Config)) *scanner.Scanner 
 func TestReplayURLVerdict(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"example.com"}
 
@@ -76,6 +78,7 @@ func TestReplayURLVerdict_ScannerInput(t *testing.T) {
 	})
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.com"}
 
@@ -98,6 +101,7 @@ func TestReplayURLVerdict_ScannerInput(t *testing.T) {
 func TestReplayResponseVerdict(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
@@ -138,6 +142,7 @@ func TestReplayDLPVerdict(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	re := NewReplayEngine(cfg, sc)
@@ -167,6 +172,7 @@ func TestReplayDLPVerdict(t *testing.T) {
 func TestReplayToolPolicy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.Action = config.ActionBlock
@@ -215,6 +221,7 @@ func TestReplayToolPolicy(t *testing.T) {
 func TestReplayToolPolicy_NoMatch(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.Action = config.ActionBlock
@@ -276,6 +283,7 @@ func TestReplaySummaryOnly(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	re := NewReplayEngine(cfg, sc)
 
@@ -310,6 +318,7 @@ func TestReplaySummaryOnly(t *testing.T) {
 func TestReplayResponseVerdict_Clean(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
@@ -339,6 +348,7 @@ func TestReplayDLPVerdict_Clean(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	re := NewReplayEngine(cfg, sc)
 
@@ -433,6 +443,7 @@ func TestLoadAndReplay(t *testing.T) {
 	// Candidate config blocks safe.example.com — should produce Changed=true.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"safe.example.com"}
 
@@ -466,6 +477,7 @@ func TestLoadAndReplay_Empty(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	records, dropped, skipped, originalHash, err := LoadAndReplay(cfg, dir)
@@ -515,6 +527,7 @@ func TestLoadAndReplay_DropCount(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	_, dropped, _, _, err := LoadAndReplay(cfg, dir)
@@ -547,6 +560,7 @@ func TestLoadAndReplay_SkipsFiles(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.ScanEnv = false
 
 	// Only one session session dir; capture-meta should be skipped.

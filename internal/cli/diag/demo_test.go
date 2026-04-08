@@ -166,6 +166,7 @@ func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 		t.Run(s.name, func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			cfg.ResponseScanning.Action = "block"
 			cfg.DLP.ScanEnv = false
 
@@ -227,6 +228,7 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 	// This exercises the "not blocked" / fallback paths in each closure.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.Patterns = nil
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = nil

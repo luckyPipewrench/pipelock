@@ -16,6 +16,7 @@ func newAddressProtectionScanner(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AddressProtection.Enabled = true
 	cfg.AddressProtection.Action = config.ActionBlock
 	cfg.AddressProtection.UnknownAction = config.ActionAllow
@@ -97,6 +98,7 @@ func TestScanRequestBody_AddressUnknownAllowed(t *testing.T) {
 func TestScanRequestBody_NoAddressProtection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
 	sc := scanner.New(cfg)
@@ -118,6 +120,7 @@ func TestScanRequestBody_NoAddressProtection(t *testing.T) {
 func TestScanRequestBody_AddressWithAgentID(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.AddressProtection.Enabled = true
 	cfg.AddressProtection.Action = config.ActionBlock
 	cfg.AddressProtection.UnknownAction = config.ActionAllow

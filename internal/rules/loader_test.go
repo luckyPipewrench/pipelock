@@ -1335,3 +1335,74 @@ func TestLoadBundles_V2UnsignedRejected(t *testing.T) {
 		t.Errorf("expected 0 loaded bundles for unsigned v2, got %d", len(result.Loaded))
 	}
 }
+
+func TestLoadBundles_V2RequiredFeaturesKnown(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setupKeyring(t, pub)
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "feat-known")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundleV2("feat-known", TierStandard, 1, []Rule{
+		testDLPRule("dlp-feat-001", confidenceHigh, StatusStable),
+	})
+	b.KeyID = KeyFingerprint(pub)
+	b.RequiredFeatures = []string{"dlp", "checksum"}
+	writeSignedBundle(t, bundleDir, b, pub, priv)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	if len(result.Errors) != 0 {
+		t.Fatalf("expected no errors for known features, got: %v", result.Errors)
+	}
+	if len(result.DLP) != 1 {
+		t.Errorf("expected 1 DLP rule, got %d", len(result.DLP))
+	}
+}
+
+func TestLoadBundles_V2RequiredFeaturesUnknown(t *testing.T) {
+	// Non-parallel: mutates KeyringHex.
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	setupKeyring(t, pub)
+
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, "feat-unknown")
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	b := testBundleV2("feat-unknown", TierCommunity, 1, []Rule{
+		testDLPRule("dlp-feat-002", confidenceHigh, StatusStable),
+	})
+	b.KeyID = KeyFingerprint(pub)
+	b.RequiredFeatures = []string{"dlp", "quantum_crypto"}
+	writeSignedBundle(t, bundleDir, b, pub, priv)
+
+	result := LoadBundles(dir, LoadOptions{
+		MinConfidence:   confidenceLow,
+		PipelockVersion: testPipelockVersion,
+	})
+
+	if len(result.Errors) == 0 {
+		t.Fatal("expected error for unknown required feature")
+	}
+	if !strings.Contains(result.Errors[0].Reason, "unknown feature") {
+		t.Errorf("error %q should mention unknown feature", result.Errors[0].Reason)
+	}
+	if len(result.DLP) != 0 {
+		t.Errorf("expected 0 DLP rules for rejected bundle, got %d", len(result.DLP))
+	}
+}

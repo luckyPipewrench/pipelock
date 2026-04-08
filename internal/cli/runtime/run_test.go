@@ -211,6 +211,7 @@ func TestRedactEndpoint(t *testing.T) {
 func testConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return cfg
 }
 
@@ -701,10 +702,12 @@ func TestAgentListenersChanged(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			old := config.Defaults()
 			old.Internal = nil
+			old.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			old.Agents = tt.old
 
 			newCfg := config.Defaults()
 			newCfg.Internal = nil
+			newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			newCfg.Agents = tt.new
 
 			got := AgentListenersChanged(old, newCfg)
@@ -719,6 +722,7 @@ func TestPreserveAgentListeners(t *testing.T) {
 	t.Run("both configs have same agents", func(t *testing.T) {
 		old := config.Defaults()
 		old.Internal = nil
+		old.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		old.Agents = map[string]config.AgentProfile{
 			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
 			"b": {Listeners: []string{":9002"}},
@@ -726,6 +730,7 @@ func TestPreserveAgentListeners(t *testing.T) {
 
 		newCfg := config.Defaults()
 		newCfg.Internal = nil
+		newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		newCfg.Agents = map[string]config.AgentProfile{
 			"a": {Listeners: []string{":9999"}, Mode: config.ModeStrict},
 			"b": {Listeners: []string{":8888"}},
@@ -747,12 +752,14 @@ func TestPreserveAgentListeners(t *testing.T) {
 	t.Run("listener-bearing agent removed re-added", func(t *testing.T) {
 		old := config.Defaults()
 		old.Internal = nil
+		old.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		old.Agents = map[string]config.AgentProfile{
 			"a": {Listeners: []string{":9001"}, Mode: config.ModeBalanced},
 		}
 
 		newCfg := config.Defaults()
 		newCfg.Internal = nil
+		newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		newCfg.Agents = map[string]config.AgentProfile{}
 
 		PreserveAgentListeners(old, newCfg)
@@ -774,12 +781,14 @@ func TestPreserveAgentListeners(t *testing.T) {
 	t.Run("non-listener agent removed stays removed", func(t *testing.T) {
 		old := config.Defaults()
 		old.Internal = nil
+		old.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		old.Agents = map[string]config.AgentProfile{
 			"a": {Mode: config.ModeBalanced}, // no listeners
 		}
 
 		newCfg := config.Defaults()
 		newCfg.Internal = nil
+		newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		newCfg.Agents = map[string]config.AgentProfile{}
 
 		PreserveAgentListeners(old, newCfg)
@@ -792,10 +801,12 @@ func TestPreserveAgentListeners(t *testing.T) {
 	t.Run("new agent listeners stripped", func(t *testing.T) {
 		old := config.Defaults()
 		old.Internal = nil
+		old.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		old.Agents = map[string]config.AgentProfile{}
 
 		newCfg := config.Defaults()
 		newCfg.Internal = nil
+		newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		newCfg.Agents = map[string]config.AgentProfile{
 			"b": {Listeners: []string{":9002"}, Mode: config.ModeStrict},
 		}
@@ -816,12 +827,14 @@ func TestPreserveAgentListeners(t *testing.T) {
 	t.Run("nil new agents map initialized", func(t *testing.T) {
 		old := config.Defaults()
 		old.Internal = nil
+		old.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		old.Agents = map[string]config.AgentProfile{
 			"a": {Listeners: []string{":9001"}},
 		}
 
 		newCfg := config.Defaults()
 		newCfg.Internal = nil
+		newCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 		newCfg.Agents = nil
 
 		PreserveAgentListeners(old, newCfg)

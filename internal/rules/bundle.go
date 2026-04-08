@@ -28,7 +28,7 @@ type Bundle struct {
 	MonotonicVersion uint64   `yaml:"monotonic_version"` // rollback-prevention counter (v2+)
 	PublishedAt      string   `yaml:"published_at"`      // RFC 3339 timestamp (v2+)
 	ExpiresAt        string   `yaml:"expires_at"`        // RFC 3339 timestamp (v2+)
-	RequiredFeatures []string `yaml:"required_features"` // engine features needed (v2+, parsed but not yet enforced)
+	RequiredFeatures []string `yaml:"required_features"` // engine features needed (v2+, enforced at load time)
 	KeyID            string   `yaml:"key_id"`            // signing key fingerprint (v2+)
 	Rules            []Rule   `yaml:"rules"`
 }
@@ -100,6 +100,39 @@ var validTiers = map[string]bool{
 	TierStandard:  true,
 	TierCommunity: true,
 	TierPro:       true,
+}
+
+// KnownFeatures is the set of engine features that bundles can require.
+// Bundles declaring a required_feature not in this set are rejected at
+// load time, forcing operators to upgrade pipelock before using the bundle.
+var KnownFeatures = map[string]bool{
+	"dlp":            true,
+	"injection":      true,
+	"tool_poison":    true,
+	"chain":          true,
+	"ssrf":           true,
+	"response":       true,
+	"encoding_aware": true, // recursive base64/hex/base32 detection
+	"checksum":       true, // Luhn, mod97, WIF, ABA validators
+}
+
+// featureNameRegex validates required_features entries: 1-64 chars,
+// lowercase alphanumeric + underscores.
+var featureNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// CheckRequiredFeatures verifies that every feature in required is well-formed
+// and is a known engine feature. Returns an error naming the first invalid or
+// unknown feature.
+func CheckRequiredFeatures(required []string) error {
+	for _, f := range required {
+		if !featureNameRegex.MatchString(f) {
+			return fmt.Errorf("invalid feature name %q (must be 1-64 lowercase alphanumeric chars with underscores)", f)
+		}
+		if !KnownFeatures[f] {
+			return fmt.Errorf("bundle requires unknown feature %q (upgrade pipelock to use this bundle)", f)
+		}
+	}
+	return nil
 }
 
 // Bundle size and count limits.
@@ -252,6 +285,12 @@ func (b *Bundle) validateV2Fields() error {
 
 	if b.KeyID == "" {
 		return fmt.Errorf("validate bundle: key_id must not be empty for v2+ bundles")
+	}
+
+	for _, f := range b.RequiredFeatures {
+		if !featureNameRegex.MatchString(f) {
+			return fmt.Errorf("validate bundle: required_features entry %q must be 1-64 lowercase alphanumeric chars with underscores", f)
+		}
 	}
 
 	return nil

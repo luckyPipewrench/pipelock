@@ -99,6 +99,7 @@ func TestRecorder_Redaction(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
@@ -1741,6 +1742,7 @@ func TestRecorder_VerifyChain_WithPubKey(t *testing.T) {
 func TestRecorder_ReceiptRedaction(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 

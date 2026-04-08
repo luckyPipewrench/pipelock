@@ -2728,6 +2728,7 @@ func TestScanResponse_StateControlPoisoning(t *testing.T) {
 	// Use config.Defaults() to pick up the new state/control patterns.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := New(cfg)
 	defer s.Close()
 
@@ -2849,6 +2850,7 @@ func TestScanResponse_StateControlPoisoning(t *testing.T) {
 func TestScanResponse_StateControlNewlineBypass(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := New(cfg)
 	defer s.Close()
 
@@ -2893,6 +2895,7 @@ func TestScanResponse_StateControlNewlineBypass(t *testing.T) {
 func TestScanResponse_StateControlNoFalsePositives(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	s := New(cfg)
 	defer s.Close()
 

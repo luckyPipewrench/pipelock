@@ -54,6 +54,7 @@ func ptrBool(v bool) *bool { return &v }
 func adaptiveConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	enforceFalse := false
 	cfg.Enforce = &enforceFalse
@@ -72,6 +73,7 @@ func adaptiveConfig() *config.Config {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 	cfg.ApplyDefaults()
 	cfg.Internal = nil // re-null after ApplyDefaults adds SSRF CIDRs
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return cfg
 }
 
@@ -1756,6 +1758,7 @@ func TestForwardHTTP_Adaptive_ResponseScan_StripRecordsSignal(t *testing.T) {
 func TestAdaptive_RateLimitBlock_NoEscalation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
@@ -1799,6 +1802,7 @@ func TestAdaptive_RateLimitBlock_NoEscalation(t *testing.T) {
 func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
@@ -1851,6 +1855,7 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 func TestDeathSpiral_RateLimitBurst(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 20.0 // production default
@@ -1900,6 +1905,7 @@ func TestDeathSpiral_RateLimitBurst(t *testing.T) {
 func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.Enforce = ptrBool(false) // audit mode
 	cfg.SessionProfiling.Enabled = true
 	cfg.AdaptiveEnforcement.Enabled = true
@@ -1943,6 +1949,7 @@ func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
 func TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
@@ -2003,6 +2010,7 @@ func TestAdaptive_ProtectiveRateLimit_Transport(t *testing.T) {
 	enforceTrue := true
 	cfg.Enforce = &enforceTrue
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.TimeoutSeconds = 5
 	// Set rate limit to 1 request/min so the second request triggers it.

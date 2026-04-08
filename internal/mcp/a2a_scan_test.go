@@ -20,6 +20,7 @@ func testA2AScanner(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // no SSRF DNS in tests
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return scanner.New(cfg)
 }
 

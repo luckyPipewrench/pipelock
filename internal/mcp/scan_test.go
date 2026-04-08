@@ -23,6 +23,7 @@ func testScanner(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 	return sc
@@ -757,6 +758,7 @@ func TestScanToolsListNonToolFields_SiblingAndErrorInjection(t *testing.T) {
 	// field appends with a newline separator.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -779,6 +781,7 @@ func TestScanToolsListNonToolFields_NonStandardErrorShape(t *testing.T) {
 	// Error is a plain string, not a standard {code, message, data} object.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -798,6 +801,7 @@ func TestScanToolsListNonToolFields_ParamsWithSiblingText(t *testing.T) {
 	// A result with a non-tools sibling populates text, then params appends.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -817,6 +821,7 @@ func TestScanToolsListNonToolFields_CleanNonToolText(t *testing.T) {
 	// Non-tools sibling fields have benign text that passes scanner check.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
@@ -836,6 +841,7 @@ func TestScanToolsListNonToolFields_CleanNonToolText(t *testing.T) {
 func TestScanToolsListNonToolFields_InstructionLikeDescriptionsNoFP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Action = config.ActionBlock
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)

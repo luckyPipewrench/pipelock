@@ -99,6 +99,7 @@ func testInputScanner(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 	return sc
@@ -1705,6 +1706,7 @@ func TestScanRequest_ParamsWithNoStrings(t *testing.T) {
 	// Params contain only numbers/booleans — extract.AllStringsFromJSON returns empty.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1720,6 +1722,7 @@ func TestScanRequest_ParamsArrayOfNumbers(t *testing.T) {
 	// Array of non-string values — extract.AllStringsFromJSON returns empty.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1734,6 +1737,7 @@ func TestScanRequest_InjectionInParams(t *testing.T) {
 	// Exercise the injection-detection path to produce Inject matches.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1752,6 +1756,7 @@ func TestScanSplitSecret_ConcatEqualsJoined(t *testing.T) {
 	// When concatenated values equal the joined string, no rescan needed.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1774,6 +1779,7 @@ func TestScanSplitSecret_EdgeFieldFallback(t *testing.T) {
 	// Exercise the edge-field fallback path: >64 fields, secret in first+last.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1805,6 +1811,7 @@ func TestScanSplitSecret_SingleField(t *testing.T) {
 	// Exercise the len(vals) <= 1 early return.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -1820,6 +1827,7 @@ func TestScanSplitSecret_AlreadyDirty(t *testing.T) {
 	// Exercise the !result.Clean early return.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 
@@ -2364,6 +2372,7 @@ func TestForwardScannedInput_BatchRejectWithDoW(t *testing.T) {
 func TestForwardScannedInput_KillSwitchBlocksRequest(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "test kill switch deny"
 	ks := killswitch.New(cfg)
@@ -2404,6 +2413,7 @@ func TestForwardScannedInput_KillSwitchBlocksRequest(t *testing.T) {
 func TestForwardScannedInput_KillSwitchDropsNotification(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.KillSwitch.Enabled = true
 	ks := killswitch.New(cfg)
 
@@ -3264,6 +3274,7 @@ func TestScanRequest_EthAddressInToolArgs(t *testing.T) {
 	// address_protection allowlists. Add the pattern explicitly for this test.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
 		Name: "Ethereum Address", Regex: `0x[0-9a-fA-F]{40}\b`, Severity: "high",
 	})

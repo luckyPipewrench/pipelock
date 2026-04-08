@@ -89,7 +89,8 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 
 	// --- Phase 2: LoadAndReplay ---
 	candidateCfg := config.Defaults()
-	candidateCfg.Internal = nil      // disable SSRF checks (no DNS in tests)
+	candidateCfg.Internal = nil // disable SSRF checks (no DNS in tests)
+	candidateCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	candidateCfg.DLP.ScanEnv = false // no env leak scanning
 	// Candidate blocks both domains — api.example.com was previously allowed,
 	// so it becomes a new_block. evil.example.com was already blocked, so it

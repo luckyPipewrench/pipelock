@@ -49,6 +49,7 @@ func doReq(t *testing.T, client *http.Client, method, url string, body string, h
 func TestKillSwitchPortIsolation_APIOnSeparatePort(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF for tests
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
 
 	// Allocate a free port for the API server.
@@ -215,6 +216,7 @@ func TestKillSwitchPortIsolation_APIOnSeparatePort(t *testing.T) {
 func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.APIToken = "test-token-default" //nolint:gosec // test value
 
@@ -281,6 +283,7 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 func TestKillSwitchHealthReportsActive(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ApplyDefaults()
 
 	logger, _ := audit.New("json", "stdout", "", false, false)

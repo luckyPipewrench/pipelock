@@ -24,6 +24,12 @@ const (
 	ScannerCoreResponse = "core_response"
 )
 
+// CoreDLPCount returns the number of immutable core DLP patterns.
+func CoreDLPCount() int { return len(coreDLPPatternDefs()) }
+
+// CoreResponseCount returns the number of immutable core response patterns.
+func CoreResponseCount() int { return len(coreResponsePatternDefs()) }
+
 // coreDLPPattern defines a single immutable DLP pattern compiled into the binary.
 // These patterns represent the safety floor — they CANNOT be disabled by any
 // config field (include_defaults, response_scanning.enabled, etc.).
@@ -550,6 +556,86 @@ func (s *Scanner) mergedSSRFCIDRs() []*net.IPNet {
 	merged = append(merged, s.core.internalCIDRs...)
 	merged = append(merged, s.internalCIDRs...)
 	return merged
+}
+
+// checkCoreSSRFLiteral blocks requests to literal private IP addresses when
+// SSRF config is disabled (cfg.Internal is nil). This provides the same
+// immutable floor for SSRF as core DLP and core response scanning.
+//
+// When SSRF IS active (cfg.Internal non-nil), the normal checkSSRF path
+// already includes core CIDRs via mergedSSRFCIDRs() and provides richer
+// diagnostics (hints, config mismatch classification). This function only
+// serves as the safety net for the disabled case.
+//
+// Only checks IP literals (standard dotted-decimal, hex, octal, decimal
+// integer). Hostname-based SSRF (where DNS resolves to a private IP) remains
+// config-gated because it requires DNS resolution.
+//
+// Respects ssrf.ip_allowlist so operators can explicitly permit specific
+// internal IPs (e.g., sidecar communication, test servers).
+func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
+	if s.core == nil {
+		return Result{Allowed: true}
+	}
+
+	// When SSRF is active, checkSSRF handles everything (including core
+	// CIDRs via mergedSSRFCIDRs). Only fire here as the safety net.
+	if len(s.internalCIDRs) > 0 {
+		return Result{Allowed: true}
+	}
+
+	// Normalize hostname for IP parsing:
+	// - Strip IPv6 zone ID (e.g. "::1%eth0" → "::1") which causes
+	//   net.ParseIP to return nil.
+	// - url.URL.Hostname() already strips brackets from "[::1]".
+	clean := hostname
+	if idx := strings.Index(clean, "%"); idx != -1 {
+		clean = clean[:idx]
+	}
+
+	// Try standard dotted-decimal / IPv6 first.
+	ip := net.ParseIP(clean)
+
+	// Try alternative IP notations (hex, octal, decimal integer).
+	if ip == nil {
+		ip = parseAlternativeIP(clean)
+	}
+
+	if ip == nil {
+		return Result{Allowed: true} // hostname, not IP literal
+	}
+
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+
+	// Operator override: ip_allowlist exempts specific ranges.
+	if s.IsIPAllowlisted(ip) {
+		return Result{Allowed: true}
+	}
+
+	if s.isCoreCIDRBlocked(ip) {
+		r := Result{
+			Allowed: false,
+			Reason:  fmt.Sprintf("core SSRF: %s is a private/internal IP address", hostname),
+			Scanner: ScannerCoreSSRF,
+			Score:   1.0,
+		}
+		// If the IP is in api_allowlist, this is a config mismatch (operator
+		// intended to allow it) rather than a real attack. Classify so
+		// adaptive enforcement doesn't escalate, and hint toward ip_allowlist.
+		if s.IsInAPIAllowlist(clean) {
+			cidr := ip.String() + "/128"
+			if ip.To4() != nil {
+				cidr = ip.String() + "/32"
+			}
+			r.Hint = fmt.Sprintf("add %q to ssrf.ip_allowlist to allow this internal IP", cidr)
+			r.Class = ClassConfigMismatch
+		}
+		return r
+	}
+
+	return Result{Allowed: true}
 }
 
 // checkCoreDLP runs core DLP patterns against a parsed URL. Mirrors the main

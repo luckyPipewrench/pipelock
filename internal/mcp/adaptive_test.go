@@ -102,6 +102,7 @@ func buildBlockChainMatcher() *chains.Matcher {
 func newAdaptiveTestScanner() *scanner.Scanner {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return scanner.New(cfg)
 }
 
@@ -811,11 +812,13 @@ func TestForwardScanned_Adaptive_BlockAllDeniesCleanResponse(t *testing.T) {
 func TestForwardScanned_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	// Base action: warn (injection found, not blocked without escalation).
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionWarn
 	cfg.ApplyDefaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	sc := scanner.New(cfg)
 	defer sc.Close()
 

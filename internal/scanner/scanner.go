@@ -579,6 +579,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 		return result
 	}
 
+	// Core SSRF literal — immutable safety floor for IP literals. Runs ALWAYS,
+	// even when cfg.Internal is nil (SSRF disabled). Blocks direct requests
+	// to private IPs (127.0.0.1, 169.254.169.254, 10.x, etc.). Respects
+	// ssrf.ip_allowlist for operator overrides.
+	if result := s.checkCoreSSRFLiteral(hostname); !result.Allowed {
+		return result
+	}
+
 	// Core DLP — immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
 	if result := s.checkCoreDLP(parsed); !result.Allowed {

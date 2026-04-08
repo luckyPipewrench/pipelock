@@ -104,6 +104,7 @@ Exit codes:
 
 			// Disable SSRF so mock upstream at 127.0.0.1 is reachable.
 			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 			// Disable env scanning for self-test.
 			cfg.DLP.ScanEnv = false
 			// Enable forward proxy for CONNECT checks.

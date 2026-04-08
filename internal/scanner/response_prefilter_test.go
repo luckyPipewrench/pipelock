@@ -157,6 +157,7 @@ func TestPerPassPreFilterConstruction(t *testing.T) {
 	// Verify that opt-space and vowel-fold pre-filters are built independently.
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = "block"
 	s := New(cfg)

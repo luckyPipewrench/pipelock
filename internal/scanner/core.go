@@ -624,7 +624,7 @@ func (s *Scanner) checkCoreSSRFLiteral(hostname string) Result {
 		// If the IP is in api_allowlist, this is a config mismatch (operator
 		// intended to allow it) rather than a real attack. Classify so
 		// adaptive enforcement doesn't escalate, and hint toward ip_allowlist.
-		if s.IsInAPIAllowlist(hostname) {
+		if s.IsInAPIAllowlist(clean) {
 			cidr := ip.String() + "/128"
 			if ip.To4() != nil {
 				cidr = ip.String() + "/32"

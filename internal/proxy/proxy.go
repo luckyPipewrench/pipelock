@@ -1648,14 +1648,16 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Inject mediation envelope before forwarding on allow path.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		_ = envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
+		if envErr := envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
 			ActionID:   actionID,
 			Action:     string(receipt.ActionRead),
 			Verdict:    config.ActionAllow,
 			SideEffect: string(receipt.SideEffectExternalRead),
 			Actor:      agent,
 			ActorAuth:  id.Auth,
-		})
+		}); envErr != nil {
+			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+		}
 	}
 
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here

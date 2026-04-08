@@ -597,9 +597,12 @@ func ForwardScannedInput(
 			}
 		}
 
-		// Pre-generate actionID once for both receipt and envelope so
-		// the envelope's receipt_id correlates with the action receipt.
-		actionID := receipt.NewActionID()
+		// Pre-generate actionID for tools/call only — metadata methods
+		// (tools/list, initialize, notifications) don't produce receipts.
+		var actionID string
+		if verdict.Method == methodToolsCall {
+			actionID = receipt.NewActionID()
+		}
 
 		redirectSucceeded := false
 		switch effectiveAction {
@@ -786,8 +789,8 @@ func ForwardScannedInput(
 			}
 		}
 
-		// Action receipt: emit for every MCP tool call decision.
-		if opts.ReceiptEmitter != nil {
+		// Action receipt: emit for tools/call decisions only.
+		if verdict.Method == methodToolsCall && opts.ReceiptEmitter != nil {
 			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   effectiveAction,

@@ -4,6 +4,7 @@
 package envelope
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -84,6 +85,12 @@ func TestEnvelope_Serialize_RoundTrip(t *testing.T) {
 	}
 	if parsed.Timestamp != env.Timestamp {
 		t.Errorf("Timestamp = %d, want %d", parsed.Timestamp, env.Timestamp)
+	}
+	if parsed.SideEffect != env.SideEffect {
+		t.Errorf("SideEffect = %q, want %q", parsed.SideEffect, env.SideEffect)
+	}
+	if !bytes.Equal(parsed.PolicyHash, env.PolicyHash) {
+		t.Errorf("PolicyHash = %x, want %x", parsed.PolicyHash, env.PolicyHash)
 	}
 }
 

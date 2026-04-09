@@ -4,6 +4,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -83,6 +84,12 @@ type MCPProxyOpts struct {
 	// ReceiptEmitter emits signed action receipts for MCP decisions.
 	// Nil-safe (no-op when nil).
 	ReceiptEmitter *receipt.Emitter
+
+	// EnvelopeEmitter builds mediation envelopes for MCP allow decisions.
+	// When non-nil, tools/call messages forwarded on allow get a
+	// com.pipelock/mediation entry injected into params._meta.
+	// Nil-safe (no-op when nil).
+	EnvelopeEmitter *envelope.Emitter
 
 	// Pre-spawn binary integrity verification (nil-safe).
 	IntegrityCfg *config.MCPBinaryIntegrity

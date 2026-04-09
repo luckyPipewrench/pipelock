@@ -383,6 +383,7 @@ type Config struct {
 	Airlock               Airlock                 `yaml:"airlock"`
 	BrowserShield         BrowserShield           `yaml:"browser_shield"`
 	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
+	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
 	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
@@ -954,6 +955,17 @@ type FlightRecorder struct {
 	RawEscrow          bool   `yaml:"raw_escrow"`           // encrypted raw detail sidecar (default false)
 	EscrowPublicKey    string `yaml:"escrow_public_key"`    // X25519 public key for raw escrow encryption
 	SigningKeyPath     string `yaml:"signing_key_path"`     // Ed25519 private key for checkpoint signing and action receipts
+}
+
+// MediationEnvelope configures sideband metadata on proxied requests.
+// When enabled, pipelock injects a Pipelock-Mediation header (HTTP) or
+// _meta["com.pipelock/mediation"] (MCP) carrying action type, verdict,
+// actor identity, and receipt correlation ID.
+//
+// Envelope signing (RFC 9421), SPIFFE actor format, and key management
+// are planned for a follow-up PR. See mediation-envelope-design.md.
+type MediationEnvelope struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
@@ -1923,6 +1935,7 @@ func (c *Config) Validate() error {
 		c.validateBehavioralBaseline,
 		c.validateAirlock,
 		c.validateBrowserShield,
+		c.validateMediationEnvelope,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -3183,6 +3196,12 @@ func (c *Config) validateBrowserShield() error {
 	return nil
 }
 
+func (c *Config) validateMediationEnvelope() error {
+	// Only field today is Enabled (bool). Signing, SPIFFE actor format,
+	// and key management will add validation when they ship.
+	return nil
+}
+
 // ResolveCAPath returns resolved CA cert and key paths.
 // Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
 // Returns an error if $HOME cannot be determined and paths are not set explicitly.
@@ -4313,6 +4332,7 @@ func Defaults() *Config {
 				"www.recaptcha.net",
 			},
 		},
+		MediationEnvelope: MediationEnvelope{},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source
 	// selector can distinguish them from user-supplied patterns. Set at

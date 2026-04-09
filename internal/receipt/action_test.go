@@ -63,31 +63,34 @@ func TestValidActionType(t *testing.T) {
 	})
 }
 
-func TestNewActionID(t *testing.T) {
+func TestNewActionID_UUIDv7(t *testing.T) {
 	t.Parallel()
+	id := NewActionID()
+	if len(id) != 36 {
+		t.Fatalf("expected 36-char UUID, got %d chars: %q", len(id), id)
+	}
+	// UUIDv7 version nibble at position 14 must be '7'
+	if id[14] != '7' {
+		t.Fatalf("expected UUID version 7, got %c in %q", id[14], id)
+	}
+	// Variant bits at position 19 must be 8/9/a/b
+	v := id[19]
+	if v != '8' && v != '9' && v != 'a' && v != 'b' {
+		t.Fatalf("expected RFC 4122 variant at pos 19, got %c in %q", v, id)
+	}
+}
 
-	uuidV4Re := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-
-	t.Run("format", func(t *testing.T) {
-		t.Parallel()
-		id := NewActionID()
-		if !uuidV4Re.MatchString(id) {
-			t.Errorf("NewActionID() = %q, does not match UUID v4 format", id)
+func TestNewActionID_Monotonic(t *testing.T) {
+	t.Parallel()
+	ids := make([]string, 100)
+	for i := range ids {
+		ids[i] = NewActionID()
+	}
+	for i := 1; i < len(ids); i++ {
+		if ids[i] < ids[i-1] {
+			t.Fatalf("not monotonic: ids[%d]=%q < ids[%d]=%q", i, ids[i], i-1, ids[i-1])
 		}
-	})
-
-	t.Run("uniqueness", func(t *testing.T) {
-		t.Parallel()
-		const count = 100
-		seen := make(map[string]struct{}, count)
-		for range count {
-			id := NewActionID()
-			if _, ok := seen[id]; ok {
-				t.Fatalf("duplicate action ID generated: %s", id)
-			}
-			seen[id] = struct{}{}
-		}
-	})
+	}
 }
 
 func TestActionRecord_Validate(t *testing.T) {

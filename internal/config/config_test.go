@@ -10649,3 +10649,36 @@ func TestBudgetConfig_HasDoWFields(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateMediationEnvelope(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		cfg  func() *Config
+	}{
+		{
+			name: "disabled is valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = false
+				return c
+			},
+		},
+		{
+			name: "enabled is valid",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MediationEnvelope.Enabled = true
+				return c
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := tt.cfg().validateMediationEnvelope(); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

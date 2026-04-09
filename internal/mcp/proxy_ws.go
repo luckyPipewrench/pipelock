@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -49,6 +50,7 @@ func RunWSProxy(
 	m *metrics.Metrics,
 	redirectRT *RedirectRuntime,
 	dowCheck DoWCheckFunc,
+	envEmitter *envelope.Emitter,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -110,6 +112,7 @@ func RunWSProxy(
 		AuditLogger: auditLogger, CEE: cee,
 		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
 		RedirectRT: redirectRT, DoWCheck: dowCheck,
+		EnvelopeEmitter: envEmitter,
 	}
 
 	clientReader := transport.NewStdioReader(clientIn)

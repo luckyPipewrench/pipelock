@@ -19,8 +19,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
@@ -51,15 +54,16 @@ type ReverseProxyBlockResponse struct {
 // to a configured upstream URL. Request bodies are scanned for DLP patterns
 // (secret exfiltration) and response bodies are scanned for prompt injection.
 type ReverseProxyHandler struct {
-	upstream     *url.URL
-	proxy        *httputil.ReverseProxy
-	cfgPtr       *atomic.Pointer[config.Config]
-	scPtr        *atomic.Pointer[scanner.Scanner]
-	logger       *audit.Logger
-	metrics      *metrics.Metrics
-	ks           *killswitch.Controller
-	captureObs   capture.CaptureObserver
-	shieldEngine *shield.Engine
+	upstream           *url.URL
+	proxy              *httputil.ReverseProxy
+	cfgPtr             *atomic.Pointer[config.Config]
+	scPtr              *atomic.Pointer[scanner.Scanner]
+	logger             *audit.Logger
+	metrics            *metrics.Metrics
+	ks                 *killswitch.Controller
+	captureObs         capture.CaptureObserver
+	shieldEngine       *shield.Engine
+	envelopeEmitterPtr *atomic.Pointer[envelope.Emitter]
 }
 
 // NewReverseProxy creates a reverse proxy handler that scans request and
@@ -109,9 +113,18 @@ func NewReverseProxy(
 	return rp
 }
 
+// SetEnvelopeEmitter sets the atomic pointer to the envelope emitter.
+// Must be called before serving requests if mediation envelopes are enabled.
+func (rp *ReverseProxyHandler) SetEnvelopeEmitter(ptr *atomic.Pointer[envelope.Emitter]) {
+	rp.envelopeEmitterPtr = ptr
+}
+
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Strip inbound mediation envelope headers to prevent forgery.
+	envelope.StripInbound(r.Header)
+
 	cfg := rp.cfgPtr.Load()
 	sc := rp.scPtr.Load()
 
@@ -199,6 +212,22 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
 		if blocked := rp.scanRequest(w, r, cfg, sc); blocked {
 			return
+		}
+	}
+
+	// Inject mediation envelope before forwarding on allow path.
+	if rp.envelopeEmitterPtr != nil {
+		if envEmitter := rp.envelopeEmitterPtr.Load(); envEmitter != nil {
+			if envErr := envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
+				ActionID:   receipt.NewActionID(),
+				Action:     string(receipt.ClassifyHTTP(r.Method)),
+				Verdict:    config.ActionAllow,
+				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
+				Actor:      edition.ExtractAgent(r),
+				ActorAuth:  envelope.ActorAuthSelfDeclared, // Reverse proxy has no per-agent listener binding
+			}); envErr != nil {
+				rp.logger.LogAnomaly(audit.LogContext{Method: r.Method, URL: r.URL.String()}, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			}
 		}
 	}
 

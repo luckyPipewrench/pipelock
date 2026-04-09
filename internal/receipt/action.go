@@ -7,30 +7,25 @@
 package receipt
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// NewActionID generates a random UUID v4 for action records.
+// NewActionID generates a UUIDv7 for action records. UUIDv7 is time-ordered
+// (millisecond precision in the high bits) and globally unique, suitable for
+// correlation handles in mediation envelopes and receipt lookups.
 func NewActionID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand failure is fatal in a security context.
-		// Fall back to zero UUID rather than panicking on the hot path.
-		return "00000000-0000-4000-8000-000000000000"
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "00000000-0000-7000-8000-000000000000"
 	}
-	// Set version 4 (bits 76-79 of byte 6).
-	b[6] = (b[6] & 0x0f) | 0x40
-	// Set variant bits (bits 70-71 of byte 8).
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return id.String()
 }
 
 // ActionType classifies what kind of operation a mediated action represents.

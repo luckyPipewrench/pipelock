@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -485,6 +486,14 @@ Environment passthrough (subprocess mode only):
 				}
 			}
 
+			// Envelope emitter: create when mediation_envelope.enabled=true.
+			var envEmitter *envelope.Emitter
+			if cfg.MediationEnvelope.Enabled {
+				envEmitter = envelope.NewEmitter(envelope.EmitterConfig{
+					ConfigHash: cfg.Hash(),
+				})
+			}
+
 			toolAction := "disabled"
 			if toolCfg != nil {
 				toolAction = toolCfg.Action
@@ -530,9 +539,10 @@ Environment passthrough (subprocess mode only):
 						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
-						RedirectRT:    buildRedirectRT(cfg),
-						ProvenanceCfg: &cfg.MCPToolProvenance,
-						DoWCheck:      dowCheck,
+						RedirectRT:      buildRedirectRT(cfg),
+						ProvenanceCfg:   &cfg.MCPToolProvenance,
+						EnvelopeEmitter: envEmitter,
+						DoWCheck:        dowCheck,
 					}); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -546,7 +556,7 @@ Environment passthrough (subprocess mode only):
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, buildRedirectRT(cfg), dowCheck); err != nil {
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, buildRedirectRT(cfg), dowCheck, envEmitter); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -564,10 +574,11 @@ Environment passthrough (subprocess mode only):
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
-					RedirectRT:    buildRedirectRT(cfg),
-					DoWCheck:      dowCheck,
-					IntegrityCfg:  &cfg.MCPBinaryIntegrity,
-					ProvenanceCfg: &cfg.MCPToolProvenance,
+					RedirectRT:      buildRedirectRT(cfg),
+					EnvelopeEmitter: envEmitter,
+					DoWCheck:        dowCheck,
+					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg:   &cfg.MCPToolProvenance,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -693,8 +704,9 @@ Environment passthrough (subprocess mode only):
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
-					IntegrityCfg:  &cfg.MCPBinaryIntegrity,
-					ProvenanceCfg: &cfg.MCPToolProvenance,
+					EnvelopeEmitter: envEmitter,
+					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
+					ProvenanceCfg:   &cfg.MCPToolProvenance,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -794,9 +806,10 @@ Environment passthrough (subprocess mode only):
 				CEE: cee, Store: store,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 				RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
-				IntegrityCfg:  &cfg.MCPBinaryIntegrity,
-				ProvenanceCfg: &cfg.MCPToolProvenance,
-				Lineage:       lin, OnChildReady: onChildReady,
+				EnvelopeEmitter: envEmitter,
+				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
+				ProvenanceCfg:   &cfg.MCPToolProvenance,
+				Lineage:         lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)

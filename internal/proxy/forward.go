@@ -122,7 +122,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	targetCtx := baseCtx
 	targetCtx.Target = target
 	headerCtx := baseCtx
-	headerCtx.URL = syntheticURL
+	headerCtx.Target = target
 	hostCtx := baseCtx
 	hostCtx.Target = host
 

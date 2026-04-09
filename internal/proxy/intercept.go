@@ -224,7 +224,7 @@ func interceptTunnel(
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 
-	ictx := audit.NewConnectLogContext(ic.TargetHost, ic.ClientIP, ic.RequestID, ic.Agent)
+	ictx := audit.NewConnectLogContext(net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	handshakeStart := time.Now()
@@ -363,7 +363,7 @@ func newInterceptHandler(
 		}
 		if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
 			mismatch := r.Host + " vs " + target
-			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, Target: r.Host, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
+			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, Target: net.JoinHostPort(reqHost, reqPort), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			ic.Metrics.RecordTLSRequestBlocked("authority_mismatch")
 			interceptEmitReceipt(ic, receipt.EmitOpts{
 				ActionID:  actionID,

@@ -917,3 +917,93 @@ func TestProxy_ReceiptEmission_PostFetchResponseScan(t *testing.T) {
 		t.Fatalf("no block receipt with layer=response_scan found in %d entries (receipts: %v)", len(entries), summaries)
 	}
 }
+
+// TestProxy_ReceiptEmission_PostFetchResponseSize verifies that a response
+// exceeding max_response_mb emits a block receipt with layer=response_size.
+func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
+	t.Parallel()
+
+	// Upstream returns a response larger than 1 byte (our tiny limit).
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("this response exceeds the tiny limit"))
+	}))
+	defer upstream.Close()
+
+	dir := t.TempDir()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test-hash",
+		Principal:  "test",
+		Actor:      "test",
+	})
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	// 1 byte max — any real response will exceed this.
+	cfg.FetchProxy.MaxResponseMB = 0
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+
+	p, pErr := New(cfg, logger, sc, metrics.New(),
+		WithRecorder(rec),
+		WithReceiptEmitter(emitter),
+	)
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+
+	handler := p.buildHandler(p.buildMux())
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/big", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	entries := readAllEntries(t, dir)
+
+	var found bool
+	for _, e := range entries {
+		if e.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, mErr := json.Marshal(e.Detail)
+		if mErr != nil {
+			t.Fatalf("marshal detail: %v", mErr)
+		}
+		r, uErr := receipt.Unmarshal(detailJSON)
+		if uErr != nil {
+			t.Fatalf("unmarshal receipt: %v", uErr)
+		}
+		if r.ActionRecord.Verdict == "block" && r.ActionRecord.Layer == "response_size" {
+			found = true
+			if err := receipt.Verify(r); err != nil {
+				t.Fatalf("receipt verification failed: %v", err)
+			}
+			break
+		}
+	}
+
+	if !found {
+		t.Fatal("no block receipt with layer=response_size found")
+	}
+}

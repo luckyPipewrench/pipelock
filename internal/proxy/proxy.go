@@ -2025,7 +2025,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked(audit.NewHTTPLogContext("GET", displayURL, clientIP, requestID, agent), "response_scan", reason)
+		log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
@@ -2043,7 +2043,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.NewHTTPLogContext("GET", displayURL, clientIP, requestID, agent), "response_scan", reason)
+			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2078,7 +2078,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.NewHTTPLogContext("GET", displayURL, clientIP, requestID, agent), "response_scan", reason)
+			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,

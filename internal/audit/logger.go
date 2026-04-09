@@ -200,6 +200,7 @@ const (
 	EventAirlockDeny       EventType = "airlock_deny"
 	EventAirlockDeescalate EventType = "airlock_deescalate"
 	EventShieldRewrite     EventType = "shield_rewrite"
+	EventMediaExposure     EventType = "media_exposure"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -429,6 +430,69 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 			fields["agent"] = sanitizeString(ctx.Agent)
 		}
 		l.emitter.Emit(context.Background(), string(EventResponseScanExempt), fields)
+	}
+}
+
+// MediaExposureInfo carries the structured fields for a media_exposure
+// event emitted by the audit logger. Populated by the proxy media policy
+// helper (see internal/proxy/media_policy.go) and passed to
+// LogMediaExposure so the audit layer and emit sinks see a dedicated
+// media_exposure event type rather than a generic anomaly.
+//
+// Separate from internal/proxy.MediaExposureFields (which holds the
+// pre-wiring payload) so the audit package doesn't import internal/proxy.
+type MediaExposureInfo struct {
+	Transport       string // "forward", "connect", "fetch", "reverse"
+	ContentType     string
+	Format          string // "jpeg", "png", "unknown"
+	SizeBytes       int
+	MetadataRemoved int
+	BytesRemoved    int
+	Blocked         bool
+	BlockReason     string
+}
+
+// LogMediaExposure emits a dedicated media_exposure audit event with the
+// structured fields taint/authority and SIEM consumers need to correlate
+// media reaching an agent with downstream sensitive actions. Severity is
+// SeverityWarn (set in internal/emit via EventSeverity map). Both the
+// zerolog stream and the emitter sink receive the same field set.
+//
+// Unlike LogAnomaly this is not a suspicion marker — it is an exposure
+// provenance signal. Every media response that reaches the agent (allowed
+// or blocked) should produce one event when media_policy.log_media_exposure
+// is enabled, so the downstream policy engine can build an exposure
+// timeline.
+func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
+	e := newLogEntry(l.zl.Warn(), EventMediaExposure).
+		optStr("method", ctx.Method).
+		str("url", ctx.URL).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
+		str("transport", info.Transport).
+		str("content_type", info.ContentType).
+		optStr("format", info.Format).
+		intField("size_bytes", info.SizeBytes)
+	if info.MetadataRemoved > 0 {
+		e = e.intField("metadata_segments_removed", info.MetadataRemoved).
+			intField("metadata_bytes_removed", info.BytesRemoved)
+	}
+	// Record block state as a structured field so SIEM consumers can
+	// filter blocked vs allowed exposures without parsing the reason.
+	e.event = e.event.Bool("blocked", info.Blocked)
+	e.fields["blocked"] = info.Blocked
+	if info.BlockReason != "" {
+		e = e.str("block_reason", info.BlockReason)
+	}
+	if info.Blocked {
+		e.msg("media response blocked by policy")
+	} else {
+		e.msg("media response reached agent")
+	}
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventMediaExposure), e.fields)
 	}
 }
 

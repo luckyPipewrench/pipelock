@@ -123,6 +123,8 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		EventAdaptiveUpgrade:   true,
 		"error":                true,
 		"response_scan_exempt": true,
+		EventMediaExposure:     true,
+		EventTextStego:         true,
 		"allowed":              true,
 		"tunnel_open":          true,
 		"tunnel_close":         true,

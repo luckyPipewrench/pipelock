@@ -4,10 +4,14 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -220,11 +224,16 @@ func TestReverseProxy_ResponseInjection_ExemptDomain(t *testing.T) {
 
 func TestReverseProxy_BinaryPassthrough(t *testing.T) {
 	cfg := reverseTestConfig()
-	pngHeader := "\x89PNG\r\n\x1a\n"
+	// Use a structurally valid minimal PNG (signature + IHDR + IDAT + IEND
+	// with correct CRCs) rather than just the 8-byte signature. Media
+	// policy runs strict parsing now and fails closed on malformed images,
+	// so a bare signature is correctly rejected as truncated. This test
+	// exercises the clean passthrough path for a well-formed binary body.
+	validPNG := buildMinimalValidPNG()
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(pngHeader))
+		_, _ = w.Write(validPNG)
 	}
 
 	proxy := reverseTestSetup(t, cfg, upstream)
@@ -237,9 +246,40 @@ func TestReverseProxy_BinaryPassthrough(t *testing.T) {
 	}
 
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != pngHeader {
-		t.Fatal("binary body was modified")
+	// Body is pixel-identical because the minimal PNG has no metadata
+	// chunks to strip.
+	if !bytes.Equal(body, validPNG) {
+		t.Fatal("binary body was modified despite no metadata chunks present")
 	}
+}
+
+// buildMinimalValidPNG returns an 8-byte signature + IHDR + IDAT + IEND
+// chunk stream with valid CRCs. Shared PNG fixture for tests that need a
+// passthrough-eligible image body.
+func buildMinimalValidPNG() []byte {
+	var b bytes.Buffer
+	b.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+	writeChunk := func(typ string, data []byte) {
+		n := len(data)
+		if n < 0 || n > math.MaxUint32 {
+			panic("buildMinimalValidPNG: length overflow")
+		}
+		lenBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(lenBytes, uint32(n))
+		b.Write(lenBytes)
+		b.WriteString(typ)
+		b.Write(data)
+		crc := crc32.NewIEEE()
+		_, _ = crc.Write([]byte(typ))
+		_, _ = crc.Write(data)
+		crcBytes := make([]byte, 4)
+		binary.BigEndian.PutUint32(crcBytes, crc.Sum32())
+		b.Write(crcBytes)
+	}
+	writeChunk("IHDR", []byte("\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"))
+	writeChunk("IDAT", []byte("fake pixel data"))
+	writeChunk("IEND", nil)
+	return b.Bytes()
 }
 
 func TestReverseProxy_BinaryRequestPassthrough(t *testing.T) {

@@ -346,6 +346,120 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// visibility but findings are pinned to warn with no adaptive scoring.
 	revHost := resp.Request.URL.Hostname()
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
+
+	// Media policy runs regardless of response-scanning state so an
+	// operator who disables response scanning for performance cannot
+	// silently bypass image metadata stripping, audio/video blocks, size
+	// caps, or exposure events. Must execute BEFORE the
+	// ResponseScanning.Enabled short-circuit below.
+	mediaCT := resp.Header.Get("Content-Type")
+	if isBinaryMIME(mediaCT) && cfg.MediaPolicy.IsEnabled() {
+		actx := audit.LogContext{
+			Method: resp.Request.Method,
+			URL:    resp.Request.URL.String(),
+		}
+		canonCT := canonicalContentType(mediaCT)
+		isImage := strings.HasPrefix(canonCT, "image/")
+
+		// Audio/video path: no body read required. The policy decides
+		// based on content type alone, so we avoid the image-sized
+		// buffer and the image-sized max_image_bytes cap (which is
+		// specifically about decompression bomb defense for images, not
+		// a general media size limit). When the verdict is Allow, the
+		// flow falls through to the binary-skip short-circuit below
+		// so the original streamed body passes through unmodified.
+		if !isImage {
+			verdict := applyMediaPolicy(cfg, mediaCT, nil)
+			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
+			if verdict.Blocked {
+				rp.logger.LogBlocked(actx, "media_policy", verdict.BlockReason)
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
+				replaceWithMediaBlockResponse(resp, verdict.BlockReason)
+				return nil
+			}
+			// Fall through to the isBinaryMIME skip below so the
+			// original resp.Body streams to the client untouched.
+		} else {
+			maxRead := cfg.MediaPolicy.EffectiveMaxImageBytes()
+			if maxRead <= 0 {
+				maxRead = config.DefaultMaxImageBytes
+			}
+			// +1 so we can detect overrun via a single comparison
+			// instead of counting bytes during the read.
+			limited := io.LimitReader(resp.Body, maxRead+1)
+			body, err := io.ReadAll(limited)
+			_ = resp.Body.Close()
+			if err != nil {
+				// Mirror the block-event surface of every other
+				// media-policy deny path: structured audit log,
+				// reverse-proxy-specific scan-blocked metric, and
+				// the 403 request counter. Otherwise read failures
+				// would disappear from SIEM and the media-policy
+				// metric cardinality.
+				rp.logger.LogBlocked(actx, "media_policy", "media response read error")
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
+				replaceWithMediaBlockResponse(resp, "media response read error")
+				return nil
+			}
+			oversize := int64(len(body)) > maxRead
+			verdict := applyMediaPolicy(cfg, mediaCT, body)
+			// If oversized, synthesize a block verdict with an
+			// explicit exposure payload so the exposure event still
+			// fires for oversize images.
+			if oversize {
+				verdict = MediaPolicyVerdict{
+					Blocked:     true,
+					BlockReason: fmt.Sprintf("media_policy: image size %d exceeds limit %d", len(body), maxRead),
+					MediaType:   canonCT,
+					Exposure: &MediaExposureFields{
+						ContentType: canonCT,
+						SizeBytes:   len(body),
+						Blocked:     true,
+						BlockReason: fmt.Sprintf("media_policy: image size %d exceeds limit %d", len(body), maxRead),
+					},
+				}
+			}
+			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
+			if verdict.Blocked {
+				rp.logger.LogBlocked(actx, "media_policy", verdict.BlockReason)
+				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
+				replaceWithMediaBlockResponse(resp, verdict.BlockReason)
+				return nil
+			}
+			if verdict.StripResult != nil && verdict.StripResult.Changed() {
+				body = verdict.Body
+				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+				// Clear body-derived validators. Content-MD5
+				// describes a hash of the upstream bytes — stale
+				// after metadata stripping, and a validating client
+				// or intermediary will reject the response.
+				resp.Header.Del("ETag")
+				resp.Header.Del("Digest")
+				resp.Header.Del("Content-MD5")
+			}
+			// Media responses do not go through text injection
+			// scanning — rewrap the body and return.
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			resp.ContentLength = int64(len(body))
+			rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+				strconv.Itoa(resp.StatusCode))
+			return nil
+		}
+	}
+
+	// Skip remaining binary content types (non-media application/*, etc.).
+	if isBinaryMIME(mediaCT) {
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
+			strconv.Itoa(resp.StatusCode))
+		return nil
+	}
+
+	// Response-scanning short-circuit. Runs AFTER the media policy branch
+	// above so disabling response scanning does not silently bypass image
+	// metadata stripping, audio/video blocks, or exposure events.
 	if !cfg.ResponseScanning.Enabled {
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
 			strconv.Itoa(resp.StatusCode))
@@ -357,13 +471,6 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			URL:    resp.Request.URL.String(),
 		}
 		rp.logger.LogResponseScanExempt(actx, revHost)
-	}
-
-	// Skip binary content types.
-	if isBinaryMIME(resp.Header.Get("Content-Type")) {
-		rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
-			strconv.Itoa(resp.StatusCode))
-		return nil
 	}
 
 	// Fail-closed on compressed responses: regex can't match gzipped content.
@@ -580,6 +687,31 @@ func writeReverseProxyBlock(w http.ResponseWriter, status int, reason string) {
 // Etag, and other upstream headers through a synthetic block response. The
 // forward proxy avoids this by never copying headers on block; since
 // httputil.ReverseProxy copies them before ModifyResponse, we clear them.
+// replaceWithMediaBlockResponse replaces the upstream response with a 403
+// JSON body tagged as a media-policy block. Separate from
+// replaceWithBlockResponse because that builder hardcodes the
+// "injection: ..." block reason prefix — media-policy blocks are not
+// injection findings, and reporting them that way would mislead the
+// client about what the proxy rejected.
+func replaceWithMediaBlockResponse(resp *http.Response, reason string) {
+	blockResp := ReverseProxyBlockResponse{
+		Error:       "response blocked by pipelock",
+		Blocked:     true,
+		BlockReason: reason,
+		Direction:   scanDirectionResponse,
+	}
+	blockBody, _ := json.Marshal(blockResp)
+	resp.Body = io.NopCloser(bytes.NewReader(blockBody))
+	resp.ContentLength = int64(len(blockBody))
+	resp.StatusCode = http.StatusForbidden
+	resp.Status = http.StatusText(http.StatusForbidden)
+	for k := range resp.Header {
+		delete(resp.Header, k)
+	}
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(blockBody)))
+}
+
 func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
 	blockResp := ReverseProxyBlockResponse{
 		Error:       "response blocked by pipelock",

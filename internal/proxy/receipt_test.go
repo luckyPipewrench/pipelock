@@ -138,7 +138,7 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 		t.Fatalf("receipt verification failed: %v", err)
 	}
 
-	if r.ActionRecord.Verdict != "block" {
+	if r.ActionRecord.Verdict != actionBlock {
 		t.Errorf("expected verdict block, got %q", r.ActionRecord.Verdict)
 	}
 	if r.ActionRecord.ActionType != receipt.ActionRead {
@@ -894,7 +894,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseScan(t *testing.T) {
 		if uErr != nil {
 			t.Fatalf("unmarshal receipt: %v", uErr)
 		}
-		if r.ActionRecord.Verdict == "block" && r.ActionRecord.Layer == "response_scan" {
+		if r.ActionRecord.Verdict == actionBlock && r.ActionRecord.Layer == "response_scan" {
 			found = true
 			if err := receipt.Verify(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)
@@ -994,7 +994,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 		if uErr != nil {
 			t.Fatalf("unmarshal receipt: %v", uErr)
 		}
-		if r.ActionRecord.Verdict == "block" && r.ActionRecord.Layer == "response_size" {
+		if r.ActionRecord.Verdict == actionBlock && r.ActionRecord.Layer == "response_size" {
 			found = true
 			if err := receipt.Verify(r); err != nil {
 				t.Fatalf("receipt verification failed: %v", err)

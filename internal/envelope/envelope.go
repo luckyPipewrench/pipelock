@@ -169,6 +169,9 @@ func Parse(s string) (Envelope, error) {
 	if env.ReceiptID == "" {
 		return Envelope{}, fmt.Errorf("missing required field %q", keyReceiptID)
 	}
+	if env.Timestamp == 0 {
+		return Envelope{}, fmt.Errorf("missing required field %q", keyTimestamp)
+	}
 
 	// Validate ActorAuth against allowed values.
 	switch env.ActorAuth {

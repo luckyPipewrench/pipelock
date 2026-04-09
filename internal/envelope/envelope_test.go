@@ -150,6 +150,7 @@ func TestParse_RejectsMissingRequiredFields(t *testing.T) {
 		{"missing action", `v=1, vd="allow", rid="id-1"`, `missing required field "act"`},
 		{"missing verdict", `v=1, act="read", rid="id-1"`, `missing required field "vd"`},
 		{"missing receipt_id", `v=1, act="read", vd="allow"`, `missing required field "rid"`},
+		{"missing timestamp", `v=1, act="read", vd="allow", rid="id-1"`, `missing required field "ts"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -168,7 +169,7 @@ func TestParse_RejectsMissingRequiredFields(t *testing.T) {
 func TestParse_RejectsUnknownActorAuth(t *testing.T) {
 	t.Parallel()
 
-	_, err := Parse(`v=1, act="read", vd="allow", rid="id-1", aa="root"`)
+	_, err := Parse(`v=1, act="read", vd="allow", rid="id-1", ts=1712345678, aa="root"`)
 	if err == nil {
 		t.Fatal("expected error for unknown actor_auth, got nil")
 	}
@@ -181,7 +182,7 @@ func TestParse_AcceptsValidActorAuth(t *testing.T) {
 	t.Parallel()
 
 	for _, aa := range []string{"bound", "matched", "self-declared", ""} {
-		input := `v=1, act="read", vd="allow", rid="id-1"`
+		input := `v=1, act="read", vd="allow", rid="id-1", ts=1712345678`
 		if aa != "" {
 			input += `, aa="` + aa + `"`
 		}

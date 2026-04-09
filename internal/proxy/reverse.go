@@ -218,14 +218,16 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Inject mediation envelope before forwarding on allow path.
 	if rp.envelopeEmitterPtr != nil {
 		if envEmitter := rp.envelopeEmitterPtr.Load(); envEmitter != nil {
-			_ = envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
+			if envErr := envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
 				ActionID:   receipt.NewActionID(),
 				Action:     string(receipt.ClassifyHTTP(r.Method)),
 				Verdict:    config.ActionAllow,
 				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 				Actor:      edition.ExtractAgent(r),
 				ActorAuth:  envelope.ActorAuthSelfDeclared, // Reverse proxy has no per-agent listener binding
-			})
+			}); envErr != nil {
+				rp.logger.LogAnomaly(audit.LogContext{Method: r.Method, URL: r.URL.String()}, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			}
 		}
 	}
 

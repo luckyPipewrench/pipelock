@@ -911,14 +911,16 @@ func newInterceptHandler(
 		// Inject mediation envelope before forwarding on allow path.
 		if ic.Proxy != nil {
 			if envEmitter := ic.Proxy.envelopeEmitterPtr.Load(); envEmitter != nil {
-				_ = envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
+				if envErr := envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
 					ActionID:   actionID,
 					Action:     string(receipt.ClassifyHTTP(r.Method)),
 					Verdict:    config.ActionAllow,
 					SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 					Actor:      ic.Agent,
 					ActorAuth:  ic.ActorAuth,
-				})
+				}); envErr != nil {
+					ic.Logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+				}
 			}
 		}
 

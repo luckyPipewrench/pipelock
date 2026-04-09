@@ -52,18 +52,31 @@ type Envelope struct {
 
 // Serialize encodes the envelope as an RFC 8941 Structured Fields Dictionary
 // string suitable for the Pipelock-Mediation HTTP header value.
+// Wire keys for the RFC 8941 Dictionary encoding.
+const (
+	keyVersion    = "v"
+	keyAction     = "act"
+	keyVerdict    = "vd"
+	keySideEffect = "se"
+	keyActor      = "actor"
+	keyActorAuth  = "aa"
+	keyPolicyHash = "ph"
+	keyReceiptID  = "rid"
+	keyTimestamp  = "ts"
+)
+
 func (e Envelope) Serialize() (string, error) {
 	dict := httpsfv.NewDictionary()
 
-	dict.Add("v", httpsfv.NewItem(int64(e.Version)))
-	dict.Add("act", httpsfv.NewItem(e.Action))
-	dict.Add("vd", httpsfv.NewItem(e.Verdict))
-	dict.Add("se", httpsfv.NewItem(e.SideEffect))
-	dict.Add("actor", httpsfv.NewItem(e.Actor))
-	dict.Add("aa", httpsfv.NewItem(string(e.ActorAuth)))
-	dict.Add("ph", httpsfv.NewItem(e.PolicyHash))
-	dict.Add("rid", httpsfv.NewItem(e.ReceiptID))
-	dict.Add("ts", httpsfv.NewItem(e.Timestamp))
+	dict.Add(keyVersion, httpsfv.NewItem(int64(e.Version)))
+	dict.Add(keyAction, httpsfv.NewItem(e.Action))
+	dict.Add(keyVerdict, httpsfv.NewItem(e.Verdict))
+	dict.Add(keySideEffect, httpsfv.NewItem(e.SideEffect))
+	dict.Add(keyActor, httpsfv.NewItem(e.Actor))
+	dict.Add(keyActorAuth, httpsfv.NewItem(string(e.ActorAuth)))
+	dict.Add(keyPolicyHash, httpsfv.NewItem(e.PolicyHash))
+	dict.Add(keyReceiptID, httpsfv.NewItem(e.ReceiptID))
+	dict.Add(keyTimestamp, httpsfv.NewItem(e.Timestamp))
 
 	return httpsfv.Marshal(dict)
 }
@@ -77,63 +90,63 @@ func Parse(s string) (Envelope, error) {
 
 	var env Envelope
 
-	if m, ok := dict.Get("v"); ok {
+	if m, ok := dict.Get(keyVersion); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(int64); ok {
 				env.Version = int(v)
 			}
 		}
 	}
-	if m, ok := dict.Get("act"); ok {
+	if m, ok := dict.Get(keyAction); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
 				env.Action = v
 			}
 		}
 	}
-	if m, ok := dict.Get("vd"); ok {
+	if m, ok := dict.Get(keyVerdict); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
 				env.Verdict = v
 			}
 		}
 	}
-	if m, ok := dict.Get("se"); ok {
+	if m, ok := dict.Get(keySideEffect); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
 				env.SideEffect = v
 			}
 		}
 	}
-	if m, ok := dict.Get("actor"); ok {
+	if m, ok := dict.Get(keyActor); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
 				env.Actor = v
 			}
 		}
 	}
-	if m, ok := dict.Get("aa"); ok {
+	if m, ok := dict.Get(keyActorAuth); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
 				env.ActorAuth = ActorAuth(v)
 			}
 		}
 	}
-	if m, ok := dict.Get("ph"); ok {
+	if m, ok := dict.Get(keyPolicyHash); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.([]byte); ok {
 				env.PolicyHash = v
 			}
 		}
 	}
-	if m, ok := dict.Get("rid"); ok {
+	if m, ok := dict.Get(keyReceiptID); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
 				env.ReceiptID = v
 			}
 		}
 	}
-	if m, ok := dict.Get("ts"); ok {
+	if m, ok := dict.Get(keyTimestamp); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(int64); ok {
 				env.Timestamp = v
@@ -147,14 +160,14 @@ func Parse(s string) (Envelope, error) {
 // ToMCPMeta returns the envelope as a map for MCP _meta injection.
 func (e Envelope) ToMCPMeta() map[string]any {
 	return map[string]any{
-		"v":     e.Version,
-		"act":   e.Action,
-		"vd":    e.Verdict,
-		"se":    e.SideEffect,
-		"actor": e.Actor,
-		"aa":    string(e.ActorAuth),
-		"ph":    "sha256-128:" + base64.StdEncoding.EncodeToString(e.PolicyHash),
-		"rid":   e.ReceiptID,
-		"ts":    e.Timestamp,
+		keyVersion:    e.Version,
+		keyAction:     e.Action,
+		keyVerdict:    e.Verdict,
+		keySideEffect: e.SideEffect,
+		keyActor:      e.Actor,
+		keyActorAuth:  string(e.ActorAuth),
+		keyPolicyHash: "sha256-128:" + base64.StdEncoding.EncodeToString(e.PolicyHash),
+		keyReceiptID:  e.ReceiptID,
+		keyTimestamp:  e.Timestamp,
 	}
 }

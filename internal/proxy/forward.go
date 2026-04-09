@@ -977,14 +977,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Inject mediation envelope before forwarding on allow path.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		_ = envEmitter.InjectHTTPEnvelope(outReq.Header, envelope.BuildOpts{
+		if envErr := envEmitter.InjectHTTPEnvelope(outReq.Header, envelope.BuildOpts{
 			ActionID:   actionID,
 			Action:     string(receipt.ClassifyHTTP(r.Method)),
 			Verdict:    config.ActionAllow,
 			SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 			Actor:      agent,
 			ActorAuth:  id.Auth,
-		})
+		}); envErr != nil {
+			p.logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+		}
 	}
 
 	resp, err := p.client.Do(outReq)

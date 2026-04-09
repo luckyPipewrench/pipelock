@@ -315,14 +315,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Inject mediation envelope into upstream handshake headers on allow path.
 	actionID := receipt.NewActionID()
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		_ = envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
+		if envErr := envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
 			ActionID:   actionID,
 			Action:     string(receipt.ActionDelegate),
 			Verdict:    config.ActionAllow,
 			SideEffect: string(receipt.SideEffectExternalWrite),
 			Actor:      agent,
 			ActorAuth:  id.Auth,
-		})
+		}); envErr != nil {
+			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+		}
 	}
 
 	// Dial upstream via SSRF-safe dialer.

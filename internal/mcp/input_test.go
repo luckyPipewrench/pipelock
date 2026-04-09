@@ -3526,6 +3526,57 @@ func TestStripInboundMCPMeta_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestInjectMCPEnvelope_PreservesLargeIntegerMeta verifies that existing _meta
+// members with large integer values are preserved byte-for-byte through the
+// json.RawMessage round-trip. A map[string]any approach would silently convert
+// them to float64, losing precision on values > 2^53.
+func TestInjectMCPEnvelope_PreservesLargeIntegerMeta(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	// _meta has a large integer that would lose precision with float64.
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"progressToken":9007199254740993}}}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "test-id", Action: "read", Verdict: "allow",
+	})
+
+	// The original progressToken must survive exactly.
+	if !bytes.Contains(got, []byte(`9007199254740993`)) {
+		t.Errorf("large integer not preserved in _meta: %s", got)
+	}
+	// Envelope must also be injected.
+	if !bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Errorf("envelope not injected: %s", got)
+	}
+}
+
+// TestInjectMCPEnvelope_MalformedMetaFailsOpen verifies that a _meta value
+// that isn't a JSON object causes fail-open (message returned unmodified).
+func TestInjectMCPEnvelope_MalformedMetaFailsOpen(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	// _meta is a string, not an object.
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":"not-an-object"}}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "test-id", Action: "read", Verdict: "allow",
+	})
+
+	if !bytes.Equal(got, msg) {
+		t.Errorf("malformed _meta should fail-open with original message\ngot:  %s\nwant: %s", got, msg)
+	}
+}
+
+// TestInjectMCPEnvelope_ArrayMetaFailsOpen verifies that _meta as a JSON
+// array (not object) also fails open.
+func TestInjectMCPEnvelope_ArrayMetaFailsOpen(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":[1,2,3]}}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "test-id", Action: "read", Verdict: "allow",
+	})
+
+	if !bytes.Equal(got, msg) {
+		t.Errorf("array _meta should fail-open with original message\ngot:  %s\nwant: %s", got, msg)
+	}
+}
+
 func TestForwardScannedInput_EnvelopeInjectedOnCleanToolCall(t *testing.T) {
 	sc := testInputScanner(t)
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test-hash"})

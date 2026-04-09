@@ -137,3 +137,61 @@ func TestActorAuth_Constants(t *testing.T) {
 		seen[l] = true
 	}
 }
+
+func TestParse_RejectsMissingRequiredFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"missing version", `act="read", vd="allow", rid="id-1"`, `missing required field "v"`},
+		{"missing action", `v=1, vd="allow", rid="id-1"`, `missing required field "act"`},
+		{"missing verdict", `v=1, act="read", rid="id-1"`, `missing required field "vd"`},
+		{"missing receipt_id", `v=1, act="read", vd="allow"`, `missing required field "rid"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := Parse(tt.input)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q should contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParse_RejectsUnknownActorAuth(t *testing.T) {
+	t.Parallel()
+
+	_, err := Parse(`v=1, act="read", vd="allow", rid="id-1", aa="root"`)
+	if err == nil {
+		t.Fatal("expected error for unknown actor_auth, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown actor_auth") {
+		t.Errorf("error %q should mention actor_auth", err)
+	}
+}
+
+func TestParse_AcceptsValidActorAuth(t *testing.T) {
+	t.Parallel()
+
+	for _, aa := range []string{"bound", "matched", "self-declared", ""} {
+		input := `v=1, act="read", vd="allow", rid="id-1"`
+		if aa != "" {
+			input += `, aa="` + aa + `"`
+		}
+		env, err := Parse(input)
+		if err != nil {
+			t.Errorf("ActorAuth=%q: unexpected error: %v", aa, err)
+			continue
+		}
+		if string(env.ActorAuth) != aa {
+			t.Errorf("ActorAuth = %q, want %q", env.ActorAuth, aa)
+		}
+	}
+}

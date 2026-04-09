@@ -154,6 +154,30 @@ func Parse(s string) (Envelope, error) {
 		}
 	}
 
+	// Reject envelopes missing required fields. A partial envelope
+	// could pass through trust decisions with zero-value defaults,
+	// silently accepted as if they were valid enum members.
+	if env.Version == 0 {
+		return Envelope{}, fmt.Errorf("missing required field %q", keyVersion)
+	}
+	if env.Action == "" {
+		return Envelope{}, fmt.Errorf("missing required field %q", keyAction)
+	}
+	if env.Verdict == "" {
+		return Envelope{}, fmt.Errorf("missing required field %q", keyVerdict)
+	}
+	if env.ReceiptID == "" {
+		return Envelope{}, fmt.Errorf("missing required field %q", keyReceiptID)
+	}
+
+	// Validate ActorAuth against allowed values.
+	switch env.ActorAuth {
+	case ActorAuthBound, ActorAuthMatched, ActorAuthSelfDeclared, "":
+		// valid
+	default:
+		return Envelope{}, fmt.Errorf("unknown actor_auth value %q", env.ActorAuth)
+	}
+
 	return env, nil
 }
 

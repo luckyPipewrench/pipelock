@@ -166,6 +166,59 @@ func TestPolicyHashTruncated_EmptyString(t *testing.T) {
 	}
 }
 
+func TestPolicyHashTruncated_ValidHexLong(t *testing.T) {
+	t.Parallel()
+	// 32 hex bytes = 64 hex chars. Should decode and truncate to first 16 bytes.
+	hexStr := "abcdef0123456789abcdef01234567890000000000000000ffffffffffffffff"
+	hash := policyHashTruncated(hexStr)
+	if len(hash) != 16 {
+		t.Fatalf("length = %d, want 16", len(hash))
+	}
+	// First byte of "ab" = 0xab.
+	if hash[0] != 0xab {
+		t.Errorf("hash[0] = 0x%02x, want 0xab", hash[0])
+	}
+}
+
+func TestPolicyHashTruncated_ValidHexShort(t *testing.T) {
+	t.Parallel()
+	// 4 hex bytes = 8 hex chars. Shorter than 16 -- should pad to 16 bytes.
+	hexStr := "abcdef01"
+	hash := policyHashTruncated(hexStr)
+	if len(hash) != 16 {
+		t.Fatalf("length = %d, want 16", len(hash))
+	}
+	if hash[0] != 0xab {
+		t.Errorf("hash[0] = 0x%02x, want 0xab", hash[0])
+	}
+	// Trailing bytes should be zero (padding).
+	for i := 4; i < 16; i++ {
+		if hash[i] != 0 {
+			t.Errorf("hash[%d] = 0x%02x, want 0x00 (padding)", i, hash[i])
+		}
+	}
+}
+
+func TestPolicyHashTruncated_NonHexString(t *testing.T) {
+	t.Parallel()
+	// "sha256:..." prefix is not valid hex -- should SHA-256 hash and truncate.
+	hash := policyHashTruncated("sha256:not-hex-at-all")
+	if len(hash) != 16 {
+		t.Fatalf("length = %d, want 16", len(hash))
+	}
+	// Result is non-zero (SHA-256 of the input).
+	allZero := true
+	for _, b := range hash {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Error("non-hex input should produce a non-zero hash")
+	}
+}
+
 func TestConfigHashString_NonString(t *testing.T) {
 	t.Parallel()
 	if got := configHashString(42); got != "" {

@@ -10,8 +10,10 @@ import (
 )
 
 // TestForDLP_Parity verifies ForDLP produces identical output to the
-// inline 4-step pipeline it replaces (StripControlChars → NFKC →
-// ConfusableToASCII → StripCombiningMarks).
+// inline 5-step pipeline (StripControlChars → StripExoticWhitespace →
+// NFKC → ConfusableToASCII → StripCombiningMarks). Each row runs the
+// helper and then replays the manual pipeline so a future reordering
+// or missing step fails loudly.
 func TestForDLP_Parity(t *testing.T) {
 	// Build prefixes at runtime to avoid gosec G101 false positives.
 	skProj := "s" + "k-proj-"
@@ -52,8 +54,11 @@ func TestForDLP_Parity(t *testing.T) {
 				t.Errorf("ForDLP(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 
-			// Parity check: manually run the old 4-step inline pipeline.
+			// Parity check: manually run the inline pipeline. StripExoticWhitespace
+			// runs between StripControlChars and NFKC so wide/NBSP splitters are
+			// stripped BEFORE NFKC compatibility-decomposes them to ASCII space.
 			old := StripControlChars(tt.input)
+			old = StripExoticWhitespace(old)
 			old = norm.NFKC.String(old)
 			old = ConfusableToASCII(old)
 			old = StripCombiningMarks(old)
@@ -517,6 +522,201 @@ func TestFoldVowels_ConfusableVowelAttack(t *testing.T) {
 	target := FoldVowels("instructions")
 	if folded != target {
 		t.Errorf("vowel fold mismatch: got %q, want %q (same as folded 'instructions')", folded, target)
+	}
+}
+
+// TestWhitespace_ExpandedSet verifies the full explicit evasion whitelist is
+// mapped to ASCII space. These are the characters attackers use to split words
+// in injection phrases while preserving visual layout.
+func TestWhitespace_ExpandedSet(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"NBSP", "a\u00A0b", "a b"},
+		{"en quad", "a\u2000b", "a b"},
+		{"em quad", "a\u2001b", "a b"},
+		{"en space", "a\u2002b", "a b"},
+		{"em space", "a\u2003b", "a b"},
+		{"three-per-em", "a\u2004b", "a b"},
+		{"four-per-em", "a\u2005b", "a b"},
+		{"six-per-em", "a\u2006b", "a b"},
+		{"figure space", "a\u2007b", "a b"},
+		{"punctuation space", "a\u2008b", "a b"},
+		{"thin space", "a\u2009b", "a b"},
+		{"hair space", "a\u200Ab", "a b"},
+		{"narrow no-break", "a\u202Fb", "a b"},
+		{"medium math space", "a\u205Fb", "a b"},
+		{"ideographic space", "a\u3000b", "a b"},
+		{"legitimate CJK between Latin", "hello\u3000world", "hello world"},
+		{"multi-run", "x\u00A0\u2009\u3000y", "x   y"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Whitespace(tt.input)
+			if got != tt.want {
+				t.Errorf("Whitespace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStripExoticWhitespace verifies that all non-ASCII whitespace is stripped
+// while ASCII whitespace is preserved. This is the DLP-side behavior: secrets
+// never contain legitimate whitespace, so exotic splitters get removed entirely
+// rather than converted to ASCII space.
+func TestStripExoticWhitespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"NBSP removed", "a\u00A0b", "ab"},
+		{"Ogham removed", "a\u1680b", "ab"},
+		{"Mongolian VS removed", "a\u180Eb", "ab"},
+		{"en space removed", "a\u2002b", "ab"},
+		{"em space removed", "a\u2003b", "ab"},
+		{"thin space removed", "a\u2009b", "ab"},
+		{"hair space removed", "a\u200Ab", "ab"},
+		{"line separator removed", "a\u2028b", "ab"},
+		{"paragraph separator removed", "a\u2029b", "ab"},
+		{"narrow no-break removed", "a\u202Fb", "ab"},
+		{"medium math removed", "a\u205Fb", "ab"},
+		{"ideographic removed", "a\u3000b", "ab"},
+		{"ASCII space preserved", "a b", "a b"},
+		{"tab preserved", "a\tb", "a\tb"},
+		{"newline preserved", "a\nb", "a\nb"},
+		{"CR preserved", "a\rb", "a\rb"},
+		{"zero-width NOT in set", "a\u200Bb", "a\u200Bb"}, // handled by StripControlChars/InvisibleRanges
+		{"empty", "", ""},
+		{"pure ASCII", "hello world", "hello world"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripExoticWhitespace(tt.input)
+			if got != tt.want {
+				t.Errorf("StripExoticWhitespace(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestForDLP_ExoticWhitespaceEvasion verifies DLP normalization strips exotic
+// whitespace used to split secrets. Without StripExoticWhitespace running
+// before NFKC, NFKC would compatibility-decompose NBSP/wide spaces to ASCII
+// space, leaving an unmatchable "sk-pr oj-abc" in the DLP pipeline.
+func TestForDLP_ExoticWhitespaceEvasion(t *testing.T) {
+	// Runtime construction avoids gosec G101 on the source literal.
+	skProj := "s" + "k-proj-"
+	target := skProj + "abc"
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"NBSP split", "s" + "k-pr\u00A0oj-abc", target},
+		{"ideographic split", "s" + "k-pr\u3000oj-abc", target},
+		{"Ogham split", "s" + "k-pr\u1680oj-abc", target},
+		{"Mongolian VS split", "s" + "k-pr\u180Eoj-abc", target},
+		{"en space split", "s" + "k-pr\u2002oj-abc", target},
+		{"em space split", "s" + "k-pr\u2003oj-abc", target},
+		{"thin space split", "s" + "k-pr\u2009oj-abc", target},
+		{"narrow no-break split", "s" + "k-pr\u202Foj-abc", target},
+		{"medium math split", "s" + "k-pr\u205Foj-abc", target},
+		{"line separator split", "s" + "k-pr\u2028oj-abc", target},
+		{"paragraph separator split", "s" + "k-pr\u2029oj-abc", target},
+		{"multi-char exotic", "s" + "k-\u00A0\u3000pr\u2009oj-abc", target},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ForDLP(tt.input)
+			if got != tt.want {
+				t.Errorf("ForDLP(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestZalgoDensity verifies the combining-mark run counter returns the expected
+// density for representative inputs. Combining marks are category Mn.
+func TestZalgoDensity(t *testing.T) {
+	// \u0301 = combining acute, \u0302 = combining circumflex, \u0303 = tilde,
+	// \u0327 = cedilla, \u0308 = diaeresis. All category Mn.
+	tests := []struct {
+		name  string
+		input string
+		want  int
+	}{
+		{"plain ASCII", "hello world", 0},
+		{"single mark", "e\u0301", 1},
+		{"two marks (Vietnamese decomposed)", "e\u0302\u0301", 2},
+		{"three marks", "e\u0301\u0302\u0303", 3},
+		{"five marks", "e\u0301\u0302\u0303\u0308\u0327", 5},
+		{"max resets between bases", "e\u0301\u0302 a\u0303", 2},
+		{"max across multiple bases", "a\u0301 b\u0301\u0302\u0303\u0308 c\u0302", 4},
+		{"leading marks with no base", "\u0301\u0302\u0303", 3},
+		{"empty", "", 0},
+		{"no marks with accents (precomposed é)", "\u00E9", 0}, // NFC composed, not Mn
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ZalgoDensity(tt.input)
+			if got != tt.want {
+				t.Errorf("ZalgoDensity(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestZalgoSuspicious verifies the threshold boundary: exactly three combining
+// marks trip the signal, two do not. This matches ZalgoSuspiciousThreshold.
+func TestZalgoSuspicious(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"clean", "hello", false},
+		{"one mark", "a\u0301", false},
+		{"two marks (legitimate Vietnamese-like)", "a\u0301\u0302", false},
+		{"exactly threshold", "a\u0301\u0302\u0303", true},
+		{"well above threshold", "a\u0301\u0302\u0303\u0308\u0327", true},
+		{"multiple bases below threshold", "a\u0301 b\u0301 c\u0301", false},
+		{"one base above threshold mixed in", "a\u0301 b\u0301\u0302\u0303 c\u0301", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ZalgoSuspicious(tt.input)
+			if got != tt.want {
+				t.Errorf("ZalgoSuspicious(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestZalgoSuspiciousThreshold documents the chosen value so a change to the
+// constant flags the policy decision in review, not just in downstream tests.
+func TestZalgoSuspiciousThreshold(t *testing.T) {
+	if ZalgoSuspiciousThreshold != 3 {
+		t.Errorf("ZalgoSuspiciousThreshold = %d, want 3 — changing this threshold "+
+			"changes taint/exposure signal sensitivity; verify the PR description "+
+			"explains why and update references in docs", ZalgoSuspiciousThreshold)
+	}
+}
+
+func BenchmarkStripExoticWhitespace(b *testing.B) {
+	input := "sk-pr\u00A0oj-\u3000abc\u2009123\u202F"
+	for b.Loop() {
+		StripExoticWhitespace(input)
+	}
+}
+
+func BenchmarkZalgoDensity(b *testing.B) {
+	input := "hello w\u0301\u0302\u0303orld plain text a\u0301 b\u0301\u0302"
+	for b.Loop() {
+		ZalgoDensity(input)
 	}
 }
 

@@ -1789,6 +1789,41 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Media policy on fetched responses. Runs after shield so HTML passes
+	// through unchanged and image/audio/video responses get transport-
+	// agnostic enforcement. Blocks yield a structured FetchResponse so the
+	// client sees the policy reason, not a generic 403.
+	mediaVerdict := applyMediaPolicy(cfg, contentType, body)
+	logMediaExposureIfPresent(log, actx, mediaVerdict, "fetch")
+	if mediaVerdict.Blocked {
+		log.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
+		p.metrics.RecordBlocked(parsed.Hostname(), "media_policy", time.Since(start), agentLabel)
+		// Terminal block receipt. Reuse the request's actionID so this
+		// receipt correlates with the allow envelope that was injected
+		// on the outbound request. Without this emit, a response-side
+		// media deny would leave the envelope/receipt pair half-closed
+		// and break downstream causality reconstruction.
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     "media_policy",
+			Pattern:   mediaVerdict.BlockReason,
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL: displayURL, Agent: agent, Blocked: true,
+			BlockReason: mediaVerdict.BlockReason,
+		})
+		return
+	}
+	if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+		body = mediaVerdict.Body
+	}
 	content := string(body)
 
 	// Extract text from HTML hiding spots (comments, script/style bodies)

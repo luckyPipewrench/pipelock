@@ -2746,10 +2746,12 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	proxyAddr := proxyLn.Addr().String()
 
 	// Retry the dial+read sequence to handle CI startup races where the
-	// relay→backend handshake can be slow under load.
+	// relay→backend handshake can be slow under load. 5 attempts with
+	// 200ms backoff covers heavily-contended GitHub Actions runners.
 	var conn net.Conn
 	var reply []byte
-	for attempt := range 3 {
+	const maxAttempts = 5
+	for attempt := range maxAttempts {
 		c := dialWS(t, proxyAddr, backendAddr)
 		r, _, readErr := wsutil.ReadServerData(c)
 		if readErr == nil && string(r) == testWSHello {
@@ -2758,10 +2760,10 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 			break
 		}
 		_ = c.Close()
-		if attempt == 2 {
-			t.Fatalf("read initial frame after 3 attempts: last error: %v", readErr)
+		if attempt == maxAttempts-1 {
+			t.Fatalf("read initial frame after %d attempts: last error: %v", maxAttempts, readErr)
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 	_ = reply // used in assertion above
 	defer func() { _ = conn.Close() }()

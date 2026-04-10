@@ -1075,6 +1075,45 @@ func newInterceptHandler(
 			}
 		}
 
+		// Media policy on intercepted TLS responses. Runs after shield so
+		// HTML/JS rewriting happens on the original body and image/audio/
+		// video responses get transport-agnostic enforcement.
+		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody)
+		logMediaExposureIfPresent(ic.Logger, actx, mediaVerdict, "connect")
+		if mediaVerdict.Blocked {
+			interceptRecordSignal(ic, session.SignalBlock)
+			ic.Logger.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
+			ic.Metrics.RecordTLSResponseBlocked("media_policy")
+			// Reuse the envelope/request actionID so the block receipt
+			// correlates with the allow envelope already injected on
+			// this request. A fresh ID here would orphan the evidence
+			// pair and break downstream causality reconstruction.
+			interceptEmitReceipt(ic, receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "media_policy",
+				Pattern:   mediaVerdict.BlockReason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})
+			http.Error(w, "blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
+			return
+		}
+		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+			respBody = mediaVerdict.Body
+			resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+			// Delete body-derived validators. Content-MD5 is often
+			// set alongside ETag and describes a hash of the upstream
+			// bytes — stale after metadata stripping, and a client or
+			// intermediary that validates it will reject the response.
+			resp.Header.Del("ETag")
+			resp.Header.Del("Digest")
+			resp.Header.Del("Content-MD5")
+		}
+
 		// A2A response body scanning: field-aware classification replaces
 		// generic response scanning for A2A traffic. Agent Card paths route
 		// through drift detection; all other A2A responses use the walker.

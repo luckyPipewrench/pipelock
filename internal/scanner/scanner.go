@@ -1575,6 +1575,11 @@ var nonSecretEnvNames = map[string]struct{}{
 	// Working directory and paths
 	"PWD": {}, "OLDPWD": {}, "HOME": {}, "PATH": {},
 	"TMPDIR": {}, "TEMP": {}, "TMP": {},
+	// POSIX "last command" variable — bash sets $_ to the absolute path
+	// of the previously executed command. High-entropy binary path leaks
+	// into scans whenever the parent shell ran something like
+	// /usr/local/bin/go test. Not a secret, never has been.
+	"_": {},
 	// User identity (public, not secret)
 	"USER": {}, "LOGNAME": {}, "USERNAME": {}, "HOSTNAME": {}, "HOST": {},
 	// Shell and terminal

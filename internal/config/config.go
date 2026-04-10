@@ -1502,6 +1502,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ScanAPI.Kinds.DLP = true
 		cfg.ScanAPI.Kinds.PromptInjection = true
 		cfg.ScanAPI.Kinds.ToolCall = true
+		cfg.Taint.Enabled = true
 		return
 	}
 
@@ -1563,6 +1564,10 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// Behavioral baseline: poison_resistance defaults to true (trimmed-mean scoring).
 	bb, _ := raw["behavioral_baseline"].(map[string]interface{})
 	setBoolDefault(bb, "poison_resistance", &cfg.BehavioralBaseline.PoisonResistance)
+
+	// Taint defaults to enabled when omitted, matching Defaults().
+	taint, _ := raw["taint"].(map[string]interface{})
+	setBoolDefault(taint, "enabled", &cfg.Taint.Enabled)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.

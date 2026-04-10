@@ -8143,6 +8143,42 @@ func TestLoad_ExplicitTruePreserved(t *testing.T) {
 	}
 }
 
+func TestLoad_TaintEnabledDefaultsWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "taint-omitted.yaml")
+	content := "mode: balanced\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if !cfg.Taint.Enabled {
+		t.Fatal("expected taint.enabled to default to true when omitted from YAML")
+	}
+}
+
+func TestLoad_TaintEnabledExplicitFalsePreserved(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "taint-explicit-false.yaml")
+	content := "mode: balanced\n" +
+		"taint:\n" +
+		"  enabled: false\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Taint.Enabled {
+		t.Fatal("expected explicit taint.enabled: false to be preserved")
+	}
+}
+
 func TestLoad_AddressProtectionChainDefaults(t *testing.T) {
 	// When address_protection is enabled but chains are omitted from YAML,
 	// nil-coalescing in Validate() must produce the documented defaults:

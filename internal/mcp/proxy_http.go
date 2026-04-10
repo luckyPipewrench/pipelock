@@ -46,7 +46,7 @@ func RunHTTPProxy(
 ) error {
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
-		opts.Transport = "mcp_http"
+		opts.Transport = "mcp_http_upstream"
 	}
 
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
@@ -853,7 +853,7 @@ func RunHTTPListenerProxy(
 		InputCfg: opts.InputCfg, PolicyCfg: opts.PolicyCfg,
 		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
 		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
-		RedirectRT: opts.RedirectRT, Transport: "mcp_http",
+		RedirectRT: opts.RedirectRT, Transport: "mcp_http_listener",
 		ReceiptEmitter: opts.ReceiptEmitter,
 		CaptureObs:     opts.captureObserver(),
 		ProvenanceCfg:  opts.ProvenanceCfg,

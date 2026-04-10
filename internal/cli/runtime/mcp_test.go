@@ -402,8 +402,8 @@ func TestMcpProxyCmd_EmitsSignedReceipts_HTTPUpstream(t *testing.T) {
 		if err := receipt.VerifyWithKey(rcpt, pubHex); err != nil {
 			t.Fatalf("VerifyWithKey(receipt): %v", err)
 		}
-		if rcpt.ActionRecord.Transport != "mcp_http" {
-			t.Fatalf("transport = %q, want mcp_http", rcpt.ActionRecord.Transport)
+		if rcpt.ActionRecord.Transport != "mcp_http_upstream" {
+			t.Fatalf("transport = %q, want mcp_http_upstream", rcpt.ActionRecord.Transport)
 		}
 		if rcpt.ActionRecord.Verdict == config.ActionBlock {
 			blockFound = true

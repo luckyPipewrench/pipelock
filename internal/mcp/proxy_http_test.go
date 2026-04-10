@@ -1634,8 +1634,8 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	if err := receipt.VerifyWithKey(receipts[0], pubHex); err != nil {
 		t.Fatalf("VerifyWithKey: %v", err)
 	}
-	if receipts[0].ActionRecord.Transport != "mcp_http" {
-		t.Fatalf("transport = %q, want %q", receipts[0].ActionRecord.Transport, "mcp_http")
+	if receipts[0].ActionRecord.Transport != "mcp_http_listener" {
+		t.Fatalf("transport = %q, want %q", receipts[0].ActionRecord.Transport, "mcp_http_listener")
 	}
 	if receipts[0].ActionRecord.Verdict != config.ActionBlock {
 		t.Fatalf("verdict = %q, want %q", receipts[0].ActionRecord.Verdict, config.ActionBlock)

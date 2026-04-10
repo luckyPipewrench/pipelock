@@ -224,13 +224,7 @@ func interceptTunnel(
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 
-	ictx := audit.LogContext{
-		Method:    "CONNECT",
-		URL:       ic.TargetHost,
-		ClientIP:  ic.ClientIP,
-		RequestID: ic.RequestID,
-		Agent:     ic.Agent,
-	}
+	ictx := audit.NewConnectLogContext(net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	handshakeStart := time.Now()
@@ -369,7 +363,7 @@ func newInterceptHandler(
 		}
 		if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
 			mismatch := r.Host + " vs " + target
-			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, URL: r.URL.Path, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
+			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, Target: net.JoinHostPort(reqHost, reqPort), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			ic.Metrics.RecordTLSRequestBlocked("authority_mismatch")
 			interceptEmitReceipt(ic, receipt.EmitOpts{
 				ActionID:  actionID,
@@ -409,13 +403,7 @@ func newInterceptHandler(
 
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
-		actx := audit.LogContext{
-			Method:    r.Method,
-			URL:       r.URL.String(),
-			ClientIP:  ic.ClientIP,
-			RequestID: ic.RequestID,
-			Agent:     ic.Agent,
-		}
+		actx := audit.NewHTTPLogContext(r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that

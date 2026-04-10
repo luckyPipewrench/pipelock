@@ -1004,7 +1004,7 @@ func TestLogTunnelOpen_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelOpen(LogContext{ClientIP: "10.0.0.5", RequestID: "req-100"}, "example.com:443")
+	logger.LogTunnelOpen(LogContext{Target: "example.com:443", ClientIP: "10.0.0.5", RequestID: "req-100"})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1035,7 +1035,7 @@ func TestLogTunnelOpen_Filtered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelOpen(LogContext{ClientIP: "10.0.0.5", RequestID: "req-100"}, "example.com:443")
+	logger.LogTunnelOpen(LogContext{Target: "example.com:443", ClientIP: "10.0.0.5", RequestID: "req-100"})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1052,7 +1052,7 @@ func TestLogTunnelClose_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelClose(LogContext{ClientIP: "10.0.0.5", RequestID: "req-100"}, "example.com:443", 4096, 5*time.Second)
+	logger.LogTunnelClose(LogContext{Target: "example.com:443", ClientIP: "10.0.0.5", RequestID: "req-100"}, 4096, 5*time.Second)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1084,7 +1084,7 @@ func TestLogTunnelClose_Filtered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelClose(LogContext{ClientIP: "10.0.0.5", RequestID: "req-100"}, "example.com:443", 4096, 5*time.Second)
+	logger.LogTunnelClose(LogContext{Target: "example.com:443", ClientIP: "10.0.0.5", RequestID: "req-100"}, 4096, 5*time.Second)
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1585,7 +1585,7 @@ func TestLogTunnelOpen_SanitizesTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelOpen(LogContext{ClientIP: "10.0.0.5", RequestID: "req-101"}, "evil\x1b[2J.com:443")
+	logger.LogTunnelOpen(LogContext{Target: "evil\x1b[2J.com:443", ClientIP: "10.0.0.5", RequestID: "req-101"})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -2444,7 +2444,7 @@ func TestLogTunnelOpenIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelOpen(LogContext{ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "example.com:443")
+	logger.LogTunnelOpen(LogContext{Target: "example.com:443", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName})
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -2609,7 +2609,7 @@ func TestLogTunnelCloseIncludesAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogTunnelClose(LogContext{ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, "example.com:443", 1024, time.Second)
+	logger.LogTunnelClose(LogContext{Target: "example.com:443", ClientIP: testClientIP, RequestID: "req-1", Agent: testAgentName}, 1024, time.Second)
 	logger.Close()
 
 	data, err := os.ReadFile(filepath.Clean(logFile))
@@ -3029,5 +3029,89 @@ func TestLogResponseScan_IncludesMethod(t *testing.T) {
 	}
 	if entry["method"] != testMethodGet {
 		t.Errorf("expected method=GET, got %v", entry["method"])
+	}
+}
+
+// TestLogContext_ResourceField_MCP verifies that MCP contexts emit "resource"
+// instead of "url" in the audit log output.
+func TestLogContext_ResourceField_MCP(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "resource-mcp.json")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewMCPLogContext("MCP", "tools/list", testAgentName)
+	logger.LogBlocked(ctx, "mcp_tool_scanning", "poisoned description")
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry["resource"] != "tools/list" {
+		t.Errorf("expected resource=tools/list, got %v", entry["resource"])
+	}
+	if _, hasURL := entry["url"]; hasURL {
+		t.Error("url field should be absent for MCP contexts")
+	}
+	if _, hasTarget := entry["target"]; hasTarget {
+		t.Error("target field should be absent for MCP contexts")
+	}
+}
+
+// TestLogContext_ResourceField_ConfigReload verifies that config reload contexts
+// emit "resource" for the config file path.
+func TestLogContext_ResourceField_ConfigReload(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "resource-config.json")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := LogContext{Method: "CONFIG_RELOAD", Resource: "/etc/pipelock/config.yaml"}
+	logger.LogError(ctx, fmt.Errorf("validation failed"))
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry["resource"] != "/etc/pipelock/config.yaml" {
+		t.Errorf("expected resource path, got %v", entry["resource"])
+	}
+	if _, hasURL := entry["url"]; hasURL {
+		t.Error("url field should be absent for config contexts")
+	}
+}
+
+// TestLogContext_TargetField_Connect verifies that CONNECT contexts emit
+// "target" instead of "url".
+func TestLogContext_TargetField_Connect(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "target-connect.json")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := NewConnectLogContext("evil.com:443", testClientIP, testReqID, testAgentName)
+	logger.LogTunnelOpen(ctx)
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if entry["target"] != "evil.com:443" {
+		t.Errorf("expected target=evil.com:443, got %v", entry["target"])
+	}
+	if _, hasURL := entry["url"]; hasURL {
+		t.Error("url field should be absent for CONNECT contexts")
+	}
+	if _, hasResource := entry["resource"]; hasResource {
+		t.Error("resource field should be absent for CONNECT contexts")
 	}
 }

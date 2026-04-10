@@ -1185,6 +1185,64 @@ func TestScanTextForDLP_ConfusableBypass(t *testing.T) {
 	}
 }
 
+// TestScanTextForDLP_ExoticWhitespaceBypass verifies that non-ASCII
+// whitespace splitters embedded in a secret do not prevent DLP detection.
+// This is the scanner-level regression for the StripExoticWhitespace pass
+// added to the ForDLP normalization pipeline.
+func TestScanTextForDLP_ExoticWhitespaceBypass(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	suffix := strings.Repeat("a", 25)
+
+	tests := []struct {
+		name  string
+		split string
+	}{
+		{"NBSP", "\u00A0"},
+		{"ideographic_space", "\u3000"},
+		{"Ogham_space", "\u1680"},
+		{"Mongolian_vowel_separator", "\u180E"},
+		{"en_space", "\u2002"},
+		{"em_space", "\u2003"},
+		{"thin_space", "\u2009"},
+		{"narrow_no_break", "\u202F"},
+		{"medium_math_space", "\u205F"},
+		{"line_separator", "\u2028"},
+		{"paragraph_separator", "\u2029"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Insert the splitter in the middle of an Anthropic-style key.
+			text := "sk-ant-" + tt.split + suffix
+			result := s.ScanTextForDLP(context.Background(), text)
+			if result.Clean {
+				t.Errorf("exotic whitespace bypass not caught (%s): %q", tt.name, text)
+			}
+		})
+	}
+}
+
+// TestScanTextForDLP_StackedStegoVectors layers multiple evasion techniques
+// on top of each other and verifies the DLP pipeline still catches the
+// secret. Represents a realistic worst-case attacker combining everything
+// they know against the scanner.
+func TestScanTextForDLP_StackedStegoVectors(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	suffix := strings.Repeat("a", 25)
+	// sk- + Cyrillic a (U+0430) + NBSP + nt- + zero-width space + suffix.
+	// Three layers: confusable homoglyph + exotic whitespace + invisible.
+	text := "sk-\u0430\u00A0nt-\u200B" + suffix
+	result := s.ScanTextForDLP(context.Background(), text)
+	if result.Clean {
+		t.Errorf("stacked stego vector bypass not caught: %q", text)
+	}
+}
+
 func TestScanTextForDLP_CombiningMarkBypass(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)

@@ -213,18 +213,21 @@ func TestRunWSProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 		t.Fatalf("recorder.Close: %v", err)
 	}
 
-	receipts := readActionReceipts(t, dir)
-	if len(receipts) != 1 {
-		t.Fatalf("expected 1 receipt, got %d", len(receipts))
+	// The WS proxy input-scan path also emits an "allow" tool-call receipt
+	// when the request is clean, so we filter for the block receipt from
+	// response scanning (the emission under test).
+	blockReceipts := receiptsByVerdict(readActionReceipts(t, dir), config.ActionBlock)
+	if len(blockReceipts) != 1 {
+		t.Fatalf("expected 1 block receipt, got %d", len(blockReceipts))
 	}
-	if err := receipt.VerifyWithKey(receipts[0], pubHex); err != nil {
+	if err := receipt.VerifyWithKey(blockReceipts[0], pubHex); err != nil {
 		t.Fatalf("VerifyWithKey: %v", err)
 	}
-	if receipts[0].ActionRecord.Transport != "mcp_ws" {
-		t.Fatalf("transport = %q, want %q", receipts[0].ActionRecord.Transport, "mcp_ws")
+	if blockReceipts[0].ActionRecord.Transport != "mcp_ws" {
+		t.Fatalf("transport = %q, want %q", blockReceipts[0].ActionRecord.Transport, "mcp_ws")
 	}
-	if receipts[0].ActionRecord.Verdict != config.ActionBlock {
-		t.Fatalf("verdict = %q, want %q", receipts[0].ActionRecord.Verdict, config.ActionBlock)
+	if blockReceipts[0].ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("verdict = %q, want %q", blockReceipts[0].ActionRecord.Verdict, config.ActionBlock)
 	}
 }
 

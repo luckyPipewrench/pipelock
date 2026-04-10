@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // recorderEntryType is the recorder entry type for action receipts.
@@ -70,15 +71,21 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
-	ActionID  string
-	Verdict   string
-	Layer     string
-	Pattern   string
-	Transport string
-	Method    string
-	Target    string
-	RequestID string
-	Agent     string
+	ActionID            string
+	Verdict             string
+	Layer               string
+	Pattern             string
+	Transport           string
+	Method              string
+	Target              string
+	RequestID           string
+	Agent               string
+	SessionTaintLevel   string
+	SessionContaminated bool
+	RecentTaintSources  []session.TaintSourceRef
+	AuthorityKind       string
+	TaintDecision       string
+	TaintDecisionReason string
 
 	// MCP-specific fields
 	ToolName  string
@@ -117,25 +124,31 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	}
 
 	ar := ActionRecord{
-		Version:         ActionRecordVersion,
-		ActionID:        opts.ActionID,
-		ActionType:      actionType,
-		Timestamp:       time.Now().UTC(),
-		Principal:       e.principal,
-		Actor:           e.actorLabel(opts),
-		DelegationChain: nil, // Populated when delegation tracking ships
-		Target:          opts.Target,
-		SideEffectClass: sideEffect,
-		Reversibility:   reversibility,
-		PolicyHash:      configHashString(e.configHash.Load()),
-		Verdict:         NormalizeVerdict(opts.Verdict),
-		Transport:       opts.Transport,
-		Method:          opts.Method,
-		Layer:           opts.Layer,
-		Pattern:         opts.Pattern,
-		RequestID:       opts.RequestID,
-		ChainPrevHash:   e.chainPrevHash,
-		ChainSeq:        e.chainSeq,
+		Version:             ActionRecordVersion,
+		ActionID:            opts.ActionID,
+		ActionType:          actionType,
+		Timestamp:           time.Now().UTC(),
+		Principal:           e.principal,
+		Actor:               e.actorLabel(opts),
+		DelegationChain:     nil, // Populated when delegation tracking ships
+		Target:              opts.Target,
+		SideEffectClass:     sideEffect,
+		Reversibility:       reversibility,
+		PolicyHash:          configHashString(e.configHash.Load()),
+		Verdict:             NormalizeVerdict(opts.Verdict),
+		SessionTaintLevel:   opts.SessionTaintLevel,
+		SessionContaminated: opts.SessionContaminated,
+		RecentTaintSources:  append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),
+		AuthorityKind:       opts.AuthorityKind,
+		TaintDecision:       opts.TaintDecision,
+		TaintDecisionReason: opts.TaintDecisionReason,
+		Transport:           opts.Transport,
+		Method:              opts.Method,
+		Layer:               opts.Layer,
+		Pattern:             opts.Pattern,
+		RequestID:           opts.RequestID,
+		ChainPrevHash:       e.chainPrevHash,
+		ChainSeq:            e.chainSeq,
 	}
 
 	rcpt, err := Sign(ar, e.privKey)

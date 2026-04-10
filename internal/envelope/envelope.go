@@ -39,15 +39,19 @@ const (
 
 // Envelope is the mediation metadata attached to proxied requests.
 type Envelope struct {
-	Version    int
-	Action     string
-	Verdict    string
-	SideEffect string
-	Actor      string
-	ActorAuth  ActorAuth
-	PolicyHash []byte // First 16 bytes of SHA-256 of the policy config.
-	ReceiptID  string // UUIDv7 receipt ID for correlation.
-	Timestamp  int64  // Unix timestamp (seconds).
+	Version        int
+	Action         string
+	Verdict        string
+	SideEffect     string
+	Actor          string
+	ActorAuth      ActorAuth
+	PolicyHash     []byte // First 16 bytes of SHA-256 of the policy config.
+	ReceiptID      string // UUIDv7 receipt ID for correlation.
+	Timestamp      int64  // Unix timestamp (seconds).
+	SessionTaint   string
+	AuthorityKind  string
+	AuthorityRef   string
+	RequiresReauth bool
 }
 
 // Serialize encodes the envelope as an RFC 8941 Structured Fields Dictionary
@@ -63,6 +67,10 @@ const (
 	keyPolicyHash = "ph"
 	keyReceiptID  = "rid"
 	keyTimestamp  = "ts"
+	keyTaint      = "taint"
+	keyAuthority  = "auth"
+	keyAuthorityR = "authr"
+	keyReauth     = "reauth"
 )
 
 func (e Envelope) Serialize() (string, error) {
@@ -77,6 +85,18 @@ func (e Envelope) Serialize() (string, error) {
 	dict.Add(keyPolicyHash, httpsfv.NewItem(e.PolicyHash))
 	dict.Add(keyReceiptID, httpsfv.NewItem(e.ReceiptID))
 	dict.Add(keyTimestamp, httpsfv.NewItem(e.Timestamp))
+	if e.SessionTaint != "" {
+		dict.Add(keyTaint, httpsfv.NewItem(e.SessionTaint))
+	}
+	if e.AuthorityKind != "" {
+		dict.Add(keyAuthority, httpsfv.NewItem(e.AuthorityKind))
+	}
+	if e.AuthorityRef != "" {
+		dict.Add(keyAuthorityR, httpsfv.NewItem(e.AuthorityRef))
+	}
+	if e.RequiresReauth {
+		dict.Add(keyReauth, httpsfv.NewItem(true))
+	}
 
 	return httpsfv.Marshal(dict)
 }
@@ -153,6 +173,34 @@ func Parse(s string) (Envelope, error) {
 			}
 		}
 	}
+	if m, ok := dict.Get(keyTaint); ok {
+		if item, ok := m.(httpsfv.Item); ok {
+			if v, ok := item.Value.(string); ok {
+				env.SessionTaint = v
+			}
+		}
+	}
+	if m, ok := dict.Get(keyAuthority); ok {
+		if item, ok := m.(httpsfv.Item); ok {
+			if v, ok := item.Value.(string); ok {
+				env.AuthorityKind = v
+			}
+		}
+	}
+	if m, ok := dict.Get(keyAuthorityR); ok {
+		if item, ok := m.(httpsfv.Item); ok {
+			if v, ok := item.Value.(string); ok {
+				env.AuthorityRef = v
+			}
+		}
+	}
+	if m, ok := dict.Get(keyReauth); ok {
+		if item, ok := m.(httpsfv.Item); ok {
+			if v, ok := item.Value.(bool); ok {
+				env.RequiresReauth = v
+			}
+		}
+	}
 
 	// Reject envelopes missing required fields. A partial envelope
 	// could pass through trust decisions with zero-value defaults,
@@ -186,7 +234,7 @@ func Parse(s string) (Envelope, error) {
 
 // ToMCPMeta returns the envelope as a map for MCP _meta injection.
 func (e Envelope) ToMCPMeta() map[string]any {
-	return map[string]any{
+	meta := map[string]any{
 		keyVersion:    e.Version,
 		keyAction:     e.Action,
 		keyVerdict:    e.Verdict,
@@ -197,4 +245,17 @@ func (e Envelope) ToMCPMeta() map[string]any {
 		keyReceiptID:  e.ReceiptID,
 		keyTimestamp:  e.Timestamp,
 	}
+	if e.SessionTaint != "" {
+		meta[keyTaint] = e.SessionTaint
+	}
+	if e.AuthorityKind != "" {
+		meta[keyAuthority] = e.AuthorityKind
+	}
+	if e.AuthorityRef != "" {
+		meta[keyAuthorityR] = e.AuthorityRef
+	}
+	if e.RequiresReauth {
+		meta[keyReauth] = true
+	}
+	return meta
 }

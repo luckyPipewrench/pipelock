@@ -224,13 +224,7 @@ func interceptTunnel(
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 
-	ictx := audit.LogContext{
-		Method:    "CONNECT",
-		URL:       ic.TargetHost,
-		ClientIP:  ic.ClientIP,
-		RequestID: ic.RequestID,
-		Agent:     ic.Agent,
-	}
+	ictx := audit.NewConnectLogContext(net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	handshakeStart := time.Now()
@@ -369,7 +363,7 @@ func newInterceptHandler(
 		}
 		if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
 			mismatch := r.Host + " vs " + target
-			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, URL: r.URL.Path, ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
+			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, Target: net.JoinHostPort(reqHost, reqPort), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			ic.Metrics.RecordTLSRequestBlocked("authority_mismatch")
 			interceptEmitReceipt(ic, receipt.EmitOpts{
 				ActionID:  actionID,
@@ -409,13 +403,7 @@ func newInterceptHandler(
 
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
-		actx := audit.LogContext{
-			Method:    r.Method,
-			URL:       r.URL.String(),
-			ClientIP:  ic.ClientIP,
-			RequestID: ic.RequestID,
-			Agent:     ic.Agent,
-		}
+		actx := audit.NewHTTPLogContext(r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that
@@ -1085,6 +1073,45 @@ func newInterceptHandler(
 				resp.Header.Del("ETag")
 				resp.Header.Del("Digest")
 			}
+		}
+
+		// Media policy on intercepted TLS responses. Runs after shield so
+		// HTML/JS rewriting happens on the original body and image/audio/
+		// video responses get transport-agnostic enforcement.
+		mediaVerdict := applyMediaPolicy(ic.Config, resp.Header.Get("Content-Type"), respBody)
+		logMediaExposureIfPresent(ic.Logger, actx, mediaVerdict, "connect")
+		if mediaVerdict.Blocked {
+			interceptRecordSignal(ic, session.SignalBlock)
+			ic.Logger.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
+			ic.Metrics.RecordTLSResponseBlocked("media_policy")
+			// Reuse the envelope/request actionID so the block receipt
+			// correlates with the allow envelope already injected on
+			// this request. A fresh ID here would orphan the evidence
+			// pair and break downstream causality reconstruction.
+			interceptEmitReceipt(ic, receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "media_policy",
+				Pattern:   mediaVerdict.BlockReason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})
+			http.Error(w, "blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
+			return
+		}
+		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+			respBody = mediaVerdict.Body
+			resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
+			// Delete body-derived validators. Content-MD5 is often
+			// set alongside ETag and describes a hash of the upstream
+			// bytes — stale after metadata stripping, and a client or
+			// intermediary that validates it will reject the response.
+			resp.Header.Del("ETag")
+			resp.Header.Del("Digest")
+			resp.Header.Del("Content-MD5")
 		}
 
 		// A2A response body scanning: field-aware classification replaces

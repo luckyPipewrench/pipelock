@@ -328,13 +328,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			result := currentScanner.Scan(req.Context(), redirectURL)
 			if !result.Allowed {
-				actx := audit.LogContext{
-					Method:    req.Method,
-					URL:       redirectURL,
-					ClientIP:  clientIP,
-					RequestID: requestID,
-					Agent:     agentName,
-				}
+				actx := audit.NewHTTPLogContext(req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
 					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
 					return fmt.Errorf("redirect blocked: %s", result.Reason)
@@ -1218,11 +1212,11 @@ func (p *Proxy) Start(ctx context.Context) error {
 			defer cancel()
 			for _, srv := range p.agentServers {
 				if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
-					p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", URL: srv.Addr}, shutErr)
+					p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", Resource: srv.Addr}, shutErr)
 				}
 			}
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", URL: cfg.FetchProxy.Listen}, err)
+				p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", Resource: cfg.FetchProxy.Listen}, err)
 			}
 			p.Close()
 		case <-done:
@@ -1235,7 +1229,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-				p.logger.LogAnomaly(audit.LogContext{Method: "STARTUP", URL: cfg.FetchProxy.Listen}, "",
+				p.logger.LogAnomaly(audit.LogContext{Method: "STARTUP", Resource: cfg.FetchProxy.Listen}, "",
 					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
 					0.5)
 			}
@@ -1318,13 +1312,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.
 	displayURL := scanner.IterativeDecode(targetURL)
-	actx := audit.LogContext{
-		Method:    http.MethodGet,
-		URL:       displayURL,
-		ClientIP:  clientIP,
-		RequestID: requestID,
-		Agent:     agent,
-	}
+	actx := audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent)
 
 	// Scan URL through all scanners
 	result := sc.Scan(r.Context(), targetURL)
@@ -1367,6 +1355,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		fetchRec = sm.GetOrCreate(fetchSessionKey)
 	}
+	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
 	// Airlock check: drain tier blocks all traffic including fetch.
 	if fetchSess, ok := fetchRec.(*SessionState); ok && fetchSess != nil {
@@ -1393,15 +1382,21 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     result.Scanner,
-				Pattern:   result.Reason,
-				Transport: "fetch",
-				Method:    http.MethodGet,
-				Target:    displayURL,
-				RequestID: requestID,
-				Agent:     agent,
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               result.Scanner,
+				Pattern:             result.Reason,
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
 			})
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
@@ -1649,12 +1644,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Inject mediation envelope before forwarding on allow path.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
 		if envErr := envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
-			ActionID:   actionID,
-			Action:     string(receipt.ActionRead),
-			Verdict:    config.ActionAllow,
-			SideEffect: string(receipt.SideEffectExternalRead),
-			Actor:      agent,
-			ActorAuth:  id.Auth,
+			ActionID:      actionID,
+			Action:        string(receipt.ActionRead),
+			Verdict:       config.ActionAllow,
+			SideEffect:    string(receipt.SideEffectExternalRead),
+			Actor:         agent,
+			ActorAuth:     id.Auth,
+			SessionTaint:  fetchTaint.Risk.Level.String(),
+			AuthorityKind: fetchTaint.Authority.String(),
 		}); envErr != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
 		}
@@ -1699,6 +1696,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
+
+	responsePromptHit := false
+	defer func() {
+		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), resp.Header.Get("Content-Type"), "fetch_response", responsePromptHit)
+	}()
 
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
@@ -1801,6 +1803,41 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+
+	// Media policy on fetched responses. Runs after shield so HTML passes
+	// through unchanged and image/audio/video responses get transport-
+	// agnostic enforcement. Blocks yield a structured FetchResponse so the
+	// client sees the policy reason, not a generic 403.
+	mediaVerdict := applyMediaPolicy(cfg, contentType, body)
+	logMediaExposureIfPresent(log, actx, mediaVerdict, "fetch")
+	if mediaVerdict.Blocked {
+		log.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
+		p.metrics.RecordBlocked(parsed.Hostname(), "media_policy", time.Since(start), agentLabel)
+		// Terminal block receipt. Reuse the request's actionID so this
+		// receipt correlates with the allow envelope that was injected
+		// on the outbound request. Without this emit, a response-side
+		// media deny would leave the envelope/receipt pair half-closed
+		// and break downstream causality reconstruction.
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     "media_policy",
+			Pattern:   mediaVerdict.BlockReason,
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL: displayURL, Agent: agent, Blocked: true,
+			BlockReason: mediaVerdict.BlockReason,
+		})
+		return
+	}
+	if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+		body = mediaVerdict.Body
+	}
 	content := string(body)
 
 	// Extract text from HTML hiding spots (comments, script/style bodies)
@@ -1828,6 +1865,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				hasFinding = true
 			}
 			hiddenInjectionFound = found
+			responsePromptHit = responsePromptHit || found
 		}
 	}
 
@@ -1850,6 +1888,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// TransformedContent cannot map back to the full HTML (it operates on
 	// concatenated fragments), so strip cannot function here.
 	if hiddenInjectionFound && !readabilityOK {
+		responsePromptHit = true
 		reason := "hidden injection detected and readability extraction failed (fail-closed)"
 		log.LogBlocked(actx, "response_scan", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
@@ -1873,6 +1912,21 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
+
+		// Filter out suppressed findings before deriving taint or capture action.
+		if !scanResult.Clean && len(cfg.Suppress) > 0 {
+			var kept []scanner.ResponseMatch
+			for _, m := range scanResult.Matches {
+				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
+					kept = append(kept, m)
+				}
+			}
+			scanResult.Matches = kept
+			scanResult.Clean = len(kept) == 0
+		}
+		if !scanResult.Clean {
+			responsePromptHit = true
+		}
 
 		// Capture observer: record response scan verdict for policy replay.
 		respAction := sc.ResponseAction()
@@ -1926,13 +1980,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  actionID,
-		Verdict:   config.ActionAllow,
-		Transport: "fetch",
-		Method:    http.MethodGet,
-		Target:    displayURL,
-		RequestID: requestID,
-		Agent:     agent,
+		ActionID:            actionID,
+		Verdict:             config.ActionAllow,
+		Transport:           "fetch",
+		Method:              http.MethodGet,
+		Target:              displayURL,
+		RequestID:           requestID,
+		Agent:               agent,
+		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+		SessionContaminated: fetchTaint.Risk.Contaminated,
+		RecentTaintSources:  fetchTaint.Risk.Sources,
+		AuthorityKind:       fetchTaint.Authority.String(),
+		TaintDecision:       fetchTaint.Result.Decision.String(),
+		TaintDecisionReason: fetchTaint.Result.Reason,
 	})
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
@@ -2037,7 +2097,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+		log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
@@ -2055,7 +2115,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2083,14 +2143,14 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "ask:allow", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "ask:strip", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2108,13 +2168,13 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
-		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

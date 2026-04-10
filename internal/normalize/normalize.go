@@ -228,16 +228,125 @@ var confusableMap = map[rune]rune{
 	'\U0001F1FF': 'Z', // 🇿
 }
 
-// Whitespace replaces Unicode whitespace characters that Go's RE2 \s does not
-// match with ASCII space.
+// Whitespace replaces Unicode whitespace characters with ASCII space to
+// preserve word boundaries for pattern matching. Used in ForMatching / ForPolicy
+// / ForToolText, which need "ignore\u00a0all" to match as "ignore all" and not
+// collapse to "ignoreall".
+//
+// NFKC handles most Unicode whitespace via compatibility decomposition, but the
+// pipelines call Whitespace AFTER NFKC as belt-and-suspenders in case a future
+// pipeline change reorders or drops NFKC. The explicit list is auditable and
+// covers the known evasion set (NBSP, Ogham, Mongolian vowel separator,
+// en/em/thin/hair/punctuation spaces, line/paragraph separators, narrow no-break,
+// medium math space, ideographic space). Not Unicode Zs category-wide because
+// that would couple behavior to future standard changes.
 func Whitespace(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
-		case '\u1680', '\u180E', '\u2028', '\u2029':
+		case '\u00A0', // NBSP
+			'\u1680', // Ogham space mark
+			'\u180E', // Mongolian vowel separator
+			'\u2000', // en quad
+			'\u2001', // em quad
+			'\u2002', // en space
+			'\u2003', // em space
+			'\u2004', // three-per-em space
+			'\u2005', // four-per-em space
+			'\u2006', // six-per-em space
+			'\u2007', // figure space
+			'\u2008', // punctuation space
+			'\u2009', // thin space
+			'\u200A', // hair space
+			'\u2028', // line separator
+			'\u2029', // paragraph separator
+			'\u202F', // narrow no-break space
+			'\u205F', // medium mathematical space
+			'\u3000': // ideographic space
 			return ' '
 		}
 		return r
 	}, s)
+}
+
+// StripExoticWhitespace removes non-ASCII whitespace characters entirely from s.
+// Used in the DLP pipeline: secrets never contain legitimate whitespace, so
+// exotic whitespace in the middle of what looks like a key is an evasion attempt
+// ("sk-pr\u00A0oj-abc" → "sk-proj-abc"). Must run BEFORE NFKC because NFKC
+// compatibility-decomposes NBSP/U+3000/U+2000-200A to ASCII space, which would
+// survive as a regex-breaking literal space inside a would-be match.
+//
+// ASCII whitespace (' ', '\t', '\n', '\r') is preserved: legitimate content
+// uses it, and the DLP pipeline's StripControlChars already removes tab/newline
+// for secrets that must not span lines. The rune set matches Whitespace()
+// exactly so the two functions share one mental model for stego whitespace.
+func StripExoticWhitespace(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\u00A0',
+			'\u1680',
+			'\u180E',
+			'\u2000', '\u2001', '\u2002', '\u2003', '\u2004',
+			'\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A',
+			'\u2028', '\u2029',
+			'\u202F',
+			'\u205F',
+			'\u3000':
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// ZalgoSuspiciousThreshold is the minimum consecutive-combining-mark count that
+// ZalgoSuspicious treats as evasion. Three is chosen so composed text with at
+// most two stacked marks (Vietnamese "ế" in decomposed form, Thai vowel plus
+// tone) does not trigger. Exposed so callers and tests reference one value.
+const ZalgoSuspiciousThreshold = 3
+
+// ZalgoDensity returns the maximum number of consecutive Unicode combining
+// marks (category Mn) attached to any single base character in s. Legitimate
+// text uses 0–2 combining marks per base (composed Latin accents, Devanagari
+// and Thai vowel signs, Hebrew nikud). Values at or above ZalgoSuspiciousThreshold
+// indicate "Zalgo" text or obfuscated payload, not natural language.
+//
+// This is a detection signal, not a transformation. StripCombiningMarks already
+// neutralizes the runtime text by removing all combining marks; ZalgoDensity
+// lets callers raise a taint/exposure event even after the characters are gone.
+// Measured on the input string before any normalization so the caller controls
+// when (or whether) to normalize first.
+//
+// Implementation note: the longest run of consecutive Mn runes equals the
+// maximum marks-per-base because combining marks attach to the preceding base.
+// A run that begins at string start with no base character is still counted —
+// a stream of combining marks with no base is pathological either way.
+func ZalgoDensity(s string) int {
+	maxRun := 0
+	cur := 0
+	for _, r := range s {
+		if unicode.Is(unicode.Mn, r) {
+			cur++
+			if cur > maxRun {
+				maxRun = cur
+			}
+			continue
+		}
+		cur = 0
+	}
+	return maxRun
+}
+
+// ZalgoSuspicious reports whether s contains combining mark density at or
+// above ZalgoSuspiciousThreshold. Convenience wrapper for callers that
+// only need the boolean signal (event emission, taint escalation).
+//
+// TODO(taint-system): wire this into internal/scanner/response.go so
+// responses flagged suspicious emit an emit.EventTextStego exposure
+// event. Until the taint/authority system lands, ForMatching already
+// neutralizes combining marks via StripCombiningMarks — the helper and
+// its emit event type are pre-defined so downstream code can key on
+// them without a second API rev later.
+func ZalgoSuspicious(s string) bool {
+	return ZalgoDensity(s) >= ZalgoSuspiciousThreshold
 }
 
 // Leetspeak maps common digit-for-letter substitutions used in L1B3RT4S-style
@@ -345,11 +454,18 @@ func StripControlChars(s string) string {
 	}, s)
 }
 
-// ForDLP applies the standard DLP normalization pipeline: strip all control/invisible
-// characters, NFKC decomposition, confusable-to-ASCII mapping, combining mark removal.
-// Used across all DLP scanning paths (URL segments, MCP text, env leak detection).
+// ForDLP applies the standard DLP normalization pipeline: strip all control/
+// invisible characters, remove exotic whitespace used to split secrets, NFKC
+// decomposition, confusable-to-ASCII mapping, combining mark removal. Used
+// across all DLP scanning paths (URL segments, MCP text, env leak detection).
+//
+// StripExoticWhitespace runs BEFORE NFKC because NFKC compatibility-decomposes
+// wide/NBSP space variants to ASCII space. If stripping happened after NFKC,
+// those evasion characters would leave behind a literal ASCII space in the
+// middle of what would otherwise be a matchable secret, breaking the regex.
 func ForDLP(s string) string {
 	s = StripControlChars(s)
+	s = StripExoticWhitespace(s)
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)

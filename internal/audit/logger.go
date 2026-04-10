@@ -195,11 +195,13 @@ const (
 	EventToolRedirect       EventType = "tool_redirect"
 	EventSessionAdmin       EventType = "session_admin"
 	EventResponseScanExempt EventType = "response_scan_exempt"
+	EventTaintDecision      EventType = "taint_decision"
 
 	EventAirlockEnter      EventType = "airlock_enter"
 	EventAirlockDeny       EventType = "airlock_deny"
 	EventAirlockDeescalate EventType = "airlock_deescalate"
 	EventShieldRewrite     EventType = "shield_rewrite"
+	EventMediaExposure     EventType = "media_exposure"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -230,12 +232,56 @@ type BundleRuleHit struct {
 }
 
 // LogContext carries common fields shared across all audit log events.
+// Use the typed constructors (NewHTTPLogContext, NewMCPLogContext,
+// NewConnectLogContext) to enforce required fields per transport.
+//
+// URL, Target, and Resource are mutually exclusive identifiers:
+//   - URL: actual HTTP/HTTPS URLs (fetch, forward-proxy, response scan)
+//   - Target: CONNECT tunnel host:port destinations
+//   - Resource: MCP tool names, config file paths, listen addresses
 type LogContext struct {
 	Method    string
-	URL       string
+	URL       string // actual HTTP URL
+	Target    string // CONNECT host:port
+	Resource  string // MCP tool, config path, listen address
 	ClientIP  string
 	RequestID string
 	Agent     string
+}
+
+// NewHTTPLogContext creates a LogContext for HTTP proxy requests (fetch,
+// forward-proxy). ClientIP and RequestID are required to prevent accidental
+// omission on HTTP paths.
+func NewHTTPLogContext(method, url, clientIP, requestID, agent string) LogContext {
+	return LogContext{
+		Method:    method,
+		URL:       url,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
+}
+
+// NewMCPLogContext creates a LogContext for MCP proxy requests. HTTP-specific
+// fields (ClientIP, RequestID) are omitted by design since MCP stdio has no
+// HTTP transport layer.
+func NewMCPLogContext(method, resource, agent string) LogContext {
+	return LogContext{
+		Method:   method,
+		Resource: resource,
+		Agent:    agent,
+	}
+}
+
+// NewConnectLogContext creates a LogContext for CONNECT tunnel operations.
+func NewConnectLogContext(target, clientIP, requestID, agent string) LogContext {
+	return LogContext{
+		Method:    "CONNECT",
+		Target:    target,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
 }
 
 // Logger handles structured audit logging using zerolog.
@@ -314,7 +360,9 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 	}
 	e := newLogEntry(l.zl.Info(), EventAllowed).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		intField("status_code", statusCode).
@@ -330,7 +378,9 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 
 	e := newLogEntry(l.zl.Warn(), EventBlocked).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		str("scanner", scanner).
@@ -352,7 +402,9 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -373,7 +425,9 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 
 	e := newLogEntry(l.zl.Warn(), EventAnomaly).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -395,8 +449,17 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	event := l.zl.Info().
 		Str("event", string(EventResponseScanExempt)).
-		Str("method", ctx.Method).
-		Str("url", sanitizeString(ctx.URL)).
+		Str("method", ctx.Method)
+	if ctx.URL != "" {
+		event = event.Str("url", sanitizeString(ctx.URL))
+	}
+	if ctx.Target != "" {
+		event = event.Str("target", sanitizeString(ctx.Target))
+	}
+	if ctx.Resource != "" {
+		event = event.Str("resource", sanitizeString(ctx.Resource))
+	}
+	event = event.
 		Str("hostname", hostname).
 		Str("enforcement_type", "response_scanning").
 		Str("reason", "exempt_domains match")
@@ -414,10 +477,18 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	if l.emitter != nil {
 		fields := map[string]any{
 			"method":           ctx.Method,
-			"url":              sanitizeString(ctx.URL),
 			"hostname":         hostname,
 			"enforcement_type": "response_scanning",
 			"reason":           "exempt_domains match",
+		}
+		if ctx.URL != "" {
+			fields["url"] = sanitizeString(ctx.URL)
+		}
+		if ctx.Target != "" {
+			fields["target"] = sanitizeString(ctx.Target)
+		}
+		if ctx.Resource != "" {
+			fields["resource"] = sanitizeString(ctx.Resource)
 		}
 		if ctx.ClientIP != "" {
 			fields["client_ip"] = ctx.ClientIP
@@ -432,6 +503,69 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	}
 }
 
+// MediaExposureInfo carries the structured fields for a media_exposure
+// event emitted by the audit logger. Populated by the proxy media policy
+// helper (see internal/proxy/media_policy.go) and passed to
+// LogMediaExposure so the audit layer and emit sinks see a dedicated
+// media_exposure event type rather than a generic anomaly.
+//
+// Separate from internal/proxy.MediaExposureFields (which holds the
+// pre-wiring payload) so the audit package doesn't import internal/proxy.
+type MediaExposureInfo struct {
+	Transport       string // "forward", "connect", "fetch", "reverse"
+	ContentType     string
+	Format          string // "jpeg", "png", "unknown"
+	SizeBytes       int
+	MetadataRemoved int
+	BytesRemoved    int
+	Blocked         bool
+	BlockReason     string
+}
+
+// LogMediaExposure emits a dedicated media_exposure audit event with the
+// structured fields taint/authority and SIEM consumers need to correlate
+// media reaching an agent with downstream sensitive actions. Severity is
+// SeverityWarn (set in internal/emit via EventSeverity map). Both the
+// zerolog stream and the emitter sink receive the same field set.
+//
+// Unlike LogAnomaly this is not a suspicion marker — it is an exposure
+// provenance signal. Every media response that reaches the agent (allowed
+// or blocked) should produce one event when media_policy.log_media_exposure
+// is enabled, so the downstream policy engine can build an exposure
+// timeline.
+func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
+	e := newLogEntry(l.zl.Warn(), EventMediaExposure).
+		optStr("method", ctx.Method).
+		str("url", ctx.URL).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
+		str("transport", info.Transport).
+		str("content_type", info.ContentType).
+		optStr("format", info.Format).
+		intField("size_bytes", info.SizeBytes)
+	if info.MetadataRemoved > 0 {
+		e = e.intField("metadata_segments_removed", info.MetadataRemoved).
+			intField("metadata_bytes_removed", info.BytesRemoved)
+	}
+	// Record block state as a structured field so SIEM consumers can
+	// filter blocked vs allowed exposures without parsing the reason.
+	e.event = e.event.Bool("blocked", info.Blocked)
+	e.fields["blocked"] = info.Blocked
+	if info.Blocked && info.BlockReason != "" {
+		e = e.str("block_reason", info.BlockReason)
+	}
+	if info.Blocked {
+		e.msg("media response blocked by policy")
+	} else {
+		e.msg("media response reached agent")
+	}
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventMediaExposure), e.fields)
+	}
+}
+
 // LogResponseScan logs a response content scan that found prompt injection patterns.
 // When bundleRules is non-empty, bundle provenance is included in the audit event
 // and webhook payload so SIEM consumers can identify which community rules matched.
@@ -440,7 +574,9 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
 		optStr("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		str("action", action).
@@ -458,13 +594,36 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 	}
 }
 
+// LogTaintDecision logs a taint-aware policy evaluation for a sensitive action.
+func (l *Logger) LogTaintDecision(ctx LogContext, taintLevel, actionClass, sensitivity, authority, decision, reason, sourceURL, sourceKind string) {
+	e := newLogEntry(l.zl.Warn(), EventTaintDecision).
+		optStr("method", ctx.Method).
+		str("url", ctx.URL).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
+		str("session_taint_level", taintLevel).
+		str("action_class", actionClass).
+		str("action_sensitivity", sensitivity).
+		str("authority_kind", authority).
+		str("decision", decision).
+		str("reason", reason).
+		optStr("source_url", sourceURL).
+		optStr("source_kind", sourceKind)
+	e.msg("taint policy decision")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventTaintDecision), e.fields)
+	}
+}
+
 // LogTunnelOpen logs a CONNECT tunnel establishment.
-func (l *Logger) LogTunnelOpen(ctx LogContext, target string) {
+func (l *Logger) LogTunnelOpen(ctx LogContext) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelOpen).
-		str("target", target).
+		optStr("target", ctx.Target).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent)
@@ -472,12 +631,12 @@ func (l *Logger) LogTunnelOpen(ctx LogContext, target string) {
 }
 
 // LogTunnelClose logs a CONNECT tunnel teardown with traffic stats.
-func (l *Logger) LogTunnelClose(ctx LogContext, target string, totalBytes int64, duration time.Duration) {
+func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelClose).
-		str("target", target).
+		optStr("target", ctx.Target).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -493,7 +652,9 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 	}
 	e := newLogEntry(l.zl.Info(), EventForwardHTTP).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -825,7 +986,9 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 
 	e := newLogEntry(l.zl.Warn(), EventBodyDLP).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		str("action", action).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
@@ -848,7 +1011,9 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string, matchCount int, findingNames []string) {
 	e := newLogEntry(l.zl.Warn(), eventType).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		str("action", action).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
@@ -869,7 +1034,9 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 
 	e := newLogEntry(l.zl.Warn(), EventHeaderDLP).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		str("header", headerName).
 		str("action", action).
 		optStr("client_ip", ctx.ClientIP).

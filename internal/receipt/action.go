@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // NewActionID generates a UUIDv7 for action records. UUIDv7 is time-ordered
@@ -130,6 +131,13 @@ type ActionRecord struct {
 	// Policy context
 	PolicyHash string `json:"policy_hash"`
 	Verdict    string `json:"verdict"`
+	// Taint-aware policy escalation context.
+	SessionTaintLevel   string                   `json:"session_taint_level,omitempty"`
+	SessionContaminated bool                     `json:"session_contaminated,omitempty"`
+	RecentTaintSources  []session.TaintSourceRef `json:"recent_taint_sources,omitempty"`
+	AuthorityKind       string                   `json:"authority_kind,omitempty"`
+	TaintDecision       string                   `json:"taint_decision,omitempty"`
+	TaintDecisionReason string                   `json:"taint_decision_reason,omitempty"`
 
 	// Transport context
 	Transport string `json:"transport"`

@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -370,6 +371,75 @@ func TestInterceptTunnel_AuthorityMismatch(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403 (authority mismatch)", resp.StatusCode)
+	}
+}
+
+// TestInterceptTunnel_MediaPolicyStripsJPEGMetadata proves the TLS
+// intercept path runs media policy on forwarded responses: a JPEG with
+// an APP1 payload comes back with the EXIF segment elided byte-level.
+// Parity coverage with forward / fetch / reverse.
+func TestInterceptTunnel_MediaPolicyStripsJPEGMetadata(t *testing.T) {
+	secretPayload := []byte("Exif\x00\x00intercept-path-gps-leak")
+	jpegBytes := buildValidJPEG(secretPayload)
+
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(jpegBytes)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	// Media policy is on by default via config.Defaults(); no extra flip
+	// needed here. We only need to confirm the wire runs on the intercept
+	// path and modifies the body.
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/photo.jpg", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if bytes.Contains(body, secretPayload) {
+		t.Error("intercepted response still contains EXIF payload — media policy did not run on intercept path")
+	}
+	if !bytes.HasPrefix(body, []byte{0xFF, 0xD8}) {
+		t.Error("intercepted response is not a JPEG (missing SOI)")
+	}
+	if len(body) >= len(jpegBytes) {
+		t.Errorf("stripped body length %d >= original %d; no bytes removed", len(body), len(jpegBytes))
+	}
+}
+
+// TestInterceptTunnel_MediaPolicyBlocksAudio verifies the TLS intercept
+// path rejects audio/mpeg responses by default policy. Intercept writes
+// its own receipt on block, exercising the intercept-specific block path.
+func TestInterceptTunnel_MediaPolicyBlocksAudio(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("fake audio body that must not reach the agent"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/track.mp3", nil)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (audio should block on intercept)", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "audio stripped") {
+		t.Errorf("block body = %q, want contains 'audio stripped'", body)
 	}
 }
 

@@ -43,6 +43,17 @@ type Result struct {
 	TrapHits      int          // hidden DOM traps and comment traps removed
 	ShimInjected  bool         // true if a fingerprint/extension defense shim was prepended
 	PipelineUsed  PipelineType // which pipeline was applied
+
+	// SVG active content strip counts. SVGForeignObjectHits counts elided
+	// <foreignObject> blocks (HTML-in-SVG embedding). SVGEventHandlerHits
+	// counts onXxx attribute removals across all SVG elements.
+	// SVGXlinkExternalHits counts external xlink:href references rewritten
+	// away from absolute URLs. SVGHiddenTextHits counts hidden <text>
+	// blocks removed (opacity:0 / display:none / visibility:hidden).
+	SVGForeignObjectHits int
+	SVGEventHandlerHits  int
+	SVGXlinkExternalHits int
+	SVGHiddenTextHits    int
 }
 
 // Engine compiles detection patterns once and reuses them across requests.
@@ -53,6 +64,20 @@ type Engine struct {
 	commentTrapRe   *regexp.Regexp
 	functionStripRe *regexp.Regexp
 	svgScriptRe     *regexp.Regexp // extracts <script>...</script> inside SVG
+
+	// SVG active content regexes. Kept separate from the HTML/JS set so
+	// a future SVG-only engine variant can initialize only the patterns
+	// it needs, and so the SVG pipeline doesn't touch the hot HTML path.
+	// External URL refs are split into xlink:href and plain href matchers
+	// so each can be rewritten to its own attribute name (rewriting plain
+	// href to xlink:href in SVG2 without the xmlns:xlink declaration
+	// produces an unbound-prefix XML parse error).
+	svgForeignObjectRe  *regexp.Regexp
+	svgEventHandlerRe   *regexp.Regexp
+	svgXlinkExternalRe  *regexp.Regexp
+	svgHrefExternalRe   *regexp.Regexp
+	svgHiddenTextStyle  *regexp.Regexp
+	svgHiddenTextAttrRe *regexp.Regexp
 }
 
 // NewEngine compiles all shield patterns and returns a ready-to-use engine.
@@ -69,13 +94,20 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 		merged := trackRe.String() + `|(?i)` + strings.Join(extra, "|")
 		trackRe = regexp.MustCompile(merged)
 	}
+	svgForeignRe, svgEventRe, svgXlinkRe, svgHrefRe, svgHiddenStyleRe, svgHiddenAttrRe := compileSVGActivePatterns()
 	return &Engine{
-		extensionRe:     extRe,
-		trackingPixelRe: trackRe,
-		hiddenTrapRe:    trapRe,
-		commentTrapRe:   commentRe,
-		functionStripRe: funcRe,
-		svgScriptRe:     regexp.MustCompile(`(?is)<script[^>]*>(.*?)</script>`),
+		extensionRe:         extRe,
+		trackingPixelRe:     trackRe,
+		hiddenTrapRe:        trapRe,
+		commentTrapRe:       commentRe,
+		functionStripRe:     funcRe,
+		svgScriptRe:         regexp.MustCompile(`(?is)<script[^>]*>(.*?)</script>`),
+		svgForeignObjectRe:  svgForeignRe,
+		svgEventHandlerRe:   svgEventRe,
+		svgXlinkExternalRe:  svgXlinkRe,
+		svgHrefExternalRe:   svgHrefRe,
+		svgHiddenTextStyle:  svgHiddenStyleRe,
+		svgHiddenTextAttrRe: svgHiddenAttrRe,
 	}
 }
 
@@ -205,7 +237,15 @@ func (e *Engine) rewriteJS(res *Result, cfg *config.BrowserShield) {
 }
 
 // rewriteSVG extracts <script> blocks, applies the JS pipeline to each, and
-// reassembles the document.
+// reassembles the document. Then applies SVG-specific active content
+// stripping: foreignObject elements, event handler attributes, external
+// xlink:href references, and hidden <text> elements.
+//
+// Active content stripping always runs when the SVG pipeline is used — the
+// browser shield is a fail-closed defensive layer, and SVG active content
+// has no legitimate use in agent-visible responses. The strip passes are
+// not gated behind StripHiddenTraps (which is an HTML concept) because
+// they are SVG-specific and the config knob doesn't map cleanly.
 func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	doc := res.Content
 	doc = e.svgScriptRe.ReplaceAllStringFunc(doc, func(match string) string {
@@ -220,6 +260,33 @@ func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 		res.TrackingHits += innerRes.TrackingHits
 		return strings.Replace(match, sub[1], innerRes.Content, 1)
 	})
+
+	// SVG active content stripping: foreignObject, event handlers, external
+	// xlink:href / href references, and hidden text (both style= and
+	// presentation-attribute forms). Each pass counts its own stat so the
+	// caller can see exactly which vector fired.
+	doc, res.SVGForeignObjectHits = countReplace(e.svgForeignObjectRe, doc)
+	doc, res.SVGEventHandlerHits = countReplace(e.svgEventHandlerRe, doc)
+
+	// Rewrite each external ref form back to its own attribute name so the
+	// output stays well-formed XML. Without the split, plain href in an
+	// SVG2 document (with no xmlns:xlink) would be rewritten to xlink:href
+	// and fail to parse under a strict XML parser.
+	var xlinkHits, hrefHits int
+	doc, xlinkHits = countReplaceFunc(e.svgXlinkExternalRe, doc, func(_ string) string {
+		return ` xlink:href="#_stripped"`
+	})
+	doc, hrefHits = countReplaceFunc(e.svgHrefExternalRe, doc, func(_ string) string {
+		return ` href="#_stripped"`
+	})
+	res.SVGXlinkExternalHits = xlinkHits + hrefHits
+
+	// Hidden <text>: both inline style= form and SVG presentation
+	// attributes (display="none", visibility="hidden", opacity="0").
+	var hiddenStyleHits, hiddenAttrHits int
+	doc, hiddenStyleHits = countReplace(e.svgHiddenTextStyle, doc)
+	doc, hiddenAttrHits = countReplace(e.svgHiddenTextAttrRe, doc)
+	res.SVGHiddenTextHits = hiddenStyleHits + hiddenAttrHits
 
 	// Strip hidden traps in the SVG XML body outside scripts.
 	if cfg.StripHiddenTraps {
@@ -305,4 +372,16 @@ func countReplace(re *regexp.Regexp, s string) (string, int) {
 		return s, 0
 	}
 	return re.ReplaceAllString(s, ""), n
+}
+
+// countReplaceFunc is the callback variant of countReplace. Used for SVG
+// xlink:href rewriting where the replacement is a fixed safe attribute
+// rather than an empty string, so the element tag structure stays valid.
+func countReplaceFunc(re *regexp.Regexp, s string, repl func(match string) string) (string, int) {
+	matches := re.FindAllStringIndex(s, -1)
+	n := len(matches)
+	if n == 0 {
+		return s, 0
+	}
+	return re.ReplaceAllStringFunc(s, repl), n
 }

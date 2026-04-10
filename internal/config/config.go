@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"mime"
 	"net"
 	"net/url"
 	"os"
@@ -25,9 +26,10 @@ import (
 
 // Mode constants for Pipelock operating modes.
 const (
-	ModeStrict   = "strict"
-	ModeBalanced = "balanced"
-	ModeAudit    = "audit"
+	ModeStrict     = "strict"
+	ModeBalanced   = "balanced"
+	ModeAudit      = "audit"
+	ModePermissive = "permissive"
 )
 
 // Hook variables set by enterprise builds. Nil in OSS mode.
@@ -382,7 +384,9 @@ type Config struct {
 	BehavioralBaseline    BehavioralBaseline      `yaml:"behavioral_baseline"`
 	Airlock               Airlock                 `yaml:"airlock"`
 	BrowserShield         BrowserShield           `yaml:"browser_shield"`
+	MediaPolicy           MediaPolicy             `yaml:"media_policy"`
 	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
+	Taint                 TaintConfig             `yaml:"taint"`
 	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
@@ -968,6 +972,28 @@ type MediationEnvelope struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// TaintConfig configures exposure-based policy escalation for sessions that
+// recently observed untrusted content.
+type TaintConfig struct {
+	Enabled            bool                 `yaml:"enabled"`
+	AllowlistedDomains []string             `yaml:"allowlisted_domains"`
+	ProtectedPaths     []string             `yaml:"protected_paths"`
+	ElevatedPaths      []string             `yaml:"elevated_paths"`
+	TrustOverrides     []TaintTrustOverride `yaml:"trust_overrides"`
+	Policy             string               `yaml:"policy"`         // strict, balanced, permissive
+	RecentSources      int                  `yaml:"recent_sources"` // bounded recent source history
+}
+
+// TaintTrustOverride grants a narrow, expiring trust exemption.
+type TaintTrustOverride struct {
+	Scope       string    `yaml:"scope"`
+	SourceMatch string    `yaml:"source_match"`
+	ActionMatch string    `yaml:"action_match"`
+	ExpiresAt   time.Time `yaml:"expires_at"`
+	GrantedBy   string    `yaml:"granted_by"`
+	Reason      string    `yaml:"reason"`
+}
+
 // MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
 type MCPBinaryIntegrity struct {
 	Enabled      bool   `yaml:"enabled"`
@@ -1071,6 +1097,197 @@ const (
 	ShieldOversizeScanHead = "scan_head"
 	ShieldOversizeWarn     = "warn"
 )
+
+// DefaultMaxImageBytes is the default cap on inbound image response size.
+// Images larger than this are rejected before any parsing so decompression
+// bombs cannot allocate unbounded memory. Matches the BrowserShield
+// MaxShieldBytes default for consistency across response size limits.
+const DefaultMaxImageBytes int64 = 5 * 1024 * 1024 // 5 MiB
+
+// MediaPolicy configures transport-level handling of media responses
+// (image/audio/video Content-Type). Pipelock is not a multimodal inspector:
+// it cannot catch instructions embedded in pixels, audio frames, or video.
+// Instead this section reduces exposure by stripping unused media types,
+// enforcing size limits (decompression bomb defense), surgically removing
+// metadata from allowed image types, and emitting exposure events so
+// downstream taint / approval systems can react to rich media reaching an
+// agent before a sensitive action.
+//
+// Boolean fields use *bool with nil-means-security-default semantics: omitting
+// a field from YAML must produce the protective default, not the zero value.
+// Validate 6 states per boolean per the hard rule: omitted, YAML null/blank,
+// explicit false, explicit true, reload with change, reload without change.
+type MediaPolicy struct {
+	// Enabled is the master switch for media policy enforcement. nil = true
+	// (default enabled). When false, media responses pass through unchanged
+	// and no exposure events are emitted.
+	Enabled *bool `yaml:"enabled,omitempty"`
+
+	// StripImages rejects all image/* Content-Type responses when true.
+	// nil = false (default: allow images, strip metadata). Set true for
+	// strict-mode agents that should never receive any image content.
+	StripImages *bool `yaml:"strip_images,omitempty"`
+
+	// StripAudio rejects all audio/* Content-Type responses when true.
+	// nil = true (default: reject). Agents rarely need audio, and audio
+	// is a plausible prompt-injection carrier through ASR transcription.
+	StripAudio *bool `yaml:"strip_audio,omitempty"`
+
+	// StripVideo rejects all video/* Content-Type responses when true.
+	// nil = true (default: reject). Same rationale as StripAudio plus
+	// frame extraction cost.
+	StripVideo *bool `yaml:"strip_video,omitempty"`
+
+	// AllowedImageTypes limits which image media types pass when StripImages
+	// is false. Empty means the default set (PNG, JPEG). SVG is
+	// intentionally excluded because SVG is active content handled by the
+	// browser shield pipeline, not a static image.
+	AllowedImageTypes []string `yaml:"allowed_image_types,omitempty"`
+
+	// StripImageMetadata surgically removes EXIF/XMP/IPTC/ICC metadata from
+	// allowed image responses without touching pixel data. nil = true
+	// (default: strip). Uses byte-level marker/chunk parsing, never decode
+	// + re-encode, so the forwarded image is pixel-identical.
+	StripImageMetadata *bool `yaml:"strip_image_metadata,omitempty"`
+
+	// MaxImageBytes rejects image responses larger than this size in bytes,
+	// measured at ingest before any parsing. Protects against decompression
+	// bombs and excessive memory pressure. 0 means use DefaultMaxImageBytes.
+	MaxImageBytes int64 `yaml:"max_image_bytes,omitempty"`
+
+	// LogMediaExposure emits a "media_exposure" event for every allowed
+	// media response. nil = true (default: log). These events feed the
+	// upcoming taint/authority policy system as exposure signals.
+	LogMediaExposure *bool `yaml:"log_media_exposure,omitempty"`
+}
+
+// DefaultAllowedImageTypes is the media type whitelist applied when
+// MediaPolicy.AllowedImageTypes is empty. Scoped to the formats the
+// metadata stripper can actually sanitize (JPEG, PNG). GIF and WebP are
+// intentionally excluded by default because internal/media.StripMetadata
+// does not yet parse their chunk formats — admitting them here would
+// pass through any embedded metadata (XMP in WebP, comment blocks in
+// GIF) without stripping. Operators who accept that trade-off can add
+// them explicitly via media_policy.allowed_image_types. SVG is excluded
+// unconditionally: it is active content handled by the browser shield
+// pipeline, not a raster image safe to forward byte-for-byte.
+var DefaultAllowedImageTypes = []string{
+	"image/png",
+	"image/jpeg",
+}
+
+// IsEnabled reports whether the media policy is active. Defaults to true
+// when the field is unset (security-preserving default).
+func (m *MediaPolicy) IsEnabled() bool {
+	return m.Enabled == nil || *m.Enabled
+}
+
+// ShouldStripImages reports whether all image responses should be rejected.
+// Defaults to false when unset (allow images with metadata stripping).
+func (m *MediaPolicy) ShouldStripImages() bool {
+	return m.StripImages != nil && *m.StripImages
+}
+
+// ShouldStripAudio reports whether all audio responses should be rejected.
+// Defaults to true when unset.
+func (m *MediaPolicy) ShouldStripAudio() bool {
+	return m.StripAudio == nil || *m.StripAudio
+}
+
+// ShouldStripVideo reports whether all video responses should be rejected.
+// Defaults to true when unset.
+func (m *MediaPolicy) ShouldStripVideo() bool {
+	return m.StripVideo == nil || *m.StripVideo
+}
+
+// ShouldStripImageMetadata reports whether EXIF/XMP/IPTC should be removed
+// from allowed images. Defaults to true when unset.
+func (m *MediaPolicy) ShouldStripImageMetadata() bool {
+	return m.StripImageMetadata == nil || *m.StripImageMetadata
+}
+
+// ShouldLogExposure reports whether media_exposure events should be emitted.
+// Defaults to true when unset.
+func (m *MediaPolicy) ShouldLogExposure() bool {
+	return m.LogMediaExposure == nil || *m.LogMediaExposure
+}
+
+// EffectiveMaxImageBytes returns the active size limit, applying the default
+// when the configured value is zero or negative.
+func (m *MediaPolicy) EffectiveMaxImageBytes() int64 {
+	if m.MaxImageBytes <= 0 {
+		return DefaultMaxImageBytes
+	}
+	return m.MaxImageBytes
+}
+
+// EffectiveAllowedImageTypes returns the active image type whitelist,
+// applying DefaultAllowedImageTypes when the configured list is empty.
+// Entries are canonicalized (lowercased, whitespace-trimmed, parameters
+// stripped) so validation and runtime matching can never disagree on
+// ambiguous YAML forms like " image/png " or "image/jpeg; charset=binary".
+// Canonicalizing at read time — not at Load() — keeps Config free of
+// side-effect mutation and lets hot reload pick up whatever the operator
+// changed without re-canonicalizing the stored struct.
+func (m *MediaPolicy) EffectiveAllowedImageTypes() []string {
+	if len(m.AllowedImageTypes) == 0 {
+		return DefaultAllowedImageTypes
+	}
+	out := make([]string, 0, len(m.AllowedImageTypes))
+	for _, raw := range m.AllowedImageTypes {
+		if c := canonicalizeMediaTypeEntry(raw); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// canonicalizeMediaTypeEntry parses a media type string (optionally with
+// parameters) and returns the lowercase "type/subtype" portion with
+// whitespace trimmed. Returns "" if the input is empty or unparseable
+// enough that no media type can be recovered. Shared between validation
+// and runtime matching so both paths compute the same canonical form.
+func canonicalizeMediaTypeEntry(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	mt, _, err := mime.ParseMediaType(trimmed)
+	if err != nil {
+		// Fallback for malformed entries: strip any parameter suffix and
+		// lowercase. If that still has no media-type shape, return empty
+		// so the validator can reject it.
+		if idx := strings.IndexByte(trimmed, ';'); idx >= 0 {
+			trimmed = trimmed[:idx]
+		}
+		return strings.ToLower(strings.TrimSpace(trimmed))
+	}
+	return strings.ToLower(mt)
+}
+
+// ImageTypeAllowed reports whether a specific media type string passes the
+// allowed-image-types filter. Comparison is canonicalized on both sides:
+// the input media type has parameters stripped and is lowercased, and the
+// stored allowlist is piped through EffectiveAllowedImageTypes so both
+// sides share one canonical form. Returns false when StripImages is set
+// (either explicitly or by the caller's pre-check); the explicit check
+// here makes the method self-consistent for any future caller that
+// forgets to gate on ShouldStripImages first.
+func (m *MediaPolicy) ImageTypeAllowed(mediaType string) bool {
+	if m.ShouldStripImages() {
+		return false
+	}
+	mt := canonicalizeMediaTypeEntry(mediaType)
+	if mt == "" {
+		return false
+	}
+	for _, allowed := range m.EffectiveAllowedImageTypes() {
+		if mt == allowed {
+			return true
+		}
+	}
+	return false
+}
 
 // ScanAPI configures the evaluation-plane HTTP listener.
 // Disabled by default (Listen: ""). When enabled, serves POST /api/v1/scan
@@ -1285,6 +1502,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ScanAPI.Kinds.DLP = true
 		cfg.ScanAPI.Kinds.PromptInjection = true
 		cfg.ScanAPI.Kinds.ToolCall = true
+		cfg.Taint.Enabled = true
 		return
 	}
 
@@ -1346,6 +1564,10 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// Behavioral baseline: poison_resistance defaults to true (trimmed-mean scoring).
 	bb, _ := raw["behavioral_baseline"].(map[string]interface{})
 	setBoolDefault(bb, "poison_resistance", &cfg.BehavioralBaseline.PoisonResistance)
+
+	// Taint defaults to enabled when omitted, matching Defaults().
+	taint, _ := raw["taint"].(map[string]interface{})
+	setBoolDefault(taint, "enabled", &cfg.Taint.Enabled)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
@@ -1758,6 +1980,23 @@ func (c *Config) ApplyDefaults() {
 		}
 	}
 
+	// Taint policy defaults
+	if c.Taint.Policy == "" {
+		c.Taint.Policy = ModeBalanced
+	}
+	if c.Taint.RecentSources < 0 {
+		c.Taint.RecentSources = 10
+	}
+	if c.Taint.AllowlistedDomains == nil {
+		c.Taint.AllowlistedDomains = append([]string(nil), Defaults().Taint.AllowlistedDomains...)
+	}
+	if c.Taint.ProtectedPaths == nil {
+		c.Taint.ProtectedPaths = append([]string(nil), Defaults().Taint.ProtectedPaths...)
+	}
+	if c.Taint.ElevatedPaths == nil {
+		c.Taint.ElevatedPaths = append([]string(nil), Defaults().Taint.ElevatedPaths...)
+	}
+
 	// MCP binary integrity defaults
 	if c.MCPBinaryIntegrity.Enabled {
 		if c.MCPBinaryIntegrity.Action == "" {
@@ -1935,7 +2174,9 @@ func (c *Config) Validate() error {
 		c.validateBehavioralBaseline,
 		c.validateAirlock,
 		c.validateBrowserShield,
+		c.validateTaint,
 		c.validateMediationEnvelope,
+		c.validateMediaPolicy,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
@@ -1987,7 +2228,7 @@ func (c *Config) validateDLP() error {
 	// These fields exist on the struct so YAML doesn't silently drop them;
 	// validation rejects non-empty values with an explicit error.
 	if c.DLP.Action != "" {
-		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (e.g. request_body_scanning.action for bodies, mcp_input_scanning.action for MCP, enforce/audit mode for URL scanning)", c.DLP.Action)
+		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (request_body_scanning.action for HTTP bodies/headers, mcp_input_scanning.action for MCP input, enforce/audit mode for URL scanning, and response_scanning.action only for inbound prompt-injection response scanning)", c.DLP.Action)
 	}
 
 	// Validate DLP patterns compile as valid regexes
@@ -3202,6 +3443,109 @@ func (c *Config) validateMediationEnvelope() error {
 	return nil
 }
 
+func (c *Config) validateTaint() error {
+	switch c.Taint.Policy {
+	case "", ModeBalanced, ModeStrict, ModePermissive:
+	default:
+		return fmt.Errorf("invalid taint.policy %q: must be %s, %s, or %s", c.Taint.Policy, ModeStrict, ModeBalanced, ModePermissive)
+	}
+	if c.Taint.RecentSources < 0 {
+		return fmt.Errorf("taint.recent_sources must be >= 0")
+	}
+	if err := ValidateTrustedDomains(c.Taint.AllowlistedDomains, "taint.allowlisted_domains"); err != nil {
+		return err
+	}
+	if err := validatePathGlobs(c.Taint.ProtectedPaths, "taint.protected_paths"); err != nil {
+		return err
+	}
+	if err := validatePathGlobs(c.Taint.ElevatedPaths, "taint.elevated_paths"); err != nil {
+		return err
+	}
+	for i, override := range c.Taint.TrustOverrides {
+		if override.Scope == "" {
+			return fmt.Errorf("taint.trust_overrides[%d].scope is required", i)
+		}
+		switch override.Scope {
+		case "action":
+			if override.ActionMatch == "" {
+				return fmt.Errorf("taint.trust_overrides[%d].action_match is required for scope=action", i)
+			}
+		case "source":
+			if override.SourceMatch == "" {
+				return fmt.Errorf("taint.trust_overrides[%d].source_match is required for scope=source", i)
+			}
+		default:
+			return fmt.Errorf("invalid taint.trust_overrides[%d].scope %q: must be action or source", i, override.Scope)
+		}
+		if override.ExpiresAt.IsZero() {
+			return fmt.Errorf("taint.trust_overrides[%d].expires_at is required", i)
+		}
+	}
+	return nil
+}
+
+func validatePathGlobs(patterns []string, label string) error {
+	for i, pattern := range patterns {
+		if pattern == "" {
+			return fmt.Errorf("%s[%d] must not be empty", label, i)
+		}
+		if _, err := path.Match(pattern, "probe"); err != nil {
+			return fmt.Errorf("%s[%d] %q: invalid glob: %w", label, i, pattern, err)
+		}
+	}
+	return nil
+}
+
+// validateMediaPolicy checks media_policy settings for consistency.
+// Runs on every Load() and hot reload. Validation is deliberately strict on
+// explicit values but permissive on unset/default (nil bool, zero int, empty
+// slice) — Defaults() and the getters handle those cases so operators who
+// partially configure don't hit spurious errors.
+//
+// Structural validation runs regardless of whether the master switch is
+// enabled. "media_policy.enabled: false" cannot be a license to load
+// malformed values that would apply the moment the feature is re-enabled
+// on a subsequent reload.
+func (c *Config) validateMediaPolicy() error {
+	// MaxImageBytes: reject explicit negative values. Zero is allowed and
+	// means "use DefaultMaxImageBytes" via EffectiveMaxImageBytes().
+	if c.MediaPolicy.MaxImageBytes < 0 {
+		return fmt.Errorf("media_policy.max_image_bytes must be non-negative (0 = default %d)", DefaultMaxImageBytes)
+	}
+
+	// AllowedImageTypes must contain only image/* media types. Empty list
+	// falls through to DefaultAllowedImageTypes via the getter. SVG is
+	// rejected here because it is active content, not a raster image —
+	// the browser shield pipeline handles SVG separately.
+	//
+	// Canonicalization uses the same helper that EffectiveAllowedImageTypes
+	// applies at read time, so validation and runtime matching can never
+	// disagree on whether an entry like " image/png " or
+	// "image/jpeg; charset=binary" is accepted.
+	for _, raw := range c.MediaPolicy.AllowedImageTypes {
+		canon := canonicalizeMediaTypeEntry(raw)
+		if canon == "" {
+			return fmt.Errorf("media_policy.allowed_image_types contains an empty or unparseable entry: %q", raw)
+		}
+		if !strings.HasPrefix(canon, "image/") {
+			return fmt.Errorf("media_policy.allowed_image_types entry %q must be an image/* media type", raw)
+		}
+		// Require a concrete subtype. ImageTypeAllowed does exact string
+		// matching at runtime, so wildcard or whitespace-containing
+		// subtypes would pass validation but never match a real
+		// response. Reject them here so the validation/matching contract
+		// cannot diverge on ambiguous inputs.
+		subtype := strings.TrimPrefix(canon, "image/")
+		if subtype == "" || strings.ContainsAny(subtype, "*?/ ") {
+			return fmt.Errorf("media_policy.allowed_image_types entry %q must name a concrete subtype (no wildcards, whitespace, or nested slashes)", raw)
+		}
+		if canon == "image/svg+xml" {
+			return fmt.Errorf("media_policy.allowed_image_types must not include image/svg+xml: SVG is active content handled by browser_shield")
+		}
+	}
+	return nil
+}
+
 // ResolveCAPath returns resolved CA cert and key paths.
 // Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
 // Returns an error if $HOME cannot be determined and paths are not set explicitly.
@@ -3376,6 +3720,47 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// Warn if escalation levels are weakened on reload.
 	if old.AdaptiveEnforcement.Enabled && updated.AdaptiveEnforcement.Enabled {
 		checkEscalationWeakening(&old.AdaptiveEnforcement.Levels, &updated.AdaptiveEnforcement.Levels, &warnings)
+	}
+
+	// Taint escalation disabled or weakened.
+	if old.Taint.Enabled && !updated.Taint.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "taint.enabled",
+			Message: "taint-aware policy escalation disabled",
+		})
+	}
+	taintPolicyRank := map[string]int{ModeStrict: 3, ModeBalanced: 2, ModePermissive: 1}
+	if old.Taint.Enabled && updated.Taint.Enabled && taintPolicyRank[updated.Taint.Policy] < taintPolicyRank[old.Taint.Policy] {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "taint.policy",
+			Message: fmt.Sprintf("taint policy downgraded from %s to %s", old.Taint.Policy, updated.Taint.Policy),
+		})
+	}
+	if old.Taint.Enabled && updated.Taint.Enabled {
+		if added := passthroughDomainsAdded(old.Taint.AllowlistedDomains, updated.Taint.AllowlistedDomains); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.allowlisted_domains",
+				Message: fmt.Sprintf("taint allowlisted domains added: %s — these sources now downgrade from untrusted to allowlisted", strings.Join(added, ", ")),
+			})
+		}
+		if removed := removedPatterns(old.Taint.ProtectedPaths, updated.Taint.ProtectedPaths); len(removed) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.protected_paths",
+				Message: fmt.Sprintf("taint protected paths removed: %s — fewer actions are treated as protected under taint", strings.Join(removed, ", ")),
+			})
+		}
+		if removed := removedPatterns(old.Taint.ElevatedPaths, updated.Taint.ElevatedPaths); len(removed) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.elevated_paths",
+				Message: fmt.Sprintf("taint elevated paths removed: %s — fewer actions are treated as elevated under taint", strings.Join(removed, ", ")),
+			})
+		}
+		if added := taintOverridesAdded(old.Taint.TrustOverrides, updated.Taint.TrustOverrides); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.trust_overrides",
+				Message: fmt.Sprintf("taint trust overrides added: %s", strings.Join(added, ", ")),
+			})
+		}
 	}
 
 	// MCP session binding disabled
@@ -3651,6 +4036,75 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Media policy downgrades. Each toggle that weakens protection gets a
+	// dedicated warning so operators see the field-level cause of the
+	// downgrade rather than a generic "media_policy changed" message.
+	if old.MediaPolicy.IsEnabled() && !updated.MediaPolicy.IsEnabled() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.enabled",
+			Message: "media policy disabled — image metadata stripping, audio/video blocks, and exposure events no longer apply",
+		})
+	}
+	if old.MediaPolicy.ShouldStripImages() && !updated.MediaPolicy.ShouldStripImages() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.strip_images",
+			Message: "media_policy.strip_images disabled — image responses now forwarded without stripping",
+		})
+	}
+	if old.MediaPolicy.ShouldStripAudio() && !updated.MediaPolicy.ShouldStripAudio() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.strip_audio",
+			Message: "media_policy.strip_audio disabled — audio responses now forwarded",
+		})
+	}
+	if old.MediaPolicy.ShouldStripVideo() && !updated.MediaPolicy.ShouldStripVideo() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.strip_video",
+			Message: "media_policy.strip_video disabled — video responses now forwarded",
+		})
+	}
+	if old.MediaPolicy.ShouldStripImageMetadata() && !updated.MediaPolicy.ShouldStripImageMetadata() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.strip_image_metadata",
+			Message: "media_policy.strip_image_metadata disabled — image metadata no longer removed",
+		})
+	}
+	if old.MediaPolicy.ShouldLogExposure() && !updated.MediaPolicy.ShouldLogExposure() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.log_media_exposure",
+			Message: "media_policy.log_media_exposure disabled — media responses no longer emit exposure events",
+		})
+	}
+	oldMax := old.MediaPolicy.EffectiveMaxImageBytes()
+	newMax := updated.MediaPolicy.EffectiveMaxImageBytes()
+	if newMax > oldMax {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.max_image_bytes",
+			Message: fmt.Sprintf("media_policy.max_image_bytes raised from %d to %d — larger images now accepted", oldMax, newMax),
+		})
+	}
+	// Allowed image types widened: warn when any effective entry is newly
+	// admitted. Compare on the EFFECTIVE list so reloading from an
+	// explicit narrow list like ["image/png"] back to "" (which falls
+	// through to DefaultAllowedImageTypes, i.e., {png, jpeg}) still
+	// counts as a widening. The previous guard was a raw-list length
+	// check that missed the "clear to defaults" transition.
+	oldEffective := old.MediaPolicy.EffectiveAllowedImageTypes()
+	newEffective := updated.MediaPolicy.EffectiveAllowedImageTypes()
+	oldAllowed := make(map[string]bool, len(oldEffective))
+	for _, t := range oldEffective {
+		oldAllowed[t] = true
+	}
+	for _, t := range newEffective {
+		if !oldAllowed[t] {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "media_policy.allowed_image_types",
+				Message: fmt.Sprintf("media_policy.allowed_image_types widened: %q newly admitted", t),
+			})
+			break
+		}
+	}
+
 	return warnings
 }
 
@@ -3801,6 +4255,57 @@ func passthroughDomainsAdded(old, updated []string) []string {
 		}
 	}
 	return added
+}
+
+func taintOverridesAdded(old, updated []TaintTrustOverride) []string {
+	oldExpiry := make(map[string]time.Time, len(old))
+	for _, override := range old {
+		key := taintOverrideReloadKey(override)
+		if expiry, exists := oldExpiry[key]; !exists || override.ExpiresAt.After(expiry) {
+			oldExpiry[key] = override.ExpiresAt
+		}
+	}
+	var added []string
+	for _, override := range updated {
+		key := taintOverrideReloadKey(override)
+		oldExpiresAt, exists := oldExpiry[key]
+		switch {
+		case !exists:
+			added = append(added, key)
+		case override.ExpiresAt.After(oldExpiresAt):
+			added = append(added, fmt.Sprintf("%s expires_at=%s", key, override.ExpiresAt.UTC().Format(time.RFC3339)))
+		}
+	}
+	return added
+}
+
+func removedPatterns(old, updated []string) []string {
+	updatedSet := make(map[string]struct{}, len(updated))
+	for _, pattern := range updated {
+		updatedSet[pattern] = struct{}{}
+	}
+	var removed []string
+	for _, pattern := range old {
+		if _, exists := updatedSet[pattern]; !exists {
+			removed = append(removed, pattern)
+		}
+	}
+	return removed
+}
+
+func taintOverrideReloadKey(override TaintTrustOverride) string {
+	scope := strings.ToLower(strings.TrimSpace(override.Scope))
+	source := strings.ToLower(strings.TrimSpace(override.SourceMatch))
+	action := strings.ToLower(strings.TrimSpace(override.ActionMatch))
+
+	switch scope {
+	case "source":
+		return fmt.Sprintf("scope=%s source=%s", scope, source)
+	case "action":
+		return fmt.Sprintf("scope=%s action=%s", scope, action)
+	default:
+		return fmt.Sprintf("scope=%s source=%s action=%s", scope, source, action)
+	}
 }
 
 // ssrfIPAllowlistExpanded returns CIDR strings from updated that expand coverage
@@ -4332,7 +4837,37 @@ func Defaults() *Config {
 				"www.recaptcha.net",
 			},
 		},
+		Taint: TaintConfig{
+			Enabled: true,
+			AllowlistedDomains: []string{
+				"docs.anthropic.com",
+				"docs.github.com",
+				"developer.mozilla.org",
+			},
+			ProtectedPaths: []string{
+				"*/auth/*",
+				"*/security/*",
+				"*/.github/workflows/*",
+				"*/.env*",
+				"*/secrets*",
+				"*/policy*",
+				"*/sandbox*",
+			},
+			ElevatedPaths: []string{
+				"*/config/*",
+				"*/middleware*",
+			},
+			Policy:        ModeBalanced,
+			RecentSources: 10,
+		},
 		MediationEnvelope: MediationEnvelope{},
+		MediaPolicy:       MediaPolicy{
+			// Boolean fields left nil intentionally: all getters return the
+			// security-preserving default when unset. Explicit YAML values
+			// override, omission hits the default (enabled, strip audio+video,
+			// strip metadata, log exposure). AllowedImageTypes and
+			// MaxImageBytes also fall through to defaults via their getters.
+		},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source
 	// selector can distinguish them from user-supplied patterns. Set at

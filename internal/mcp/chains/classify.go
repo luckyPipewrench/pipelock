@@ -153,6 +153,15 @@ func matchByPriority(segments []string) string {
 	return categoryUnknown
 }
 
+// ClassifyTool returns the best-effort category for a tool name and arguments.
+// Nil cfg uses the built-in keyword classifier with no overrides.
+func ClassifyTool(toolName, argHint string, cfg *config.ToolChainDetection) string {
+	if cfg == nil {
+		cfg = &config.ToolChainDetection{}
+	}
+	return reclassifyByArgs(classifyTool(toolName, cfg), argHint)
+}
+
 // persistArgPattern matches persistence commands in tool arguments.
 // Used to reclassify "exec" tools (bash, shell) as "persist" when
 // the arguments contain persistence-related commands.

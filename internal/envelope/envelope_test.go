@@ -125,6 +125,28 @@ func TestEnvelope_ToMCPMeta(t *testing.T) {
 	}
 }
 
+func TestEnvelope_ToMCPMeta_OmitsOptionalEmptyFields(t *testing.T) {
+	t.Parallel()
+
+	meta := Envelope{
+		Version:    1,
+		Action:     "read",
+		Verdict:    "allow",
+		SideEffect: "none",
+		Actor:      "agent:test",
+		ActorAuth:  ActorAuthSelfDeclared,
+		PolicyHash: []byte{0x01},
+		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000003",
+		Timestamp:  1712345680,
+	}.ToMCPMeta()
+
+	for _, key := range []string{"taint", "auth", "authr", "reauth"} {
+		if _, ok := meta[key]; ok {
+			t.Fatalf("unexpected optional field %q in MCP meta", key)
+		}
+	}
+}
+
 func TestActorAuth_Constants(t *testing.T) {
 	t.Parallel()
 

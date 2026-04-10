@@ -26,6 +26,19 @@ import (
 
 const testEnvelopeConfigHash = "abcdef0123456789abcdef0123456789"
 
+type headerCapture struct {
+	value atomic.Value
+}
+
+func (c *headerCapture) Set(header string) {
+	c.value.Store(header)
+}
+
+func (c *headerCapture) Get() string {
+	header, _ := c.value.Load().(string)
+	return header
+}
+
 // TestEnvelope_FetchInjectsHeader boots a proxy with envelope emission enabled,
 // sends a fetch request, and verifies the upstream receives the
 // Pipelock-Mediation header.
@@ -33,9 +46,9 @@ func TestEnvelope_FetchInjectsHeader(t *testing.T) {
 	t.Parallel()
 
 	// Upstream captures inbound request headers.
-	var gotHeader string
+	var gotHeader headerCapture
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -65,12 +78,13 @@ func TestEnvelope_FetchInjectsHeader(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
 	}
-	if gotHeader == "" {
+	header := gotHeader.Get()
+	if header == "" {
 		t.Fatal("upstream did not receive Pipelock-Mediation header")
 	}
 
 	// Parse the envelope and verify key fields.
-	env, parseErr := envelope.Parse(gotHeader)
+	env, parseErr := envelope.Parse(header)
 	if parseErr != nil {
 		t.Fatalf("parse envelope: %v", parseErr)
 	}
@@ -99,9 +113,9 @@ func TestEnvelope_FetchInjectsHeader(t *testing.T) {
 func TestEnvelope_FetchNoEmitter(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -128,8 +142,8 @@ func TestEnvelope_FetchNoEmitter(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
 	}
-	if gotHeader != "" {
-		t.Errorf("expected no Pipelock-Mediation header, got: %q", gotHeader)
+	if header := gotHeader.Get(); header != "" {
+		t.Errorf("expected no Pipelock-Mediation header, got: %q", header)
 	}
 }
 
@@ -139,9 +153,9 @@ func TestEnvelope_FetchNoEmitter(t *testing.T) {
 func TestEnvelope_FetchStripsInbound(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -173,11 +187,12 @@ func TestEnvelope_FetchStripsInbound(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body: %s", w.Code, w.Body.String())
 	}
-	if gotHeader == "" {
+	header := gotHeader.Get()
+	if header == "" {
 		t.Fatal("upstream should receive a (genuine) Pipelock-Mediation header")
 	}
-	if strings.Contains(gotHeader, "spoofed") {
-		t.Errorf("spoofed envelope reached upstream: %q", gotHeader)
+	if strings.Contains(header, "spoofed") {
+		t.Errorf("spoofed envelope reached upstream: %q", header)
 	}
 }
 
@@ -188,9 +203,9 @@ func TestEnvelope_ForwardHTTPInjectsHeader(t *testing.T) {
 	t.Parallel()
 
 	// Destination server captures the mediation header.
-	var gotHeader string
+	var gotHeader headerCapture
 	dest := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = fmt.Fprintf(w, "method=%s path=%s", r.Method, r.URL.Path)
 	}))
@@ -278,12 +293,13 @@ func TestEnvelope_ForwardHTTPInjectsHeader(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
 	}
 
-	if gotHeader == "" {
+	header := gotHeader.Get()
+	if header == "" {
 		t.Fatal("upstream did not receive Pipelock-Mediation header via forward proxy")
 	}
 
 	// Parse and verify.
-	env, parseErr := envelope.Parse(gotHeader)
+	env, parseErr := envelope.Parse(header)
 	if parseErr != nil {
 		t.Fatalf("parse envelope: %v", parseErr)
 	}
@@ -305,9 +321,9 @@ func TestEnvelope_ForwardHTTPInjectsHeader(t *testing.T) {
 func TestEnvelope_ForwardHTTPNoEmitter(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	dest := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -324,8 +340,8 @@ func TestEnvelope_ForwardHTTPNoEmitter(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
 	}
-	if gotHeader != "" {
-		t.Errorf("expected no Pipelock-Mediation header without emitter, got: %q", gotHeader)
+	if header := gotHeader.Get(); header != "" {
+		t.Errorf("expected no Pipelock-Mediation header without emitter, got: %q", header)
 	}
 }
 
@@ -334,9 +350,9 @@ func TestEnvelope_ForwardHTTPNoEmitter(t *testing.T) {
 func TestEnvelope_ForwardHTTPStripsInbound(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	dest := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -422,11 +438,12 @@ func TestEnvelope_ForwardHTTPStripsInbound(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
 	}
-	if gotHeader == "" {
+	header := gotHeader.Get()
+	if header == "" {
 		t.Fatal("upstream should receive a genuine Pipelock-Mediation header")
 	}
-	if strings.Contains(gotHeader, "spoofed") {
-		t.Errorf("spoofed envelope reached upstream via forward proxy: %q", gotHeader)
+	if strings.Contains(header, "spoofed") {
+		t.Errorf("spoofed envelope reached upstream via forward proxy: %q", header)
 	}
 
 	p.Close()
@@ -595,9 +612,9 @@ func TestEnvelope_EnvelopeEmitterPtrAccessor(t *testing.T) {
 func TestEnvelope_ReverseProxyInjectsHeader(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -650,12 +667,13 @@ func TestEnvelope_ReverseProxyInjectsHeader(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
 	}
 
-	if gotHeader == "" {
+	header := gotHeader.Get()
+	if header == "" {
 		t.Fatal("upstream did not receive Pipelock-Mediation header via reverse proxy")
 	}
 
 	// Parse and verify.
-	env, parseErr := envelope.Parse(gotHeader)
+	env, parseErr := envelope.Parse(header)
 	if parseErr != nil {
 		t.Fatalf("parse envelope: %v", parseErr)
 	}
@@ -670,14 +688,83 @@ func TestEnvelope_ReverseProxyInjectsHeader(t *testing.T) {
 	}
 }
 
+func TestEnvelope_ReverseProxyWarnBodyUsesWarnVerdict(t *testing.T) {
+	t.Parallel()
+
+	var gotHeader headerCapture
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.ApplyDefaults()
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	t.Cleanup(logger.Close)
+
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
+	var emPtr atomic.Pointer[envelope.Emitter]
+	emPtr.Store(em)
+	handler.SetEnvelopeEmitter(&emPtr)
+
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	fakeToken := "ghp_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+	reqBody := fmt.Sprintf(`{"token":"%s"}`, fakeToken)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/test", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
+	}
+	env, parseErr := envelope.Parse(gotHeader.Get())
+	if parseErr != nil {
+		t.Fatalf("parse envelope: %v", parseErr)
+	}
+	if env.Verdict != config.ActionWarn {
+		t.Fatalf("Verdict = %q, want %q", env.Verdict, config.ActionWarn)
+	}
+}
+
 // TestEnvelope_ReverseProxyNoEmitter verifies that no Pipelock-Mediation
 // header is injected when SetEnvelopeEmitter is not called.
 func TestEnvelope_ReverseProxyNoEmitter(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -725,8 +812,8 @@ func TestEnvelope_ReverseProxyNoEmitter(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
 	}
 
-	if gotHeader != "" {
-		t.Errorf("expected no Pipelock-Mediation header, got: %q", gotHeader)
+	if header := gotHeader.Get(); header != "" {
+		t.Errorf("expected no Pipelock-Mediation header, got: %q", header)
 	}
 }
 
@@ -735,9 +822,9 @@ func TestEnvelope_ReverseProxyNoEmitter(t *testing.T) {
 func TestEnvelope_ReverseProxyStripsInbound(t *testing.T) {
 	t.Parallel()
 
-	var gotHeader string
+	var gotHeader headerCapture
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get(envelope.HeaderName)
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -792,10 +879,11 @@ func TestEnvelope_ReverseProxyStripsInbound(t *testing.T) {
 		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
 	}
 
-	if gotHeader == "" {
+	header := gotHeader.Get()
+	if header == "" {
 		t.Fatal("upstream should receive a genuine Pipelock-Mediation header")
 	}
-	if strings.Contains(gotHeader, "spoofed") {
-		t.Errorf("spoofed envelope reached upstream via reverse proxy: %q", gotHeader)
+	if strings.Contains(header, "spoofed") {
+		t.Errorf("spoofed envelope reached upstream via reverse proxy: %q", header)
 	}
 }

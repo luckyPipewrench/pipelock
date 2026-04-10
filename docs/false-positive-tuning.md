@@ -33,6 +33,26 @@ pipelock logs --file pipelock-audit.log --filter blocked
 
 Each finding includes an `event` field and the `scanner` that triggered. For DLP findings, the `reason` field names the matched pattern (e.g., "AWS Access ID", "GitHub Token"). For response scanning, the `patterns` field lists which patterns matched. Use these names when writing suppressions.
 
+## Seeing What Matched
+
+Pipelock does not have a raw "dump the secret back to me" verbose mode. That would leak the same data the scanner is trying to protect.
+
+Use these instead:
+
+- `mode: audit` or `enforce: false` to let traffic through while logging what would have triggered.
+- Normal logs to see the `scanner`, `rule`/`pattern`, request ID, and verdict.
+- The flight recorder to preserve a tamper-evident decision trail with redacted detail.
+
+For example, enable the recorder:
+
+```yaml
+flight_recorder:
+  enabled: true
+  dir: /var/lib/pipelock/evidence
+```
+
+The recorder keeps receipt and decision context, but sensitive content is redacted before it is written unless you explicitly configure raw escrow. Expect pattern names and redacted evidence, not plaintext secrets.
+
 ## Suppressing Specific Findings
 
 Add suppressions to your config when you know a finding is safe. Each entry takes a `rule` (pattern name), `path` (URL or glob pattern), and optional `reason` for the audit trail.
@@ -72,6 +92,8 @@ dlp:
       regex: "INTERNAL-[A-Z0-9]{32}"
       severity: "high"
 ```
+
+There is no top-level `dlp.action`. If you want DLP to stop blocking while you tune rules, use audit mode. If you want transport-level redaction, configure the specific surface that supports it, such as `request_body_scanning.action`.
 
 ### Per-pattern domain exemptions
 

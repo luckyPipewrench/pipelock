@@ -156,6 +156,11 @@ func newReceiptTestHarness(t *testing.T) (*receipt.Emitter, *recorder.Recorder, 
 	return emitter, rec, dir, fmt.Sprintf("%x", pub)
 }
 
+// actionReceiptEntryType is the recorder entry type for action receipts.
+// Mirrors the unexported constant in internal/receipt/emitter.go — used
+// across test helpers that read recorder files directly.
+const actionReceiptEntryType = "action_receipt"
+
 func readActionReceipts(t *testing.T, dir string) []receipt.Receipt {
 	t.Helper()
 
@@ -166,7 +171,7 @@ func readActionReceipts(t *testing.T, dir string) []receipt.Receipt {
 
 	var receipts []receipt.Receipt
 	for _, entry := range entries {
-		if entry.Type != "action_receipt" {
+		if entry.Type != actionReceiptEntryType {
 			continue
 		}
 
@@ -183,6 +188,19 @@ func readActionReceipts(t *testing.T, dir string) []receipt.Receipt {
 	}
 
 	return receipts
+}
+
+// receiptsByVerdict returns the subset of receipts matching the given
+// verdict. Used by transport-level tests to isolate the block receipt
+// from ambient allow receipts emitted by the input-scan path.
+func receiptsByVerdict(receipts []receipt.Receipt, verdict string) []receipt.Receipt {
+	var out []receipt.Receipt
+	for _, r := range receipts {
+		if r.ActionRecord.Verdict == verdict {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // --- ForwardScanned tests ---

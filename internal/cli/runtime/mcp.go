@@ -604,6 +604,7 @@ signed action receipts for MCP decisions.`,
 						EnvelopeEmitter: envEmitter,
 						DoWCheck:        dowCheck,
 						ReceiptEmitter:  receiptEmitter,
+						TaintCfg:        &cfg.Taint,
 					}); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -617,7 +618,7 @@ signed action receipts for MCP decisions.`,
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, receiptEmitter, buildRedirectRT(cfg), dowCheck, envEmitter); err != nil {
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, receiptEmitter, buildRedirectRT(cfg), dowCheck, envEmitter, &cfg.Taint); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -641,6 +642,7 @@ signed action receipts for MCP decisions.`,
 					ReceiptEmitter:  receiptEmitter,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
+					TaintCfg:        &cfg.Taint,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -770,6 +772,7 @@ signed action receipts for MCP decisions.`,
 					ReceiptEmitter:  receiptEmitter,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
+					TaintCfg:        &cfg.Taint,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -873,6 +876,7 @@ signed action receipts for MCP decisions.`,
 				ReceiptEmitter:  receiptEmitter,
 				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg:   &cfg.MCPToolProvenance,
+				TaintCfg:        &cfg.Taint,
 				Lineage:         lin, OnChildReady: onChildReady,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {

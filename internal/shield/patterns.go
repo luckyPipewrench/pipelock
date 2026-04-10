@@ -50,6 +50,67 @@ const hiddenElementPattern = `(?i)<(?:div|span|p)[^>]+style\s*=\s*["'][^"']*(?:d
 // keywords.
 const ariaHiddenTrapPattern = `(?i)<[^>]+aria-hidden\s*=\s*["']true["'][^>]*>[^<]*(?:ignore|disregard|forget|override|instead|instruction)[^<]*</[^>]+>`
 
+// SVG active content patterns. Applied in rewriteSVG after the existing
+// <script> extraction pass. Regex-based for consistency with the rest of
+// the shield pipeline; known fragile against pathological XML (unbalanced
+// elements, attribute-order tricks, CDATA sections) but matches the
+// best-effort defensive posture of the shield layer.
+
+// svgForeignObjectPattern matches <foreignObject>...</foreignObject> blocks.
+// foreignObject can embed arbitrary HTML — including iframes and script
+// tags — inside SVG, turning a nominally-image response into active web
+// content. Strip the whole element with its children.
+//
+// The optional `[\w-]+:` prefix matches namespace-prefixed element names
+// like `<svg:foreignObject>` and `<s:foreignObject>`. SVG documents that
+// declare the svg namespace as a prefix rather than the default namespace
+// use this form, and omitting it would leave the attack surface open to a
+// trivial xmlns:svg="http://www.w3.org/2000/svg" relabeling.
+const svgForeignObjectPattern = `(?is)<(?:[\w-]+:)?foreignObject\b[^>]*>.*?</(?:[\w-]+:)?foreignObject>`
+
+// svgSelfClosingForeignObjectPattern catches the self-closing variant
+// <foreignObject .../> which some writers produce when the element has no
+// children. Covered separately because the greedy non-self-closing match
+// wouldn't catch it.
+const svgSelfClosingForeignObjectPattern = `(?i)<(?:[\w-]+:)?foreignObject\b[^>]*/>`
+
+// svgEventHandlerPattern matches DOM event handler attributes on any SVG
+// element (onload, onclick, onerror, onmouseover, onfocus, etc.). The
+// pattern captures the leading whitespace so the resulting element tag
+// remains well-formed after removal. Quoted value handling covers both
+// single and double quotes.
+const svgEventHandlerPattern = `(?i)\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*')`
+
+// svgExternalXlinkHrefPattern matches the namespaced xlink:href attribute
+// when its value is NOT a local fragment reference (#anchor). Split from
+// the plain href form so each variant can be rewritten back to its own
+// attribute name (rewriting plain href to xlink:href in an SVG2 document
+// without xmlns:xlink declared produces an unbound-prefix parse error).
+const svgExternalXlinkHrefPattern = `(?i)\s+xlink:href\s*=\s*(?:"[^"#][^"]*"|'[^'#][^']*')`
+
+// svgExternalHrefPattern matches the plain href attribute (SVG2) when its
+// value is NOT a local fragment reference. Matches only on SVG elements
+// where href is a real reference target (use, image, a, link) to avoid
+// stripping unrelated HTML contexts — but since this pattern is only
+// invoked from the SVG pipeline, the source doc is already known to be
+// SVG and matching any href= on any element is safe.
+const svgExternalHrefPattern = `(?i)\s+href\s*=\s*(?:"[^"#][^"]*"|'[^'#][^']*')`
+
+// svgHiddenTextStylePattern matches <text> elements whose inline style
+// makes them invisible to visual rendering while remaining in the DOM for
+// LLM consumption. The `(?:[\w-]+:)?` prefix covers namespace-prefixed
+// element names like `<svg:text ...>` that would otherwise bypass the
+// bare-name match.
+const svgHiddenTextStylePattern = `(?is)<(?:[\w-]+:)?text\b[^>]*style\s*=\s*["'][^"']*(?:opacity\s*:\s*0(?:\.0+)?|display\s*:\s*none|visibility\s*:\s*hidden)[^"']*["'][^>]*>.*?</(?:[\w-]+:)?text>`
+
+// svgHiddenTextAttrPattern matches <text> elements that use SVG
+// presentation attributes (display, visibility, opacity) directly on the
+// element rather than in an inline style. SVG 1.1 allows these as first-
+// class attributes, so relying only on style="..." would miss the simplest
+// form of the attack: <text display="none">payload</text>. Same
+// namespace-prefix handling as svgHiddenTextStylePattern.
+const svgHiddenTextAttrPattern = `(?is)<(?:[\w-]+:)?text\b[^>]*(?:\bdisplay\s*=\s*["']none["']|\bvisibility\s*=\s*["']hidden["']|\bopacity\s*=\s*["']0(?:\.0+)?["'])[^>]*>.*?</(?:[\w-]+:)?text>`
+
 // compilePatterns compiles all shield patterns into regexp objects.
 // Called once from NewEngine; panics on invalid regex (programming error).
 func compilePatterns() (
@@ -64,5 +125,27 @@ func compilePatterns() (
 	hiddenTrapRe = regexp.MustCompile(hiddenElementPattern + `|` + ariaHiddenTrapPattern)
 	commentTrapRe = regexp.MustCompile(commentTrapPattern)
 	functionStripRe = regexp.MustCompile(extensionFuncPattern)
+	return
+}
+
+// compileSVGActivePatterns compiles the SVG-specific active content patterns.
+// Returned separately from compilePatterns so the shield.Engine can keep its
+// SVG regex state distinct from the HTML/JS regex state and avoid touching
+// hot paths when SVG pipeline runs. Each strip concern has its own compiled
+// regex so per-pass stats remain accurate.
+func compileSVGActivePatterns() (
+	foreignObjectRe,
+	eventHandlerRe,
+	xlinkExternalRe,
+	hrefExternalRe,
+	hiddenTextStyleRe,
+	hiddenTextAttrRe *regexp.Regexp,
+) {
+	foreignObjectRe = regexp.MustCompile(svgForeignObjectPattern + `|` + svgSelfClosingForeignObjectPattern)
+	eventHandlerRe = regexp.MustCompile(svgEventHandlerPattern)
+	xlinkExternalRe = regexp.MustCompile(svgExternalXlinkHrefPattern)
+	hrefExternalRe = regexp.MustCompile(svgExternalHrefPattern)
+	hiddenTextStyleRe = regexp.MustCompile(svgHiddenTextStylePattern)
+	hiddenTextAttrRe = regexp.MustCompile(svgHiddenTextAttrPattern)
 	return
 }

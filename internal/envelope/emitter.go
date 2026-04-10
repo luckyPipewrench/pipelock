@@ -40,12 +40,16 @@ func (e *Emitter) UpdateConfigHash(hash string) {
 
 // BuildOpts holds per-request context for building an envelope.
 type BuildOpts struct {
-	ActionID   string
-	Action     string
-	Verdict    string
-	SideEffect string
-	Actor      string
-	ActorAuth  ActorAuth
+	ActionID       string
+	Action         string
+	Verdict        string
+	SideEffect     string
+	Actor          string
+	ActorAuth      ActorAuth
+	SessionTaint   string
+	AuthorityKind  string
+	AuthorityRef   string
+	RequiresReauth bool
 }
 
 // Build creates an Envelope from the scan decision context.
@@ -58,15 +62,19 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 	hash := policyHashTruncated(configHashString(e.configHash.Load()))
 
 	return Envelope{
-		Version:    1,
-		Action:     opts.Action,
-		Verdict:    opts.Verdict,
-		SideEffect: opts.SideEffect,
-		Actor:      opts.Actor,
-		ActorAuth:  opts.ActorAuth,
-		PolicyHash: hash,
-		ReceiptID:  opts.ActionID,
-		Timestamp:  time.Now().UTC().Unix(),
+		Version:        1,
+		Action:         opts.Action,
+		Verdict:        opts.Verdict,
+		SideEffect:     opts.SideEffect,
+		Actor:          opts.Actor,
+		ActorAuth:      opts.ActorAuth,
+		PolicyHash:     hash,
+		ReceiptID:      opts.ActionID,
+		Timestamp:      time.Now().UTC().Unix(),
+		SessionTaint:   opts.SessionTaint,
+		AuthorityKind:  opts.AuthorityKind,
+		AuthorityRef:   opts.AuthorityRef,
+		RequiresReauth: opts.RequiresReauth,
 	}
 }
 

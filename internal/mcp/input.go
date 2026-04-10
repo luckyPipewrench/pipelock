@@ -289,7 +289,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintln(logW, logMsg)
 				if dowAction == config.ActionBlock {
 					if auditLogger != nil {
-						auditLogger.LogBlocked(audit.LogContext{Method: "MCP", URL: toolCallName}, "denial_of_wallet", dowReason)
+						auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolCallName, ""), "denial_of_wallet", dowReason)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -306,7 +306,7 @@ func ForwardScannedInput(
 				}
 				// dow_action: warn — log and record near-miss, but forward the request.
 				if auditLogger != nil {
-					auditLogger.LogAnomaly(audit.LogContext{Method: "MCP", URL: toolCallName}, "denial_of_wallet", dowReason, 0)
+					auditLogger.LogAnomaly(audit.NewMCPLogContext("MCP", toolCallName, ""), "denial_of_wallet", dowReason, 0)
 				}
 				recordAdaptiveSignal(session.SignalNearMiss)
 			}
@@ -360,7 +360,7 @@ func ForwardScannedInput(
 				frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, toolCallName)
 				_, _ = fmt.Fprintln(logW, frozenMsg)
 				if auditLogger != nil {
-					auditLogger.LogBlocked(audit.LogContext{Method: "MCP", URL: toolCallName}, "frozen_tool", "tool not in frozen inventory")
+					auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolCallName, ""), "frozen_tool", "tool not in frozen inventory")
 				}
 				if m != nil {
 					m.RecordBlocked("mcp", "frozen_tool", 0, "")
@@ -440,6 +440,82 @@ func ForwardScannedInput(
 			continue
 		}
 
+		// Pre-generate actionID for tools/call only — metadata methods
+		// (tools/list, initialize, notifications) don't produce receipts.
+		actionID := ""
+		if verdict.Method == methodToolsCall {
+			actionID = receipt.NewActionID()
+		}
+
+		taintDecision := taintDecision{
+			Authority: session.AuthorityUserBroad,
+			Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
+		}
+		emitToolReceipt := func(receiptVerdict string) {
+			if actionID == "" || opts.ReceiptEmitter == nil {
+				return
+			}
+			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             receiptVerdict,
+				Transport:           opts.Transport,
+				Target:              toolCallName,
+				MCPMethod:           verdict.Method,
+				ToolName:            toolCallName,
+				SessionTaintLevel:   taintDecision.Risk.Level.String(),
+				SessionContaminated: taintDecision.Risk.Contaminated,
+				RecentTaintSources:  taintDecision.Risk.Sources,
+				AuthorityKind:       taintDecision.Authority.String(),
+				TaintDecision:       taintDecision.Result.Decision.String(),
+				TaintDecisionReason: taintDecision.Result.Reason,
+			})
+		}
+		if verdict.Method == methodToolsCall {
+			taintDecision = evaluateMCPTaint(opts, toolCallName, extractToolCallArgs(line))
+			if taintDecision.Result.Decision == session.PolicyAsk || taintDecision.Result.Decision == session.PolicyBlock {
+				if auditLogger != nil {
+					auditLogger.LogTaintDecision(
+						audit.LogContext{Method: "MCP", URL: toolCallName},
+						taintDecision.Risk.Level.String(),
+						taintDecision.ActionClass.String(),
+						taintDecision.Sensitivity.String(),
+						taintDecision.Authority.String(),
+						taintDecision.Result.Decision.String(),
+						taintDecision.Result.Reason,
+						taintDecision.Risk.LastExternalURL,
+						taintDecision.Risk.LastExternalKind,
+					)
+				}
+				switch taintDecision.Result.Decision {
+				case session.PolicyBlock:
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
+						ErrorCode:      -32002,
+						ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
+					}
+					emitToolReceipt(config.ActionBlock)
+					continue
+				case session.PolicyAsk:
+					preview := strings.TrimSpace(fmt.Sprintf("%s %s", toolCallName, taintDecision.ActionRef))
+					approved, hasApprover := taintDecisionRequiresApproval(opts, toolCallName, taintApprovalReason(taintDecision), preview)
+					if !hasApprover || !approved {
+						blockedCh <- BlockedRequest{
+							ID:             verdict.ID,
+							IsNotification: isRPCNotification(verdict.ID),
+							LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
+							ErrorCode:      -32002,
+							ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
+						}
+						emitToolReceipt(config.ActionBlock)
+						continue
+					}
+					approveTaintDecision(&taintDecision)
+				}
+			}
+		}
+
 		// All clean — forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 			// block_all enforcement: deny ALL traffic (including clean) when the
@@ -484,35 +560,22 @@ func ForwardScannedInput(
 			// Must happen before write to prevent race: response could arrive
 			// before Track completes in concurrent stdio paths.
 			tracker.Track(verdict.ID)
-			// Envelope + receipt for clean tool calls: generate one actionID
-			// shared by both so the envelope's receipt_id correlates with the
-			// action receipt log entry.
 			fwdLine := line
-			var actionID string
 			if verdict.Method == methodToolsCall {
-				actionID = receipt.NewActionID()
 				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
-					ActionID: actionID,
-					Action:   "write",
-					Verdict:  config.ActionAllow,
+					ActionID:       actionID,
+					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
+					Verdict:        config.ActionAllow,
+					SessionTaint:   taintDecision.Risk.Level.String(),
+					AuthorityKind:  taintDecision.Authority.String(),
+					RequiresReauth: taintDecision.RequiresReauth,
 				})
 			}
 			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
 				return
 			}
-			// Emit receipt AFTER successful forward so the receipt only
-			// records actions that actually reached the MCP server.
-			if actionID != "" && opts.ReceiptEmitter != nil {
-				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
-					ActionID:  actionID,
-					Verdict:   config.ActionAllow,
-					Transport: opts.Transport,
-					Target:    toolCallName,
-					MCPMethod: verdict.Method,
-					ToolName:  toolCallName,
-				})
-			}
+			emitToolReceipt(config.ActionAllow)
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 			}
@@ -595,13 +658,6 @@ func ForwardScannedInput(
 			if m != nil {
 				m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
 			}
-		}
-
-		// Pre-generate actionID for tools/call only — metadata methods
-		// (tools/list, initialize, notifications) don't produce receipts.
-		var actionID string
-		if verdict.Method == methodToolsCall {
-			actionID = receipt.NewActionID()
 		}
 
 		redirectSucceeded := false
@@ -762,9 +818,12 @@ func ForwardScannedInput(
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
 				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
-					ActionID: actionID,
-					Action:   "write",
-					Verdict:  config.ActionWarn,
+					ActionID:       actionID,
+					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
+					Verdict:        config.ActionWarn,
+					SessionTaint:   taintDecision.Risk.Level.String(),
+					AuthorityKind:  taintDecision.Authority.String(),
+					RequiresReauth: taintDecision.RequiresReauth,
 				})
 			}
 			// Forward anyway (warn mode).
@@ -790,16 +849,7 @@ func ForwardScannedInput(
 		}
 
 		// Action receipt: emit for tools/call decisions only.
-		if verdict.Method == methodToolsCall && opts.ReceiptEmitter != nil {
-			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   effectiveAction,
-				Transport: opts.Transport,
-				Target:    toolCallName,
-				MCPMethod: verdict.Method,
-				ToolName:  toolCallName,
-			})
-		}
+		emitToolReceipt(effectiveAction)
 
 		// Capture: record DLP/injection input verdict.
 		if !verdict.Clean {
@@ -899,6 +949,9 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
 		return msg
 	}
+	if params == nil {
+		params = make(map[string]json.RawMessage)
+	}
 
 	// Use json.RawMessage to preserve existing _meta members byte-for-byte.
 	// map[string]any would round-trip through encoding/json and lose precision
@@ -960,22 +1013,28 @@ func stripInboundMCPMeta(msg []byte) []byte {
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
 		return msg
 	}
+	if params == nil {
+		return msg
+	}
 
 	metaRaw, ok := params["_meta"]
 	if !ok {
 		return msg
 	}
 
-	var meta map[string]any
+	var meta map[string]json.RawMessage
 	if err := json.Unmarshal(metaRaw, &meta); err != nil {
 		return msg
 	}
 
+	if meta == nil {
+		return msg
+	}
 	if _, exists := meta[envelope.MCPMetaKey]; !exists {
 		return msg
 	}
 
-	envelope.StripInboundMCP(meta)
+	delete(meta, envelope.MCPMetaKey)
 
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {

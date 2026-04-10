@@ -312,35 +312,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(clientConn, "ws.clientConn", log)
 
-	// Inject mediation envelope into upstream handshake headers on allow path.
-	actionID := receipt.NewActionID()
-	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		if envErr := envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
-			ActionID:   actionID,
-			Action:     string(receipt.ActionDelegate),
-			Verdict:    config.ActionAllow,
-			SideEffect: string(receipt.SideEffectExternalWrite),
-			Actor:      agent,
-			ActorAuth:  id.Auth,
-		}); envErr != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
-		}
-	}
-
-	// Dial upstream via SSRF-safe dialer.
-	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
-	if dialErr != nil {
-		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
-		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
-		return
-	}
-	defer safeClose(upstreamConn, "ws.upstreamConn", log)
-
-	p.metrics.IncrActiveWS()
-	log.LogWSOpen(targetURL, clientIP, requestID, agent)
-
-	scanTextFrames := cfg.WebSocketProxy.ScanTextFrames == nil || *cfg.WebSocketProxy.ScanTextFrames
-
 	// Obtain a live session recorder for the relay. This provides live
 	// escalation level lookups instead of a stale snapshot, so that
 	// escalation changes during long-lived WS connections take effect.
@@ -366,6 +337,35 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, "airlock: WebSocket blocked during quarantine")
 			return
 		}
+	}
+
+	// Inject mediation envelope after all admission checks but before the
+	// upstream handshake so the forwarded headers on the accepted connection
+	// carry the final verdict.
+	actionID := receipt.NewActionID()
+	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+		if envErr := envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
+			ActionID:   actionID,
+			Action:     string(receipt.ActionDelegate),
+			Verdict:    config.ActionAllow,
+			SideEffect: string(receipt.SideEffectExternalWrite),
+			Actor:      agent,
+			ActorAuth:  id.Auth,
+		}); envErr != nil {
+			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+		}
+	}
+
+	// Dial upstream via SSRF-safe dialer.
+	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
+	if dialErr != nil {
+		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
+		plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
+		return
+	}
+	defer safeClose(upstreamConn, "ws.upstreamConn", log)
+
+	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
 		// Register airlock cancel for WebSocket connections. When the session
 		// escalates to hard/drain, closing both ends terminates the relay.
 		wsSess.Airlock().RegisterCancel(func() {
@@ -373,6 +373,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			safeClose(upstreamConn, "airlock.ws.upstreamConn", log)
 		})
 	}
+
+	p.metrics.IncrActiveWS()
+	log.LogWSOpen(targetURL, clientIP, requestID, agent)
+
+	scanTextFrames := cfg.WebSocketProxy.ScanTextFrames == nil || *cfg.WebSocketProxy.ScanTextFrames
 
 	// Deferred clean decay: only apply if the entire handshake was clean
 	// (no URL scan hit, no header DLP hit). This prevents same-handshake

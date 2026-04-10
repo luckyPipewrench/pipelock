@@ -62,6 +62,9 @@ type SessionState struct {
 
 	// Graduated quarantine state.
 	airlock AirlockState
+
+	// Sticky taint state used for exposure-based policy escalation.
+	risk session.SessionRisk
 }
 
 // IsResettable returns whether this session can be reset via the admin API.
@@ -322,6 +325,20 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 	return prevScore, prevLevel
 }
 
+// RiskSnapshot returns a copy of the session taint state.
+func (s *SessionState) RiskSnapshot() session.SessionRisk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.risk.Snapshot()
+}
+
+// ObserveRisk folds a new taint observation into the session's sticky risk state.
+func (s *SessionState) ObserveRisk(observation session.RiskObservation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.risk.Observe(observation)
+}
+
 // RecordBytes adds to the session's cumulative byte count.
 // Called by transport handlers after completing a request.
 func (s *SessionState) RecordBytes(n int64) {
@@ -376,6 +393,8 @@ type SessionSnapshot struct {
 	EscalationLevel string    `json:"escalation_level"`
 	BlockAll        bool      `json:"block_all"`
 	AirlockTier     string    `json:"airlock_tier"`
+	TaintLevel      string    `json:"taint_level"`
+	Contaminated    bool      `json:"contaminated"`
 	LastActivity    time.Time `json:"last_activity"`
 }
 
@@ -697,6 +716,8 @@ func (sm *SessionManager) Snapshot() []SessionSnapshot {
 			EscalationLevel: session.EscalationLabel(s.escalationLevel),
 			BlockAll:        s.atBlockAll,
 			AirlockTier:     s.airlock.Tier(),
+			TaintLevel:      s.risk.Level.String(),
+			Contaminated:    s.risk.Contaminated,
 			LastActivity:    s.lastActivity,
 		}
 		s.mu.Unlock()
@@ -753,6 +774,7 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
 	}
 
+	riskSnapshot := sess.RiskSnapshot()
 	prev = SessionSnapshot{
 		Key:             key,
 		Agent:           agent,
@@ -761,6 +783,8 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		ThreatScore:     prevScore,
 		EscalationLevel: session.EscalationLabel(prevLevel),
 		BlockAll:        false,
+		TaintLevel:      riskSnapshot.Level.String(),
+		Contaminated:    riskSnapshot.Contaminated,
 		LastActivity:    time.Now(),
 	}
 	return prev, true
@@ -816,6 +840,7 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
 	}
 
+	riskSnapshot := sess.RiskSnapshot()
 	prev = SessionSnapshot{
 		Key:             key,
 		Agent:           agent,
@@ -824,6 +849,8 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 		ThreatScore:     prevScore,
 		EscalationLevel: session.EscalationLabel(prevLevel),
 		BlockAll:        false,
+		TaintLevel:      riskSnapshot.Level.String(),
+		Contaminated:    riskSnapshot.Contaminated,
 		LastActivity:    time.Now(),
 	}
 	return prev, true, nil

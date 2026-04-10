@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -48,6 +50,7 @@ func RunHTTPProxy(
 	if opts.Transport == "" {
 		opts.Transport = "mcp_http_upstream"
 	}
+	opts.TaintExternalSource = true
 
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -124,13 +127,14 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		if blocked := scanHTTPInput(msg, safeLogW, "default", "default", fwdOpts); blocked != nil {
-			if !blocked.IsNotification {
+		decision := scanHTTPInputDecision(msg, safeLogW, "default", "default", fwdOpts)
+		if decision.Blocked != nil {
+			if !decision.Blocked.IsNotification {
 				var resp []byte
-				if blocked.SyntheticResponse != nil {
-					resp = blocked.SyntheticResponse
+				if decision.Blocked.SyntheticResponse != nil {
+					resp = decision.Blocked.SyntheticResponse
 				} else {
-					resp = blockRequestResponse(*blocked)
+					resp = blockRequestResponse(*decision.Blocked)
 				}
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
@@ -147,7 +151,7 @@ func RunHTTPProxy(
 		}
 
 		// POST to upstream.
-		respReader, err := httpClient.SendMessage(ctx, msg)
+		respReader, err := httpClient.SendMessage(ctx, decision.ForwardMessage)
 		if err != nil {
 			// Log full upstream error details to stderr for debugging.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
@@ -191,13 +195,24 @@ func RunHTTPProxy(
 	return lastScanErr
 }
 
+type httpInputDecision struct {
+	Blocked        *BlockedRequest
+	ForwardMessage []byte
+}
+
+const redirectResultRedirected = "redirected"
+
 // scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
-// This is the HTTP proxy equivalent of ForwardScannedInput's per-message logic,
-// but returns a verdict instead of writing to a channel.
+func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) *BlockedRequest {
+	return scanHTTPInputDecision(msg, logW, sessionKey, auditSessionKey, opts).Blocked
+}
+
+// scanHTTPInputDecision is the HTTP proxy equivalent of ForwardScannedInput's
+// per-message logic, but returns the block verdict plus the message to forward.
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
-func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) *BlockedRequest {
+func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) httpInputDecision {
 	sc := opts.Scanner
 	inputCfg := opts.InputCfg
 	policyCfg := opts.PolicyCfg
@@ -208,6 +223,18 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	adaptiveCfg := opts.AdaptiveCfg
 	m := opts.Metrics
 	obs := opts.captureObserver()
+	result := httpInputDecision{ForwardMessage: msg}
+	mcpMethod := ""
+	toolName := ""
+	actionID := ""
+	taintEval := taintDecision{
+		Authority: session.AuthorityUserBroad,
+		Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
+	}
+	receiptVerdict := ""
+	defer func() {
+		emitMCPToolReceipt(opts, actionID, mcpMethod, toolName, receiptVerdict, taintEval)
+	}()
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
@@ -239,11 +266,13 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	if trimmed := bytes.TrimSpace(msg); len(trimmed) > 0 && trimmed[0] == '[' {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch request (not supported by MCP)\n")
 		recordAdaptiveSignal(session.SignalBlock)
-		return &BlockedRequest{
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
 			ID:           extractRPCID(msg),
 			ErrorCode:    -32600,
 			ErrorMessage: "pipelock: batch requests are not supported by MCP",
 		}
+		return result
 	}
 
 	// Determine input scanning parameters.
@@ -262,8 +291,8 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	} else {
 		verdict = InputVerdict{Clean: true}
 		// When input scanning is disabled, extract enough metadata from the
-		// raw message so policy, chain detection, and DoW still work.
-		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil {
+		// raw message so policy, taint gating, chain detection, and DoW still work.
+		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || opts.TaintCfg != nil || opts.ReceiptEmitter != nil || opts.EnvelopeEmitter != nil {
 			verdict.ID = extractRPCID(msg)
 			// Extract method for chain detection even when content scanning is off.
 			var env struct {
@@ -273,6 +302,12 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				verdict.Method = env.Method
 			}
 		}
+	}
+
+	mcpMethod = verdict.Method
+	if verdict.Method == methodToolsCall {
+		actionID = receipt.NewActionID()
+		toolName = extractToolCallName(msg)
 	}
 
 	// A2A request body scanning: field-aware analysis for A2A protocol methods.
@@ -310,13 +345,15 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 					} else {
 						recordAdaptiveSignal(session.SignalBlock)
 					}
-					return &BlockedRequest{
+					receiptVerdict = config.ActionBlock
+					result.Blocked = &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     "blocked (a2a input scanning)",
 						ErrorCode:      -32001,
 						ErrorMessage:   "pipelock: request blocked by A2A input scanning",
 					}
+					return result
 				}
 				// warn mode: log and continue.
 				_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", a2aResult.Reason)
@@ -336,17 +373,19 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 					toolName, dowAction, dowReason, dowBudgetType)
 				if dowAction == config.ActionBlock {
 					if auditLogger != nil {
-						auditLogger.LogBlocked(audit.LogContext{Method: "MCP", URL: toolName}, "denial_of_wallet", dowReason)
+						auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolName, ""), "denial_of_wallet", dowReason)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
 					}
 					recordAdaptiveSignal(session.SignalBlock)
-					return &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
+					receiptVerdict = config.ActionBlock
+					result.Blocked = &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
+					return result
 				}
 				// dow_action: warn — log and record near-miss, but allow the request.
 				if auditLogger != nil {
-					auditLogger.LogAnomaly(audit.LogContext{Method: "MCP", URL: toolName}, "denial_of_wallet", dowReason, 0)
+					auditLogger.LogAnomaly(audit.NewMCPLogContext("MCP", toolName, ""), "denial_of_wallet", dowReason, 0)
 				}
 				recordAdaptiveSignal(session.SignalNearMiss)
 			}
@@ -374,13 +413,15 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				}
 				if cv.Action == config.ActionBlock {
 					recordAdaptiveSignal(session.SignalBlock)
-					return &BlockedRequest{
+					receiptVerdict = config.ActionBlock
+					result.Blocked = &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
 						LogMessage:     fmt.Sprintf("chain pattern %q blocked", cv.PatternName),
 						ErrorCode:      -32004,
 						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
 					}
+					return result
 				}
 				chainAction = cv.Action
 				chainReason = "chain:" + cv.PatternName
@@ -391,10 +432,58 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	// Parse error — always block.
 	if verdict.Error != "" {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
-		return &BlockedRequest{
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked (parse error)",
+		}
+		return result
+	}
+
+	if verdict.Method == methodToolsCall {
+		taintEval = evaluateMCPTaint(opts, toolName, extractToolCallArgs(msg))
+		if taintEval.Result.Decision == session.PolicyAsk || taintEval.Result.Decision == session.PolicyBlock {
+			if auditLogger != nil {
+				auditLogger.LogTaintDecision(
+					audit.LogContext{Method: "MCP", URL: toolName},
+					taintEval.Risk.Level.String(),
+					taintEval.ActionClass.String(),
+					taintEval.Sensitivity.String(),
+					taintEval.Authority.String(),
+					taintEval.Result.Decision.String(),
+					taintEval.Result.Reason,
+					taintEval.Risk.LastExternalURL,
+					taintEval.Risk.LastExternalKind,
+				)
+			}
+			switch taintEval.Result.Decision {
+			case session.PolicyBlock:
+				receiptVerdict = config.ActionBlock
+				result.Blocked = &BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     "blocked by taint policy",
+					ErrorCode:      -32002,
+					ErrorMessage:   "pipelock: " + taintEval.Result.Reason,
+				}
+				return result
+			case session.PolicyAsk:
+				preview := strings.TrimSpace(fmt.Sprintf("%s %s", toolName, taintEval.ActionRef))
+				approved, hasApprover := taintDecisionRequiresApproval(opts, toolName, taintApprovalReason(taintEval), preview)
+				if !hasApprover || !approved {
+					receiptVerdict = config.ActionBlock
+					result.Blocked = &BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     "blocked by taint policy",
+						ErrorCode:      -32002,
+						ErrorMessage:   "pipelock: " + taintEval.Result.Reason,
+					}
+					return result
+				}
+				approveTaintDecision(&taintEval)
+			}
 		}
 	}
 
@@ -407,13 +496,15 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 			if m != nil {
 				m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
 			}
-			return &BlockedRequest{
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     "blocked (session deny)",
 				ErrorCode:      -32001,
 				ErrorMessage:   "pipelock: session escalation level critical",
 			}
+			return result
 		}
 		// Cross-request exfiltration check on clean outbound messages.
 		ceeKey := ceeSessionKeyMCP("", sessionKey)
@@ -429,18 +520,24 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				EffectiveAction: config.ActionBlock,
 				Outcome:         capture.OutcomeBlocked,
 			})
-			return &BlockedRequest{
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     "CEE blocked",
 				ErrorCode:      -32005,
 				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 			}
+			return result
+		}
+		if verdict.Method == methodToolsCall {
+			result.ForwardMessage = decorateMCPToolMessage(msg, opts.EnvelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
+			receiptVerdict = config.ActionAllow
 		}
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		}
-		return nil
+		return result
 	}
 
 	// Build reasons.
@@ -508,59 +605,67 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		recordAdaptiveSignal(session.SignalBlock)
-		return &BlockedRequest{
+		receiptVerdict = effectiveAction
+		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
 			LogMessage:     "blocked",
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
 		}
+		return result
 	case config.ActionRedirect:
 		// Batch requests cannot be redirected element-by-element. Fail closed.
 		trimmedMsg := bytes.TrimSpace(msg)
 		if len(trimmedMsg) > 0 && trimmedMsg[0] == '[' {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch (%s) [redirect not supported for batches]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
-			return &BlockedRequest{
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
 				LogMessage: "blocked (batch redirect)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
 			}
+			return result
 		}
 		if policyCfg == nil {
 			// No policy config — fail closed.
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect without policy config]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
-			return &BlockedRequest{
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
 				LogMessage: "blocked (no policy config)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
 			}
+			return result
 		}
 		profile, ok := policyCfg.RedirectProfiles[policyVerdict.RedirectProfile]
 		if !ok {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect profile %q not found]\n", joinStrings(reasons), policyVerdict.RedirectProfile)
 			recordAdaptiveSignal(session.SignalBlock)
-			return &BlockedRequest{
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
 				LogMessage: "blocked (redirect profile missing)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
 			}
+			return result
 		}
 		toolName, toolArgs := extractToolCallFields(msg)
 		policyRuleName := ""
 		if len(policyVerdict.Rules) > 0 {
 			policyRuleName = policyVerdict.Rules[0]
 		}
-		result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, opts.RedirectRT)
+		redirectResult := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, opts.RedirectRT)
 		// Determine final outcome before audit logging so the event
 		// reflects the actual result delivered to the client.
 		var br *BlockedRequest
 		finalResult := "blocked"
-		if result.Success {
+		if redirectResult.Success {
 			// Scan redirect handler output for prompt injection AND DLP before
 			// sending to client. Handler output is untrusted — it could contain
 			// secrets or injection payloads.
-			scanVerdict := ScanResponse(result.Response, sc)
+			scanVerdict := ScanResponse(redirectResult.Response, sc)
 			// context.Background: scanHTTPInput has no ctx param; param unused in ScanTextForDLP.
-			dlpResult := sc.ScanTextForDLP(context.Background(), string(result.Response))
+			dlpResult := sc.ScanTextForDLP(context.Background(), string(redirectResult.Response))
 			if !scanVerdict.Clean {
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
 				recordAdaptiveSignal(session.SignalBlock)
@@ -582,16 +687,16 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 					ErrorMessage: "pipelock: redirect handler output blocked by DLP scanning",
 				}
 			} else {
-				finalResult = "redirected"
-				_, _ = fmt.Fprintf(logW, "pipelock: input: redirected via profile %q (%dms)\n", policyVerdict.RedirectProfile, result.LatencyMs)
+				finalResult = redirectResultRedirected
+				_, _ = fmt.Fprintf(logW, "pipelock: input: redirected via profile %q (%dms)\n", policyVerdict.RedirectProfile, redirectResult.LatencyMs)
 				br = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
-					LogMessage: "redirected", SyntheticResponse: result.Response,
+					LogMessage: "redirected", SyntheticResponse: redirectResult.Response,
 				}
 			}
 		} else {
 			// Redirect handler failed — fall through to block (fail-closed).
-			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect failed: %s]\n", joinStrings(reasons), result.Error)
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect failed: %s]\n", joinStrings(reasons), redirectResult.Error)
 			recordAdaptiveSignal(session.SignalBlock)
 			br = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
@@ -599,20 +704,28 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 			}
 		}
 		if auditLogger != nil {
-			auditLogger.LogToolRedirect(auditSessionKey, toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
+			auditLogger.LogToolRedirect(auditSessionKey, toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, redirectResult.LatencyMs)
 		}
-		return br
+		if finalResult == redirectResultRedirected {
+			receiptVerdict = config.ActionRedirect
+		} else {
+			receiptVerdict = config.ActionBlock
+		}
+		result.Blocked = br
+		return result
 	case config.ActionAsk:
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
 		recordAdaptiveSignal(session.SignalBlock)
-		return &BlockedRequest{
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
 			LogMessage:     "blocked (ask fallback)",
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
 		}
+		return result
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
@@ -632,13 +745,15 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				EffectiveAction: config.ActionBlock,
 				Outcome:         capture.OutcomeBlocked,
 			})
-			return &BlockedRequest{
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     "CEE blocked",
 				ErrorCode:      -32005,
 				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 			}
+			return result
 		}
 		// Capture: record DLP/injection input verdict when not clean.
 		if !verdict.Clean {
@@ -654,7 +769,11 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 				Outcome:         captureOutcome(effectiveAction, false),
 			})
 		}
-		return nil // forward
+		if verdict.Method == methodToolsCall {
+			result.ForwardMessage = decorateMCPToolMessage(msg, opts.EnvelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
+			receiptVerdict = config.ActionWarn
+		}
+		return result // forward
 	}
 }
 
@@ -854,11 +973,14 @@ func RunHTTPListenerProxy(
 		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
 		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
 		RedirectRT: opts.RedirectRT, Transport: "mcp_http_listener",
-		ReceiptEmitter: opts.ReceiptEmitter,
-		CaptureObs:     opts.captureObserver(),
-		ProvenanceCfg:  opts.ProvenanceCfg,
-		DoWCheck:       opts.DoWCheck,
-		A2ACfg:         opts.A2ACfg,
+		ReceiptEmitter:      opts.ReceiptEmitter,
+		CaptureObs:          opts.captureObserver(),
+		ProvenanceCfg:       opts.ProvenanceCfg,
+		DoWCheck:            opts.DoWCheck,
+		A2ACfg:              opts.A2ACfg,
+		TaintCfg:            opts.TaintCfg,
+		TaintExternalSource: true,
+		EnvelopeEmitter:     opts.EnvelopeEmitter,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -1060,7 +1182,8 @@ func RunHTTPListenerProxy(
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
-		if blocked := scanHTTPInput(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts); blocked != nil {
+		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
+		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)
@@ -1075,7 +1198,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Build upstream request with passthrough headers.
-		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
+		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(decision.ForwardMessage))
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)

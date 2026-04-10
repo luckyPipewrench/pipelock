@@ -51,6 +51,7 @@ func RunWSProxy(
 	redirectRT *RedirectRuntime,
 	dowCheck DoWCheckFunc,
 	envEmitter *envelope.Emitter,
+	taintCfg ...*config.TaintConfig,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -103,6 +104,10 @@ func RunWSProxy(
 	}
 
 	const sessionKey = "ws-stdio"
+	var wsTaintCfg *config.TaintConfig
+	if len(taintCfg) > 0 {
+		wsTaintCfg = taintCfg[0]
+	}
 
 	// Shared opts for ForwardScanned and scanHTTPInput calls.
 	wsOpts := MCPProxyOpts{
@@ -112,7 +117,9 @@ func RunWSProxy(
 		AuditLogger: auditLogger, CEE: cee,
 		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
 		RedirectRT: redirectRT, DoWCheck: dowCheck,
-		EnvelopeEmitter: envEmitter,
+		EnvelopeEmitter:     envEmitter,
+		TaintCfg:            wsTaintCfg,
+		TaintExternalSource: true,
 	}
 
 	clientReader := transport.NewStdioReader(clientIn)
@@ -179,14 +186,15 @@ func RunWSProxy(
 		}
 
 		// Input scanning: DLP, injection, policy, chain detection.
-		if blocked := scanHTTPInput(msg, safeLogW, sessionKey, sessionKey, wsOpts); blocked != nil {
-			if !blocked.IsNotification {
+		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, wsOpts)
+		if decision.Blocked != nil {
+			if !decision.Blocked.IsNotification {
 				var resp []byte
-				if blocked.SyntheticResponse != nil {
+				if decision.Blocked.SyntheticResponse != nil {
 					// Redirect handler produced a synthetic response -- send it as-is.
-					resp = blocked.SyntheticResponse
+					resp = decision.Blocked.SyntheticResponse
 				} else {
-					resp = blockRequestResponse(*blocked)
+					resp = blockRequestResponse(*decision.Blocked)
 				}
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
@@ -203,7 +211,7 @@ func RunWSProxy(
 		}
 
 		// Forward to upstream.
-		if writeErr := wsClient.WriteMessage(msg); writeErr != nil {
+		if writeErr := wsClient.WriteMessage(decision.ForwardMessage); writeErr != nil {
 			stdinErr = fmt.Errorf("upstream write: %w", writeErr)
 			break
 		}

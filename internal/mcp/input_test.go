@@ -3435,6 +3435,16 @@ func TestInjectMCPEnvelope_NoParams(t *testing.T) {
 	}
 }
 
+func TestInjectMCPEnvelope_NullParamsCreatesMetaMap(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}`)
+	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x", Action: "read", Verdict: "allow"})
+
+	if !bytes.Contains(got, []byte(`"_meta"`)) {
+		t.Fatalf("expected _meta to be created for null params, got: %s", got)
+	}
+}
+
 func TestInjectMCPEnvelope_StripsExistingSpoofedEnvelope(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"}}}}`)
@@ -3490,6 +3500,18 @@ func TestStripInboundMCPMeta_RemovesSpoofedKey(t *testing.T) {
 	}
 	if meta["other"] != "keep" {
 		t.Error("other _meta key should be preserved")
+	}
+}
+
+func TestStripInboundMCPMeta_PreservesLargeIntegerMeta(t *testing.T) {
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"},"progressToken":9007199254740993}}}`)
+	got := stripInboundMCPMeta(msg)
+
+	if !bytes.Contains(got, []byte(`9007199254740993`)) {
+		t.Fatalf("large integer should be preserved exactly, got: %s", got)
+	}
+	if bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("mediation key should be stripped, got: %s", got)
 	}
 }
 

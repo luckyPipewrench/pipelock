@@ -1809,9 +1809,12 @@ func TestStripOrBlock_InvalidJSON(t *testing.T) {
 	var log bytes.Buffer
 
 	// Invalid JSON causes stripResponse to fail; stripOrBlock falls back to block.
-	err := stripOrBlock([]byte("not valid json"), sc, w, &log, json.RawMessage(`42`))
+	forwarded, err := stripOrBlock([]byte("not valid json"), sc, w, &log, json.RawMessage(`42`))
 	if err != nil {
 		t.Fatalf("unexpected write error: %v", err)
+	}
+	if forwarded {
+		t.Fatal("invalid JSON should fall back to block, not forward stripped content")
 	}
 
 	if !strings.Contains(log.String(), "strip failed") {
@@ -1833,9 +1836,12 @@ func TestStripOrBlock_ValidStrip(t *testing.T) {
 	w := &syncWriter{w: &out}
 	var log bytes.Buffer
 
-	err := stripOrBlock([]byte(injectionResponse), sc, w, &log, json.RawMessage(`42`))
+	forwarded, err := stripOrBlock([]byte(injectionResponse), sc, w, &log, json.RawMessage(`42`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !forwarded {
+		t.Fatal("valid strip should report forwarded=true")
 	}
 
 	// Should have stripped the injection, not blocked.
@@ -2127,9 +2133,12 @@ func TestStripOrBlock_NonRedactable_FallsBackToBlock(t *testing.T) {
 	writer := &syncWriter{w: &out}
 	var logBuf bytes.Buffer
 
-	err := stripOrBlock([]byte(resp), sc, writer, &logBuf, json.RawMessage("1"))
+	forwarded, err := stripOrBlock([]byte(resp), sc, writer, &logBuf, json.RawMessage("1"))
 	if err != nil {
 		t.Fatalf("unexpected write error: %v", err)
+	}
+	if forwarded {
+		t.Fatal("non-redactable response should block, not report forwarded")
 	}
 
 	// Should have written a block response, not the original injection.

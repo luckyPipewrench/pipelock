@@ -325,6 +325,13 @@ dlp:
 | `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, or `wif` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 
+There is no top-level `dlp.action` setting. DLP enforcement is transport-specific:
+
+- URL/query scanning uses global `mode` plus `enforce` (`mode: audit` or `enforce: false` logs but does not block).
+- HTTP request body/header scanning uses `request_body_scanning.action`.
+- MCP input scanning uses `mcp_input_scanning.action`.
+- `response_scanning.action: strip` is for inbound prompt-injection response rewriting, not DLP.
+
 ### Validated Patterns (Financial DLP)
 
 Some patterns include a `validator` field for post-match checksum verification. When set, regex matches are passed through a checksum algorithm before being flagged. This eliminates false positives from random numbers that happen to match the pattern format.

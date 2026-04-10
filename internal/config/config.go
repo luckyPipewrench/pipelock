@@ -26,9 +26,10 @@ import (
 
 // Mode constants for Pipelock operating modes.
 const (
-	ModeStrict   = "strict"
-	ModeBalanced = "balanced"
-	ModeAudit    = "audit"
+	ModeStrict     = "strict"
+	ModeBalanced   = "balanced"
+	ModeAudit      = "audit"
+	ModePermissive = "permissive"
 )
 
 // Hook variables set by enterprise builds. Nil in OSS mode.
@@ -385,6 +386,7 @@ type Config struct {
 	BrowserShield         BrowserShield           `yaml:"browser_shield"`
 	MediaPolicy           MediaPolicy             `yaml:"media_policy"`
 	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
+	Taint                 TaintConfig             `yaml:"taint"`
 	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
@@ -970,6 +972,28 @@ type MediationEnvelope struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// TaintConfig configures exposure-based policy escalation for sessions that
+// recently observed untrusted content.
+type TaintConfig struct {
+	Enabled            bool                 `yaml:"enabled"`
+	AllowlistedDomains []string             `yaml:"allowlisted_domains"`
+	ProtectedPaths     []string             `yaml:"protected_paths"`
+	ElevatedPaths      []string             `yaml:"elevated_paths"`
+	TrustOverrides     []TaintTrustOverride `yaml:"trust_overrides"`
+	Policy             string               `yaml:"policy"`         // strict, balanced, permissive
+	RecentSources      int                  `yaml:"recent_sources"` // bounded recent source history
+}
+
+// TaintTrustOverride grants a narrow, expiring trust exemption.
+type TaintTrustOverride struct {
+	Scope       string    `yaml:"scope"`
+	SourceMatch string    `yaml:"source_match"`
+	ActionMatch string    `yaml:"action_match"`
+	ExpiresAt   time.Time `yaml:"expires_at"`
+	GrantedBy   string    `yaml:"granted_by"`
+	Reason      string    `yaml:"reason"`
+}
+
 // MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
 type MCPBinaryIntegrity struct {
 	Enabled      bool   `yaml:"enabled"`
@@ -1478,6 +1502,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ScanAPI.Kinds.DLP = true
 		cfg.ScanAPI.Kinds.PromptInjection = true
 		cfg.ScanAPI.Kinds.ToolCall = true
+		cfg.Taint.Enabled = true
 		return
 	}
 
@@ -1539,6 +1564,10 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// Behavioral baseline: poison_resistance defaults to true (trimmed-mean scoring).
 	bb, _ := raw["behavioral_baseline"].(map[string]interface{})
 	setBoolDefault(bb, "poison_resistance", &cfg.BehavioralBaseline.PoisonResistance)
+
+	// Taint defaults to enabled when omitted, matching Defaults().
+	taint, _ := raw["taint"].(map[string]interface{})
+	setBoolDefault(taint, "enabled", &cfg.Taint.Enabled)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
@@ -1951,6 +1980,23 @@ func (c *Config) ApplyDefaults() {
 		}
 	}
 
+	// Taint policy defaults
+	if c.Taint.Policy == "" {
+		c.Taint.Policy = ModeBalanced
+	}
+	if c.Taint.RecentSources < 0 {
+		c.Taint.RecentSources = 10
+	}
+	if c.Taint.AllowlistedDomains == nil {
+		c.Taint.AllowlistedDomains = append([]string(nil), Defaults().Taint.AllowlistedDomains...)
+	}
+	if c.Taint.ProtectedPaths == nil {
+		c.Taint.ProtectedPaths = append([]string(nil), Defaults().Taint.ProtectedPaths...)
+	}
+	if c.Taint.ElevatedPaths == nil {
+		c.Taint.ElevatedPaths = append([]string(nil), Defaults().Taint.ElevatedPaths...)
+	}
+
 	// MCP binary integrity defaults
 	if c.MCPBinaryIntegrity.Enabled {
 		if c.MCPBinaryIntegrity.Action == "" {
@@ -2128,6 +2174,7 @@ func (c *Config) Validate() error {
 		c.validateBehavioralBaseline,
 		c.validateAirlock,
 		c.validateBrowserShield,
+		c.validateTaint,
 		c.validateMediationEnvelope,
 		c.validateMediaPolicy,
 	}
@@ -2181,7 +2228,7 @@ func (c *Config) validateDLP() error {
 	// These fields exist on the struct so YAML doesn't silently drop them;
 	// validation rejects non-empty values with an explicit error.
 	if c.DLP.Action != "" {
-		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (e.g. request_body_scanning.action for bodies, mcp_input_scanning.action for MCP, enforce/audit mode for URL scanning)", c.DLP.Action)
+		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (request_body_scanning.action for HTTP bodies/headers, mcp_input_scanning.action for MCP input, enforce/audit mode for URL scanning, and response_scanning.action only for inbound prompt-injection response scanning)", c.DLP.Action)
 	}
 
 	// Validate DLP patterns compile as valid regexes
@@ -3396,6 +3443,59 @@ func (c *Config) validateMediationEnvelope() error {
 	return nil
 }
 
+func (c *Config) validateTaint() error {
+	switch c.Taint.Policy {
+	case "", ModeBalanced, ModeStrict, ModePermissive:
+	default:
+		return fmt.Errorf("invalid taint.policy %q: must be %s, %s, or %s", c.Taint.Policy, ModeStrict, ModeBalanced, ModePermissive)
+	}
+	if c.Taint.RecentSources < 0 {
+		return fmt.Errorf("taint.recent_sources must be >= 0")
+	}
+	if err := ValidateTrustedDomains(c.Taint.AllowlistedDomains, "taint.allowlisted_domains"); err != nil {
+		return err
+	}
+	if err := validatePathGlobs(c.Taint.ProtectedPaths, "taint.protected_paths"); err != nil {
+		return err
+	}
+	if err := validatePathGlobs(c.Taint.ElevatedPaths, "taint.elevated_paths"); err != nil {
+		return err
+	}
+	for i, override := range c.Taint.TrustOverrides {
+		if override.Scope == "" {
+			return fmt.Errorf("taint.trust_overrides[%d].scope is required", i)
+		}
+		switch override.Scope {
+		case "action":
+			if override.ActionMatch == "" {
+				return fmt.Errorf("taint.trust_overrides[%d].action_match is required for scope=action", i)
+			}
+		case "source":
+			if override.SourceMatch == "" {
+				return fmt.Errorf("taint.trust_overrides[%d].source_match is required for scope=source", i)
+			}
+		default:
+			return fmt.Errorf("invalid taint.trust_overrides[%d].scope %q: must be action or source", i, override.Scope)
+		}
+		if override.ExpiresAt.IsZero() {
+			return fmt.Errorf("taint.trust_overrides[%d].expires_at is required", i)
+		}
+	}
+	return nil
+}
+
+func validatePathGlobs(patterns []string, label string) error {
+	for i, pattern := range patterns {
+		if pattern == "" {
+			return fmt.Errorf("%s[%d] must not be empty", label, i)
+		}
+		if _, err := path.Match(pattern, "probe"); err != nil {
+			return fmt.Errorf("%s[%d] %q: invalid glob: %w", label, i, pattern, err)
+		}
+	}
+	return nil
+}
+
 // validateMediaPolicy checks media_policy settings for consistency.
 // Runs on every Load() and hot reload. Validation is deliberately strict on
 // explicit values but permissive on unset/default (nil bool, zero int, empty
@@ -3443,7 +3543,6 @@ func (c *Config) validateMediaPolicy() error {
 			return fmt.Errorf("media_policy.allowed_image_types must not include image/svg+xml: SVG is active content handled by browser_shield")
 		}
 	}
-
 	return nil
 }
 
@@ -3621,6 +3720,47 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// Warn if escalation levels are weakened on reload.
 	if old.AdaptiveEnforcement.Enabled && updated.AdaptiveEnforcement.Enabled {
 		checkEscalationWeakening(&old.AdaptiveEnforcement.Levels, &updated.AdaptiveEnforcement.Levels, &warnings)
+	}
+
+	// Taint escalation disabled or weakened.
+	if old.Taint.Enabled && !updated.Taint.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "taint.enabled",
+			Message: "taint-aware policy escalation disabled",
+		})
+	}
+	taintPolicyRank := map[string]int{ModeStrict: 3, ModeBalanced: 2, ModePermissive: 1}
+	if old.Taint.Enabled && updated.Taint.Enabled && taintPolicyRank[updated.Taint.Policy] < taintPolicyRank[old.Taint.Policy] {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "taint.policy",
+			Message: fmt.Sprintf("taint policy downgraded from %s to %s", old.Taint.Policy, updated.Taint.Policy),
+		})
+	}
+	if old.Taint.Enabled && updated.Taint.Enabled {
+		if added := passthroughDomainsAdded(old.Taint.AllowlistedDomains, updated.Taint.AllowlistedDomains); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.allowlisted_domains",
+				Message: fmt.Sprintf("taint allowlisted domains added: %s — these sources now downgrade from untrusted to allowlisted", strings.Join(added, ", ")),
+			})
+		}
+		if removed := removedPatterns(old.Taint.ProtectedPaths, updated.Taint.ProtectedPaths); len(removed) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.protected_paths",
+				Message: fmt.Sprintf("taint protected paths removed: %s — fewer actions are treated as protected under taint", strings.Join(removed, ", ")),
+			})
+		}
+		if removed := removedPatterns(old.Taint.ElevatedPaths, updated.Taint.ElevatedPaths); len(removed) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.elevated_paths",
+				Message: fmt.Sprintf("taint elevated paths removed: %s — fewer actions are treated as elevated under taint", strings.Join(removed, ", ")),
+			})
+		}
+		if added := taintOverridesAdded(old.Taint.TrustOverrides, updated.Taint.TrustOverrides); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.trust_overrides",
+				Message: fmt.Sprintf("taint trust overrides added: %s", strings.Join(added, ", ")),
+			})
+		}
 	}
 
 	// MCP session binding disabled
@@ -4115,6 +4255,57 @@ func passthroughDomainsAdded(old, updated []string) []string {
 		}
 	}
 	return added
+}
+
+func taintOverridesAdded(old, updated []TaintTrustOverride) []string {
+	oldExpiry := make(map[string]time.Time, len(old))
+	for _, override := range old {
+		key := taintOverrideReloadKey(override)
+		if expiry, exists := oldExpiry[key]; !exists || override.ExpiresAt.After(expiry) {
+			oldExpiry[key] = override.ExpiresAt
+		}
+	}
+	var added []string
+	for _, override := range updated {
+		key := taintOverrideReloadKey(override)
+		oldExpiresAt, exists := oldExpiry[key]
+		switch {
+		case !exists:
+			added = append(added, key)
+		case override.ExpiresAt.After(oldExpiresAt):
+			added = append(added, fmt.Sprintf("%s expires_at=%s", key, override.ExpiresAt.UTC().Format(time.RFC3339)))
+		}
+	}
+	return added
+}
+
+func removedPatterns(old, updated []string) []string {
+	updatedSet := make(map[string]struct{}, len(updated))
+	for _, pattern := range updated {
+		updatedSet[pattern] = struct{}{}
+	}
+	var removed []string
+	for _, pattern := range old {
+		if _, exists := updatedSet[pattern]; !exists {
+			removed = append(removed, pattern)
+		}
+	}
+	return removed
+}
+
+func taintOverrideReloadKey(override TaintTrustOverride) string {
+	scope := strings.ToLower(strings.TrimSpace(override.Scope))
+	source := strings.ToLower(strings.TrimSpace(override.SourceMatch))
+	action := strings.ToLower(strings.TrimSpace(override.ActionMatch))
+
+	switch scope {
+	case "source":
+		return fmt.Sprintf("scope=%s source=%s", scope, source)
+	case "action":
+		return fmt.Sprintf("scope=%s action=%s", scope, action)
+	default:
+		return fmt.Sprintf("scope=%s source=%s action=%s", scope, source, action)
+	}
 }
 
 // ssrfIPAllowlistExpanded returns CIDR strings from updated that expand coverage
@@ -4645,6 +4836,29 @@ func Defaults() *Config {
 				"hcaptcha.com",
 				"www.recaptcha.net",
 			},
+		},
+		Taint: TaintConfig{
+			Enabled: true,
+			AllowlistedDomains: []string{
+				"docs.anthropic.com",
+				"docs.github.com",
+				"developer.mozilla.org",
+			},
+			ProtectedPaths: []string{
+				"*/auth/*",
+				"*/security/*",
+				"*/.github/workflows/*",
+				"*/.env*",
+				"*/secrets*",
+				"*/policy*",
+				"*/sandbox*",
+			},
+			ElevatedPaths: []string{
+				"*/config/*",
+				"*/middleware*",
+			},
+			Policy:        ModeBalanced,
+			RecentSources: 10,
 		},
 		MediationEnvelope: MediationEnvelope{},
 		MediaPolicy:       MediaPolicy{

@@ -1355,6 +1355,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		fetchRec = sm.GetOrCreate(fetchSessionKey)
 	}
+	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
 	// Airlock check: drain tier blocks all traffic including fetch.
 	if fetchSess, ok := fetchRec.(*SessionState); ok && fetchSess != nil {
@@ -1381,15 +1382,21 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  actionID,
-				Verdict:   config.ActionBlock,
-				Layer:     result.Scanner,
-				Pattern:   result.Reason,
-				Transport: "fetch",
-				Method:    http.MethodGet,
-				Target:    displayURL,
-				RequestID: requestID,
-				Agent:     agent,
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               result.Scanner,
+				Pattern:             result.Reason,
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
 			})
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
@@ -1637,12 +1644,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Inject mediation envelope before forwarding on allow path.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
 		if envErr := envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
-			ActionID:   actionID,
-			Action:     string(receipt.ActionRead),
-			Verdict:    config.ActionAllow,
-			SideEffect: string(receipt.SideEffectExternalRead),
-			Actor:      agent,
-			ActorAuth:  id.Auth,
+			ActionID:      actionID,
+			Action:        string(receipt.ActionRead),
+			Verdict:       config.ActionAllow,
+			SideEffect:    string(receipt.SideEffectExternalRead),
+			Actor:         agent,
+			ActorAuth:     id.Auth,
+			SessionTaint:  fetchTaint.Risk.Level.String(),
+			AuthorityKind: fetchTaint.Authority.String(),
 		}); envErr != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
 		}
@@ -1687,6 +1696,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
+
+	responsePromptHit := false
+	defer func() {
+		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), resp.Header.Get("Content-Type"), "fetch_response", responsePromptHit)
+	}()
 
 	// Limit response body size: use the tighter of max_response_mb and the
 	// remaining per-agent byte budget, so oversized responses are blocked
@@ -1851,6 +1865,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				hasFinding = true
 			}
 			hiddenInjectionFound = found
+			responsePromptHit = responsePromptHit || found
 		}
 	}
 
@@ -1873,6 +1888,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// TransformedContent cannot map back to the full HTML (it operates on
 	// concatenated fragments), so strip cannot function here.
 	if hiddenInjectionFound && !readabilityOK {
+		responsePromptHit = true
 		reason := "hidden injection detected and readability extraction failed (fail-closed)"
 		log.LogBlocked(actx, "response_scan", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
@@ -1896,6 +1912,21 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
+
+		// Filter out suppressed findings before deriving taint or capture action.
+		if !scanResult.Clean && len(cfg.Suppress) > 0 {
+			var kept []scanner.ResponseMatch
+			for _, m := range scanResult.Matches {
+				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
+					kept = append(kept, m)
+				}
+			}
+			scanResult.Matches = kept
+			scanResult.Clean = len(kept) == 0
+		}
+		if !scanResult.Clean {
+			responsePromptHit = true
+		}
 
 		// Capture observer: record response scan verdict for policy replay.
 		respAction := sc.ResponseAction()
@@ -1949,13 +1980,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  actionID,
-		Verdict:   config.ActionAllow,
-		Transport: "fetch",
-		Method:    http.MethodGet,
-		Target:    displayURL,
-		RequestID: requestID,
-		Agent:     agent,
+		ActionID:            actionID,
+		Verdict:             config.ActionAllow,
+		Transport:           "fetch",
+		Method:              http.MethodGet,
+		Target:              displayURL,
+		RequestID:           requestID,
+		Agent:               agent,
+		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+		SessionContaminated: fetchTaint.Risk.Contaminated,
+		RecentTaintSources:  fetchTaint.Risk.Sources,
+		AuthorityKind:       fetchTaint.Authority.String(),
+		TaintDecision:       fetchTaint.Result.Decision.String(),
+		TaintDecisionReason: fetchTaint.Result.Reason,
 	})
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 

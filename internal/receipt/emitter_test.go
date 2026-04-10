@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -166,6 +167,67 @@ func TestEmitter_Emit_HappyPath(t *testing.T) {
 	}
 	if receipt.ActionRecord.Principal != testPrincipal {
 		t.Errorf("principal = %q, want %q", receipt.ActionRecord.Principal, testPrincipal)
+	}
+}
+
+func TestEmitter_Emit_TaintFields(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+
+	source := session.TaintSourceRef{
+		URL:   "https://evil.example/issue/123",
+		Kind:  "http_response",
+		Level: session.TaintExternalUntrusted,
+	}
+	err := e.Emit(EmitOpts{
+		ActionID:            NewActionID(),
+		Target:              testTarget,
+		Verdict:             config.ActionAllow,
+		Transport:           testTransport,
+		Method:              http.MethodPost,
+		SessionTaintLevel:   session.TaintExternalUntrusted.String(),
+		SessionContaminated: true,
+		RecentTaintSources:  []session.TaintSourceRef{source},
+		AuthorityKind:       session.AuthorityOperatorOverride.String(),
+		TaintDecision:       "ask",
+		TaintDecisionReason: "protected_write_after_untrusted_external_exposure",
+	})
+	if err != nil {
+		t.Fatalf("Emit() error: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close() error: %v", err)
+	}
+
+	got := readReceiptFromDir(t, dir, pub)
+	if got.ActionRecord.SessionTaintLevel != session.TaintExternalUntrusted.String() {
+		t.Fatalf("session_taint_level = %q", got.ActionRecord.SessionTaintLevel)
+	}
+	if !got.ActionRecord.SessionContaminated {
+		t.Fatal("expected session_contaminated to be true")
+	}
+	if len(got.ActionRecord.RecentTaintSources) != 1 {
+		t.Fatalf("recent_taint_sources length = %d, want 1", len(got.ActionRecord.RecentTaintSources))
+	}
+	if got.ActionRecord.AuthorityKind != session.AuthorityOperatorOverride.String() {
+		t.Fatalf("authority_kind = %q", got.ActionRecord.AuthorityKind)
+	}
+	if got.ActionRecord.TaintDecision != "ask" {
+		t.Fatalf("taint_decision = %q", got.ActionRecord.TaintDecision)
+	}
+	if got.ActionRecord.TaintDecisionReason != "protected_write_after_untrusted_external_exposure" {
+		t.Fatalf("taint_decision_reason = %q", got.ActionRecord.TaintDecisionReason)
 	}
 }
 

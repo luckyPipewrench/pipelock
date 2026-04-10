@@ -2365,6 +2365,9 @@ func TestSessionManager_ResetSession_ClearsIPState(t *testing.T) {
 	if prev.Kind != sessionKindIdentity {
 		t.Errorf("kind: got %q, want %q", prev.Kind, sessionKindIdentity)
 	}
+	if prev.TaintLevel != session.TaintTrusted.String() {
+		t.Errorf("taint level: got %q, want %q", prev.TaintLevel, session.TaintTrusted.String())
+	}
 
 	sm.mu.RLock()
 	ipDomains := sm.ipDomains["10.0.0.1"]
@@ -2414,6 +2417,38 @@ func TestSessionManager_ResetSession_LivePointerStillWorks(t *testing.T) {
 	}
 	if sess.ThreatScore() != 0 {
 		t.Error("threat score should be 0 after reset")
+	}
+}
+
+func TestSessionManager_ResetSession_PreservesTaintSnapshotFields(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 300,
+		DomainBurst:            10,
+		WindowMinutes:          5,
+	}
+	sm := NewSessionManager(cfg, nil, metrics.New())
+	defer sm.Close()
+
+	sess := sm.GetOrCreate("agent|10.0.0.1")
+	sess.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://evil.example/issue/123",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+
+	prev, found := sm.ResetSession("agent|10.0.0.1")
+	if !found {
+		t.Fatal("expected session to be found")
+	}
+	if prev.TaintLevel != session.TaintExternalUntrusted.String() {
+		t.Fatalf("taint level = %q, want %q", prev.TaintLevel, session.TaintExternalUntrusted.String())
+	}
+	if !prev.Contaminated {
+		t.Fatal("expected previous snapshot to report contamination")
 	}
 }
 

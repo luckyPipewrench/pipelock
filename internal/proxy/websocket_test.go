@@ -161,11 +161,10 @@ func setupWSProxy(t *testing.T, cfgMod func(*config.Config)) (string, func()) {
 	return proxyAddr, cancel
 }
 
-// dialWS connects to the proxy /ws endpoint and returns the raw connection.
+// dialWSConn connects to the proxy /ws endpoint and returns the raw connection.
 // Compression is disabled to avoid "compressed frames not supported" errors
 // when the proxy relays frames without per-message deflate negotiation.
-func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
-	t.Helper()
+func dialWSConn(proxyAddr, backendAddr string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -174,6 +173,17 @@ func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 		Extensions: nil, // disable per-message deflate compression
 	}
 	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// dialWS connects to the proxy /ws endpoint and returns the raw connection.
+func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
+	t.Helper()
+
+	conn, err := dialWSConn(proxyAddr, backendAddr)
 	if err != nil {
 		t.Fatalf("ws dial: %v", err)
 	}
@@ -2751,7 +2761,14 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	var reply []byte
 	const maxAttempts = 10
 	for attempt := range maxAttempts {
-		c := dialWS(t, proxyAddr, backendAddr)
+		c, dialErr := dialWSConn(proxyAddr, backendAddr)
+		if dialErr != nil {
+			if attempt == maxAttempts-1 {
+				t.Fatalf("dial/read initial frame after %d attempts: dial error: %v", maxAttempts, dialErr)
+			}
+			time.Sleep(250 * time.Millisecond)
+			continue
+		}
 		r, _, readErr := wsutil.ReadServerData(c)
 		if readErr == nil && string(r) == testWSHello {
 			conn = c

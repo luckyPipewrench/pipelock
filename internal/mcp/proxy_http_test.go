@@ -96,6 +96,27 @@ func readReceiptEntriesHTTP(t *testing.T, dir string) []recorder.Entry {
 	return all
 }
 
+func findActionReceiptHTTP(t *testing.T, entries []recorder.Entry) receipt.Receipt {
+	t.Helper()
+
+	for _, entry := range entries {
+		if entry.Type != "action_receipt" {
+			continue
+		}
+		detailJSON, err := json.Marshal(entry.Detail)
+		if err != nil {
+			t.Fatalf("Marshal(detail): %v", err)
+		}
+		var recorded receipt.Receipt
+		if err := json.Unmarshal(detailJSON, &recorded); err != nil {
+			t.Fatalf("Unmarshal(detail): %v", err)
+		}
+		return recorded
+	}
+	t.Fatal("expected action receipt entry")
+	return receipt.Receipt{}
+}
+
 func testScannerForHTTP(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
@@ -971,6 +992,39 @@ func TestScanHTTPInput_PolicyAskFallbackToBlock(t *testing.T) {
 	}
 	if blocked.ErrorCode != -32002 {
 		t.Errorf("ErrorCode = %d, want -32002", blocked.ErrorCode)
+	}
+}
+
+func TestScanHTTPInputDecision_ReceiptVerdictForAskFallbackIsBlock(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	fakeKey := strings.Repeat("a", 40)
+	msg := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"run","arguments":{"code":"echo %s%s"}}}`, testGHPPrefix, fakeKey))
+
+	receiptEmitter, receiptRecorder, receiptDir := newTestReceiptEmitter(t)
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:        sc,
+		ReceiptEmitter: receiptEmitter,
+		Transport:      "mcp_http",
+		InputCfg: &InputScanConfig{
+			Enabled:      true,
+			Action:       config.ActionAsk,
+			OnParseError: config.ActionBlock,
+		},
+	})
+	if decision.Blocked == nil {
+		t.Fatal("expected ask fallback to block")
+	}
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	recorded := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, receiptDir))
+	if recorded.ActionRecord.Verdict != config.ActionBlock {
+		t.Fatalf("receipt verdict = %q, want %q", recorded.ActionRecord.Verdict, config.ActionBlock)
 	}
 }
 
@@ -4161,6 +4215,37 @@ func TestScanHTTPInputDecision_EnvelopeMetadataBackfillWhenInputScanningDisabled
 	}
 	if !foundReceipt {
 		t.Fatal("expected receipt emitter path to record an action receipt when input scanning metadata is backfilled")
+	}
+}
+
+func TestScanHTTPInputDecision_ReceiptBackfillWhenInputScanningDisabledAndBlocked(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"expensive_tool","arguments":{"path":"/tmp/readme.md"}}}`)
+
+	receiptEmitter, receiptRecorder, receiptDir := newTestReceiptEmitter(t)
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:        sc,
+		ReceiptEmitter: receiptEmitter,
+		Transport:      "mcp_http",
+		DoWCheck: func(toolName, _ string) (bool, string, string, string) {
+			if toolName == "expensive_tool" {
+				return false, config.ActionBlock, "budget exceeded", "per_call"
+			}
+			return true, "", "", ""
+		},
+	})
+	if decision.Blocked == nil {
+		t.Fatal("expected request to be blocked by DoW")
+	}
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	record := findActionReceiptHTTP(t, readReceiptEntriesHTTP(t, receiptDir)).ActionRecord
+	if record.Verdict != config.ActionBlock {
+		t.Fatalf("receipt verdict = %q, want %q", record.Verdict, config.ActionBlock)
+	}
+	if record.Target != "expensive_tool" {
+		t.Fatalf("receipt target = %q, want %q", record.Target, "expensive_tool")
 	}
 }
 

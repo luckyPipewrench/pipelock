@@ -266,6 +266,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if trimmed := bytes.TrimSpace(msg); len(trimmed) > 0 && trimmed[0] == '[' {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch request (not supported by MCP)\n")
 		recordAdaptiveSignal(session.SignalBlock)
+		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
 			ID:           extractRPCID(msg),
 			ErrorCode:    -32600,
@@ -344,6 +345,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 					} else {
 						recordAdaptiveSignal(session.SignalBlock)
 					}
+					receiptVerdict = config.ActionBlock
 					result.Blocked = &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -377,6 +379,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
 					}
 					recordAdaptiveSignal(session.SignalBlock)
+					receiptVerdict = config.ActionBlock
 					result.Blocked = &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
 					return result
 				}
@@ -410,6 +413,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				}
 				if cv.Action == config.ActionBlock {
 					recordAdaptiveSignal(session.SignalBlock)
+					receiptVerdict = config.ActionBlock
 					result.Blocked = &BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -428,6 +432,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Parse error — always block.
 	if verdict.Error != "" {
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
+		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isRPCNotification(verdict.ID),
@@ -615,7 +620,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if len(trimmedMsg) > 0 && trimmedMsg[0] == '[' {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch (%s) [redirect not supported for batches]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
-			receiptVerdict = effectiveAction
+			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
 				LogMessage: "blocked (batch redirect)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
@@ -626,7 +631,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// No policy config — fail closed.
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect without policy config]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
-			receiptVerdict = effectiveAction
+			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
 				LogMessage: "blocked (no policy config)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
@@ -637,7 +642,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if !ok {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect profile %q not found]\n", joinStrings(reasons), policyVerdict.RedirectProfile)
 			recordAdaptiveSignal(session.SignalBlock)
-			receiptVerdict = effectiveAction
+			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
 				ID: verdict.ID, IsNotification: isNotification,
 				LogMessage: "blocked (redirect profile missing)", ErrorCode: -32002, ErrorMessage: errPolicyBlocked,
@@ -712,7 +717,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
 		recordAdaptiveSignal(session.SignalBlock)
-		receiptVerdict = effectiveAction
+		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,

@@ -26,9 +26,10 @@ import (
 
 // Mode constants for Pipelock operating modes.
 const (
-	ModeStrict   = "strict"
-	ModeBalanced = "balanced"
-	ModeAudit    = "audit"
+	ModeStrict     = "strict"
+	ModeBalanced   = "balanced"
+	ModeAudit      = "audit"
+	ModePermissive = "permissive"
 )
 
 // Hook variables set by enterprise builds. Nil in OSS mode.
@@ -3439,9 +3440,9 @@ func (c *Config) validateMediationEnvelope() error {
 
 func (c *Config) validateTaint() error {
 	switch c.Taint.Policy {
-	case "", ModeBalanced, ModeStrict, "permissive":
+	case "", ModeBalanced, ModeStrict, ModePermissive:
 	default:
-		return fmt.Errorf("invalid taint.policy %q: must be strict, balanced, or permissive", c.Taint.Policy)
+		return fmt.Errorf("invalid taint.policy %q: must be %s, %s, or %s", c.Taint.Policy, ModeStrict, ModeBalanced, ModePermissive)
 	}
 	if c.Taint.RecentSources < 0 {
 		return fmt.Errorf("taint.recent_sources must be >= 0")

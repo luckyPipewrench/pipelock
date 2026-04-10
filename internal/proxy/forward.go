@@ -1152,7 +1152,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
 		p.logger.LogResponseScanExempt(actx, fwdRespHost)
 	}
-	if sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled {
+	// Buffer the response when ANY of response scanning, browser shield, or
+	// media policy is enabled. Media policy cannot be gated behind the
+	// scanning flag — an operator who disables response scanning for
+	// performance would otherwise stream raw media past the policy and
+	// lose image metadata stripping, audio/video blocks, and exposure
+	// events.
+	if sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled() {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
@@ -1176,6 +1182,30 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordBlocked(fwdRespHost, "shield_oversize", time.Since(start), agentLabel)
 			http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 			return
+		}
+
+		// Media policy: strip metadata from allowed images, block unused
+		// media types (audio/video by default, oversized images, disallowed
+		// types). Runs after Browser Shield so HTML responses flow through
+		// unchanged and image responses are handled transport-agnostically.
+		mediaVerdict := applyMediaPolicy(cfg, resp.Header.Get("Content-Type"), respBody)
+		logMediaExposureIfPresent(p.logger, actx, mediaVerdict, "forward")
+		if mediaVerdict.Blocked {
+			p.logger.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
+			p.metrics.RecordBlocked(fwdRespHost, "media_policy", time.Since(start), agentLabel)
+			http.Error(w, "blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
+			return
+		}
+		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+			respBody = mediaVerdict.Body
+			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			// Clear body-derived validators. Content-MD5 describes a
+			// hash of the upstream bytes — stale after metadata
+			// stripping, and a validating client or intermediary
+			// will reject the response.
+			resp.Header.Del("ETag")
+			resp.Header.Del("Digest")
+			resp.Header.Del("Content-MD5")
 		}
 
 		// A2A response body scanning: field-aware walk for Agent Card drift
@@ -1221,118 +1251,127 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		scanResult := sc.ScanResponse(r.Context(), string(respBody))
-		if !scanResult.Clean {
-			responsePromptHit = true
-		}
+		// Response injection scanning: only runs when the scanner feature
+		// is enabled. Media policy above always runs when MediaPolicy
+		// is enabled, even if response scanning is off.
+		if sc.ResponseScanningEnabled() {
+			scanResult := sc.ScanResponse(r.Context(), string(respBody))
+			if !scanResult.Clean {
+				responsePromptHit = true
+			}
 
-		// Capture observer: record forward response scan verdict for policy replay.
-		// Apply exempt override before capture so the recorded action matches runtime.
-		{
-			fwdRespAction := sc.ResponseAction()
-			if fwdRespExempt {
-				fwdRespAction = config.ActionWarn
-			}
-			if scanResult.Clean {
-				fwdRespAction = ""
-			}
-			p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
-				Subsurface:        "response_forward",
-				Transport:         "forward",
-				RequestID:         requestID,
-				Agent:             agent,
-				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
-				TransformKind:     capture.TransformRaw,
-				RawFindings:       responseMatchesToFindings(scanResult.Matches, fwdRespAction),
-				EffectiveFindings: responseMatchesToFindings(scanResult.Matches, fwdRespAction),
-				EffectiveAction:   fwdRespAction,
-				Outcome:           captureOutcome(fwdRespAction, scanResult.Clean),
-			})
-		}
-
-		// Filter out suppressed findings (parity with fetch proxy).
-		if !scanResult.Clean && len(cfg.Suppress) > 0 {
-			var kept []scanner.ResponseMatch
-			for _, m := range scanResult.Matches {
-				if !config.IsSuppressed(m.PatternName, targetURL, cfg.Suppress) {
-					kept = append(kept, m)
-				}
-			}
-			scanResult.Matches = kept
-			scanResult.Clean = len(kept) == 0
-		}
-		if !scanResult.Clean {
-			hasFinding = true
-			action := sc.ResponseAction()
-			// Exempt domains: pin to warn, skip adaptive scoring/upgrade.
-			if fwdRespExempt {
-				action = config.ActionWarn
-			}
-			patternNames := make([]string, len(scanResult.Matches))
-			for i, match := range scanResult.Matches {
-				patternNames[i] = match.PatternName
-			}
-			bundleRules := responseBundleRules(scanResult.Matches)
-			reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
-
-			// Adaptive enforcement: upgrade the response action before the switch.
-			// Exempt domains skip upgrade — operator's trust decision overrides escalation.
-			originalAction := action
-			if forwardRec != nil && !fwdRespExempt {
-				action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
-				if action != originalAction {
-					sessionKey := clientIP
-					if agent != "" && agent != agentAnonymous {
-						sessionKey = agent + "|" + clientIP
+			// Filter out suppressed findings BEFORE capture (parity with
+			// fetch proxy). If every match is suppressed, runtime treats
+			// the response as clean, and capture must record that
+			// outcome so policy replay matches what actually happened.
+			if !scanResult.Clean && len(cfg.Suppress) > 0 {
+				var kept []scanner.ResponseMatch
+				for _, m := range scanResult.Matches {
+					if !config.IsSuppressed(m.PatternName, targetURL, cfg.Suppress) {
+						kept = append(kept, m)
 					}
-					p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(forwardRec.EscalationLevel()), originalAction, action, "response_scan", clientIP, requestID)
-					p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(forwardRec.EscalationLevel()))
 				}
+				scanResult.Matches = kept
+				scanResult.Clean = len(kept) == 0
 			}
 
-			switch action {
-			case config.ActionBlock, config.ActionAsk:
-				p.logger.LogBlocked(actx, "response_scan", reason)
-				p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
-				http.Error(w, "blocked: response contains injection", http.StatusForbidden)
-				return
-			case config.ActionStrip:
-				// Record SignalStrip for adaptive enforcement scoring.
-				// Exempt domains skip scoring — findings are logged but don't escalate.
-				if !fwdRespExempt {
-					if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+			// Capture observer: record forward response scan verdict for
+			// policy replay. Runs AFTER suppression so the recorded
+			// finding set matches the post-suppression runtime action.
+			{
+				fwdRespAction := sc.ResponseAction()
+				if fwdRespExempt {
+					fwdRespAction = config.ActionWarn
+				}
+				if scanResult.Clean {
+					fwdRespAction = ""
+				}
+				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+					Subsurface:        "response_forward",
+					Transport:         "forward",
+					RequestID:         requestID,
+					Agent:             agent,
+					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:     capture.TransformRaw,
+					RawFindings:       responseMatchesToFindings(scanResult.Matches, fwdRespAction),
+					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, fwdRespAction),
+					EffectiveAction:   fwdRespAction,
+					Outcome:           captureOutcome(fwdRespAction, scanResult.Clean),
+				})
+			}
+			if !scanResult.Clean {
+				hasFinding = true
+				action := sc.ResponseAction()
+				// Exempt domains: pin to warn, skip adaptive scoring/upgrade.
+				if fwdRespExempt {
+					action = config.ActionWarn
+				}
+				patternNames := make([]string, len(scanResult.Matches))
+				for i, match := range scanResult.Matches {
+					patternNames[i] = match.PatternName
+				}
+				bundleRules := responseBundleRules(scanResult.Matches)
+				reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
+
+				// Adaptive enforcement: upgrade the response action before the switch.
+				// Exempt domains skip upgrade — operator's trust decision overrides escalation.
+				originalAction := action
+				if forwardRec != nil && !fwdRespExempt {
+					action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
+					if action != originalAction {
 						sessionKey := clientIP
 						if agent != "" && agent != agentAnonymous {
 							sessionKey = agent + "|" + clientIP
 						}
-						sess := sm.GetOrCreate(sessionKey)
-						decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
-							Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
-							Logger:    p.logger,
-							Metrics:   p.metrics,
-							Session:   sessionKey,
-							ClientIP:  clientIP,
-							RequestID: requestID,
-						})
+						p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(forwardRec.EscalationLevel()), originalAction, action, "response_scan", clientIP, requestID)
+						p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(forwardRec.EscalationLevel()))
 					}
 				}
-				if scanResult.TransformedContent != "" {
-					respBody = []byte(scanResult.TransformedContent)
-					// Remove body-derived validators that no longer match the stripped content.
-					resp.Header.Del("Etag")
-					resp.Header.Del("Content-Md5")
-					resp.Header.Del("Digest")
-				} else {
-					p.logger.LogBlocked(actx, "response_scan", reason+" (strip failed)")
+
+				switch action {
+				case config.ActionBlock, config.ActionAsk:
+					p.logger.LogBlocked(actx, "response_scan", reason)
 					p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
+				case config.ActionStrip:
+					// Record SignalStrip for adaptive enforcement scoring.
+					// Exempt domains skip scoring — findings are logged but don't escalate.
+					if !fwdRespExempt {
+						if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
+							sessionKey := clientIP
+							if agent != "" && agent != agentAnonymous {
+								sessionKey = agent + "|" + clientIP
+							}
+							sess := sm.GetOrCreate(sessionKey)
+							decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
+								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+								Logger:    p.logger,
+								Metrics:   p.metrics,
+								Session:   sessionKey,
+								ClientIP:  clientIP,
+								RequestID: requestID,
+							})
+						}
+					}
+					if scanResult.TransformedContent != "" {
+						respBody = []byte(scanResult.TransformedContent)
+						// Remove body-derived validators that no longer match the stripped content.
+						resp.Header.Del("Etag")
+						resp.Header.Del("Content-Md5")
+						resp.Header.Del("Digest")
+					} else {
+						p.logger.LogBlocked(actx, "response_scan", reason+" (strip failed)")
+						p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
+						http.Error(w, "blocked: response contains injection", http.StatusForbidden)
+						return
+					}
+					p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
+				default:
+					p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 				}
-				p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)
-			default:
-				p.logger.LogResponseScan(actx, action, len(scanResult.Matches), patternNames, bundleRules)
 			}
-		}
+		} // end ResponseScanningEnabled
 
 		// Scan passed — now copy upstream headers and write response.
 		copyResponseHeaders(w.Header(), resp.Header)

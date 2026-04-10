@@ -2730,7 +2730,8 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	// relay→backend handshake can be slow under load.
 	var conn net.Conn
 	var reply []byte
-	for attempt := range 10 {
+	const maxAttempts = 10
+	for attempt := range maxAttempts {
 		c := dialWS(t, proxyAddr, backendAddr)
 		r, _, readErr := wsutil.ReadServerData(c)
 		if readErr == nil && string(r) == testWSHello {
@@ -2739,8 +2740,8 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 			break
 		}
 		_ = c.Close()
-		if attempt == 9 {
-			t.Fatalf("read initial frame after 10 attempts: last error: %v", readErr)
+		if attempt == maxAttempts-1 {
+			t.Fatalf("read initial frame after %d attempts: last error: %v", maxAttempts, readErr)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}

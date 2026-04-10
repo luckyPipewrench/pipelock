@@ -64,6 +64,21 @@ func DefaultInstanceID() string {
 // changes the action applied to a request (e.g. warn → block).
 const EventAdaptiveUpgrade = "adaptive_upgrade"
 
+// EventMediaExposure is the event type emitted when a media response
+// (image/audio/video) reaches an agent through the proxy. Fires on both
+// allowed and blocked paths so the taint/authority policy system can
+// correlate exposure with downstream sensitive actions. Fields include
+// content_type, source URL, size, and whether the response was forwarded
+// or blocked.
+const EventMediaExposure = "media_exposure"
+
+// EventTextStego is the event type emitted when normalize.ZalgoSuspicious
+// reports excessive combining-mark density on a scanned text response. The
+// text is already neutralized by StripCombiningMarks in the scanner
+// pipeline, so this event is an exposure/provenance signal, not a block
+// trigger. Fields include source URL, density, and a snippet hash.
+const EventTextStego = "text_stego_detected"
+
 // actionBlock is the action string that indicates a request was blocked.
 // Used internally for severity mapping — block actions map to SeverityCritical.
 const actionBlock = "block"
@@ -93,6 +108,8 @@ var EventSeverity = map[string]Severity{
 
 	// Warn: security-relevant operational events
 	"response_scan_exempt": SeverityWarn, // scanning was skipped; operators need visibility
+	EventMediaExposure:     SeverityWarn, // media reached agent; provenance signal for taint system
+	EventTextStego:         SeverityWarn, // suspicious combining-mark density; exposure signal
 
 	// Info: normal operations
 	"allowed":       SeverityInfo,

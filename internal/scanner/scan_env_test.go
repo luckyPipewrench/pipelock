@@ -220,6 +220,11 @@ func TestIsNonSecretEnvName(t *testing.T) {
 		{"PWD", true},
 		{"HOME", true},
 		{"PATH", true},
+		// POSIX last-command variable: bash sets $_ to the full path of
+		// the previous command. Leaks high-entropy binary paths into
+		// env-secret collection when the shell ran anything under
+		// /usr/local/bin or /opt. Never a secret.
+		{"_", true},
 		{"LS_COLORS", true},
 		{"SHELL", true},
 		{"USER", true},

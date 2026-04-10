@@ -1573,6 +1573,17 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	var logBuf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-done:
+			if runErr != nil {
+				t.Errorf("RunHTTPListenerProxy: %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timeout waiting for listener proxy to stop")
+		}
+	})
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
 			Scanner:        sc,
@@ -1603,7 +1614,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST listener proxy: %v", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test
+	defer func() { _ = resp.Body.Close() }()
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1613,16 +1624,8 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 		t.Fatalf("expected block response, got: %s", payload)
 	}
 
-	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("RunHTTPListenerProxy: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for listener proxy to stop")
-	}
-
+	// Cleanup is handled by t.Cleanup registered above. Close the
+	// recorder here so receipts are flushed before we read them.
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder.Close: %v", err)
 	}

@@ -478,7 +478,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if len(names) > 0 {
 				pattern = names[0]
 			}
-			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+			if emitErr := opts.ReceiptEmitter.Emit(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   effectiveAction,
 				Transport: opts.Transport,
@@ -486,7 +486,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				RequestID: requestID,
 				Layer:     "mcp_response_scan",
 				Pattern:   pattern,
-			})
+			}); emitErr != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+			}
 		}
 
 		// Signal recording: record after action is taken.

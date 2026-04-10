@@ -538,7 +538,11 @@ signed action receipts for MCP decisions.`,
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
 				if receiptEmitter != nil {
-					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
+					if len(recPrivKey) > 0 {
+						cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
+					} else {
+						cmd.PrintErrf("  Receipts: enabled (unsigned — set flight_recorder.signing_key_path for signed receipts)\n")
+					}
 				}
 			}
 

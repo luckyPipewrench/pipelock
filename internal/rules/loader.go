@@ -155,9 +155,15 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 			freshnessState = &FreshnessState{HighestSeen: make(map[string]uint64)}
 		}
 
+		bctx := &bundleExecCtx{
+			MinRank:        minRank,
+			Result:         result,
+			FreshnessState: freshnessState,
+			Now:            now,
+		}
 		for _, d := range dirs {
 			bundleDir := filepath.Join(rulesDir, d.Name())
-			loadOneBundle(bundleDir, d.Name(), opts, minRank, result, freshnessState, now)
+			loadOneBundle(bundleDir, d.Name(), opts, bctx)
 		}
 
 		// Save updated freshness state if any v2+ bundles were loaded.
@@ -174,9 +180,15 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	if lockErr != nil {
 		// Flock failure: load bundles without freshness protection.
 		result.Warnings = append(result.Warnings, fmt.Sprintf("freshness lock: %v (continuing without cross-process protection)", lockErr))
+		bctx := &bundleExecCtx{
+			MinRank:        minRank,
+			Result:         result,
+			FreshnessState: freshnessState,
+			Now:            now,
+		}
 		for _, d := range dirs {
 			bundleDir := filepath.Join(rulesDir, d.Name())
-			loadOneBundle(bundleDir, d.Name(), opts, minRank, result, freshnessState, now)
+			loadOneBundle(bundleDir, d.Name(), opts, bctx)
 		}
 	}
 
@@ -196,41 +208,51 @@ func LoadBundles(rulesDir string, opts LoadOptions) *LoadResult {
 	return result
 }
 
+// bundleExecCtx groups execution context passed through the bundle loading
+// pipeline. Extracted from loadOneBundle's parameter list per the options-struct
+// convention (>6 params → struct).
+type bundleExecCtx struct {
+	MinRank        int
+	Result         *LoadResult
+	FreshnessState *FreshnessState
+	Now            time.Time
+}
+
 // loadOneBundle loads a single bundle directory and appends results or errors.
-func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, result *LoadResult, freshnessState *FreshnessState, now time.Time) {
+func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecCtx) {
 	bundlePath := filepath.Join(bundleDir, bundleFilename)
 	lockPath := filepath.Join(bundleDir, lockFilename)
 
 	// Read and size-check bundle.yaml.
 	data, err := readBundleFile(bundlePath)
 	if err != nil {
-		result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error()})
 		return
 	}
 
 	// Read lock file.
 	lock, err := ReadLockFile(lockPath)
 	if err != nil {
-		result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("reading lock file: %v", err)})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("reading lock file: %v", err)})
 		return
 	}
 
 	// Verify integrity against the exact bytes we just read (no TOCTOU).
 	if err := VerifyIntegrityBytes(data, bundleDir, lock.Unsigned, lock.SignerFingerprint, lock.BundleSHA256, opts.TrustedKeys); err != nil {
-		result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("integrity check: %v", err)})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("integrity check: %v", err)})
 		return
 	}
 
 	// Parse and validate bundle YAML.
 	bundle, err := ParseBundle(data)
 	if err != nil {
-		result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("parse error: %v", err)})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: fmt.Sprintf("parse error: %v", err)})
 		return
 	}
 
 	// Check min_pipelock version requirement.
 	if err := CheckMinPipelock(bundle.MinPipelock, opts.PipelockVersion); err != nil {
-		result.Errors = append(result.Errors, BundleError{Name: dirName, Reason: err.Error()})
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Reason: err.Error()})
 		return
 	}
 
@@ -239,7 +261,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 	// signature, not directory name).
 	official := strings.HasPrefix(bundle.Name, reservedBundlePrefix) && isOfficialFingerprint(lock.SignerFingerprint)
 	if strings.HasPrefix(bundle.Name, reservedBundlePrefix) && !official {
-		result.Errors = append(result.Errors, BundleError{
+		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 			Name:   dirName,
 			Reason: fmt.Sprintf("bundle name %q uses reserved prefix %q but signer is not official", bundle.Name, reservedBundlePrefix),
 		})
@@ -251,7 +273,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 		// V2 bundles MUST be signed. Unsigned v2 bundles could forge any
 		// tier/key_id and bypass tier-key binding entirely.
 		if lock.Unsigned {
-			result.Errors = append(result.Errors, BundleError{
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 				Name:     dirName,
 				Official: official,
 				Reason:   "format_version 2 bundles must be signed (unsigned v2 bundles are rejected)",
@@ -261,28 +283,28 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 
 		// Tier-key binding: verify the signing key matches the declared tier.
 		if err := CheckTierKeyBinding(bundle, lock.SignerFingerprint, opts.TierKeyMapping); err != nil {
-			result.Errors = append(result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
 			return
 		}
 
 		// Required features: reject bundles needing engine features we don't support.
 		if err := CheckRequiredFeatures(bundle.RequiredFeatures); err != nil {
-			result.Errors = append(result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: err.Error()})
 			return
 		}
 
 		// Freshness: rollback prevention and expiry.
-		fr := CheckFreshness(bundle, freshnessState, now, opts.AllowStale)
+		fr := CheckFreshness(bundle, ctx.FreshnessState, ctx.Now, opts.AllowStale)
 		if !fr.OK {
-			result.Errors = append(result.Errors, BundleError{Name: dirName, Official: official, Reason: fr.Message})
+			ctx.Result.Errors = append(ctx.Result.Errors, BundleError{Name: dirName, Official: official, Reason: fr.Message})
 			return
 		}
 		if fr.Expired {
-			result.Warnings = append(result.Warnings, fr.Message)
+			ctx.Result.Warnings = append(ctx.Result.Warnings, fr.Message)
 		}
 
 		// Record version for future rollback prevention.
-		RecordVersion(freshnessState, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
+		RecordVersion(ctx.FreshnessState, bundle.Tier, bundle.Name, bundle.MonotonicVersion)
 	}
 
 	// Filter and convert rules.
@@ -310,7 +332,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 
 		// Confidence filter.
 		ruleRank := confidenceRank[r.Confidence]
-		if ruleRank < minRank {
+		if ruleRank < ctx.MinRank {
 			continue
 		}
 
@@ -331,7 +353,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 		// Convert rule to config-compatible type.
 		switch r.Type {
 		case RuleTypeDLP:
-			result.DLP = append(result.DLP, config.DLPPattern{
+			ctx.Result.DLP = append(ctx.Result.DLP, config.DLPPattern{
 				Name:          patternName,
 				Regex:         r.Pattern.Regex,
 				Severity:      r.Severity,
@@ -341,7 +363,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 			loaded.DLP++
 
 		case RuleTypeInjection:
-			result.Injection = append(result.Injection, config.ResponseScanPattern{
+			ctx.Result.Injection = append(ctx.Result.Injection, config.ResponseScanPattern{
 				Name:          patternName,
 				Regex:         r.Pattern.Regex,
 				Bundle:        bundle.Name,
@@ -356,7 +378,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 				// Pattern was already validated by ParseBundle, but guard anyway.
 				continue
 			}
-			result.ToolPoison = append(result.ToolPoison, CompiledToolPoisonRule{
+			ctx.Result.ToolPoison = append(ctx.Result.ToolPoison, CompiledToolPoisonRule{
 				Name:          nsID,
 				RuleID:        nsID,
 				Re:            compiled,
@@ -369,7 +391,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, minRank int, res
 	}
 
 	loaded.Rules = loaded.DLP + loaded.Injection + loaded.ToolPoison
-	result.Loaded = append(result.Loaded, loaded)
+	ctx.Result.Loaded = append(ctx.Result.Loaded, loaded)
 }
 
 // readBundleFile reads bundle.yaml with a size check.

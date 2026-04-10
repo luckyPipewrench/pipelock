@@ -713,7 +713,9 @@ func TestEnvelope_ReverseProxyWarnBodyUsesWarnVerdict(t *testing.T) {
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/test", strings.NewReader(`{"token":"ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"}`))
+	fakeToken := "ghp_" + "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"
+	reqBody := fmt.Sprintf(`{"token":"%s"}`, fakeToken)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/test", strings.NewReader(reqBody))
 	if err != nil {
 		t.Fatalf("create request: %v", err)
 	}

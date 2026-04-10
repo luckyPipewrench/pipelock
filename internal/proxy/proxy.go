@@ -1685,6 +1685,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() {
 				resp.Hint = "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks."
 			}
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "redirect",
+				Pattern:   reason,
+				Transport: "fetch",
+				Method:    http.MethodGet,
+				Target:    displayURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			writeJSON(w, http.StatusForbidden, resp)
 			return
 		}
@@ -1730,6 +1741,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			reason := fmt.Sprintf("response size %d exceeds max_response_mb %d", len(body), configMaxBytes)
 			log.LogBlocked(actx, "response_size", reason)
 			p.metrics.RecordBlocked(parsed.Hostname(), "response_size", time.Since(start), agentLabel)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "response_size",
+				Pattern:   reason,
+				Transport: "fetch",
+				Method:    http.MethodGet,
+				Target:    displayURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			writeJSON(w, http.StatusBadGateway, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -1743,6 +1765,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
 		_ = resolved.Budget.RecordBytes(int64(len(body)))
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "budget",
+			Pattern:   reason,
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1765,6 +1798,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	body, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch)
 	if shieldBlocked {
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "shield_oversize",
+			Pattern:   "response body exceeds browser shield size limit",
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL: displayURL, Agent: agent, Blocked: true,
 			BlockReason: "response body exceeds browser shield size limit",
@@ -1825,6 +1869,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		reason := "hidden injection detected and readability extraction failed (fail-closed)"
 		log.LogBlocked(actx, "response_scan", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "response_scan",
+			Pattern:   reason,
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return
 	}
@@ -2008,6 +2063,17 @@ func (p *Proxy) filterAndActOnResponseScan(
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "response_scan",
+			Pattern:   reason,
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		return true, "", true
 	case config.ActionAsk:
@@ -2015,6 +2081,17 @@ func (p *Proxy) filterAndActOnResponseScan(
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
 			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "response_scan",
+				Pattern:   reason,
+				Transport: "fetch",
+				Method:    http.MethodGet,
+				Target:    displayURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
 		}
@@ -2039,6 +2116,17 @@ func (p *Proxy) filterAndActOnResponseScan(
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
 			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "response_scan",
+				Pattern:   reason,
+				Transport: "fetch",
+				Method:    http.MethodGet,
+				Target:    displayURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			writeJSON(w, http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
 		}

@@ -383,6 +383,7 @@ type Config struct {
 	Airlock               Airlock                 `yaml:"airlock"`
 	BrowserShield         BrowserShield           `yaml:"browser_shield"`
 	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
+	Taint                 TaintConfig             `yaml:"taint"`
 	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
 	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
@@ -966,6 +967,28 @@ type FlightRecorder struct {
 // are planned for a follow-up PR. See mediation-envelope-design.md.
 type MediationEnvelope struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+// TaintConfig configures exposure-based policy escalation for sessions that
+// recently observed untrusted content.
+type TaintConfig struct {
+	Enabled            bool                 `yaml:"enabled"`
+	AllowlistedDomains []string             `yaml:"allowlisted_domains"`
+	ProtectedPaths     []string             `yaml:"protected_paths"`
+	ElevatedPaths      []string             `yaml:"elevated_paths"`
+	TrustOverrides     []TaintTrustOverride `yaml:"trust_overrides"`
+	Policy             string               `yaml:"policy"`         // strict, balanced, permissive
+	RecentSources      int                  `yaml:"recent_sources"` // bounded recent source history
+}
+
+// TaintTrustOverride grants a narrow, expiring trust exemption.
+type TaintTrustOverride struct {
+	Scope       string    `yaml:"scope"`
+	SourceMatch string    `yaml:"source_match"`
+	ActionMatch string    `yaml:"action_match"`
+	ExpiresAt   time.Time `yaml:"expires_at"`
+	GrantedBy   string    `yaml:"granted_by"`
+	Reason      string    `yaml:"reason"`
 }
 
 // MCPBinaryIntegrity configures pre-spawn hash verification for MCP subprocesses.
@@ -1758,6 +1781,23 @@ func (c *Config) ApplyDefaults() {
 		}
 	}
 
+	// Taint policy defaults
+	if c.Taint.Policy == "" {
+		c.Taint.Policy = ModeBalanced
+	}
+	if c.Taint.RecentSources <= 0 {
+		c.Taint.RecentSources = 10
+	}
+	if len(c.Taint.AllowlistedDomains) == 0 {
+		c.Taint.AllowlistedDomains = append([]string(nil), Defaults().Taint.AllowlistedDomains...)
+	}
+	if len(c.Taint.ProtectedPaths) == 0 {
+		c.Taint.ProtectedPaths = append([]string(nil), Defaults().Taint.ProtectedPaths...)
+	}
+	if len(c.Taint.ElevatedPaths) == 0 {
+		c.Taint.ElevatedPaths = append([]string(nil), Defaults().Taint.ElevatedPaths...)
+	}
+
 	// MCP binary integrity defaults
 	if c.MCPBinaryIntegrity.Enabled {
 		if c.MCPBinaryIntegrity.Action == "" {
@@ -1935,6 +1975,7 @@ func (c *Config) Validate() error {
 		c.validateBehavioralBaseline,
 		c.validateAirlock,
 		c.validateBrowserShield,
+		c.validateTaint,
 		c.validateMediationEnvelope,
 	}
 	for _, v := range validators {
@@ -1987,7 +2028,7 @@ func (c *Config) validateDLP() error {
 	// These fields exist on the struct so YAML doesn't silently drop them;
 	// validation rejects non-empty values with an explicit error.
 	if c.DLP.Action != "" {
-		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (e.g. request_body_scanning.action for bodies, mcp_input_scanning.action for MCP, enforce/audit mode for URL scanning)", c.DLP.Action)
+		return fmt.Errorf("dlp.action %q is not supported; DLP match behavior depends on the calling surface (request_body_scanning.action for HTTP bodies/headers, mcp_input_scanning.action for MCP input, enforce/audit mode for URL scanning, and response_scanning.action only for inbound prompt-injection response scanning)", c.DLP.Action)
 	}
 
 	// Validate DLP patterns compile as valid regexes
@@ -3202,6 +3243,59 @@ func (c *Config) validateMediationEnvelope() error {
 	return nil
 }
 
+func (c *Config) validateTaint() error {
+	switch c.Taint.Policy {
+	case "", ModeBalanced, ModeStrict, "permissive":
+	default:
+		return fmt.Errorf("invalid taint.policy %q: must be strict, balanced, or permissive", c.Taint.Policy)
+	}
+	if c.Taint.RecentSources < 0 {
+		return fmt.Errorf("taint.recent_sources must be >= 0")
+	}
+	if err := ValidateTrustedDomains(c.Taint.AllowlistedDomains, "taint.allowlisted_domains"); err != nil {
+		return err
+	}
+	if err := validatePathGlobs(c.Taint.ProtectedPaths, "taint.protected_paths"); err != nil {
+		return err
+	}
+	if err := validatePathGlobs(c.Taint.ElevatedPaths, "taint.elevated_paths"); err != nil {
+		return err
+	}
+	for i, override := range c.Taint.TrustOverrides {
+		if override.Scope == "" {
+			return fmt.Errorf("taint.trust_overrides[%d].scope is required", i)
+		}
+		switch override.Scope {
+		case "action":
+			if override.ActionMatch == "" {
+				return fmt.Errorf("taint.trust_overrides[%d].action_match is required for scope=action", i)
+			}
+		case "source":
+			if override.SourceMatch == "" {
+				return fmt.Errorf("taint.trust_overrides[%d].source_match is required for scope=source", i)
+			}
+		default:
+			return fmt.Errorf("invalid taint.trust_overrides[%d].scope %q: must be action or source", i, override.Scope)
+		}
+		if override.ExpiresAt.IsZero() {
+			return fmt.Errorf("taint.trust_overrides[%d].expires_at is required", i)
+		}
+	}
+	return nil
+}
+
+func validatePathGlobs(patterns []string, label string) error {
+	for i, pattern := range patterns {
+		if pattern == "" {
+			return fmt.Errorf("%s[%d] must not be empty", label, i)
+		}
+		if _, err := path.Match(pattern, "probe"); err != nil {
+			return fmt.Errorf("%s[%d] %q: invalid glob: %w", label, i, pattern, err)
+		}
+	}
+	return nil
+}
+
 // ResolveCAPath returns resolved CA cert and key paths.
 // Empty config values resolve to ~/.pipelock/ca.pem and ~/.pipelock/ca-key.pem.
 // Returns an error if $HOME cannot be determined and paths are not set explicitly.
@@ -4331,6 +4425,29 @@ func Defaults() *Config {
 				"hcaptcha.com",
 				"www.recaptcha.net",
 			},
+		},
+		Taint: TaintConfig{
+			Enabled: true,
+			AllowlistedDomains: []string{
+				"docs.anthropic.com",
+				"docs.github.com",
+				"developer.mozilla.org",
+			},
+			ProtectedPaths: []string{
+				"*/auth/*",
+				"*/security/*",
+				"*/.github/workflows/*",
+				"*/.env*",
+				"*/secrets*",
+				"*/policy*",
+				"*/sandbox*",
+			},
+			ElevatedPaths: []string{
+				"*/config/*",
+				"*/middleware*",
+			},
+			Policy:        ModeBalanced,
+			RecentSources: 10,
 		},
 		MediationEnvelope: MediationEnvelope{},
 	}

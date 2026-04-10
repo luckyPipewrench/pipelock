@@ -361,6 +361,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
+			observeMCPResponseTaint(opts, toolPoisonDetected)
 			continue
 		}
 
@@ -436,8 +437,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if err := writer.WriteMessage(line); err != nil {
 						return foundInjection, fmt.Errorf("writing line: %w", err)
 					}
+					observeMCPResponseTaint(opts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
+					observeMCPResponseTaint(opts, true)
 					if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
 						return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 					}
@@ -450,6 +453,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 		case config.ActionStrip:
+			observeMCPResponseTaint(opts, true)
 			if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
 				return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
 			}
@@ -457,6 +461,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
+			observeMCPResponseTaint(opts, true)
 		}
 
 		// Signal recording: record after action is taken.

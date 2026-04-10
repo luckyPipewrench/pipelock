@@ -43,6 +43,10 @@ type MCPProxyOpts struct {
 	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate
 	AdaptiveCfg   *config.AdaptiveEnforcement
 	AdaptiveCfgFn AdaptiveConfigFunc // hot-reload aware; used by listener proxy. Nil = use static AdaptiveCfg.
+	TaintCfg      *config.TaintConfig
+	// TaintExternalSource marks responses from this MCP transport as external
+	// content by default (HTTP/SSE and WebSocket upstreams).
+	TaintExternalSource bool
 
 	// Cross-request exfiltration detection
 	CEE *CEEDeps

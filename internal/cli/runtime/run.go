@@ -912,6 +912,7 @@ Examples:
 						ProvenanceCfg:       &cfg.MCPToolProvenance,
 						ReceiptEmitter:      receiptEmitter,
 						EnvelopeEmitter:     envEmitter,
+						TaintCfg:            &cfg.Taint,
 						ToolFreezer:         p.FrozenTools(),
 						FrozenToolStableKey: mcpUpstream,
 					})

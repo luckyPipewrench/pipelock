@@ -195,6 +195,7 @@ const (
 	EventToolRedirect       EventType = "tool_redirect"
 	EventSessionAdmin       EventType = "session_admin"
 	EventResponseScanExempt EventType = "response_scan_exempt"
+	EventTaintDecision      EventType = "taint_decision"
 
 	EventAirlockEnter      EventType = "airlock_enter"
 	EventAirlockDeny       EventType = "airlock_deny"
@@ -455,6 +456,29 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventResponseScan), e.fields)
+	}
+}
+
+// LogTaintDecision logs a taint-aware policy evaluation for a sensitive action.
+func (l *Logger) LogTaintDecision(ctx LogContext, taintLevel, actionClass, sensitivity, authority, decision, reason, sourceURL, sourceKind string) {
+	e := newLogEntry(l.zl.Warn(), EventTaintDecision).
+		optStr("method", ctx.Method).
+		str("url", ctx.URL).
+		optStr("client_ip", ctx.ClientIP).
+		optStr("request_id", ctx.RequestID).
+		optStr("agent", ctx.Agent).
+		str("session_taint_level", taintLevel).
+		str("action_class", actionClass).
+		str("action_sensitivity", sensitivity).
+		str("authority_kind", authority).
+		str("decision", decision).
+		str("reason", reason).
+		optStr("source_url", sourceURL).
+		optStr("source_kind", sourceKind)
+	e.msg("taint policy decision")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventTaintDecision), e.fields)
 	}
 }
 

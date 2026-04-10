@@ -1115,7 +1115,7 @@ type MediaPolicy struct {
 	StripVideo *bool `yaml:"strip_video,omitempty"`
 
 	// AllowedImageTypes limits which image media types pass when StripImages
-	// is false. Empty means the default set (PNG, JPEG, GIF, WebP). SVG is
+	// is false. Empty means the default set (PNG, JPEG). SVG is
 	// intentionally excluded because SVG is active content handled by the
 	// browser shield pipeline, not a static image.
 	AllowedImageTypes []string `yaml:"allowed_image_types,omitempty"`
@@ -3903,6 +3903,12 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "media_policy.enabled",
 			Message: "media policy disabled — image metadata stripping, audio/video blocks, and exposure events no longer apply",
+		})
+	}
+	if old.MediaPolicy.ShouldStripImages() && !updated.MediaPolicy.ShouldStripImages() {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "media_policy.strip_images",
+			Message: "media_policy.strip_images disabled — image responses now forwarded without stripping",
 		})
 	}
 	if old.MediaPolicy.ShouldStripAudio() && !updated.MediaPolicy.ShouldStripAudio() {

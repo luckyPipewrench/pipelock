@@ -482,7 +482,7 @@ func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 	// filter blocked vs allowed exposures without parsing the reason.
 	e.event = e.event.Bool("blocked", info.Blocked)
 	e.fields["blocked"] = info.Blocked
-	if info.BlockReason != "" {
+	if info.Blocked && info.BlockReason != "" {
 		e = e.str("block_reason", info.BlockReason)
 	}
 	if info.Blocked {

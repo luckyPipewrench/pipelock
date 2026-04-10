@@ -352,26 +352,39 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// silently bypass image metadata stripping, audio/video blocks, size
 	// caps, or exposure events. Must execute BEFORE the
 	// ResponseScanning.Enabled short-circuit below.
+	// Enter the media branch for declared media types AND generic/missing
+	// Content-Types where the body might actually be an image. Without the
+	// generic-type arm, an attacker who serves a JPEG as
+	// application/octet-stream bypasses the entire media branch because
+	// isBinaryMIME only matches image/audio/video prefixes. The content-
+	// sniffing fallback inside applyMediaPolicy handles the rest, but only
+	// if we enter the branch in the first place.
 	mediaCT := resp.Header.Get("Content-Type")
-	if isBinaryMIME(mediaCT) && cfg.MediaPolicy.IsEnabled() {
+	mediaCTCanon := canonicalContentType(mediaCT)
+	if (isBinaryMIME(mediaCT) || contentTypeIsGeneric(mediaCTCanon)) && cfg.MediaPolicy.IsEnabled() {
 		actx := audit.LogContext{
 			Method: resp.Request.Method,
 			URL:    resp.Request.URL.String(),
 		}
-		canonCT := canonicalContentType(mediaCT)
+		canonCT := mediaCTCanon
 		isImage := strings.HasPrefix(canonCT, "image/")
+		isDeclaredAudioVideo := !isImage && isBinaryMIME(mediaCT)
 
-		// Audio/video path: no body read required. The policy decides
-		// based on content type alone, so we avoid the image-sized
-		// buffer and the image-sized max_image_bytes cap (which is
-		// specifically about decompression bomb defense for images, not
-		// a general media size limit). When the verdict is Allow, the
-		// flow falls through to the binary-skip short-circuit below
-		// so the original streamed body passes through unmodified.
-		if !isImage {
+		// Declared audio/video: no body read required. The policy
+		// decides based on content type alone, so we avoid the image-
+		// sized buffer. When the verdict is Allow, the flow falls
+		// through to the binary-skip short-circuit below so the
+		// original streamed body passes through unmodified.
+		if isDeclaredAudioVideo {
+			// Close the original body before replacing it so the
+			// upstream connection is released. Without this close,
+			// replaceWithMediaBlockResponse overwrites resp.Body
+			// while the original stream is still open, leaking the
+			// upstream TCP connection.
 			verdict := applyMediaPolicy(cfg, mediaCT, nil)
 			logMediaExposureIfPresent(rp.logger, actx, verdict, "reverse")
 			if verdict.Blocked {
+				_ = resp.Body.Close()
 				rp.logger.LogBlocked(actx, "media_policy", verdict.BlockReason)
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "media_policy")
@@ -381,6 +394,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			// Fall through to the isBinaryMIME skip below so the
 			// original resp.Body streams to the client untouched.
 		} else {
+			// Image OR generic Content-Type: buffer the body so
+			// applyMediaPolicy can either strip image metadata or
+			// run the content-sniffing fallback for generic types
+			// (application/octet-stream, empty, etc.) that might
+			// actually be images.
 			maxRead := cfg.MediaPolicy.EffectiveMaxImageBytes()
 			if maxRead <= 0 {
 				maxRead = config.DefaultMaxImageBytes

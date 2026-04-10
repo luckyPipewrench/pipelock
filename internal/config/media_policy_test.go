@@ -493,6 +493,30 @@ func TestValidateReload_MediaPolicyAllowlistNarrowed(t *testing.T) {
 	}
 }
 
+// TestValidateReload_MediaPolicyStripImagesDisabled verifies that
+// relaxing strip_images from true to false produces a downgrade warning.
+func TestValidateReload_MediaPolicyStripImagesDisabled(t *testing.T) {
+	t.Parallel()
+	oldCfg := Defaults()
+	t2 := true
+	oldCfg.MediaPolicy.StripImages = &t2 // explicitly enabled
+	newCfg := Defaults()
+	f := false
+	newCfg.MediaPolicy.StripImages = &f
+
+	warnings := ValidateReload(oldCfg, newCfg)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "media_policy.strip_images" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("disabling strip_images should warn; got warnings: %v", warnings)
+	}
+}
+
 // equalStringSlices compares two string slices for equal length and
 // element-wise equality. Avoids importing reflect for a simple test helper.
 func equalStringSlices(a, b []string) bool {

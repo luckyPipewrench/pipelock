@@ -3722,6 +3722,35 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		checkEscalationWeakening(&old.AdaptiveEnforcement.Levels, &updated.AdaptiveEnforcement.Levels, &warnings)
 	}
 
+	// Taint escalation disabled or weakened.
+	if old.Taint.Enabled && !updated.Taint.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "taint.enabled",
+			Message: "taint-aware policy escalation disabled",
+		})
+	}
+	taintPolicyRank := map[string]int{ModeStrict: 3, ModeBalanced: 2, ModePermissive: 1}
+	if old.Taint.Enabled && updated.Taint.Enabled && taintPolicyRank[updated.Taint.Policy] < taintPolicyRank[old.Taint.Policy] {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "taint.policy",
+			Message: fmt.Sprintf("taint policy downgraded from %s to %s", old.Taint.Policy, updated.Taint.Policy),
+		})
+	}
+	if old.Taint.Enabled && updated.Taint.Enabled {
+		if added := passthroughDomainsAdded(old.Taint.AllowlistedDomains, updated.Taint.AllowlistedDomains); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.allowlisted_domains",
+				Message: fmt.Sprintf("taint allowlisted domains added: %s — these sources now downgrade from untrusted to allowlisted", strings.Join(added, ", ")),
+			})
+		}
+		if added := taintOverridesAdded(old.Taint.TrustOverrides, updated.Taint.TrustOverrides); len(added) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.trust_overrides",
+				Message: fmt.Sprintf("taint trust overrides added: %s", strings.Join(added, ", ")),
+			})
+		}
+	}
+
 	// MCP session binding disabled
 	if old.MCPSessionBinding.Enabled && !updated.MCPSessionBinding.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -4214,6 +4243,43 @@ func passthroughDomainsAdded(old, updated []string) []string {
 		}
 	}
 	return added
+}
+
+func taintOverridesAdded(old, updated []TaintTrustOverride) []string {
+	oldExpiry := make(map[string]time.Time, len(old))
+	for _, override := range old {
+		key := taintOverrideReloadKey(override)
+		if expiry, exists := oldExpiry[key]; !exists || override.ExpiresAt.After(expiry) {
+			oldExpiry[key] = override.ExpiresAt
+		}
+	}
+	var added []string
+	for _, override := range updated {
+		key := taintOverrideReloadKey(override)
+		oldExpiresAt, exists := oldExpiry[key]
+		switch {
+		case !exists:
+			added = append(added, key)
+		case override.ExpiresAt.After(oldExpiresAt):
+			added = append(added, fmt.Sprintf("%s expires_at=%s", key, override.ExpiresAt.UTC().Format(time.RFC3339)))
+		}
+	}
+	return added
+}
+
+func taintOverrideReloadKey(override TaintTrustOverride) string {
+	scope := strings.ToLower(strings.TrimSpace(override.Scope))
+	source := strings.ToLower(strings.TrimSpace(override.SourceMatch))
+	action := strings.ToLower(strings.TrimSpace(override.ActionMatch))
+
+	switch scope {
+	case "source":
+		return fmt.Sprintf("scope=%s source=%s", scope, source)
+	case "action":
+		return fmt.Sprintf("scope=%s action=%s", scope, action)
+	default:
+		return fmt.Sprintf("scope=%s source=%s action=%s", scope, source, action)
+	}
 }
 
 // ssrfIPAllowlistExpanded returns CIDR strings from updated that expand coverage

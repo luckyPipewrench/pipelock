@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -2521,7 +2522,213 @@ func TestValidateReload_ResponseScanningDisabled(t *testing.T) {
 	}
 }
 
-const reloadFieldResponseExempt = "response_scanning.exempt_domains"
+const (
+	reloadFieldResponseExempt      = "response_scanning.exempt_domains"
+	reloadFieldTaintAllowlisted    = "taint.allowlisted_domains"
+	reloadFieldTaintTrustOverrides = "taint.trust_overrides"
+)
+
+func TestValidateReload_TaintDisabled(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	updated := Defaults()
+	updated.Taint.Enabled = false
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "taint.enabled" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint disabled warning")
+	}
+}
+
+func TestValidateReload_TaintPolicyDowngrade(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.Policy = ModeStrict
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.Policy = ModeBalanced
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "taint.policy" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint policy downgrade warning")
+	}
+}
+
+func TestValidateReload_TaintPolicyUpgrade_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.Policy = ModePermissive
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.Policy = ModeStrict
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == "taint.policy" {
+			t.Errorf("taint policy upgrade should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_TaintAllowlistedDomainsExpanded(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.AllowlistedDomains = []string{"docs.github.com"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.AllowlistedDomains = []string{"docs.github.com", "developer.mozilla.org"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintAllowlisted {
+			found = true
+			if !strings.Contains(w.Message, "developer.mozilla.org") {
+				t.Errorf("warning should name the added domain, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint allowlisted domain expansion warning")
+	}
+}
+
+func TestValidateReload_TaintAllowlistedDomainsReplacedWarns(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.AllowlistedDomains = []string{"docs.github.com"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.AllowlistedDomains = []string{"*.github.com"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintAllowlisted {
+			found = true
+			if !strings.Contains(w.Message, "*.github.com") {
+				t.Errorf("warning should name the added domain, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning for same-size taint allowlist replacement")
+	}
+}
+
+func TestValidateReload_TaintAllowlistedDomainsReduced_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.AllowlistedDomains = []string{"docs.github.com", "developer.mozilla.org"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.AllowlistedDomains = []string{"docs.github.com"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintAllowlisted {
+			t.Errorf("pure taint allowlist reduction should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_TaintTrustOverridesExpanded(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.TrustOverrides = []TaintTrustOverride{
+		{Scope: "source", SourceMatch: "docs.github.com"},
+	}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.TrustOverrides = []TaintTrustOverride{
+		{Scope: "source", SourceMatch: "docs.github.com"},
+		{Scope: "action", ActionMatch: "write:protected"},
+	}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintTrustOverrides {
+			found = true
+			if !strings.Contains(w.Message, "scope=action action=write:protected") {
+				t.Errorf("warning should name the added override, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint trust override expansion warning")
+	}
+}
+
+func TestValidateReload_TaintTrustOverridesUnchanged_NoWarning(t *testing.T) {
+	override := TaintTrustOverride{Scope: "source", SourceMatch: "docs.github.com"}
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.TrustOverrides = []TaintTrustOverride{override}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.TrustOverrides = []TaintTrustOverride{override}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintTrustOverrides {
+			t.Errorf("unchanged taint trust overrides should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_TaintTrustOverridesExpiryExtendedWarns(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.TrustOverrides = []TaintTrustOverride{
+		{
+			Scope:       "source",
+			SourceMatch: "docs.github.com",
+			ExpiresAt:   time.Date(2026, time.April, 10, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.TrustOverrides = []TaintTrustOverride{
+		{
+			Scope:       "source",
+			SourceMatch: "docs.github.com",
+			ExpiresAt:   time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC),
+		},
+	}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintTrustOverrides {
+			found = true
+			if !strings.Contains(w.Message, "expires_at=2026-04-11T12:00:00Z") {
+				t.Errorf("warning should name the broadened expiry, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint trust override expiry extension warning")
+	}
+}
 
 func TestValidateReload_ResponseScanningExemptDomainsExpanded(t *testing.T) {
 	old := Defaults()

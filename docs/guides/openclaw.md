@@ -4,7 +4,9 @@ Pipelock sits between your AI agent and the OpenClaw gateway, scanning all MCP t
 
 ## Why
 
-CVE-2026-25253 (CVSS 8.8) is a cross-site WebSocket hijacking attack against OpenClaw gateways. The attack chain:
+> **Note:** The following describes a hypothetical attack scenario for illustration purposes.
+
+A cross-site WebSocket hijacking attack (similar to CSRF but for WebSockets) against OpenClaw gateways could work as follows. The attack chain:
 
 1. Victim clicks a malicious link
 2. Attacker's page opens a WebSocket to the victim's localhost gateway (no origin validation)

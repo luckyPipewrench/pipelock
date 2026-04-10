@@ -154,15 +154,7 @@ func taintOverrideMatches(override config.TaintTrustOverride, risk session.Sessi
 }
 
 func taintRiskSourceMatches(risk session.SessionRisk, pattern string) bool {
-	if taintWildcardMatch(risk.LastExternalURL, pattern) {
-		return true
-	}
-	for _, source := range risk.Sources {
-		if taintWildcardMatch(source.URL, pattern) {
-			return true
-		}
-	}
-	return false
+	return taintWildcardMatch(risk.LastExternalURL, pattern)
 }
 
 func taintWildcardMatch(value, pattern string) bool {

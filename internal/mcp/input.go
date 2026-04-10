@@ -949,6 +949,9 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
 		return msg
 	}
+	if params == nil {
+		params = make(map[string]json.RawMessage)
+	}
 
 	// Use json.RawMessage to preserve existing _meta members byte-for-byte.
 	// map[string]any would round-trip through encoding/json and lose precision
@@ -1010,22 +1013,28 @@ func stripInboundMCPMeta(msg []byte) []byte {
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
 		return msg
 	}
+	if params == nil {
+		return msg
+	}
 
 	metaRaw, ok := params["_meta"]
 	if !ok {
 		return msg
 	}
 
-	var meta map[string]any
+	var meta map[string]json.RawMessage
 	if err := json.Unmarshal(metaRaw, &meta); err != nil {
 		return msg
 	}
 
+	if meta == nil {
+		return msg
+	}
 	if _, exists := meta[envelope.MCPMetaKey]; !exists {
 		return msg
 	}
 
-	envelope.StripInboundMCP(meta)
+	delete(meta, envelope.MCPMetaKey)
 
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {

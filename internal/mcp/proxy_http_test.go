@@ -22,6 +22,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -4068,6 +4069,22 @@ func TestScanHTTPInput_A2AMetadataBackfill(t *testing.T) {
 	blocked := scanHTTPInput(msg, &logBuf, "test-session", "audit-key", opts)
 	if blocked == nil {
 		t.Fatal("expected A2A scanning to block even with input scanning disabled")
+	}
+}
+
+func TestScanHTTPInputDecision_EnvelopeMetadataBackfillWhenInputScanningDisabled(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	msg := []byte(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/readme.md"}}}`)
+
+	decision := scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:         sc,
+		EnvelopeEmitter: envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"}),
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("expected request to pass, got block: %+v", decision.Blocked)
+	}
+	if !bytes.Contains(decision.ForwardMessage, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("expected forwarded message to contain mediation envelope, got: %s", decision.ForwardMessage)
 	}
 }
 

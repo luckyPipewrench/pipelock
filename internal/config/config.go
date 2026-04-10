@@ -1788,13 +1788,13 @@ func (c *Config) ApplyDefaults() {
 	if c.Taint.RecentSources <= 0 {
 		c.Taint.RecentSources = 10
 	}
-	if len(c.Taint.AllowlistedDomains) == 0 {
+	if c.Taint.AllowlistedDomains == nil {
 		c.Taint.AllowlistedDomains = append([]string(nil), Defaults().Taint.AllowlistedDomains...)
 	}
-	if len(c.Taint.ProtectedPaths) == 0 {
+	if c.Taint.ProtectedPaths == nil {
 		c.Taint.ProtectedPaths = append([]string(nil), Defaults().Taint.ProtectedPaths...)
 	}
-	if len(c.Taint.ElevatedPaths) == 0 {
+	if c.Taint.ElevatedPaths == nil {
 		c.Taint.ElevatedPaths = append([]string(nil), Defaults().Taint.ElevatedPaths...)
 	}
 

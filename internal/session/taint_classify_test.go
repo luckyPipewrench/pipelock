@@ -99,6 +99,14 @@ func TestClassifyMCPToolCall(t *testing.T) {
 			wantAction: "https://example.com/docs",
 		},
 		{
+			name:       "non mutating shell stays exec",
+			toolName:   "shell",
+			argsJSON:   `{"command":"git status"}`,
+			wantClass:  session.ActionClassExec,
+			wantLevel:  session.SensitivityProtected,
+			wantAction: "",
+		},
+		{
 			name:       "unknown tool with edit intent becomes write",
 			toolName:   "apply_changes",
 			argsJSON:   `{"path":"/repo/security/policy.go","changes":[{"text":"deny all"}]}`,
@@ -122,5 +130,37 @@ func TestClassifyMCPToolCall(t *testing.T) {
 				t.Fatalf("action ref = %q, want %q", gotAction, tt.wantAction)
 			}
 		})
+	}
+}
+
+func TestClassifyPathSensitivity_RootRelativePatterns(t *testing.T) {
+	t.Parallel()
+
+	protected := []string{"*/.env*", "*/auth/*"}
+	if got := session.ClassifyPathSensitivity(".env.production", protected, nil); got != session.SensitivityProtected {
+		t.Fatalf("sensitivity = %v, want protected", got)
+	}
+	if got := session.ClassifyPathSensitivity("auth/middleware.go", protected, nil); got != session.SensitivityProtected {
+		t.Fatalf("sensitivity = %v, want protected", got)
+	}
+}
+
+func TestClassifyMCPToolCall_MutatingNetworkIntentWithSpacedJSON(t *testing.T) {
+	t.Parallel()
+
+	class, sensitivity, target := session.ClassifyMCPToolCall(
+		"http_request",
+		"{\n  \"method\": \"POST\",\n  \"url\": \"https://api.example.com/publish\"\n}",
+		nil,
+		nil,
+	)
+	if class != session.ActionClassPublish {
+		t.Fatalf("action class = %v, want publish", class)
+	}
+	if sensitivity != session.SensitivityElevated {
+		t.Fatalf("sensitivity = %v, want elevated", sensitivity)
+	}
+	if target != "https://api.example.com/publish" {
+		t.Fatalf("target = %q, want publish URL", target)
 	}
 }

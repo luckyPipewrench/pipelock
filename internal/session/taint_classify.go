@@ -117,7 +117,7 @@ func ClassifyMCPToolCall(toolName, argsJSON string, protectedPatterns, elevatedP
 		if isMutatingShellCommand(command) {
 			return ActionClassExec, classifyShellSensitivity(command, targetPath, protectedPatterns, elevatedPatterns), targetPath
 		}
-		return ActionClassRead, SensitivityNormal, targetPath
+		return ActionClassExec, SensitivityProtected, targetPath
 	}
 
 	if category == "persist" {
@@ -180,12 +180,28 @@ func matchPathPattern(target, pattern string) bool {
 	target = toSlash(target)
 	pattern = toSlash(pattern)
 	candidates := []string{target}
-	trimmed := strings.TrimPrefix(target, "/")
-	if trimmed != target {
-		candidates = append(candidates, trimmed)
+	for _, trimmed := range []string{
+		strings.TrimPrefix(target, "/"),
+		strings.TrimPrefix(target, "./"),
+		strings.TrimPrefix(strings.TrimPrefix(target, "/"), "./"),
+	} {
+		if trimmed != "" && trimmed != target {
+			candidates = append(candidates, trimmed)
+		}
+	}
+	patterns := []string{pattern}
+	if trimmedPattern := strings.TrimPrefix(pattern, "*/"); trimmedPattern != pattern {
+		patterns = append(patterns, trimmedPattern)
 	}
 	for _, candidate := range candidates {
-		if matched, _ := path.Match(pattern, candidate); matched {
+		for _, candidatePattern := range patterns {
+			if matched, _ := path.Match(candidatePattern, candidate); matched {
+				return true
+			}
+		}
+	}
+	for _, candidate := range candidates {
+		if matched, _ := path.Match(pattern, "/"+strings.TrimPrefix(candidate, "/")); matched {
 			return true
 		}
 	}
@@ -275,11 +291,8 @@ func looksLikeBrowseTool(name string) bool {
 }
 
 func looksLikePublishTool(name, argsJSON string) bool {
-	lowerArgs := strings.ToLower(argsJSON)
 	return containsAny(name, "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
-		strings.Contains(lowerArgs, `"method":"post"`) ||
-		strings.Contains(lowerArgs, `"method":"put"`) ||
-		strings.Contains(lowerArgs, `"method":"patch"`)
+		hasMutatingNetworkMethod(argsJSON)
 }
 
 func looksLikePath(value string) bool {
@@ -321,7 +334,12 @@ func containsAny(value string, needles ...string) bool {
 }
 
 func hasWriteIntent(argsJSON string) bool {
-	lower := strings.ToLower(argsJSON)
+	decoded, ok := decodeJSONValue(argsJSON)
+	if ok {
+		return jsonHasAnyKey(decoded, "path", "file_path", "filepath", "target_path", "destination_path", "new_path", "old_path") &&
+			jsonHasAnyKey(decoded, "content", "contents", "text", "diff", "patch", "replacement", "edits", "changes")
+	}
+	lower := normalizeIntentJSON(argsJSON)
 	return containsAny(lower,
 		`"path"`, `"file_path"`, `"filepath"`, `"target_path"`, `"destination_path"`, `"new_path"`, `"old_path"`) &&
 		containsAny(lower,
@@ -329,13 +347,88 @@ func hasWriteIntent(argsJSON string) bool {
 }
 
 func hasExecIntent(argsJSON string) bool {
-	lower := strings.ToLower(argsJSON)
+	lower := normalizeIntentJSON(argsJSON)
 	return containsAny(lower, `"command"`, `"cmd"`, `"script"`, `"shell"`, `"program"`, `"argv"`)
 }
 
 func hasMutatingNetworkIntent(argsJSON string) bool {
-	lower := strings.ToLower(argsJSON)
+	decoded, ok := decodeJSONValue(argsJSON)
+	if ok {
+		return hasMutatingNetworkMethod(argsJSON) ||
+			jsonHasAnyKey(decoded, "webhook", "endpoint", "payload", "request_body", "form_data", "upload")
+	}
+	lower := normalizeIntentJSON(argsJSON)
 	return containsAny(lower,
 		`"method":"post"`, `"method":"put"`, `"method":"patch"`, `"method":"delete"`,
 		`"webhook"`, `"endpoint"`, `"payload"`, `"request_body"`, `"form_data"`, `"upload"`)
+}
+
+func decodeJSONValue(raw string) (any, bool) {
+	if raw == "" {
+		return nil, false
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+func jsonHasAnyKey(v any, keys ...string) bool {
+	allowed := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		allowed[strings.ToLower(key)] = struct{}{}
+	}
+	return jsonWalk(v, func(key string, _ any) bool {
+		_, ok := allowed[strings.ToLower(key)]
+		return ok
+	})
+}
+
+func hasMutatingNetworkMethod(argsJSON string) bool {
+	decoded, ok := decodeJSONValue(argsJSON)
+	if !ok {
+		lower := normalizeIntentJSON(argsJSON)
+		return containsAny(lower,
+			`"method":"post"`, `"method":"put"`, `"method":"patch"`, `"method":"delete"`)
+	}
+	return jsonWalk(decoded, func(key string, value any) bool {
+		if !strings.EqualFold(key, "method") {
+			return false
+		}
+		method, ok := value.(string)
+		if !ok {
+			return false
+		}
+		switch strings.ToUpper(strings.TrimSpace(method)) {
+		case "POST", "PUT", "PATCH", "DELETE":
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func jsonWalk(v any, visit func(key string, value any) bool) bool {
+	switch tv := v.(type) {
+	case []any:
+		for _, item := range tv {
+			if jsonWalk(item, visit) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, value := range tv {
+			if visit(key, value) || jsonWalk(value, visit) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeIntentJSON(raw string) string {
+	lower := strings.ToLower(raw)
+	replacer := strings.NewReplacer(" ", "", "\n", "", "\r", "", "\t", "")
+	return replacer.Replace(lower)
 }

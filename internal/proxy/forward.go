@@ -1107,6 +1107,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// so we only record the anomaly. Block mode and internal errors
 			// terminate the stream.
 			if errors.Is(err, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
+				responsePromptHit = true
 				p.logger.LogAnomaly(actx, "a2a_stream", err.Error(), 0)
 			} else {
 				p.logger.LogBlocked(actx, "a2a_stream", err.Error())

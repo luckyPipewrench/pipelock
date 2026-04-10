@@ -32,6 +32,25 @@ func TestDefaults_Taint(t *testing.T) {
 	}
 }
 
+func TestApplyDefaults_TaintPreservesExplicitEmptySlices(t *testing.T) {
+	cfg := &Config{}
+	cfg.Taint.AllowlistedDomains = []string{}
+	cfg.Taint.ProtectedPaths = []string{}
+	cfg.Taint.ElevatedPaths = []string{}
+
+	cfg.ApplyDefaults()
+
+	if cfg.Taint.AllowlistedDomains == nil || len(cfg.Taint.AllowlistedDomains) != 0 {
+		t.Fatalf("allowlisted domains = %#v, want explicit empty slice", cfg.Taint.AllowlistedDomains)
+	}
+	if cfg.Taint.ProtectedPaths == nil || len(cfg.Taint.ProtectedPaths) != 0 {
+		t.Fatalf("protected paths = %#v, want explicit empty slice", cfg.Taint.ProtectedPaths)
+	}
+	if cfg.Taint.ElevatedPaths == nil || len(cfg.Taint.ElevatedPaths) != 0 {
+		t.Fatalf("elevated paths = %#v, want explicit empty slice", cfg.Taint.ElevatedPaths)
+	}
+}
+
 func TestValidateTaint(t *testing.T) {
 	tests := []struct {
 		name    string

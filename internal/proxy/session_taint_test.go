@@ -114,3 +114,26 @@ func TestEvaluateHTTPTaint_TrustOverrideHonorsScope(t *testing.T) {
 		t.Fatalf("decision = %v, want ask when scope=source has no source_match", decision.Result.Decision)
 	}
 }
+
+func TestEvaluateHTTPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
+	cfg := config.Defaults()
+	sess := &SessionState{}
+
+	observeHTTPResponseTaint(sess, cfg, "https://docs.github.com/copilot", "text/html", "fetch_response", false)
+	observeHTTPResponseTaint(sess, cfg, "https://evil.example/issue/123", "text/html", "fetch_response", false)
+
+	targetURL, err := url.Parse("https://api.example.com/auth/update")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+		Scope:       "source",
+		SourceMatch: "https://docs.github.com/*",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+	}}
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision = %v, want ask when only a historical source matches", decision.Result.Decision)
+	}
+}

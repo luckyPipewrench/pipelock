@@ -209,9 +209,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Scan request body for DLP patterns (secret exfiltration).
+	forwardedVerdict := config.ActionAllow
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
-		if blocked := rp.scanRequest(w, r, cfg, sc); blocked {
+		blocked, verdict := rp.scanRequest(w, r, cfg, sc)
+		if blocked {
 			return
+		}
+		if verdict != "" {
+			forwardedVerdict = verdict
 		}
 	}
 
@@ -221,7 +226,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if envErr := envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
 				ActionID:   receipt.NewActionID(),
 				Action:     string(receipt.ClassifyHTTP(r.Method)),
-				Verdict:    config.ActionAllow,
+				Verdict:    forwardedVerdict,
 				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 				Actor:      edition.ExtractAgent(r),
 				ActorAuth:  envelope.ActorAuthSelfDeclared, // Reverse proxy has no per-agent listener binding
@@ -237,10 +242,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 // scanRequest reads and scans the request body for DLP patterns.
 // Returns true if the request was blocked (response already written).
-func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner) bool {
+func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner) (bool, string) {
 	// Skip binary content types — no secrets to scan in images/video.
 	if isBinaryMIME(r.Header.Get("Content-Type")) {
-		return false
+		return false, ""
 	}
 
 	maxBytes := cfg.RequestBodyScanning.MaxBodyBytes
@@ -283,7 +288,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		// Re-wrap the buffered body so the reverse proxy can forward it.
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
-		return false
+		return false, config.ActionAllow
 	}
 
 	action := result.Action
@@ -317,20 +322,20 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
 		writeReverseProxyBlock(w, http.StatusForbidden, reason)
-		return true
+		return true, config.ActionBlock
 	}
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
 		writeReverseProxyBlock(w, http.StatusForbidden, reason)
-		return true
+		return true, config.ActionBlock
 	}
 
 	// Warn mode: re-wrap body and continue.
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	r.ContentLength = int64(len(bodyBytes))
-	return false
+	return false, action
 }
 
 // modifyResponse scans the upstream response body for prompt injection.

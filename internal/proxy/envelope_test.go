@@ -670,6 +670,73 @@ func TestEnvelope_ReverseProxyInjectsHeader(t *testing.T) {
 	}
 }
 
+func TestEnvelope_ReverseProxyWarnBodyUsesWarnVerdict(t *testing.T) {
+	t.Parallel()
+
+	var gotHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get(envelope.HeaderName)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.ApplyDefaults()
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	t.Cleanup(logger.Close)
+
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
+	var emPtr atomic.Pointer[envelope.Emitter]
+	emPtr.Store(em)
+	handler.SetEnvelopeEmitter(&emPtr)
+
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, proxy.URL+"/test", strings.NewReader(`{"token":"ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789"}`))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
+	}
+	env, parseErr := envelope.Parse(gotHeader)
+	if parseErr != nil {
+		t.Fatalf("parse envelope: %v", parseErr)
+	}
+	if env.Verdict != config.ActionWarn {
+		t.Fatalf("Verdict = %q, want %q", env.Verdict, config.ActionWarn)
+	}
+}
+
 // TestEnvelope_ReverseProxyNoEmitter verifies that no Pipelock-Mediation
 // header is injected when SetEnvelopeEmitter is not called.
 func TestEnvelope_ReverseProxyNoEmitter(t *testing.T) {

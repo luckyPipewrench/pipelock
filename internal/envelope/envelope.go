@@ -234,7 +234,7 @@ func Parse(s string) (Envelope, error) {
 
 // ToMCPMeta returns the envelope as a map for MCP _meta injection.
 func (e Envelope) ToMCPMeta() map[string]any {
-	return map[string]any{
+	meta := map[string]any{
 		keyVersion:    e.Version,
 		keyAction:     e.Action,
 		keyVerdict:    e.Verdict,
@@ -244,9 +244,18 @@ func (e Envelope) ToMCPMeta() map[string]any {
 		keyPolicyHash: "sha256-128:" + base64.StdEncoding.EncodeToString(e.PolicyHash),
 		keyReceiptID:  e.ReceiptID,
 		keyTimestamp:  e.Timestamp,
-		keyTaint:      e.SessionTaint,
-		keyAuthority:  e.AuthorityKind,
-		keyAuthorityR: e.AuthorityRef,
-		keyReauth:     e.RequiresReauth,
 	}
+	if e.SessionTaint != "" {
+		meta[keyTaint] = e.SessionTaint
+	}
+	if e.AuthorityKind != "" {
+		meta[keyAuthority] = e.AuthorityKind
+	}
+	if e.AuthorityRef != "" {
+		meta[keyAuthorityR] = e.AuthorityRef
+	}
+	if e.RequiresReauth {
+		meta[keyReauth] = true
+	}
+	return meta
 }

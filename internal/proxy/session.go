@@ -782,6 +782,8 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		ThreatScore:     prevScore,
 		EscalationLevel: session.EscalationLabel(prevLevel),
 		BlockAll:        false,
+		TaintLevel:      sess.RiskSnapshot().Level.String(),
+		Contaminated:    sess.RiskSnapshot().Contaminated,
 		LastActivity:    time.Now(),
 	}
 	return prev, true
@@ -845,6 +847,8 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 		ThreatScore:     prevScore,
 		EscalationLevel: session.EscalationLabel(prevLevel),
 		BlockAll:        false,
+		TaintLevel:      sess.RiskSnapshot().Level.String(),
+		Contaminated:    sess.RiskSnapshot().Contaminated,
 		LastActivity:    time.Now(),
 	}
 	return prev, true, nil

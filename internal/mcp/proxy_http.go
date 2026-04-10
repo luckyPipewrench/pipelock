@@ -200,6 +200,8 @@ type httpInputDecision struct {
 	ForwardMessage []byte
 }
 
+const redirectResultRedirected = "redirected"
+
 // scanHTTPInput checks a single input message for DLP/injection/policy/CEE.
 // Returns a *BlockedRequest if the message should be blocked, nil if clean.
 func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) *BlockedRequest {
@@ -289,7 +291,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		verdict = InputVerdict{Clean: true}
 		// When input scanning is disabled, extract enough metadata from the
 		// raw message so policy, taint gating, chain detection, and DoW still work.
-		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || opts.TaintCfg != nil {
+		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || opts.TaintCfg != nil || opts.ReceiptEmitter != nil || opts.EnvelopeEmitter != nil {
 			verdict.ID = extractRPCID(msg)
 			// Extract method for chain detection even when content scanning is off.
 			var env struct {
@@ -680,7 +682,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 					ErrorMessage: "pipelock: redirect handler output blocked by DLP scanning",
 				}
 			} else {
-				finalResult = "redirected"
+				finalResult = redirectResultRedirected
 				_, _ = fmt.Fprintf(logW, "pipelock: input: redirected via profile %q (%dms)\n", policyVerdict.RedirectProfile, redirectResult.LatencyMs)
 				br = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
@@ -699,7 +701,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if auditLogger != nil {
 			auditLogger.LogToolRedirect(auditSessionKey, toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, redirectResult.LatencyMs)
 		}
-		receiptVerdict = effectiveAction
+		if finalResult == redirectResultRedirected {
+			receiptVerdict = config.ActionRedirect
+		} else {
+			receiptVerdict = config.ActionBlock
+		}
 		result.Blocked = br
 		return result
 	case config.ActionAsk:
@@ -1171,7 +1177,8 @@ func RunHTTPListenerProxy(
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
-		if blocked := scanHTTPInput(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts); blocked != nil {
+		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
+		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")
 			if blocked.IsNotification {
 				w.WriteHeader(http.StatusAccepted)
@@ -1186,7 +1193,7 @@ func RunHTTPListenerProxy(
 		}
 
 		// Build upstream request with passthrough headers.
-		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(body))
+		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(decision.ForwardMessage))
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)

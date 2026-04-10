@@ -440,9 +440,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					observeMCPResponseTaint(opts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					observeMCPResponseTaint(opts, true)
-					if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
+					forwarded, err := stripOrBlock(line, sc, writer, logW, verdict.ID)
+					if err != nil {
 						return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
+					}
+					if forwarded {
+						observeMCPResponseTaint(opts, true)
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
@@ -453,9 +456,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 		case config.ActionStrip:
-			observeMCPResponseTaint(opts, true)
-			if err := stripOrBlock(line, sc, writer, logW, verdict.ID); err != nil {
+			forwarded, err := stripOrBlock(line, sc, writer, logW, verdict.ID)
+			if err != nil {
 				return foundInjection, fmt.Errorf("writing strip/block response: %w", err)
+			}
+			if forwarded {
+				observeMCPResponseTaint(opts, true)
 			}
 		default: // warn
 			if err := writer.WriteMessage(line); err != nil {
@@ -497,13 +503,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 // stripOrBlock tries to strip injection from the response. If stripping fails,
 // it falls back to blocking (fail-closed). Returns a write error if the writer fails.
-func stripOrBlock(line []byte, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, rpcID json.RawMessage) error {
+func stripOrBlock(line []byte, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, rpcID json.RawMessage) (bool, error) {
 	stripped, sErr := stripResponse(line, sc)
 	if sErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: strip failed (%v), blocking instead\n", sErr)
-		return writer.WriteMessage(blockResponse(rpcID))
+		return false, writer.WriteMessage(blockResponse(rpcID))
 	}
-	return writer.WriteMessage(stripped)
+	return true, writer.WriteMessage(stripped)
 }
 
 // rpcError is a JSON-RPC 2.0 error response sent when a response is blocked.

@@ -285,6 +285,42 @@ func TestEvaluateMCPTaint_TrustOverrideHonorsScope(t *testing.T) {
 	}
 }
 
+func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
+	t.Parallel()
+
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://docs.github.com/copilot",
+			Kind:  "http_response",
+			Level: session.TaintAllowlistedReference,
+		},
+	})
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://evil.example/issue/123",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+	cfg.Taint.TrustOverrides = []config.TaintTrustOverride{{
+		Scope:       "source",
+		SourceMatch: "https://docs.github.com/*",
+		ExpiresAt:   nowPlusHour(t),
+	}}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{
+		Scanner:  sc,
+		Rec:      rec,
+		TaintCfg: &cfg.Taint,
+	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision = %v, want ask when only a historical source matches", decision.Result.Decision)
+	}
+}
+
 func nowPlusHour(t *testing.T) time.Time {
 	t.Helper()
 	return time.Now().UTC().Add(time.Hour)

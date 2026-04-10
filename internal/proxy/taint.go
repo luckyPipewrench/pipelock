@@ -112,15 +112,7 @@ func overrideMatches(override config.TaintTrustOverride, risk session.SessionRis
 }
 
 func riskSourceMatches(risk session.SessionRisk, pattern string) bool {
-	if wildcardMatch(risk.LastExternalURL, pattern) {
-		return true
-	}
-	for _, source := range risk.Sources {
-		if wildcardMatch(source.URL, pattern) {
-			return true
-		}
-	}
-	return false
+	return wildcardMatch(risk.LastExternalURL, pattern)
 }
 
 func wildcardMatch(value, pattern string) bool {

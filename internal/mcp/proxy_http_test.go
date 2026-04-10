@@ -6,6 +6,8 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -29,6 +33,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -43,6 +49,52 @@ const (
 )
 
 func intPtrHTTP(v int) *int { return &v }
+
+func newTestReceiptEmitter(t *testing.T) (*receipt.Emitter, *recorder.Recorder, string) {
+	t.Helper()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	return receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: "test",
+		Principal:  "test-principal",
+		Actor:      "test-actor",
+	}), rec, dir
+}
+
+func readReceiptEntriesHTTP(t *testing.T, dir string) []recorder.Entry {
+	t.Helper()
+
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var all []recorder.Entry
+	for _, de := range dirEntries {
+		if de.IsDir() || !strings.HasSuffix(de.Name(), ".jsonl") {
+			continue
+		}
+		entries, err := recorder.ReadEntries(filepath.Join(dir, de.Name()))
+		if err != nil {
+			t.Fatalf("ReadEntries(%s): %v", de.Name(), err)
+		}
+		all = append(all, entries...)
+	}
+	return all
+}
 
 func testScannerForHTTP(t *testing.T) *scanner.Scanner {
 	t.Helper()
@@ -4085,6 +4137,30 @@ func TestScanHTTPInputDecision_EnvelopeMetadataBackfillWhenInputScanningDisabled
 	}
 	if !bytes.Contains(decision.ForwardMessage, []byte(envelope.MCPMetaKey)) {
 		t.Fatalf("expected forwarded message to contain mediation envelope, got: %s", decision.ForwardMessage)
+	}
+
+	receiptEmitter, receiptRecorder, receiptDir := newTestReceiptEmitter(t)
+	decision = scanHTTPInputDecision(msg, io.Discard, "sess", "sess", MCPProxyOpts{
+		Scanner:        sc,
+		ReceiptEmitter: receiptEmitter,
+		Transport:      "mcp_http",
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("expected request to pass with receipt emitter, got block: %+v", decision.Blocked)
+	}
+	if err := receiptRecorder.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+	entries := readReceiptEntriesHTTP(t, receiptDir)
+	foundReceipt := false
+	for _, entry := range entries {
+		if entry.Type == "action_receipt" {
+			foundReceipt = true
+			break
+		}
+	}
+	if !foundReceipt {
+		t.Fatal("expected receipt emitter path to record an action receipt when input scanning metadata is backfilled")
 	}
 }
 

@@ -1060,6 +1060,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			ActorAuth:      id.Auth,
 			SessionTaint:   forwardTaint.Risk.Level.String(),
 			AuthorityKind:  forwardTaint.Authority.String(),
+			AuthorityRef:   forwardTaint.ActionRef,
 			RequiresReauth: forwardRequiresReauth,
 		}); envErr != nil {
 			p.logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
@@ -1101,13 +1102,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
 		if err := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, sc, &cfg.A2AScanning); err != nil {
+			if errors.Is(err, mcp.ErrA2AStreamFinding) {
+				responsePromptHit = true
+			}
 			// Distinguish scanning findings from internal/IO errors. In warn
 			// mode, findings are logged but the stream has already been
 			// forwarded (events are written before scanning the next one),
 			// so we only record the anomaly. Block mode and internal errors
 			// terminate the stream.
 			if errors.Is(err, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
-				responsePromptHit = true
 				p.logger.LogAnomaly(actx, "a2a_stream", err.Error(), 0)
 			} else {
 				p.logger.LogBlocked(actx, "a2a_stream", err.Error())

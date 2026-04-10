@@ -303,6 +303,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}
 
+	mcpMethod = verdict.Method
+	if verdict.Method == methodToolsCall {
+		actionID = receipt.NewActionID()
+		toolName = extractToolCallName(msg)
+	}
+
 	// A2A request body scanning: field-aware analysis for A2A protocol methods.
 	// Runs after content scanning so both pipelines contribute findings.
 	// When the method is unknown (input scanning disabled, no policy/chain),
@@ -428,12 +434,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			LogMessage:     "blocked (parse error)",
 		}
 		return result
-	}
-
-	mcpMethod = verdict.Method
-	if verdict.Method == methodToolsCall {
-		actionID = receipt.NewActionID()
-		toolName = extractToolCallName(msg)
 	}
 
 	if verdict.Method == methodToolsCall {

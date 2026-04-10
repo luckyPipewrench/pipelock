@@ -68,10 +68,23 @@ func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, 
 }
 
 func httpActionRef(action session.ActionClass, method string, parsedURL *url.URL) string {
+	actionName := strings.ToLower(action.String())
+	methodName := strings.ToLower(method)
 	if parsedURL == nil {
-		return strings.ToLower(fmt.Sprintf("%s:%s", action.String(), method))
+		return fmt.Sprintf("%s:%s", actionName, methodName)
 	}
-	return strings.ToLower(fmt.Sprintf("%s:%s:%s", action.String(), method, parsedURL.String()))
+	requestURI := parsedURL.RequestURI()
+	if requestURI == "" {
+		requestURI = "/"
+	}
+	return fmt.Sprintf(
+		"%s:%s:%s://%s%s",
+		actionName,
+		methodName,
+		strings.ToLower(parsedURL.Scheme),
+		strings.ToLower(parsedURL.Host),
+		requestURI,
+	)
 }
 
 func trustOverrideApplies(overrides []config.TaintTrustOverride, risk session.SessionRisk, actionRef string) bool {

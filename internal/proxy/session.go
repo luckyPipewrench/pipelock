@@ -774,6 +774,7 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
 	}
 
+	riskSnapshot := sess.RiskSnapshot()
 	prev = SessionSnapshot{
 		Key:             key,
 		Agent:           agent,
@@ -782,8 +783,8 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		ThreatScore:     prevScore,
 		EscalationLevel: session.EscalationLabel(prevLevel),
 		BlockAll:        false,
-		TaintLevel:      sess.RiskSnapshot().Level.String(),
-		Contaminated:    sess.RiskSnapshot().Contaminated,
+		TaintLevel:      riskSnapshot.Level.String(),
+		Contaminated:    riskSnapshot.Contaminated,
 		LastActivity:    time.Now(),
 	}
 	return prev, true
@@ -839,6 +840,7 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
 	}
 
+	riskSnapshot := sess.RiskSnapshot()
 	prev = SessionSnapshot{
 		Key:             key,
 		Agent:           agent,
@@ -847,8 +849,8 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 		ThreatScore:     prevScore,
 		EscalationLevel: session.EscalationLabel(prevLevel),
 		BlockAll:        false,
-		TaintLevel:      sess.RiskSnapshot().Level.String(),
-		Contaminated:    sess.RiskSnapshot().Contaminated,
+		TaintLevel:      riskSnapshot.Level.String(),
+		Contaminated:    riskSnapshot.Contaminated,
 		LastActivity:    time.Now(),
 	}
 	return prev, true, nil

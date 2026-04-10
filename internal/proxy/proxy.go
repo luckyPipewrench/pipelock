@@ -1889,6 +1889,18 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
 		scanResult := sc.ScanResponse(r.Context(), content)
+
+		// Filter out suppressed findings before deriving taint or capture action.
+		if !scanResult.Clean && len(cfg.Suppress) > 0 {
+			var kept []scanner.ResponseMatch
+			for _, m := range scanResult.Matches {
+				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
+					kept = append(kept, m)
+				}
+			}
+			scanResult.Matches = kept
+			scanResult.Clean = len(kept) == 0
+		}
 		if !scanResult.Clean {
 			responsePromptHit = true
 		}

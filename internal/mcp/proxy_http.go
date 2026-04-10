@@ -854,10 +854,11 @@ func RunHTTPListenerProxy(
 		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
 		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
 		RedirectRT: opts.RedirectRT, Transport: "mcp_http",
-		CaptureObs:    opts.captureObserver(),
-		ProvenanceCfg: opts.ProvenanceCfg,
-		DoWCheck:      opts.DoWCheck,
-		A2ACfg:        opts.A2ACfg,
+		ReceiptEmitter: opts.ReceiptEmitter,
+		CaptureObs:     opts.captureObserver(),
+		ProvenanceCfg:  opts.ProvenanceCfg,
+		DoWCheck:       opts.DoWCheck,
+		A2ACfg:         opts.A2ACfg,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled

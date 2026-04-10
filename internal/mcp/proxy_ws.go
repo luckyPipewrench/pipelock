@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -48,6 +49,7 @@ func RunWSProxy(
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
 	m *metrics.Metrics,
+	receiptEmitter *receipt.Emitter,
 	redirectRT *RedirectRuntime,
 	dowCheck DoWCheckFunc,
 	envEmitter *envelope.Emitter,
@@ -111,7 +113,9 @@ func RunWSProxy(
 		KillSwitch: ks, ChainMatcher: chainMatcher,
 		AuditLogger: auditLogger, CEE: cee,
 		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
-		RedirectRT: redirectRT, DoWCheck: dowCheck,
+		Transport:      "mcp_ws",
+		ReceiptEmitter: receiptEmitter,
+		RedirectRT:     redirectRT, DoWCheck: dowCheck,
 		EnvelopeEmitter: envEmitter,
 	}
 

@@ -199,9 +199,12 @@ func TestEmitter_Emit_TaintFields(t *testing.T) {
 		SessionTaintLevel:   session.TaintExternalUntrusted.String(),
 		SessionContaminated: true,
 		RecentTaintSources:  []session.TaintSourceRef{source},
+		SessionTaskID:       "task-123",
+		SessionTaskLabel:    "review auth fix",
 		AuthorityKind:       session.AuthorityOperatorOverride.String(),
 		TaintDecision:       "ask",
 		TaintDecisionReason: "protected_write_after_untrusted_external_exposure",
+		TaskOverrideApplied: true,
 	})
 	if err != nil {
 		t.Fatalf("Emit() error: %v", err)
@@ -220,6 +223,12 @@ func TestEmitter_Emit_TaintFields(t *testing.T) {
 	if len(got.ActionRecord.RecentTaintSources) != 1 {
 		t.Fatalf("recent_taint_sources length = %d, want 1", len(got.ActionRecord.RecentTaintSources))
 	}
+	if got.ActionRecord.SessionTaskID != "task-123" {
+		t.Fatalf("session_task_id = %q", got.ActionRecord.SessionTaskID)
+	}
+	if got.ActionRecord.SessionTaskLabel != "review auth fix" {
+		t.Fatalf("session_task_label = %q", got.ActionRecord.SessionTaskLabel)
+	}
 	if got.ActionRecord.AuthorityKind != session.AuthorityOperatorOverride.String() {
 		t.Fatalf("authority_kind = %q", got.ActionRecord.AuthorityKind)
 	}
@@ -228,6 +237,9 @@ func TestEmitter_Emit_TaintFields(t *testing.T) {
 	}
 	if got.ActionRecord.TaintDecisionReason != "protected_write_after_untrusted_external_exposure" {
 		t.Fatalf("taint_decision_reason = %q", got.ActionRecord.TaintDecisionReason)
+	}
+	if !got.ActionRecord.TaskOverrideApplied {
+		t.Fatal("expected task_override_applied to be true")
 	}
 }
 

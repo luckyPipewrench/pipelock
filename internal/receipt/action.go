@@ -135,9 +135,12 @@ type ActionRecord struct {
 	SessionTaintLevel   string                   `json:"session_taint_level,omitempty"`
 	SessionContaminated bool                     `json:"session_contaminated,omitempty"`
 	RecentTaintSources  []session.TaintSourceRef `json:"recent_taint_sources,omitempty"`
+	SessionTaskID       string                   `json:"session_task_id,omitempty"`
+	SessionTaskLabel    string                   `json:"session_task_label,omitempty"`
 	AuthorityKind       string                   `json:"authority_kind,omitempty"`
 	TaintDecision       string                   `json:"taint_decision,omitempty"`
 	TaintDecisionReason string                   `json:"taint_decision_reason,omitempty"`
+	TaskOverrideApplied bool                     `json:"task_override_applied,omitempty"`
 
 	// Transport context
 	Transport string `json:"transport"`

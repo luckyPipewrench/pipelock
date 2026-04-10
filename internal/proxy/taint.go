@@ -17,15 +17,18 @@ import (
 const (
 	taintScopeAction = "action"
 	taintScopeSource = "source"
+	taintScopeTask   = "task"
 )
 
 type taintDecision struct {
-	Risk        session.SessionRisk
-	ActionClass session.ActionClass
-	Sensitivity session.ActionSensitivity
-	Authority   session.AuthorityKind
-	Result      session.PolicyDecisionResult
-	ActionRef   string
+	Risk                session.SessionRisk
+	Task                session.TaskContext
+	ActionClass         session.ActionClass
+	Sensitivity         session.ActionSensitivity
+	Authority           session.AuthorityKind
+	Result              session.PolicyDecisionResult
+	ActionRef           string
+	TaskOverrideApplied bool
 }
 
 func observeHTTPResponseTaint(rec session.Recorder, cfg *config.Config, rawURL, contentType, kind string, promptHit bool) {
@@ -55,6 +58,14 @@ func evaluateHTTPTaint(cfg *config.Config, rec session.Recorder, method string, 
 	}
 	decision.ActionClass, decision.Sensitivity = session.ClassifyHTTPAction(method, parsedURL.Path, cfg.Taint.ProtectedPaths, cfg.Taint.ElevatedPaths)
 	decision.ActionRef = httpActionRef(decision.ActionClass, method, parsedURL)
+	if tp, ok := rec.(session.TaskContextProvider); ok {
+		decision.Task = tp.TaskSnapshot()
+		if runtimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.ActionRef) {
+			decision.Result = session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: "taint_runtime_task_override"}
+			decision.TaskOverrideApplied = true
+			return decision
+		}
+	}
 	decision.Result = session.PolicyMatrix{Profile: cfg.Taint.Policy}.Evaluate(
 		decision.Risk.Level,
 		decision.ActionClass,
@@ -122,6 +133,29 @@ func overrideMatches(override config.TaintTrustOverride, risk session.SessionRis
 	default:
 		return false
 	}
+}
+
+func runtimeTrustOverrideApplies(overrides []session.TrustOverride, task session.TaskContext, risk session.SessionRisk, actionRef string) bool {
+	now := time.Now().UTC()
+	for _, override := range overrides {
+		if override.Scope != taintScopeTask {
+			continue
+		}
+		if override.TaskID == "" || override.TaskID != task.CurrentTaskID {
+			continue
+		}
+		if !override.ExpiresAt.IsZero() && override.ExpiresAt.Before(now) {
+			continue
+		}
+		if override.ActionMatch != "" && !wildcardMatch(actionRef, override.ActionMatch) {
+			continue
+		}
+		if override.SourceMatch != "" && !riskSourceMatches(risk, override.SourceMatch) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func riskSourceMatches(risk session.SessionRisk, pattern string) bool {

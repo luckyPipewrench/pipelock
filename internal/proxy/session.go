@@ -65,6 +65,10 @@ type SessionState struct {
 
 	// Sticky taint state used for exposure-based policy escalation.
 	risk session.SessionRisk
+
+	// Task-boundary state for taint overrides and evidence binding.
+	task             session.TaskContext
+	runtimeOverrides []session.TrustOverride
 }
 
 // IsResettable returns whether this session can be reset via the admin API.
@@ -332,11 +336,73 @@ func (s *SessionState) RiskSnapshot() session.SessionRisk {
 	return s.risk.Snapshot()
 }
 
+// TaskSnapshot returns a copy of the session's current task context.
+func (s *SessionState) TaskSnapshot() session.TaskContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.CurrentTaskID == "" {
+		s.task = newTaskContext("", time.Now())
+	}
+	return s.task
+}
+
+// RuntimeTrustOverrides returns a copy of the session's runtime overrides.
+func (s *SessionState) RuntimeTrustOverrides() []session.TrustOverride {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]session.TrustOverride(nil), s.runtimeOverrides...)
+}
+
 // ObserveRisk folds a new taint observation into the session's sticky risk state.
 func (s *SessionState) ObserveRisk(observation session.RiskObservation) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.risk.Observe(observation)
+}
+
+// BeginNewTask rotates the current task boundary and clears taint-only state.
+// Adaptive enforcement state remains intact.
+func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskContext, clearedOverrides int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	if s.task.CurrentTaskID == "" {
+		s.task = newTaskContext("", now)
+	}
+	prev = s.task
+	s.task = newTaskContext(label, now)
+	s.risk = session.SessionRisk{}
+
+	if len(s.runtimeOverrides) > 0 {
+		kept := s.runtimeOverrides[:0]
+		for _, override := range s.runtimeOverrides {
+			if override.TaskID != "" && override.TaskID == prev.CurrentTaskID {
+				clearedOverrides++
+				continue
+			}
+			kept = append(kept, override)
+		}
+		s.runtimeOverrides = kept
+	}
+
+	return prev, s.task, clearedOverrides
+}
+
+// AddRuntimeTrustOverride stores a session-scoped trust override. Task-scoped
+// overrides are automatically bound to the current task ID.
+func (s *SessionState) AddRuntimeTrustOverride(override session.TrustOverride) session.TrustOverride {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.task.CurrentTaskID == "" {
+		s.task = newTaskContext("", time.Now())
+	}
+	if override.Scope == "task" && override.TaskID == "" {
+		override.TaskID = s.task.CurrentTaskID
+	}
+	s.runtimeOverrides = append(s.runtimeOverrides, override)
+	return override
 }
 
 // RecordBytes adds to the session's cumulative byte count.
@@ -385,17 +451,19 @@ var invocationPrefixes = []string{"mcp-stdio-", "mcp-http-", "mcp-ws-"}
 
 // SessionSnapshot is a read-only DTO for the admin API.
 type SessionSnapshot struct {
-	Key             string    `json:"key"`
-	Agent           string    `json:"agent"`
-	ClientIP        string    `json:"client_ip"`
-	Kind            string    `json:"kind"`
-	ThreatScore     float64   `json:"threat_score"`
-	EscalationLevel string    `json:"escalation_level"`
-	BlockAll        bool      `json:"block_all"`
-	AirlockTier     string    `json:"airlock_tier"`
-	TaintLevel      string    `json:"taint_level"`
-	Contaminated    bool      `json:"contaminated"`
-	LastActivity    time.Time `json:"last_activity"`
+	Key              string    `json:"key"`
+	Agent            string    `json:"agent"`
+	ClientIP         string    `json:"client_ip"`
+	Kind             string    `json:"kind"`
+	CurrentTaskID    string    `json:"current_task_id,omitempty"`
+	CurrentTaskLabel string    `json:"current_task_label,omitempty"`
+	ThreatScore      float64   `json:"threat_score"`
+	EscalationLevel  string    `json:"escalation_level"`
+	BlockAll         bool      `json:"block_all"`
+	AirlockTier      string    `json:"airlock_tier"`
+	TaintLevel       string    `json:"taint_level"`
+	Contaminated     bool      `json:"contaminated"`
+	LastActivity     time.Time `json:"last_activity"`
 }
 
 // classifySessionKey determines whether a key is an identity key or an
@@ -410,6 +478,15 @@ func classifySessionKey(key string) (kind, agent, clientIP string) {
 		return sessionKindIdentity, key[:idx], key[idx+1:]
 	}
 	return sessionKindIdentity, "", key
+}
+
+func newTaskContext(label string, now time.Time) session.TaskContext {
+	return session.TaskContext{
+		CurrentTaskID:    session.NextTaskID(),
+		CurrentTaskLabel: label,
+		StartedAt:        now.UTC(),
+		LastBoundaryAt:   now.UTC(),
+	}
 }
 
 // BaselineResult holds the outcome of a behavioral baseline deviation check.
@@ -597,6 +674,7 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 		lastActivity:     now,
 		currentThreshold: 0, // set by adaptive enforcement when enabled
 		airlock:          AirlockState{tier: config.AirlockTierNone},
+		task:             newTaskContext("", now),
 	}
 	sm.sessions[key] = sess
 	if sm.metrics != nil {
@@ -708,17 +786,19 @@ func (sm *SessionManager) Snapshot() []SessionSnapshot {
 		s.mu.Lock()
 		kind, agent, ip := classifySessionKey(keys[i])
 		snaps[i] = SessionSnapshot{
-			Key:             keys[i],
-			Agent:           agent,
-			ClientIP:        ip,
-			Kind:            kind,
-			ThreatScore:     s.threatScore,
-			EscalationLevel: session.EscalationLabel(s.escalationLevel),
-			BlockAll:        s.atBlockAll,
-			AirlockTier:     s.airlock.Tier(),
-			TaintLevel:      s.risk.Level.String(),
-			Contaminated:    s.risk.Contaminated,
-			LastActivity:    s.lastActivity,
+			Key:              keys[i],
+			Agent:            agent,
+			ClientIP:         ip,
+			Kind:             kind,
+			CurrentTaskID:    s.task.CurrentTaskID,
+			CurrentTaskLabel: s.task.CurrentTaskLabel,
+			ThreatScore:      s.threatScore,
+			EscalationLevel:  session.EscalationLabel(s.escalationLevel),
+			BlockAll:         s.atBlockAll,
+			AirlockTier:      s.airlock.Tier(),
+			TaintLevel:       s.risk.Level.String(),
+			Contaminated:     s.risk.Contaminated,
+			LastActivity:     s.lastActivity,
 		}
 		s.mu.Unlock()
 	}
@@ -776,16 +856,18 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 
 	riskSnapshot := sess.RiskSnapshot()
 	prev = SessionSnapshot{
-		Key:             key,
-		Agent:           agent,
-		ClientIP:        ip,
-		Kind:            sessionKindIdentity,
-		ThreatScore:     prevScore,
-		EscalationLevel: session.EscalationLabel(prevLevel),
-		BlockAll:        false,
-		TaintLevel:      riskSnapshot.Level.String(),
-		Contaminated:    riskSnapshot.Contaminated,
-		LastActivity:    time.Now(),
+		Key:              key,
+		Agent:            agent,
+		ClientIP:         ip,
+		Kind:             sessionKindIdentity,
+		CurrentTaskID:    sess.TaskSnapshot().CurrentTaskID,
+		CurrentTaskLabel: sess.TaskSnapshot().CurrentTaskLabel,
+		ThreatScore:      prevScore,
+		EscalationLevel:  session.EscalationLabel(prevLevel),
+		BlockAll:         false,
+		TaintLevel:       riskSnapshot.Level.String(),
+		Contaminated:     riskSnapshot.Contaminated,
+		LastActivity:     time.Now(),
 	}
 	return prev, true
 }
@@ -794,6 +876,9 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 // invocation (MCP transport) session, which is ephemeral and not meaningful
 // to reset.
 var ErrInvocationReset = errors.New("cannot reset invocation session")
+
+// ErrTaskScopeOnly is returned when a runtime trust grant uses an unsupported scope.
+var ErrTaskScopeOnly = errors.New("runtime trust grants only support task scope")
 
 // ResetSessionIfResettable atomically looks up a session, verifies it is an
 // identity session (not invocation), and resets it under a single sm.mu.Lock.
@@ -842,18 +927,52 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 
 	riskSnapshot := sess.RiskSnapshot()
 	prev = SessionSnapshot{
-		Key:             key,
-		Agent:           agent,
-		ClientIP:        ip,
-		Kind:            sessionKindIdentity,
-		ThreatScore:     prevScore,
-		EscalationLevel: session.EscalationLabel(prevLevel),
-		BlockAll:        false,
-		TaintLevel:      riskSnapshot.Level.String(),
-		Contaminated:    riskSnapshot.Contaminated,
-		LastActivity:    time.Now(),
+		Key:              key,
+		Agent:            agent,
+		ClientIP:         ip,
+		Kind:             sessionKindIdentity,
+		CurrentTaskID:    sess.TaskSnapshot().CurrentTaskID,
+		CurrentTaskLabel: sess.TaskSnapshot().CurrentTaskLabel,
+		ThreatScore:      prevScore,
+		EscalationLevel:  session.EscalationLabel(prevLevel),
+		BlockAll:         false,
+		TaintLevel:       riskSnapshot.Level.String(),
+		Contaminated:     riskSnapshot.Contaminated,
+		LastActivity:     time.Now(),
 	}
 	return prev, true, nil
+}
+
+// BeginNewTask rotates the task boundary for an active session and clears
+// taint-only state while preserving adaptive profiling state.
+func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, found bool) {
+	sm.mu.RLock()
+	sess, ok := sm.sessions[key]
+	sm.mu.RUnlock()
+	if !ok {
+		return session.TaskContext{}, session.TaskContext{}, 0, false
+	}
+	prev, current, clearedOverrides = sess.BeginNewTask(label)
+	return prev, current, clearedOverrides, true
+}
+
+// AddRuntimeTrustOverride binds and stores a task-scoped trust override on an
+// active session.
+func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.TrustOverride) (applied session.TrustOverride, task session.TaskContext, found bool, err error) {
+	if override.Scope != "task" {
+		return session.TrustOverride{}, session.TaskContext{}, false, ErrTaskScopeOnly
+	}
+
+	sm.mu.RLock()
+	sess, ok := sm.sessions[key]
+	sm.mu.RUnlock()
+	if !ok {
+		return session.TrustOverride{}, session.TaskContext{}, false, nil
+	}
+
+	applied = sess.AddRuntimeTrustOverride(override)
+	task = sess.TaskSnapshot()
+	return applied, task, true, nil
 }
 
 // ForceSetAirlockTier atomically looks up a session by key and sets the

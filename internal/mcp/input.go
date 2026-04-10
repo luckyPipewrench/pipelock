@@ -465,9 +465,12 @@ func ForwardScannedInput(
 				SessionTaintLevel:   taintDecision.Risk.Level.String(),
 				SessionContaminated: taintDecision.Risk.Contaminated,
 				RecentTaintSources:  taintDecision.Risk.Sources,
+				SessionTaskID:       taintDecision.Task.CurrentTaskID,
+				SessionTaskLabel:    taintDecision.Task.CurrentTaskLabel,
 				AuthorityKind:       taintDecision.Authority.String(),
 				TaintDecision:       taintDecision.Result.Decision.String(),
 				TaintDecisionReason: taintDecision.Result.Reason,
+				TaskOverrideApplied: taintDecision.TaskOverrideApplied,
 			})
 		}
 		if verdict.Method == methodToolsCall {
@@ -567,6 +570,7 @@ func ForwardScannedInput(
 					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
 					Verdict:        config.ActionAllow,
 					SessionTaint:   taintDecision.Risk.Level.String(),
+					TaskID:         taintDecision.Task.CurrentTaskID,
 					AuthorityKind:  taintDecision.Authority.String(),
 					RequiresReauth: taintDecision.RequiresReauth,
 				})
@@ -822,6 +826,7 @@ func ForwardScannedInput(
 					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
 					Verdict:        config.ActionWarn,
 					SessionTaint:   taintDecision.Risk.Level.String(),
+					TaskID:         taintDecision.Task.CurrentTaskID,
 					AuthorityKind:  taintDecision.Authority.String(),
 					RequiresReauth: taintDecision.RequiresReauth,
 				})

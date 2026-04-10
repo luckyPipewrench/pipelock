@@ -16,8 +16,10 @@ import (
 )
 
 type taintRecorder struct {
-	level int
-	risk  session.SessionRisk
+	level     int
+	risk      session.SessionRisk
+	task      session.TaskContext
+	overrides []session.TrustOverride
 }
 
 func (r *taintRecorder) RecordSignal(_ session.SignalType, _ float64) (bool, string, string) {
@@ -40,6 +42,17 @@ func (r *taintRecorder) RiskSnapshot() session.SessionRisk {
 
 func (r *taintRecorder) ObserveRisk(observation session.RiskObservation) {
 	r.risk.Observe(observation)
+}
+
+func (r *taintRecorder) TaskSnapshot() session.TaskContext {
+	if r.task.CurrentTaskID == "" {
+		r.task = session.TaskContext{CurrentTaskID: session.NextTaskID()}
+	}
+	return r.task
+}
+
+func (r *taintRecorder) RuntimeTrustOverrides() []session.TrustOverride {
+	return append([]session.TrustOverride(nil), r.overrides...)
 }
 
 func TestForwardScanned_ExternalResponseContaminatesSession(t *testing.T) {
@@ -383,6 +396,44 @@ func TestEvaluateMCPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision = %v, want ask when only a historical source matches", decision.Result.Decision)
+	}
+}
+
+func TestEvaluateMCPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	rec := &taintRecorder{
+		task: session.TaskContext{CurrentTaskID: "task-1"},
+		risk: session.SessionRisk{
+			Level:        session.TaintExternalUntrusted,
+			Contaminated: true,
+			Sources: []session.TaintSourceRef{{
+				URL:   "https://evil.example/issue/123",
+				Kind:  "http_response",
+				Level: session.TaintExternalUntrusted,
+			}},
+		},
+		overrides: []session.TrustOverride{{
+			Scope:       "task",
+			TaskID:      "task-1",
+			ActionMatch: "mcp:write_file:/repo/auth/middleware.go",
+			ExpiresAt:   time.Now().UTC().Add(time.Hour),
+		}},
+	}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
+	}
+	if !decision.TaskOverrideApplied {
+		t.Fatal("expected runtime task override to be recorded")
+	}
+
+	rec.task = session.TaskContext{CurrentTaskID: "task-2"}
+	decision = evaluateMCPTaint(MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision after task boundary = %v, want ask", decision.Result.Decision)
 	}
 }
 

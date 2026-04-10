@@ -1209,6 +1209,8 @@ func TestIsActiveHTTP_ExemptsSessionAPI(t *testing.T) {
 	}{
 		{"/api/v1/sessions", false},
 		{"/api/v1/sessions/agent%7C10.0.0.1/reset", false},
+		{"/api/v1/sessions/agent%7C10.0.0.1/task", false},
+		{"/api/v1/sessions/agent%7C10.0.0.1/trust", false},
 		{"/fetch", true},
 		{"/api/v1/killswitch", false},
 		{"/api/v1/killswitch/status", false},

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -233,6 +234,90 @@ func TestSessionAPI_HandleReset_Success(t *testing.T) {
 	}
 	if sess.BlockAll() {
 		t.Error("blockAll should be cleared")
+	}
+}
+
+func TestSessionAPI_HandleTask_Success(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sess := sm.GetOrCreate("agent-a|10.0.0.1")
+	sess.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://evil.example/issue/123",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+	before := sess.TaskSnapshot()
+
+	handler := newTestSessionAPIHandler(t, sm)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/task", strings.NewReader(`{"label":"new task","reason":"user started a new task"}`))
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		PreviousTaskID          string `json:"previous_task_id"`
+		CurrentTaskID           string `json:"current_task_id"`
+		RuntimeOverridesCleared int    `json:"runtime_overrides_cleared"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.PreviousTaskID != before.CurrentTaskID {
+		t.Fatalf("previous_task_id = %q, want %q", resp.PreviousTaskID, before.CurrentTaskID)
+	}
+	if resp.CurrentTaskID == "" || resp.CurrentTaskID == resp.PreviousTaskID {
+		t.Fatalf("expected rotated task id, got %q", resp.CurrentTaskID)
+	}
+	if sess.RiskSnapshot().Contaminated {
+		t.Fatal("task boundary should clear taint contamination")
+	}
+}
+
+func TestSessionAPI_HandleTrust_Success(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sess := sm.GetOrCreate("agent-a|10.0.0.1")
+	task := sess.TaskSnapshot()
+
+	handler := newTestSessionAPIHandler(t, sm)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/trust", strings.NewReader(fmt.Sprintf(`{"scope":"task","action_match":"publish:post:https://api.example.com/auth/update","expires_at":"%s","granted_by":"operator","reason":"same-task follow-up"}`, time.Now().UTC().Add(time.Hour).Format(time.RFC3339))))
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		TaskID      string `json:"task_id"`
+		ActionMatch string `json:"action_match"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.TaskID != task.CurrentTaskID {
+		t.Fatalf("task_id = %q, want %q", resp.TaskID, task.CurrentTaskID)
+	}
+	overrides := sess.RuntimeTrustOverrides()
+	if len(overrides) != 1 {
+		t.Fatalf("runtime overrides = %d, want 1", len(overrides))
+	}
+	if overrides[0].TaskID != task.CurrentTaskID {
+		t.Fatalf("override task_id = %q, want %q", overrides[0].TaskID, task.CurrentTaskID)
+	}
+	if overrides[0].ActionMatch != resp.ActionMatch {
+		t.Fatalf("override action_match = %q, want %q", overrides[0].ActionMatch, resp.ActionMatch)
 	}
 }
 

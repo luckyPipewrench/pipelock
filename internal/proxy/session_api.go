@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // Rate limiting constants for the session reset endpoint.
@@ -269,6 +270,20 @@ type airlockResponse struct {
 	Changed      bool   `json:"changed"`
 }
 
+type taskRequest struct {
+	Label  string `json:"label"`
+	Reason string `json:"reason"`
+}
+
+type trustOverrideRequest struct {
+	Scope       string    `json:"scope"`
+	SourceMatch string    `json:"source_match"`
+	ActionMatch string    `json:"action_match"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	GrantedBy   string    `json:"granted_by"`
+	Reason      string    `json:"reason"`
+}
+
 // HandleAirlock handles POST /api/v1/sessions/{key}/airlock.
 // Accepts {"tier": "soft|hard|drain|normal"} and transitions the session's
 // airlock state. "normal" is an alias for "none" (human-friendly).
@@ -341,6 +356,166 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 		PreviousTier: from,
 		NewTier:      to,
 		Changed:      changed,
+	})
+}
+
+// HandleTask starts a new task boundary for an active session.
+func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	if !h.checkResetRateLimit() {
+		h.logSessionAdmin("task_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "task")
+	if !ok {
+		h.logSessionAdmin("task_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	var req taskRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			h.logSessionAdmin("task_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
+			http.Error(w, "invalid JSON body", http.StatusBadRequest)
+			return
+		}
+	}
+
+	prev, current, cleared, found := sm.BeginNewTask(key, req.Label)
+	if !found {
+		h.logSessionAdmin("task_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	h.logSessionAdmin("task_ok", clientIP, key, req.Reason, http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Key                     string `json:"key"`
+		PreviousTaskID          string `json:"previous_task_id"`
+		CurrentTaskID           string `json:"current_task_id"`
+		CurrentTaskLabel        string `json:"current_task_label,omitempty"`
+		TaintCleared            bool   `json:"taint_cleared"`
+		RuntimeOverridesCleared int    `json:"runtime_overrides_cleared"`
+	}{
+		Key:                     key,
+		PreviousTaskID:          prev.CurrentTaskID,
+		CurrentTaskID:           current.CurrentTaskID,
+		CurrentTaskLabel:        current.CurrentTaskLabel,
+		TaintCleared:            true,
+		RuntimeOverridesCleared: cleared,
+	})
+}
+
+// HandleTrust grants a runtime trust override bound to the current task.
+func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	if !h.checkResetRateLimit() {
+		h.logSessionAdmin("trust_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "trust")
+	if !ok {
+		h.logSessionAdmin("trust_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	var req trustOverrideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logSessionAdmin("trust_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if req.Scope != taintScopeTask {
+		h.logSessionAdmin("trust_bad_scope", clientIP, key, "invalid scope", http.StatusBadRequest)
+		http.Error(w, "invalid scope: must be task", http.StatusBadRequest)
+		return
+	}
+	if req.SourceMatch == "" && req.ActionMatch == "" {
+		h.logSessionAdmin("trust_bad_match", clientIP, key, "missing match pattern", http.StatusBadRequest)
+		http.Error(w, "source_match or action_match is required", http.StatusBadRequest)
+		return
+	}
+	if req.ExpiresAt.IsZero() || !req.ExpiresAt.After(time.Now().UTC()) {
+		h.logSessionAdmin("trust_bad_expiry", clientIP, key, "invalid expiry", http.StatusBadRequest)
+		http.Error(w, "expires_at must be in the future", http.StatusBadRequest)
+		return
+	}
+
+	override := session.TrustOverride{
+		Scope:       taintScopeTask,
+		SourceMatch: req.SourceMatch,
+		ActionMatch: req.ActionMatch,
+		ExpiresAt:   req.ExpiresAt.UTC(),
+		GrantedBy:   req.GrantedBy,
+		Reason:      req.Reason,
+	}
+	applied, task, found, err := sm.AddRuntimeTrustOverride(key, override)
+	if err != nil {
+		h.logSessionAdmin("trust_rejected", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !found {
+		h.logSessionAdmin("trust_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	h.logSessionAdmin("trust_ok", clientIP, key, applied.Reason, http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Key         string    `json:"key"`
+		Scope       string    `json:"scope"`
+		TaskID      string    `json:"task_id"`
+		SourceMatch string    `json:"source_match,omitempty"`
+		ActionMatch string    `json:"action_match,omitempty"`
+		ExpiresAt   time.Time `json:"expires_at"`
+		GrantedBy   string    `json:"granted_by,omitempty"`
+		Reason      string    `json:"reason,omitempty"`
+	}{
+		Key:         key,
+		Scope:       applied.Scope,
+		TaskID:      task.CurrentTaskID,
+		SourceMatch: applied.SourceMatch,
+		ActionMatch: applied.ActionMatch,
+		ExpiresAt:   applied.ExpiresAt,
+		GrantedBy:   applied.GrantedBy,
+		Reason:      applied.Reason,
 	})
 }
 

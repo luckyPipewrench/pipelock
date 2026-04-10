@@ -83,9 +83,12 @@ type EmitOpts struct {
 	SessionTaintLevel   string
 	SessionContaminated bool
 	RecentTaintSources  []session.TaintSourceRef
+	SessionTaskID       string
+	SessionTaskLabel    string
 	AuthorityKind       string
 	TaintDecision       string
 	TaintDecisionReason string
+	TaskOverrideApplied bool
 
 	// MCP-specific fields
 	ToolName  string
@@ -139,9 +142,12 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		SessionTaintLevel:   opts.SessionTaintLevel,
 		SessionContaminated: opts.SessionContaminated,
 		RecentTaintSources:  append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),
+		SessionTaskID:       opts.SessionTaskID,
+		SessionTaskLabel:    opts.SessionTaskLabel,
 		AuthorityKind:       opts.AuthorityKind,
 		TaintDecision:       opts.TaintDecision,
 		TaintDecisionReason: opts.TaintDecisionReason,
+		TaskOverrideApplied: opts.TaskOverrideApplied,
 		Transport:           opts.Transport,
 		Method:              opts.Method,
 		Layer:               opts.Layer,

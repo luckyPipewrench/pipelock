@@ -9,6 +9,7 @@ package session
 import (
 	"fmt"
 	"sync/atomic"
+	"time"
 )
 
 // SignalType identifies a threat signal for adaptive enforcement.
@@ -63,6 +64,21 @@ type Store interface {
 	GetOrCreate(key string) Recorder
 }
 
+// TaskContext describes the current task boundary attached to a live session.
+type TaskContext struct {
+	CurrentTaskID    string
+	CurrentTaskLabel string
+	StartedAt        time.Time
+	LastBoundaryAt   time.Time
+}
+
+// TaskContextProvider exposes task-boundary context and runtime trust
+// overrides without coupling callers to the proxy package.
+type TaskContextProvider interface {
+	TaskSnapshot() TaskContext
+	RuntimeTrustOverrides() []TrustOverride
+}
+
 // ToolFreezer checks whether a tool call is permitted under a frozen tool
 // inventory. Used by MCP proxy paths to enforce airlock hard-tier restrictions
 // without importing the proxy package (which would create a circular dep).
@@ -76,9 +92,17 @@ type ToolFreezer interface {
 // subprocesses start concurrently.
 var invocationCounter atomic.Uint64
 
+// taskCounter provides unique task identifiers scoped to the current process.
+var taskCounter atomic.Uint64
+
 // NextInvocationKey returns a unique session key with the given prefix.
 // Format: "<prefix>-<n>" where n is a monotonically increasing integer.
 // Safe for concurrent use.
 func NextInvocationKey(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, invocationCounter.Add(1))
+}
+
+// NextTaskID returns a unique pipelock-owned task identifier.
+func NextTaskID() string {
+	return fmt.Sprintf("task-%d", taskCounter.Add(1))
 }

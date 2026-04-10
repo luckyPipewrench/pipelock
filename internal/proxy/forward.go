@@ -121,11 +121,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	syntheticURL := "https://" + syntheticHost + "/"
 	targetCtx := baseCtx
-	targetCtx.URL = target
+	targetCtx.Target = target
 	headerCtx := baseCtx
-	headerCtx.URL = syntheticURL
+	headerCtx.Target = target
 	hostCtx := baseCtx
-	hostCtx.URL = host
+	hostCtx.Target = host
 
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
@@ -506,7 +506,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.metrics.IncrActiveTunnels()
-	p.logger.LogTunnelOpen(targetCtx, target)
+	p.logger.LogTunnelOpen(targetCtx)
 
 	// Bidirectional relay with idle timeout
 	idleTimeout := time.Duration(cfg.ForwardProxy.IdleTimeoutSeconds) * time.Second
@@ -526,7 +526,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		RequestID: requestID,
 		Agent:     agent,
 	})
-	p.logger.LogTunnelClose(targetCtx, target, totalBytes, duration)
+	p.logger.LogTunnelClose(targetCtx, totalBytes, duration)
 
 	// Record data budget for the target domain
 	sc.RecordRequest(strings.ToLower(host), int(totalBytes))
@@ -564,13 +564,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	targetURL := r.URL.String()
-	actx := audit.LogContext{
-		Method:    r.Method,
-		URL:       targetURL,
-		ClientIP:  clientIP,
-		RequestID: requestID,
-		Agent:     agent,
-	}
+	actx := audit.NewHTTPLogContext(r.Method, targetURL, clientIP, requestID, agent)
 
 	// Scan through all layers (URL pipeline)
 	result := sc.Scan(r.Context(), targetURL)

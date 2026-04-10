@@ -328,13 +328,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			result := currentScanner.Scan(req.Context(), redirectURL)
 			if !result.Allowed {
-				actx := audit.LogContext{
-					Method:    req.Method,
-					URL:       redirectURL,
-					ClientIP:  clientIP,
-					RequestID: requestID,
-					Agent:     agentName,
-				}
+				actx := audit.NewHTTPLogContext(req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
 					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
 					return fmt.Errorf("redirect blocked: %s", result.Reason)
@@ -1218,11 +1212,11 @@ func (p *Proxy) Start(ctx context.Context) error {
 			defer cancel()
 			for _, srv := range p.agentServers {
 				if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
-					p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", URL: srv.Addr}, shutErr)
+					p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", Resource: srv.Addr}, shutErr)
 				}
 			}
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", URL: cfg.FetchProxy.Listen}, err)
+				p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", Resource: cfg.FetchProxy.Listen}, err)
 			}
 			p.Close()
 		case <-done:
@@ -1235,7 +1229,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-				p.logger.LogAnomaly(audit.LogContext{Method: "STARTUP", URL: cfg.FetchProxy.Listen}, "",
+				p.logger.LogAnomaly(audit.LogContext{Method: "STARTUP", Resource: cfg.FetchProxy.Listen}, "",
 					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
 					0.5)
 			}
@@ -1318,13 +1312,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.
 	displayURL := scanner.IterativeDecode(targetURL)
-	actx := audit.LogContext{
-		Method:    http.MethodGet,
-		URL:       displayURL,
-		ClientIP:  clientIP,
-		RequestID: requestID,
-		Agent:     agent,
-	}
+	actx := audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent)
 
 	// Scan URL through all scanners
 	result := sc.Scan(r.Context(), targetURL)
@@ -2109,7 +2097,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+		log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
@@ -2127,7 +2115,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2155,14 +2143,14 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "ask:allow", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "ask:strip", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.LogContext{Method: "GET", URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, "response_scan", reason)
+			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2180,13 +2168,13 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
-		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionStrip, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, config.ActionWarn, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(audit.LogContext{URL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}, action, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

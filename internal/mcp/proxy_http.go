@@ -371,7 +371,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 					toolName, dowAction, dowReason, dowBudgetType)
 				if dowAction == config.ActionBlock {
 					if auditLogger != nil {
-						auditLogger.LogBlocked(audit.LogContext{Method: "MCP", URL: toolName}, "denial_of_wallet", dowReason)
+						auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolName, ""), "denial_of_wallet", dowReason)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -382,7 +382,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				}
 				// dow_action: warn — log and record near-miss, but allow the request.
 				if auditLogger != nil {
-					auditLogger.LogAnomaly(audit.LogContext{Method: "MCP", URL: toolName}, "denial_of_wallet", dowReason, 0)
+					auditLogger.LogAnomaly(audit.NewMCPLogContext("MCP", toolName, ""), "denial_of_wallet", dowReason, 0)
 				}
 				recordAdaptiveSignal(session.SignalNearMiss)
 			}

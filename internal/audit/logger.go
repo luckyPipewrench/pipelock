@@ -232,12 +232,56 @@ type BundleRuleHit struct {
 }
 
 // LogContext carries common fields shared across all audit log events.
+// Use the typed constructors (NewHTTPLogContext, NewMCPLogContext,
+// NewConnectLogContext) to enforce required fields per transport.
+//
+// URL, Target, and Resource are mutually exclusive identifiers:
+//   - URL: actual HTTP/HTTPS URLs (fetch, forward-proxy, response scan)
+//   - Target: CONNECT tunnel host:port destinations
+//   - Resource: MCP tool names, config file paths, listen addresses
 type LogContext struct {
 	Method    string
-	URL       string
+	URL       string // actual HTTP URL
+	Target    string // CONNECT host:port
+	Resource  string // MCP tool, config path, listen address
 	ClientIP  string
 	RequestID string
 	Agent     string
+}
+
+// NewHTTPLogContext creates a LogContext for HTTP proxy requests (fetch,
+// forward-proxy). ClientIP and RequestID are required to prevent accidental
+// omission on HTTP paths.
+func NewHTTPLogContext(method, url, clientIP, requestID, agent string) LogContext {
+	return LogContext{
+		Method:    method,
+		URL:       url,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
+}
+
+// NewMCPLogContext creates a LogContext for MCP proxy requests. HTTP-specific
+// fields (ClientIP, RequestID) are omitted by design since MCP stdio has no
+// HTTP transport layer.
+func NewMCPLogContext(method, resource, agent string) LogContext {
+	return LogContext{
+		Method:   method,
+		Resource: resource,
+		Agent:    agent,
+	}
+}
+
+// NewConnectLogContext creates a LogContext for CONNECT tunnel operations.
+func NewConnectLogContext(target, clientIP, requestID, agent string) LogContext {
+	return LogContext{
+		Method:    "CONNECT",
+		Target:    target,
+		ClientIP:  clientIP,
+		RequestID: requestID,
+		Agent:     agent,
+	}
 }
 
 // Logger handles structured audit logging using zerolog.
@@ -316,7 +360,9 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 	}
 	e := newLogEntry(l.zl.Info(), EventAllowed).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		intField("status_code", statusCode).
@@ -332,7 +378,9 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 
 	e := newLogEntry(l.zl.Warn(), EventBlocked).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		str("scanner", scanner).
@@ -354,7 +402,9 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -375,7 +425,9 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 
 	e := newLogEntry(l.zl.Warn(), EventAnomaly).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -397,8 +449,17 @@ func (l *Logger) LogAnomaly(ctx LogContext, scanner, reason string, score float6
 func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	event := l.zl.Info().
 		Str("event", string(EventResponseScanExempt)).
-		Str("method", ctx.Method).
-		Str("url", sanitizeString(ctx.URL)).
+		Str("method", ctx.Method)
+	if ctx.URL != "" {
+		event = event.Str("url", sanitizeString(ctx.URL))
+	}
+	if ctx.Target != "" {
+		event = event.Str("target", sanitizeString(ctx.Target))
+	}
+	if ctx.Resource != "" {
+		event = event.Str("resource", sanitizeString(ctx.Resource))
+	}
+	event = event.
 		Str("hostname", hostname).
 		Str("enforcement_type", "response_scanning").
 		Str("reason", "exempt_domains match")
@@ -416,10 +477,18 @@ func (l *Logger) LogResponseScanExempt(ctx LogContext, hostname string) {
 	if l.emitter != nil {
 		fields := map[string]any{
 			"method":           ctx.Method,
-			"url":              sanitizeString(ctx.URL),
 			"hostname":         hostname,
 			"enforcement_type": "response_scanning",
 			"reason":           "exempt_domains match",
+		}
+		if ctx.URL != "" {
+			fields["url"] = sanitizeString(ctx.URL)
+		}
+		if ctx.Target != "" {
+			fields["target"] = sanitizeString(ctx.Target)
+		}
+		if ctx.Resource != "" {
+			fields["resource"] = sanitizeString(ctx.Resource)
 		}
 		if ctx.ClientIP != "" {
 			fields["client_ip"] = ctx.ClientIP
@@ -505,7 +574,9 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
 		optStr("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		str("action", action).
@@ -547,12 +618,12 @@ func (l *Logger) LogTaintDecision(ctx LogContext, taintLevel, actionClass, sensi
 }
 
 // LogTunnelOpen logs a CONNECT tunnel establishment.
-func (l *Logger) LogTunnelOpen(ctx LogContext, target string) {
+func (l *Logger) LogTunnelOpen(ctx LogContext) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelOpen).
-		str("target", target).
+		optStr("target", ctx.Target).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent)
@@ -560,12 +631,12 @@ func (l *Logger) LogTunnelOpen(ctx LogContext, target string) {
 }
 
 // LogTunnelClose logs a CONNECT tunnel teardown with traffic stats.
-func (l *Logger) LogTunnelClose(ctx LogContext, target string, totalBytes int64, duration time.Duration) {
+func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.Duration) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelClose).
-		str("target", target).
+		optStr("target", ctx.Target).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -581,7 +652,9 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 	}
 	e := newLogEntry(l.zl.Info(), EventForwardHTTP).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
 		optStr("agent", ctx.Agent).
@@ -913,7 +986,9 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 
 	e := newLogEntry(l.zl.Warn(), EventBodyDLP).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		str("action", action).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
@@ -936,7 +1011,9 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string, matchCount int, findingNames []string) {
 	e := newLogEntry(l.zl.Warn(), eventType).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		str("action", action).
 		optStr("client_ip", ctx.ClientIP).
 		optStr("request_id", ctx.RequestID).
@@ -957,7 +1034,9 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 
 	e := newLogEntry(l.zl.Warn(), EventHeaderDLP).
 		str("method", ctx.Method).
-		str("url", ctx.URL).
+		optStr("url", ctx.URL).
+		optStr("target", ctx.Target).
+		optStr("resource", ctx.Resource).
 		str("header", headerName).
 		str("action", action).
 		optStr("client_ip", ctx.ClientIP).

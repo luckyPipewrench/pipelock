@@ -2680,11 +2680,30 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	cfg.WebSocketProxy.Enabled = true
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576
 	cfg.WebSocketProxy.MaxConcurrentConnections = 128
-	// Short idle timeout so the relay re-checks kill switch quickly.
-	// The old 15s value caused the relay to block in Read for up to 15s
-	// before looping back to the kill switch check, hitting CI timeouts.
+	// Idle timeout governs how long the relay's upstreamToClient loop
+	// blocks in ws.ReadHeader before looping back to re-check the kill
+	// switch. This test does NOT rely on idle ticks for kill-switch
+	// detection: it triggers an explicit "after-ks" frame immediately
+	// after activating the switch, so the relay wakes up from the read
+	// on frame arrival (microseconds), then the top-of-loop kill-switch
+	// check fires. The only reason the idle timeout matters here is that
+	// it also sets the read deadline on the FIRST ReadHeader call, so
+	// too-short values race the initial-frame-delivery path under CI
+	// load and manifest as "ws closed: 1001 upstream disconnected".
+	//
+	// History:
+	//   * 15s (original): safe but hit the proxy's max-connection-time
+	//     ceiling on other tests.
+	//   * 1s: too aggressive — initial-frame delivery under GitHub
+	//     Actions load can exceed 1s, turning the relay's first read
+	//     deadline into a false timeout that closed the client with
+	//     1001 before testWSHello was ever forwarded.
+	//   * 5s (current): generous enough to absorb CI scheduler jitter,
+	//     still far below the 10s max-connection budget. Kill-switch
+	//     latency is asserted independently below (< 2s), bounded by
+	//     the explicit "after-ks" frame round-trip, not by this value.
 	cfg.WebSocketProxy.MaxConnectionSeconds = 10
-	cfg.WebSocketProxy.IdleTimeoutSeconds = 1
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
 	cfg.FetchProxy.TimeoutSeconds = 5
 
 	logger := audit.NewNop()
@@ -2754,8 +2773,9 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	// Trigger the server to send another frame (the relay should intercept it).
 	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("go"))
 
-	// Set a read deadline to prevent CI from hanging if a regression keeps the
-	// socket open. With 1s idle timeout the relay re-checks kill switch quickly.
+	// Safety net in case a regression keeps the socket open. Must be
+	// shorter than the idle timeout above so a stuck relay fails fast
+	// here rather than limping along until idle fires.
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 
 	// Read until closed — relay should terminate due to kill switch.
@@ -2766,10 +2786,13 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 			break
 		}
 	}
-	// With 1s idle timeout, the relay should close well under 3s.
-	// If it takes longer, it's the idle timeout firing instead of kill switch.
+	// Kill-switch wake-up is bounded by "after-ks" frame delivery, which
+	// happens in milliseconds. A close that takes >2s means either idle
+	// timeout fired (which we've disabled by setting idle to 5s and
+	// this deadline to 3s) or the kill-switch check missed a loop
+	// iteration. Either way, it's a regression.
 	if elapsed := time.Since(ksStart); elapsed > 2*time.Second {
-		t.Errorf("relay took %v to close after kill switch; expected <2s (idle timeout may have fired instead)", elapsed)
+		t.Errorf("relay took %v to close after kill switch; expected <2s (kill switch check missed a loop iteration)", elapsed)
 	}
 }
 

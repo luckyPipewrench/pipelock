@@ -1984,7 +1984,7 @@ func (c *Config) ApplyDefaults() {
 	if c.Taint.Policy == "" {
 		c.Taint.Policy = ModeBalanced
 	}
-	if c.Taint.RecentSources <= 0 {
+	if c.Taint.RecentSources < 0 {
 		c.Taint.RecentSources = 10
 	}
 	if c.Taint.AllowlistedDomains == nil {
@@ -3743,6 +3743,18 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 				Message: fmt.Sprintf("taint allowlisted domains added: %s — these sources now downgrade from untrusted to allowlisted", strings.Join(added, ", ")),
 			})
 		}
+		if removed := removedPatterns(old.Taint.ProtectedPaths, updated.Taint.ProtectedPaths); len(removed) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.protected_paths",
+				Message: fmt.Sprintf("taint protected paths removed: %s — fewer actions are treated as protected under taint", strings.Join(removed, ", ")),
+			})
+		}
+		if removed := removedPatterns(old.Taint.ElevatedPaths, updated.Taint.ElevatedPaths); len(removed) > 0 {
+			warnings = append(warnings, ReloadWarning{
+				Field:   "taint.elevated_paths",
+				Message: fmt.Sprintf("taint elevated paths removed: %s — fewer actions are treated as elevated under taint", strings.Join(removed, ", ")),
+			})
+		}
 		if added := taintOverridesAdded(old.Taint.TrustOverrides, updated.Taint.TrustOverrides); len(added) > 0 {
 			warnings = append(warnings, ReloadWarning{
 				Field:   "taint.trust_overrides",
@@ -4265,6 +4277,20 @@ func taintOverridesAdded(old, updated []TaintTrustOverride) []string {
 		}
 	}
 	return added
+}
+
+func removedPatterns(old, updated []string) []string {
+	updatedSet := make(map[string]struct{}, len(updated))
+	for _, pattern := range updated {
+		updatedSet[pattern] = struct{}{}
+	}
+	var removed []string
+	for _, pattern := range old {
+		if _, exists := updatedSet[pattern]; !exists {
+			removed = append(removed, pattern)
+		}
+	}
+	return removed
 }
 
 func taintOverrideReloadKey(override TaintTrustOverride) string {

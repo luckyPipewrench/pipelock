@@ -2525,8 +2525,32 @@ func TestValidateReload_ResponseScanningDisabled(t *testing.T) {
 const (
 	reloadFieldResponseExempt      = "response_scanning.exempt_domains"
 	reloadFieldTaintAllowlisted    = "taint.allowlisted_domains"
+	reloadFieldTaintElevatedPaths  = "taint.elevated_paths"
+	reloadFieldTaintProtectedPaths = "taint.protected_paths"
 	reloadFieldTaintTrustOverrides = "taint.trust_overrides"
 )
+
+func TestApplyDefaults_TaintRecentSourcesZeroPreserved(t *testing.T) {
+	cfg := Defaults()
+	cfg.Taint.RecentSources = 0
+
+	cfg.ApplyDefaults()
+
+	if cfg.Taint.RecentSources != 0 {
+		t.Fatalf("expected taint.recent_sources 0 to be preserved, got %d", cfg.Taint.RecentSources)
+	}
+}
+
+func TestApplyDefaults_TaintRecentSourcesNegativeDefaults(t *testing.T) {
+	cfg := Defaults()
+	cfg.Taint.RecentSources = -1
+
+	cfg.ApplyDefaults()
+
+	if cfg.Taint.RecentSources != 10 {
+		t.Fatalf("expected negative taint.recent_sources to default to 10, got %d", cfg.Taint.RecentSources)
+	}
+}
 
 func TestValidateReload_TaintDisabled(t *testing.T) {
 	old := Defaults()
@@ -2727,6 +2751,86 @@ func TestValidateReload_TaintTrustOverridesExpiryExtendedWarns(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected taint trust override expiry extension warning")
+	}
+}
+
+func TestValidateReload_TaintProtectedPathsRemovedWarns(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.ProtectedPaths = []string{"*/auth/*", "*/security/*"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.ProtectedPaths = []string{"*/auth/*"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintProtectedPaths {
+			found = true
+			if !strings.Contains(w.Message, "*/security/*") {
+				t.Errorf("warning should name the removed protected path, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint protected_paths removal warning")
+	}
+}
+
+func TestValidateReload_TaintProtectedPathsExpanded_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.ProtectedPaths = []string{"*/auth/*"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.ProtectedPaths = []string{"*/auth/*", "*/security/*"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintProtectedPaths {
+			t.Errorf("protected path expansion should not produce warning, got: %s", w.Message)
+		}
+	}
+}
+
+func TestValidateReload_TaintElevatedPathsRemovedWarns(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.ElevatedPaths = []string{"*/config/*", "*/middleware*"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.ElevatedPaths = []string{"*/config/*"}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintElevatedPaths {
+			found = true
+			if !strings.Contains(w.Message, "*/middleware*") {
+				t.Errorf("warning should name the removed elevated path, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected taint elevated_paths removal warning")
+	}
+}
+
+func TestValidateReload_TaintElevatedPathsExpanded_NoWarning(t *testing.T) {
+	old := Defaults()
+	old.Taint.Enabled = true
+	old.Taint.ElevatedPaths = []string{"*/config/*"}
+	updated := Defaults()
+	updated.Taint.Enabled = true
+	updated.Taint.ElevatedPaths = []string{"*/config/*", "*/middleware*"}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == reloadFieldTaintElevatedPaths {
+			t.Errorf("elevated path expansion should not produce warning, got: %s", w.Message)
+		}
 	}
 }
 

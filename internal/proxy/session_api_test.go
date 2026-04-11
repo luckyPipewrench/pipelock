@@ -6,9 +6,12 @@ package proxy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -726,5 +729,595 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 		// Success — completed without deadlock.
 	case <-ctx.Done():
 		t.Fatal("deadlock detected: test did not complete within timeout")
+	}
+}
+
+// --- HandleTask coverage: error and guard paths ---
+
+// futureTimestamp builds a valid expires_at string one hour in the future
+// for trust-override request bodies. Extracted to avoid reading time.RFC3339
+// in every test literal.
+func futureTimestamp() string {
+	return time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+}
+
+// newTaskRequest constructs a POST /task request with the given body reader
+// and standard auth header. Returns the request ready for ServeHTTP.
+func newTaskRequest(method, key, body string) *http.Request {
+	path := "/api/v1/sessions/" + url.PathEscape(key) + "/task"
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, r)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	return req
+}
+
+// newTrustRequest constructs a POST /trust request with the given body and
+// auth header.
+func newTrustRequest(method, key, body string) *http.Request {
+	path := "/api/v1/sessions/" + url.PathEscape(key) + "/trust"
+	var r io.Reader
+	if body != "" {
+		r = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, path, r)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	return req
+}
+
+func TestSessionAPI_HandleTask_MethodNotAllowed(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTaskRequest(http.MethodGet, "agent|10.0.0.1", "")
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+	if allow := w.Header().Get("Allow"); allow != http.MethodPost {
+		t.Errorf("expected Allow: POST, got %q", allow)
+	}
+}
+
+func TestSessionAPI_HandleTask_Unauthorized(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/task", nil)
+	// No Authorization header.
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTask_RateLimited(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Task and reset share the same limiter — exhaust it via /task.
+	for range sessionAPIRateLimitMax {
+		req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
+		w := httptest.NewRecorder()
+		handler.HandleTask(w, req)
+	}
+	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+	if retry := w.Header().Get("Retry-After"); retry != "60" {
+		t.Errorf("expected Retry-After: 60, got %q", retry)
+	}
+}
+
+func TestSessionAPI_HandleTask_ProfilingDisabled(t *testing.T) {
+	handler := newTestSessionAPIHandler(t, nil) // nil SessionManager
+	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTask_BadKey(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Path missing the session key entirely.
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//task", nil)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTask_BadBody(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", `{"label":`) // truncated JSON
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSessionAPI_HandleTask_UnknownField(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", `{"label":"x","unknown_field":true}`)
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSessionAPI_HandleTask_TrailingData(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Two JSON objects back-to-back should be rejected.
+	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", `{"label":"a"}{"label":"b"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for trailing data, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSessionAPI_HandleTask_EmptyBodyOK(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Empty body is allowed for HandleTask — rotates the task with no
+	// label/reason. This was the chunked-body case CodeRabbit flagged.
+	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for empty body, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSessionAPI_HandleTask_NotFound(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTaskRequest(http.MethodPost, "ghost|10.0.0.1", `{}`)
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+// TestSessionAPI_HandleTask_InvocationKeyRejected is the GPT-flagged
+// privilege-boundary bypass regression. Invocation sessions (ephemeral
+// per-request MCP keys) must not be mutable via /task, mirroring the
+// HandleReset guardrail.
+func TestSessionAPI_HandleTask_InvocationKeyRejected(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("mcp-stdio-42") // classifies as invocation (no pipe)
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTaskRequest(http.MethodPost, "mcp-stdio-42", `{"label":"attempt"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTask(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invocation key, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invocation session") {
+		t.Errorf("expected invocation-session error, got %q", w.Body.String())
+	}
+}
+
+// --- HandleTrust coverage: error and guard paths ---
+
+func TestSessionAPI_HandleTrust_MethodNotAllowed(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodGet, "agent|10.0.0.1", "")
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_Unauthorized(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/trust", nil)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_RateLimited(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	for range sessionAPIRateLimitMax {
+		req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+			`{"scope":"task","action_match":"x","expires_at":"`+futureTimestamp()+`"}`)
+		w := httptest.NewRecorder()
+		handler.HandleTrust(w, req)
+	}
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"task","action_match":"x","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_ProfilingDisabled(t *testing.T) {
+	handler := newTestSessionAPIHandler(t, nil)
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"task","action_match":"x","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_BadKey(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//trust", nil)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_BadBody(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1", `{not-json`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_UnknownField(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"task","action_match":"x","expires_at":"`+futureTimestamp()+`","wildcard":true}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for unknown field, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_BadScope(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"source","source_match":"https://x","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-task scope, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_NoMatchPattern(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"task","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing match, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_ExpiredOrMissing(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Past expiry.
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"task","action_match":"x","expires_at":"`+time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for past expiry, got %d", w.Code)
+	}
+}
+
+func TestSessionAPI_HandleTrust_NotFound(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "ghost|10.0.0.1",
+		`{"scope":"task","action_match":"x","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+// TestSessionAPI_HandleTrust_InvocationKeyRejected is the GPT-flagged
+// privilege-boundary bypass regression for HandleTrust.
+func TestSessionAPI_HandleTrust_InvocationKeyRejected(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("mcp-stdio-7")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "mcp-stdio-7",
+		`{"scope":"task","action_match":"publish:*","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invocation key, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "invocation session") {
+		t.Errorf("expected invocation-session error, got %q", w.Body.String())
+	}
+}
+
+func TestSessionAPI_HandleTrust_SourceMatchOnly(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+		`{"scope":"task","source_match":"https://docs.example","expires_at":"`+futureTimestamp()+`"}`)
+	w := httptest.NewRecorder()
+	handler.HandleTrust(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// --- decodeJSONBody unit coverage ---
+
+func TestDecodeJSONBody(t *testing.T) {
+	type payload struct {
+		Name string `json:"name"`
+	}
+
+	cases := []struct {
+		name    string
+		body    string
+		wantErr bool
+		wantVal string
+	}{
+		{name: "valid", body: `{"name":"alice"}`, wantErr: false, wantVal: "alice"},
+		{name: "empty_body", body: "", wantErr: false, wantVal: ""},
+		{name: "unknown_field", body: `{"name":"x","extra":1}`, wantErr: true},
+		{name: "trailing_data", body: `{"name":"a"}garbage`, wantErr: true},
+		{name: "malformed", body: `{bad`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r io.Reader
+			if tc.body != "" {
+				r = strings.NewReader(tc.body)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/x", r)
+			var v payload
+			err := decodeJSONBody(req, &v)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !tc.wantErr && v.Name != tc.wantVal {
+				t.Fatalf("Name = %q, want %q", v.Name, tc.wantVal)
+			}
+		})
+	}
+}
+
+// TestDecodeJSONBody_NilBody confirms the nil-body early return path.
+func TestDecodeJSONBody_NilBody(t *testing.T) {
+	var v struct {
+		Name string `json:"name"`
+	}
+	r := &http.Request{Body: nil}
+	if err := decodeJSONBody(r, &v); err != nil {
+		t.Fatalf("nil body should return nil error, got %v", err)
+	}
+}
+
+// TestDecodeJSONBody_SizeLimit confirms the size limit truncates input and
+// causes a decode error for oversized payloads.
+func TestDecodeJSONBody_SizeLimit(t *testing.T) {
+	// Build a body larger than sessionAPIMaxBodyBytes with a valid opening.
+	big := `{"name":"` + strings.Repeat("a", sessionAPIMaxBodyBytes+1) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(big))
+	var v struct {
+		Name string `json:"name"`
+	}
+	err := decodeJSONBody(req, &v)
+	if err == nil {
+		t.Fatal("expected decode error on oversized body, got nil")
+	}
+}
+
+// --- SessionManager guard coverage ---
+
+// TestSessionManager_BeginNewTask_InvocationRejected asserts the guard at
+// the SessionManager layer rejects invocation sessions directly (not just
+// via the HTTP handler).
+func TestSessionManager_BeginNewTask_InvocationRejected(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sm.GetOrCreate("mcp-stdio-99")
+	_, _, _, found, err := sm.BeginNewTask("mcp-stdio-99", "label")
+	if !found {
+		t.Fatal("expected found=true for existing invocation session")
+	}
+	if !errors.Is(err, ErrInvocationReset) {
+		t.Fatalf("err = %v, want ErrInvocationReset", err)
+	}
+}
+
+// TestSessionManager_AddRuntimeTrustOverride_InvocationRejected asserts
+// the guard at the SessionManager layer for AddRuntimeTrustOverride.
+func TestSessionManager_AddRuntimeTrustOverride_InvocationRejected(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sm.GetOrCreate("mcp-stdio-101")
+	override := session.TrustOverride{
+		Scope:       "task",
+		ActionMatch: "x",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+	}
+	_, _, found, err := sm.AddRuntimeTrustOverride("mcp-stdio-101", override)
+	if !found {
+		t.Fatal("expected found=true for existing invocation session")
+	}
+	if !errors.Is(err, ErrInvocationReset) {
+		t.Fatalf("err = %v, want ErrInvocationReset", err)
+	}
+}
+
+// TestSessionManager_BeginNewTask_NotFound covers the no-session path.
+func TestSessionManager_BeginNewTask_NotFound(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	_, _, _, found, err := sm.BeginNewTask("no-such-session", "")
+	if found {
+		t.Fatal("expected found=false for nonexistent session")
+	}
+	if err != nil {
+		t.Fatalf("expected nil err for not-found, got %v", err)
+	}
+}
+
+// TestSessionManager_AddRuntimeTrustOverride_NotFound covers the
+// no-session path for the trust override API.
+func TestSessionManager_AddRuntimeTrustOverride_NotFound(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	override := session.TrustOverride{
+		Scope:       "task",
+		ActionMatch: "x",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+	}
+	_, _, found, err := sm.AddRuntimeTrustOverride("no-such-session", override)
+	if found {
+		t.Fatal("expected found=false for nonexistent session")
+	}
+	if err != nil {
+		t.Fatalf("expected nil err for not-found, got %v", err)
+	}
+}
+
+// TestSessionManager_AddRuntimeTrustOverride_WrongScope covers the
+// ErrTaskScopeOnly branch.
+func TestSessionManager_AddRuntimeTrustOverride_WrongScope(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sm.GetOrCreate("agent|10.0.0.1")
+	override := session.TrustOverride{
+		Scope:       "source",
+		SourceMatch: "https://docs.example",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+	}
+	_, _, found, err := sm.AddRuntimeTrustOverride("agent|10.0.0.1", override)
+	if found {
+		t.Errorf("expected found=false when scope is wrong, got true")
+	}
+	if !errors.Is(err, ErrTaskScopeOnly) {
+		t.Fatalf("err = %v, want ErrTaskScopeOnly", err)
 	}
 }

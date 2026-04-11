@@ -6,6 +6,9 @@ package proxy
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,6 +27,43 @@ const (
 	sessionAPIRateLimitWindow = time.Minute
 	sessionAPIRateLimitMax    = 10
 )
+
+// sessionAPIMaxBodyBytes caps the size of admin API request bodies. These
+// endpoints accept small JSON (tier, label, trust override) and have no
+// reason to read more. The limit defends against slow-body DoS and
+// accidental large uploads.
+const sessionAPIMaxBodyBytes = 64 * 1024 // 64 KiB
+
+// decodeJSONBody is the shared strict decoder for admin API endpoints.
+// It enforces:
+//   - a hard size limit via io.LimitReader (defends against large bodies)
+//   - DisallowUnknownFields (rejects typos and field injection attempts)
+//   - exactly-one-JSON-value (rejects trailing garbage after the object)
+//
+// An empty body is treated as "no fields" (v is left at its zero value and
+// nil is returned). Callers that require a body must validate fields after
+// decoding.
+func decodeJSONBody(r *http.Request, v any) error {
+	if r.Body == nil {
+		return nil
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, sessionAPIMaxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			// Empty body — acceptable for optional-body endpoints.
+			return nil
+		}
+		return fmt.Errorf("decode body: %w", err)
+	}
+	// Reject bodies with trailing data after the first JSON value. This
+	// catches multi-object smuggling and trailing garbage.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("decode body: unexpected trailing data")
+	}
+	return nil
+}
 
 // API path segment constants used in URL validation.
 const (
@@ -312,8 +352,8 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 	}
 
 	var req airlockRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.logSessionAdmin("airlock_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
+	if err := decodeJSONBody(r, &req); err != nil {
+		h.logSessionAdmin("airlock_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
@@ -389,19 +429,34 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Body is optional for HandleTask — callers may POST with no body to
+	// rotate the task without a label/reason. decodeJSONBody treats an
+	// empty body as "no fields" and leaves req at its zero value, so a
+	// missing Content-Length or chunked transfer encoding is handled
+	// correctly without skipping the decode.
 	var req taskRequest
-	if r.Body != nil && r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			h.logSessionAdmin("task_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
-			http.Error(w, "invalid JSON body", http.StatusBadRequest)
-			return
-		}
+	if err := decodeJSONBody(r, &req); err != nil {
+		h.logSessionAdmin("task_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
 	}
 
-	prev, current, cleared, found := sm.BeginNewTask(key, req.Label)
+	prev, current, cleared, found, taskErr := sm.BeginNewTask(key, req.Label)
 	if !found {
 		h.logSessionAdmin("task_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if taskErr != nil {
+		// Invocation sessions are ephemeral per-request contexts and
+		// cannot be mutated via the admin API. Mirrors the guardrail on
+		// HandleReset.
+		h.logSessionAdmin("task_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: "cannot begin new task on invocation session; only identity sessions are mutable"})
 		return
 	}
 
@@ -455,8 +510,8 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var req trustOverrideRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.logSessionAdmin("trust_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
+	if err := decodeJSONBody(r, &req); err != nil {
+		h.logSessionAdmin("trust_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
@@ -485,14 +540,26 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 		Reason:      req.Reason,
 	}
 	applied, task, found, err := sm.AddRuntimeTrustOverride(key, override)
-	if err != nil {
-		h.logSessionAdmin("trust_rejected", clientIP, key, err.Error(), http.StatusBadRequest)
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if !found {
+	if !found && err == nil {
 		h.logSessionAdmin("trust_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		// Distinguish invocation-session rejection from other errors so
+		// the audit trail mirrors HandleReset. Both return 400; only the
+		// error string + log tag differ.
+		if errors.Is(err, ErrInvocationReset) {
+			h.logSessionAdmin("trust_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(struct {
+				Error string `json:"error"`
+			}{Error: "cannot grant runtime trust override on invocation session; only identity sessions are mutable"})
+			return
+		}
+		h.logSessionAdmin("trust_rejected", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 

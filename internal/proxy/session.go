@@ -945,19 +945,34 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 
 // BeginNewTask rotates the task boundary for an active session and clears
 // taint-only state while preserving adaptive profiling state.
-func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, found bool) {
+//
+// Only identity sessions are valid targets. Invocation sessions (ephemeral
+// per-request MCP session keys) cannot be mutated via the admin API — they
+// represent the exact execution context the caller should NOT be allowed to
+// alter, and mirror the guardrail established by ResetSessionIfResettable.
+//
+// Returns:
+//   - found=false, err=nil: session does not exist
+//   - found=true, err=ErrInvocationReset: session exists but is not resettable
+//   - found=true, err=nil: rotation succeeded
+func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, found bool, err error) {
 	sm.mu.RLock()
 	sess, ok := sm.sessions[key]
 	sm.mu.RUnlock()
 	if !ok {
-		return session.TaskContext{}, session.TaskContext{}, 0, false
+		return session.TaskContext{}, session.TaskContext{}, 0, false, nil
+	}
+	if !sess.IsResettable() {
+		return session.TaskContext{}, session.TaskContext{}, 0, true, ErrInvocationReset
 	}
 	prev, current, clearedOverrides = sess.BeginNewTask(label)
-	return prev, current, clearedOverrides, true
+	return prev, current, clearedOverrides, true, nil
 }
 
 // AddRuntimeTrustOverride binds and stores a task-scoped trust override on an
-// active session.
+// active session. Same identity-session guardrail as BeginNewTask applies:
+// invocation sessions cannot receive runtime trust overrides via the admin
+// API.
 func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.TrustOverride) (applied session.TrustOverride, task session.TaskContext, found bool, err error) {
 	if override.Scope != "task" {
 		return session.TrustOverride{}, session.TaskContext{}, false, ErrTaskScopeOnly
@@ -968,6 +983,9 @@ func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.T
 	sm.mu.RUnlock()
 	if !ok {
 		return session.TrustOverride{}, session.TaskContext{}, false, nil
+	}
+	if !sess.IsResettable() {
+		return session.TrustOverride{}, session.TaskContext{}, true, ErrInvocationReset
 	}
 
 	applied = sess.AddRuntimeTrustOverride(override)

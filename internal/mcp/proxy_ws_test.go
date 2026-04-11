@@ -95,7 +95,7 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Send request, wait for response to arrive, then close stdin.
@@ -150,7 +150,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
@@ -197,7 +197,7 @@ func TestRunWSProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, emitter, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, ReceiptEmitter: emitter})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
@@ -263,7 +263,7 @@ func TestRunWSProxy_InputDLPBlocking(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -305,7 +305,7 @@ func TestRunWSProxy_KillSwitchDeniesAll(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, KillSwitch: ks})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestRunWSProxy_KillSwitchDropsNotification(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, ks, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, KillSwitch: ks})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, policyCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, nil, nil, chainMatcher, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher})
 	}()
 
 	// First tool call: read_file.
@@ -524,7 +524,7 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, nil, nil, nil, al, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, AuditLogger: al})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -564,7 +564,7 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, toolCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
@@ -591,7 +591,7 @@ func TestRunWSProxy_DialFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, "ws://127.0.0.1:1", sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, "ws://127.0.0.1:1", MCPProxyOpts{Scanner: sc})
 	if err == nil {
 		t.Fatal("expected error for unreachable upstream")
 	}
@@ -619,7 +619,7 @@ func TestRunWSProxy_UpstreamCloseReturnsCleanly(t *testing.T) {
 	defer cancel()
 
 	// Should not panic regardless of close timing.
-	_ = RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	_ = RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 }
 
 func TestRunWSProxy_MultipleMessages(t *testing.T) {
@@ -662,7 +662,7 @@ func TestRunWSProxy_MultipleMessages(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a","arguments":{}}}` + "\n"))
@@ -712,7 +712,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"` + fakeKey + `"}}}` + "\n"))
@@ -766,7 +766,7 @@ func TestRunWSProxy_BlockedNotificationSilent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), sc, nil, inputCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -806,7 +806,7 @@ func TestRunWSProxy_BindingConfigWired(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, toolCfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
@@ -846,7 +846,7 @@ func TestRunWSProxy_UpstreamWriteError(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		// Error is expected from upstream write or context cancellation.
-		_ = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		_ = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	}()
 
 	// First message accepted by server.
@@ -893,7 +893,7 @@ func TestRunWSProxy_ParentContextCancellation(t *testing.T) {
 	var runErr error
 	go func() {
 		defer wg.Done()
-		runErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		runErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	}()
 
 	// Send one message, let it forward, then cancel context.
@@ -933,7 +933,7 @@ func TestRunWSProxy_StdinReadError(t *testing.T) {
 	defer cancel()
 
 	customErr := fmt.Errorf("custom read failure")
-	err := RunWSProxy(ctx, &errReaderWS{err: customErr}, &stdout, &stderr, wsURL(srv), sc, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	err := RunWSProxy(ctx, &errReaderWS{err: customErr}, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	if err == nil {
 		t.Fatal("expected stdin read error")
 	}

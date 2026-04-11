@@ -537,12 +537,16 @@ signed action receipts for MCP decisions.`,
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
-				if receiptEmitter != nil {
-					if len(recPrivKey) > 0 {
-						cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
-					} else {
-						cmd.PrintErrf("  Receipts: enabled (unsigned — set flight_recorder.signing_key_path for signed receipts)\n")
-					}
+				// receipt.NewEmitter returns nil when no signing key is
+				// configured. Receipts must be signed — there is no
+				// "unsigned receipt" mode — so report the operator-facing
+				// status by signing-key presence, not by emitter identity.
+				// This is more honest than the prior branch which could
+				// never execute.
+				if len(recPrivKey) > 0 {
+					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
+				} else {
+					cmd.PrintErrf("  Receipts: disabled — set flight_recorder.signing_key_path to enable signed action receipts\n")
 				}
 			}
 
@@ -618,7 +622,20 @@ signed action receipts for MCP decisions.`,
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, receiptEmitter, buildRedirectRT(cfg), dowCheck, envEmitter, &cfg.Taint); err != nil {
+					wsOpts := mcp.MCPProxyOpts{
+						Scanner: sc, Approver: approver,
+						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+						KillSwitch: ks, ChainMatcher: chainMatcher,
+						CEE: cee, Store: store,
+						AdaptiveCfg:     adaptiveCfg,
+						Metrics:         mcpMetrics,
+						ReceiptEmitter:  receiptEmitter,
+						RedirectRT:      buildRedirectRT(cfg),
+						DoWCheck:        dowCheck,
+						EnvelopeEmitter: envEmitter,
+						TaintCfg:        &cfg.Taint,
+					}
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}

@@ -10,18 +10,9 @@ import (
 	"io"
 	"sync"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
-	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/envelope"
-	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
-	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/metrics"
-	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -37,23 +28,7 @@ func RunWSProxy(
 	clientOut io.Writer,
 	logW io.Writer,
 	upstreamURL string,
-	sc *scanner.Scanner,
-	approver *hitl.Approver,
-	inputCfg *InputScanConfig,
-	toolCfg *tools.ToolScanConfig,
-	policyCfg *policy.Config,
-	ks *killswitch.Controller,
-	chainMatcher *chains.Matcher,
-	auditLogger *audit.Logger,
-	cee *CEEDeps,
-	store session.Store,
-	adaptiveCfg *config.AdaptiveEnforcement,
-	m *metrics.Metrics,
-	receiptEmitter *receipt.Emitter,
-	redirectRT *RedirectRuntime,
-	dowCheck DoWCheckFunc,
-	envEmitter *envelope.Emitter,
-	taintCfg ...*config.TaintConfig,
+	opts MCPProxyOpts,
 ) error {
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
@@ -63,8 +38,8 @@ func RunWSProxy(
 
 	// Per-invocation adaptive enforcement recorder.
 	var rec session.Recorder
-	if store != nil {
-		rec = store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
+	if opts.Store != nil {
+		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
 	}
 
 	safeClientOut := &syncWriter{w: clientOut}
@@ -92,39 +67,32 @@ func RunWSProxy(
 	// Request tracker for confused deputy protection.
 	tracker := NewRequestTracker()
 
-	// Tool scanning baseline for this session.
+	// Tool scanning baseline for this session. ToolCfg from the caller
+	// provides the config; each invocation gets its own Baseline so
+	// concurrent WS sessions can't contaminate each other's drift state.
 	var fwdToolCfg *tools.ToolScanConfig
-	if toolCfg != nil && toolCfg.Action != "" {
+	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
-			Action:                  toolCfg.Action,
-			DetectDrift:             toolCfg.DetectDrift,
-			BindingUnknownAction:    toolCfg.BindingUnknownAction,
-			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
-			ExtraPoison:             toolCfg.ExtraPoison,
+			Action:                  opts.ToolCfg.Action,
+			DetectDrift:             opts.ToolCfg.DetectDrift,
+			BindingUnknownAction:    opts.ToolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: opts.ToolCfg.BindingNoBaselineAction,
+			ExtraPoison:             opts.ToolCfg.ExtraPoison,
 		}
 	}
 
 	const sessionKey = "ws-stdio"
-	var wsTaintCfg *config.TaintConfig
-	if len(taintCfg) > 0 {
-		wsTaintCfg = taintCfg[0]
-	}
 
-	// Shared opts for ForwardScanned and scanHTTPInput calls.
-	wsOpts := MCPProxyOpts{
-		Scanner: sc, Approver: approver, ToolCfg: fwdToolCfg,
-		InputCfg: inputCfg, PolicyCfg: policyCfg,
-		KillSwitch: ks, ChainMatcher: chainMatcher,
-		AuditLogger: auditLogger, CEE: cee,
-		Rec: rec, AdaptiveCfg: adaptiveCfg, Metrics: m,
-		Transport:      "mcp_ws",
-		ReceiptEmitter: receiptEmitter,
-		RedirectRT:     redirectRT, DoWCheck: dowCheck,
-		EnvelopeEmitter:     envEmitter,
-		TaintCfg:            wsTaintCfg,
-		TaintExternalSource: true,
-	}
+	// Derive the invocation-scoped opts from the caller's shared opts.
+	// Override transport-specific fields: the per-invocation recorder,
+	// the fwdToolCfg with its private baseline, "mcp_ws" transport, and
+	// the always-external-source flag for response-side taint classification.
+	wsOpts := opts
+	wsOpts.Rec = rec
+	wsOpts.ToolCfg = fwdToolCfg
+	wsOpts.Transport = "mcp_ws"
+	wsOpts.TaintExternalSource = true
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -174,8 +142,8 @@ func RunWSProxy(
 		}
 
 		// Kill switch: deny all messages when active.
-		if ks != nil {
-			if d := ks.IsActiveMCP(msg); d.Active {
+		if opts.KillSwitch != nil {
+			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
 				if d.IsNotification {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue

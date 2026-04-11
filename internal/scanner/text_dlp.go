@@ -161,7 +161,10 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	// try decoding each segment individually. Catches encoded secrets embedded
 	// in URLs within MCP tool arguments (e.g., "https://evil.com/<hex-key>/data")
 	// where whole-string decode fails because the text isn't pure hex/base64.
-	if len(matches) == 0 {
+	// Only skip segment decoding when enforced matches already exist.
+	// Warn-only matches must not gate off further scanning — an enforced
+	// match might hide in a decoded segment.
+	if !hasEnforcedMatch(matches) {
 		matches = append(matches, s.decodeTextSegments(cleaned)...)
 	}
 
@@ -336,6 +339,16 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 		}
 	}
 	return result
+}
+
+// hasEnforcedMatch reports whether any match in the slice is non-warn (enforced).
+func hasEnforcedMatch(matches []TextDLPMatch) bool {
+	for _, m := range matches {
+		if !m.Warn {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeTextSegments splits text on common URL/path delimiters and tries

@@ -25,7 +25,8 @@ dlp:
 2. **Deploy and observe.** The pattern matches traffic but requests are not
    blocked. When the runtime warn hook is configured (see below), matches
    emit `dlp_warn` audit events. Without the hook, warn matches are still
-   tracked in the scanner result's `InformationalMatches` field.
+   tracked in the scanner result (`InformationalMatches` for text DLP,
+   `WarnMatches` for URL DLP).
 
 3. **Review matches.** Check the `pattern`, `severity`, and `transport` fields
    in the audit event (when the warn hook is active) or the scan API response
@@ -80,8 +81,8 @@ fields, but no audit event is emitted.
   Transport-level action configuration (`request_body_scanning.action`,
   `mcp_input_scanning.action`, etc.) controls enforcement for enforced matches.
 - **Warn mode applies to DLP patterns only.** Blocklist entries, response
-  scanning patterns, and chain detection rules do not support per-rule warn
-  mode in this release.
+  scanning patterns, and chain detection rules. Per-rule warn for those
+  rule types may be added in a future release.
 
 ## Other false positive tuning techniques
 

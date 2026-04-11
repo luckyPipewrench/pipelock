@@ -167,20 +167,14 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).
+	// Warn-mode matches are NOT included here — they are already emitted
+	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
+	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
 	for _, m := range result.Matches {
 		if !singleFragment[m.PatternName] {
 			matches = append(matches, DLPMatch{
 				PatternName: m.PatternName,
-			})
-		}
-	}
-	// Warn-mode cross-request matches: emit via hook but don't enforce.
-	for _, m := range result.InformationalMatches {
-		if !singleFragment[m.PatternName] {
-			matches = append(matches, DLPMatch{
-				PatternName: m.PatternName,
-				Warn:        true,
 			})
 		}
 	}

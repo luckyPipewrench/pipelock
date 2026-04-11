@@ -287,7 +287,7 @@ func TestDeduplicateWarnMatches_NilAndSingle(t *testing.T) {
 	}
 }
 
-func TestFragmentBuffer_WarnPatternReportedNotEnforced(t *testing.T) {
+func TestFragmentBuffer_WarnPatternNotEnforced(t *testing.T) {
 	cfg := testDLPConfig("staged-frag", `staged-frag-[A-Za-z0-9]{20,}`, true)
 	s := New(cfg)
 
@@ -299,15 +299,11 @@ func TestFragmentBuffer_WarnPatternReportedNotEnforced(t *testing.T) {
 	fb.Append("session-1", []byte("AABBCCDDEEFFGGHHIIJJ"))
 
 	matches := fb.ScanForSecrets(context.Background(), "session-1", s)
-	// Warn-only cross-request matches should be reported with Warn=true.
-	// The caller uses the Warn field to decide enforcement vs. audit-only.
-	if len(matches) == 0 {
-		t.Fatal("expected warn-mode cross-request match to be reported")
-	}
-	for _, m := range matches {
-		if !m.Warn {
-			t.Errorf("cross-request warn match should have Warn=true, got %q", m.PatternName)
-		}
+	// Warn-only cross-request matches must NOT appear in the enforcement
+	// return — CEE callers treat len(matches) > 0 as an enforcement signal.
+	// The DLPWarnHook inside ScanTextForDLP handles audit emission.
+	if len(matches) != 0 {
+		t.Errorf("warn-only pattern should not produce enforcement matches, got %d", len(matches))
 	}
 }
 

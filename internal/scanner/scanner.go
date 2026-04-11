@@ -70,14 +70,22 @@ const (
 	ClassConfigMismatch
 )
 
+// WarnMatch describes a DLP pattern match from a warn-mode pattern.
+// These are informational only — they do not block or alter the request.
+type WarnMatch struct {
+	PatternName string `json:"pattern_name"`
+	Severity    string `json:"severity"`
+}
+
 // Result describes the outcome of scanning a URL.
 type Result struct {
-	Allowed bool        `json:"allowed"`
-	Reason  string      `json:"reason,omitempty"`
-	Scanner string      `json:"scanner,omitempty"` // which scanner triggered
-	Hint    string      `json:"hint,omitempty"`    // actionable guidance when blocked
-	Score   float64     `json:"score"`             // anomaly score 0.0-1.0
-	Class   ResultClass `json:"-"`                 // internal: threat vs protective classification
+	Allowed     bool        `json:"allowed"`
+	Reason      string      `json:"reason,omitempty"`
+	Scanner     string      `json:"scanner,omitempty"` // which scanner triggered
+	Hint        string      `json:"hint,omitempty"`    // actionable guidance when blocked
+	Score       float64     `json:"score"`             // anomaly score 0.0-1.0
+	Class       ResultClass `json:"-"`                 // internal: threat vs protective classification
+	WarnMatches []WarnMatch `json:"warn_matches,omitempty"`
 }
 
 // IsProtective reports whether this result represents protective enforcement
@@ -136,6 +144,7 @@ type compiledPattern struct {
 	exemptDomains []string          // domains where this pattern is skipped (wildcard supported)
 	bundle        string            // empty for built-in/config patterns
 	bundleVersion string
+	warn          bool // true when pattern action is "warn" — matches are informational only
 }
 
 // matches returns true if text matches the regex AND passes the post-match
@@ -206,6 +215,7 @@ func New(cfg *config.Config) *Scanner {
 			exemptDomains: p.ExemptDomains,
 			bundle:        p.Bundle,
 			bundleVersion: p.BundleVersion,
+			warn:          p.Action == config.ActionWarn,
 		}
 		if p.Validator != "" {
 			fn, ok := DLPValidators[p.Validator]
@@ -523,7 +533,7 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 // scan checks a URL against all scanners and returns the result.
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
-func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
+func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return Result{Allowed: false, Reason: "invalid URL", Scanner: ScannerParser, Score: 1.0}
@@ -596,9 +606,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) Result {
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
-	if result := s.checkDLP(parsed); !result.Allowed {
-		return result
+	dlpResult, dlpWarns := s.checkDLP(parsed)
+	if !dlpResult.Allowed {
+		dlpResult.WarnMatches = dlpWarns
+		return dlpResult
 	}
+	// Attach DLP warn matches to whatever result is returned from here on.
+	// The defer fires on every return path, including blocks by later scanners.
+	defer func() { result.WarnMatches = dlpWarns }()
 	if result := s.checkEntropy(parsed); !result.Allowed {
 		return result
 	}
@@ -1168,11 +1183,13 @@ func decodeEncodings(s string) []decodedResult {
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
-func (s *Scanner) checkDLP(parsed *url.URL) Result {
+func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
 	// "Canary Token"). Canary is the safety net for synthetic tokens that
 	// DLP patterns don't cover. Both are evaluated — DLP wins if it matches.
+
+	var warnMatches []WarnMatch
 
 	// parsed.Path is already URL-decoded by Go's url.Parse.
 	// For query strings, iteratively decode to catch multi-layer encoding.
@@ -1269,12 +1286,19 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 				if len(p.exemptDomains) > 0 && matchesDomainList(parsed.Hostname(), p.exemptDomains) {
 					continue
 				}
+				if p.warn {
+					warnMatches = append(warnMatches, WarnMatch{
+						PatternName: p.name,
+						Severity:    p.severity,
+					})
+					continue
+				}
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerDLP,
 					Score:   1.0,
-				}
+				}, warnMatches
 			}
 		}
 	}
@@ -1283,8 +1307,10 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." —
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	if result := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname()); !result.Allowed {
-		return result
+	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname())
+	warnMatches = append(warnMatches, subWarns...)
+	if !subResult.Allowed {
+		return subResult, warnMatches
 	}
 
 	// Seed phrase detection on seed-safe candidates only.
@@ -1350,22 +1376,22 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 					Reason:  "DLP match: BIP-39 Seed Phrase (critical)",
 					Scanner: ScannerDLP,
 					Score:   1.0,
-				}
+				}, warnMatches
 			}
 		}
 	}
 
 	// Check for environment variable leaks
 	if result := s.checkSecretsInURL(s.envSecrets, parsed, "environment variable leak detected"); !result.Allowed {
-		return result
+		return result, warnMatches
 	}
 
 	// Check for known file secret leaks
 	if result := s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected"); !result.Allowed {
-		return result
+		return result, warnMatches
 	}
 
-	return Result{Allowed: true}
+	return Result{Allowed: true}, deduplicateWarnMatches(warnMatches)
 }
 
 // querySubsequenceDLP checks ordered subsequences (combinations) of query
@@ -1373,9 +1399,9 @@ func (s *Scanner) checkDLP(parsed *url.URL) Result {
 // multiple parameters with arbitrary junk values interleaved between fragments.
 // Tries subsequences of size 2-4 for URLs with 3-20 query params.
 // Cost: O(n^4) worst case, bounded at ~6k combinations for n=20.
-func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) Result {
+func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) (Result, []WarnMatch) {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
-		return Result{Allowed: true}
+		return Result{Allowed: true}, nil
 	}
 
 	var values []string
@@ -1388,7 +1414,7 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) Result {
 
 	n := len(values)
 	if n < 3 {
-		return Result{Allowed: true}
+		return Result{Allowed: true}, nil
 	}
 	// Cap to first 20 values to bound combinatorial cost (O(n^4)).
 	if n > 20 {
@@ -1396,18 +1422,22 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname string) Result {
 		n = 20
 	}
 
+	var warnMatches []WarnMatch
 	for size := 2; size <= 4 && size <= n; size++ {
-		if result := s.checkDLPCombinations(values, n, size, hostname); !result.Allowed {
-			return result
+		result, warns := s.checkDLPCombinations(values, n, size, hostname)
+		warnMatches = append(warnMatches, warns...)
+		if !result.Allowed {
+			return result, warnMatches
 		}
 	}
 
-	return Result{Allowed: true}
+	return Result{Allowed: true}, warnMatches
 }
 
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
-func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname string) Result {
+func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname string) (Result, []WarnMatch) {
+	var warnMatches []WarnMatch
 	indices := make([]int, size)
 	for i := range indices {
 		indices[i] = i
@@ -1428,12 +1458,19 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 				if len(p.exemptDomains) > 0 && matchesDomainList(hostname, p.exemptDomains) {
 					continue
 				}
+				if p.warn {
+					warnMatches = append(warnMatches, WarnMatch{
+						PatternName: p.name,
+						Severity:    p.severity,
+					})
+					continue
+				}
 				return Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("DLP match: %s (%s)", p.name, p.severity),
 					Scanner: ScannerDLP,
 					Score:   1.0,
-				}
+				}, warnMatches
 			}
 		}
 
@@ -1442,7 +1479,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname st
 		}
 	}
 
-	return Result{Allowed: true}
+	return Result{Allowed: true}, warnMatches
 }
 
 // nextCombination advances indices to the next lexicographic combination.
@@ -1459,6 +1496,22 @@ func nextCombination(indices []int, n int) bool {
 		}
 	}
 	return false
+}
+
+// deduplicateWarnMatches removes duplicate warn matches by pattern name.
+func deduplicateWarnMatches(matches []WarnMatch) []WarnMatch {
+	if len(matches) <= 1 {
+		return matches
+	}
+	seen := make(map[string]struct{}, len(matches))
+	out := make([]WarnMatch, 0, len(matches))
+	for _, m := range matches {
+		if _, ok := seen[m.PatternName]; !ok {
+			seen[m.PatternName] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // checkSecretsInURL scans a URL for leaked secrets (env vars or file-based).

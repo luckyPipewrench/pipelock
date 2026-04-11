@@ -13,6 +13,7 @@ import (
 type DLPMatch struct {
 	PatternName string
 	Matched     string
+	Warn        bool // true for warn-mode patterns (informational only)
 }
 
 // fragment holds a single outbound payload chunk with its arrival time.

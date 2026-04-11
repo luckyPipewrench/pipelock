@@ -43,6 +43,7 @@ const (
 	fieldFileSentry      = "file_sentry"
 	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
 	testExemptDomain     = "api.openai.com"
+	testStagedPattern    = "staged-pattern"
 
 	testProfileDir  = "/tmp/profiles"
 	testRecorderDir = "/tmp/recorder"
@@ -897,6 +898,255 @@ dlp:
 	if !strings.Contains(err.Error(), "action") {
 		t.Errorf("error should mention action, got: %v", err)
 	}
+}
+
+func TestValidate_DLPPatternActionWarn(t *testing.T) {
+	// 6-state boolean test for the action: warn field per Security Invariants.
+	tests := []struct {
+		name    string
+		action  string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "omitted (empty string) — valid",
+			action:  "",
+			wantErr: false,
+		},
+		{
+			name:    "explicit warn — valid",
+			action:  ActionWarn,
+			wantErr: false,
+		},
+		{
+			name:    "explicit block — rejected",
+			action:  ActionBlock,
+			wantErr: true,
+			errMsg:  "unsupported action",
+		},
+		{
+			name:    "explicit strip — rejected",
+			action:  ActionStrip,
+			wantErr: true,
+			errMsg:  "unsupported action",
+		},
+		{
+			name:    "explicit redirect — rejected",
+			action:  ActionRedirect,
+			wantErr: true,
+			errMsg:  "unsupported action",
+		},
+		{
+			name:    "explicit ask — rejected",
+			action:  ActionAsk,
+			wantErr: true,
+			errMsg:  "unsupported action",
+		},
+		{
+			name:    "arbitrary string — rejected",
+			action:  "foobar",
+			wantErr: true,
+			errMsg:  "unsupported action",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.DLP.Patterns = []DLPPattern{
+				{Name: "test-warn", Regex: `sk-test-[a-z]+`, Severity: "high", Action: tt.action},
+			}
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error for action %q", tt.action)
+				} else if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("expected error containing %q, got: %v", tt.errMsg, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("action %q should be valid: %v", tt.action, err)
+				}
+			}
+		})
+	}
+}
+
+func TestValidate_DLPPatternActionWarnOnBuiltin(t *testing.T) {
+	cfg := Defaults()
+	// Built-in default patterns have Compiled=true. Setting warn on them
+	// must be rejected — the immutable safety floor is never warnable.
+	for i := range cfg.DLP.Patterns {
+		if cfg.DLP.Patterns[i].Compiled {
+			cfg.DLP.Patterns[i].Action = ActionWarn
+			break
+		}
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when setting warn on built-in pattern")
+	}
+	if !strings.Contains(err.Error(), "built-in default") {
+		t.Errorf("error should mention built-in default, got: %v", err)
+	}
+}
+
+func TestLoad_DLPPatternActionWarnFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	cfgContent := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: test-warn-pattern
+      regex: 'sk-test-[a-z]+'
+      severity: high
+      action: warn
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("action: warn should be accepted: %v", err)
+	}
+	found := false
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "test-warn-pattern" && p.Action == ActionWarn {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("loaded config should contain pattern with action: warn")
+	}
+}
+
+func TestLoad_DLPPatternActionNullFromYAML(t *testing.T) {
+	// YAML null for the action field should be treated as omitted (empty string).
+	dir := t.TempDir()
+	cfgContent := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: test-null
+      regex: 'sk-test-[a-z]+'
+      severity: high
+      action: null
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("action: null should be valid (treated as omitted): %v", err)
+	}
+	for _, p := range cfg.DLP.Patterns {
+		if p.Name == "test-null" {
+			if p.Action != "" {
+				t.Errorf("YAML null action should parse as empty string, got %q", p.Action)
+			}
+			return
+		}
+	}
+	t.Error("test-null pattern not found in loaded config")
+}
+
+func TestReload_DLPPatternActionWarnPersists(t *testing.T) {
+	dir := t.TempDir()
+	// First config: pattern with warn.
+	cfgContent1 := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: staged-pattern
+      regex: 'staged-[a-z]+'
+      severity: medium
+      action: warn
+`
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgContent1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg1, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+
+	// Second config: same pattern, still warn (reload without change).
+	cfg2, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	_ = cfg1
+	for _, p := range cfg2.DLP.Patterns {
+		if p.Name == testStagedPattern {
+			if p.Action != ActionWarn {
+				t.Errorf("reload without change: action should be %q, got %q", ActionWarn, p.Action)
+			}
+			return
+		}
+	}
+	t.Error("staged-pattern not found after reload")
+}
+
+func TestReload_DLPPatternActionWarnRemoved(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+
+	// First: pattern with warn.
+	cfgContent1 := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: staged-pattern
+      regex: 'staged-[a-z]+'
+      severity: medium
+      action: warn
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg1, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	for _, p := range cfg1.DLP.Patterns {
+		if p.Name == testStagedPattern && p.Action != ActionWarn {
+			t.Fatalf("first load: expected action warn, got %q", p.Action)
+		}
+	}
+
+	// Second: same pattern, warn removed (promoted to enforce).
+	cfgContent2 := `
+version: 1
+dlp:
+  include_defaults: false
+  patterns:
+    - name: staged-pattern
+      regex: 'staged-[a-z]+'
+      severity: medium
+`
+	if err := os.WriteFile(cfgPath, []byte(cfgContent2), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg2, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	for _, p := range cfg2.DLP.Patterns {
+		if p.Name == testStagedPattern {
+			if p.Action != "" {
+				t.Errorf("reload with warn removed: action should be empty, got %q", p.Action)
+			}
+			return
+		}
+	}
+	t.Error("staged-pattern not found after reload with warn removed")
 }
 
 func TestValidate_InvalidLoggingFormat(t *testing.T) {

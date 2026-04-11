@@ -73,11 +73,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
-	baseCtx := audit.LogContext{
-		Method:    http.MethodConnect,
-		ClientIP:  clientIP,
-		RequestID: requestID,
-	}
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -89,7 +84,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
-	baseCtx.Agent = agent
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	// Strip inbound mediation envelope headers to prevent forgery.
@@ -120,12 +114,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		syntheticHost = "[" + host + "]"
 	}
 	syntheticURL := "https://" + syntheticHost + "/"
-	targetCtx := baseCtx
-	targetCtx.Target = target
-	headerCtx := baseCtx
-	headerCtx.Target = target
-	hostCtx := baseCtx
-	hostCtx.Target = host
+	targetCtx := newConnectAuditContext(p.logger, target, clientIP, requestID, agent)
+	headerCtx := targetCtx
 
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
@@ -433,7 +423,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if certCache == nil {
 			// Fail-closed: TLS interception is enabled but cert cache is missing.
 			// Connection is already hijacked, so close both sides (deferred).
-			p.logger.LogError(hostCtx, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
+			p.logger.LogError(targetCtx, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
 			p.metrics.RecordTLSIntercept("failed")
 			return
 		}
@@ -442,7 +432,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		safeClose(targetConn, "targetConn", p.logger)
 		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
-		p.logger.LogAnomaly(hostCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
+		p.logger.LogAnomaly(targetCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
@@ -484,7 +474,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Recorder:       interceptRec,
 			KillSwitch:     p.ks,
 		}); err != nil {
-			p.logger.LogError(hostCtx, err)
+			p.logger.LogError(targetCtx, err)
 		}
 		return
 	}
@@ -564,7 +554,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	targetURL := r.URL.String()
-	actx := audit.NewHTTPLogContext(r.Method, targetURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(p.logger, r.Method, targetURL, clientIP, requestID, agent)
 
 	// Scan through all layers (URL pipeline)
 	result := sc.Scan(r.Context(), targetURL)

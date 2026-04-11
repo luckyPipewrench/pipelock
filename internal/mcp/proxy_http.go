@@ -446,7 +446,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if taintEval.Result.Decision == session.PolicyAsk || taintEval.Result.Decision == session.PolicyBlock {
 			if auditLogger != nil {
 				auditLogger.LogTaintDecision(
-					audit.LogContext{Method: "MCP", URL: toolName},
+					audit.NewMCPLogContext("MCP", toolName, ""),
 					taintEval.Risk.Level.String(),
 					taintEval.ActionClass.String(),
 					taintEval.Sensitivity.String(),

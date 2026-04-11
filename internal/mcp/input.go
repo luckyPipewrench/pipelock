@@ -475,7 +475,7 @@ func ForwardScannedInput(
 			if taintDecision.Result.Decision == session.PolicyAsk || taintDecision.Result.Decision == session.PolicyBlock {
 				if auditLogger != nil {
 					auditLogger.LogTaintDecision(
-						audit.LogContext{Method: "MCP", URL: toolCallName},
+						audit.NewMCPLogContext("MCP", toolCallName, ""),
 						taintDecision.Risk.Level.String(),
 						taintDecision.ActionClass.String(),
 						taintDecision.Sensitivity.String(),

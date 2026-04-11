@@ -481,7 +481,11 @@ func TestLogMediaExposureIfPresent_EmitsWithTransport(t *testing.T) {
 		},
 	}
 	logger := &fakeMediaLogger{}
-	logMediaExposureIfPresent(logger, audit.LogContext{URL: "https://example.com/x.jpg"}, v, "reverse")
+	actx, err := audit.NewHTTPLogContext(http.MethodGet, "https://example.com/x.jpg", "127.0.0.1", "req-media-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logMediaExposureIfPresent(logger, actx, v, "reverse")
 	if len(logger.calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(logger.calls))
 	}

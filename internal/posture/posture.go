@@ -246,7 +246,10 @@ func (o Options) withDefaults() Options {
 }
 
 func resolveSigningKey(cfg *config.Config, key ed25519.PrivateKey) (ed25519.PrivateKey, error) {
-	if len(key) == ed25519.PrivateKeySize {
+	if len(key) > 0 {
+		if len(key) != ed25519.PrivateKeySize {
+			return nil, fmt.Errorf("invalid signing key length: got %d, want %d", len(key), ed25519.PrivateKeySize)
+		}
 		return key, nil
 	}
 
@@ -331,9 +334,7 @@ func collectSimulateEvidence(cfg *config.Config) (audit.SimulateResult, error) {
 }
 
 func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, error) {
-	result := FlightRecorderCounts{
-		ScannerVerdict: make(map[string]VerdictCount),
-	}
+	result := FlightRecorderCounts{}
 
 	if cfg.FlightRecorder.Dir == "" {
 		return result, nil
@@ -347,6 +348,7 @@ func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, er
 		}
 		return FlightRecorderCounts{}, fmt.Errorf("read flight recorder dir: %w", err)
 	}
+	result.ScannerVerdict = make(map[string]VerdictCount)
 
 	var files []string
 	for _, entry := range entries {

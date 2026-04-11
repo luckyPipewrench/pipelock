@@ -389,6 +389,18 @@ func TestResolveSigningKeyLoadFailure(t *testing.T) {
 	}
 }
 
+func TestResolveSigningKeyRejectsMalformedProvidedKey(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "ignored.key")
+
+	_, err := resolveSigningKey(cfg, ed25519.PrivateKey([]byte("short")))
+	if err == nil || !strings.Contains(err.Error(), "invalid signing key length") {
+		t.Fatalf("resolveSigningKey() error = %v, want malformed key rejection", err)
+	}
+}
+
 func TestVerifyValidationFailures(t *testing.T) {
 	t.Parallel()
 
@@ -555,6 +567,27 @@ func TestCollectEvidenceWithoutRecorder(t *testing.T) {
 	}
 }
 
+func TestCollectEvidenceMissingRecorderDirIsInactive(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Enabled = true
+	cfg.FlightRecorder.Dir = filepath.Join(t.TempDir(), "missing")
+
+	evidence, err := collectEvidence(cfg)
+	if err != nil {
+		t.Fatalf("collectEvidence(): %v", err)
+	}
+
+	if evidence.VerifyInstall.FlightRecorderActive {
+		t.Fatal("VerifyInstall.FlightRecorderActive = true, want false")
+	}
+	if evidence.FlightRecorder.ScannerVerdict != nil {
+		t.Fatalf("FlightRecorder.ScannerVerdict = %#v, want nil for missing recorder dir", evidence.FlightRecorder.ScannerVerdict)
+	}
+}
+
 func TestCollectFlightRecorderEvidence(t *testing.T) {
 	t.Parallel()
 
@@ -624,6 +657,9 @@ func TestCollectFlightRecorderEvidence(t *testing.T) {
 				}
 				if got.ReceiptCount != 0 {
 					t.Fatalf("ReceiptCount = %d, want 0", got.ReceiptCount)
+				}
+				if tt.name == "missing dir" && got.ScannerVerdict != nil {
+					t.Fatalf("ScannerVerdict = %#v, want nil for missing recorder dir", got.ScannerVerdict)
 				}
 				return
 			}

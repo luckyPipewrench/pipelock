@@ -9,6 +9,8 @@ import gzip
 import hashlib
 import json
 import os
+import re
+import selectors
 import shutil
 import socket
 import subprocess
@@ -173,9 +175,28 @@ def snapshot_receipts(pub_hex: str) -> tuple[list[dict[str, Any]], list[dict[str
 
 
 def reserve_port() -> int:
+    """Reserve a loopback port number for a subprocess to re-bind later.
+
+    TOCTOU caveat: subprocess listeners that accept a ``--listen ADDR``
+    flag have to close this socket and ask the child to bind it again,
+    which leaves a small race window. We minimize it by setting
+    SO_REUSEADDR (and SO_REUSEPORT on Linux) before bind so the kernel
+    will honor the rebind immediately, and by calling wait_for_tcp
+    against the final child port before using it. For in-process
+    Python HTTP servers use ``start_payload_web_server`` instead — it
+    binds port 0 directly with no race at all.
+    """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                # Not all kernels expose SO_REUSEPORT at runtime; it's a
+                # best-effort narrowing of the TOCTOU window, not a
+                # correctness requirement.
+                pass
+        sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
 
 
@@ -284,13 +305,15 @@ def reserve_listen_addr() -> str:
 
 
 def start_payload_web_server(payload: str) -> tuple[ThreadingHTTPServer, threading.Thread, str]:
-    port = reserve_port()
-
     class Handler(PayloadHTTPHandler):
         pass
 
     Handler.payload = payload
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    # Bind port 0 directly on the server socket and read back the bound
+    # port. No reserve/rebind race — the listener exists before we
+    # publish the address to any caller.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = int(server.server_address[1])
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread, f"http://127.0.0.1:{port}/"
@@ -330,20 +353,53 @@ def send_request(proc: subprocess.Popen[bytes], message: dict[str, Any]) -> None
 
 
 def read_response(proc: subprocess.Popen[bytes], timeout_s: float = 8.0) -> dict[str, Any]:
+    """Read one JSON-RPC response from ``proc.stdout`` within the timeout.
+
+    The original implementation called ``readline()`` in a loop with a
+    time check, but ``readline()`` is blocking — once we enter it, the
+    whole timeout budget can be consumed by a single stalled line. We
+    now use ``selectors`` to gate each read on readiness, and we also
+    fail fast if the child process exited before we got a response.
+    """
     assert proc.stdout is not None
+    buffer = bytearray()
     deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            time.sleep(0.05)
-            continue
-        try:
-            obj = json.loads(line.decode("utf-8", errors="replace").strip())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict) and obj.get("jsonrpc") == "2.0":
-            return obj
-    raise TimeoutError("no JSON-RPC response from pipelock within timeout")
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("no JSON-RPC response from pipelock within timeout")
+            # Child exited without emitting a response — no point waiting.
+            if proc.poll() is not None:
+                raise TimeoutError(
+                    f"pipelock process exited (code={proc.returncode}) before sending a JSON-RPC response"
+                )
+            events = sel.select(timeout=min(remaining, 0.2))
+            if not events:
+                continue
+            chunk = os.read(proc.stdout.fileno(), 4096)
+            if not chunk:
+                # Clean EOF: the child closed stdout without more data.
+                raise TimeoutError("pipelock closed stdout before sending a JSON-RPC response")
+            buffer.extend(chunk)
+            while b"\n" in buffer:
+                line, _, rest = bytes(buffer).partition(b"\n")
+                buffer = bytearray(rest)
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    obj = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and obj.get("jsonrpc") == "2.0":
+                    return obj
+    finally:
+        sel.unregister(proc.stdout)
+        sel.close()
 
 
 def run_mcp_exchange(proc: subprocess.Popen[bytes], call_count: int = 1) -> list[dict[str, Any]]:
@@ -405,15 +461,27 @@ def verify_receipt_inline(receipt: dict[str, Any], pub_hex: str) -> None:
 
 
 def load_receipts_from_evidence(pub_hex: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load and verify receipts from the evidence directory.
+
+    Parse and verification failures are reported on stderr rather than
+    silently dropped. For a demo centered on signed evidence and tamper
+    detection, an audit gap is worse than noisy output — if corruption,
+    truncation, or unexpected format changes occur, the operator sees
+    exactly which file and line were affected instead of "why are my
+    receipt counts different."
+    """
     receipts: list[dict[str, Any]] = []
     for jsonl in sorted(EVIDENCE_DIR.glob("*.jsonl")):
-        for line in jsonl.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
+        for lineno, raw in enumerate(jsonl.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped_line = raw.strip()
+            if not stripped_line:
                 continue
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+                entry = json.loads(stripped_line)
+            except json.JSONDecodeError as exc:
+                sys.stderr.write(
+                    f"[load_receipts] {jsonl.name}:{lineno}: skipped malformed JSON line ({exc})\n"
+                )
                 continue
             if entry.get("type") != "action_receipt":
                 continue
@@ -423,14 +491,25 @@ def load_receipts_from_evidence(pub_hex: str) -> tuple[list[dict[str, Any]], lis
             elif isinstance(detail, str):
                 try:
                     receipts.append(json.loads(detail))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    sys.stderr.write(
+                        f"[load_receipts] {jsonl.name}:{lineno}: skipped malformed detail JSON ({exc})\n"
+                    )
                     continue
+            else:
+                sys.stderr.write(
+                    f"[load_receipts] {jsonl.name}:{lineno}: skipped entry with non-object detail\n"
+                )
 
     verified: list[dict[str, Any]] = []
-    for receipt in receipts:
+    for index, receipt in enumerate(receipts):
         try:
             verify_receipt_inline(receipt, pub_hex)
-        except (InvalidSignature, KeyError, TypeError, ValueError):
+        except (InvalidSignature, KeyError, TypeError, ValueError) as exc:
+            action_id = receipt.get("action_record", {}).get("action_id", "?")
+            sys.stderr.write(
+                f"[load_receipts] receipt #{index} (action_id={action_id}): verification failed ({exc})\n"
+            )
             continue
         verified.append(receipt)
     return receipts, verified
@@ -500,9 +579,29 @@ def variant_payloads() -> list[tuple[str, str]]:
     ]
 
 
+_FLIGHT_RECORDER_RE = re.compile(
+    # Match a top-level ``flight_recorder:`` key (not indented) plus any
+    # number of blank or indented continuation lines that belong to the
+    # same YAML block. Stop at the next top-level key or EOF. Captured
+    # as multiline (^ anchors to line starts).
+    r"^flight_recorder:[ \t]*(?:\r?\n|$)(?:[ \t]+[^\n]*(?:\r?\n|$)|[ \t]*(?:\r?\n|$))*",
+    re.MULTILINE,
+)
+
+
 def strip_flight_recorder_block(text: str) -> str:
-    marker = "\nflight_recorder:\n"
-    start = text.find(marker)
-    if start == -1:
-        return text
-    return text[:start].rstrip() + "\n"
+    """Remove the ``flight_recorder`` YAML block from a pipelock config.
+
+    Handles: block at start of file, block at end of file, block with
+    comments in the middle, and indented continuation lines. Raises
+    ValueError if the mutation does not actually eliminate the block —
+    this catches regressions where the demo reports "flight recorder
+    removed" but the file still contains it (GPT review, demo audit
+    integrity).
+    """
+    stripped = _FLIGHT_RECORDER_RE.sub("", text)
+    if re.search(r"^flight_recorder:", stripped, re.MULTILINE):
+        raise ValueError(
+            "strip_flight_recorder_block: flight_recorder section still present after mutation"
+        )
+    return stripped

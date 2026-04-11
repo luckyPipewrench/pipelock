@@ -162,7 +162,13 @@ def print_transport_result(result: dict[str, Any]) -> None:
 
 
 def run_tamper_test(result: dict[str, Any], pub_hex: str) -> tuple[bool, str]:
-    candidate = block_receipts(result["verified"])[0]
+    # Guard against an IndexError if the run produced no verified block
+    # receipts at all — return an explicit failure message instead of
+    # crashing. A demo that tamper-tests zero receipts isn't a pass.
+    candidates = block_receipts(result["verified"])
+    if not candidates:
+        return False, "no verified block receipts to tamper-test"
+    candidate = candidates[0]
     tampered = tamper_signature(candidate)
     try:
         verify_receipt_inline(tampered, pub_hex)

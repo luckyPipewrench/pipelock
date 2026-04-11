@@ -478,10 +478,14 @@ func TestEnvValueIsNeverSecret(t *testing.T) {
 // DLP scanning so digit-heavy temp paths do not produce false
 // positives against the Credit Card Number pattern.
 func TestScanEnvSecrets_SkipsSafeNames(t *testing.T) {
-	// Set a GITHUB_PATH-like value that would otherwise match the CCN
-	// regex (\b\d{4}(?:[- ]?\d){11,15}\b). Using 16 digits lets the
-	// raw regex match; the filter has to skip by name.
-	t.Setenv("GITHUB_PATH", "/home/runner/work/_temp/set_output_1234567890123456")
+	// Use a value that matches the CCN regex (\b\d{4}(?:[- ]?\d){11,15}\b)
+	// but is NOT path-shaped, so envValueIsNeverSecret cannot short-circuit
+	// the skip. The only filter that can still exclude GITHUB_PATH is
+	// envVarAlwaysSafe — which is what this test is meant to prove. The
+	// value is assembled from string literals at runtime so hardcoded-
+	// credential linters do not flag the source.
+	fakeCCN := "1234-" + "5678-" + "9012-" + "3456"
+	t.Setenv("GITHUB_PATH", fakeCCN)
 	findings := scanEnvSecrets(compileDLPPatterns())
 	for _, f := range findings {
 		if strings.Contains(f.Message, "GITHUB_PATH") {

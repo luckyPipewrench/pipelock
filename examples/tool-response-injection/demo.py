@@ -185,7 +185,15 @@ def run_chain_break_test(result: dict[str, Any], pub_hex: str) -> tuple[bool, in
     evidence_file = result["evidence_file"]
     if evidence_file is None:
         return False, -1, "no evidence file found for stdio run"
-    broken_path, expected_seq = write_chain_break_file(evidence_file)
+    # write_chain_break_file needs at least 3 receipts to synthesize a
+    # valid break. If the stdio run produced fewer, report the
+    # precondition failure instead of crashing the whole harness —
+    # the chain-break subtest is best-effort and shouldn't take down
+    # the demo.
+    try:
+        broken_path, expected_seq = write_chain_break_file(evidence_file)
+    except ValueError as exc:
+        return False, -1, f"precondition failed: {exc}"
     completed = run_verify_receipt(broken_path, pub_hex)
     combined = (completed.stdout + completed.stderr).strip()
     ok = completed.returncode != 0 and f"Broke at: seq {expected_seq}" in combined

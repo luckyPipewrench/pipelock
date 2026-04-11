@@ -9,8 +9,8 @@ import gzip
 import hashlib
 import json
 import os
+import queue
 import re
-import selectors
 import shutil
 import socket
 import subprocess
@@ -264,7 +264,13 @@ def start_mcp_http_server(payload: str | None = None) -> tuple[subprocess.Popen[
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    wait_for_tcp("127.0.0.1", port)
+    try:
+        wait_for_tcp("127.0.0.1", port)
+    except Exception:
+        # Readiness failed — reap the spawned child so we don't leave
+        # an orphaned Python process behind when the demo raises.
+        _ = stop_process(proc)
+        raise
     return proc, f"http://{listen}"
 
 
@@ -296,7 +302,13 @@ def start_pipelock_fetch_proxy(listen: str) -> subprocess.Popen[bytes]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    wait_for_http(f"http://{listen}/health")
+    try:
+        wait_for_http(f"http://{listen}/health")
+    except Exception:
+        # Readiness failed — reap the spawned pipelock so we don't leave
+        # an orphaned proxy bound to the reserved port.
+        _ = stop_process(proc)
+        raise
     return proc
 
 
@@ -352,54 +364,83 @@ def send_request(proc: subprocess.Popen[bytes], message: dict[str, Any]) -> None
     proc.stdin.flush()
 
 
+_READER_THREADS: dict[int, tuple[threading.Thread, "queue.Queue[bytes | None]"]] = {}
+_READER_LOCK = threading.Lock()
+
+
+def _reader_loop(stream: Any, q: "queue.Queue[bytes | None]") -> None:
+    """Background reader: enqueue every line from ``stream`` until EOF.
+
+    ``None`` signals EOF so the consumer can stop waiting. Errors on
+    the stream (e.g. the child closing its stdout abruptly) are
+    reported the same way — the consumer sees ``None``.
+    """
+    try:
+        while True:
+            line = stream.readline()
+            if not line:
+                break
+            q.put(line)
+    finally:
+        q.put(None)
+
+
+def _reader_for(proc: subprocess.Popen[bytes]) -> "queue.Queue[bytes | None]":
+    """Return the reader-thread queue for ``proc``, creating one if needed."""
+    assert proc.stdout is not None
+    with _READER_LOCK:
+        entry = _READER_THREADS.get(id(proc))
+        if entry is None:
+            q: queue.Queue[bytes | None] = queue.Queue()
+            thread = threading.Thread(
+                target=_reader_loop,
+                args=(proc.stdout, q),
+                daemon=True,
+                name=f"read_response-{id(proc):x}",
+            )
+            thread.start()
+            _READER_THREADS[id(proc)] = (thread, q)
+            return q
+        return entry[1]
+
+
 def read_response(proc: subprocess.Popen[bytes], timeout_s: float = 8.0) -> dict[str, Any]:
     """Read one JSON-RPC response from ``proc.stdout`` within the timeout.
 
     The original implementation called ``readline()`` in a loop with a
     time check, but ``readline()`` is blocking — once we enter it, the
-    whole timeout budget can be consumed by a single stalled line. We
-    now use ``selectors`` to gate each read on readiness, and we also
-    fail fast if the child process exited before we got a response.
+    whole timeout budget can be consumed by a single stalled line.
+    Dispatching the reads to a background thread with a queue makes
+    the timeout genuine and works on every platform Python supports
+    (``selectors.DefaultSelector`` does not support subprocess pipes
+    on Windows). We also fail fast if the child exits before sending
+    a response.
     """
-    assert proc.stdout is not None
-    buffer = bytearray()
+    q = _reader_for(proc)
     deadline = time.monotonic() + timeout_s
-
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stdout, selectors.EVENT_READ)
-    try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("no JSON-RPC response from pipelock within timeout")
-            # Child exited without emitting a response — no point waiting.
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("no JSON-RPC response from pipelock within timeout")
+        try:
+            line = q.get(timeout=min(remaining, 0.2))
+        except queue.Empty:
             if proc.poll() is not None:
                 raise TimeoutError(
                     f"pipelock process exited (code={proc.returncode}) before sending a JSON-RPC response"
                 )
-            events = sel.select(timeout=min(remaining, 0.2))
-            if not events:
-                continue
-            chunk = os.read(proc.stdout.fileno(), 4096)
-            if not chunk:
-                # Clean EOF: the child closed stdout without more data.
-                raise TimeoutError("pipelock closed stdout before sending a JSON-RPC response")
-            buffer.extend(chunk)
-            while b"\n" in buffer:
-                line, _, rest = bytes(buffer).partition(b"\n")
-                buffer = bytearray(rest)
-                text = line.decode("utf-8", errors="replace").strip()
-                if not text:
-                    continue
-                try:
-                    obj = json.loads(text)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(obj, dict) and obj.get("jsonrpc") == "2.0":
-                    return obj
-    finally:
-        sel.unregister(proc.stdout)
-        sel.close()
+            continue
+        if line is None:
+            raise TimeoutError("pipelock closed stdout before sending a JSON-RPC response")
+        text = line.decode("utf-8", errors="replace").strip()
+        if not text:
+            continue
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("jsonrpc") == "2.0":
+            return obj
 
 
 def run_mcp_exchange(proc: subprocess.Popen[bytes], call_count: int = 1) -> list[dict[str, Any]]:

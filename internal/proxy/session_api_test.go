@@ -1258,7 +1258,7 @@ func TestSessionManager_AddRuntimeTrustOverride_InvocationRejected(t *testing.T)
 		ActionMatch: "x",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}
-	_, _, found, err := sm.AddRuntimeTrustOverride("mcp-stdio-101", override)
+	_, found, err := sm.AddRuntimeTrustOverride("mcp-stdio-101", override)
 	if !found {
 		t.Fatal("expected found=true for existing invocation session")
 	}
@@ -1292,7 +1292,7 @@ func TestSessionManager_AddRuntimeTrustOverride_NotFound(t *testing.T) {
 		ActionMatch: "x",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}
-	_, _, found, err := sm.AddRuntimeTrustOverride("no-such-session", override)
+	_, found, err := sm.AddRuntimeTrustOverride("no-such-session", override)
 	if found {
 		t.Fatal("expected found=false for nonexistent session")
 	}
@@ -1313,7 +1313,7 @@ func TestSessionManager_AddRuntimeTrustOverride_WrongScope(t *testing.T) {
 		SourceMatch: "https://docs.example",
 		ExpiresAt:   time.Now().UTC().Add(time.Hour),
 	}
-	_, _, found, err := sm.AddRuntimeTrustOverride("agent|10.0.0.1", override)
+	_, found, err := sm.AddRuntimeTrustOverride("agent|10.0.0.1", override)
 	if found {
 		t.Errorf("expected found=false when scope is wrong, got true")
 	}

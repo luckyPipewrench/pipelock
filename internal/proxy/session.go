@@ -973,24 +973,28 @@ func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session
 // active session. Same identity-session guardrail as BeginNewTask applies:
 // invocation sessions cannot receive runtime trust overrides via the admin
 // API.
-func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.TrustOverride) (applied session.TrustOverride, task session.TaskContext, found bool, err error) {
+//
+// The returned “applied“ override carries the task ID that was bound under
+// the session mutex. Callers must use “applied.TaskID“ for response bodies
+// or logs — a second TaskSnapshot call outside the mutex would race against
+// concurrent BeginNewTask rotations.
+func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.TrustOverride) (applied session.TrustOverride, found bool, err error) {
 	if override.Scope != "task" {
-		return session.TrustOverride{}, session.TaskContext{}, false, ErrTaskScopeOnly
+		return session.TrustOverride{}, false, ErrTaskScopeOnly
 	}
 
 	sm.mu.RLock()
 	sess, ok := sm.sessions[key]
 	sm.mu.RUnlock()
 	if !ok {
-		return session.TrustOverride{}, session.TaskContext{}, false, nil
+		return session.TrustOverride{}, false, nil
 	}
 	if !sess.IsResettable() {
-		return session.TrustOverride{}, session.TaskContext{}, true, ErrInvocationReset
+		return session.TrustOverride{}, true, ErrInvocationReset
 	}
 
 	applied = sess.AddRuntimeTrustOverride(override)
-	task = sess.TaskSnapshot()
-	return applied, task, true, nil
+	return applied, true, nil
 }
 
 // ForceSetAirlockTier atomically looks up a session by key and sets the

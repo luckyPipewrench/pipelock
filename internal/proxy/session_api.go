@@ -539,7 +539,7 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 		GrantedBy:   req.GrantedBy,
 		Reason:      req.Reason,
 	}
-	applied, task, found, err := sm.AddRuntimeTrustOverride(key, override)
+	applied, found, err := sm.AddRuntimeTrustOverride(key, override)
 	if !found && err == nil {
 		h.logSessionAdmin("trust_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
@@ -575,9 +575,13 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 		GrantedBy   string    `json:"granted_by,omitempty"`
 		Reason      string    `json:"reason,omitempty"`
 	}{
-		Key:         key,
-		Scope:       applied.Scope,
-		TaskID:      task.CurrentTaskID,
+		Key:   key,
+		Scope: applied.Scope,
+		// applied.TaskID was bound under the session mutex by
+		// SessionState.AddRuntimeTrustOverride — use it directly instead
+		// of taking a second TaskSnapshot that could race a concurrent
+		// BeginNewTask rotation.
+		TaskID:      applied.TaskID,
 		SourceMatch: applied.SourceMatch,
 		ActionMatch: applied.ActionMatch,
 		ExpiresAt:   applied.ExpiresAt,

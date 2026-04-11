@@ -444,6 +444,11 @@ func TestScanFileForEntropy_QuotedValues(t *testing.T) {
 // TestEnvValueIsNeverSecret covers the structural path filter used to
 // prevent the env-var scanner from flagging file paths as credentials.
 func TestEnvValueIsNeverSecret(t *testing.T) {
+	// Split fake credentials so pipelock's own PR diff scanner does
+	// not flag these test vectors (G101 + scan-diff). Same pattern used
+	// throughout the pipelock test suite for synthetic credentials.
+	fakeAWS := "AKIA" + "IOSFODNN7EXAMPLE"
+	fakeAnt := "sk-" + "ant-" + "api03-test1234567890"
 	cases := []struct {
 		name  string
 		value string
@@ -456,8 +461,8 @@ func TestEnvValueIsNeverSecret(t *testing.T) {
 		{"windows_backslash", `C:\Users\runner\file`, true},
 		{"windows_forward", "C:/Users/runner/file", true},
 		{"windows_no_drive", "Users/runner", false},
-		{"non_path_secret", "AKIAIOSFODNN7EXAMPLE", false},
-		{"non_path_token", "sk-ant-api03-test1234567890", false},
+		{"non_path_secret", fakeAWS, false},
+		{"non_path_token", fakeAnt, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

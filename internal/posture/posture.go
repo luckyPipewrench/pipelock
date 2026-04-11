@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
@@ -39,6 +40,8 @@ const (
 
 	// ProofFilename is the JSON artifact written by posture emit.
 	ProofFilename = "proof.json"
+
+	evidenceFilePrefix = "evidence-"
 )
 
 var (
@@ -382,7 +385,7 @@ func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, er
 			continue
 		}
 		name := entry.Name()
-		if filepath.Ext(name) == ".jsonl" && len(name) >= len("evidence-") && name[:len("evidence-")] == "evidence-" {
+		if filepath.Ext(name) == ".jsonl" && strings.HasPrefix(name, evidenceFilePrefix) {
 			files = append(files, filepath.Join(dir, name))
 		}
 	}

@@ -69,6 +69,8 @@ Quick start:
 		assess.Cmd(),
 		// Policy capture/replay
 		policy.Cmd(),
+		// Posture capsules
+		postureCmd(),
 		// Audit & reporting
 		audit.Cmd(),
 		// Canary tokens

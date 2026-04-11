@@ -72,6 +72,23 @@ const (
 	apiSessionsSegment = "sessions"
 )
 
+// Admin API action names used as rate-limiter keys. Extracted so
+// there is exactly one source of truth per endpoint label.
+const (
+	sessionAPIActionReset = "reset"
+	sessionAPIActionTask  = "task"
+	sessionAPIActionTrust = "trust"
+)
+
+// rateLimiterState tracks a sliding-window request count for a
+// single admin action. One instance per action so high-volume abuse
+// of one endpoint cannot starve legitimate traffic on another during
+// incident response.
+type rateLimiterState struct {
+	reqCount    int
+	windowStart time.Time
+}
+
 // SessionAPIHandler handles the admin session management API.
 type SessionAPIHandler struct {
 	smPtr    *atomic.Pointer[SessionManager]
@@ -81,9 +98,11 @@ type SessionAPIHandler struct {
 	logger   *audit.Logger
 	apiToken string
 
-	mu          sync.Mutex
-	reqCount    int
-	windowStart time.Time
+	// limitMu guards all rate-limiter state. One limiter per admin
+	// action (reset/task/trust) so /task abuse cannot suppress
+	// /reset during incident response, and vice versa.
+	limitMu  sync.Mutex
+	limiters map[string]*rateLimiterState
 }
 
 // NewSessionAPIHandler creates a session API handler.
@@ -96,13 +115,17 @@ func NewSessionAPIHandler(
 	apiToken string,
 ) *SessionAPIHandler {
 	return &SessionAPIHandler{
-		smPtr:       smPtr,
-		etPtr:       etPtr,
-		fbPtr:       fbPtr,
-		metrics:     m,
-		logger:      logger,
-		apiToken:    apiToken,
-		windowStart: time.Now(),
+		smPtr:    smPtr,
+		etPtr:    etPtr,
+		fbPtr:    fbPtr,
+		metrics:  m,
+		logger:   logger,
+		apiToken: apiToken,
+		limiters: map[string]*rateLimiterState{
+			sessionAPIActionReset: {windowStart: time.Now()},
+			sessionAPIActionTask:  {windowStart: time.Now()},
+			sessionAPIActionTrust: {windowStart: time.Now()},
+		},
 	}
 }
 
@@ -166,19 +189,29 @@ func (h *SessionAPIHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// checkResetRateLimit enforces a sliding-window rate limit on reset requests.
-// Returns true if the request is within the limit.
-func (h *SessionAPIHandler) checkResetRateLimit() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// checkRateLimit enforces a sliding-window rate limit on a single
+// admin action (reset/task/trust). Returns true if the request is
+// within the limit. Each action has its own counter so a flood on one
+// endpoint cannot starve another during incident response — the
+// operator can hit /reset even while /task or /trust is being abused.
+func (h *SessionAPIHandler) checkRateLimit(action string) bool {
+	h.limitMu.Lock()
+	defer h.limitMu.Unlock()
 
-	now := time.Now()
-	if now.Sub(h.windowStart) > sessionAPIRateLimitWindow {
-		h.reqCount = 0
-		h.windowStart = now
+	st, ok := h.limiters[action]
+	if !ok {
+		// Defensive: if a new admin action is added without
+		// registering a limiter, fail-closed (deny) rather than
+		// silently bypass rate limiting.
+		return false
 	}
-	h.reqCount++
-	return h.reqCount <= sessionAPIRateLimitMax
+	now := time.Now()
+	if now.Sub(st.windowStart) > sessionAPIRateLimitWindow {
+		st.reqCount = 0
+		st.windowStart = now
+	}
+	st.reqCount++
+	return st.reqCount <= sessionAPIRateLimitMax
 }
 
 // extractSessionKey extracts the session key from /api/v1/sessions/{key}/reset.
@@ -210,7 +243,7 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 
 	clientIP, _ := requestMeta(r)
 
-	if !h.checkResetRateLimit() {
+	if !h.checkRateLimit(sessionAPIActionReset) {
 		h.logSessionAdmin("reset_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -411,7 +444,7 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientIP, _ := requestMeta(r)
-	if !h.checkResetRateLimit() {
+	if !h.checkRateLimit(sessionAPIActionTask) {
 		h.logSessionAdmin("task_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -491,7 +524,7 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 	}
 
 	clientIP, _ := requestMeta(r)
-	if !h.checkResetRateLimit() {
+	if !h.checkRateLimit(sessionAPIActionTrust) {
 		h.logSessionAdmin("trust_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)

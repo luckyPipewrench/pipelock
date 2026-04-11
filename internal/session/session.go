@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // SignalType identifies a threat signal for adaptive enforcement.
@@ -92,9 +94,6 @@ type ToolFreezer interface {
 // subprocesses start concurrently.
 var invocationCounter atomic.Uint64
 
-// taskCounter provides unique task identifiers scoped to the current process.
-var taskCounter atomic.Uint64
-
 // NextInvocationKey returns a unique session key with the given prefix.
 // Format: "<prefix>-<n>" where n is a monotonically increasing integer.
 // Safe for concurrent use.
@@ -103,6 +102,22 @@ func NextInvocationKey(prefix string) string {
 }
 
 // NextTaskID returns a unique pipelock-owned task identifier.
+//
+// Task IDs are emitted in envelopes, MCP _meta, action receipts, and
+// session snapshots. They are correlation identifiers, not auth
+// tokens — but they leave the trust boundary, so using opaque
+// high-entropy UUIDv7 values prevents downstream components from
+// treating a monotonically-predictable "task-N" sequence as
+// meaningful context. Matches the UUIDv7 pattern already used for
+// action IDs in internal/receipt/action.go.
 func NextTaskID() string {
-	return fmt.Sprintf("task-%d", taskCounter.Add(1))
+	id, err := uuid.NewV7()
+	if err != nil {
+		// UUIDv7 generation fails only when crypto/rand or the
+		// clock is broken — neither happens in practice. Emit a
+		// sentinel that is clearly non-colliding and easy to
+		// grep for if it ever appears in a receipt.
+		return "task-00000000-0000-7000-8000-000000000000"
+	}
+	return "task-" + id.String()
 }

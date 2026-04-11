@@ -406,6 +406,72 @@ func TestSessionAPI_HandleList_NotRateLimited(t *testing.T) {
 	}
 }
 
+// TestSessionAPI_RateLimiters_Independent asserts that flooding one
+// admin endpoint does not starve another. Each mutating endpoint
+// has its own sliding-window limiter so an attacker (or a runaway
+// script) exhausting /task cannot prevent a legitimate operator
+// from hitting /reset during incident response.
+func TestSessionAPI_RateLimiters_Independent(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Exhaust the /task limiter.
+	for range sessionAPIRateLimitMax {
+		req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
+		w := httptest.NewRecorder()
+		handler.HandleTask(w, req)
+	}
+	// One more /task request should 429 — the limiter is exhausted.
+	{
+		req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
+		w := httptest.NewRecorder()
+		handler.HandleTask(w, req)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("exhausted /task should 429, got %d", w.Code)
+		}
+	}
+	// /reset on the same handler must still succeed — its limiter
+	// has not been touched.
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+		w := httptest.NewRecorder()
+		handler.HandleReset(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatal("/task flood should not starve /reset; got 429")
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("/reset expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	}
+	// /trust also has its own limiter and should still be fresh.
+	{
+		req := newTrustRequest(http.MethodPost, "agent|10.0.0.1",
+			`{"scope":"task","action_match":"x","expires_at":"`+futureTimestamp()+`"}`)
+		w := httptest.NewRecorder()
+		handler.HandleTrust(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatal("/task flood should not starve /trust; got 429")
+		}
+	}
+}
+
+// TestSessionAPI_CheckRateLimit_UnknownActionDenies covers the
+// defensive fail-closed path when a bug asks the limiter about an
+// action that was never registered. The code must NOT silently
+// bypass limiting — it must deny.
+func TestSessionAPI_CheckRateLimit_UnknownActionDenies(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	handler := newTestSessionAPIHandler(t, sm)
+
+	if handler.checkRateLimit("nonexistent-action") {
+		t.Fatal("unknown action should fail-closed, got allowed")
+	}
+}
+
 func TestSessionAPI_HandleReset_MethodNotAllowed(t *testing.T) {
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()

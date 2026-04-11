@@ -46,6 +46,13 @@ KEY_PATH = HERE / "signing.key"
 EVIDENCE_DIR = HERE / "evidence"
 PIPELOCK_BIN = os.environ.get("PIPELOCK_BIN", "pipelock")
 
+# _ACTION_RECORD_FIELDS mirrors the Go ActionRecord field order in
+# internal/receipt/action.go. Canonicalization MUST include every
+# omitempty field the Go emitter might populate, or the Python
+# inline verifier will compute a different SHA256 and fail signature
+# verification against Go-produced receipts. The omitempty flag here
+# must match the Go struct tag — True means drop zero-valued entries
+# from the canonical form, mirroring Go's encoding/json behavior.
 _ACTION_RECORD_FIELDS = [
     ("version", False),
     ("action_id", False),
@@ -62,6 +69,15 @@ _ACTION_RECORD_FIELDS = [
     ("reversibility", False),
     ("policy_hash", False),
     ("verdict", False),
+    # Taint-aware policy escalation context. Added to ActionRecord in
+    # #383 — required here to keep signature verification consistent
+    # with receipts produced after taint evaluation populates these.
+    ("session_taint_level", True),
+    ("session_contaminated", True),
+    ("recent_taint_sources", True),
+    ("authority_kind", True),
+    ("taint_decision", True),
+    ("taint_decision_reason", True),
     ("transport", False),
     ("method", True),
     ("layer", True),

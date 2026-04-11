@@ -440,3 +440,63 @@ func TestScanFileForEntropy_QuotedValues(t *testing.T) {
 		t.Error("expected entropy finding for quoted high-entropy value")
 	}
 }
+
+// TestEnvValueIsNeverSecret covers the structural path filter used to
+// prevent the env-var scanner from flagging file paths as credentials.
+func TestEnvValueIsNeverSecret(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"unix_absolute", "/home/runner/work/_temp/_runner_file_commands/set_output_1234567890123456", true},
+		{"unix_nested", "/usr/local/bin/pipelock", true},
+		{"unix_root_only", "/", false},
+		{"unix_single_slash", "/foo", false},
+		{"windows_backslash", `C:\Users\runner\file`, true},
+		{"windows_forward", "C:/Users/runner/file", true},
+		{"windows_no_drive", "Users/runner", false},
+		{"non_path_secret", "AKIAIOSFODNN7EXAMPLE", false},
+		{"non_path_token", "sk-ant-api03-test1234567890", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := envValueIsNeverSecret(tc.value); got != tc.want {
+				t.Errorf("envValueIsNeverSecret(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanEnvSecrets_SkipsSafeNames asserts that the GitHub Actions
+// runner env vars (and other well-known safe names) are excluded from
+// DLP scanning so digit-heavy temp paths do not produce false
+// positives against the Credit Card Number pattern.
+func TestScanEnvSecrets_SkipsSafeNames(t *testing.T) {
+	// Set a GITHUB_PATH-like value that would otherwise match the CCN
+	// regex (\b\d{4}(?:[- ]?\d){11,15}\b). Using 16 digits lets the
+	// raw regex match; the filter has to skip by name.
+	t.Setenv("GITHUB_PATH", "/home/runner/work/_temp/set_output_1234567890123456")
+	findings := scanEnvSecrets(compileDLPPatterns())
+	for _, f := range findings {
+		if strings.Contains(f.Message, "GITHUB_PATH") {
+			t.Errorf("GITHUB_PATH should be skipped, got finding: %s", f.Message)
+		}
+	}
+}
+
+// TestScanEnvSecrets_SkipsPathValues asserts that env vars whose
+// values look like absolute file paths are excluded regardless of
+// their name. Paths can match digit-heavy regexes by coincidence but
+// are never themselves secrets.
+func TestScanEnvSecrets_SkipsPathValues(t *testing.T) {
+	// Unknown var name — wouldn't be in envVarAlwaysSafe — but with a
+	// path-shaped value, it must still be skipped.
+	t.Setenv("MY_CUSTOM_PATH", "/tmp/_some_long_path_with_digits_1234567890123456")
+	findings := scanEnvSecrets(compileDLPPatterns())
+	for _, f := range findings {
+		if strings.Contains(f.Message, "MY_CUSTOM_PATH") {
+			t.Errorf("absolute path value should be skipped, got finding: %s", f.Message)
+		}
+	}
+}

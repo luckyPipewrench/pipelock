@@ -24,8 +24,8 @@ dlp:
 
 2. **Deploy and observe.** The pattern matches traffic but requests are not
    blocked. When the runtime warn hook is configured (see below), matches
-   emit `dlp_warn` audit events. Without the hook, you can observe matches
-   through `InformationalMatches` in the scan API response or flight recorder.
+   emit `dlp_warn` audit events. Without the hook, warn matches are still
+   tracked in the scanner result's `InformationalMatches` field.
 
 3. **Review matches.** Check the `pattern`, `severity`, and `transport` fields
    in the audit event (when the warn hook is active) or the scan API response

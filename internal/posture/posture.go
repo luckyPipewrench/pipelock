@@ -41,6 +41,14 @@ const (
 	ProofFilename = "proof.json"
 )
 
+var (
+	canonicalize     = canonicalJSON
+	jsonMarshal      = json.Marshal
+	userHomeDir      = os.UserHomeDir
+	discoverConfigs  = discover.Discover
+	readRecorderFile = recorder.ReadEntries
+)
+
 // Capsule is the signed posture artifact emitted by pipelock posture emit.
 type Capsule struct {
 	SchemaVersion string         `json:"schema_version"`
@@ -227,7 +235,7 @@ func WriteProofJSON(outputDir string, capsule *Capsule) (string, error) {
 // MarshalJSON emits deterministic canonical JSON for signature stability.
 func (c Capsule) MarshalJSON() ([]byte, error) {
 	type alias Capsule
-	return canonicalJSON(alias(c))
+	return canonicalize(alias(c))
 }
 
 // UnmarshalJSON decodes a posture capsule from JSON.
@@ -270,9 +278,27 @@ func resolveSigningKey(cfg *config.Config, key ed25519.PrivateKey) (ed25519.Priv
 
 func resolveEvidence(cfg *config.Config, preload *EvidenceBundle) (EvidenceBundle, error) {
 	if preload != nil {
-		return *preload, nil
+		return cloneEvidenceBundle(*preload), nil
 	}
 	return collectEvidence(cfg)
+}
+
+func cloneEvidenceBundle(bundle EvidenceBundle) EvidenceBundle {
+	cloned := bundle
+	if bundle.Simulate.Scenarios != nil {
+		cloned.Simulate.Scenarios = append([]audit.ScenarioResult(nil), bundle.Simulate.Scenarios...)
+	}
+	if bundle.FlightRecorder.LastReceiptAt != nil {
+		ts := *bundle.FlightRecorder.LastReceiptAt
+		cloned.FlightRecorder.LastReceiptAt = &ts
+	}
+	if bundle.FlightRecorder.ScannerVerdict != nil {
+		cloned.FlightRecorder.ScannerVerdict = make(map[string]VerdictCount, len(bundle.FlightRecorder.ScannerVerdict))
+		for key, value := range bundle.FlightRecorder.ScannerVerdict {
+			cloned.FlightRecorder.ScannerVerdict[key] = value
+		}
+	}
+	return cloned
 }
 
 func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
@@ -281,10 +307,7 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 		return EvidenceBundle{}, err
 	}
 
-	simulateEvidence, err := collectSimulateEvidence(cfg)
-	if err != nil {
-		return EvidenceBundle{}, err
-	}
+	simulateEvidence := collectSimulateEvidence(cfg)
 
 	flightRecorderEvidence, err := collectFlightRecorderEvidence(cfg)
 	if err != nil {
@@ -306,12 +329,12 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 }
 
 func collectDiscoverEvidence() (DiscoverEvidence, error) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDir()
 	if err != nil {
 		return DiscoverEvidence{}, fmt.Errorf("resolve home directory: %w", err)
 	}
 
-	report, err := discover.Discover(home)
+	report, err := discoverConfigs(home)
 	if err != nil {
 		return DiscoverEvidence{}, fmt.Errorf("discover: %w", err)
 	}
@@ -328,12 +351,12 @@ func collectDiscoverEvidence() (DiscoverEvidence, error) {
 	}, nil
 }
 
-func collectSimulateEvidence(cfg *config.Config) (audit.SimulateResult, error) {
+func collectSimulateEvidence(cfg *config.Config) audit.SimulateResult {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
 	scenarios := audit.BuildSimScenarios(cfg, sc)
-	return audit.RunSimulation(scenarios, "", cfg.Mode), nil
+	return audit.RunSimulation(scenarios, "", cfg.Mode)
 }
 
 func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, error) {
@@ -367,7 +390,7 @@ func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, er
 
 	var lastReceipt time.Time
 	for _, file := range files {
-		records, err := recorder.ReadEntries(file)
+		records, err := readRecorderFile(file)
 		if err != nil {
 			return FlightRecorderCounts{}, fmt.Errorf("read recorder file %s: %w", filepath.Base(file), err)
 		}
@@ -416,7 +439,7 @@ func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, er
 }
 
 func hashConfig(cfg *config.Config) (string, error) {
-	canonical, err := canonicalJSON(cfg)
+	canonical, err := canonicalize(cfg)
 	if err != nil {
 		return "", err
 	}
@@ -425,7 +448,7 @@ func hashConfig(cfg *config.Config) (string, error) {
 }
 
 func (c Capsule) signableJSON() ([]byte, error) {
-	return canonicalJSON(signableCapsule{
+	return canonicalize(signableCapsule{
 		SchemaVersion: c.SchemaVersion,
 		GeneratedAt:   c.GeneratedAt,
 		ExpiresAt:     c.ExpiresAt,
@@ -436,7 +459,7 @@ func (c Capsule) signableJSON() ([]byte, error) {
 }
 
 func canonicalJSON(v any) ([]byte, error) {
-	raw, err := json.Marshal(v)
+	raw, err := jsonMarshal(v)
 	if err != nil {
 		return nil, err
 	}
@@ -467,7 +490,7 @@ func appendCanonical(buf *bytes.Buffer, v any) error {
 			buf.WriteString("false")
 		}
 	case string:
-		data, err := json.Marshal(value)
+		data, err := jsonMarshal(value)
 		if err != nil {
 			return err
 		}
@@ -475,7 +498,7 @@ func appendCanonical(buf *bytes.Buffer, v any) error {
 	case json.Number:
 		buf.WriteString(value.String())
 	case float64:
-		data, err := json.Marshal(value)
+		data, err := jsonMarshal(value)
 		if err != nil {
 			return err
 		}
@@ -502,7 +525,7 @@ func appendCanonical(buf *bytes.Buffer, v any) error {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			keyJSON, err := json.Marshal(key)
+			keyJSON, err := jsonMarshal(key)
 			if err != nil {
 				return err
 			}
@@ -514,7 +537,7 @@ func appendCanonical(buf *bytes.Buffer, v any) error {
 		}
 		buf.WriteByte('}')
 	default:
-		data, err := json.Marshal(value)
+		data, err := jsonMarshal(value)
 		if err != nil {
 			return err
 		}

@@ -23,8 +23,6 @@ import (
 )
 
 func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
-	t.Parallel()
-
 	expectedCapsule := Capsule{
 		SchemaVersion: "1",
 		GeneratedAt:   time.Date(2026, time.April, 11, 17, 45, 0, 0, time.UTC),
@@ -57,8 +55,6 @@ func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			var capsule Capsule
 			if err := json.Unmarshal([]byte(tt.input), &capsule); err != nil {
 				t.Fatalf("json.Unmarshal(): %v", err)
@@ -77,8 +73,6 @@ func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
 }
 
 func TestEmitAndVerifyRoundTrip(t *testing.T) {
-	t.Parallel()
-
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -113,8 +107,6 @@ func TestEmitAndVerifyRoundTrip(t *testing.T) {
 }
 
 func TestVerifyExpiration(t *testing.T) {
-	t.Parallel()
-
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -142,7 +134,7 @@ func TestVerifyExpiration(t *testing.T) {
 		{
 			name: "near expiration",
 			mutate: func(c *Capsule) {
-				c.ExpiresAt = time.Now().UTC().Add(1 * time.Second)
+				c.ExpiresAt = time.Now().UTC().Add(1 * time.Minute)
 			},
 		},
 		{
@@ -174,8 +166,6 @@ func TestVerifyExpiration(t *testing.T) {
 }
 
 func TestVerifyRejectsSchemaVersionMismatch(t *testing.T) {
-	t.Parallel()
-
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -199,8 +189,6 @@ func TestVerifyRejectsSchemaVersionMismatch(t *testing.T) {
 }
 
 func TestVerifyDetectsTampering(t *testing.T) {
-	t.Parallel()
-
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -222,8 +210,6 @@ func TestVerifyDetectsTampering(t *testing.T) {
 }
 
 func TestEmitDefaultsExpirationDays(t *testing.T) {
-	t.Parallel()
-
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -243,9 +229,53 @@ func TestEmitDefaultsExpirationDays(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsNegativeExpirationDays(t *testing.T) {
-	t.Parallel()
+func TestEmitReturnsHashConfigError(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
 
+	restore := patchCanonicalize(func(v any) ([]byte, error) {
+		if _, ok := v.(*config.Config); ok {
+			return nil, fmt.Errorf("hash boom")
+		}
+		return canonicalJSON(v)
+	})
+	defer restore()
+
+	_, err = Emit(config.Defaults(), Options{
+		SigningKey:     priv,
+		EvidenceBundle: bundlePtr(testEvidenceBundle()),
+	})
+	if err == nil || !strings.Contains(err.Error(), "hash config: hash boom") {
+		t.Fatalf("Emit() error = %v, want hash config failure", err)
+	}
+}
+
+func TestEmitReturnsSignableMarshalError(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
+
+	restore := patchCanonicalize(func(v any) ([]byte, error) {
+		if _, ok := v.(signableCapsule); ok {
+			return nil, fmt.Errorf("signable boom")
+		}
+		return canonicalJSON(v)
+	})
+	defer restore()
+
+	_, err = Emit(config.Defaults(), Options{
+		SigningKey:     priv,
+		EvidenceBundle: bundlePtr(testEvidenceBundle()),
+	})
+	if err == nil || !strings.Contains(err.Error(), "marshal signable capsule: signable boom") {
+		t.Fatalf("Emit() error = %v, want signable marshal failure", err)
+	}
+}
+
+func TestEmitRejectsNegativeExpirationDays(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -326,8 +356,6 @@ func TestEmitCollectsEvidenceAndWritesProof(t *testing.T) {
 }
 
 func TestEmitLoadsSigningKeyFromConfigPath(t *testing.T) {
-	t.Parallel()
-
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -351,8 +379,6 @@ func TestEmitLoadsSigningKeyFromConfigPath(t *testing.T) {
 }
 
 func TestEmitMissingSigningKeyPath(t *testing.T) {
-	t.Parallel()
-
 	_, err := Emit(config.Defaults(), Options{EvidenceBundle: bundlePtr(testEvidenceBundle())})
 	if err == nil || !strings.Contains(err.Error(), "flight_recorder.signing_key_path is required") {
 		t.Fatalf("Emit() error = %v, want missing signing key path", err)
@@ -382,8 +408,6 @@ func TestEmitReturnsEvidenceCollectionError(t *testing.T) {
 }
 
 func TestEmitNilConfig(t *testing.T) {
-	t.Parallel()
-
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -396,8 +420,6 @@ func TestEmitNilConfig(t *testing.T) {
 }
 
 func TestResolveSigningKeyLoadFailure(t *testing.T) {
-	t.Parallel()
-
 	cfg := config.Defaults()
 	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "missing.key")
 
@@ -408,8 +430,6 @@ func TestResolveSigningKeyLoadFailure(t *testing.T) {
 }
 
 func TestResolveSigningKeyRejectsMalformedProvidedKey(t *testing.T) {
-	t.Parallel()
-
 	cfg := config.Defaults()
 	cfg.FlightRecorder.SigningKeyPath = filepath.Join(t.TempDir(), "ignored.key")
 
@@ -419,9 +439,29 @@ func TestResolveSigningKeyRejectsMalformedProvidedKey(t *testing.T) {
 	}
 }
 
-func TestVerifyValidationFailures(t *testing.T) {
-	t.Parallel()
+func TestResolveEvidenceClonesPreload(t *testing.T) {
+	preload := testEvidenceBundle()
+	cloned, err := resolveEvidence(config.Defaults(), &preload)
+	if err != nil {
+		t.Fatalf("resolveEvidence(): %v", err)
+	}
 
+	preload.Simulate.Scenarios[0].Name = "mutated"
+	*preload.FlightRecorder.LastReceiptAt = preload.FlightRecorder.LastReceiptAt.Add(24 * time.Hour)
+	preload.FlightRecorder.ScannerVerdict["alpha"] = VerdictCount{Warn: 9}
+
+	if got := cloned.Simulate.Scenarios[0].Name; got != "scenario-a" {
+		t.Fatalf("cloned Simulate.Scenarios[0].Name = %q, want scenario-a", got)
+	}
+	if got := cloned.FlightRecorder.ScannerVerdict["alpha"]; got != (VerdictCount{Allow: 1, Block: 2}) {
+		t.Fatalf("cloned ScannerVerdict[alpha] = %#v, want original counts", got)
+	}
+	if cloned.FlightRecorder.LastReceiptAt == preload.FlightRecorder.LastReceiptAt {
+		t.Fatal("LastReceiptAt pointer was aliased")
+	}
+}
+
+func TestVerifyValidationFailures(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("ed25519.GenerateKey(): %v", err)
@@ -508,9 +548,35 @@ func TestVerifyValidationFailures(t *testing.T) {
 	}
 }
 
-func TestWriteProofJSONValidationFailures(t *testing.T) {
-	t.Parallel()
+func TestVerifyReturnsSignableMarshalError(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
 
+	capsule, err := Emit(config.Defaults(), Options{
+		SigningKey:     priv,
+		EvidenceBundle: bundlePtr(testEvidenceBundle()),
+	})
+	if err != nil {
+		t.Fatalf("Emit(): %v", err)
+	}
+
+	restore := patchCanonicalize(func(v any) ([]byte, error) {
+		if _, ok := v.(signableCapsule); ok {
+			return nil, fmt.Errorf("verify boom")
+		}
+		return canonicalJSON(v)
+	})
+	defer restore()
+
+	err = Verify(capsule, pub)
+	if err == nil || !strings.Contains(err.Error(), "marshal signable capsule: verify boom") {
+		t.Fatalf("Verify() error = %v, want signable marshal failure", err)
+	}
+}
+
+func TestWriteProofJSONValidationFailures(t *testing.T) {
 	_, err := WriteProofJSON(t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "capsule is required") {
 		t.Fatalf("WriteProofJSON(nil) error = %v, want nil capsule rejection", err)
@@ -556,12 +622,26 @@ func TestWriteProofJSONValidationFailures(t *testing.T) {
 	}
 }
 
-func TestUnmarshalJSONError(t *testing.T) {
-	t.Parallel()
+func TestWriteProofJSONMarshalFailure(t *testing.T) {
+	capsule := &Capsule{
+		SchemaVersion: SchemaVersion,
+	}
 
+	restore := patchCanonicalize(func(v any) ([]byte, error) {
+		return nil, fmt.Errorf("marshal boom")
+	})
+	defer restore()
+
+	_, err := WriteProofJSON(t.TempDir(), capsule)
+	if err == nil || !strings.Contains(err.Error(), "marshal boom") {
+		t.Fatalf("WriteProofJSON() error = %v, want marshal failure", err)
+	}
+}
+
+func TestUnmarshalJSONError(t *testing.T) {
 	var capsule Capsule
-	if err := json.Unmarshal([]byte(`{"schema_version":`), &capsule); err == nil {
-		t.Fatal("json.Unmarshal() error = nil, want invalid JSON error")
+	if err := capsule.UnmarshalJSON([]byte(`{"generated_at":"not-a-time"}`)); err == nil {
+		t.Fatal("UnmarshalJSON() error = nil, want invalid JSON error")
 	}
 }
 
@@ -606,9 +686,19 @@ func TestCollectEvidenceMissingRecorderDirIsInactive(t *testing.T) {
 	}
 }
 
-func TestCollectFlightRecorderEvidence(t *testing.T) {
-	t.Parallel()
+func TestCollectEvidenceDiscoverFailure(t *testing.T) {
+	restoreHome := patchUserHomeDir(func() (string, error) {
+		return "", fmt.Errorf("home boom")
+	})
+	defer restoreHome()
 
+	_, err := collectEvidence(config.Defaults())
+	if err == nil || !strings.Contains(err.Error(), "resolve home directory: home boom") {
+		t.Fatalf("collectEvidence() error = %v, want discover failure", err)
+	}
+}
+
+func TestCollectFlightRecorderEvidence(t *testing.T) {
 	tests := []struct {
 		name    string
 		setup   func(t *testing.T) *config.Config
@@ -663,6 +753,20 @@ func TestCollectFlightRecorderEvidence(t *testing.T) {
 			},
 			wantErr: "decode receipt detail",
 		},
+		{
+			name: "read recorder file error",
+			setup: func(t *testing.T) *config.Config {
+				dir := t.TempDir()
+				path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+				if err := os.WriteFile(path, []byte("{not-json}\n"), 0o600); err != nil {
+					t.Fatalf("os.WriteFile(): %v", err)
+				}
+				cfg := config.Defaults()
+				cfg.FlightRecorder.Dir = dir
+				return cfg
+			},
+			wantErr: "read recorder file",
+		},
 	}
 
 	for _, tt := range tests {
@@ -688,9 +792,79 @@ func TestCollectFlightRecorderEvidence(t *testing.T) {
 	}
 }
 
-func TestCanonicalHelpers(t *testing.T) {
-	t.Parallel()
+func TestCollectFlightRecorderEvidenceAdditionalBranches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "nested"), 0o750); err != nil {
+		t.Fatalf("os.Mkdir(): %v", err)
+	}
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(): %v", err)
+	}
 
+	baseTime := time.Date(2026, time.April, 11, 17, 40, 0, 0, time.UTC)
+	restore := patchReadRecorderFile(func(string) ([]recorder.Entry, error) {
+		return []recorder.Entry{
+			{Type: "other"},
+			{Type: "action_receipt", Detail: receipt.Receipt{
+				Version: 1,
+				ActionRecord: receipt.ActionRecord{
+					Timestamp: baseTime,
+					Verdict:   config.ActionAllow,
+					Layer:     "",
+				},
+			}},
+			{Type: "action_receipt", Detail: receipt.Receipt{
+				Version: 1,
+				ActionRecord: receipt.ActionRecord{
+					Timestamp: baseTime.Add(time.Minute),
+					Verdict:   config.ActionWarn,
+					Layer:     "custom",
+				},
+			}},
+		}, nil
+	})
+	defer restore()
+
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Dir = dir
+
+	got, err := collectFlightRecorderEvidence(cfg)
+	if err != nil {
+		t.Fatalf("collectFlightRecorderEvidence(): %v", err)
+	}
+	if got.ScannerVerdict["unknown"].Allow != 1 {
+		t.Fatalf("ScannerVerdict[unknown].Allow = %d, want 1", got.ScannerVerdict["unknown"].Allow)
+	}
+	if got.ScannerVerdict["custom"].Warn != 1 {
+		t.Fatalf("ScannerVerdict[custom].Warn = %d, want 1", got.ScannerVerdict["custom"].Warn)
+	}
+}
+
+func TestCollectFlightRecorderEvidenceMarshalReceiptDetailFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(): %v", err)
+	}
+
+	restore := patchReadRecorderFile(func(string) ([]recorder.Entry, error) {
+		return []recorder.Entry{
+			{Type: "action_receipt", Detail: func() {}},
+		}, nil
+	})
+	defer restore()
+
+	cfg := config.Defaults()
+	cfg.FlightRecorder.Dir = dir
+
+	_, err := collectFlightRecorderEvidence(cfg)
+	if err == nil || !strings.Contains(err.Error(), "marshal receipt detail") {
+		t.Fatalf("collectFlightRecorderEvidence() error = %v, want marshal receipt detail failure", err)
+	}
+}
+
+func TestCanonicalHelpers(t *testing.T) {
 	t.Run("canonical JSON sorts keys", func(t *testing.T) {
 		got, err := canonicalJSON(map[string]any{
 			"b": true,
@@ -749,11 +923,66 @@ func TestCanonicalHelpers(t *testing.T) {
 			t.Fatal("canonicalJSON() error = nil, want decoder failure")
 		}
 	})
+
+	t.Run("canonical JSON propagates append failure", func(t *testing.T) {
+		restore := patchJSONMarshal(func(v any) ([]byte, error) {
+			if s, ok := v.(string); ok && s == "boom-key" {
+				return nil, fmt.Errorf("append boom")
+			}
+			return json.Marshal(v)
+		})
+		defer restore()
+
+		_, err := canonicalJSON(map[string]any{"boom-key": 1})
+		if err == nil || !strings.Contains(err.Error(), "append boom") {
+			t.Fatalf("canonicalJSON() error = %v, want append failure", err)
+		}
+	})
+}
+
+func TestAppendCanonicalMarshalFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		match func(v any) bool
+	}{
+		{
+			name:  "string",
+			value: "boom-string",
+			match: func(v any) bool { s, ok := v.(string); return ok && s == "boom-string" },
+		},
+		{
+			name:  "float64",
+			value: float64(1.5),
+			match: func(v any) bool { f, ok := v.(float64); return ok && f == 1.5 },
+		},
+		{
+			name:  "default",
+			value: 7,
+			match: func(v any) bool { i, ok := v.(int); return ok && i == 7 },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			restore := patchJSONMarshal(func(v any) ([]byte, error) {
+				if tt.match(v) {
+					return nil, fmt.Errorf("marshal boom")
+				}
+				return json.Marshal(v)
+			})
+			defer restore()
+
+			var buf bytes.Buffer
+			err := appendCanonical(&buf, tt.value)
+			if err == nil || !strings.Contains(err.Error(), "marshal boom") {
+				t.Fatalf("appendCanonical() error = %v, want marshal failure", err)
+			}
+		})
+	}
 }
 
 func TestHashConfigDeterministic(t *testing.T) {
-	t.Parallel()
-
 	cfgA := config.Defaults()
 	cfgB := config.Defaults()
 
@@ -816,6 +1045,30 @@ func testEvidenceBundle() EvidenceBundle {
 
 func bundlePtr(bundle EvidenceBundle) *EvidenceBundle {
 	return &bundle
+}
+
+func patchCanonicalize(fn func(any) ([]byte, error)) func() {
+	original := canonicalize
+	canonicalize = fn
+	return func() { canonicalize = original }
+}
+
+func patchJSONMarshal(fn func(any) ([]byte, error)) func() {
+	original := jsonMarshal
+	jsonMarshal = fn
+	return func() { jsonMarshal = original }
+}
+
+func patchUserHomeDir(fn func() (string, error)) func() {
+	original := userHomeDir
+	userHomeDir = fn
+	return func() { userHomeDir = original }
+}
+
+func patchReadRecorderFile(fn func(string) ([]recorder.Entry, error)) func() {
+	original := readRecorderFile
+	readRecorderFile = fn
+	return func() { readRecorderFile = original }
 }
 
 func resignCapsule(t *testing.T, capsule *Capsule, priv ed25519.PrivateKey) string {

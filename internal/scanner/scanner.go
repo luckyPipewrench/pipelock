@@ -100,6 +100,12 @@ func (r Result) IsConfigMismatch() bool {
 	return r.Class == ClassConfigMismatch
 }
 
+// DLPWarnHook is called whenever a warn-mode DLP pattern matches.
+// The runtime sets this to route warn events to the audit logger.
+// When nil, warn matches still allow traffic but are not emitted.
+// Parameters: patternName, severity, transport ("url" or "text").
+var DLPWarnHook func(patternName, severity, transport string)
+
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
 	core                       *compiledCoreScanner // immutable safety floor — always runs, no config knobs
@@ -613,7 +619,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	}
 	// Attach DLP warn matches to whatever result is returned from here on.
 	// The defer fires on every return path, including blocks by later scanners.
-	defer func() { result.WarnMatches = dlpWarns }()
+	defer func() {
+		result.WarnMatches = dlpWarns
+		if len(dlpWarns) > 0 && DLPWarnHook != nil {
+			for _, m := range dlpWarns {
+				DLPWarnHook(m.PatternName, m.Severity, "url")
+			}
+		}
+	}()
 	if result := s.checkEntropy(parsed); !result.Allowed {
 		return result
 	}

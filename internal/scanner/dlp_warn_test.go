@@ -269,7 +269,7 @@ func TestDeduplicateWarnMatches_NilAndSingle(t *testing.T) {
 	}
 }
 
-func TestFragmentBuffer_WarnPatternNotBlocked(t *testing.T) {
+func TestFragmentBuffer_WarnPatternReportedNotEnforced(t *testing.T) {
 	cfg := testDLPConfig("staged-frag", `staged-frag-[A-Za-z0-9]{20,}`, true)
 	s := New(cfg)
 
@@ -281,8 +281,69 @@ func TestFragmentBuffer_WarnPatternNotBlocked(t *testing.T) {
 	fb.Append("session-1", []byte("AABBCCDDEEFFGGHHIIJJ"))
 
 	matches := fb.ScanForSecrets(context.Background(), "session-1", s)
-	// Warn-only matches should NOT trigger cross-request enforcement.
-	if len(matches) != 0 {
-		t.Errorf("warn-only pattern should not produce cross-request DLP matches, got %d", len(matches))
+	// Warn-only cross-request matches should be reported with Warn=true.
+	// The caller uses the Warn field to decide enforcement vs. audit-only.
+	if len(matches) == 0 {
+		t.Fatal("expected warn-mode cross-request match to be reported")
 	}
+	for _, m := range matches {
+		if !m.Warn {
+			t.Errorf("cross-request warn match should have Warn=true, got %q", m.PatternName)
+		}
+	}
+}
+
+func TestDLPWarnHook_TextDLP(t *testing.T) {
+	cfg := testDLPConfig("hook-text", `hook-text-[A-Za-z0-9]{10,}`, true)
+	s := New(cfg)
+
+	var called []string
+	old := DLPWarnHook
+	DLPWarnHook = func(patternName, severity, transport string) {
+		called = append(called, patternName+":"+transport)
+	}
+	defer func() { DLPWarnHook = old }()
+
+	s.ScanTextForDLP(context.Background(), "hook-text-ABCDEFGHIJ1234")
+
+	if len(called) == 0 {
+		t.Fatal("DLPWarnHook should have been called for text DLP warn match")
+	}
+	if called[0] != "hook-text:text" {
+		t.Errorf("expected hook-text:text, got %q", called[0])
+	}
+}
+
+func TestDLPWarnHook_URLDLP(t *testing.T) {
+	cfg := testDLPConfig("hook-url", `hook-url-[A-Za-z0-9]{10,}`, true)
+	s := New(cfg)
+
+	var called []string
+	old := DLPWarnHook
+	DLPWarnHook = func(patternName, severity, transport string) {
+		called = append(called, patternName+":"+transport)
+	}
+	defer func() { DLPWarnHook = old }()
+
+	s.Scan(context.Background(), "https://example.com/?key=hook-url-ABCDEFGHIJ1234")
+
+	if len(called) == 0 {
+		t.Fatal("DLPWarnHook should have been called for URL DLP warn match")
+	}
+	if called[0] != "hook-url:url" {
+		t.Errorf("expected hook-url:url, got %q", called[0])
+	}
+}
+
+func TestDLPWarnHook_NilDoesNotPanic(t *testing.T) {
+	cfg := testDLPConfig("hook-nil", `hook-nil-[A-Za-z0-9]{10,}`, true)
+	s := New(cfg)
+
+	old := DLPWarnHook
+	DLPWarnHook = nil
+	defer func() { DLPWarnHook = old }()
+
+	// Should not panic with nil hook.
+	s.ScanTextForDLP(context.Background(), "hook-nil-ABCDEFGHIJ1234")
+	s.Scan(context.Background(), "https://example.com/?key=hook-nil-ABCDEFGHIJ1234")
 }

@@ -324,7 +324,7 @@ dlp:
 | `patterns` | 46 built-in | DLP credential detection patterns |
 | `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, or `wif` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
-| `patterns[].action` | `""` | Per-pattern action override. Only `warn` is supported. When set to `warn`, matches produce an audit event (`dlp_warn`) without blocking. See the [false positive tuning guide](guides/false-positive-tuning.md) for the rollout workflow. Built-in default patterns cannot be set to warn. |
+| `patterns[].action` | `""` | Per-pattern action override. Only `warn` is supported. When set to `warn`, matches allow traffic through without enforcement. See the [false positive tuning guide](guides/false-positive-tuning.md) for the rollout workflow. Built-in default patterns cannot be set to warn. |
 
 There is no top-level `dlp.action` setting. DLP enforcement is transport-specific:
 

@@ -195,6 +195,14 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 			enforced = append(enforced, m)
 		}
 	}
+
+	// Emit warn events through the hook so callers don't need individual wiring.
+	if len(informational) > 0 && DLPWarnHook != nil {
+		for _, m := range informational {
+			DLPWarnHook(m.PatternName, m.Severity, "text")
+		}
+	}
+
 	return TextDLPResult{
 		Clean:                len(enforced) == 0,
 		Matches:              enforced,

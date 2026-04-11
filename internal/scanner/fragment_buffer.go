@@ -145,7 +145,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 
 	// Scan the concatenated buffer.
 	result := sc.ScanTextForDLP(ctx, string(buf))
-	if result.Clean {
+	if result.Clean && len(result.InformationalMatches) == 0 {
 		return nil
 	}
 
@@ -159,6 +159,9 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 			for _, m := range fragResult.Matches {
 				singleFragment[m.PatternName] = true
 			}
+			for _, m := range fragResult.InformationalMatches {
+				singleFragment[m.PatternName] = true
+			}
 		}
 	}
 
@@ -169,6 +172,15 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 		if !singleFragment[m.PatternName] {
 			matches = append(matches, DLPMatch{
 				PatternName: m.PatternName,
+			})
+		}
+	}
+	// Warn-mode cross-request matches: emit via hook but don't enforce.
+	for _, m := range result.InformationalMatches {
+		if !singleFragment[m.PatternName] {
+			matches = append(matches, DLPMatch{
+				PatternName: m.PatternName,
+				Warn:        true,
 			})
 		}
 	}

@@ -22,13 +22,15 @@ dlp:
       action: warn
 ```
 
-2. **Deploy and observe.** The pattern matches traffic and emits `dlp_warn`
-   audit events, but requests are not blocked. Monitor the audit log or
-   flight recorder for `event: dlp_warn` entries.
+2. **Deploy and observe.** The pattern matches traffic but requests are not
+   blocked. When the runtime warn hook is configured (see below), matches
+   emit `dlp_warn` audit events. Without the hook, you can observe matches
+   through `InformationalMatches` in the scan API response or flight recorder.
 
 3. **Review matches.** Check the `pattern`, `severity`, and `transport` fields
-   in the audit event to determine if the matches are true positives or false
-   positives. Adjust the regex if needed.
+   in the audit event (when the warn hook is active) or the scan API response
+   to determine if the matches are true positives or false positives.
+   Adjust the regex if needed.
 
 4. **Promote to enforce.** When confident the pattern has an acceptable
    false positive rate, remove the `action: warn` line (or delete the field
@@ -50,36 +52,24 @@ enforced patterns (URL DLP, text DLP, encoded variants, cross-request
 detection). The difference is purely in how the match result is handled:
 
 - **Enforced patterns** produce a block/strip action on the applicable transport.
-- **Warn patterns** produce an informational audit event (`dlp_warn`) and
-  the request proceeds as if the pattern had not matched.
+- **Warn patterns** allow the request to proceed. When the warn hook is
+  active, they also emit `dlp_warn` audit events.
 
 Warn mode applies to all DLP scanning surfaces: fetch proxy, forward proxy,
-CONNECT, WebSocket, MCP input scanning, and request body scanning.
+CONNECT, WebSocket, MCP input scanning, request body scanning, and
+cross-request fragment detection.
 
-### Interpreting `dlp_warn` audit events
+### Warn hook
 
-Each warn-mode match emits an event with these fields:
+The scanner provides a package-level hook (`scanner.DLPWarnHook`) that the
+runtime can set to route warn events to the audit logger. When the hook is
+wired, each warn-mode match emits a `dlp_warn` event with `pattern`,
+`severity`, and `transport` fields. The `LogDLPWarn` method on the audit
+logger provides the canonical event format.
 
-| Field | Description |
-|-------|-------------|
-| `event` | `dlp_warn` |
-| `mode` | `warn` |
-| `pattern` | Pattern name from config |
-| `severity` | Pattern severity (`critical`, `high`, `medium`, `low`) |
-| `transport` | Scanning surface that triggered the match |
-| `url` / `target` / `resource` | The scanned destination |
-
-To find warn matches in the flight recorder:
-
-```bash
-pipelock logs --event dlp_warn
-```
-
-Or filter the JSON audit log:
-
-```bash
-jq 'select(.event == "dlp_warn")' /var/log/pipelock/audit.json
-```
+When the hook is not configured, warn matches still allow traffic through
+and are reported in the scan result's `InformationalMatches` / `WarnMatches`
+fields, but no audit event is emitted.
 
 ### Restrictions
 

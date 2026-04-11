@@ -263,6 +263,9 @@ func (c LogContext) Agent() string     { return c.agent }
 var (
 	errLogContextMissingClientIP  = errors.New("audit log context: client IP required")
 	errLogContextMissingRequestID = errors.New("audit log context: request ID required")
+	errLogContextMissingURL       = errors.New("audit log context: url required")
+	errLogContextMissingTarget    = errors.New("audit log context: target required")
+	errLogContextMissingResource  = errors.New("audit log context: resource required")
 	errLogContextIdentifierClash  = errors.New("audit log context: url, target, and resource are mutually exclusive")
 )
 
@@ -298,6 +301,9 @@ func newLogContext(method, url, target, resource, clientIP, requestID, agent str
 // (fetch, forward-proxy, WebSocket, response scan). ClientIP and RequestID are
 // required to prevent accidental omission on URL-bearing transport paths.
 func NewHTTPLogContext(method, url, clientIP, requestID, agent string) (LogContext, error) {
+	if url == "" {
+		return LogContext{}, errLogContextMissingURL
+	}
 	if clientIP == "" {
 		return LogContext{}, errLogContextMissingClientIP
 	}
@@ -310,13 +316,18 @@ func NewHTTPLogContext(method, url, clientIP, requestID, agent string) (LogConte
 // NewMCPLogContext creates a LogContext for MCP proxy requests. HTTP-specific
 // fields (ClientIP, RequestID) are omitted by design since MCP stdio has no
 // HTTP transport layer.
-func NewMCPLogContext(method, resource, agent string) LogContext {
-	ctx, _ := newLogContext(method, "", "", resource, "", "", agent)
-	return ctx
+func NewMCPLogContext(method, resource, agent string) (LogContext, error) {
+	if resource == "" {
+		return LogContext{}, errLogContextMissingResource
+	}
+	return newLogContext(method, "", "", resource, "", "", agent)
 }
 
 // NewConnectLogContext creates a LogContext for CONNECT tunnel operations.
 func NewConnectLogContext(target, clientIP, requestID, agent string) (LogContext, error) {
+	if target == "" {
+		return LogContext{}, errLogContextMissingTarget
+	}
 	if clientIP == "" {
 		return LogContext{}, errLogContextMissingClientIP
 	}
@@ -466,7 +477,7 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 // LogError logs a fetch error.
 func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).
-		str("method", ctx.method).
+		optStr("method", ctx.method).
 		optStr("url", ctx.url).
 		optStr("target", ctx.target).
 		optStr("resource", ctx.resource).
@@ -735,6 +746,10 @@ func (l *Logger) LogForwardHTTP(ctx LogContext, statusCode, sizeBytes int, durat
 		intField("size_bytes", sizeBytes).
 		durMS(duration)
 	e.msg("forward proxy request")
+
+	if l.emitter != nil {
+		l.emitter.Emit(context.Background(), string(EventForwardHTTP), e.fields)
+	}
 }
 
 // LogRedirect logs a redirect hop in the chain.

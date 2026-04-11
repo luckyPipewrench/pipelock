@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
@@ -249,7 +248,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				if pv.Block {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
 					if opts.AuditLogger != nil {
-						opts.AuditLogger.LogBlocked(audit.NewMCPLogContext("MCP", "tools/list", ""), "provenance", pv.Error)
+						opts.AuditLogger.LogBlocked(mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"), "provenance", pv.Error)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "provenance", 0, "")
@@ -268,7 +267,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if r.Status != provenance.StatusVerified {
 						_, _ = fmt.Fprintf(logW, "pipelock: line %d: tool %q unsigned (provenance warn)\n", lineNum, r.ToolName)
 						if opts.AuditLogger != nil {
-							opts.AuditLogger.LogAnomaly(audit.NewMCPLogContext("MCP", r.ToolName, ""), "provenance", "unsigned tool", 0)
+							opts.AuditLogger.LogAnomaly(mustMCPAuditContext(opts.AuditLogger, "MCP", r.ToolName), "provenance", "unsigned tool", 0)
 						}
 					}
 				}

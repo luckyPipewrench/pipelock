@@ -1637,6 +1637,15 @@ func mustConnectLogContext(t *testing.T, target, clientIP, requestID, agent stri
 	return ctx
 }
 
+func mustMCPLogContext(t *testing.T, method, resource, agent string) LogContext {
+	t.Helper()
+	ctx, err := NewMCPLogContext(method, resource, agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
+}
+
 func assertEmitterContextFields(t *testing.T, ev emit.Event, wantKey string, wantValue any, absent ...string) {
 	t.Helper()
 	if got := ev.Fields[wantKey]; got != wantValue {
@@ -1654,17 +1663,19 @@ func TestNewHTTPLogContext_RequiresCorrelationFields(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		url       string
 		clientIP  string
 		requestID string
 		wantErr   error
 	}{
-		{name: "missing_client_ip", clientIP: "", requestID: testReqID, wantErr: errLogContextMissingClientIP},
-		{name: "missing_request_id", clientIP: testClientIP, requestID: "", wantErr: errLogContextMissingRequestID},
+		{name: "missing_url", url: "", clientIP: testClientIP, requestID: testReqID, wantErr: errLogContextMissingURL},
+		{name: "missing_client_ip", url: "https://example.com", clientIP: "", requestID: testReqID, wantErr: errLogContextMissingClientIP},
+		{name: "missing_request_id", url: "https://example.com", clientIP: testClientIP, requestID: "", wantErr: errLogContextMissingRequestID},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewHTTPLogContext(testMethodGet, "https://example.com", tt.clientIP, tt.requestID, "")
+			_, err := NewHTTPLogContext(testMethodGet, tt.url, tt.clientIP, tt.requestID, "")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
@@ -1677,21 +1688,32 @@ func TestNewConnectLogContext_RequiresCorrelationFields(t *testing.T) {
 
 	tests := []struct {
 		name      string
+		target    string
 		clientIP  string
 		requestID string
 		wantErr   error
 	}{
-		{name: "missing_client_ip", clientIP: "", requestID: testReqID, wantErr: errLogContextMissingClientIP},
-		{name: "missing_request_id", clientIP: testClientIP, requestID: "", wantErr: errLogContextMissingRequestID},
+		{name: "missing_target", target: "", clientIP: testClientIP, requestID: testReqID, wantErr: errLogContextMissingTarget},
+		{name: "missing_client_ip", target: "evil.com:443", clientIP: "", requestID: testReqID, wantErr: errLogContextMissingClientIP},
+		{name: "missing_request_id", target: "evil.com:443", clientIP: testClientIP, requestID: "", wantErr: errLogContextMissingRequestID},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewConnectLogContext("evil.com:443", tt.clientIP, tt.requestID, "")
+			_, err := NewConnectLogContext(tt.target, tt.clientIP, tt.requestID, "")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestNewMCPLogContext_RequiresResource(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewMCPLogContext("MCP", "", "")
+	if !errors.Is(err, errLogContextMissingResource) {
+		t.Fatalf("err = %v, want %v", err, errLogContextMissingResource)
 	}
 }
 
@@ -1760,8 +1782,8 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 		},
 		{
 			name: "mcp_stdio_blocked_uses_resource_only",
-			emitFn: func(_ *testing.T, logger *Logger) {
-				logger.LogBlocked(NewMCPLogContext("MCP", "tools/list", testAgentName), "mcp_tool_scanning", "poisoned description")
+			emitFn: func(t *testing.T, logger *Logger) {
+				logger.LogBlocked(mustMCPLogContext(t, "MCP", "tools/list", testAgentName), "mcp_tool_scanning", "poisoned description")
 			},
 			wantType:  string(EventBlocked),
 			wantKey:   "resource",
@@ -1770,8 +1792,8 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 		},
 		{
 			name: "mcp_http_anomaly_uses_resource_only",
-			emitFn: func(_ *testing.T, logger *Logger) {
-				logger.LogAnomaly(NewMCPLogContext("MCP", "resources/read", testAgentName), "prompt_injection", "tool output suspicious", 0.5)
+			emitFn: func(t *testing.T, logger *Logger) {
+				logger.LogAnomaly(mustMCPLogContext(t, "MCP", "resources/read", testAgentName), "prompt_injection", "tool output suspicious", 0.5)
 			},
 			wantType:  string(EventAnomaly),
 			wantKey:   "resource",
@@ -1780,8 +1802,8 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 		},
 		{
 			name: "mcp_sse_exempt_uses_resource_only",
-			emitFn: func(_ *testing.T, logger *Logger) {
-				logger.LogResponseScanExempt(NewMCPLogContext("MCP", "prompts/get", testAgentName), "mcp.example")
+			emitFn: func(t *testing.T, logger *Logger) {
+				logger.LogResponseScanExempt(mustMCPLogContext(t, "MCP", "prompts/get", testAgentName), "mcp.example")
 			},
 			wantType:  string(EventResponseScanExempt),
 			wantKey:   "resource",
@@ -1986,6 +2008,27 @@ func TestEmit_LogResponseScan(t *testing.T) {
 	}
 	if ev.Fields["mitre_technique"] != mitreT1059 {
 		t.Errorf("fields[mitre_technique] = %v, want T1059", ev.Fields["mitre_technique"])
+	}
+}
+
+func TestEmit_LogForwardHTTP(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogForwardHTTP(LogContext{method: testMethodGet, url: "http://example.com/path", clientIP: testClientIP, requestID: "req-forward-http", agent: testAgentName}, 200, 2048, 100*time.Millisecond)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventForwardHTTP) {
+		t.Fatalf("type = %q, want %s", ev.Type, EventForwardHTTP)
+	}
+	if ev.Fields["url"] != "http://example.com/path" {
+		t.Errorf("fields[url] = %v, want http://example.com/path", ev.Fields["url"])
+	}
+	if ev.Fields["status_code"] != 200 {
+		t.Errorf("fields[status_code] = %v, want 200", ev.Fields["status_code"])
 	}
 }
 
@@ -3262,7 +3305,10 @@ func TestLogContext_ResourceField_MCP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := NewMCPLogContext("MCP", "tools/list", testAgentName)
+	ctx, err := NewMCPLogContext("MCP", "tools/list", testAgentName)
+	if err != nil {
+		t.Fatal(err)
+	}
 	logger.LogBlocked(ctx, "mcp_tool_scanning", "poisoned description")
 	logger.Close()
 

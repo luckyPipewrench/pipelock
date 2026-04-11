@@ -2165,10 +2165,10 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(newHTTPAuditContext(log, "", displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(newHTTPAuditContext(log, "", displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
@@ -2190,13 +2190,13 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
-		log.LogResponseScan(newHTTPAuditContext(log, "", displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(newHTTPAuditContext(log, "", displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(newHTTPAuditContext(log, "", displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

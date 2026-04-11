@@ -118,6 +118,9 @@ func Emit(cfg *config.Config, opts Options) (*Capsule, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
+	if opts.ExpirationDays < 0 {
+		return nil, fmt.Errorf("expiration_days must be >= 0")
+	}
 
 	opts = opts.withDefaults()
 
@@ -239,7 +242,7 @@ func (c *Capsule) UnmarshalJSON(data []byte) error {
 }
 
 func (o Options) withDefaults() Options {
-	if o.ExpirationDays <= 0 {
+	if o.ExpirationDays == 0 {
 		o.ExpirationDays = DefaultExpirationDays
 	}
 	return o

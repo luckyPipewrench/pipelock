@@ -243,6 +243,24 @@ func TestEmitDefaultsExpirationDays(t *testing.T) {
 	}
 }
 
+func TestEmitRejectsNegativeExpirationDays(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
+
+	_, err = Emit(config.Defaults(), Options{
+		ExpirationDays: -7,
+		SigningKey:     priv,
+		EvidenceBundle: bundlePtr(testEvidenceBundle()),
+	})
+	if err == nil || !strings.Contains(err.Error(), "expiration_days must be >= 0") {
+		t.Fatalf("Emit() error = %v, want negative expiration rejection", err)
+	}
+}
+
 func TestEmitCollectsEvidenceAndWritesProof(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

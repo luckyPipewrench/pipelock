@@ -615,17 +615,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	dlpResult, dlpWarns := s.checkDLP(parsed)
 	if !dlpResult.Allowed {
 		dlpResult.WarnMatches = dlpWarns
+		emitDLPWarns(dlpWarns)
 		return dlpResult
 	}
 	// Attach DLP warn matches to whatever result is returned from here on.
 	// The defer fires on every return path, including blocks by later scanners.
 	defer func() {
 		result.WarnMatches = dlpWarns
-		if len(dlpWarns) > 0 && DLPWarnHook != nil {
-			for _, m := range dlpWarns {
-				DLPWarnHook(m.PatternName, m.Severity, "url")
-			}
-		}
+		emitDLPWarns(dlpWarns)
 	}()
 	if result := s.checkEntropy(parsed); !result.Allowed {
 		return result
@@ -1509,6 +1506,16 @@ func nextCombination(indices []int, n int) bool {
 		}
 	}
 	return false
+}
+
+// emitDLPWarns calls DLPWarnHook for each warn match if the hook is set.
+func emitDLPWarns(matches []WarnMatch) {
+	if len(matches) == 0 || DLPWarnHook == nil {
+		return
+	}
+	for _, m := range matches {
+		DLPWarnHook(m.PatternName, m.Severity, "url")
+	}
 }
 
 // deduplicateWarnMatches removes duplicate warn matches by pattern name.

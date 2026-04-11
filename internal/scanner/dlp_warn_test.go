@@ -185,6 +185,14 @@ func TestURLDLP_WarnDoesNotPreventEnforceBlock(t *testing.T) {
 	)
 	s := New(cfg)
 
+	// Install hook to verify warn emission even on blocked requests.
+	var hookCalled []string
+	old := DLPWarnHook
+	DLPWarnHook = func(patternName, _, _ string) {
+		hookCalled = append(hookCalled, patternName)
+	}
+	defer func() { DLPWarnHook = old }()
+
 	// URL with both warn and enforce matches — should be blocked by enforce.
 	url := "https://example.com/?a=warnurl-AAAAAAAAAA&b=enforceurl-BBBBBBBBBB"
 	result := s.Scan(context.Background(), url)
@@ -195,6 +203,16 @@ func TestURLDLP_WarnDoesNotPreventEnforceBlock(t *testing.T) {
 	// Warn matches should still be reported even when blocked by another pattern.
 	if len(result.WarnMatches) == 0 {
 		t.Error("warn matches should be reported even when request is blocked by enforce pattern")
+	}
+	// Hook should fire for the warn pattern even though the request was blocked.
+	foundWarnHook := false
+	for _, name := range hookCalled {
+		if name == "warn-url" {
+			foundWarnHook = true
+		}
+	}
+	if !foundWarnHook {
+		t.Error("DLPWarnHook should fire for warn-url even when request is blocked by enforce pattern")
 	}
 }
 

@@ -12,6 +12,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 )
 
+const (
+	wantMode             = "warn"
+	wantTransportFetch   = "fetch"
+	wantTransportBody    = "body"
+	wantPatternStagedKey = "staged-key"
+	wantPatternStagedTok = "staged-token"
+	wantSeverityHigh     = "high"
+	wantSeverityMedium   = "medium"
+)
+
 func TestLogDLPWarn_EmitsCorrectFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger, err := New("json", "custom", "", true, true)
@@ -21,7 +31,7 @@ func TestLogDLPWarn_EmitsCorrectFields(t *testing.T) {
 	logger.zl = logger.zl.Output(&buf)
 
 	ctx := NewHTTPLogContext("GET", "https://example.com/api", "10.0.0.1", "req-42", "test-agent")
-	logger.LogDLPWarn(ctx, "staged-key", "high", "fetch")
+	logger.LogDLPWarn(ctx, wantPatternStagedKey, wantSeverityHigh, wantTransportFetch)
 
 	output := buf.String()
 	if output == "" {
@@ -35,10 +45,10 @@ func TestLogDLPWarn_EmitsCorrectFields(t *testing.T) {
 
 	checks := map[string]string{
 		"event":     string(EventDLPWarn),
-		"mode":      "warn",
-		"pattern":   "staged-key",
-		"severity":  "high",
-		"transport": "fetch",
+		"mode":      wantMode,
+		"pattern":   wantPatternStagedKey,
+		"severity":  wantSeverityHigh,
+		"transport": wantTransportFetch,
 		"method":    "GET",
 		"url":       "https://example.com/api",
 		"client_ip": "10.0.0.1",
@@ -75,7 +85,7 @@ func TestLogDLPWarn_EmitterReceivesEvent(t *testing.T) {
 	t.Cleanup(func() { _ = emitter.Close() })
 
 	ctx := NewHTTPLogContext("POST", "https://api.example.com/v1", "10.0.0.2", "req-99", "my-agent")
-	logger.LogDLPWarn(ctx, "staged-token", "medium", "body")
+	logger.LogDLPWarn(ctx, wantPatternStagedTok, wantSeverityMedium, wantTransportBody)
 
 	_ = emitter.Close() // flush
 
@@ -89,13 +99,13 @@ func TestLogDLPWarn_EmitterReceivesEvent(t *testing.T) {
 	if ev.Type != string(EventDLPWarn) {
 		t.Errorf("emitted event type: want %q, got %q", EventDLPWarn, ev.Type)
 	}
-	if ev.Fields["mode"] != "warn" {
-		t.Errorf("emitted mode: want %q, got %v", "warn", ev.Fields["mode"])
+	if ev.Fields["mode"] != wantMode {
+		t.Errorf("emitted mode: want %q, got %v", wantMode, ev.Fields["mode"])
 	}
-	if ev.Fields["pattern"] != "staged-token" {
-		t.Errorf("emitted pattern: want %q, got %v", "staged-token", ev.Fields["pattern"])
+	if ev.Fields["pattern"] != wantPatternStagedTok {
+		t.Errorf("emitted pattern: want %q, got %v", wantPatternStagedTok, ev.Fields["pattern"])
 	}
-	if ev.Fields["transport"] != "body" {
-		t.Errorf("emitted transport: want %q, got %v", "body", ev.Fields["transport"])
+	if ev.Fields["transport"] != wantTransportBody {
+		t.Errorf("emitted transport: want %q, got %v", wantTransportBody, ev.Fields["transport"])
 	}
 }

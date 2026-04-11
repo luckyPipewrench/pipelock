@@ -360,7 +360,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
 			tier := connectSess.Airlock().Tier()
 			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
-				connectSess.Airlock().ExtendTimer()
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -633,7 +632,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
 			if !allowed {
-				forwardSess.Airlock().ExtendTimer()
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
 				http.Error(w, "airlock: "+reason, http.StatusForbidden)

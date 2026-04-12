@@ -1134,6 +1134,10 @@ func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case killswitch.IsSessionActionPath(path, "airlock"):
 		p.sessionAPI.HandleAirlock(w, r)
+	case killswitch.IsSessionActionPath(path, "task"):
+		p.sessionAPI.HandleTask(w, r)
+	case killswitch.IsSessionActionPath(path, "trust"):
+		p.sessionAPI.HandleTrust(w, r)
 	case killswitch.IsSessionActionPath(path, "reset"):
 		p.sessionAPI.HandleReset(w, r)
 	default:
@@ -1407,9 +1411,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
 				SessionContaminated: fetchTaint.Risk.Contaminated,
 				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       fetchTaint.Authority.String(),
 				TaintDecision:       fetchTaint.Result.Decision.String(),
 				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
@@ -1664,6 +1671,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Actor:         agent,
 			ActorAuth:     id.Auth,
 			SessionTaint:  fetchTaint.Risk.Level.String(),
+			TaskID:        fetchTaint.Task.CurrentTaskID,
 			AuthorityKind: fetchTaint.Authority.String(),
 		}); envErr != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
@@ -2003,9 +2011,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
 		SessionContaminated: fetchTaint.Risk.Contaminated,
 		RecentTaintSources:  fetchTaint.Risk.Sources,
+		SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
 		AuthorityKind:       fetchTaint.Authority.String(),
 		TaintDecision:       fetchTaint.Result.Decision.String(),
 		TaintDecisionReason: fetchTaint.Result.Reason,
+		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 	})
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 

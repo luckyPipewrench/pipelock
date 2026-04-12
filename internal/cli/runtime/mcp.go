@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -31,11 +32,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // handleProxyError classifies MCP proxy errors: subprocess exits get a
@@ -236,7 +240,11 @@ Environment passthrough (subprocess mode only):
 
   By default, pipelock strips the child process environment to prevent secret leakage.
   Use --env KEY to pass through a variable from the current environment, or
-  --env KEY=VALUE to set it explicitly.`,
+  --env KEY=VALUE to set it explicitly.
+
+When flight_recorder.enabled is true in config, pipelock writes tamper-evident
+MCP evidence. If flight_recorder.signing_key_path is also set, pipelock emits
+signed action receipts for MCP decisions.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dashIdx := cmd.ArgsLenAtDash()
 			hasSubprocess := dashIdx >= 0 && dashIdx < len(args)
@@ -486,6 +494,62 @@ Environment passthrough (subprocess mode only):
 				}
 			}
 
+			var receiptEmitter *receipt.Emitter
+			if cfg.FlightRecorder.Enabled {
+				recCfg := recorder.Config{
+					Enabled:            cfg.FlightRecorder.Enabled,
+					Dir:                cfg.FlightRecorder.Dir,
+					CheckpointInterval: cfg.FlightRecorder.CheckpointInterval,
+					RetentionDays:      cfg.FlightRecorder.RetentionDays,
+					Redact:             cfg.FlightRecorder.Redact,
+					SignCheckpoints:    cfg.FlightRecorder.SignCheckpoints,
+					MaxEntriesPerFile:  cfg.FlightRecorder.MaxEntriesPerFile,
+					RawEscrow:          cfg.FlightRecorder.RawEscrow,
+					EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
+				}
+
+				var redactFn recorder.RedactFunc
+				if cfg.FlightRecorder.Redact {
+					redactFn = sc.ScanTextForDLP
+				}
+
+				var recPrivKey ed25519.PrivateKey
+				if cfg.FlightRecorder.SigningKeyPath != "" {
+					k, kErr := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath)
+					if kErr != nil {
+						return fmt.Errorf("loading flight recorder signing key: %w", kErr)
+					}
+					recPrivKey = k
+				}
+
+				rec, recErr := recorder.New(recCfg, redactFn, recPrivKey)
+				if recErr != nil {
+					return fmt.Errorf("creating flight recorder: %w", recErr)
+				}
+				defer func() { _ = rec.Close() }()
+
+				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
+					Recorder:   rec,
+					PrivKey:    recPrivKey,
+					ConfigHash: cfg.Hash(),
+					Principal:  "local",
+					Actor:      "pipelock",
+				})
+
+				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+				// receipt.NewEmitter returns nil when no signing key is
+				// configured. Receipts must be signed — there is no
+				// "unsigned receipt" mode — so report the operator-facing
+				// status by signing-key presence, not by emitter identity.
+				// This is more honest than the prior branch which could
+				// never execute.
+				if len(recPrivKey) > 0 {
+					cmd.PrintErrf("  Receipts: enabled (action receipts signed)\n")
+				} else {
+					cmd.PrintErrf("  Receipts: disabled — set flight_recorder.signing_key_path to enable signed action receipts\n")
+				}
+			}
+
 			// Envelope emitter: create when mediation_envelope.enabled=true.
 			var envEmitter *envelope.Emitter
 			if cfg.MediationEnvelope.Enabled {
@@ -543,6 +607,7 @@ Environment passthrough (subprocess mode only):
 						ProvenanceCfg:   &cfg.MCPToolProvenance,
 						EnvelopeEmitter: envEmitter,
 						DoWCheck:        dowCheck,
+						ReceiptEmitter:  receiptEmitter,
 						TaintCfg:        &cfg.Taint,
 					}); err != nil {
 						if sentryClient != nil {
@@ -557,7 +622,20 @@ Environment passthrough (subprocess mode only):
 				if isWSUpstream {
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, input=%s, tools=%s, policy=%s)\n",
 						upstreamURL, sc.ResponseAction(), inputCfg.Action, toolAction, policyAction)
-					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, sc, approver, inputCfg, toolCfg, policyCfg, ks, chainMatcher, nil, cee, store, adaptiveCfg, mcpMetrics, buildRedirectRT(cfg), dowCheck, envEmitter, &cfg.Taint); err != nil {
+					wsOpts := mcp.MCPProxyOpts{
+						Scanner: sc, Approver: approver,
+						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
+						KillSwitch: ks, ChainMatcher: chainMatcher,
+						CEE: cee, Store: store,
+						AdaptiveCfg:     adaptiveCfg,
+						Metrics:         mcpMetrics,
+						ReceiptEmitter:  receiptEmitter,
+						RedirectRT:      buildRedirectRT(cfg),
+						DoWCheck:        dowCheck,
+						EnvelopeEmitter: envEmitter,
+						TaintCfg:        &cfg.Taint,
+					}
+					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
 						}
@@ -578,6 +656,7 @@ Environment passthrough (subprocess mode only):
 					RedirectRT:      buildRedirectRT(cfg),
 					EnvelopeEmitter: envEmitter,
 					DoWCheck:        dowCheck,
+					ReceiptEmitter:  receiptEmitter,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
 					TaintCfg:        &cfg.Taint,
@@ -707,6 +786,7 @@ Environment passthrough (subprocess mode only):
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 					EnvelopeEmitter: envEmitter,
+					ReceiptEmitter:  receiptEmitter,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
 					TaintCfg:        &cfg.Taint,
@@ -810,6 +890,7 @@ Environment passthrough (subprocess mode only):
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
 				RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 				EnvelopeEmitter: envEmitter,
+				ReceiptEmitter:  receiptEmitter,
 				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg:   &cfg.MCPToolProvenance,
 				TaintCfg:        &cfg.Taint,

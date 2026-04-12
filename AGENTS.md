@@ -83,7 +83,7 @@ These are Pipelock's three pillars. Weight findings in these areas highest.
 ## Code Conventions
 
 - **Go 1.25+**, module: `github.com/luckyPipewrench/pipelock`
-- **18 direct dependencies.** Don't suggest adding deps without strong justification.
+- **20 direct dependencies.** Don't suggest adding deps without strong justification.
 - **golangci-lint v2** with 19 linters + gofumpt formatter (see `.golangci.yml`)
 - **`cmd.OutOrStdout()`** for output, never raw `fmt.Print`
 - **`0o600`** not `0600` for file permissions (gosec)

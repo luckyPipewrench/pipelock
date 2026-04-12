@@ -4,6 +4,26 @@ Pipelock blocks bad traffic, but only if traffic actually goes through it. Setti
 
 The pattern is always the same: agent can only reach pipelock, pipelock can reach the internet.
 
+## Enforcement Tiers
+
+Pipelock supports three enforcement tiers. Pick the one that matches your threat model, then follow the recipe that implements it.
+
+| Tier | Name | What enforces it | Bypass surface | Recommended when |
+|------|------|------------------|----------------|------------------|
+| 1 | **Soft** (`HTTPS_PROXY`, K8s sidecar) | Agent cooperation | Raw sockets, tools that ignore proxy env vars, any container sharing the pod network namespace | Local dev, trusted agents, quick start |
+| 2 | **Enforced** (kernel network boundary) | Container runtime network namespace or kernel per-UID packet filter | Container escape or kernel-level bypass | Most production workloads on a single host |
+| 3 | **Transparent** (separate proxy pod + NetworkPolicy egress lock) | Cluster CNI enforces that the agent pod can only reach the pipelock Service IP | CNI misconfiguration or a CNI vulnerability | Zero-trust deployments, untrusted agents, fleet scale |
+
+Each tier is strictly stronger than the previous one. Tier 1 assumes the agent cooperates with `HTTPS_PROXY`. Tier 2 makes cooperation irrelevant because a kernel-enforced boundary drops direct egress from the agent. Tier 3 moves pipelock to its own pod so the agent's container has no network path except the pipelock Service endpoint — even a compromised agent binary can't bypass it without escaping the CNI.
+
+**Picking a tier:**
+
+- **Tier 1 (Soft):** `HTTPS_PROXY` env var, or [Kubernetes sidecar](#sidecar-deployment) where pipelock runs in the same pod as the agent. Fast to set up, no isolation guarantees — the agent must cooperate. The K8s sidecar is in this tier because the agent container shares the pod's network namespace with pipelock and can reach the internet directly without going through pipelock; NetworkPolicy filters the pod's egress, not the container-to-container traffic within the pod. Good for local development, CI where the agent is trusted, and K8s quickstart.
+- **Tier 2 (Enforced):** [Docker Compose with `internal: true` network](#docker-compose-recommended-for-local-development) on a single host (Docker creates an isolated network namespace with no gateway, so pipelock is the agent's only route out), [Linux host firewall rules](#iptables--nftables-linux) (iptables/nftables `--uid-owner` filtering drops packets from the agent user unless destined for pipelock), or [macOS PF per-user filtering](#macos-pf) (PF drops packets from the agent user unless destined for pipelock). In all three, a kernel-enforced boundary drops direct agent egress; raw sockets don't help because the kernel drops the packets before they leave the host.
+- **Tier 3 (Transparent):** [Kubernetes separate-pod pattern with NetworkPolicy](#kubernetes-with-networkpolicy) restricting the agent pod's egress to only the pipelock Service IP. Pipelock runs as its own Deployment, not as a sidecar. The agent pod has no route to the internet; it can only reach the pipelock Service endpoint. This is the strongest tier pipelock supports today with zero agent cooperation required.
+
+> **Future work: kernel-level transparent interception.** TPROXY / `IP_TRANSPARENT`-based interception that redirects packets at the kernel before they leave the host would let pipelock transparently capture agent traffic without any agent cooperation or per-UID filtering. Pipelock does not currently set `IP_TRANSPARENT` on its listen socket, so a TPROXY recipe requires pipelock code changes, not just documentation. This is on the roadmap.
+
 ## Docker Compose (Recommended for Local Development)
 
 The quickest way to get full network isolation. Pipelock generates this for you:

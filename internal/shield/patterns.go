@@ -78,8 +78,10 @@ const svgSelfClosingForeignObjectPattern = `(?i)<(?:[\w-]+:)?foreignObject\b[^>]
 // element (onload, onclick, onerror, onmouseover, onfocus, etc.). The
 // pattern captures the leading whitespace so the resulting element tag
 // remains well-formed after removal. Quoted value handling covers both
-// single and double quotes.
-const svgEventHandlerPattern = `(?i)\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*')`
+// single and double quotes. The third alternative catches unquoted values
+// (valid in HTML parsing contexts and some SVG serializers) — the value
+// runs until the next whitespace, >, or />.
+const svgEventHandlerPattern = `(?i)\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"'/][^\s>"'/]*)`
 
 // svgExternalXlinkHrefPattern matches the namespaced xlink:href attribute
 // when its value is NOT a local fragment reference (#anchor). Split from
@@ -111,6 +113,15 @@ const svgHiddenTextStylePattern = `(?is)<(?:[\w-]+:)?text\b[^>]*style\s*=\s*["']
 // namespace-prefix handling as svgHiddenTextStylePattern.
 const svgHiddenTextAttrPattern = `(?is)<(?:[\w-]+:)?text\b[^>]*(?:\bdisplay\s*=\s*["']none["']|\bvisibility\s*=\s*["']hidden["']|\bopacity\s*=\s*["']0(?:\.0+)?["'])[^>]*>.*?</(?:[\w-]+:)?text>`
 
+// svgAnimationInjectionPattern matches SVG animation elements that target
+// event handler attributes. <set attributeName="onload" to="alert(1)"/> and
+// <animate attributeName="onclick" ...> can inject active content without
+// any direct on* attribute on the target element — the animation engine
+// sets the attribute at runtime. The pattern matches <animate>, <set>,
+// <animateTransform>, and <animateMotion> elements where attributeName
+// points to an event handler (on*). Namespace-prefixed forms included.
+const svgAnimationInjectionPattern = `(?is)<(?:[\w-]+:)?(?:animate|set|animateTransform|animateMotion)\b[^>]*\battributeName\s*=\s*(?:"on[a-z]+"|'on[a-z]+'|on[a-z]+)[^>]*/?>(?:.*?</(?:[\w-]+:)?(?:animate|set|animateTransform|animateMotion)>)?`
+
 // compilePatterns compiles all shield patterns into regexp objects.
 // Called once from NewEngine; panics on invalid regex (programming error).
 func compilePatterns() (
@@ -139,7 +150,8 @@ func compileSVGActivePatterns() (
 	xlinkExternalRe,
 	hrefExternalRe,
 	hiddenTextStyleRe,
-	hiddenTextAttrRe *regexp.Regexp,
+	hiddenTextAttrRe,
+	animationInjectionRe *regexp.Regexp,
 ) {
 	foreignObjectRe = regexp.MustCompile(svgForeignObjectPattern + `|` + svgSelfClosingForeignObjectPattern)
 	eventHandlerRe = regexp.MustCompile(svgEventHandlerPattern)
@@ -147,5 +159,6 @@ func compileSVGActivePatterns() (
 	hrefExternalRe = regexp.MustCompile(svgExternalHrefPattern)
 	hiddenTextStyleRe = regexp.MustCompile(svgHiddenTextStylePattern)
 	hiddenTextAttrRe = regexp.MustCompile(svgHiddenTextAttrPattern)
+	animationInjectionRe = regexp.MustCompile(svgAnimationInjectionPattern)
 	return
 }

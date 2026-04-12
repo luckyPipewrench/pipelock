@@ -12,12 +12,12 @@ All numbers from Go benchmarks on AMD Ryzen 7 7800X3D (8 cores / 16 threads) / G
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Full pipeline (allowed URL) | ~32 μs | ~31,000/sec |
-| Blocklist block (early exit) | ~2 μs | ~500,000/sec |
-| DLP pattern match (47 patterns, pre-filtered) | ~8 μs | ~130,000/sec |
-| DLP pre-filter only (clean text, zero alloc) | ~400 ns | ~2,500,000/sec |
-| Entropy detection | ~58 μs | ~17,000/sec |
-| Complex URL (ports, query params) | ~60 μs | ~17,000/sec |
+| Full pipeline (allowed URL) | ~40 μs | ~25,000/sec |
+| Blocklist block (early exit) | ~2 μs | ~510,000/sec |
+| DLP pattern match (48 patterns, pre-filtered) | ~5.4 μs | ~184,000/sec |
+| DLP pre-filter only (clean text, zero alloc) | ~500 ns | ~2,000,000/sec |
+| Entropy detection | ~85 μs | ~12,000/sec |
+| Complex URL (ports, query params) | ~80 μs | ~12,000/sec |
 
 ### MCP Scanning (tool call/response inspection)
 
@@ -25,9 +25,9 @@ JSON-RPC parsing + text extraction + prompt injection pattern matching.
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Clean tool response | ~78 μs | ~13,000/sec |
-| Injection detected (early exit) | ~36 μs | ~28,000/sec |
-| Text extraction | ~2.5 μs | ~400,000/sec |
+| Clean tool response | ~126 μs | ~8,000/sec |
+| Injection detected (early exit) | ~25 μs | ~41,000/sec |
+| Text extraction | ~2.4 μs | ~414,000/sec |
 
 ### Response Scanning (fetched content injection detection)
 
@@ -35,10 +35,10 @@ Pattern matching against 25 prompt injection patterns (including 6 state/control
 
 | Operation | Latency | Throughput (1 core) |
 |-----------|---------|--------------------:|
-| Short clean text (~90B) | ~76 μs | ~13,000/sec |
-| 10KB clean text | ~8.4 ms | ~120/sec |
-| Injection detected (early exit) | ~42 μs | ~24,000/sec |
-| State/control clean | ~134 μs | ~7,500/sec |
+| Short clean text (~90B) | ~139 μs | ~7,200/sec |
+| 10KB clean text | ~17.7 ms | ~56/sec |
+| Injection detected (early exit) | ~27 μs | ~36,000/sec |
+| State/control clean | ~236 μs | ~4,200/sec |
 
 The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no injection keywords are present in the normalized text. This cut clean-text latency by 29%, large-content latency by 27%, and injection-detected latency by 3.1x (early keyword match skips later normalization passes). The 10KB response scan remains the current ceiling due to 6 sequential normalization passes. Content size tiering (skipping passes 3-6 for large content) is planned.
 
@@ -46,12 +46,12 @@ The keyword pre-filter (added in v1.3.0) short-circuits regex evaluation when no
 
 | Operation | Latency |
 |-----------|---------|
-| Unicode normalization (DLP mode) | ~950 ns |
+| Unicode normalization (DLP mode) | ~1.1 μs |
 | Unicode normalization (matching mode) | ~1.3 μs |
-| Unicode normalization (tool text mode) | ~2.0 μs |
-| Shannon entropy calculation | ~2.2 μs |
+| Unicode normalization (tool text mode) | ~2.1 μs |
+| Shannon entropy calculation | ~2.3 μs |
 | Domain matching (exact) | ~50 ns |
-| Domain matching (wildcard) | ~53 ns |
+| Domain matching (wildcard) | ~54 ns |
 
 ## Concurrent Scaling
 
@@ -65,60 +65,60 @@ These benchmarks run across all available goroutines simultaneously, measuring t
 
 | GOMAXPROCS | ns/op | Throughput | Scaling vs 1 |
 |-----------:|------:|----------:|---------:|
-| 1 | 44,135 | 22,700/sec | 1.0x |
-| 2 | 23,052 | 43,400/sec | 1.9x |
-| 4 | 12,356 | 80,900/sec | 3.6x |
-| 8 | 7,177 | 139,300/sec | 6.1x |
-| 16 | 6,500 | 153,800/sec | 6.8x |
+| 1 | 87,503 | 11,400/sec | 1.0x |
+| 2 | 43,870 | 22,800/sec | 2.0x |
+| 4 | 21,309 | 46,900/sec | 4.1x |
+| 8 | 15,060 | 66,400/sec | 5.8x |
+| 16 | 13,417 | 74,500/sec | 6.5x |
 
 **DLP Block (early exit):**
 
 | GOMAXPROCS | ns/op | Throughput | Scaling vs 1 |
 |-----------:|------:|----------:|---------:|
-| 1 | 7,625 | 131,100/sec | 1.0x |
-| 2 | 4,017 | 248,900/sec | 1.9x |
-| 4 | 2,204 | 453,700/sec | 3.5x |
-| 8 | 1,414 | 707,200/sec | 5.4x |
-| 16 | 1,184 | 844,600/sec | 6.4x |
+| 1 | 5,793 | 172,600/sec | 1.0x |
+| 2 | 2,881 | 347,100/sec | 2.0x |
+| 4 | 1,473 | 678,900/sec | 3.9x |
+| 8 | 1,031 | 970,000/sec | 5.6x |
+| 16 | 869 | 1,150,700/sec | 6.7x |
 
 **Response Scanning (short content):**
 
 | GOMAXPROCS | ns/op | Throughput | Scaling vs 1 |
 |-----------:|------:|----------:|---------:|
-| 1 | 87,818 | 11,400/sec | 1.0x |
-| 2 | 45,767 | 21,800/sec | 1.9x |
-| 4 | 23,978 | 41,700/sec | 3.7x |
-| 8 | 14,628 | 68,400/sec | 6.0x |
-| 16 | 12,900 | 77,500/sec | 6.8x |
+| 1 | 129,955 | 7,700/sec | 1.0x |
+| 2 | 67,390 | 14,800/sec | 1.9x |
+| 4 | 35,491 | 28,200/sec | 3.7x |
+| 8 | 25,390 | 39,400/sec | 5.1x |
+| 16 | 18,250 | 54,800/sec | 7.1x |
 
 **Response Scanning (10KB content):**
 
 | GOMAXPROCS | ns/op | Throughput | Scaling vs 1 |
 |-----------:|------:|----------:|---------:|
-| 1 | 11,780,295 | 85/sec | 1.0x |
-| 2 | 6,657,276 | 150/sec | 1.8x |
-| 4 | 3,093,228 | 323/sec | 3.8x |
-| 8 | 1,898,905 | 527/sec | 6.2x |
-| 16 | 1,928,156 | 519/sec | 6.1x |
+| 1 | 16,203,683 | 62/sec | 1.0x |
+| 2 | 8,245,280 | 121/sec | 2.0x |
+| 4 | 4,158,378 | 240/sec | 3.9x |
+| 8 | 2,566,365 | 390/sec | 6.3x |
+| 16 | 2,460,095 | 407/sec | 6.6x |
 
 **MCP Scanning (clean response):**
 
 | GOMAXPROCS | ns/op | Throughput | Scaling vs 1 |
 |-----------:|------:|----------:|---------:|
-| 1 | 87,764 | 11,400/sec | 1.0x |
-| 4 | 23,540 | 42,500/sec | 3.7x |
-| 8 | 13,442 | 74,400/sec | 6.5x |
-| 16 | 11,510 | 86,900/sec | 7.6x |
+| 1 | 127,944 | 7,800/sec | 1.0x |
+| 4 | 33,450 | 29,900/sec | 3.8x |
+| 8 | 20,312 | 49,200/sec | 6.3x |
+| 16 | 17,482 | 57,200/sec | 7.3x |
 
 **Blocklist (early exit):**
 
 | GOMAXPROCS | ns/op | Throughput | Scaling vs 1 |
 |-----------:|------:|----------:|---------:|
-| 1 | 2,139 | 467,500/sec | 1.0x |
-| 2 | 1,132 | 883,400/sec | 1.9x |
-| 4 | 633 | 1,580,300/sec | 3.4x |
-| 8 | 423 | 2,364,100/sec | 5.1x |
-| 16 | 364 | 2,747,300/sec | 5.9x |
+| 1 | 2,059 | 485,700/sec | 1.0x |
+| 2 | 1,005 | 995,000/sec | 2.0x |
+| 4 | 529 | 1,890,400/sec | 3.9x |
+| 8 | 369 | 2,710,000/sec | 5.6x |
+| 16 | 325 | 3,076,900/sec | 6.3x |
 
 ### Concurrent throughput scaling (goroutine ramp)
 
@@ -170,17 +170,17 @@ How much CPU does scanning consume at various request rates? These numbers cover
 
 | Request rate | CPU (URL scan) | CPU (MCP scan) |
 |-------------|---------------:|---------------:|
-| 100/sec | 0.4% of 1 core | 0.9% of 1 core |
-| 1,000/sec | 3.7% of 1 core | 8.9% of 1 core |
-| 10,000/sec | 37% of 1 core | 0.9 cores |
-| 100,000/sec | 3.7 cores | 8.9 cores |
+| 100/sec | 0.9% of 1 core | 1.3% of 1 core |
+| 1,000/sec | 8.8% of 1 core | 12.8% of 1 core |
+| 10,000/sec | 88% of 1 core | 1.3 cores |
+| 100,000/sec | 8.8 cores | 12.8 cores |
 
 ### Response-side scanning
 
 | Request rate | CPU (short ~90B) | CPU (10KB content) |
 |-------------|---------------:|---------------:|
-| 100/sec | 0.8% of 1 core | 1.2 cores |
-| 1,000/sec | 8.1% of 1 core | 12.1 cores |
+| 100/sec | 1.3% of 1 core | 1.6 cores |
+| 1,000/sec | 13.0% of 1 core | 16.2 cores |
 
 Response scanning is the most CPU-intensive path. At high throughput with large payloads, it dominates. For request-side scanning only, 1,000 requests per second uses less than 15% of a single CPU core. Network latency (waiting for upstream HTTP responses) dominates total request time by orders of magnitude.
 

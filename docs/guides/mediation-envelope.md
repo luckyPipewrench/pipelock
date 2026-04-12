@@ -1,0 +1,140 @@
+<!--
+Copyright 2026 Josh Waldrep
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Mediation envelope
+
+The mediation envelope is sideband metadata that pipelock attaches to every
+proxied request. It tells downstream services what pipelock decided (verdict,
+action), who the agent is (actor identity and trust level), and how to
+correlate the decision with the flight recorder (receipt ID).
+
+## When to use
+
+Enable the mediation envelope when:
+
+- A backend service needs to know whether pipelock allowed, blocked, or warned
+  on the request without parsing pipelock's log stream.
+- You are building a trust chain where each hop carries evidence of the
+  previous hop's security decision.
+- You want to correlate backend audit logs with pipelock's flight recorder
+  entries using the receipt ID.
+- Your authorization layer needs the actor identity and its trust level
+  (bound, matched, or self-declared) to make access decisions.
+
+## Configuration
+
+```yaml
+mediation_envelope:
+  enabled: true
+```
+
+That is the only field today. Envelope signing (RFC 9421 HTTP Message
+Signatures), SPIFFE actor format, and key management are planned.
+
+## HTTP header format
+
+HTTP requests get a `Pipelock-Mediation` header encoded as an
+RFC 8941 Structured Fields Dictionary:
+
+```
+Pipelock-Mediation: v=1, act="allow", vd="clean", se="", actor="agent-1",
+  aa="bound", ph=:dGVzdA==:, rid="019...", ts=1712764800
+```
+
+Optional fields (`taint`, `task`, `auth`, `authr`, `reauth`) are omitted
+when they carry no value.
+
+## MCP meta format
+
+MCP JSON-RPC messages get the envelope injected into the `_meta` map under
+the `com.pipelock/mediation` key:
+
+```json
+{
+  "_meta": {
+    "com.pipelock/mediation": {
+      "v": 1,
+      "act": "allow",
+      "vd": "clean",
+      "se": "",
+      "actor": "agent-1",
+      "aa": "bound",
+      "ph": "sha256-128:dGVzdA==",
+      "rid": "019...",
+      "ts": 1712764800
+    }
+  }
+}
+```
+
+## Envelope fields
+
+| Wire key | Name | Description |
+|----------|------|-------------|
+| `v` | Version | Schema version (currently `1`) |
+| `act` | Action | Action taken: `allow`, `block`, `warn`, `ask`, `strip`, `redirect` |
+| `vd` | Verdict | Scanner verdict: `clean`, `blocked`, `warned` |
+| `se` | SideEffect | Side effect description (empty when none) |
+| `actor` | Actor | Agent identity string |
+| `aa` | ActorAuth | Trust level: `bound` (infra-set), `matched` (profile match), `self-declared` (unverified) |
+| `ph` | PolicyHash | Truncated SHA-256 of the active config (16 bytes, base64 in MCP) |
+| `rid` | ReceiptID | UUIDv7 receipt ID for flight recorder correlation |
+| `ts` | Timestamp | Unix epoch seconds |
+| `taint` | SessionTaint | Session taint state (omitted when clean) |
+| `task` | TaskID | Task boundary identifier (omitted when no active task) |
+| `auth` | AuthorityKind | Authority type backing this action (omitted when absent) |
+| `authr` | AuthorityRef | Authority reference (omitted when absent) |
+| `reauth` | RequiresReauth | True when the action requires re-authorization |
+
+## Inbound stripping
+
+Pipelock strips any inbound `Pipelock-Mediation` header and any
+`pipelock`-prefixed members from `Signature` and `Signature-Input` headers
+before processing. This prevents agents or upstream proxies from forging
+mediation metadata.
+
+For MCP, any existing `com.pipelock/mediation` key in `_meta` is deleted
+before the envelope is injected.
+
+## Interaction with receipts
+
+The envelope's `rid` field carries the same UUIDv7 action ID written to the
+flight recorder. A downstream service that receives the header can:
+
+1. Extract `rid` from the envelope.
+2. Query the flight recorder JSONL for the matching `action_id`.
+3. Verify the receipt's Ed25519 signature to confirm the decision was made by
+   a trusted pipelock instance.
+
+The `ph` (policy hash) field lets the verifier confirm which policy version
+was active when the decision was made.
+
+## Actor trust levels
+
+| Level | Meaning | How it is set |
+|-------|---------|---------------|
+| `bound` | Identity set by infrastructure (per-agent listener binding). Spoof-proof. | Dedicated listen address per agent |
+| `matched` | Agent name matches a configured profile but was self-declared via header or query param. | `X-Pipelock-Agent` header or `?agent=` query param |
+| `self-declared` | Unknown agent or fallback path. Attacker-controllable. | No matching profile or no identity header |
+
+Use `bound` in production by assigning each agent its own listen port. The
+`matched` and `self-declared` levels are informational and should not be
+trusted for authorization decisions without additional verification.
+
+## Example: reading the envelope in Go
+
+```go
+env, err := envelope.Parse(req.Header.Get("Pipelock-Mediation"))
+if err != nil {
+    // malformed or missing envelope
+}
+fmt.Println(env.Action, env.Verdict, env.ReceiptID)
+```
+
+## See also
+
+- [Configuration reference](../configuration.md#mediation-envelope-v21) for all config fields
+- [Flight recorder guide](flight-recorder.md) for receipt correlation
+- [Receipt verification guide](receipt-verification.md) for verifying receipt signatures

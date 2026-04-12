@@ -196,6 +196,10 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
 | **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, flags deviations after ratification. |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
+| **Mediation Envelope** | Sideband metadata on every proxied request (`Pipelock-Mediation` header / MCP `_meta`). Carries verdict, action, actor identity, and receipt correlation ID so downstream services can react without parsing logs. |
+| **Media Policy** | Controls media response handling: strips steganographic metadata from JPEG/PNG (byte-level surgery, pixel-identical output), rejects audio/video by default, hardens SVG active content (foreignObject, event handlers, external hrefs), and enforces image size limits against decompression bombs. |
+| **Taint Escalation** | Exposure-based policy escalation across MCP transports. Sessions that recently observed untrusted content get elevated scanning on protected paths. Task boundaries scope trust overrides to individual operations. |
+| **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) with golden test vectors. Reference Python verifier at [pipelock-verify-python](https://github.com/luckyPipewrench/pipelock-verify-python). |
 | **Compliance Mappings** | OWASP MCP Top 10, OWASP Agentic Top 15, NIST 800-53, EU AI Act, SOC 2 coverage documentation |
 
 ![Pipelock Agent Egress Report showing risk rating, timeline, findings by category, and evidence appendix](examples/sample-report.png)
@@ -428,6 +432,10 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [EU AI Act](docs/compliance/eu-ai-act-mapping.md) | EU AI Act compliance mapping |
 | [NIST 800-53](docs/compliance/nist-800-53.md) | NIST SP 800-53 Rev. 5 controls mapping |
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
+| [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
+| [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
+| [Receipt Verification](docs/guides/receipt-verification.md) | verify-receipt CLI, conformance suite, chain integrity |
+| [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots for audit trails |
 
 ## Project Structure
 
@@ -442,13 +450,16 @@ internal/
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
   discover/            IDE/agent config discovery (Claude Code, Cursor, VS Code, JetBrains)
   killswitch/          Emergency deny-all (4 sources) + port-isolated API
+  envelope/            Mediation envelope (RFC 8941) for sideband metadata
+  media/               Image metadata stripping (JPEG/PNG byte-level surgery)
   receipt/             Action receipt signing + hash-chained evidence
   sandbox/             Landlock, seccomp, netns, macOS sandbox-exec
-  shield/              Airlock, browser shield, posture capsule
+  shield/              Airlock, browser shield, SVG hardening, posture capsule
   signing/             Ed25519 key management
   integrity/           SHA256 file integrity monitoring
   report/              HTML/JSON audit report generation
 enterprise/            Multi-agent features (ELv2)
+sdk/conformance/       Cross-implementation receipt verification test vectors
 charts/                Helm chart for Kubernetes deployment
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings
@@ -463,7 +474,7 @@ Pipelock is tested like a security product. The open-source core has thousands o
 | Go tests (with `-race`) | 10,800+ |
 | Statement coverage | 88%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~43us per URL scan |
+| Scanner pipeline overhead | ~40us per URL scan |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 

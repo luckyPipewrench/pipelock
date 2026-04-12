@@ -37,6 +37,8 @@ These techniques use Unicode characters to break pattern matching.
 | Leetspeak | `1GN0R3 4LL` | Tested | Digit-to-letter folding (response scanning) |
 | Vowel substitution | `instrocktoons` | Tested | Vowel folding pass in response scanning |
 | Regional indicators / emoji | Boxed letters, flag sequences | Tested | Stripped by zero-width/variation selector removal |
+| Exotic whitespace | `\u00A0`, `\u2000`-`\u200A`, `\u3000`, etc. | Tested | `StripExoticWhitespace` removes 18 Unicode space codepoints before DLP matching |
+| Zalgo text | `t̷̺̀e̸̜̅s̵̲̈́t̵̙̅` (stacked combining marks) | Tested | `StripCombiningMarks` removes all marks; `ZalgoDensity` detects 3+ consecutive marks as suspicious for taint signaling |
 
 ## DNS-Based Exfiltration
 
@@ -135,6 +137,23 @@ These techniques spread secret data across multiple independent requests to stay
 
 **Coverage gap:** Cross-request detection scans all outbound content visible to the proxy: URLs, request bodies, MCP JSON-RPC payloads, and WebSocket frames. For CONNECT tunnels without TLS interception, only the target hostname is visible (not the request body or path). Enable `tls_interception.enabled: true` to get full cross-request coverage on CONNECT traffic.
 
+## Media and SVG Evasion
+
+These techniques use media responses or SVG content to deliver payloads.
+
+| Technique | Example | Status | How |
+|-----------|---------|--------|-----|
+| EXIF metadata exfiltration | Secret in JPEG EXIF comment field | Tested | JPEG APP1/APP2/APP13 segments stripped; PNG tEXt/iTXt/zTXt/eXIf chunks stripped |
+| SVG foreignObject injection | `<foreignObject>` with embedded HTML instructions | Tested | All `<foreignObject>` elements removed (including namespace-prefixed) |
+| SVG event handler injection | `<rect onload="fetch('evil.com')">` | Tested | All `on*` attributes stripped from SVG elements |
+| SVG external reference | `<use xlink:href="https://evil.com/x.svg">` | Tested | External `xlink:href` and `href` references neutralized; local `#id` references preserved |
+| SVG hidden text injection | `<text style="opacity:0">injection payload</text>` | Tested | Hidden text elements with `opacity:0`, `display:none`, or `visibility:hidden` stripped |
+| SVG script injection | `<script>evil()</script>` in SVG | Tested | Script blocks stripped by browser shield SVG pipeline |
+| SVG animation injection | `<set attributeName="href" to="evil.com">` | Tested | Animation elements targeting href attributes stripped |
+| Audio/video as injection carrier | Prompt injection via ASR transcription of audio | Mitigated | Audio and video responses stripped by default (`strip_audio: true`, `strip_video: true`) |
+| Decompression bomb | 1KB compressed image expands to 10GB | Tested | `max_image_bytes` enforced before any parsing (default 5 MiB) |
+| SVG as image bypass | Serve SVG as `image/svg+xml` to bypass image-specific scanning | Tested | `image/svg+xml` rejected from `allowed_image_types`; SVG routed to browser shield pipeline |
+
 ## Known Limitations
 
 These are things pipelock does not protect against. If your threat model includes these, you need additional controls.
@@ -146,7 +165,7 @@ These are things pipelock does not protect against. If your threat model include
 | **Process-level attacks** | Pipelock is a network proxy, not a sandbox. If the agent can exec arbitrary processes, those processes can bypass the proxy. | Pair with an OS sandbox (Docker, gVisor, Firecracker). See [comparison](comparison.md). |
 | **Non-HTTP exfiltration** | Agent writes to cloud-synced folder, clipboard, stdout, or subprocess that doesn't use the proxy. | Container network isolation (see [deployment recipes](guides/deployment-recipes.md)). |
 | **Model compromise** | If the model itself is fine-tuned to be malicious, pipelock can't distinguish legitimate from malicious intent. | Defense in depth. Pipelock catches the network-visible symptoms. |
-| **Steganography** | Data hidden in image pixels, timing channels, or LSBs of audio/video. | Beyond content inspection. Requires specialized analysis. |
+| **Steganography (pixel-level)** | Data hidden in image pixels, timing channels, or LSBs of audio/video. | Beyond content inspection. Requires specialized analysis. Media policy strips EXIF/XMP/IPTC/ICC metadata from JPEG and text/eXIf chunks from PNG (eliminating metadata-based steganography), but pixel-level encoding remains out of scope. |
 
 ### Architectural Limits
 

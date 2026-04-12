@@ -379,7 +379,7 @@ dlp:
         - "*.anthropic.com"
 ```
 
-### Built-in DLP Patterns (46)
+### Built-in DLP Patterns (48)
 
 | Pattern | Regex Prefix | Severity |
 |---------|-------------|----------|
@@ -1764,6 +1764,92 @@ mcp_binary_integrity:
 | `action` | `warn` | Action on hash mismatch: `block` or `warn` |
 
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing.
+
+## Mediation Envelope (v2.1)
+
+Attaches sideband metadata to every proxied request so downstream services know pipelock's verdict, action, actor identity, and receipt correlation ID without parsing logs.
+
+HTTP requests get a `Pipelock-Mediation` header encoded as an RFC 8941 Structured Fields Dictionary. MCP requests get a `_meta["com.pipelock/mediation"]` map.
+
+```yaml
+mediation_envelope:
+  enabled: true
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable envelope injection on proxied requests |
+
+When enabled, the envelope carries these wire fields:
+
+| Wire Key | Field | Description |
+|----------|-------|-------------|
+| `v` | Version | Envelope schema version (currently `1`) |
+| `act` | Action | Action taken (`allow`, `block`, `warn`, `ask`, `strip`, `redirect`) |
+| `vd` | Verdict | Scanner verdict (`clean`, `blocked`, `warned`) |
+| `se` | SideEffect | Side effect description (empty when none) |
+| `actor` | Actor | Agent identity string |
+| `aa` | ActorAuth | Trust level of the actor field: `bound`, `matched`, or `self-declared` |
+| `ph` | PolicyHash | First 16 bytes of SHA-256 of the active policy config (base64-encoded in MCP) |
+| `rid` | ReceiptID | UUIDv7 receipt ID for correlation with flight recorder entries |
+| `ts` | Timestamp | Unix timestamp (seconds) |
+| `taint` | SessionTaint | Current session taint state (omitted when clean) |
+| `task` | TaskID | Task boundary ID (omitted when no active task) |
+| `auth` | AuthorityKind | Authority type backing this action (omitted when absent) |
+| `authr` | AuthorityRef | Authority reference (omitted when absent) |
+| `reauth` | RequiresReauth | `true` when the action requires re-authorization (omitted when false) |
+
+**Inbound stripping:** Pipelock strips any inbound `Pipelock-Mediation` header and any `pipelock`-prefixed members from `Signature` and `Signature-Input` headers before processing. This prevents agents or upstream proxies from forging mediation metadata.
+
+**Planned:** Envelope signing (RFC 9421 HTTP Message Signatures), SPIFFE actor format, and key management are planned for a follow-up release.
+
+## Media Policy (v2.1)
+
+Controls how media responses (image, audio, video Content-Type) are handled. Pipelock cannot inspect pixels or audio frames for embedded instructions, so this section reduces exposure by stripping unused media types, enforcing size limits, surgically removing metadata from allowed images, and emitting exposure events.
+
+```yaml
+media_policy:
+  enabled: true
+  strip_images: false
+  strip_audio: true
+  strip_video: true
+  allowed_image_types:
+    - image/png
+    - image/jpeg
+  strip_image_metadata: true
+  max_image_bytes: 5242880
+  log_media_exposure: true
+```
+
+All boolean fields use nil-means-security-default semantics: omitting a field from YAML produces the protective default, not the Go zero value.
+
+| Field | Type | Default (when omitted) | Description |
+|-------|------|------------------------|-------------|
+| `enabled` | *bool | `true` | Master switch for media policy enforcement |
+| `strip_images` | *bool | `false` | Reject all `image/*` responses |
+| `strip_audio` | *bool | `true` | Reject all `audio/*` responses |
+| `strip_video` | *bool | `true` | Reject all `video/*` responses |
+| `allowed_image_types` | []string | `["image/png", "image/jpeg"]` | Image media types allowed when `strip_images` is false |
+| `strip_image_metadata` | *bool | `true` | Remove EXIF/XMP/IPTC/ICC metadata from allowed images |
+| `max_image_bytes` | int64 | `5242880` (5 MiB) | Reject images larger than this before parsing (decompression bomb defense) |
+| `log_media_exposure` | *bool | `true` | Emit `media_exposure` events for allowed media responses |
+
+### Metadata stripping
+
+For JPEG images: strips APP1 (EXIF, XMP), APP2 (ICC profile, FlashPix), and APP13 (IPTC, Photoshop) marker segments. APP0 (JFIF header) is preserved. Pixel data is never decoded or re-encoded.
+
+For PNG images: strips tEXt, iTXt, zTXt (text metadata), and eXIf (EXIF) chunks. All other chunks (IHDR, IDAT, PLTE, tRNS, IEND) pass through with their original CRCs.
+
+### SVG active content hardening
+
+SVG (`image/svg+xml`) is never in the allowed image types list. SVG is active content handled by the browser shield pipeline, which strips `<foreignObject>` elements (XSS/injection vector), `on*` event handler attributes, external `xlink:href` and `href` references, hidden `<text>` elements (invisible prompt injection), `<script>` blocks, and animation injection (`<set>`/`<animate>` targeting href).
+
+### Validation
+
+- `allowed_image_types` entries must be `image/*` media types with concrete subtypes (no wildcards)
+- `image/svg+xml` is rejected in `allowed_image_types` (SVG is active content)
+- `max_image_bytes` must be non-negative (0 means use the 5 MiB default)
+- Validation runs regardless of whether `enabled` is true, so re-enabling on reload cannot introduce malformed values
 
 ## Validation Rules
 

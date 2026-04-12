@@ -21,16 +21,19 @@ const (
 	taintReasonDisabled = "taint_disabled"
 	taintScopeAction    = "action"
 	taintScopeSource    = "source"
+	taintScopeTask      = "task"
 )
 
 type taintDecision struct {
-	Risk           session.SessionRisk
-	ActionClass    session.ActionClass
-	Sensitivity    session.ActionSensitivity
-	Authority      session.AuthorityKind
-	Result         session.PolicyDecisionResult
-	ActionRef      string
-	RequiresReauth bool
+	Risk                session.SessionRisk
+	Task                session.TaskContext
+	ActionClass         session.ActionClass
+	Sensitivity         session.ActionSensitivity
+	Authority           session.AuthorityKind
+	Result              session.PolicyDecisionResult
+	ActionRef           string
+	RequiresReauth      bool
+	TaskOverrideApplied bool
 }
 
 func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
@@ -66,6 +69,17 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 		opts.TaintCfg.ElevatedPaths,
 	)
 	decision.ActionRef = mcpActionRef(toolName, decision.ActionRef)
+	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
+		decision.Task = tp.TaskSnapshot()
+		if taintRuntimeTrustOverrideApplies(tp.RuntimeTrustOverrides(), decision.Task, decision.Risk, decision.ActionRef) {
+			decision.Result = session.PolicyDecisionResult{
+				Decision: session.PolicyAllow,
+				Reason:   "taint_runtime_task_override",
+			}
+			decision.TaskOverrideApplied = true
+			return decision
+		}
+	}
 	decision.Result = session.PolicyMatrix{Profile: opts.TaintCfg.Policy}.Evaluate(
 		decision.Risk.Level,
 		decision.ActionClass,
@@ -153,6 +167,29 @@ func taintOverrideMatches(override config.TaintTrustOverride, risk session.Sessi
 	}
 }
 
+func taintRuntimeTrustOverrideApplies(overrides []session.TrustOverride, task session.TaskContext, risk session.SessionRisk, actionRef string) bool {
+	now := time.Now().UTC()
+	for _, override := range overrides {
+		if override.Scope != taintScopeTask {
+			continue
+		}
+		if override.TaskID == "" || override.TaskID != task.CurrentTaskID {
+			continue
+		}
+		if !override.ExpiresAt.IsZero() && override.ExpiresAt.Before(now) {
+			continue
+		}
+		if override.ActionMatch != "" && !taintWildcardMatch(actionRef, override.ActionMatch) {
+			continue
+		}
+		if override.SourceMatch != "" && !taintRiskSourceMatches(risk, override.SourceMatch) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func taintRiskSourceMatches(risk session.SessionRisk, pattern string) bool {
 	return taintWildcardMatch(risk.LastExternalURL, pattern)
 }
@@ -206,9 +243,12 @@ func emitMCPToolReceipt(opts MCPProxyOpts, actionID, mcpMethod, toolName, receip
 		SessionTaintLevel:   decision.Risk.Level.String(),
 		SessionContaminated: decision.Risk.Contaminated,
 		RecentTaintSources:  decision.Risk.Sources,
+		SessionTaskID:       decision.Task.CurrentTaskID,
+		SessionTaskLabel:    decision.Task.CurrentTaskLabel,
 		AuthorityKind:       decision.Authority.String(),
 		TaintDecision:       decision.Result.Decision.String(),
 		TaintDecisionReason: decision.Result.Reason,
+		TaskOverrideApplied: decision.TaskOverrideApplied,
 	})
 }
 
@@ -221,6 +261,7 @@ func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcp
 		Action:         string(receipt.ClassifyMCPTool(toolName, mcpMethod)),
 		Verdict:        receiptVerdict,
 		SessionTaint:   decision.Risk.Level.String(),
+		TaskID:         decision.Task.CurrentTaskID,
 		AuthorityKind:  decision.Authority.String(),
 		RequiresReauth: decision.RequiresReauth,
 	})

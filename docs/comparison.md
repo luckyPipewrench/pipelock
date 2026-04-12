@@ -30,7 +30,7 @@ An honest feature matrix and guidance on when to use what.
 | **Config format** | YAML + presets | YAML (agent.yaml) | CLI flags | Code |
 | **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
-| **Testing depth** | 7,500+ tests, 88%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
+| **Testing depth** | 11,000+ tests, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
 
 ## When to Use What
 

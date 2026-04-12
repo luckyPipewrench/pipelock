@@ -155,7 +155,7 @@ tls_interception:
 
 Passthrough connections are spliced (bidirectional byte copy) without decryption. Hostname-level scanning (blocklist, SSRF, SNI verification) still applies.
 
-Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` but not `example.com` itself).
+Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` and the apex `example.com` itself).
 
 ### Fail-Closed Behavior
 

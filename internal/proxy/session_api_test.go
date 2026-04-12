@@ -1387,3 +1387,190 @@ func TestSessionManager_AddRuntimeTrustOverride_WrongScope(t *testing.T) {
 		t.Fatalf("err = %v, want ErrTaskScopeOnly", err)
 	}
 }
+
+// TestSessionManager_WithMutableIdentitySession_BlocksConcurrentWriteLock
+// proves the helper keeps sm.mu.RLock held for the full callback duration.
+// A concurrent writer must stay blocked until the mutation callback returns.
+func TestSessionManager_WithMutableIdentitySession_BlocksConcurrentWriteLock(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	const targetKey = "agent|10.0.0.1"
+	sm.GetOrCreate(targetKey)
+
+	entered := make(chan struct{})
+	releaseMutation := make(chan struct{})
+	resultCh := make(chan struct {
+		found bool
+		err   error
+	}, 1)
+
+	go func() {
+		found, err := sm.withMutableIdentitySession(targetKey, func(_ *SessionState) {
+			close(entered)
+			<-releaseMutation
+		})
+		resultCh <- struct {
+			found bool
+			err   error
+		}{found: found, err: err}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("mutation callback did not start")
+	}
+
+	writerAcquired := make(chan struct{})
+	writerRelease := make(chan struct{})
+	go func() {
+		sm.mu.Lock()
+		close(writerAcquired)
+		<-writerRelease
+		sm.mu.Unlock()
+	}()
+
+	select {
+	case <-writerAcquired:
+		t.Fatal("concurrent writer acquired sm.mu while mutation callback was active")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseMutation)
+
+	select {
+	case res := <-resultCh:
+		if !res.found {
+			t.Fatal("expected found=true for existing identity session")
+		}
+		if res.err != nil {
+			t.Fatalf("unexpected mutation err: %v", res.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mutation did not complete after release")
+	}
+
+	select {
+	case <-writerAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent writer did not acquire sm.mu after mutation completed")
+	}
+	close(writerRelease)
+}
+
+// TestSessionManager_WithMutableIdentitySession_BlocksEvictionDuringMutation
+// proves that eviction-triggering writes stay blocked until the mutation
+// callback returns. This is the stale-pointer race that BeginNewTask and
+// AddRuntimeTrustOverride rely on withMutableIdentitySession to prevent.
+func TestSessionManager_WithMutableIdentitySession_BlocksEvictionDuringMutation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*SessionState) string
+	}{
+		{
+			name: "begin new task",
+			mutate: func(sess *SessionState) string {
+				_, current, _ := sess.BeginNewTask("coordinated-task")
+				return current.CurrentTaskID
+			},
+		},
+		{
+			name: "runtime trust override",
+			mutate: func(sess *SessionState) string {
+				applied := sess.AddRuntimeTrustOverride(session.TrustOverride{
+					Scope:       "task",
+					ActionMatch: "publish:*",
+					ExpiresAt:   time.Now().UTC().Add(time.Hour),
+					Reason:      "lock-span regression",
+				})
+				return applied.TaskID
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := NewSessionManager(&config.SessionProfiling{
+				MaxSessions:            1,
+				SessionTTLMinutes:      30,
+				CleanupIntervalSeconds: 300,
+				DomainBurst:            10,
+				WindowMinutes:          5,
+			}, nil, nil)
+			defer sm.Close()
+
+			const targetKey = "agent|10.0.0.1"
+			sm.GetOrCreate(targetKey)
+
+			entered := make(chan struct{})
+			releaseMutation := make(chan struct{})
+			resultCh := make(chan struct {
+				found     bool
+				err       error
+				mutatedID string
+			}, 1)
+
+			go func() {
+				var mutatedID string
+				found, err := sm.withMutableIdentitySession(targetKey, func(sess *SessionState) {
+					close(entered)
+					<-releaseMutation
+					mutatedID = tt.mutate(sess)
+				})
+				resultCh <- struct {
+					found     bool
+					err       error
+					mutatedID string
+				}{found: found, err: err, mutatedID: mutatedID}
+			}()
+
+			select {
+			case <-entered:
+			case <-time.After(time.Second):
+				t.Fatal("mutation callback did not start")
+			}
+
+			evictDone := make(chan struct{})
+			go func() {
+				sm.GetOrCreate("evictor|10.0.0.2")
+				close(evictDone)
+			}()
+
+			select {
+			case <-evictDone:
+				t.Fatal("GetOrCreate completed before mutation released sm.mu.RLock")
+			case <-time.After(50 * time.Millisecond):
+			}
+
+			close(releaseMutation)
+
+			var mutatedID string
+			select {
+			case res := <-resultCh:
+				if !res.found {
+					t.Fatal("expected found=true for existing identity session")
+				}
+				if res.err != nil {
+					t.Fatalf("unexpected mutation err: %v", res.err)
+				}
+				if res.mutatedID == "" {
+					t.Fatal("mutation did not produce a task ID")
+				}
+				mutatedID = res.mutatedID
+			case <-time.After(time.Second):
+				t.Fatal("mutation did not complete after release")
+			}
+
+			select {
+			case <-evictDone:
+			case <-time.After(time.Second):
+				t.Fatal("eviction-triggering GetOrCreate did not resume after mutation completed")
+			}
+
+			if got := sm.GetOrCreate(targetKey).TaskSnapshot().CurrentTaskID; got == mutatedID {
+				t.Fatalf("expected target session to be replaced after eviction, but live task ID %s still matches the pre-eviction mutation", got)
+			}
+		})
+	}
+}

@@ -943,6 +943,32 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 	return prev, true, nil
 }
 
+// withMutableIdentitySession looks up a resettable identity session and runs
+// mutate while still holding sm.mu.RLock. This blocks cleanup/eviction from
+// removing the session between map lookup and the session-scoped mutation.
+//
+// Returns:
+//   - found=false, err=nil: session does not exist
+//   - found=true, err=ErrInvocationReset: session exists but is not resettable
+//   - found=true, err=nil: mutate completed
+func (sm *SessionManager) withMutableIdentitySession(key string, mutate func(*SessionState)) (found bool, err error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	sess, ok := sm.sessions[key]
+	if !ok {
+		return false, nil
+	}
+	// Hold RLock across the kind check and mutation so cleanup/eviction
+	// can't remove the session between lookup and mutate. IsResettable and
+	// the callback both acquire sess.mu internally (lock ordering: sm.mu > sess.mu).
+	if !sess.IsResettable() {
+		return true, ErrInvocationReset
+	}
+	mutate(sess)
+	return true, nil
+}
+
 // BeginNewTask rotates the task boundary for an active session and clears
 // taint-only state while preserving adaptive profiling state.
 //
@@ -956,17 +982,10 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 //   - found=true, err=ErrInvocationReset: session exists but is not resettable
 //   - found=true, err=nil: rotation succeeded
 func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session.TaskContext, clearedOverrides int, found bool, err error) {
-	sm.mu.RLock()
-	sess, ok := sm.sessions[key]
-	sm.mu.RUnlock()
-	if !ok {
-		return session.TaskContext{}, session.TaskContext{}, 0, false, nil
-	}
-	if !sess.IsResettable() {
-		return session.TaskContext{}, session.TaskContext{}, 0, true, ErrInvocationReset
-	}
-	prev, current, clearedOverrides = sess.BeginNewTask(label)
-	return prev, current, clearedOverrides, true, nil
+	found, err = sm.withMutableIdentitySession(key, func(sess *SessionState) {
+		prev, current, clearedOverrides = sess.BeginNewTask(label)
+	})
+	return prev, current, clearedOverrides, found, err
 }
 
 // AddRuntimeTrustOverride binds and stores a task-scoped trust override on an
@@ -983,18 +1002,10 @@ func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.T
 		return session.TrustOverride{}, false, ErrTaskScopeOnly
 	}
 
-	sm.mu.RLock()
-	sess, ok := sm.sessions[key]
-	sm.mu.RUnlock()
-	if !ok {
-		return session.TrustOverride{}, false, nil
-	}
-	if !sess.IsResettable() {
-		return session.TrustOverride{}, true, ErrInvocationReset
-	}
-
-	applied = sess.AddRuntimeTrustOverride(override)
-	return applied, true, nil
+	found, err = sm.withMutableIdentitySession(key, func(sess *SessionState) {
+		applied = sess.AddRuntimeTrustOverride(override)
+	})
+	return applied, found, err
 }
 
 // ForceSetAirlockTier atomically looks up a session by key and sets the

@@ -32,6 +32,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: refs/pull/${{ github.event.issue.number }}/merge
+          persist-credentials: false
 
       - name: Set up Go
         if: contains(github.event.comment.body, 'stats')

@@ -73,11 +73,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	clientIP, requestID := requestMeta(r)
-	baseCtx := audit.LogContext{
-		Method:    http.MethodConnect,
-		ClientIP:  clientIP,
-		RequestID: requestID,
-	}
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
@@ -89,7 +84,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
-	baseCtx.Agent = agent
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	// Strip inbound mediation envelope headers to prevent forgery.
@@ -120,12 +114,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		syntheticHost = "[" + host + "]"
 	}
 	syntheticURL := "https://" + syntheticHost + "/"
-	targetCtx := baseCtx
-	targetCtx.Target = target
-	headerCtx := baseCtx
-	headerCtx.Target = target
-	hostCtx := baseCtx
-	hostCtx.Target = host
+	targetCtx := newConnectAuditContext(p.logger, target, clientIP, requestID, agent)
+	headerCtx := targetCtx
 
 	// Scan through all layers (URL pipeline).
 	result := sc.Scan(r.Context(), syntheticURL)
@@ -360,7 +350,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
 			tier := connectSess.Airlock().Tier()
 			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
-				connectSess.Airlock().ExtendTimer()
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -433,7 +422,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if certCache == nil {
 			// Fail-closed: TLS interception is enabled but cert cache is missing.
 			// Connection is already hijacked, so close both sides (deferred).
-			p.logger.LogError(hostCtx, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
+			p.logger.LogError(targetCtx, fmt.Errorf("TLS interception enabled but cert cache unavailable"))
 			p.metrics.RecordTLSIntercept("failed")
 			return
 		}
@@ -442,7 +431,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		safeClose(targetConn, "targetConn", p.logger)
 		targetConn = nil
 		p.metrics.RecordTLSIntercept("intercepted")
-		p.logger.LogAnomaly(hostCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
+		p.logger.LogAnomaly(targetCtx, "tls_intercept", "TLS MITM interception active", 0) // 0: informational, not anomalous
 		// Wrap clientConn with buffered reader so any bytes peeked during
 		// SNI verification (ClientHello) are available to the TLS server.
 		interceptConn := wrapBuffered(clientConn, clientReader)
@@ -484,7 +473,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Recorder:       interceptRec,
 			KillSwitch:     p.ks,
 		}); err != nil {
-			p.logger.LogError(hostCtx, err)
+			p.logger.LogError(targetCtx, err)
 		}
 		return
 	}
@@ -564,7 +553,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 
 	targetURL := r.URL.String()
-	actx := audit.NewHTTPLogContext(r.Method, targetURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(p.logger, r.Method, targetURL, clientIP, requestID, agent)
 
 	// Scan through all layers (URL pipeline)
 	result := sc.Scan(r.Context(), targetURL)
@@ -633,7 +622,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
 			if !allowed {
-				forwardSess.Airlock().ExtendTimer()
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
 				http.Error(w, "airlock: "+reason, http.StatusForbidden)
@@ -735,9 +723,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 			SessionContaminated: forwardTaint.Risk.Contaminated,
 			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 			AuthorityKind:       forwardTaint.Authority.String(),
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 		http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
@@ -767,9 +758,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 				SessionContaminated: forwardTaint.Risk.Contaminated,
 				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       forwardTaint.Authority.String(),
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 			http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
@@ -1053,6 +1047,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Actor:          agent,
 			ActorAuth:      id.Auth,
 			SessionTaint:   forwardTaint.Risk.Level.String(),
+			TaskID:         forwardTaint.Task.CurrentTaskID,
 			AuthorityKind:  forwardTaint.Authority.String(),
 			AuthorityRef:   forwardTaint.ActionRef,
 			RequiresReauth: forwardRequiresReauth,
@@ -1124,9 +1119,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 				SessionContaminated: forwardTaint.Risk.Contaminated,
 				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       forwardTaint.Authority.String(),
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -1395,9 +1393,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 			SessionContaminated: forwardTaint.Risk.Contaminated,
 			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 			AuthorityKind:       forwardTaint.Authority.String(),
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -1437,9 +1438,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 		SessionContaminated: forwardTaint.Risk.Contaminated,
 		RecentTaintSources:  forwardTaint.Risk.Sources,
+		SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 		AuthorityKind:       forwardTaint.Authority.String(),
 		TaintDecision:       forwardTaint.Result.Decision.String(),
 		TaintDecisionReason: forwardTaint.Result.Reason,
+		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 	})
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {

@@ -59,6 +59,7 @@ jobs:
   scan:
     name: Pipelock Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       score: ${{ steps.pipelock.outputs.score }}
       findings-count: ${{ steps.pipelock.outputs.findings-count }}
@@ -69,6 +70,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0  # Full history needed for PR diff scanning
+          persist-credentials: false
 
       - name: Run Pipelock
         id: pipelock

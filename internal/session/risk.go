@@ -159,6 +159,7 @@ type RiskObservation struct {
 // TrustOverride grants a narrow, expiring trust exemption.
 type TrustOverride struct {
 	Scope       string
+	TaskID      string
 	SourceMatch string
 	ActionMatch string
 	ExpiresAt   time.Time

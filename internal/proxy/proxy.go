@@ -118,6 +118,28 @@ func requestMeta(r *http.Request) (clientIP, requestID string) {
 	return
 }
 
+func newHTTPAuditContext(logger *audit.Logger, method, targetURL, clientIP, requestID, agent string) audit.LogContext {
+	ctx, err := audit.NewHTTPLogContext(method, targetURL, clientIP, requestID, agent)
+	if err != nil {
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext(method), err)
+		}
+		return audit.NewMethodLogContext(method)
+	}
+	return ctx
+}
+
+func newConnectAuditContext(logger *audit.Logger, target, clientIP, requestID, agent string) audit.LogContext {
+	ctx, err := audit.NewConnectLogContext(target, clientIP, requestID, agent)
+	if err != nil {
+		if logger != nil {
+			logger.LogError(audit.NewMethodLogContext(http.MethodConnect), err)
+		}
+		return audit.NewMethodLogContext(http.MethodConnect)
+	}
+	return ctx
+}
+
 // Version is set at build time via ldflags.
 var Version = "0.1.0-dev"
 
@@ -328,7 +350,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			result := currentScanner.Scan(req.Context(), redirectURL)
 			if !result.Allowed {
-				actx := audit.NewHTTPLogContext(req.Method, redirectURL, clientIP, requestID, agentName)
+				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
 					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
 					return fmt.Errorf("redirect blocked: %s", result.Reason)
@@ -382,7 +404,7 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 		return
 	}
 	if err := e.Emit(opts); err != nil {
-		p.logger.LogError(audit.LogContext{RequestID: opts.RequestID}, err)
+		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
 	}
 }
 
@@ -411,7 +433,7 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 		// Failure is non-fatal: log and keep the prior emitter (if any) so
 		// receipts continue with the old key rather than going dark entirely.
 		if p.logger != nil {
-			p.logger.LogError(audit.LogContext{Method: "RELOAD"}, fmt.Errorf("loading receipt signing key: %w", err))
+			p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("loading receipt signing key: %w", err))
 		}
 		return
 	}
@@ -505,7 +527,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	oldSnap := p.editionPtr.Load()
 	newEd, edErr := oldSnap.Reload(cfg, sc)
 	if edErr != nil {
-		p.logger.LogError(audit.LogContext{Method: "RELOAD"}, fmt.Errorf("edition rebuild failed, keeping old config: %w", edErr))
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("edition rebuild failed, keeping old config: %w", edErr))
 		sc.Close() // caller-allocated scanner must be closed since we're not using it
 		return
 	}
@@ -808,6 +830,16 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	anomalies = append(anomalies, ipAnomalies...)
 
 	// Record adaptive signals (only when adaptive enforcement is enabled).
+	// escalated tracks whether the current request actually crossed an
+	// adaptive escalation threshold. Downstream airlock triggering is
+	// edge-bound on this flag so a session that merely sits at a trigger
+	// level (plateau) does not repeatedly re-arm airlock on every request.
+	// Plateau triggering produced a drain -> hard -> drain deadlock under
+	// retrying clients: timer-based de-escalation would recover to hard,
+	// the next allowed request would observe the still-elevated level,
+	// slam SetTier(drain) again, and the loop never broke. See
+	// TestAirlockEdgeTrigger_NoPlateauReentry.
+	escalated := false
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
 		ep := decide.EscalationParams{
@@ -827,15 +859,18 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			// probing should still accumulate a weak signal so the
 			// session isn't completely invisible to adaptive scoring.
 			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+				escalated = true
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
 			if decide.RecordSignal(sess, session.SignalBlock, ep) {
+				escalated = true
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
 			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+				escalated = true
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
@@ -848,10 +883,10 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	level := sess.EscalationLevel()
 
-	// Airlock auto-triggers: map adaptive escalation levels to airlock tiers.
-	// Only fires when airlock is enabled. sess is already *SessionState from
-	// SessionManager.GetOrCreate, so Airlock() is directly accessible.
-	if cfg.Airlock.Enabled {
+	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
+	// every request that happens to observe a session at a trigger level.
+	// See the long comment at the `escalated` declaration above.
+	if cfg.Airlock.Enabled && escalated {
 		targetTier := ""
 		switch session.EscalationLabel(level) {
 		case "elevated":
@@ -941,15 +976,15 @@ func (p *Proxy) runShieldPipeline(body []byte, contentType string, respHeaders h
 		body = []byte(shieldResult.Content)
 		if shieldResult.ExtensionHits > 0 {
 			p.metrics.RecordShieldRewrite("extension", transport)
-			p.logger.LogShieldRewrite("extension", shieldResult.ExtensionHits, transport, actx.URL, clientIP, requestID)
+			p.logger.LogShieldRewrite("extension", shieldResult.ExtensionHits, transport, actx.URL(), clientIP, requestID)
 		}
 		if shieldResult.TrackingHits > 0 {
 			p.metrics.RecordShieldRewrite("tracking", transport)
-			p.logger.LogShieldRewrite("tracking", shieldResult.TrackingHits, transport, actx.URL, clientIP, requestID)
+			p.logger.LogShieldRewrite("tracking", shieldResult.TrackingHits, transport, actx.URL(), clientIP, requestID)
 		}
 		if shieldResult.TrapHits > 0 {
 			p.metrics.RecordShieldRewrite("trap", transport)
-			p.logger.LogShieldRewrite("trap", shieldResult.TrapHits, transport, actx.URL, clientIP, requestID)
+			p.logger.LogShieldRewrite("trap", shieldResult.TrapHits, transport, actx.URL(), clientIP, requestID)
 		}
 		if shieldResult.ShimInjected {
 			p.metrics.RecordShieldShimInjected(transport)
@@ -1121,6 +1156,10 @@ func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case killswitch.IsSessionActionPath(path, "airlock"):
 		p.sessionAPI.HandleAirlock(w, r)
+	case killswitch.IsSessionActionPath(path, "task"):
+		p.sessionAPI.HandleTask(w, r)
+	case killswitch.IsSessionActionPath(path, "trust"):
+		p.sessionAPI.HandleTrust(w, r)
 	case killswitch.IsSessionActionPath(path, "reset"):
 		p.sessionAPI.HandleReset(w, r)
 	default:
@@ -1212,11 +1251,11 @@ func (p *Proxy) Start(ctx context.Context) error {
 			defer cancel()
 			for _, srv := range p.agentServers {
 				if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
-					p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", Resource: srv.Addr}, shutErr)
+					p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", srv.Addr), shutErr)
 				}
 			}
 			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError(audit.LogContext{Method: "SHUTDOWN", Resource: cfg.FetchProxy.Listen}, err)
+				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", cfg.FetchProxy.Listen), err)
 			}
 			p.Close()
 		case <-done:
@@ -1229,7 +1268,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
 			ip := net.ParseIP(host)
 			if host == "" || host == "0.0.0.0" || host == "::" || (ip != nil && !ip.IsLoopback()) {
-				p.logger.LogAnomaly(audit.LogContext{Method: "STARTUP", Resource: cfg.FetchProxy.Listen}, "",
+				p.logger.LogAnomaly(audit.NewResourceLogContext("STARTUP", cfg.FetchProxy.Listen), "",
 					"listen address is not loopback — /metrics and /stats endpoints are exposed to the network",
 					0.5)
 			}
@@ -1312,7 +1351,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// internally decodes for matching, but targetURL retains partial decoding
 	// from Go's query parsing. Operators should see the final resolved URL.
 	displayURL := scanner.IterativeDecode(targetURL)
-	actx := audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent)
+	actx := newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent)
 
 	// Scan URL through all scanners
 	result := sc.Scan(r.Context(), targetURL)
@@ -1394,9 +1433,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
 				SessionContaminated: fetchTaint.Risk.Contaminated,
 				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       fetchTaint.Authority.String(),
 				TaintDecision:       fetchTaint.Result.Decision.String(),
 				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
@@ -1651,6 +1693,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Actor:         agent,
 			ActorAuth:     id.Auth,
 			SessionTaint:  fetchTaint.Risk.Level.String(),
+			TaskID:        fetchTaint.Task.CurrentTaskID,
 			AuthorityKind: fetchTaint.Authority.String(),
 		}); envErr != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
@@ -1990,9 +2033,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
 		SessionContaminated: fetchTaint.Risk.Contaminated,
 		RecentTaintSources:  fetchTaint.Risk.Sources,
+		SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
 		AuthorityKind:       fetchTaint.Authority.String(),
 		TaintDecision:       fetchTaint.Result.Decision.String(),
 		TaintDecisionReason: fetchTaint.Result.Reason,
+		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 	})
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
@@ -2097,7 +2143,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionBlock:
 		recordResponseSignal(session.SignalBlock)
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
-		log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
+		log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
@@ -2115,7 +2161,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		if p.approver == nil {
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response contains prompt injection: %s (no HITL approver)", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
+			log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2143,14 +2189,14 @@ func (p *Proxy) filterAndActOnResponseScan(
 		})
 		switch d {
 		case hitl.DecisionAllow:
-			log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), "ask:allow", len(result.Matches), patternNames, bundleRules)
 		case hitl.DecisionStrip:
 			out = result.TransformedContent
-			log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
+			log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), "ask:strip", len(result.Matches), patternNames, bundleRules)
 		default:
 			recordResponseSignal(session.SignalBlock)
 			reason := fmt.Sprintf("response blocked by operator: %s", strings.Join(patternNames, ", "))
-			log.LogBlocked(audit.NewHTTPLogContext(http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
+			log.LogBlocked(newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent), "response_scan", reason)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
@@ -2168,13 +2214,13 @@ func (p *Proxy) filterAndActOnResponseScan(
 	case config.ActionStrip:
 		recordResponseSignal(session.SignalStrip)
 		out = result.TransformedContent
-		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
 		recordResponseSignal(session.SignalNearMiss)
-		log.LogResponseScan(audit.NewHTTPLogContext("", displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
+		log.LogResponseScan(newHTTPAuditContext(log, http.MethodGet, displayURL, clientIP, requestID, agent), action, len(result.Matches), patternNames, bundleRules)
 	}
 	return false, out, true
 }

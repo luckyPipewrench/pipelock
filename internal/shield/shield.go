@@ -50,10 +50,11 @@ type Result struct {
 	// SVGXlinkExternalHits counts external xlink:href references rewritten
 	// away from absolute URLs. SVGHiddenTextHits counts hidden <text>
 	// blocks removed (opacity:0 / display:none / visibility:hidden).
-	SVGForeignObjectHits int
-	SVGEventHandlerHits  int
-	SVGXlinkExternalHits int
-	SVGHiddenTextHits    int
+	SVGForeignObjectHits      int
+	SVGEventHandlerHits       int
+	SVGXlinkExternalHits      int
+	SVGHiddenTextHits         int
+	SVGAnimationInjectionHits int
 }
 
 // Engine compiles detection patterns once and reuses them across requests.
@@ -72,12 +73,13 @@ type Engine struct {
 	// so each can be rewritten to its own attribute name (rewriting plain
 	// href to xlink:href in SVG2 without the xmlns:xlink declaration
 	// produces an unbound-prefix XML parse error).
-	svgForeignObjectRe  *regexp.Regexp
-	svgEventHandlerRe   *regexp.Regexp
-	svgXlinkExternalRe  *regexp.Regexp
-	svgHrefExternalRe   *regexp.Regexp
-	svgHiddenTextStyle  *regexp.Regexp
-	svgHiddenTextAttrRe *regexp.Regexp
+	svgForeignObjectRe      *regexp.Regexp
+	svgEventHandlerRe       *regexp.Regexp
+	svgXlinkExternalRe      *regexp.Regexp
+	svgHrefExternalRe       *regexp.Regexp
+	svgHiddenTextStyle      *regexp.Regexp
+	svgHiddenTextAttrRe     *regexp.Regexp
+	svgAnimationInjectionRe *regexp.Regexp
 }
 
 // NewEngine compiles all shield patterns and returns a ready-to-use engine.
@@ -94,20 +96,21 @@ func NewEngine(extraTrackingDomains []string) *Engine {
 		merged := trackRe.String() + `|(?i)` + strings.Join(extra, "|")
 		trackRe = regexp.MustCompile(merged)
 	}
-	svgForeignRe, svgEventRe, svgXlinkRe, svgHrefRe, svgHiddenStyleRe, svgHiddenAttrRe := compileSVGActivePatterns()
+	svgForeignRe, svgEventRe, svgXlinkRe, svgHrefRe, svgHiddenStyleRe, svgHiddenAttrRe, svgAnimRe := compileSVGActivePatterns()
 	return &Engine{
-		extensionRe:         extRe,
-		trackingPixelRe:     trackRe,
-		hiddenTrapRe:        trapRe,
-		commentTrapRe:       commentRe,
-		functionStripRe:     funcRe,
-		svgScriptRe:         regexp.MustCompile(`(?is)<script[^>]*>(.*?)</script>`),
-		svgForeignObjectRe:  svgForeignRe,
-		svgEventHandlerRe:   svgEventRe,
-		svgXlinkExternalRe:  svgXlinkRe,
-		svgHrefExternalRe:   svgHrefRe,
-		svgHiddenTextStyle:  svgHiddenStyleRe,
-		svgHiddenTextAttrRe: svgHiddenAttrRe,
+		extensionRe:             extRe,
+		trackingPixelRe:         trackRe,
+		hiddenTrapRe:            trapRe,
+		commentTrapRe:           commentRe,
+		functionStripRe:         funcRe,
+		svgScriptRe:             regexp.MustCompile(`(?is)<script[^>]*>(.*?)</script>`),
+		svgForeignObjectRe:      svgForeignRe,
+		svgEventHandlerRe:       svgEventRe,
+		svgXlinkExternalRe:      svgXlinkRe,
+		svgHrefExternalRe:       svgHrefRe,
+		svgHiddenTextStyle:      svgHiddenStyleRe,
+		svgHiddenTextAttrRe:     svgHiddenAttrRe,
+		svgAnimationInjectionRe: svgAnimRe,
 	}
 }
 
@@ -267,6 +270,7 @@ func (e *Engine) rewriteSVG(res *Result, cfg *config.BrowserShield) {
 	// caller can see exactly which vector fired.
 	doc, res.SVGForeignObjectHits = countReplace(e.svgForeignObjectRe, doc)
 	doc, res.SVGEventHandlerHits = countReplace(e.svgEventHandlerRe, doc)
+	doc, res.SVGAnimationInjectionHits = countReplace(e.svgAnimationInjectionRe, doc)
 
 	// Rewrite each external ref form back to its own attribute name so the
 	// output stays well-formed XML. Without the split, plain href in an

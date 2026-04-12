@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
@@ -289,7 +288,7 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintln(logW, logMsg)
 				if dowAction == config.ActionBlock {
 					if auditLogger != nil {
-						auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolCallName, ""), "denial_of_wallet", dowReason)
+						auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", dowReason)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -306,7 +305,7 @@ func ForwardScannedInput(
 				}
 				// dow_action: warn — log and record near-miss, but forward the request.
 				if auditLogger != nil {
-					auditLogger.LogAnomaly(audit.NewMCPLogContext("MCP", toolCallName, ""), "denial_of_wallet", dowReason, 0)
+					auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", dowReason, 0)
 				}
 				recordAdaptiveSignal(session.SignalNearMiss)
 			}
@@ -360,7 +359,7 @@ func ForwardScannedInput(
 				frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, toolCallName)
 				_, _ = fmt.Fprintln(logW, frozenMsg)
 				if auditLogger != nil {
-					auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolCallName, ""), "frozen_tool", "tool not in frozen inventory")
+					auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "frozen_tool", "tool not in frozen inventory")
 				}
 				if m != nil {
 					m.RecordBlocked("mcp", "frozen_tool", 0, "")
@@ -478,7 +477,7 @@ func ForwardScannedInput(
 			if taintDecision.Result.Decision == session.PolicyAsk || taintDecision.Result.Decision == session.PolicyBlock {
 				if auditLogger != nil {
 					auditLogger.LogTaintDecision(
-						audit.LogContext{Method: "MCP", URL: toolCallName},
+						mustMCPAuditContext(auditLogger, "MCP", toolCallName),
 						taintDecision.Risk.Level.String(),
 						taintDecision.ActionClass.String(),
 						taintDecision.Sensitivity.String(),

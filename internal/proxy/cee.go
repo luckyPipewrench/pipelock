@@ -287,7 +287,7 @@ func ceeAdmit(
 			m.RecordCrossRequestEntropyExceeded()
 			detail := fmt.Sprintf("entropy budget exceeded: %.0f/%.0f bits",
 				et.CurrentUsage(sessionKey), et.Budget())
-			actx := audit.LogContext{Method: "CEE", URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}
+			actx := newHTTPAuditContext(logger, "CEE", targetURL, clientIP, requestID, agent)
 			if ceeCfg.EntropyBudget.Action == config.ActionBlock {
 				logger.LogBlocked(actx, "cross_request_entropy", detail)
 				result.Blocked = true
@@ -351,7 +351,7 @@ func ceeFragmentScan(
 	}
 	m.RecordCrossRequestDLPMatch()
 	detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
-	actx := audit.LogContext{Method: "CEE", URL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}
+	actx := newHTTPAuditContext(logger, "CEE", targetURL, clientIP, requestID, agent)
 	if ceeCfg.Action == config.ActionBlock {
 		logger.LogBlocked(actx, "cross_request_fragment", detail)
 		return &ceeResult{

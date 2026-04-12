@@ -21,6 +21,6 @@ func safeClose(c io.Closer, label string, logger *audit.Logger) {
 		return
 	}
 	if err := c.Close(); err != nil && logger != nil {
-		logger.LogError(audit.LogContext{Method: "close"}, fmt.Errorf("%s: %w", label, err))
+		logger.LogError(audit.NewMethodLogContext("close"), fmt.Errorf("%s: %w", label, err))
 	}
 }

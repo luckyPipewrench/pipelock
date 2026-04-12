@@ -21,12 +21,14 @@ type TextDLPMatch struct {
 	Encoded       string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain"
 	Bundle        string `json:"bundle,omitempty"`
 	BundleVersion string `json:"bundle_version,omitempty"`
+	Warn          bool   `json:"warn,omitempty"` // true for warn-mode patterns (informational only)
 }
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
 type TextDLPResult struct {
-	Clean   bool           `json:"clean"`
-	Matches []TextDLPMatch `json:"matches,omitempty"`
+	Clean                bool           `json:"clean"`
+	Matches              []TextDLPMatch `json:"matches,omitempty"`
+	InformationalMatches []TextDLPMatch `json:"informational_matches,omitempty"` // warn-mode matches (non-blocking)
 }
 
 // ScanTextForDLP checks arbitrary text for DLP pattern matches and env secret leaks.
@@ -129,6 +131,7 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 				Severity:      p.severity,
 				Bundle:        p.bundle,
 				BundleVersion: p.bundleVersion,
+				Warn:          p.warn,
 			})
 		}
 	}
@@ -158,7 +161,10 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	// try decoding each segment individually. Catches encoded secrets embedded
 	// in URLs within MCP tool arguments (e.g., "https://evil.com/<hex-key>/data")
 	// where whole-string decode fails because the text isn't pure hex/base64.
-	if len(matches) == 0 {
+	// Only skip segment decoding when enforced matches already exist.
+	// Warn-only matches must not gate off further scanning — an enforced
+	// match might hide in a decoded segment.
+	if !hasEnforcedMatch(matches) {
 		matches = append(matches, s.decodeTextSegments(cleaned)...)
 	}
 
@@ -180,7 +186,31 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 	if len(matches) == 0 {
 		return TextDLPResult{Clean: true}
 	}
-	return TextDLPResult{Clean: false, Matches: matches}
+
+	// Partition matches: warn-mode patterns go to InformationalMatches,
+	// enforced patterns go to Matches. Warn-only results are Clean=true
+	// so transports take no enforcement action.
+	var enforced, informational []TextDLPMatch
+	for _, m := range matches {
+		if m.Warn {
+			informational = append(informational, m)
+		} else {
+			enforced = append(enforced, m)
+		}
+	}
+
+	// Emit warn events through the hook so callers don't need individual wiring.
+	if len(informational) > 0 && DLPWarnHook != nil {
+		for _, m := range informational {
+			DLPWarnHook(m.PatternName, m.Severity, "text")
+		}
+	}
+
+	return TextDLPResult{
+		Clean:                len(enforced) == 0,
+		Matches:              enforced,
+		InformationalMatches: informational,
+	}
 }
 
 // maxDecodeDepth bounds recursive encoding decode to prevent CPU exhaustion.
@@ -257,6 +287,7 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 				Encoded:       encoding,
 				Bundle:        p.bundle,
 				BundleVersion: p.bundleVersion,
+				Warn:          p.warn,
 			})
 		}
 	}
@@ -308,6 +339,16 @@ func deduplicateMatches(matches []TextDLPMatch) []TextDLPMatch {
 		}
 	}
 	return result
+}
+
+// hasEnforcedMatch reports whether any match in the slice is non-warn (enforced).
+func hasEnforcedMatch(matches []TextDLPMatch) bool {
+	for _, m := range matches {
+		if !m.Warn {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeTextSegments splits text on common URL/path delimiters and tries

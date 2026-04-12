@@ -13,6 +13,7 @@ import (
 type DLPMatch struct {
 	PatternName string
 	Matched     string
+	Warn        bool // true for warn-mode patterns (informational only)
 }
 
 // fragment holds a single outbound payload chunk with its arrival time.
@@ -144,7 +145,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 
 	// Scan the concatenated buffer.
 	result := sc.ScanTextForDLP(ctx, string(buf))
-	if result.Clean {
+	if result.Clean && len(result.InformationalMatches) == 0 {
 		return nil
 	}
 
@@ -158,11 +159,17 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 			for _, m := range fragResult.Matches {
 				singleFragment[m.PatternName] = true
 			}
+			for _, m := range fragResult.InformationalMatches {
+				singleFragment[m.PatternName] = true
+			}
 		}
 	}
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).
+	// Warn-mode matches are NOT included here — they are already emitted
+	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
+	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch
 	for _, m := range result.Matches {
 		if !singleFragment[m.PatternName] {

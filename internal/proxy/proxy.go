@@ -348,7 +348,13 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if currentScanner == nil {
 				currentScanner = p.scannerPtr.Load()
 			}
-			result := currentScanner.Scan(req.Context(), redirectURL)
+			redirectWarnCtx := scanner.DLPWarnContextFromCtx(req.Context())
+			redirectWarnCtx.Method = req.Method
+			redirectWarnCtx.URL = redirectURL
+			redirectWarnCtx.ClientIP = clientIP
+			redirectWarnCtx.RequestID = requestID
+			redirectWarnCtx.Agent = agentName
+			result := currentScanner.Scan(scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx), redirectURL)
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
@@ -1354,7 +1360,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	actx := newHTTPAuditContext(p.logger, http.MethodGet, displayURL, clientIP, requestID, agent)
 
 	// Scan URL through all scanners
-	result := sc.Scan(r.Context(), targetURL)
+	scanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+		Method: http.MethodGet, URL: targetURL, ClientIP: clientIP,
+		RequestID: requestID, Agent: agent, Transport: "fetch",
+	})
+	r = r.WithContext(scanCtx)
+	result := sc.Scan(scanCtx, targetURL)
 
 	// Capture observer: record URL verdict for policy replay.
 	urlFindings := urlResultToFindings(result)

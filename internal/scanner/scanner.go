@@ -100,11 +100,7 @@ func (r Result) IsConfigMismatch() bool {
 	return r.Class == ClassConfigMismatch
 }
 
-// DLPWarnHook is called whenever a warn-mode DLP pattern matches.
-// The runtime sets this to route warn events to the audit logger.
-// When nil, warn matches still allow traffic but are not emitted.
-// Parameters: patternName, severity, transport ("url" or "text").
-var DLPWarnHook func(patternName, severity, transport string)
+// dlpWarnCtxKey and DLPWarnContext are defined in warnctx.go.
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
@@ -140,6 +136,15 @@ type Scanner struct {
 	seedEnabled                bool
 	seedMinWords               int
 	seedVerifyChecksum         bool
+	dlpWarnHook                func(ctx context.Context, patternName, severity string)
+}
+
+// SetDLPWarnHook sets the callback for warn-mode DLP matches.
+// The hook receives the request context (which may carry DLPWarnContext
+// metadata), pattern name, and severity. Called once per scanner instance
+// from runtime startup and on config reload.
+func (s *Scanner) SetDLPWarnHook(hook func(ctx context.Context, patternName, severity string)) {
+	s.dlpWarnHook = hook
 }
 
 type compiledPattern struct {
@@ -615,14 +620,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	dlpResult, dlpWarns := s.checkDLP(parsed)
 	if !dlpResult.Allowed {
 		dlpResult.WarnMatches = dlpWarns
-		emitDLPWarns(dlpWarns)
+		s.emitDLPWarns(ctx, dlpWarns)
 		return dlpResult
 	}
 	// Attach DLP warn matches to whatever result is returned from here on.
 	// The defer fires on every return path, including blocks by later scanners.
 	defer func() {
 		result.WarnMatches = dlpWarns
-		emitDLPWarns(dlpWarns)
+		s.emitDLPWarns(ctx, dlpWarns)
 	}()
 	if result := s.checkEntropy(parsed); !result.Allowed {
 		return result
@@ -1508,13 +1513,13 @@ func nextCombination(indices []int, n int) bool {
 	return false
 }
 
-// emitDLPWarns calls DLPWarnHook for each warn match if the hook is set.
-func emitDLPWarns(matches []WarnMatch) {
-	if len(matches) == 0 || DLPWarnHook == nil {
+// emitDLPWarns calls the instance warn hook for each warn match if set.
+func (s *Scanner) emitDLPWarns(ctx context.Context, matches []WarnMatch) {
+	if len(matches) == 0 || s.dlpWarnHook == nil {
 		return
 	}
 	for _, m := range matches {
-		DLPWarnHook(m.PatternName, m.Severity, "url")
+		s.dlpWarnHook(ctx, m.PatternName, m.Severity)
 	}
 }
 

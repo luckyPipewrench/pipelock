@@ -56,7 +56,32 @@ const (
 	serverWriteTimeout      = 10 * time.Second
 	serverIdleTimeout       = 120 * time.Second
 	serverShutdownTimeout   = 5 * time.Second
+
+	// transportUnknown is the fallback transport label when DLPWarnContext
+	// does not carry a transport value.
+	transportUnknown = "unknown"
 )
+
+// dlpWarnLogContext builds the appropriate audit LogContext for a DLP warn
+// event based on which identifier fields are populated. CONNECT-style events
+// must carry both Target and the CONNECT method, MCP events carry Resource,
+// and URL-bearing request paths use the HTTP constructor. Falls back to a
+// zero LogContext when no transport-specific identifier is set.
+func dlpWarnLogContext(wc scanner.DLPWarnContext) audit.LogContext {
+	switch {
+	case wc.Target != "" && wc.Method == http.MethodConnect:
+		lctx, _ := audit.NewConnectLogContext(wc.Target, wc.ClientIP, wc.RequestID, wc.Agent)
+		return lctx
+	case wc.Resource != "":
+		lctx, _ := audit.NewMCPLogContext(wc.Method, wc.Resource, wc.Agent)
+		return lctx
+	case wc.URL != "":
+		lctx, _ := audit.NewHTTPLogContext(wc.Method, wc.URL, wc.ClientIP, wc.RequestID, wc.Agent)
+		return lctx
+	default:
+		return audit.LogContext{}
+	}
+}
 
 // newHTTPServer creates an http.Server with the standard pipelock timeouts.
 // Callers that need non-default values (e.g. reverse proxy WriteTimeout) can
@@ -227,6 +252,15 @@ Examples:
 
 			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
+			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+				wc := scanner.DLPWarnContextFromCtx(ctx)
+				transport := wc.Transport
+				if transport == "" {
+					transport = transportUnknown
+				}
+				lctx := dlpWarnLogContext(wc)
+				logger.LogDLPWarn(lctx, patternName, severity, transport)
+			})
 			defer sc.Close()
 			m := metrics.New()
 
@@ -545,6 +579,15 @@ Examples:
 								cmd.PrintErrf("WARNING: DEGRADED — standard pack failed after reload, running core patterns only\n")
 							}
 							newSc := scanner.New(newCfg)
+							newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+								wc := scanner.DLPWarnContextFromCtx(ctx)
+								transport := wc.Transport
+								if transport == "" {
+									transport = transportUnknown
+								}
+								lctx := dlpWarnLogContext(wc)
+								logger.LogDLPWarn(lctx, patternName, severity, transport)
+							})
 							p.Reload(newCfg, newSc)
 							if reloadErr := p.LoadCertCache(newCfg); reloadErr != nil {
 								logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, configFile),

@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -285,8 +286,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Content scan.
 	var verdict InputVerdict
 	scanEnabled := inputCfg != nil && inputCfg.Enabled
+	inputScanCtx := context.Background()
 	if scanEnabled {
-		verdict = ScanRequest(msg, sc, action, onParseError)
+		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, scanner.DLPWarnContext{
+			Transport: "mcp_http",
+		})
+		verdict = ScanRequest(inputScanCtx, msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
 		// When input scanning is disabled, extract enough metadata from the
@@ -331,7 +336,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 		if IsA2AMethod(method) {
-			a2aResult := ScanA2ARequestBody(context.Background(), msg, sc, opts.A2ACfg)
+			a2aResult := ScanA2ARequestBody(inputScanCtx, msg, sc, opts.A2ACfg)
 			if !a2aResult.Clean {
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
@@ -663,8 +668,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// sending to client. Handler output is untrusted — it could contain
 			// secrets or injection payloads.
 			scanVerdict := ScanResponse(redirectResult.Response, sc)
-			// context.Background: scanHTTPInput has no ctx param; param unused in ScanTextForDLP.
-			dlpResult := sc.ScanTextForDLP(context.Background(), string(redirectResult.Response))
+			// scanHTTPInput has no ctx param; wrap background with DLP warn metadata.
+			httpWarnCtx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+				Transport: "mcp_http",
+			})
+			dlpResult := sc.ScanTextForDLP(httpWarnCtx, string(redirectResult.Response))
 			if !scanVerdict.Clean {
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
 				recordAdaptiveSignal(session.SignalBlock)
@@ -1111,6 +1119,11 @@ func RunHTTPListenerProxy(
 			}
 			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
+
+		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+			Transport: "mcp_http",
+		})
+		r = r.WithContext(httpWarnCtx)
 
 		// Scan Authorization header for DLP patterns. The body scanner
 		// doesn't see HTTP headers, so an agent could leak credentials

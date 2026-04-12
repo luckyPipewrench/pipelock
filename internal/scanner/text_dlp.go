@@ -35,7 +35,7 @@ type TextDLPResult struct {
 // Unlike checkDLP (which operates on URLs), this method works on raw text strings
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
-func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
+func (s *Scanner) ScanTextForDLP(ctx context.Context, text string) TextDLPResult {
 	// Core DLP runs FIRST — immutable safety floor. Core matches are
 	// prepended to results; main scanner also runs to capture additional
 	// findings (env leaks, seed phrases, non-core patterns).
@@ -199,10 +199,10 @@ func (s *Scanner) ScanTextForDLP(_ context.Context, text string) TextDLPResult {
 		}
 	}
 
-	// Emit warn events through the hook so callers don't need individual wiring.
-	if len(informational) > 0 && DLPWarnHook != nil {
+	// Emit warn events through the instance hook so callers don't need individual wiring.
+	if len(informational) > 0 && s.dlpWarnHook != nil {
 		for _, m := range informational {
-			DLPWarnHook(m.PatternName, m.Severity, "text")
+			s.dlpWarnHook(ctx, m.PatternName, m.Severity)
 		}
 	}
 

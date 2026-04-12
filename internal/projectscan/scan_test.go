@@ -440,3 +440,72 @@ func TestScanFileForEntropy_QuotedValues(t *testing.T) {
 		t.Error("expected entropy finding for quoted high-entropy value")
 	}
 }
+
+// TestEnvValueIsNeverSecret covers the structural path filter used to
+// prevent the env-var scanner from flagging file paths as credentials.
+func TestEnvValueIsNeverSecret(t *testing.T) {
+	// Split fake credentials so pipelock's own PR diff scanner does
+	// not flag these test vectors (G101 + scan-diff). Same pattern used
+	// throughout the pipelock test suite for synthetic credentials.
+	fakeAWS := "AKIA" + "IOSFODNN7EXAMPLE"
+	fakeAnt := "sk-" + "ant-" + "api03-test1234567890"
+	cases := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"unix_absolute", "/home/runner/work/_temp/_runner_file_commands/set_output_1234567890123456", true},
+		{"unix_nested", "/usr/local/bin/pipelock", true},
+		{"unix_root_only", "/", false},
+		{"unix_single_slash", "/foo", false},
+		{"windows_backslash", `C:\Users\runner\file`, true},
+		{"windows_forward", "C:/Users/runner/file", true},
+		{"windows_no_drive", "Users/runner", false},
+		{"non_path_secret", fakeAWS, false},
+		{"non_path_token", fakeAnt, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := envValueIsNeverSecret(tc.value); got != tc.want {
+				t.Errorf("envValueIsNeverSecret(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanEnvSecrets_SkipsSafeNames asserts that the GitHub Actions
+// runner env vars (and other well-known safe names) are excluded from
+// DLP scanning so digit-heavy temp paths do not produce false
+// positives against the Credit Card Number pattern.
+func TestScanEnvSecrets_SkipsSafeNames(t *testing.T) {
+	// Use a value that matches the CCN regex (\b\d{4}(?:[- ]?\d){11,15}\b)
+	// but is NOT path-shaped, so envValueIsNeverSecret cannot short-circuit
+	// the skip. The only filter that can still exclude GITHUB_PATH is
+	// envVarAlwaysSafe — which is what this test is meant to prove. The
+	// value is assembled from string literals at runtime so hardcoded-
+	// credential linters do not flag the source.
+	fakeCCN := "1234-" + "5678-" + "9012-" + "3456"
+	t.Setenv("GITHUB_PATH", fakeCCN)
+	findings := scanEnvSecrets(compileDLPPatterns())
+	for _, f := range findings {
+		if strings.Contains(f.Message, "GITHUB_PATH") {
+			t.Errorf("GITHUB_PATH should be skipped, got finding: %s", f.Message)
+		}
+	}
+}
+
+// TestScanEnvSecrets_SkipsPathValues asserts that env vars whose
+// values look like absolute file paths are excluded regardless of
+// their name. Paths can match digit-heavy regexes by coincidence but
+// are never themselves secrets.
+func TestScanEnvSecrets_SkipsPathValues(t *testing.T) {
+	// Unknown var name — wouldn't be in envVarAlwaysSafe — but with a
+	// path-shaped value, it must still be skipped.
+	t.Setenv("MY_CUSTOM_PATH", "/tmp/_some_long_path_with_digits_1234567890123456")
+	findings := scanEnvSecrets(compileDLPPatterns())
+	for _, f := range findings {
+		if strings.Contains(f.Message, "MY_CUSTOM_PATH") {
+			t.Errorf("absolute path value should be skipped, got finding: %s", f.Message)
+		}
+	}
+}

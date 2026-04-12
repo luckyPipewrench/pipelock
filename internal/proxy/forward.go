@@ -735,9 +735,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 			SessionContaminated: forwardTaint.Risk.Contaminated,
 			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 			AuthorityKind:       forwardTaint.Authority.String(),
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 		http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
@@ -767,9 +770,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 				SessionContaminated: forwardTaint.Risk.Contaminated,
 				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       forwardTaint.Authority.String(),
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 			http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
@@ -1053,6 +1059,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Actor:          agent,
 			ActorAuth:      id.Auth,
 			SessionTaint:   forwardTaint.Risk.Level.String(),
+			TaskID:         forwardTaint.Task.CurrentTaskID,
 			AuthorityKind:  forwardTaint.Authority.String(),
 			AuthorityRef:   forwardTaint.ActionRef,
 			RequiresReauth: forwardRequiresReauth,
@@ -1124,9 +1131,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 				SessionContaminated: forwardTaint.Risk.Contaminated,
 				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       forwardTaint.Authority.String(),
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -1395,9 +1405,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 			SessionContaminated: forwardTaint.Risk.Contaminated,
 			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 			AuthorityKind:       forwardTaint.Authority.String(),
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -1437,9 +1450,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 		SessionContaminated: forwardTaint.Risk.Contaminated,
 		RecentTaintSources:  forwardTaint.Risk.Sources,
+		SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 		AuthorityKind:       forwardTaint.Authority.String(),
 		TaintDecision:       forwardTaint.Result.Decision.String(),
 		TaintDecisionReason: forwardTaint.Result.Reason,
+		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 	})
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {

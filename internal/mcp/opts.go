@@ -82,7 +82,8 @@ type MCPProxyOpts struct {
 	CaptureObs capture.CaptureObserver
 
 	// Transport identifies the MCP transport for capture records.
-	// Set to "mcp_stdio" for stdio proxy or "mcp_http" for HTTP proxy.
+	// Set by each proxy surface, for example "mcp_stdio", "mcp_http_upstream",
+	// "mcp_http_listener", or "mcp_ws".
 	Transport string
 
 	// ReceiptEmitter emits signed action receipts for MCP decisions.

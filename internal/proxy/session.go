@@ -386,6 +386,10 @@ func (s *SessionState) BeginNewTask(label string) (prev, current session.TaskCon
 		s.runtimeOverrides = kept
 	}
 
+	// Refresh activity so cleanup doesn't evict a session that just had
+	// its task boundary rotated via the admin API.
+	s.lastActivity = now
+
 	return prev, s.task, clearedOverrides
 }
 
@@ -402,6 +406,9 @@ func (s *SessionState) AddRuntimeTrustOverride(override session.TrustOverride) s
 		override.TaskID = s.task.CurrentTaskID
 	}
 	s.runtimeOverrides = append(s.runtimeOverrides, override)
+	// Refresh activity so cleanup doesn't evict a session that just
+	// received a trust override via the admin API.
+	s.lastActivity = time.Now()
 	return override
 }
 

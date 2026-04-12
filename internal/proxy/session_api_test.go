@@ -1422,14 +1422,25 @@ func TestSessionManager_WithMutableIdentitySession_BlocksConcurrentWriteLock(t *
 		t.Fatal("mutation callback did not start")
 	}
 
+	writerStarted := make(chan struct{})
 	writerAcquired := make(chan struct{})
 	writerRelease := make(chan struct{})
 	go func() {
+		close(writerStarted)
 		sm.mu.Lock()
 		close(writerAcquired)
 		<-writerRelease
 		sm.mu.Unlock()
 	}()
+
+	// Wait for the writer goroutine to be scheduled before checking it
+	// stays blocked. Without this handshake, a slow scheduler could make
+	// the 50ms window pass before the goroutine even reaches sm.mu.Lock().
+	select {
+	case <-writerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("writer goroutine did not start")
+	}
 
 	select {
 	case <-writerAcquired:
@@ -1531,11 +1542,19 @@ func TestSessionManager_WithMutableIdentitySession_BlocksEvictionDuringMutation(
 				t.Fatal("mutation callback did not start")
 			}
 
+			evictStarted := make(chan struct{})
 			evictDone := make(chan struct{})
 			go func() {
+				close(evictStarted)
 				sm.GetOrCreate("evictor|10.0.0.2")
 				close(evictDone)
 			}()
+
+			select {
+			case <-evictStarted:
+			case <-time.After(time.Second):
+				t.Fatal("evictor goroutine did not start")
+			}
 
 			select {
 			case <-evictDone:

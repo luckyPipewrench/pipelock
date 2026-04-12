@@ -871,7 +871,7 @@ func TestSessionAPI_HandleTask_RateLimited(t *testing.T) {
 	sm.GetOrCreate("agent|10.0.0.1")
 	handler := newTestSessionAPIHandler(t, sm)
 
-	// Task and reset share the same limiter — exhaust it via /task.
+	// Exhaust the /task limiter via /task requests.
 	for range sessionAPIRateLimitMax {
 		req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
 		w := httptest.NewRecorder()

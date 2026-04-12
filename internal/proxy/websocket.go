@@ -151,13 +151,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
 
-	actx := audit.LogContext{
-		Method:    "WS",
-		URL:       targetURL,
-		ClientIP:  clientIP,
-		RequestID: requestID,
-		Agent:     agent,
-	}
+	actx := newHTTPAuditContext(log, "WS", targetURL, clientIP, requestID, agent)
 
 	// Run through all 9 scanner layers.
 	result := sc.Scan(r.Context(), scanURL)

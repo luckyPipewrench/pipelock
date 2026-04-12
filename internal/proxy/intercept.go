@@ -134,7 +134,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) {
 		return
 	}
 	if err := e.Emit(opts); err != nil && ic.Logger != nil {
-		ic.Logger.LogError(audit.LogContext{RequestID: opts.RequestID}, err)
+		ic.Logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
 	}
 }
 
@@ -224,7 +224,7 @@ func interceptTunnel(
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 
-	ictx := audit.NewConnectLogContext(net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
+	ictx := newConnectAuditContext(ic.Logger, net.JoinHostPort(ic.TargetHost, ic.TargetPort), ic.ClientIP, ic.RequestID, ic.Agent)
 
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	handshakeStart := time.Now()
@@ -363,7 +363,8 @@ func newInterceptHandler(
 		}
 		if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
 			mismatch := r.Host + " vs " + target
-			ic.Logger.LogBlocked(audit.LogContext{Method: r.Method, Target: net.JoinHostPort(reqHost, reqPort), ClientIP: ic.ClientIP, RequestID: ic.RequestID, Agent: ic.Agent}, "tls_authority_mismatch", "authority mismatch: "+mismatch)
+			mismatchURL := schemeHTTPS + "://" + net.JoinHostPort(reqHost, reqPort) + r.URL.RequestURI()
+			ic.Logger.LogBlocked(newHTTPAuditContext(ic.Logger, r.Method, mismatchURL, ic.ClientIP, ic.RequestID, ic.Agent), "tls_authority_mismatch", "authority mismatch: "+mismatch)
 			ic.Metrics.RecordTLSRequestBlocked("authority_mismatch")
 			interceptEmitReceipt(ic, receipt.EmitOpts{
 				ActionID:  actionID,
@@ -402,7 +403,7 @@ func newInterceptHandler(
 
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.
-		actx := audit.NewHTTPLogContext(r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
+		actx := newHTTPAuditContext(ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent)
 
 		// Track whether any finding occurred (URL, body DLP, or response scan).
 		// RecordClean is only applied when the request was fully clean so that

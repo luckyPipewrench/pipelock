@@ -2243,7 +2243,12 @@ func (c *Config) validateDLP() error {
 			return fmt.Errorf("DLP pattern %q has invalid regex: %w", p.Name, err)
 		}
 		if p.Action != "" {
-			return fmt.Errorf("DLP pattern %q has action %q which is not supported; per-pattern DLP actions are not yet implemented", p.Name, p.Action)
+			if p.Action != ActionWarn {
+				return fmt.Errorf("DLP pattern %q has unsupported action %q; only %q is allowed as a per-pattern action", p.Name, p.Action, ActionWarn)
+			}
+			if p.Compiled {
+				return fmt.Errorf("DLP pattern %q is a built-in default and cannot be set to warn mode; built-in patterns always enforce", p.Name)
+			}
 		}
 		if p.Validator != "" {
 			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF

@@ -808,6 +808,16 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	anomalies = append(anomalies, ipAnomalies...)
 
 	// Record adaptive signals (only when adaptive enforcement is enabled).
+	// escalated tracks whether the current request actually crossed an
+	// adaptive escalation threshold. Downstream airlock triggering is
+	// edge-bound on this flag so a session that merely sits at a trigger
+	// level (plateau) does not repeatedly re-arm airlock on every request.
+	// Plateau triggering produced a drain -> hard -> drain deadlock under
+	// retrying clients: timer-based de-escalation would recover to hard,
+	// the next allowed request would observe the still-elevated level,
+	// slam SetTier(drain) again, and the loop never broke. See
+	// TestAirlockEdgeTrigger_NoPlateauReentry.
+	escalated := false
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
 		ep := decide.EscalationParams{
@@ -827,15 +837,18 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			// probing should still accumulate a weak signal so the
 			// session isn't completely invisible to adaptive scoring.
 			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+				escalated = true
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
 			if decide.RecordSignal(sess, session.SignalBlock, ep) {
+				escalated = true
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
 			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+				escalated = true
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
@@ -848,10 +861,10 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	level := sess.EscalationLevel()
 
-	// Airlock auto-triggers: map adaptive escalation levels to airlock tiers.
-	// Only fires when airlock is enabled. sess is already *SessionState from
-	// SessionManager.GetOrCreate, so Airlock() is directly accessible.
-	if cfg.Airlock.Enabled {
+	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
+	// every request that happens to observe a session at a trigger level.
+	// See the long comment at the `escalated` declaration above.
+	if cfg.Airlock.Enabled && escalated {
 		targetTier := ""
 		switch session.EscalationLabel(level) {
 		case "elevated":

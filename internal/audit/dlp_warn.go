@@ -20,13 +20,13 @@ func (l *Logger) LogDLPWarn(ctx LogContext, patternName, severity, transport str
 		str("severity", severity).
 		str("transport", transport).
 		str("mitre_technique", technique).
-		str("method", ctx.Method).
-		optStr("url", ctx.URL).
-		optStr("target", ctx.Target).
-		optStr("resource", ctx.Resource).
-		optStr("client_ip", ctx.ClientIP).
-		optStr("request_id", ctx.RequestID).
-		optStr("agent", ctx.Agent)
+		str("method", ctx.Method()).
+		optStr("url", ctx.URL()).
+		optStr("target", ctx.Target()).
+		optStr("resource", ctx.Resource()).
+		optStr("client_ip", ctx.ClientIP()).
+		optStr("request_id", ctx.RequestID()).
+		optStr("agent", ctx.Agent())
 	e.msg("DLP warn-mode match (informational)")
 
 	if l.emitter != nil {

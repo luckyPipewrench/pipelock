@@ -30,7 +30,10 @@ func TestLogDLPWarn_EmitsCorrectFields(t *testing.T) {
 	}
 	logger.zl = logger.zl.Output(&buf)
 
-	ctx := NewHTTPLogContext("GET", "https://example.com/api", "10.0.0.1", "req-42", "test-agent")
+	ctx, ctxErr := NewHTTPLogContext("GET", "https://example.com/api", "10.0.0.1", "req-42", "test-agent")
+	if ctxErr != nil {
+		t.Fatalf("NewHTTPLogContext: %v", ctxErr)
+	}
 	logger.LogDLPWarn(ctx, wantPatternStagedKey, wantSeverityHigh, wantTransportFetch)
 
 	output := buf.String()
@@ -84,7 +87,10 @@ func TestLogDLPWarn_EmitterReceivesEvent(t *testing.T) {
 	logger.SetEmitter(emitter)
 	t.Cleanup(func() { _ = emitter.Close() })
 
-	ctx := NewHTTPLogContext("POST", "https://api.example.com/v1", "10.0.0.2", "req-99", "my-agent")
+	ctx, ctxErr := NewHTTPLogContext("POST", "https://api.example.com/v1", "10.0.0.2", "req-99", "my-agent")
+	if ctxErr != nil {
+		t.Fatalf("NewHTTPLogContext: %v", ctxErr)
+	}
 	logger.LogDLPWarn(ctx, wantPatternStagedTok, wantSeverityMedium, wantTransportBody)
 
 	_ = emitter.Close() // flush

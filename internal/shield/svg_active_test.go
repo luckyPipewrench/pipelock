@@ -310,6 +310,124 @@ func TestRewriteSVG_NamespacePrefixedElements(t *testing.T) {
 	}
 }
 
+func TestRewriteSVG_StripsUnquotedEventHandlers(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(nil)
+	tests := []struct {
+		name string
+		svg  string
+	}{
+		{
+			name: "unquoted_onload",
+			svg:  `<svg><rect onload=alert(1) x="0"/></svg>`,
+		},
+		{
+			name: "unquoted_onerror",
+			svg:  `<svg><image onerror=fetch('https://evil.example') href="#x"/></svg>`,
+		},
+		{
+			name: "unquoted_onmouseover",
+			svg:  `<svg><circle onmouseover=steal() cx="50" cy="50" r="40"/></svg>`,
+		},
+		{
+			name: "mixed_quoted_and_unquoted",
+			svg:  `<svg><rect onclick="ok()" onfocus=bad() x="0"/></svg>`,
+		},
+		{
+			name: "unquoted_self_closing_preserves_slash",
+			svg:  `<svg><rect onload=alert(1)/></svg>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			res := e.Rewrite(tt.svg, PipelineSVG, svgTestCfg())
+			if res.SVGEventHandlerHits == 0 {
+				t.Fatalf("expected event handler hits, got 0 for input: %s", tt.svg)
+			}
+			for _, needle := range []string{"onload", "onerror", "onmouseover", "onclick", "onfocus"} {
+				if strings.Contains(res.Content, needle+"=") {
+					t.Errorf("unquoted event handler %q= survived strip in: %s", needle, res.Content)
+				}
+			}
+			// Self-closing elements must keep their /> after stripping.
+			if tt.name == "unquoted_self_closing_preserves_slash" {
+				if !strings.Contains(res.Content, "/>") {
+					t.Errorf("self-closing /> lost after strip: %s", res.Content)
+				}
+			}
+		})
+	}
+}
+
+func TestRewriteSVG_StripsAnimationInjection(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(nil)
+	tests := []struct {
+		name string
+		svg  string
+		want int
+	}{
+		{
+			name: "set_onload",
+			svg:  `<svg><set attributeName="onload" to="alert(1)"/></svg>`,
+			want: 1,
+		},
+		{
+			name: "animate_onclick",
+			svg:  `<svg><animate attributeName="onclick" values="steal()" dur="0s" fill="freeze"/></svg>`,
+			want: 1,
+		},
+		{
+			name: "animateTransform_onerror",
+			svg:  `<svg><animateTransform attributeName="onerror" to="evil()"/></svg>`,
+			want: 1,
+		},
+		{
+			name: "animateMotion_safe",
+			svg:  `<svg><animateMotion dur="3s" repeatCount="indefinite"><mpath href="#path1"/></animateMotion></svg>`,
+			want: 0,
+		},
+		{
+			name: "animate_safe_attribute",
+			svg:  `<svg><animate attributeName="opacity" from="0" to="1" dur="1s"/></svg>`,
+			want: 0,
+		},
+		{
+			name: "namespace_prefixed_set",
+			svg:  `<svg><svg:set attributeName="onload" to="alert(1)"/></svg>`,
+			want: 1,
+		},
+		{
+			name: "single_quoted_attributename",
+			svg:  `<svg><set attributeName='onfocus' to='evil()'/></svg>`,
+			want: 1,
+		},
+		{
+			name: "unquoted_attributename",
+			svg:  `<svg><set attributeName=onload to=alert(1)/></svg>`,
+			want: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			res := e.Rewrite(tt.svg, PipelineSVG, svgTestCfg())
+			if res.SVGAnimationInjectionHits != tt.want {
+				t.Fatalf("SVGAnimationInjectionHits = %d, want %d for input: %s",
+					res.SVGAnimationInjectionHits, tt.want, tt.svg)
+			}
+			if tt.want > 0 {
+				for _, tag := range []string{"<set", "<animate", "<animateTransform"} {
+					if strings.Contains(res.Content, tag+" attributeName") {
+						t.Errorf("animation injection element survived strip: %s", res.Content)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestRewriteSVG_CleanSVGPassthrough(t *testing.T) {
 	t.Parallel()
 	e := NewEngine(nil)
@@ -319,9 +437,11 @@ func TestRewriteSVG_CleanSVGPassthrough(t *testing.T) {
 </svg>`
 	res := e.Rewrite(svg, PipelineSVG, svgTestCfg())
 	if res.SVGForeignObjectHits != 0 || res.SVGEventHandlerHits != 0 ||
-		res.SVGXlinkExternalHits != 0 || res.SVGHiddenTextHits != 0 {
-		t.Errorf("clean SVG triggered strip: foreign=%d event=%d xlink=%d hidden=%d",
+		res.SVGXlinkExternalHits != 0 || res.SVGHiddenTextHits != 0 ||
+		res.SVGAnimationInjectionHits != 0 {
+		t.Errorf("clean SVG triggered strip: foreign=%d event=%d xlink=%d hidden=%d anim=%d",
 			res.SVGForeignObjectHits, res.SVGEventHandlerHits,
-			res.SVGXlinkExternalHits, res.SVGHiddenTextHits)
+			res.SVGXlinkExternalHits, res.SVGHiddenTextHits,
+			res.SVGAnimationInjectionHits)
 	}
 }

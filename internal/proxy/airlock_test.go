@@ -220,32 +220,6 @@ func TestAirlockState_TryDeescalate_ZeroTimerDisables(t *testing.T) {
 	}
 }
 
-func TestAirlockState_ExtendTimer(t *testing.T) {
-	a := NewAirlockState()
-	a.mu.Lock()
-	a.tier = config.AirlockTierHard
-	a.enteredAt = time.Now().Add(-10 * time.Minute)
-	a.mu.Unlock()
-
-	before := time.Now()
-	a.ExtendTimer()
-
-	a.mu.Lock()
-	entered := a.enteredAt
-	a.mu.Unlock()
-
-	if entered.Before(before) {
-		t.Error("ExtendTimer should reset enteredAt to now")
-	}
-
-	// After extension, deescalation should NOT fire (timer was 5 min default).
-	timers := &config.AirlockTimers{HardMinutes: 5}
-	changed, _, _ := a.TryDeescalate(timers)
-	if changed {
-		t.Error("deescalation should not fire after timer extension")
-	}
-}
-
 func TestAirlockState_HalfClose(t *testing.T) {
 	a := NewAirlockState()
 	called := 0

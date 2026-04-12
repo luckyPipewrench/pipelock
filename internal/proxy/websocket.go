@@ -324,7 +324,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if wsSess, ok := wsRec.(*SessionState); ok && wsSess != nil {
 		tier := wsSess.Airlock().Tier()
 		if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
-			wsSess.Airlock().ExtendTimer()
 			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportWS, http.MethodGet)
 			p.metrics.RecordWSBlocked()

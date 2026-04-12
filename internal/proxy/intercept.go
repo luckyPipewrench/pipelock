@@ -387,7 +387,6 @@ func newInterceptHandler(
 			if tier != config.AirlockTierNone {
 				allowed, reason := ClassifyAction(tier, r.Method, TransportConnect, true)
 				if !allowed {
-					interceptSess.Airlock().ExtendTimer()
 					ic.Logger.LogAirlockDeny(interceptSess.key, tier, TransportConnect, r.Method, ic.ClientIP, ic.RequestID)
 					ic.Metrics.RecordAirlockDenial(tier, TransportConnect, r.Method)
 					ic.Metrics.RecordTLSRequestBlocked("airlock")

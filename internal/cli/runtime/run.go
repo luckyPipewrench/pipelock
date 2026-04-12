@@ -673,6 +673,10 @@ Examples:
 						switch {
 						case killswitch.IsSessionActionPath(path, "airlock"):
 							sessionAPI.HandleAirlock(w, r)
+						case killswitch.IsSessionActionPath(path, "task"):
+							sessionAPI.HandleTask(w, r)
+						case killswitch.IsSessionActionPath(path, "trust"):
+							sessionAPI.HandleTrust(w, r)
 						case killswitch.IsSessionActionPath(path, "reset"):
 							sessionAPI.HandleReset(w, r)
 						default:

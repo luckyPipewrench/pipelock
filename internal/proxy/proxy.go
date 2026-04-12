@@ -830,6 +830,16 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	anomalies = append(anomalies, ipAnomalies...)
 
 	// Record adaptive signals (only when adaptive enforcement is enabled).
+	// escalated tracks whether the current request actually crossed an
+	// adaptive escalation threshold. Downstream airlock triggering is
+	// edge-bound on this flag so a session that merely sits at a trigger
+	// level (plateau) does not repeatedly re-arm airlock on every request.
+	// Plateau triggering produced a drain -> hard -> drain deadlock under
+	// retrying clients: timer-based de-escalation would recover to hard,
+	// the next allowed request would observe the still-elevated level,
+	// slam SetTier(drain) again, and the loop never broke. See
+	// TestAirlockEdgeTrigger_NoPlateauReentry.
+	escalated := false
 	if cfg.AdaptiveEnforcement.Enabled {
 		adaptiveCfg := cfg.AdaptiveEnforcement
 		ep := decide.EscalationParams{
@@ -849,15 +859,18 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			// probing should still accumulate a weak signal so the
 			// session isn't completely invisible to adaptive scoring.
 			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+				escalated = true
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !result.Allowed {
 			if decide.RecordSignal(sess, session.SignalBlock, ep) {
+				escalated = true
 				// Update block_all flag so RecordRequest stops refreshing lastActivity.
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
 			if decide.RecordSignal(sess, session.SignalNearMiss, ep) {
+				escalated = true
 				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if !deferClean {
@@ -870,10 +883,10 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 	level := sess.EscalationLevel()
 
-	// Airlock auto-triggers: map adaptive escalation levels to airlock tiers.
-	// Only fires when airlock is enabled. sess is already *SessionState from
-	// SessionManager.GetOrCreate, so Airlock() is directly accessible.
-	if cfg.Airlock.Enabled {
+	// Airlock auto-triggers fire on adaptive escalation EDGES only, not on
+	// every request that happens to observe a session at a trigger level.
+	// See the long comment at the `escalated` declaration above.
+	if cfg.Airlock.Enabled && escalated {
 		targetTier := ""
 		switch session.EscalationLabel(level) {
 		case "elevated":
@@ -1143,6 +1156,10 @@ func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case killswitch.IsSessionActionPath(path, "airlock"):
 		p.sessionAPI.HandleAirlock(w, r)
+	case killswitch.IsSessionActionPath(path, "task"):
+		p.sessionAPI.HandleTask(w, r)
+	case killswitch.IsSessionActionPath(path, "trust"):
+		p.sessionAPI.HandleTrust(w, r)
 	case killswitch.IsSessionActionPath(path, "reset"):
 		p.sessionAPI.HandleReset(w, r)
 	default:
@@ -1416,9 +1433,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
 				SessionContaminated: fetchTaint.Risk.Contaminated,
 				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       fetchTaint.Authority.String(),
 				TaintDecision:       fetchTaint.Result.Decision.String(),
 				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			status := http.StatusForbidden
@@ -1673,6 +1693,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Actor:         agent,
 			ActorAuth:     id.Auth,
 			SessionTaint:  fetchTaint.Risk.Level.String(),
+			TaskID:        fetchTaint.Task.CurrentTaskID,
 			AuthorityKind: fetchTaint.Authority.String(),
 		}); envErr != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
@@ -2012,9 +2033,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		SessionTaintLevel:   fetchTaint.Risk.Level.String(),
 		SessionContaminated: fetchTaint.Risk.Contaminated,
 		RecentTaintSources:  fetchTaint.Risk.Sources,
+		SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
 		AuthorityKind:       fetchTaint.Authority.String(),
 		TaintDecision:       fetchTaint.Result.Decision.String(),
 		TaintDecisionReason: fetchTaint.Result.Reason,
+		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
 	})
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 

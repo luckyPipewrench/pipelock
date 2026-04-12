@@ -350,7 +350,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if connectSess, ok := connectRec.(*SessionState); ok && connectSess != nil {
 			tier := connectSess.Airlock().Tier()
 			if tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
-				connectSess.Airlock().ExtendTimer()
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
 				p.metrics.RecordTunnelBlocked(agentLabel)
@@ -623,7 +622,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if tier != config.AirlockTierNone {
 			allowed, reason := ClassifyAction(tier, r.Method, TransportForward, false)
 			if !allowed {
-				forwardSess.Airlock().ExtendTimer()
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
 				http.Error(w, "airlock: "+reason, http.StatusForbidden)
@@ -725,9 +723,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 			SessionContaminated: forwardTaint.Risk.Contaminated,
 			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 			AuthorityKind:       forwardTaint.Authority.String(),
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 		http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
@@ -757,9 +758,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 				SessionContaminated: forwardTaint.Risk.Contaminated,
 				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       forwardTaint.Authority.String(),
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
 			http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
@@ -1043,6 +1047,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Actor:          agent,
 			ActorAuth:      id.Auth,
 			SessionTaint:   forwardTaint.Risk.Level.String(),
+			TaskID:         forwardTaint.Task.CurrentTaskID,
 			AuthorityKind:  forwardTaint.Authority.String(),
 			AuthorityRef:   forwardTaint.ActionRef,
 			RequiresReauth: forwardRequiresReauth,
@@ -1114,9 +1119,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 				SessionContaminated: forwardTaint.Risk.Contaminated,
 				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 				AuthorityKind:       forwardTaint.Authority.String(),
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -1385,9 +1393,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 			SessionContaminated: forwardTaint.Risk.Contaminated,
 			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 			AuthorityKind:       forwardTaint.Authority.String(),
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -1427,9 +1438,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		SessionTaintLevel:   forwardTaint.Risk.Level.String(),
 		SessionContaminated: forwardTaint.Risk.Contaminated,
 		RecentTaintSources:  forwardTaint.Risk.Sources,
+		SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+		SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
 		AuthorityKind:       forwardTaint.Authority.String(),
 		TaintDecision:       forwardTaint.Result.Decision.String(),
 		TaintDecisionReason: forwardTaint.Result.Reason,
+		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 	})
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {

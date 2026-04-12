@@ -47,7 +47,7 @@ func RunHTTPProxy(
 ) error {
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
-		opts.Transport = "mcp_http"
+		opts.Transport = "mcp_http_upstream"
 	}
 	opts.TaintExternalSource = true
 
@@ -971,14 +971,14 @@ func RunHTTPListenerProxy(
 		InputCfg: opts.InputCfg, PolicyCfg: opts.PolicyCfg,
 		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
 		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
-		RedirectRT: opts.RedirectRT, Transport: "mcp_http",
+		RedirectRT: opts.RedirectRT, Transport: "mcp_http_listener",
+		ReceiptEmitter:      opts.ReceiptEmitter,
 		CaptureObs:          opts.captureObserver(),
 		ProvenanceCfg:       opts.ProvenanceCfg,
 		DoWCheck:            opts.DoWCheck,
 		A2ACfg:              opts.A2ACfg,
 		TaintCfg:            opts.TaintCfg,
 		TaintExternalSource: true,
-		ReceiptEmitter:      opts.ReceiptEmitter,
 		EnvelopeEmitter:     opts.EnvelopeEmitter,
 	}
 

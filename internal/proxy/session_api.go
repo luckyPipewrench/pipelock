@@ -6,6 +6,9 @@ package proxy
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // Rate limiting constants for the session reset endpoint.
@@ -24,12 +28,66 @@ const (
 	sessionAPIRateLimitMax    = 10
 )
 
+// sessionAPIMaxBodyBytes caps the size of admin API request bodies. These
+// endpoints accept small JSON (tier, label, trust override) and have no
+// reason to read more. The limit defends against slow-body DoS and
+// accidental large uploads.
+const sessionAPIMaxBodyBytes = 64 * 1024 // 64 KiB
+
+// decodeJSONBody is the shared strict decoder for admin API endpoints.
+// It enforces:
+//   - a hard size limit via io.LimitReader (defends against large bodies)
+//   - DisallowUnknownFields (rejects typos and field injection attempts)
+//   - exactly-one-JSON-value (rejects trailing garbage after the object)
+//
+// An empty body is treated as "no fields" (v is left at its zero value and
+// nil is returned). Callers that require a body must validate fields after
+// decoding.
+func decodeJSONBody(r *http.Request, v any) error {
+	if r.Body == nil {
+		return nil
+	}
+	dec := json.NewDecoder(io.LimitReader(r.Body, sessionAPIMaxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		if errors.Is(err, io.EOF) {
+			// Empty body — acceptable for optional-body endpoints.
+			return nil
+		}
+		return fmt.Errorf("decode body: %w", err)
+	}
+	// Reject bodies with trailing data after the first JSON value. This
+	// catches multi-object smuggling and trailing garbage.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("decode body: unexpected trailing data")
+	}
+	return nil
+}
+
 // API path segment constants used in URL validation.
 const (
 	apiPathSegment     = "api"
 	apiVersionSegment  = "v1"
 	apiSessionsSegment = "sessions"
 )
+
+// Admin API action names used as rate-limiter keys. Extracted so
+// there is exactly one source of truth per endpoint label.
+const (
+	sessionAPIActionReset = "reset"
+	sessionAPIActionTask  = "task"
+	sessionAPIActionTrust = "trust"
+)
+
+// rateLimiterState tracks a sliding-window request count for a
+// single admin action. One instance per action so high-volume abuse
+// of one endpoint cannot starve legitimate traffic on another during
+// incident response.
+type rateLimiterState struct {
+	reqCount    int
+	windowStart time.Time
+}
 
 // SessionAPIHandler handles the admin session management API.
 type SessionAPIHandler struct {
@@ -40,9 +98,11 @@ type SessionAPIHandler struct {
 	logger   *audit.Logger
 	apiToken string
 
-	mu          sync.Mutex
-	reqCount    int
-	windowStart time.Time
+	// limitMu guards all rate-limiter state. One limiter per admin
+	// action (reset/task/trust) so /task abuse cannot suppress
+	// /reset during incident response, and vice versa.
+	limitMu  sync.Mutex
+	limiters map[string]*rateLimiterState
 }
 
 // NewSessionAPIHandler creates a session API handler.
@@ -55,13 +115,17 @@ func NewSessionAPIHandler(
 	apiToken string,
 ) *SessionAPIHandler {
 	return &SessionAPIHandler{
-		smPtr:       smPtr,
-		etPtr:       etPtr,
-		fbPtr:       fbPtr,
-		metrics:     m,
-		logger:      logger,
-		apiToken:    apiToken,
-		windowStart: time.Now(),
+		smPtr:    smPtr,
+		etPtr:    etPtr,
+		fbPtr:    fbPtr,
+		metrics:  m,
+		logger:   logger,
+		apiToken: apiToken,
+		limiters: map[string]*rateLimiterState{
+			sessionAPIActionReset: {windowStart: time.Now()},
+			sessionAPIActionTask:  {windowStart: time.Now()},
+			sessionAPIActionTrust: {windowStart: time.Now()},
+		},
 	}
 }
 
@@ -125,19 +189,29 @@ func (h *SessionAPIHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// checkResetRateLimit enforces a sliding-window rate limit on reset requests.
-// Returns true if the request is within the limit.
-func (h *SessionAPIHandler) checkResetRateLimit() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// checkRateLimit enforces a sliding-window rate limit on a single
+// admin action (reset/task/trust). Returns true if the request is
+// within the limit. Each action has its own counter so a flood on one
+// endpoint cannot starve another during incident response — the
+// operator can hit /reset even while /task or /trust is being abused.
+func (h *SessionAPIHandler) checkRateLimit(action string) bool {
+	h.limitMu.Lock()
+	defer h.limitMu.Unlock()
 
-	now := time.Now()
-	if now.Sub(h.windowStart) > sessionAPIRateLimitWindow {
-		h.reqCount = 0
-		h.windowStart = now
+	st, ok := h.limiters[action]
+	if !ok {
+		// Defensive: if a new admin action is added without
+		// registering a limiter, fail-closed (deny) rather than
+		// silently bypass rate limiting.
+		return false
 	}
-	h.reqCount++
-	return h.reqCount <= sessionAPIRateLimitMax
+	now := time.Now()
+	if now.Sub(st.windowStart) > sessionAPIRateLimitWindow {
+		st.reqCount = 0
+		st.windowStart = now
+	}
+	st.reqCount++
+	return st.reqCount <= sessionAPIRateLimitMax
 }
 
 // extractSessionKey extracts the session key from /api/v1/sessions/{key}/reset.
@@ -169,7 +243,7 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 
 	clientIP, _ := requestMeta(r)
 
-	if !h.checkResetRateLimit() {
+	if !h.checkRateLimit(sessionAPIActionReset) {
 		h.logSessionAdmin("reset_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -269,6 +343,20 @@ type airlockResponse struct {
 	Changed      bool   `json:"changed"`
 }
 
+type taskRequest struct {
+	Label  string `json:"label"`
+	Reason string `json:"reason"`
+}
+
+type trustOverrideRequest struct {
+	Scope       string    `json:"scope"`
+	SourceMatch string    `json:"source_match"`
+	ActionMatch string    `json:"action_match"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	GrantedBy   string    `json:"granted_by"`
+	Reason      string    `json:"reason"`
+}
+
 // HandleAirlock handles POST /api/v1/sessions/{key}/airlock.
 // Accepts {"tier": "soft|hard|drain|normal"} and transitions the session's
 // airlock state. "normal" is an alias for "none" (human-friendly).
@@ -297,8 +385,8 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 	}
 
 	var req airlockRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		h.logSessionAdmin("airlock_bad_body", clientIP, key, "invalid JSON", http.StatusBadRequest)
+	if err := decodeJSONBody(r, &req); err != nil {
+		h.logSessionAdmin("airlock_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
@@ -341,6 +429,197 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 		PreviousTier: from,
 		NewTier:      to,
 		Changed:      changed,
+	})
+}
+
+// HandleTask starts a new task boundary for an active session.
+func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	if !h.checkRateLimit(sessionAPIActionTask) {
+		h.logSessionAdmin("task_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "task")
+	if !ok {
+		h.logSessionAdmin("task_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	// Body is optional for HandleTask — callers may POST with no body to
+	// rotate the task without a label/reason. decodeJSONBody treats an
+	// empty body as "no fields" and leaves req at its zero value, so a
+	// missing Content-Length or chunked transfer encoding is handled
+	// correctly without skipping the decode.
+	var req taskRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		h.logSessionAdmin("task_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	prev, current, cleared, found, taskErr := sm.BeginNewTask(key, req.Label)
+	if !found {
+		h.logSessionAdmin("task_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if taskErr != nil {
+		// Invocation sessions are ephemeral per-request contexts and
+		// cannot be mutated via the admin API. Mirrors the guardrail on
+		// HandleReset.
+		h.logSessionAdmin("task_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: "cannot begin new task on invocation session; only identity sessions are mutable"})
+		return
+	}
+
+	h.logSessionAdmin("task_ok", clientIP, key, req.Reason, http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Key                     string `json:"key"`
+		PreviousTaskID          string `json:"previous_task_id"`
+		CurrentTaskID           string `json:"current_task_id"`
+		CurrentTaskLabel        string `json:"current_task_label,omitempty"`
+		TaintCleared            bool   `json:"taint_cleared"`
+		RuntimeOverridesCleared int    `json:"runtime_overrides_cleared"`
+	}{
+		Key:                     key,
+		PreviousTaskID:          prev.CurrentTaskID,
+		CurrentTaskID:           current.CurrentTaskID,
+		CurrentTaskLabel:        current.CurrentTaskLabel,
+		TaintCleared:            true,
+		RuntimeOverridesCleared: cleared,
+	})
+}
+
+// HandleTrust grants a runtime trust override bound to the current task.
+func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+	if !h.checkRateLimit(sessionAPIActionTrust) {
+		h.logSessionAdmin("trust_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "trust")
+	if !ok {
+		h.logSessionAdmin("trust_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	var req trustOverrideRequest
+	if err := decodeJSONBody(r, &req); err != nil {
+		h.logSessionAdmin("trust_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if req.Scope != taintScopeTask {
+		h.logSessionAdmin("trust_bad_scope", clientIP, key, "invalid scope", http.StatusBadRequest)
+		http.Error(w, "invalid scope: must be task", http.StatusBadRequest)
+		return
+	}
+	if req.SourceMatch == "" && req.ActionMatch == "" {
+		h.logSessionAdmin("trust_bad_match", clientIP, key, "missing match pattern", http.StatusBadRequest)
+		http.Error(w, "source_match or action_match is required", http.StatusBadRequest)
+		return
+	}
+	if req.ExpiresAt.IsZero() || !req.ExpiresAt.After(time.Now().UTC()) {
+		h.logSessionAdmin("trust_bad_expiry", clientIP, key, "invalid expiry", http.StatusBadRequest)
+		http.Error(w, "expires_at must be in the future", http.StatusBadRequest)
+		return
+	}
+
+	override := session.TrustOverride{
+		Scope:       taintScopeTask,
+		SourceMatch: req.SourceMatch,
+		ActionMatch: req.ActionMatch,
+		ExpiresAt:   req.ExpiresAt.UTC(),
+		GrantedBy:   req.GrantedBy,
+		Reason:      req.Reason,
+	}
+	applied, found, err := sm.AddRuntimeTrustOverride(key, override)
+	if !found && err == nil {
+		h.logSessionAdmin("trust_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		// Distinguish invocation-session rejection from other errors so
+		// the audit trail mirrors HandleReset. Both return 400; only the
+		// error string + log tag differ.
+		if errors.Is(err, ErrInvocationReset) {
+			h.logSessionAdmin("trust_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(struct {
+				Error string `json:"error"`
+			}{Error: "cannot grant runtime trust override on invocation session; only identity sessions are mutable"})
+			return
+		}
+		h.logSessionAdmin("trust_rejected", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	h.logSessionAdmin("trust_ok", clientIP, key, applied.Reason, http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Key         string    `json:"key"`
+		Scope       string    `json:"scope"`
+		TaskID      string    `json:"task_id"`
+		SourceMatch string    `json:"source_match,omitempty"`
+		ActionMatch string    `json:"action_match,omitempty"`
+		ExpiresAt   time.Time `json:"expires_at"`
+		GrantedBy   string    `json:"granted_by,omitempty"`
+		Reason      string    `json:"reason,omitempty"`
+	}{
+		Key:   key,
+		Scope: applied.Scope,
+		// applied.TaskID was bound under the session mutex by
+		// SessionState.AddRuntimeTrustOverride — use it directly instead
+		// of taking a second TaskSnapshot that could race a concurrent
+		// BeginNewTask rotation.
+		TaskID:      applied.TaskID,
+		SourceMatch: applied.SourceMatch,
+		ActionMatch: applied.ActionMatch,
+		ExpiresAt:   applied.ExpiresAt,
+		GrantedBy:   applied.GrantedBy,
+		Reason:      applied.Reason,
 	})
 }
 

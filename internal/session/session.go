@@ -9,6 +9,9 @@ package session
 import (
 	"fmt"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
 )
 
 // SignalType identifies a threat signal for adaptive enforcement.
@@ -63,6 +66,21 @@ type Store interface {
 	GetOrCreate(key string) Recorder
 }
 
+// TaskContext describes the current task boundary attached to a live session.
+type TaskContext struct {
+	CurrentTaskID    string
+	CurrentTaskLabel string
+	StartedAt        time.Time
+	LastBoundaryAt   time.Time
+}
+
+// TaskContextProvider exposes task-boundary context and runtime trust
+// overrides without coupling callers to the proxy package.
+type TaskContextProvider interface {
+	TaskSnapshot() TaskContext
+	RuntimeTrustOverrides() []TrustOverride
+}
+
 // ToolFreezer checks whether a tool call is permitted under a frozen tool
 // inventory. Used by MCP proxy paths to enforce airlock hard-tier restrictions
 // without importing the proxy package (which would create a circular dep).
@@ -81,4 +99,25 @@ var invocationCounter atomic.Uint64
 // Safe for concurrent use.
 func NextInvocationKey(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, invocationCounter.Add(1))
+}
+
+// NextTaskID returns a unique pipelock-owned task identifier.
+//
+// Task IDs are emitted in envelopes, MCP _meta, action receipts, and
+// session snapshots. They are correlation identifiers, not auth
+// tokens — but they leave the trust boundary, so using opaque
+// high-entropy UUIDv7 values prevents downstream components from
+// treating a monotonically-predictable "task-N" sequence as
+// meaningful context. Matches the UUIDv7 pattern already used for
+// action IDs in internal/receipt/action.go.
+func NextTaskID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		// UUIDv7 generation fails only when crypto/rand or the
+		// clock is broken — neither happens in practice. Emit a
+		// sentinel that is clearly non-colliding and easy to
+		// grep for if it ever appears in a receipt.
+		return "task-00000000-0000-7000-8000-000000000000"
+	}
+	return "task-" + id.String()
 }

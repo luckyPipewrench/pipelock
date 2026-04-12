@@ -163,7 +163,9 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
 			path == "/api/v1/sessions" ||
 			IsSessionActionPath(path, "reset") ||
-			IsSessionActionPath(path, "airlock")) {
+			IsSessionActionPath(path, "airlock") ||
+			IsSessionActionPath(path, "task") ||
+			IsSessionActionPath(path, "trust")) {
 		return Decision{}
 	}
 

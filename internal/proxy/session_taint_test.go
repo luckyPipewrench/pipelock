@@ -62,6 +62,35 @@ func TestSessionManagerSnapshotIncludesTaint(t *testing.T) {
 	if !snaps[0].Contaminated {
 		t.Fatal("expected contaminated snapshot")
 	}
+	if snaps[0].CurrentTaskID == "" {
+		t.Fatal("expected snapshot to include current task id")
+	}
+}
+
+func TestSessionStateBeginNewTaskClearsTaintButKeepsAdaptiveState(t *testing.T) {
+	sess := &SessionState{}
+	sess.RecordSignal(session.SignalBlock, 1.0)
+	sess.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://evil.example/backdoor",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+	prevTask, currentTask, _ := sess.BeginNewTask("fresh task")
+
+	if prevTask.CurrentTaskID == "" || currentTask.CurrentTaskID == "" {
+		t.Fatal("expected task ids before and after boundary")
+	}
+	if prevTask.CurrentTaskID == currentTask.CurrentTaskID {
+		t.Fatal("expected task boundary to rotate task id")
+	}
+	if sess.RiskSnapshot().Contaminated {
+		t.Fatal("new task boundary should clear taint contamination")
+	}
+	if sess.ThreatScore() == 0 {
+		t.Fatal("new task boundary should not clear adaptive threat score")
+	}
 }
 
 func TestEvaluateHTTPTaint_ExternalPublishAfterUntrustedExposureAsks(t *testing.T) {
@@ -135,5 +164,37 @@ func TestEvaluateHTTPTaint_TrustOverrideUsesActiveSourceOnly(t *testing.T) {
 	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision = %v, want ask when only a historical source matches", decision.Result.Decision)
+	}
+}
+
+func TestEvaluateHTTPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
+	cfg := config.Defaults()
+	sess := &SessionState{}
+
+	observeHTTPResponseTaint(sess, cfg, "https://evil.example/issue/123", "text/html", "fetch_response", false)
+	sess.AddRuntimeTrustOverride(session.TrustOverride{
+		Scope:       "task",
+		ActionMatch: "publish:post:https://api.example.com/auth/update",
+		ExpiresAt:   time.Now().UTC().Add(time.Hour),
+	})
+
+	targetURL, err := url.Parse("https://api.example.com/auth/update")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	decision := evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
+	}
+	if !decision.TaskOverrideApplied {
+		t.Fatal("expected runtime task override to be applied")
+	}
+
+	sess.BeginNewTask("next task")
+	observeHTTPResponseTaint(sess, cfg, "https://evil.example/issue/123", "text/html", "fetch_response", false)
+	decision = evaluateHTTPTaint(cfg, sess, http.MethodPost, targetURL)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision after task boundary = %v, want ask", decision.Result.Decision)
 	}
 }

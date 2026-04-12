@@ -159,14 +159,6 @@ func (a *AirlockState) TryDeescalate(timers *config.AirlockTimers) (changed bool
 	return true, from, nextTier
 }
 
-// ExtendTimer resets enteredAt to now, preventing auto-deescalation while
-// the session continues to trigger airlock denials.
-func (a *AirlockState) ExtendTimer() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.enteredAt = time.Now()
-}
-
 // RegisterCancel adds a cancel function for a long-lived connection.
 // Called when new connections are established so they can be torn down
 // on tier escalation. Stale entries (from normally-closed connections)

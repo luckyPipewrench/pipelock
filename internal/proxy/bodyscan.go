@@ -556,10 +556,10 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *con
 	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 
 	logger.LogHeaderDLP(actx, headerResult.HeaderName, action, patternNames, bundleRules)
-	p.metrics.RecordHeaderDLP(action, actx.Agent)
+	p.metrics.RecordHeaderDLP(action, actx.Agent())
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
-		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), actx.Agent)
+		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), actx.Agent())
 		return true, true
 	}
 	return false, true

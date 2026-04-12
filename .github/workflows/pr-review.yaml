@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   review:
+    # Restrict to repo members. Some /review modes execute code from the
+    # PR's merge ref in this workflow's secret scope, so the trigger needs
+    # a permission gate beyond the comment body check (the body is
+    # user-controlled, author_association is not).
     if: >-
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review fast' ||
@@ -25,6 +32,7 @@ jobs:
         with:
           fetch-depth: 0
           ref: refs/pull/${{ github.event.issue.number }}/merge
+          persist-credentials: false
 
       - name: Set up Go
         if: contains(github.event.comment.body, 'stats')
@@ -56,11 +64,7 @@ jobs:
       - name: Run PR review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
-          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          PR_REVIEW_MODEL_FAST: ${{ secrets.PR_REVIEW_MODEL_FAST }}
-          PR_REVIEW_MODEL_DEEP: ${{ secrets.PR_REVIEW_MODEL_DEEP }}
           REVIEW_MODE: ${{ steps.mode.outputs.mode }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}

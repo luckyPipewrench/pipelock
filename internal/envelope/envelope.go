@@ -49,6 +49,7 @@ type Envelope struct {
 	ReceiptID      string // UUIDv7 receipt ID for correlation.
 	Timestamp      int64  // Unix timestamp (seconds).
 	SessionTaint   string
+	TaskID         string
 	AuthorityKind  string
 	AuthorityRef   string
 	RequiresReauth bool
@@ -68,6 +69,7 @@ const (
 	keyReceiptID  = "rid"
 	keyTimestamp  = "ts"
 	keyTaint      = "taint"
+	keyTaskID     = "task"
 	keyAuthority  = "auth"
 	keyAuthorityR = "authr"
 	keyReauth     = "reauth"
@@ -87,6 +89,9 @@ func (e Envelope) Serialize() (string, error) {
 	dict.Add(keyTimestamp, httpsfv.NewItem(e.Timestamp))
 	if e.SessionTaint != "" {
 		dict.Add(keyTaint, httpsfv.NewItem(e.SessionTaint))
+	}
+	if e.TaskID != "" {
+		dict.Add(keyTaskID, httpsfv.NewItem(e.TaskID))
 	}
 	if e.AuthorityKind != "" {
 		dict.Add(keyAuthority, httpsfv.NewItem(e.AuthorityKind))
@@ -180,6 +185,13 @@ func Parse(s string) (Envelope, error) {
 			}
 		}
 	}
+	if m, ok := dict.Get(keyTaskID); ok {
+		if item, ok := m.(httpsfv.Item); ok {
+			if v, ok := item.Value.(string); ok {
+				env.TaskID = v
+			}
+		}
+	}
 	if m, ok := dict.Get(keyAuthority); ok {
 		if item, ok := m.(httpsfv.Item); ok {
 			if v, ok := item.Value.(string); ok {
@@ -247,6 +259,9 @@ func (e Envelope) ToMCPMeta() map[string]any {
 	}
 	if e.SessionTaint != "" {
 		meta[keyTaint] = e.SessionTaint
+	}
+	if e.TaskID != "" {
+		meta[keyTaskID] = e.TaskID
 	}
 	if e.AuthorityKind != "" {
 		meta[keyAuthority] = e.AuthorityKind

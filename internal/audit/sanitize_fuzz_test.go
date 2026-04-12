@@ -68,12 +68,12 @@ func TestSanitizeString(t *testing.T) {
 func TestLogAllowed_SanitizesURL(t *testing.T) {
 	logger := &Logger{zl: zerolog.Nop(), includeAllowed: true}
 	// Should not panic with ANSI in URL.
-	logger.LogAllowed(LogContext{Method: "GET", URL: "https://evil.com/\x1b[2Jclear", ClientIP: "127.0.0.1", RequestID: "req-1"}, 200, 0, 0)
+	logger.LogAllowed(LogContext{method: "GET", url: "https://evil.com/\x1b[2Jclear", clientIP: "127.0.0.1", requestID: "req-1"}, 200, 0, 0)
 }
 
 func TestLogBlocked_SanitizesURLAndReason(t *testing.T) {
 	logger := &Logger{zl: zerolog.Nop(), includeBlocked: true}
-	logger.LogBlocked(LogContext{Method: "GET", URL: "https://\x1b[2Jevil.com", ClientIP: "127.0.0.1", RequestID: "req-1"}, "dlp", "found \x1b[31msecret\x1b[0m")
+	logger.LogBlocked(LogContext{method: "GET", url: "https://\x1b[2Jevil.com", clientIP: "127.0.0.1", requestID: "req-1"}, "dlp", "found \x1b[31msecret\x1b[0m")
 }
 
 func TestSanitizeString_NoAllocation_CleanInput(t *testing.T) {

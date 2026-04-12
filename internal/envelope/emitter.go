@@ -47,6 +47,7 @@ type BuildOpts struct {
 	Actor          string
 	ActorAuth      ActorAuth
 	SessionTaint   string
+	TaskID         string
 	AuthorityKind  string
 	AuthorityRef   string
 	RequiresReauth bool
@@ -72,6 +73,7 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 		ReceiptID:      opts.ActionID,
 		Timestamp:      time.Now().UTC().Unix(),
 		SessionTaint:   opts.SessionTaint,
+		TaskID:         opts.TaskID,
 		AuthorityKind:  opts.AuthorityKind,
 		AuthorityRef:   opts.AuthorityRef,
 		RequiresReauth: opts.RequiresReauth,

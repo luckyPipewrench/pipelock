@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -48,7 +47,7 @@ func RunHTTPProxy(
 ) error {
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
-		opts.Transport = "mcp_http"
+		opts.Transport = "mcp_http_upstream"
 	}
 	opts.TaintExternalSource = true
 
@@ -373,7 +372,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 					toolName, dowAction, dowReason, dowBudgetType)
 				if dowAction == config.ActionBlock {
 					if auditLogger != nil {
-						auditLogger.LogBlocked(audit.NewMCPLogContext("MCP", toolName, ""), "denial_of_wallet", dowReason)
+						auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", dowReason)
 					}
 					if m != nil {
 						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
@@ -385,7 +384,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				}
 				// dow_action: warn — log and record near-miss, but allow the request.
 				if auditLogger != nil {
-					auditLogger.LogAnomaly(audit.NewMCPLogContext("MCP", toolName, ""), "denial_of_wallet", dowReason, 0)
+					auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", dowReason, 0)
 				}
 				recordAdaptiveSignal(session.SignalNearMiss)
 			}
@@ -446,7 +445,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if taintEval.Result.Decision == session.PolicyAsk || taintEval.Result.Decision == session.PolicyBlock {
 			if auditLogger != nil {
 				auditLogger.LogTaintDecision(
-					audit.LogContext{Method: "MCP", URL: toolName},
+					mustMCPAuditContext(auditLogger, "MCP", toolName),
 					taintEval.Risk.Level.String(),
 					taintEval.ActionClass.String(),
 					taintEval.Sensitivity.String(),
@@ -972,14 +971,14 @@ func RunHTTPListenerProxy(
 		InputCfg: opts.InputCfg, PolicyCfg: opts.PolicyCfg,
 		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
 		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
-		RedirectRT: opts.RedirectRT, Transport: "mcp_http",
+		RedirectRT: opts.RedirectRT, Transport: "mcp_http_listener",
+		ReceiptEmitter:      opts.ReceiptEmitter,
 		CaptureObs:          opts.captureObserver(),
 		ProvenanceCfg:       opts.ProvenanceCfg,
 		DoWCheck:            opts.DoWCheck,
 		A2ACfg:              opts.A2ACfg,
 		TaintCfg:            opts.TaintCfg,
 		TaintExternalSource: true,
-		ReceiptEmitter:      opts.ReceiptEmitter,
 		EnvelopeEmitter:     opts.EnvelopeEmitter,
 	}
 

@@ -992,12 +992,12 @@ func TestVerifyCapsule(t *testing.T) {
 		}
 		found := false
 		for _, f := range result.HardFailures {
-			if f.Rule == "no_servers_discovered" {
+			if f.Rule == ruleNoServersDiscovered {
 				found = true
 			}
 		}
 		if !found {
-			t.Fatalf("missing no_servers_discovered hard failure: %v", result.HardFailures)
+			t.Fatalf("missing %s hard failure: %v", ruleNoServersDiscovered, result.HardFailures)
 		}
 	})
 
@@ -1111,6 +1111,32 @@ func TestVerifyCapsule(t *testing.T) {
 		}
 	})
 
+	t.Run("skip receipt freshness overrides explicit max receipt age", func(t *testing.T) {
+		staleEvidence := perfectEvidence
+		staleReceipt := time.Now().Add(-10 * 24 * time.Hour)
+		staleEvidence.FlightRecorder.LastReceiptAt = &staleReceipt
+		capsule := emitCapsule(t, staleEvidence)
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:               testPolicyEnterprise,
+			MaxReceiptAge:        1,
+			SkipReceiptFreshness: true,
+		})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		if !result.Passed {
+			t.Errorf("Passed = false, want true, failures: %v", result.HardFailures)
+		}
+		if result.FactorScores.RecorderHealth.RawPercent != 100 {
+			t.Errorf("RecorderHealth.RawPercent = %d, want 100", result.FactorScores.RecorderHealth.RawPercent)
+		}
+		for _, f := range result.HardFailures {
+			if f.Rule == ruleStaleReceipts {
+				t.Fatalf("unexpected %s hard failure: %v", ruleStaleReceipts, result.HardFailures)
+			}
+		}
+	})
+
 	t.Run("future generated_at rejected", func(t *testing.T) {
 		capsule := emitCapsule(t, perfectEvidence)
 		capsule.GeneratedAt = time.Now().Add(defaultMaxFutureSkew + time.Minute)
@@ -1156,6 +1182,45 @@ func TestVerifyCapsule(t *testing.T) {
 		}
 		if got := err.Error(); got == "" || !containsAll(got, "min_score", "101") {
 			t.Errorf("error = %q, want invalid min score failure", got)
+		}
+	})
+
+	t.Run("negative max future skew rejected", func(t *testing.T) {
+		capsule := emitCapsule(t, perfectEvidence)
+		_, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:        testPolicyEnterprise,
+			MaxReceiptAge: MaxReceiptAgeDays,
+			MaxFutureSkew: -time.Second,
+		})
+		if err == nil {
+			t.Fatal("VerifyCapsule() error = nil, want invalid max future skew failure")
+		}
+		if got := err.Error(); got == "" || !containsAll(got, "max_future_skew", ">=") {
+			t.Errorf("error = %q, want invalid max future skew failure", got)
+		}
+	})
+
+	t.Run("shared clock keeps stale gate and score aligned at threshold", func(t *testing.T) {
+		now := time.Now().UTC()
+		atThreshold := now.Add(-maxAgeDuration(MaxReceiptAgeDays))
+		evidence := perfectEvidence
+		evidence.FlightRecorder.LastReceiptAt = &atThreshold
+
+		score, factors := computeScoreAt(evidence, MaxReceiptAgeDays, now)
+		failures, _ := evaluatePolicyAt(testPolicyEnterprise, evidence, VerifyOpts{
+			MaxReceiptAge: MaxReceiptAgeDays,
+		}, now)
+
+		if score != 100 {
+			t.Errorf("score = %d, want 100", score)
+		}
+		if factors.RecorderHealth.RawPercent != 100 {
+			t.Errorf("RecorderHealth.RawPercent = %d, want 100", factors.RecorderHealth.RawPercent)
+		}
+		for _, f := range failures {
+			if f.Rule == ruleStaleReceipts {
+				t.Fatalf("unexpected %s hard failure at threshold: %v", ruleStaleReceipts, failures)
+			}
 		}
 	})
 

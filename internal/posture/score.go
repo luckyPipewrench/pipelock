@@ -48,6 +48,7 @@ const (
 	ruleConfigHashMismatch  = "config_hash_mismatch"
 	ruleUnknownServers      = "unknown_servers"
 	ruleDiscoveryParseError = "discovery_parse_errors"
+	ruleNoServersDiscovered = "no_servers_discovered"
 )
 
 // Warning message for no discovered servers.
@@ -107,8 +108,12 @@ type VerifyOpts struct {
 
 // ComputeScore calculates the posture score from an evidence bundle.
 func ComputeScore(evidence EvidenceBundle, maxReceiptAgeDays int) (int, FactorScores) {
+	return computeScoreAt(evidence, maxReceiptAgeDays, time.Now().UTC())
+}
+
+func computeScoreAt(evidence EvidenceBundle, maxReceiptAgeDays int, now time.Time) (int, FactorScores) {
 	transportPct := computeTransportPct(evidence.Discover)
-	recorderPct := computeRecorderPct(evidence.VerifyInstall, evidence.FlightRecorder, maxReceiptAgeDays)
+	recorderPct := computeRecorderPctAt(evidence.VerifyInstall, evidence.FlightRecorder, maxReceiptAgeDays, now)
 	simulatePct := computeSimulatePct(evidence.Simulate)
 	cleanlinessPct := computeCleanlinessPct(evidence.Discover)
 
@@ -132,6 +137,10 @@ func ComputeScore(evidence EvidenceBundle, maxReceiptAgeDays int) (int, FactorSc
 // EvaluatePolicy checks the evidence bundle against the given policy.
 // Returns hard failures and warnings.
 func EvaluatePolicy(policy string, evidence EvidenceBundle, opts VerifyOpts) ([]HardFailure, []string) {
+	return evaluatePolicyAt(policy, evidence, opts, time.Now().UTC())
+}
+
+func evaluatePolicyAt(policy string, evidence EvidenceBundle, opts VerifyOpts, now time.Time) ([]HardFailure, []string) {
 	var failures []HardFailure
 	var warnings []string
 
@@ -150,7 +159,7 @@ func EvaluatePolicy(policy string, evidence EvidenceBundle, opts VerifyOpts) ([]
 
 	// Warning: no servers discovered (vacuous truth, not a failure).
 	totalScannable := evidence.Discover.TotalServers + evidence.Discover.ParseErrors
-	if totalScannable == 0 && evidence.Discover.ParseErrors == 0 {
+	if totalScannable == 0 {
 		warnings = append(warnings, warnNoServersDiscovered)
 	}
 
@@ -191,7 +200,7 @@ func EvaluatePolicy(policy string, evidence EvidenceBundle, opts VerifyOpts) ([]
 				Detail: "last receipt timestamp missing",
 			})
 		} else if evidence.FlightRecorder.LastReceiptAt != nil {
-			elapsed := time.Since(*evidence.FlightRecorder.LastReceiptAt)
+			elapsed := now.Sub(*evidence.FlightRecorder.LastReceiptAt)
 			if elapsed > maxAgeDuration(maxAge) {
 				failures = append(failures, HardFailure{
 					Rule:   ruleStaleReceipts,
@@ -230,7 +239,8 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 	if err != nil {
 		return nil, err
 	}
-	if err := validateCapsuleTimes(capsule, opts.MaxFutureSkew); err != nil {
+	now := time.Now().UTC()
+	if err := validateCapsuleTimesAt(capsule, opts.MaxFutureSkew, now); err != nil {
 		return nil, err
 	}
 
@@ -252,16 +262,16 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 
 	// MaxReceiptAge=0 means skip stale-receipt scoring. The CLI sets the
 	// default (7d); callers that want no staleness check pass 0 explicitly.
-	score, factors := ComputeScore(capsule.Evidence, opts.MaxReceiptAge)
+	score, factors := computeScoreAt(capsule.Evidence, opts.MaxReceiptAge, now)
 	result.Score = score
 	result.FactorScores = factors
 
-	failures, warnings := EvaluatePolicy(opts.Policy, capsule.Evidence, opts)
+	failures, warnings := evaluatePolicyAt(opts.Policy, capsule.Evidence, opts, now)
 	result.HardFailures = failures
 	result.Warnings = warnings
 
 	if opts.MaxAgeDays > 0 {
-		elapsed := time.Since(capsule.GeneratedAt)
+		elapsed := now.Sub(capsule.GeneratedAt)
 		if elapsed > maxAgeDuration(opts.MaxAgeDays) {
 			result.HardFailures = append(result.HardFailures, HardFailure{
 				Rule:   ruleCapsuleTooOld,
@@ -282,7 +292,7 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 	if opts.RequireDiscovery {
 		if capsule.Evidence.Discover.TotalServers == 0 {
 			result.HardFailures = append(result.HardFailures, HardFailure{
-				Rule:   "no_servers_discovered",
+				Rule:   ruleNoServersDiscovered,
 				Detail: "0 servers discovered (--require-discovery)",
 			})
 		}
@@ -310,17 +320,21 @@ func normalizeVerifyOpts(opts VerifyOpts) (VerifyOpts, error) {
 	if opts.MaxReceiptAge < 0 {
 		return opts, fmt.Errorf("max_receipt_age must be >= 0, got %d", opts.MaxReceiptAge)
 	}
-	if opts.MaxReceiptAge == 0 && !opts.SkipReceiptFreshness {
+	if opts.SkipReceiptFreshness {
+		opts.MaxReceiptAge = 0
+	} else if opts.MaxReceiptAge == 0 {
 		opts.MaxReceiptAge = MaxReceiptAgeDays
 	}
-	if opts.MaxFutureSkew <= 0 {
+	if opts.MaxFutureSkew < 0 {
+		return opts, fmt.Errorf("max_future_skew must be >= 0, got %s", opts.MaxFutureSkew)
+	}
+	if opts.MaxFutureSkew == 0 {
 		opts.MaxFutureSkew = defaultMaxFutureSkew
 	}
 	return opts, nil
 }
 
-func validateCapsuleTimes(capsule *Capsule, maxFutureSkew time.Duration) error {
-	now := time.Now().UTC()
+func validateCapsuleTimesAt(capsule *Capsule, maxFutureSkew time.Duration, now time.Time) error {
 	maxAllowed := now.Add(maxFutureSkew)
 
 	if capsule.GeneratedAt.After(maxAllowed) {
@@ -348,7 +362,7 @@ func computeTransportPct(d DiscoverEvidence) int {
 	return clampPercent((100 * protectedAny) / totalScannable)
 }
 
-func computeRecorderPct(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAgeDays int) int {
+func computeRecorderPctAt(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAgeDays int, now time.Time) int {
 	if !vi.FlightRecorderActive {
 		return 0
 	}
@@ -359,7 +373,7 @@ func computeRecorderPct(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAg
 		if fr.LastReceiptAt == nil {
 			return 50
 		}
-		if time.Since(*fr.LastReceiptAt) > maxAgeDuration(maxAgeDays) {
+		if now.Sub(*fr.LastReceiptAt) > maxAgeDuration(maxAgeDays) {
 			return 50
 		}
 	}

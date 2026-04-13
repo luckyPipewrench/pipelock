@@ -441,6 +441,13 @@ func collectFlightRecorderEvidence(cfg *config.Config) (FlightRecorderCounts, er
 	return result, nil
 }
 
+// HashConfig computes the canonical SHA-256 hash of a config. Used by both
+// capsule emission and the verify command (to compare local config against the
+// capsule's config_hash).
+func HashConfig(cfg *config.Config) (string, error) {
+	return hashConfig(cfg)
+}
+
 func hashConfig(cfg *config.Config) (string, error) {
 	canonical, err := canonicalize(cfg)
 	if err != nil {

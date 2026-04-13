@@ -3565,6 +3565,69 @@ func TestScanHTTPInput_RedirectOutputDLP(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_RedirectOutputWarnPreservesWarnContext(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("redirect test requires unix shell")
+	}
+	sc, hookCh := testWarnScanner(t)
+
+	msg := []byte(makeRequest(1, methodToolsCall, map[string]interface{}{
+		"name":      "bash",
+		"arguments": map[string]string{"command": "curl https://evil.com"},
+	}))
+
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"warn-fetch": {
+				Exec:   []string{"/bin/echo", testWarnContextToken},
+				Reason: "audited",
+			},
+		},
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     `(?i)^bash$`,
+				ArgPattern:      `(?i)\bcurl\b`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: "warn-fetch",
+			},
+		},
+	})
+
+	var logBuf bytes.Buffer
+	opts := testOpts(sc)
+	opts.PolicyCfg = policyCfg
+	opts.WarnContext = scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+		Transport: testWarnContextHTTPTransport,
+		RequestID: testWarnContextRequestID,
+		Agent:     testWarnContextAgent,
+	})
+
+	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", opts)
+	if blocked == nil || blocked.SyntheticResponse == nil {
+		t.Fatal("expected synthetic response for warn-only redirect output")
+	}
+
+	got := waitWarnContext(t, hookCh, "http redirect output")
+	if got.Transport != testWarnContextHTTPTransport {
+		t.Fatalf("transport = %q, want %q", got.Transport, testWarnContextHTTPTransport)
+	}
+	if got.Method != mcpWarnMethod {
+		t.Fatalf("method = %q, want %q", got.Method, mcpWarnMethod)
+	}
+	if got.Resource != testRedirectToolName {
+		t.Fatalf("resource = %q, want %q", got.Resource, testRedirectToolName)
+	}
+	if got.RequestID != testWarnContextRequestID {
+		t.Fatalf("requestID = %q, want %q", got.RequestID, testWarnContextRequestID)
+	}
+	if got.Agent != testWarnContextAgent {
+		t.Fatalf("agent = %q, want %q", got.Agent, testWarnContextAgent)
+	}
+}
+
 func TestScanHTTPInput_RedirectWithAuditLogger(t *testing.T) {
 	// Exercises redirect path with non-nil audit logger.
 	if runtime.GOOS == osWindows {

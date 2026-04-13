@@ -59,7 +59,7 @@ func withMCPRequestWarnContext(ctx context.Context, resource string) context.Con
 	if wc.Transport == "" {
 		return ctx
 	}
-	wc.Method = "MCP"
+	wc.Method = mcpWarnMethod
 	wc.Resource = resource
 	return scanner.WithDLPWarnContext(ctx, wc)
 }

@@ -251,9 +251,9 @@ func ForwardScannedInput(
 			continue
 		}
 
-		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), scanner.DLPWarnContext{
-			Transport: "mcp_stdio",
-		})
+		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
+		warnCtx.Transport = transportMCPStdio
+		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 		verdict := ScanRequest(stdioInputCtx, line, sc, action, onParseError)
 
 		// Tool call policy check — independent of content scanning.
@@ -721,11 +721,11 @@ func ForwardScannedInput(
 				// Scan redirect handler output for prompt injection AND DLP before
 				// sending to client. Handler output is untrusted.
 				scanVerdict := ScanResponse(result.Response, sc)
-				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, scanner.DLPWarnContext{
-					Transport: "mcp_stdio",
-					Method:    "MCP",
-					Resource:  mcpWarnResource(verdict.Method, line),
-				})
+				stdioWarnCtxMeta := scanner.DLPWarnContextFromCtx(stdioInputCtx)
+				stdioWarnCtxMeta.Transport = transportMCPStdio
+				stdioWarnCtxMeta.Method = mcpWarnMethod
+				stdioWarnCtxMeta.Resource = mcpWarnResource(verdict.Method, line)
+				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, stdioWarnCtxMeta)
 				dlpResult := sc.ScanTextForDLP(stdioWarnCtx, string(result.Response))
 				// Capture: record redirect output scan verdict.
 				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{

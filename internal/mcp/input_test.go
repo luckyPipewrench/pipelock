@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -33,10 +34,17 @@ import (
 )
 
 const (
-	testSecretPrefix    = "sk-" + "ant-" // split to avoid gosec G101
-	testDoWToolName     = "expensive_tool"
-	testDoWBudgetReason = "budget exceeded"
-	testDoWBudgetType   = "per_call"
+	testSecretPrefix             = "sk-" + "ant-" // split to avoid gosec G101
+	testDoWToolName              = "expensive_tool"
+	testDoWBudgetReason          = "budget exceeded"
+	testDoWBudgetType            = "per_call"
+	testWarnContextTransport     = "mcp_stdio"
+	testRedirectToolName         = "bash"
+	testWarnContextToken         = "warnctx-ABCDEFGHIJ1234"
+	testWarnContextRequestID     = "req-warnctx"
+	testWarnContextAgent         = "agent-warnctx"
+	testWarnContextHTTPTransport = "mcp_http_listener"
+	testWarnContextTimeout       = 2 * time.Second
 )
 
 func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -105,6 +113,41 @@ func testInputScanner(t *testing.T) *scanner.Scanner {
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 	return sc
+}
+
+func testWarnScanner(t *testing.T) (*scanner.Scanner, <-chan scanner.DLPWarnContext) {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     "warnctx",
+		Regex:    `warnctx-[A-Za-z0-9]{10,}`,
+		Severity: config.SeverityHigh,
+		Action:   config.ActionWarn,
+	})
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	hookCh := make(chan scanner.DLPWarnContext, 1)
+	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
+		select {
+		case hookCh <- scanner.DLPWarnContextFromCtx(ctx):
+		default:
+		}
+	})
+	return sc, hookCh
+}
+
+func waitWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scope string) scanner.DLPWarnContext {
+	t.Helper()
+	select {
+	case got := <-hookCh:
+		return got
+	case <-time.After(testWarnContextTimeout):
+		t.Fatalf("timed out waiting for DLP warn hook to capture %s context", scope)
+		return scanner.DLPWarnContext{}
+	}
 }
 
 // --- ScanRequest tests ---
@@ -1585,6 +1628,79 @@ func TestForwardScannedInput_PolicyRedirectOutputClean(t *testing.T) {
 	}
 	if !strings.Contains(logW.String(), "redirected") {
 		t.Errorf("expected 'redirected' in log, got: %s", logW.String())
+	}
+}
+
+func TestForwardScannedInput_PolicyRedirectOutputWarnPreservesWarnContext(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("exec test requires unix shell")
+	}
+	sc, hookCh := testWarnScanner(t)
+
+	req := `{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"` + testRedirectToolName + `","arguments":{"command":"curl https://example.com"}}}` + "\n"
+
+	policyCfg := policy.New(config.MCPToolPolicy{
+		Enabled: true,
+		Action:  config.ActionWarn,
+		RedirectProfiles: map[string]config.RedirectProfile{
+			"warn-fetch": {
+				Exec:   []string{"/bin/echo", testWarnContextToken},
+				Reason: "audited",
+			},
+		},
+		Rules: []config.ToolPolicyRule{
+			{
+				Name:            "redirect-fetch",
+				ToolPattern:     `(?i)^bash$`,
+				ArgPattern:      `(?i)\bcurl\b`,
+				Action:          config.ActionRedirect,
+				RedirectProfile: "warn-fetch",
+			},
+		},
+	})
+
+	var serverIn bytes.Buffer
+	var logW bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 10)
+
+	opts := testOpts(sc)
+	opts.PolicyCfg = policyCfg
+	opts.WarnContext = scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+		RequestID: testWarnContextRequestID,
+		Agent:     testWarnContextAgent,
+	})
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(req)),
+		transport.NewStdioWriter(&serverIn),
+		&logW, config.ActionBlock, config.ActionBlock, blockedCh, nil, nil, opts,
+	)
+
+	var gotResponse bool
+	for br := range blockedCh {
+		if br.SyntheticResponse != nil {
+			gotResponse = true
+		}
+	}
+	if !gotResponse {
+		t.Fatal("expected synthetic response on channel for warn-only redirect output")
+	}
+
+	got := waitWarnContext(t, hookCh, "stdio redirect output")
+	if got.Transport != testWarnContextTransport {
+		t.Fatalf("transport = %q, want %q", got.Transport, testWarnContextTransport)
+	}
+	if got.Method != mcpWarnMethod {
+		t.Fatalf("method = %q, want %q", got.Method, mcpWarnMethod)
+	}
+	if got.Resource != testRedirectToolName {
+		t.Fatalf("resource = %q, want %q", got.Resource, testRedirectToolName)
+	}
+	if got.RequestID != testWarnContextRequestID {
+		t.Fatalf("requestID = %q, want %q", got.RequestID, testWarnContextRequestID)
+	}
+	if got.Agent != testWarnContextAgent {
+		t.Fatalf("agent = %q, want %q", got.Agent, testWarnContextAgent)
 	}
 }
 

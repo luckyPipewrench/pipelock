@@ -89,3 +89,26 @@ func TestDLPWarnLogContext_FallsBackWhenConstructorErrors(t *testing.T) {
 		t.Fatalf("fallback requestID = %q, want %q", got, wc.RequestID)
 	}
 }
+
+func TestDLPWarnLogContext_UsesMCPForMCPTransport(t *testing.T) {
+	wc := scanner.DLPWarnContext{
+		Method:    "MCP",
+		Resource:  "tools/call",
+		Agent:     "agent-3",
+		Transport: "mcp_http",
+	}
+
+	ctx, err := dlpWarnLogContext(wc)
+	if err != nil {
+		t.Fatalf("dlpWarnLogContext: %v", err)
+	}
+	if got := ctx.Method(); got != wc.Method {
+		t.Fatalf("method = %q, want %q", got, wc.Method)
+	}
+	if got := ctx.Resource(); got != wc.Resource {
+		t.Fatalf("resource = %q, want %q", got, wc.Resource)
+	}
+	if got := ctx.Target(); got != "" {
+		t.Fatalf("target = %q, want empty", got)
+	}
+}

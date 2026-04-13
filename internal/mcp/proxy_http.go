@@ -289,9 +289,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	scanEnabled := inputCfg != nil && inputCfg.Enabled
 	inputScanCtx := opts.warnContext()
 	if scanEnabled {
-		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, scanner.DLPWarnContext{
-			Transport: "mcp_http",
-		})
+		wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+		if wc.Transport == "" {
+			wc.Transport = transportMCPHTTP
+		}
+		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
 		verdict = ScanRequest(inputScanCtx, msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
@@ -669,11 +671,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// sending to client. Handler output is untrusted — it could contain
 			// secrets or injection payloads.
 			scanVerdict := ScanResponse(redirectResult.Response, sc)
-			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, scanner.DLPWarnContext{
-				Transport: "mcp_http",
-				Method:    "MCP",
-				Resource:  mcpWarnResource(verdict.Method, msg),
-			})
+			wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+			if wc.Transport == "" {
+				wc.Transport = transportMCPHTTP
+			}
+			wc.Method = mcpWarnMethod
+			wc.Resource = mcpWarnResource(verdict.Method, msg)
+			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, wc)
 			dlpResult := sc.ScanTextForDLP(httpWarnCtx, string(redirectResult.Response))
 			if !scanVerdict.Clean {
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")

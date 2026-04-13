@@ -24,6 +24,12 @@ import (
 // When action is "warn", the caller logs but does not block the request.
 type DoWCheckFunc func(toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
 
+const (
+	transportMCPStdio = "mcp_stdio"
+	transportMCPHTTP  = "mcp_http"
+	mcpWarnMethod     = "MCP"
+)
+
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
 // Construct once per proxy invocation; pass by value so callers can
 // override fields (e.g. Rec, ToolCfg) without affecting the original.

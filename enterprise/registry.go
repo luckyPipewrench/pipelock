@@ -98,10 +98,11 @@ func NewAgentRegistry(base *config.Config, fallbackScanners ...*scanner.Scanner)
 	if def, ok := reg.agents[edition.ProfileDefault]; ok {
 		reg.fallback = def
 	} else {
-		sc := scanner.New(base)
+		var sc *scanner.Scanner
 		if len(fallbackScanners) > 0 && fallbackScanners[0] != nil {
 			sc = fallbackScanners[0]
 		} else {
+			sc = scanner.New(base)
 			reg.ownsFallback = true
 		}
 		reg.fallback = &edition.ResolvedAgent{

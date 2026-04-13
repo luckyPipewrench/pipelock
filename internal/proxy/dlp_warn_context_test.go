@@ -34,7 +34,7 @@ func testWarnScanner(t *testing.T) (*scanner.Scanner, *[]scanner.DLPWarnContext)
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
 		Name:     testWarnHookPattern,
 		Regex:    `warnctx-[A-Za-z0-9]{10,}`,
-		Severity: "high",
+		Severity: config.SeverityHigh,
 		Action:   config.ActionWarn,
 	})
 
@@ -138,6 +138,9 @@ func TestDLPScanWSHeaders_PropagatesWarnContext(t *testing.T) {
 	got := (*captured)[0]
 	if got.Transport != TransportWS {
 		t.Fatalf("transport = %q, want %q", got.Transport, TransportWS)
+	}
+	if got.Method != "WS" {
+		t.Fatalf("method = %q, want %q", got.Method, "WS")
 	}
 	if got.URL != testWSURL {
 		t.Fatalf("url = %q, want %q", got.URL, testWSURL)

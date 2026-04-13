@@ -575,7 +575,8 @@ func TestPostureVerifyOldCapsule(t *testing.T) {
 	if err == nil {
 		t.Fatal("cmd.Execute() = nil, want error for capsule exceeding max age")
 	}
-	assertExitCode(t, err, exitVerifyIntegrity)
+	// Capsule age is a freshness policy failure, not an integrity failure.
+	assertExitCode(t, err, exitVerifyPolicyFail)
 	if !strings.Contains(err.Error(), "capsule age") {
 		t.Errorf("error = %v, want capsule age exceeded message", err)
 	}

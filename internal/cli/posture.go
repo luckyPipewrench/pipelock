@@ -90,10 +90,12 @@ Exit codes:
 				return fmt.Errorf("parsing --max-receipt-age: %w", err)
 			}
 
-			// Check capsule age before full verification.
+			// Check capsule age. A stale capsule is a policy failure (exit 2),
+			// not an integrity failure (exit 1) — the capsule may be perfectly
+			// authentic but too old for the operator's freshness policy.
 			ageDays := int(time.Since(capsule.GeneratedAt).Hours() / 24)
 			if ageDays > maxAgeDays {
-				return cliutil.ExitCodeError(exitVerifyIntegrity, fmt.Errorf("capsule age %dd exceeds max %dd", ageDays, maxAgeDays))
+				return cliutil.ExitCodeError(exitVerifyPolicyFail, fmt.Errorf("capsule age %dd exceeds max %dd", ageDays, maxAgeDays))
 			}
 
 			opts := posturepkg.VerifyOpts{

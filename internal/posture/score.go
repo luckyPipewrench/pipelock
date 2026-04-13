@@ -125,7 +125,16 @@ func EvaluatePolicy(policy string, evidence EvidenceBundle, opts VerifyOpts) ([]
 	var failures []HardFailure
 	var warnings []string
 
-	if policy == PolicyNone {
+	switch policy {
+	case PolicyNone:
+		return failures, warnings
+	case PolicyEnterprise, PolicyStrict:
+		// valid, continue
+	default:
+		failures = append(failures, HardFailure{
+			Rule:   "invalid_policy",
+			Detail: fmt.Sprintf("unknown policy %q; must be none, enterprise, or strict", policy),
+		})
 		return failures, warnings
 	}
 
@@ -217,12 +226,9 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 		result.ConfigHashMatch = &match
 	}
 
-	maxReceiptAge := opts.MaxReceiptAge
-	if maxReceiptAge == 0 {
-		maxReceiptAge = MaxReceiptAgeDays
-	}
-
-	score, factors := ComputeScore(capsule.Evidence, maxReceiptAge)
+	// MaxReceiptAge=0 means skip stale-receipt scoring. The CLI sets the
+	// default (7d); callers that want no staleness check pass 0 explicitly.
+	score, factors := ComputeScore(capsule.Evidence, opts.MaxReceiptAge)
 	result.Score = score
 	result.FactorScores = factors
 

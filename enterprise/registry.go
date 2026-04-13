@@ -29,12 +29,16 @@ type AgentRegistry struct {
 	ports            map[string]string // listen addr -> profile name
 	cidrs            []cidrMapping     // source CIDR -> profile name
 	fallback         *edition.ResolvedAgent
+	ownsFallback     bool  // true when the registry created the fallback scanner
 	licenseExpiresAt int64 // Unix timestamp; 0 = perpetual. Checked on Lookup().
 }
 
 // NewAgentRegistry builds a registry from the base config. Each agent profile
 // is deep-merged with the base, and a scanner is built from the merged config.
-func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
+// When no _default profile is configured, callers may provide the base scanner
+// used elsewhere in the process so fallback traffic uses the same scanner
+// instance and lifecycle.
+func NewAgentRegistry(base *config.Config, fallbackScanners ...*scanner.Scanner) (_ *AgentRegistry, err error) {
 	reg := &AgentRegistry{
 		agents:           make(map[string]*edition.ResolvedAgent, len(base.Agents)),
 		ports:            make(map[string]string),
@@ -95,6 +99,11 @@ func NewAgentRegistry(base *config.Config) (_ *AgentRegistry, err error) {
 		reg.fallback = def
 	} else {
 		sc := scanner.New(base)
+		if len(fallbackScanners) > 0 && fallbackScanners[0] != nil {
+			sc = fallbackScanners[0]
+		} else {
+			reg.ownsFallback = true
+		}
 		reg.fallback = &edition.ResolvedAgent{
 			Name:    edition.ProfileDefault,
 			Config:  base,
@@ -186,7 +195,7 @@ func (r *AgentRegistry) Close() {
 	if r.fallback == nil {
 		return
 	}
-	if _, isMapped := r.agents[r.fallback.Name]; !isMapped {
+	if _, isMapped := r.agents[r.fallback.Name]; !isMapped && r.ownsFallback {
 		// fallback was built from base, not from agents map
 		r.fallback.Scanner.Close()
 	}

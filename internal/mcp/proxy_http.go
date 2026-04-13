@@ -288,12 +288,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	var verdict InputVerdict
 	scanEnabled := inputCfg != nil && inputCfg.Enabled
 	inputScanCtx := opts.warnContext()
-	if scanEnabled {
-		wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
-		if wc.Transport == "" {
-			wc.Transport = transportMCPHTTP
-		}
+	wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+	if wc.Transport == "" {
+		wc.Transport = transportMCPHTTP
 		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
+	}
+	if scanEnabled {
 		verdict = ScanRequest(inputScanCtx, msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
@@ -1126,11 +1126,20 @@ func RunHTTPListenerProxy(
 			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
 
-		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
-			Transport: "mcp_http",
-			Method:    "MCP",
-			Resource:  r.URL.Path,
-		})
+		warnCtx := scanner.DLPWarnContextFromCtx(r.Context())
+		if warnCtx.Transport == "" {
+			warnCtx.Transport = baseOpts.Transport
+		}
+		warnCtx.Method = mcpWarnMethod
+		warnCtx.Resource = r.URL.Path
+		if warnCtx.ClientIP == "" {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			warnCtx.ClientIP = host
+		}
+		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), warnCtx)
 		r = r.WithContext(httpWarnCtx)
 
 		// Scan Authorization header for DLP patterns. The body scanner

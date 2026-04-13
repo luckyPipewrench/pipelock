@@ -4339,6 +4339,30 @@ func TestScanHTTPInput_A2AMetadataBackfill(t *testing.T) {
 	}
 }
 
+func TestScanHTTPInput_A2AWarnWithoutInputScanningSeedsHTTPTransport(t *testing.T) {
+	sc, hookCh := testWarnScanner(t)
+
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionWarn,
+	}
+
+	msg := []byte(`{"jsonrpc":"2.0","id":42,"method":"SendMessage","params":{"message":{"parts":[{"text":"warnctx-ABCDEFGHIJ1234"}]}}}`)
+	var logBuf bytes.Buffer
+	blocked := scanHTTPInput(msg, &logBuf, "test-session", "audit-key", MCPProxyOpts{
+		Scanner: sc,
+		A2ACfg:  a2aCfg,
+	})
+	if blocked != nil {
+		t.Fatalf("warn-only A2A scan should not block, got: %v", blocked)
+	}
+
+	got := waitWarnContext(t, hookCh, "http A2A request")
+	if got.Transport != transportMCPHTTP {
+		t.Fatalf("transport = %q, want %q", got.Transport, transportMCPHTTP)
+	}
+}
+
 func TestScanHTTPInputDecision_EnvelopeMetadataBackfillWhenInputScanningDisabled(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	msg := []byte(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/readme.md"}}}`)
@@ -4583,6 +4607,83 @@ func TestHTTPListener_AuthDLPWithAdaptiveSignal(t *testing.T) {
 	// Verify adaptive signal was recorded.
 	if len(rec.signals) == 0 {
 		t.Error("expected adaptive block signal for auth DLP")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("timeout")
+	}
+}
+
+func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
+	var upstreamCalled int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&upstreamCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	sc, hookCh := testWarnScanner(t)
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
+			Scanner: sc,
+		})
+	}()
+
+	baseURL := "http://" + addr
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
+		resp, connErr := http.DefaultClient.Do(hReq)
+		if connErr == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testWarnContextToken)
+
+	resp, httpErr := http.DefaultClient.Do(req)
+	if httpErr != nil {
+		t.Fatalf("POST: %v", httpErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	got := waitWarnContext(t, hookCh, "listener auth header")
+	if got.Transport != testWarnContextHTTPTransport {
+		t.Fatalf("transport = %q, want %q", got.Transport, testWarnContextHTTPTransport)
+	}
+	if got.Method != mcpWarnMethod {
+		t.Fatalf("method = %q, want %q", got.Method, mcpWarnMethod)
+	}
+	if got.Resource != "/" {
+		t.Fatalf("resource = %q, want %q", got.Resource, "/")
+	}
+	if got.ClientIP != "127.0.0.1" {
+		t.Fatalf("clientIP = %q, want %q", got.ClientIP, "127.0.0.1")
+	}
+	if atomic.LoadInt32(&upstreamCalled) == 0 {
+		t.Fatal("expected warn-only Authorization header scan to reach upstream")
 	}
 
 	cancel()

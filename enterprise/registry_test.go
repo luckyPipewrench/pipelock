@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -232,6 +233,25 @@ func TestAgentRegistryFallbackScannerNotNil(t *testing.T) {
 	}
 	if agent.Config == nil {
 		t.Error("expected non-nil config on fallback")
+	}
+}
+
+func TestAgentRegistryFallbackUsesProvidedScanner(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = nil
+
+	baseScanner := scanner.New(cfg)
+	defer baseScanner.Close()
+
+	reg, err := NewAgentRegistry(cfg, baseScanner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	agent := reg.Lookup("anything")
+	if agent.Scanner != baseScanner {
+		t.Fatal("expected fallback agent to reuse provided base scanner")
 	}
 }
 

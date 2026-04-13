@@ -34,6 +34,7 @@ const (
 	testWSExample       = "EXAMPLE"
 	testWSTrigger       = "trigger"
 	testPoisonedETHAddr = `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e", "amount": "1.0"}`
+	testWarnHookTimeout = 10 * time.Second
 )
 
 // wsEchoServer creates a WebSocket server that echoes text frames back.
@@ -188,6 +189,18 @@ func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 		t.Fatalf("ws dial: %v", err)
 	}
 	return conn
+}
+
+func waitForWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scope string) scanner.DLPWarnContext {
+	t.Helper()
+
+	select {
+	case got := <-hookCh:
+		return got
+	case <-time.After(testWarnHookTimeout):
+		t.Fatalf("timed out waiting for DLP warn hook to capture %s context", scope)
+		return scanner.DLPWarnContext{}
+	}
 }
 
 func TestWSProxyEcho(t *testing.T) {
@@ -653,6 +666,97 @@ func TestWSProxyDLPAuditMode(t *testing.T) {
 	}
 	if string(reply) != secret {
 		t.Errorf("expected secret echoed back in audit mode, got %q", reply)
+	}
+}
+
+func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	logger := audit.NewNop()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 128
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+	cfg.FetchProxy.TimeoutSeconds = 5
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     testWarnHookPattern,
+		Regex:    `warnctx-[A-Za-z0-9]{10,}`,
+		Severity: "high",
+		Action:   config.ActionWarn,
+	})
+
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	hookCh := make(chan scanner.DLPWarnContext, 10)
+	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
+		hookCh <- scanner.DLPWarnContextFromCtx(ctx)
+	})
+
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	lc := net.ListenConfig{}
+	ln, listenErr := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("listen: %v", listenErr)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", p.handleWebSocket)
+		srv := &http.Server{
+			Handler:           p.buildHandler(mux),
+			ReadHeaderTimeout: 5 * time.Second,
+			BaseContext:       func(_ net.Listener) context.Context { return ctx },
+		}
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer shutdownCancel()
+			_ = srv.Shutdown(shutdownCtx)
+		}()
+		_ = srv.Serve(ln)
+	}()
+
+	conn := dialWS(t, ln.Addr().String(), backendAddr)
+	defer func() { _ = conn.Close() }()
+
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef" + " " + testWarnHookToken
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(secret)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := waitForWarnContext(t, hookCh, "websocket frame")
+	if got.Transport != "websocket" {
+		t.Fatalf("transport = %q, want %q", got.Transport, "websocket")
+	}
+	if got.Method != "WS" {
+		t.Fatalf("method = %q, want %q", got.Method, "WS")
+	}
+	if got.URL == "" {
+		t.Fatal("expected websocket warn context to carry URL")
+	}
+
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read: %v (expected message to pass in audit mode)", err)
+	}
+	if string(reply) != secret {
+		t.Fatalf("expected secret echoed back in audit mode, got %q", reply)
 	}
 }
 
@@ -2410,8 +2514,19 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	cfg.FetchProxy.TimeoutSeconds = 5
 	enforce := false
 	cfg.Enforce = &enforce
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name:     testWarnHookPattern,
+		Regex:    `warnctx-[A-Za-z0-9]{10,}`,
+		Severity: "high",
+		Action:   config.ActionWarn,
+	})
 
 	sc := scanner.New(cfg)
+	defer sc.Close()
+	hookCh := make(chan scanner.DLPWarnContext, 10)
+	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
+		hookCh <- scanner.DLPWarnContextFromCtx(ctx)
+	})
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
@@ -2450,7 +2565,7 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	defer dialCancel()
 
 	// Secret in Authorization header. In enforce mode this would block.
-	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef" + " " + testWarnHookToken
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
 
 	dialer := ws.Dialer{
@@ -2464,7 +2579,15 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	if dialErr != nil {
 		t.Fatalf("expected dial to succeed in audit mode, got: %v", dialErr)
 	}
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
+
+	got := waitForWarnContext(t, hookCh, "websocket header")
+	if got.Transport != "websocket" {
+		t.Fatalf("transport = %q, want %q", got.Transport, "websocket")
+	}
+	if got.Method != "WS" {
+		t.Fatalf("method = %q, want %q", got.Method, "WS")
+	}
 
 	// Verify the connection works (traffic allowed through despite DLP match).
 	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); writeErr != nil {

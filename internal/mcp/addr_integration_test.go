@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -47,7 +48,7 @@ func TestScanRequestAddressPoisoning(t *testing.T) {
 
 	// Poisoned address: same prefix/suffix payload, different middle.
 	line := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"transfer","arguments":{"to":"0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}}}`
-	verdict := ScanRequest([]byte(line), sc, config.ActionBlock, config.ActionBlock)
+	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
 	t.Logf("Clean: %v, AddressFindings: %d, DLP: %d, Inject: %d, Error: %q",
 		verdict.Clean, len(verdict.AddressFindings), len(verdict.Matches), len(verdict.Inject), verdict.Error)
 
@@ -83,7 +84,7 @@ func TestScanRequestAddressExactMatch(t *testing.T) {
 
 	// Exact allowlisted address.
 	line := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transfer","arguments":{"to":"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e"}}}`
-	verdict := ScanRequest([]byte(line), sc, config.ActionBlock, config.ActionBlock)
+	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionBlock, config.ActionBlock)
 
 	if !verdict.Clean {
 		t.Error("exact allowlisted address should pass clean")
@@ -120,7 +121,7 @@ func TestScanRequestBatchAddressPoisoning(t *testing.T) {
 	poisoned := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"transfer","arguments":{"to":"0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}}}`
 	batch := "[" + clean + "," + poisoned + "]"
 
-	verdict := ScanRequest([]byte(batch), sc, config.ActionBlock, config.ActionBlock)
+	verdict := ScanRequest(context.Background(), []byte(batch), sc, config.ActionBlock, config.ActionBlock)
 
 	if verdict.Clean {
 		t.Error("batch with poisoned address should NOT be clean")
@@ -159,7 +160,7 @@ func TestScanRequestNoParamsAddressPolicyAction(t *testing.T) {
 	// Response-shaped message with no params — poisoned address in result field.
 	// MCP input action is "warn" but address_protection.action is "block".
 	line := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"send to 0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}]}}`
-	verdict := ScanRequest([]byte(line), sc, config.ActionWarn, config.ActionBlock)
+	verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
 
 	if verdict.Clean {
 		t.Fatal("no-params path: poisoned address should NOT be clean")

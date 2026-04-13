@@ -258,7 +258,7 @@ func buildScenarios(extraPoison []*tools.ExtraPoisonPattern) []scenario {
 				if err != nil {
 					return false, fmt.Sprintf("marshal error: %v", err)
 				}
-				verdict := mcp.ScanRequest(line, sc, config.ActionBlock, config.ActionBlock)
+				verdict := mcp.ScanRequest(context.Background(), line, sc, config.ActionBlock, config.ActionBlock)
 				if !verdict.Clean {
 					if len(verdict.Matches) > 0 {
 						return true, fmt.Sprintf("%s (action: %s)", verdict.Matches[0].PatternName, verdict.Action)

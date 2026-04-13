@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -86,6 +87,7 @@ func RunHTTPProxy(
 	fwdOpts := opts
 	fwdOpts.Rec = rec
 	fwdOpts.ToolCfg = fwdToolCfg
+	fwdOpts.WarnContext = ctx
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -285,8 +287,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Content scan.
 	var verdict InputVerdict
 	scanEnabled := inputCfg != nil && inputCfg.Enabled
+	inputScanCtx := opts.warnContext()
+	wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+	if wc.Transport == "" {
+		wc.Transport = transportMCPHTTP
+		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
+	}
 	if scanEnabled {
-		verdict = ScanRequest(msg, sc, action, onParseError)
+		verdict = ScanRequest(inputScanCtx, msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
 		// When input scanning is disabled, extract enough metadata from the
@@ -331,7 +339,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 		if IsA2AMethod(method) {
-			a2aResult := ScanA2ARequestBody(context.Background(), msg, sc, opts.A2ACfg)
+			a2aResult := ScanA2ARequestBody(inputScanCtx, msg, sc, opts.A2ACfg)
 			if !a2aResult.Clean {
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
@@ -663,8 +671,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// sending to client. Handler output is untrusted — it could contain
 			// secrets or injection payloads.
 			scanVerdict := ScanResponse(redirectResult.Response, sc)
-			// context.Background: scanHTTPInput has no ctx param; param unused in ScanTextForDLP.
-			dlpResult := sc.ScanTextForDLP(context.Background(), string(redirectResult.Response))
+			wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+			if wc.Transport == "" {
+				wc.Transport = transportMCPHTTP
+			}
+			wc.Method = mcpWarnMethod
+			wc.Resource = mcpWarnResource(verdict.Method, msg)
+			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, wc)
+			dlpResult := sc.ScanTextForDLP(httpWarnCtx, string(redirectResult.Response))
 			if !scanVerdict.Clean {
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
 				recordAdaptiveSignal(session.SignalBlock)
@@ -1112,6 +1126,22 @@ func RunHTTPListenerProxy(
 			reqRec = opts.Store.GetOrCreate(adaptiveHost)
 		}
 
+		warnCtx := scanner.DLPWarnContextFromCtx(r.Context())
+		if warnCtx.Transport == "" {
+			warnCtx.Transport = baseOpts.Transport
+		}
+		warnCtx.Method = mcpWarnMethod
+		warnCtx.Resource = r.URL.Path
+		if warnCtx.ClientIP == "" {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				host = r.RemoteAddr
+			}
+			warnCtx.ClientIP = host
+		}
+		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), warnCtx)
+		r = r.WithContext(httpWarnCtx)
+
 		// Scan Authorization header for DLP patterns. The body scanner
 		// doesn't see HTTP headers, so an agent could leak credentials
 		// via the Authorization header without triggering DLP.
@@ -1181,6 +1211,7 @@ func RunHTTPListenerProxy(
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
+		scanOpts.WarnContext = r.Context()
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")

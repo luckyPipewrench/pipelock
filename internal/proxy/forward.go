@@ -118,7 +118,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	headerCtx := targetCtx
 
 	// Scan through all layers (URL pipeline).
-	result := sc.Scan(r.Context(), syntheticURL)
+	connectScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+		Method: http.MethodConnect, URL: syntheticURL, Target: target,
+		ClientIP: clientIP, RequestID: requestID, Agent: agent, Transport: "connect",
+	})
+	r = r.WithContext(connectScanCtx)
+	result := sc.Scan(connectScanCtx, syntheticURL)
 
 	// Capture observer: record CONNECT URL verdict for policy replay.
 	{
@@ -556,7 +561,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	actx := newHTTPAuditContext(p.logger, r.Method, targetURL, clientIP, requestID, agent)
 
 	// Scan through all layers (URL pipeline)
-	result := sc.Scan(r.Context(), targetURL)
+	fwdScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+		Method: r.Method, URL: targetURL, ClientIP: clientIP,
+		RequestID: requestID, Agent: agent, Transport: "forward",
+	})
+	r = r.WithContext(fwdScanCtx)
+	result := sc.Scan(fwdScanCtx, targetURL)
 
 	// A2A protocol detection: check path and Content-Type before deeper scanning.
 	isA2A := cfg.A2AScanning.Enabled && mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type"))

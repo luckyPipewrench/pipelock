@@ -187,11 +187,9 @@ func TestURLDLP_WarnDoesNotPreventEnforceBlock(t *testing.T) {
 
 	// Install hook to verify warn emission even on blocked requests.
 	var hookCalled []string
-	old := DLPWarnHook
-	DLPWarnHook = func(patternName, _, _ string) {
+	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
 		hookCalled = append(hookCalled, patternName)
-	}
-	defer func() { DLPWarnHook = old }()
+	})
 
 	// URL with both warn and enforce matches — should be blocked by enforce.
 	url := "https://example.com/?a=warnurl-AAAAAAAAAA&b=enforceurl-BBBBBBBBBB"
@@ -312,19 +310,17 @@ func TestDLPWarnHook_TextDLP(t *testing.T) {
 	s := New(cfg)
 
 	var called []string
-	old := DLPWarnHook
-	DLPWarnHook = func(patternName, severity, transport string) {
-		called = append(called, patternName+":"+transport)
-	}
-	defer func() { DLPWarnHook = old }()
+	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
+		called = append(called, patternName)
+	})
 
 	s.ScanTextForDLP(context.Background(), "hook-text-ABCDEFGHIJ1234")
 
 	if len(called) == 0 {
 		t.Fatal("DLPWarnHook should have been called for text DLP warn match")
 	}
-	if called[0] != "hook-text:text" {
-		t.Errorf("expected hook-text:text, got %q", called[0])
+	if called[0] != "hook-text" {
+		t.Errorf("expected hook-text, got %q", called[0])
 	}
 }
 
@@ -333,19 +329,17 @@ func TestDLPWarnHook_URLDLP(t *testing.T) {
 	s := New(cfg)
 
 	var called []string
-	old := DLPWarnHook
-	DLPWarnHook = func(patternName, severity, transport string) {
-		called = append(called, patternName+":"+transport)
-	}
-	defer func() { DLPWarnHook = old }()
+	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
+		called = append(called, patternName)
+	})
 
 	s.Scan(context.Background(), "https://example.com/?key=hook-url-ABCDEFGHIJ1234")
 
 	if len(called) == 0 {
 		t.Fatal("DLPWarnHook should have been called for URL DLP warn match")
 	}
-	if called[0] != "hook-url:url" {
-		t.Errorf("expected hook-url:url, got %q", called[0])
+	if called[0] != "hook-url" {
+		t.Errorf("expected hook-url, got %q", called[0])
 	}
 }
 
@@ -353,11 +347,85 @@ func TestDLPWarnHook_NilDoesNotPanic(t *testing.T) {
 	cfg := testDLPConfig("hook-nil", `hook-nil-[A-Za-z0-9]{10,}`, true)
 	s := New(cfg)
 
-	old := DLPWarnHook
-	DLPWarnHook = nil
-	defer func() { DLPWarnHook = old }()
-
+	// No hook set — dlpWarnHook is nil by default.
 	// Should not panic with nil hook.
 	s.ScanTextForDLP(context.Background(), "hook-nil-ABCDEFGHIJ1234")
 	s.Scan(context.Background(), "https://example.com/?key=hook-nil-ABCDEFGHIJ1234")
+}
+
+func TestDLPWarnHook_ContextCarriesTransport(t *testing.T) {
+	cfg := testDLPConfig("ctx-transport", `ctx-transport-[A-Za-z0-9]{10,}`, true)
+	s := New(cfg)
+
+	type hookCapture struct {
+		patternName string
+		severity    string
+		transport   string
+		clientIP    string
+		url         string
+		method      string
+	}
+	var captured []hookCapture
+	s.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+		wc := DLPWarnContextFromCtx(ctx)
+		captured = append(captured, hookCapture{
+			patternName: patternName,
+			severity:    severity,
+			transport:   wc.Transport,
+			clientIP:    wc.ClientIP,
+			url:         wc.URL,
+			method:      wc.Method,
+		})
+	})
+
+	tests := []struct {
+		name      string
+		transport string
+		method    string
+		url       string
+		clientIP  string
+	}{
+		{"connect", "connect", "CONNECT", "https://example.com/", "10.0.0.0"},
+		{"fetch", "fetch", "GET", "https://example.com/", "10.0.0.1"},
+		{"forward", "forward", "POST", "https://forward.example.com/", "10.0.0.4"},
+		{"intercept", "intercept", "POST", "https://intercept.example.com/", "10.0.0.5"},
+		{"websocket", "websocket", "WS", "https://ws.example.com/", "10.0.0.2"},
+		{"reverse", "reverse", "POST", "https://api.internal/", "10.0.0.3"},
+		{"mcp_stdio", "mcp_stdio", "", "", ""},
+		{"mcp_http", "mcp_http", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			captured = nil
+			ctx := WithDLPWarnContext(context.Background(), DLPWarnContext{
+				Method:    tt.method,
+				URL:       tt.url,
+				ClientIP:  tt.clientIP,
+				RequestID: "req-" + tt.name,
+				Transport: tt.transport,
+			})
+			s.ScanTextForDLP(ctx, "ctx-transport-ABCDEFGHIJ1234")
+
+			if len(captured) == 0 {
+				t.Fatal("hook was not called")
+			}
+			c := captured[0]
+			if c.transport != tt.transport {
+				t.Errorf("transport: got %q, want %q", c.transport, tt.transport)
+			}
+			if c.clientIP != tt.clientIP {
+				t.Errorf("clientIP: got %q, want %q", c.clientIP, tt.clientIP)
+			}
+			if c.url != tt.url {
+				t.Errorf("url: got %q, want %q", c.url, tt.url)
+			}
+			if c.method != tt.method {
+				t.Errorf("method: got %q, want %q", c.method, tt.method)
+			}
+			if c.patternName != "ctx-transport" {
+				t.Errorf("patternName: got %q, want %q", c.patternName, "ctx-transport")
+			}
+		})
+	}
 }

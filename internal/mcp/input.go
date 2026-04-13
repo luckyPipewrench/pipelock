@@ -251,7 +251,7 @@ func ForwardScannedInput(
 			continue
 		}
 
-		stdioInputCtx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), scanner.DLPWarnContext{
 			Transport: "mcp_stdio",
 		})
 		verdict := ScanRequest(stdioInputCtx, line, sc, action, onParseError)
@@ -721,9 +721,10 @@ func ForwardScannedInput(
 				// Scan redirect handler output for prompt injection AND DLP before
 				// sending to client. Handler output is untrusted.
 				scanVerdict := ScanResponse(result.Response, sc)
-				// Stdio loop has no HTTP request context; wrap background with DLP warn metadata.
-				stdioWarnCtx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, scanner.DLPWarnContext{
 					Transport: "mcp_stdio",
+					Method:    "MCP",
+					Resource:  mcpWarnResource(verdict.Method, line),
 				})
 				dlpResult := sc.ScanTextForDLP(stdioWarnCtx, string(result.Response))
 				// Capture: record redirect output scan verdict.

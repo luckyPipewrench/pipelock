@@ -93,6 +93,7 @@ func RunWSProxy(
 	wsOpts.ToolCfg = fwdToolCfg
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
+	wsOpts.WarnContext = innerCtx
 
 	clientReader := transport.NewStdioReader(clientIn)
 

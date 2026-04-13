@@ -51,6 +51,8 @@ import (
 // operator-configured values.
 const (
 	configReloadAuditMethod = "CONFIG_RELOAD"
+	dlpWarnAuditMethod      = "DLP_WARN"
+	mcpAuditMethod          = "MCP"
 	serverReadTimeout       = 10 * time.Second
 	serverReadHeaderTimeout = 5 * time.Second
 	serverWriteTimeout      = 10 * time.Second
@@ -62,22 +64,41 @@ const (
 	transportUnknown = "unknown"
 )
 
-// dlpWarnLogContext builds the appropriate audit LogContext for a DLP warn
-// event based on which identifier fields are populated. CONNECT-style events
-// must carry both Target and the CONNECT method, MCP events carry Resource,
-// and URL-bearing request paths use the HTTP constructor. Falls back to a
-// zero LogContext when no transport-specific identifier is set.
-func dlpWarnLogContext(wc scanner.DLPWarnContext) audit.LogContext {
+// dlpWarnLogContext builds the transport-appropriate audit context for a DLP
+// warn event. When the transport-specific constructor cannot build a complete
+// context, the caller should log the returned error and fall back to the
+// best-effort context from dlpWarnFallbackLogContext.
+func dlpWarnLogContext(wc scanner.DLPWarnContext) (audit.LogContext, error) {
 	switch wc.Transport {
 	case "connect":
-		lctx, _ := audit.NewConnectLogContext(wc.Target, wc.ClientIP, wc.RequestID, wc.Agent)
-		return lctx
-	case "mcp_stdio", "mcp_http", "mcp_input":
-		lctx, _ := audit.NewMCPLogContext(wc.Method, wc.Resource, wc.Agent)
-		return lctx
+		return audit.NewConnectLogContext(wc.Target, wc.ClientIP, wc.RequestID, wc.Agent)
+	case "mcp_stdio", "mcp_http", "mcp_input", "mcp_http_listener", "mcp_ws":
+		method := wc.Method
+		if method == "" {
+			method = mcpAuditMethod
+		}
+		return audit.NewMCPLogContext(method, wc.Resource, wc.Agent)
 	default:
-		lctx, _ := audit.NewHTTPLogContext(wc.Method, wc.URL, wc.ClientIP, wc.RequestID, wc.Agent)
-		return lctx
+		return audit.NewHTTPLogContext(wc.Method, wc.URL, wc.ClientIP, wc.RequestID, wc.Agent)
+	}
+}
+
+func dlpWarnFallbackLogContext(wc scanner.DLPWarnContext) audit.LogContext {
+	switch {
+	case wc.RequestID != "":
+		return audit.NewRequestLogContext(wc.RequestID)
+	case wc.Resource != "":
+		method := wc.Method
+		if method == "" {
+			method = mcpAuditMethod
+		}
+		return audit.NewResourceLogContext(method, wc.Resource)
+	case wc.Method != "":
+		return audit.NewMethodLogContext(wc.Method)
+	case wc.Transport != "":
+		return audit.NewMethodLogContext(dlpWarnAuditMethod)
+	default:
+		return audit.LogContext{}
 	}
 }
 
@@ -256,7 +277,11 @@ Examples:
 				if transport == "" {
 					transport = transportUnknown
 				}
-				lctx := dlpWarnLogContext(wc)
+				lctx, lctxErr := dlpWarnLogContext(wc)
+				if lctxErr != nil {
+					lctx = dlpWarnFallbackLogContext(wc)
+					logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
+				}
 				logger.LogDLPWarn(lctx, patternName, severity, transport)
 			})
 			defer sc.Close()
@@ -583,7 +608,11 @@ Examples:
 								if transport == "" {
 									transport = transportUnknown
 								}
-								lctx := dlpWarnLogContext(wc)
+								lctx, lctxErr := dlpWarnLogContext(wc)
+								if lctxErr != nil {
+									lctx = dlpWarnFallbackLogContext(wc)
+									logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
+								}
 								logger.LogDLPWarn(lctx, patternName, severity, transport)
 							})
 							p.Reload(newCfg, newSc)

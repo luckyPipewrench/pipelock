@@ -87,6 +87,7 @@ func RunHTTPProxy(
 	fwdOpts := opts
 	fwdOpts.Rec = rec
 	fwdOpts.ToolCfg = fwdToolCfg
+	fwdOpts.WarnContext = ctx
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -286,7 +287,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Content scan.
 	var verdict InputVerdict
 	scanEnabled := inputCfg != nil && inputCfg.Enabled
-	inputScanCtx := context.Background()
+	inputScanCtx := opts.warnContext()
 	if scanEnabled {
 		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, scanner.DLPWarnContext{
 			Transport: "mcp_http",
@@ -668,9 +669,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// sending to client. Handler output is untrusted — it could contain
 			// secrets or injection payloads.
 			scanVerdict := ScanResponse(redirectResult.Response, sc)
-			// scanHTTPInput has no ctx param; wrap background with DLP warn metadata.
-			httpWarnCtx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, scanner.DLPWarnContext{
 				Transport: "mcp_http",
+				Method:    "MCP",
+				Resource:  mcpWarnResource(verdict.Method, msg),
 			})
 			dlpResult := sc.ScanTextForDLP(httpWarnCtx, string(redirectResult.Response))
 			if !scanVerdict.Clean {
@@ -1122,6 +1124,8 @@ func RunHTTPListenerProxy(
 
 		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 			Transport: "mcp_http",
+			Method:    "MCP",
+			Resource:  r.URL.Path,
 		})
 		r = r.WithContext(httpWarnCtx)
 
@@ -1194,6 +1198,7 @@ func RunHTTPListenerProxy(
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
+		scanOpts.WarnContext = r.Context()
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		if blocked := decision.Blocked; blocked != nil {
 			w.Header().Set("Content-Type", "application/json")

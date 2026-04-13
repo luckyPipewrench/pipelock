@@ -734,7 +734,6 @@ func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 	if string(reply) != secret {
 		t.Fatalf("expected secret echoed back in audit mode, got %q", reply)
 	}
-
 	var got scanner.DLPWarnContext
 	select {
 	case got = <-hookCh:
@@ -2584,7 +2583,6 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	if string(reply) != testWSHello {
 		t.Errorf("expected echo, got %q", reply)
 	}
-
 	var got scanner.DLPWarnContext
 	select {
 	case got = <-hookCh:

@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/publicsuffix"
@@ -136,6 +137,7 @@ type Scanner struct {
 	seedEnabled                bool
 	seedMinWords               int
 	seedVerifyChecksum         bool
+	dlpWarnHookMu              sync.RWMutex
 	dlpWarnHook                func(ctx context.Context, patternName, severity string)
 }
 
@@ -144,7 +146,15 @@ type Scanner struct {
 // metadata), pattern name, and severity. Called once per scanner instance
 // from runtime startup and on config reload.
 func (s *Scanner) SetDLPWarnHook(hook func(ctx context.Context, patternName, severity string)) {
+	s.dlpWarnHookMu.Lock()
+	defer s.dlpWarnHookMu.Unlock()
 	s.dlpWarnHook = hook
+}
+
+func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severity string) {
+	s.dlpWarnHookMu.RLock()
+	defer s.dlpWarnHookMu.RUnlock()
+	return s.dlpWarnHook
 }
 
 type compiledPattern struct {
@@ -1516,11 +1526,12 @@ func nextCombination(indices []int, n int) bool {
 
 // emitDLPWarns calls the instance warn hook for each warn match if set.
 func (s *Scanner) emitDLPWarns(ctx context.Context, matches []WarnMatch) {
-	if len(matches) == 0 || s.dlpWarnHook == nil {
+	hook := s.getDLPWarnHook()
+	if len(matches) == 0 || hook == nil {
 		return
 	}
 	for _, m := range matches {
-		s.dlpWarnHook(ctx, m.PatternName, m.Severity)
+		hook(ctx, m.PatternName, m.Severity)
 	}
 }
 

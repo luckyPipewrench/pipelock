@@ -354,6 +354,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			redirectWarnCtx.ClientIP = clientIP
 			redirectWarnCtx.RequestID = requestID
 			redirectWarnCtx.Agent = agentName
+			redirectWarnCtx.Transport = TransportFetch
 			result := currentScanner.Scan(scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx), redirectURL)
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)

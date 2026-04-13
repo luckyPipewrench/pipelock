@@ -16,6 +16,15 @@ import (
 const (
 	testWarnHookPattern = "warnctx"
 	testWarnHookToken   = "warnctx-ABCDEFGHIJ1234"
+	testUploadURL       = "https://example.com/upload"
+	testFetchURL        = "https://example.com/fetch"
+	testWSURL           = "https://ws.example.com/chat"
+	testClientIPBody    = "10.0.0.1"
+	testClientIPHeader  = "10.0.0.2"
+	testClientIPWS      = "10.0.0.3"
+	testReqIDBody       = "req-body"
+	testReqIDHeader     = "req-header"
+	testReqIDWS         = "req-ws-header"
 )
 
 func testWarnScanner(t *testing.T) (*scanner.Scanner, *[]scanner.DLPWarnContext) {
@@ -44,10 +53,10 @@ func TestScanRequestBody_PropagatesWarnContext(t *testing.T) {
 	cfg := testScannerConfig()
 	ctx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
 		Method:    http.MethodPost,
-		URL:       "https://example.com/upload",
-		ClientIP:  "10.0.0.1",
-		RequestID: "req-body",
-		Transport: "forward",
+		URL:       testUploadURL,
+		ClientIP:  testClientIPBody,
+		RequestID: testReqIDBody,
+		Transport: TransportForward,
 	})
 
 	body := `{"key":"` + fakeAPIKey() + ` ` + testWarnHookToken + `"}`
@@ -64,11 +73,11 @@ func TestScanRequestBody_PropagatesWarnContext(t *testing.T) {
 		t.Fatal("expected DLP warn hook to capture context")
 	}
 	got := (*captured)[0]
-	if got.Transport != "forward" {
-		t.Fatalf("transport = %q, want %q", got.Transport, "forward")
+	if got.Transport != TransportForward {
+		t.Fatalf("transport = %q, want %q", got.Transport, TransportForward)
 	}
-	if got.URL != "https://example.com/upload" {
-		t.Fatalf("url = %q, want %q", got.URL, "https://example.com/upload")
+	if got.URL != testUploadURL {
+		t.Fatalf("url = %q, want %q", got.URL, testUploadURL)
 	}
 }
 
@@ -78,9 +87,9 @@ func TestScanRequestHeaders_PropagatesWarnContext(t *testing.T) {
 
 	ctx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
 		Method:    http.MethodGet,
-		URL:       "https://example.com/fetch",
-		ClientIP:  "10.0.0.2",
-		RequestID: "req-header",
+		URL:       testFetchURL,
+		ClientIP:  testClientIPHeader,
+		RequestID: testReqIDHeader,
 		Transport: TransportFetch,
 	})
 
@@ -97,8 +106,8 @@ func TestScanRequestHeaders_PropagatesWarnContext(t *testing.T) {
 	if got.Transport != TransportFetch {
 		t.Fatalf("transport = %q, want %q", got.Transport, TransportFetch)
 	}
-	if got.RequestID != "req-header" {
-		t.Fatalf("requestID = %q, want %q", got.RequestID, "req-header")
+	if got.RequestID != testReqIDHeader {
+		t.Fatalf("requestID = %q, want %q", got.RequestID, testReqIDHeader)
 	}
 }
 
@@ -108,9 +117,9 @@ func TestDLPScanWSHeaders_PropagatesWarnContext(t *testing.T) {
 
 	ctx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
 		Method:    "WS",
-		URL:       "https://ws.example.com/chat",
-		ClientIP:  "10.0.0.3",
-		RequestID: "req-ws-header",
+		URL:       testWSURL,
+		ClientIP:  testClientIPWS,
+		RequestID: testReqIDWS,
 		Transport: TransportWS,
 	})
 
@@ -130,7 +139,7 @@ func TestDLPScanWSHeaders_PropagatesWarnContext(t *testing.T) {
 	if got.Transport != TransportWS {
 		t.Fatalf("transport = %q, want %q", got.Transport, TransportWS)
 	}
-	if got.URL != "https://ws.example.com/chat" {
-		t.Fatalf("url = %q, want %q", got.URL, "https://ws.example.com/chat")
+	if got.URL != testWSURL {
+		t.Fatalf("url = %q, want %q", got.URL, testWSURL)
 	}
 }

@@ -51,6 +51,28 @@ func extractToolCallArgs(line []byte) string {
 	return string(req.Params.Arguments)
 }
 
+func withMCPRequestWarnContext(ctx context.Context, resource string) context.Context {
+	if resource == "" {
+		return ctx
+	}
+	wc := scanner.DLPWarnContextFromCtx(ctx)
+	if wc.Transport == "" {
+		return ctx
+	}
+	wc.Method = "MCP"
+	wc.Resource = resource
+	return scanner.WithDLPWarnContext(ctx, wc)
+}
+
+func mcpWarnResource(method string, line []byte) string {
+	if method == methodToolsCall {
+		if toolName := extractToolCallName(line); toolName != "" {
+			return toolName
+		}
+	}
+	return method
+}
+
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
 // DLP patterns, injection patterns, and env secret leaks. Fail-closed
 // on parse errors (configurable via onParseError).
@@ -58,6 +80,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 	// Detect batch request (JSON array).
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
+		ctx = withMCPRequestWarnContext(ctx, "batch")
 		return scanRequestBatch(ctx, trimmed, sc, action, onParseError)
 	}
 
@@ -81,6 +104,8 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 			Error: fmt.Sprintf("not a JSON-RPC 2.0 message: jsonrpc=%q", rpc.JSONRPC),
 		}
 	}
+
+	ctx = withMCPRequestWarnContext(ctx, mcpWarnResource(rpc.Method, trimmed))
 
 	// No params — but result/error/unknown fields may carry exfiltrable
 	// content (e.g., a compromised agent sending response-shaped messages).

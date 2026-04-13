@@ -199,11 +199,16 @@ func (s *Scanner) ScanTextForDLP(ctx context.Context, text string) TextDLPResult
 		}
 	}
 
-	// Emit warn events through the instance hook so callers don't need individual wiring.
-	if len(informational) > 0 && s.dlpWarnHook != nil {
+	// Emit warn events through the shared helper so warn-hook behavior stays centralized.
+	if len(informational) > 0 {
+		warns := make([]WarnMatch, 0, len(informational))
 		for _, m := range informational {
-			s.dlpWarnHook(ctx, m.PatternName, m.Severity)
+			warns = append(warns, WarnMatch{
+				PatternName: m.PatternName,
+				Severity:    m.Severity,
+			})
 		}
+		s.emitDLPWarns(ctx, warns)
 	}
 
 	return TextDLPResult{

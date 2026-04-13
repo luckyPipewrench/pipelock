@@ -21,12 +21,18 @@ type dlpWarnCtxKey struct{}
 
 // WithDLPWarnContext attaches DLP warn metadata to a context.
 func WithDLPWarnContext(ctx context.Context, wc DLPWarnContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, dlpWarnCtxKey{}, wc)
 }
 
 // DLPWarnContextFromCtx extracts DLP warn metadata from a context.
 // Returns zero value if not set.
 func DLPWarnContextFromCtx(ctx context.Context) DLPWarnContext {
+	if ctx == nil {
+		return DLPWarnContext{}
+	}
 	wc, _ := ctx.Value(dlpWarnCtxKey{}).(DLPWarnContext)
 	return wc
 }

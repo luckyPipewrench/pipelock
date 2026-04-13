@@ -682,9 +682,9 @@ func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	var captured []scanner.DLPWarnContext
+	hookCh := make(chan scanner.DLPWarnContext, 10)
 	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
-		captured = append(captured, scanner.DLPWarnContextFromCtx(ctx))
+		hookCh <- scanner.DLPWarnContextFromCtx(ctx)
 	})
 
 	m := metrics.New()
@@ -720,7 +720,7 @@ func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 	}()
 
 	conn := dialWS(t, ln.Addr().String(), backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef" + " " + testWarnHookToken
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(secret)); err != nil {
@@ -734,10 +734,13 @@ func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 	if string(reply) != secret {
 		t.Fatalf("expected secret echoed back in audit mode, got %q", reply)
 	}
-	if len(captured) == 0 {
-		t.Fatal("expected DLP warn hook to capture websocket frame context")
+
+	var got scanner.DLPWarnContext
+	select {
+	case got = <-hookCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for DLP warn hook to capture websocket frame context")
 	}
-	got := captured[0]
 	if got.Transport != "websocket" {
 		t.Fatalf("transport = %q, want %q", got.Transport, "websocket")
 	}
@@ -2512,9 +2515,9 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 
 	sc := scanner.New(cfg)
 	defer sc.Close()
-	var captured []scanner.DLPWarnContext
+	hookCh := make(chan scanner.DLPWarnContext, 10)
 	sc.SetDLPWarnHook(func(ctx context.Context, _, _ string) {
-		captured = append(captured, scanner.DLPWarnContextFromCtx(ctx))
+		hookCh <- scanner.DLPWarnContextFromCtx(ctx)
 	})
 	m := metrics.New()
 	p, err := New(cfg, logger, sc, m)
@@ -2568,7 +2571,7 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	if dialErr != nil {
 		t.Fatalf("expected dial to succeed in audit mode, got: %v", dialErr)
 	}
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	// Verify the connection works (traffic allowed through despite DLP match).
 	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); writeErr != nil {
@@ -2581,10 +2584,13 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	if string(reply) != testWSHello {
 		t.Errorf("expected echo, got %q", reply)
 	}
-	if len(captured) == 0 {
-		t.Fatal("expected DLP warn hook to capture websocket header context")
+
+	var got scanner.DLPWarnContext
+	select {
+	case got = <-hookCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for DLP warn hook to capture websocket header context")
 	}
-	got := captured[0]
 	if got.Transport != "websocket" {
 		t.Fatalf("transport = %q, want %q", got.Transport, "websocket")
 	}

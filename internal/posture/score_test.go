@@ -128,6 +128,29 @@ func TestComputeScore(t *testing.T) {
 			wantClean:    100,
 		},
 		{
+			name: "missing last receipt timestamp reduces recorder to 50",
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					TotalServers:      5,
+					ProtectedPipelock: 5,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         100,
+				},
+				Simulate: audit.SimulateResult{Percentage: 100},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount: 100,
+				},
+			},
+			maxAgeDays:   MaxReceiptAgeDays,
+			wantScore:    92,
+			wantTransp:   100,
+			wantRecorder: 50,
+			wantSim:      100,
+			wantClean:    100,
+		},
+		{
 			name: "no servers discovered vacuous truth",
 			evidence: EvidenceBundle{
 				Discover: DiscoverEvidence{},
@@ -516,6 +539,30 @@ func TestEvaluatePolicy(t *testing.T) {
 				FlightRecorder: FlightRecorderCounts{
 					ReceiptCount:  10,
 					LastReceiptAt: &staleReceipt,
+				},
+			},
+			opts:         VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
+			wantFailures: []string{ruleStaleReceipts},
+		},
+		{
+			name:   "enterprise missing last receipt timestamp",
+			policy: testPolicyEnterprise,
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					TotalServers:      3,
+					ProtectedPipelock: 3,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{
+					Scenarios: []audit.ScenarioResult{
+						{Category: "DLP", Detected: true},
+					},
+				},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount: 10,
 				},
 			},
 			opts:         VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
@@ -1198,6 +1245,16 @@ func TestFactorDetail(t *testing.T) {
 	}
 	if d.Weighted != 15 {
 		t.Errorf("Weighted = %d, want 15 (60*25/100)", d.Weighted)
+	}
+
+	high := factor(180, 25)
+	if high.RawPercent != 100 || high.Weighted != 25 {
+		t.Errorf("high clamp = %+v, want raw=100 weighted=25", high)
+	}
+
+	low := factor(-10, 25)
+	if low.RawPercent != 0 || low.Weighted != 0 {
+		t.Errorf("low clamp = %+v, want raw=0 weighted=0", low)
 	}
 }
 

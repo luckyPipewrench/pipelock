@@ -184,13 +184,20 @@ func EvaluatePolicy(policy string, evidence EvidenceBundle, opts VerifyOpts) ([]
 	}
 
 	maxAge := opts.MaxReceiptAge
-	if maxAge > 0 && evidence.FlightRecorder.LastReceiptAt != nil {
-		elapsed := time.Since(*evidence.FlightRecorder.LastReceiptAt)
-		if elapsed > maxAgeDuration(maxAge) {
+	if maxAge > 0 {
+		if evidence.VerifyInstall.ReceiptCount > 0 && evidence.FlightRecorder.LastReceiptAt == nil {
 			failures = append(failures, HardFailure{
 				Rule:   ruleStaleReceipts,
-				Detail: fmt.Sprintf("last receipt %s ago (max: %dd)", formatElapsedDays(elapsed), maxAge),
+				Detail: "last receipt timestamp missing",
 			})
+		} else if evidence.FlightRecorder.LastReceiptAt != nil {
+			elapsed := time.Since(*evidence.FlightRecorder.LastReceiptAt)
+			if elapsed > maxAgeDuration(maxAge) {
+				failures = append(failures, HardFailure{
+					Rule:   ruleStaleReceipts,
+					Detail: fmt.Sprintf("last receipt %s ago (max: %dd)", formatElapsedDays(elapsed), maxAge),
+				})
+			}
 		}
 	}
 
@@ -338,7 +345,7 @@ func computeTransportPct(d DiscoverEvidence) int {
 	}
 
 	protectedAny := d.ProtectedPipelock + d.ProtectedOther
-	return (100 * protectedAny) / totalScannable
+	return clampPercent((100 * protectedAny) / totalScannable)
 }
 
 func computeRecorderPct(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAgeDays int) int {
@@ -348,9 +355,11 @@ func computeRecorderPct(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAg
 	if vi.ReceiptCount == 0 {
 		return 0
 	}
-	if maxAgeDays > 0 && fr.LastReceiptAt != nil {
+	if maxAgeDays > 0 {
+		if fr.LastReceiptAt == nil {
+			return 50
+		}
 		if time.Since(*fr.LastReceiptAt) > maxAgeDuration(maxAgeDays) {
-			// Active but stale.
 			return 50
 		}
 	}
@@ -371,21 +380,15 @@ func computeSimulatePct(sim audit.SimulateResult) int {
 			}
 		}
 		if scorable > 0 {
-			return (passed * 100) / scorable
+			return clampPercent((passed * 100) / scorable)
 		}
 	}
 
 	scorable := sim.Total - sim.KnownLimits
 	if scorable > 0 {
-		return (sim.Passed * 100) / scorable
+		return clampPercent((sim.Passed * 100) / scorable)
 	}
-	if sim.Percentage < 0 {
-		return 0
-	}
-	if sim.Percentage > 100 {
-		return 100
-	}
-	return sim.Percentage
+	return clampPercent(sim.Percentage)
 }
 
 func computeCleanlinessPct(d DiscoverEvidence) int {
@@ -399,10 +402,22 @@ func computeCleanlinessPct(d DiscoverEvidence) int {
 }
 
 func factor(rawPct, weight int) FactorDetail {
+	rawPct = clampPercent(rawPct)
 	return FactorDetail{
 		RawPercent: rawPct,
 		Weight:     weight,
 		Weighted:   (rawPct * weight) / 100,
+	}
+}
+
+func clampPercent(rawPct int) int {
+	switch {
+	case rawPct < 0:
+		return 0
+	case rawPct > 100:
+		return 100
+	default:
+		return rawPct
 	}
 }
 

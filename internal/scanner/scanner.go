@@ -618,6 +618,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	dlpResult, dlpWarns := s.checkDLP(parsed)
+	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	if !dlpResult.Allowed {
 		dlpResult.WarnMatches = dlpWarns
 		s.emitDLPWarns(ctx, dlpWarns)

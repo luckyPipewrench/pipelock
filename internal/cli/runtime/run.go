@@ -68,18 +68,16 @@ const (
 // and URL-bearing request paths use the HTTP constructor. Falls back to a
 // zero LogContext when no transport-specific identifier is set.
 func dlpWarnLogContext(wc scanner.DLPWarnContext) audit.LogContext {
-	switch {
-	case wc.Target != "" && wc.Method == http.MethodConnect:
+	switch wc.Transport {
+	case "connect":
 		lctx, _ := audit.NewConnectLogContext(wc.Target, wc.ClientIP, wc.RequestID, wc.Agent)
 		return lctx
-	case wc.Resource != "":
+	case "mcp_stdio", "mcp_http", "mcp_input":
 		lctx, _ := audit.NewMCPLogContext(wc.Method, wc.Resource, wc.Agent)
 		return lctx
-	case wc.URL != "":
+	default:
 		lctx, _ := audit.NewHTTPLogContext(wc.Method, wc.URL, wc.ClientIP, wc.RequestID, wc.Agent)
 		return lctx
-	default:
-		return audit.LogContext{}
 	}
 }
 

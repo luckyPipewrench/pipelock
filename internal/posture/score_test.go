@@ -240,6 +240,30 @@ func TestComputeScore(t *testing.T) {
 			wantSim:      100,
 			wantClean:    100,
 		},
+		{
+			name: "receipt just over threshold is stale",
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					TotalServers:      2,
+					ProtectedPipelock: 2,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{Percentage: 100},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  10,
+					LastReceiptAt: bundleTimePtr(time.Now().Add(-(time.Duration(MaxReceiptAgeDays)*24*time.Hour + time.Hour))),
+				},
+			},
+			maxAgeDays:   MaxReceiptAgeDays,
+			wantScore:    92,
+			wantTransp:   100,
+			wantRecorder: 50,
+			wantSim:      100,
+			wantClean:    100,
+		},
 	}
 
 	for _, tt := range tests {
@@ -532,6 +556,31 @@ func TestEvaluatePolicy(t *testing.T) {
 			},
 			opts: VerifyOpts{MaxReceiptAge: 0},
 		},
+		{
+			name:   "receipt just over threshold fails exactly",
+			policy: testPolicyEnterprise,
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					TotalServers:      3,
+					ProtectedPipelock: 3,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{
+					Scenarios: []audit.ScenarioResult{
+						{Category: "DLP", Detected: true},
+					},
+				},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  10,
+					LastReceiptAt: bundleTimePtr(time.Now().Add(-(time.Duration(MaxReceiptAgeDays)*24*time.Hour + time.Hour))),
+				},
+			},
+			opts:         VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
+			wantFailures: []string{ruleStaleReceipts},
+		},
 	}
 
 	for _, tt := range tests {
@@ -772,6 +821,76 @@ func TestVerifyCapsule(t *testing.T) {
 		}
 	})
 
+	t.Run("max age failure is structured hard failure", func(t *testing.T) {
+		capsule := emitCapsule(t, perfectEvidence)
+		capsule.GeneratedAt = time.Now().Add(-(31 * 24 * time.Hour))
+		capsule.ExpiresAt = time.Now().Add(30 * 24 * time.Hour)
+		capsule.Signature = resignCapsule(t, capsule, priv)
+
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:        testPolicyNone,
+			MinScore:      0,
+			MaxAgeDays:    30,
+			MaxReceiptAge: MaxReceiptAgeDays,
+		})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		if result.Passed {
+			t.Error("Passed = true, want false (max age)")
+		}
+		found := false
+		for _, f := range result.HardFailures {
+			if f.Rule == ruleCapsuleTooOld {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s hard failure: %v", ruleCapsuleTooOld, result.HardFailures)
+		}
+	})
+
+	t.Run("require discovery ignores parse errors", func(t *testing.T) {
+		parseOnly := EvidenceBundle{
+			Discover: DiscoverEvidence{
+				ParseErrors: 2,
+			},
+			VerifyInstall: VerifyInstallEvidence{
+				FlightRecorderActive: true,
+				ReceiptCount:         10,
+			},
+			Simulate: audit.SimulateResult{
+				Percentage: 100,
+				Scenarios: []audit.ScenarioResult{
+					{Category: "DLP", Detected: true},
+				},
+			},
+			FlightRecorder: FlightRecorderCounts{
+				ReceiptCount:  10,
+				LastReceiptAt: &recentReceipt,
+			},
+		}
+		capsule := emitCapsule(t, parseOnly)
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:           testPolicyNone,
+			MinScore:         0,
+			MaxReceiptAge:    MaxReceiptAgeDays,
+			RequireDiscovery: true,
+		})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		found := false
+		for _, f := range result.HardFailures {
+			if f.Rule == "no_servers_discovered" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing no_servers_discovered hard failure: %v", result.HardFailures)
+		}
+	})
+
 	t.Run("default max receipt age applied", func(t *testing.T) {
 		capsule := emitCapsule(t, perfectEvidence)
 		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
@@ -874,4 +993,8 @@ func TestFactorDetail(t *testing.T) {
 	if d.Weighted != 15 {
 		t.Errorf("Weighted = %d, want 15 (60*25/100)", d.Weighted)
 	}
+}
+
+func bundleTimePtr(ts time.Time) *time.Time {
+	return &ts
 }

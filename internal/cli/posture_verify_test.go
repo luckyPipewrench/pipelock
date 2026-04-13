@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -290,8 +291,9 @@ func TestPostureVerifyExpiredCapsule(t *testing.T) {
 
 	pubKeyPath := writeVersionedPubKey(t, pub)
 
+	var stdout bytes.Buffer
 	cmd := rootCmd()
-	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{
 		"posture", "verify",
@@ -554,15 +556,14 @@ func TestPostureVerifyOldCapsule(t *testing.T) {
 		t.Fatalf("Emit(): %v", err)
 	}
 
-	// Write proof, then patch GeneratedAt to be 35 days ago. The CLI checks
-	// age before calling Verify(), so the signature mismatch doesn't matter.
 	proofDir := filepath.Join(t.TempDir(), "old")
-	oldProof := writeOldProof(t, proofDir, capsule)
+	oldProof := writeOldProof(t, proofDir, capsule, priv)
 
 	pubKeyPath := writeVersionedPubKey(t, pub)
 
+	var stdout bytes.Buffer
 	cmd := rootCmd()
-	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{
 		"posture", "verify",
@@ -575,10 +576,9 @@ func TestPostureVerifyOldCapsule(t *testing.T) {
 	if err == nil {
 		t.Fatal("cmd.Execute() = nil, want error for capsule exceeding max age")
 	}
-	// Capsule age is a freshness policy failure, not an integrity failure.
 	assertExitCode(t, err, exitVerifyPolicyFail)
-	if !strings.Contains(err.Error(), "capsule age") {
-		t.Errorf("error = %v, want capsule age exceeded message", err)
+	if !strings.Contains(stdout.String(), "capsule_too_old") {
+		t.Errorf("output missing capsule_too_old failure, got: %s", stdout.String())
 	}
 }
 
@@ -623,6 +623,100 @@ func TestPostureVerifyRequireDiscovery(t *testing.T) {
 		t.Fatal("cmd.Execute() = nil, want error for require-discovery")
 	}
 	assertExitCode(t, err, exitVerifyPolicyFail)
+}
+
+func TestPostureVerifyRequireDiscoveryIgnoresParseErrors(t *testing.T) {
+	recent := time.Now().Add(-1 * time.Hour)
+	parseOnly := posturepkg.EvidenceBundle{
+		Discover: posturepkg.DiscoverEvidence{
+			ParseErrors: 2,
+		},
+		VerifyInstall: posturepkg.VerifyInstallEvidence{
+			FlightRecorderActive: true,
+			ReceiptCount:         10,
+		},
+		Simulate: audit.SimulateResult{
+			Total:      1,
+			Passed:     1,
+			Percentage: 100,
+			Scenarios: []audit.ScenarioResult{
+				{Category: "DLP", Detected: true},
+			},
+		},
+		FlightRecorder: posturepkg.FlightRecorderCounts{
+			ReceiptCount:  10,
+			LastReceiptAt: &recent,
+		},
+	}
+
+	fix := newTestVerifyFixture(t, parseOnly)
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--min-score", "0",
+		"--require-discovery",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for parse-errors-only discovery")
+	}
+	assertExitCode(t, err, exitVerifyPolicyFail)
+}
+
+func TestPostureVerifyPolicyTypo(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", "bad-policy",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for invalid policy")
+	}
+	assertExitCode(t, err, exitVerifyPolicyFail)
+}
+
+func TestPostureVerifyOversizeProofFile(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
+	pubKeyPath := writeVersionedPubKey(t, pub)
+
+	proofPath := filepath.Join(t.TempDir(), "proof.json")
+	data := bytes.Repeat([]byte("a"), maxProofJSONBytes+1)
+	if err := os.WriteFile(proofPath, data, 0o600); err != nil {
+		t.Fatalf("os.WriteFile(): %v", err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", proofPath,
+		"--key", pubKeyPath,
+	})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for oversize proof")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
 }
 
 func TestParseDays(t *testing.T) {
@@ -779,30 +873,19 @@ func writeExpiredProof(t *testing.T, dir string, capsule *posturepkg.Capsule) st
 	return path
 }
 
-// writeOldProof writes a proof.json with GeneratedAt set to 35 days ago.
-func writeOldProof(t *testing.T, dir string, capsule *posturepkg.Capsule) string {
+// writeOldProof writes a proof.json with GeneratedAt set to 35 days ago and a
+// valid signature so the CLI can classify it as a freshness policy failure.
+func writeOldProof(t *testing.T, dir string, capsule *posturepkg.Capsule, priv ed25519.PrivateKey) string {
 	t.Helper()
 
-	data, err := json.Marshal(capsule)
-	if err != nil {
-		t.Fatalf("json.Marshal(): %v", err)
-	}
+	oldCapsule := *capsule
+	oldCapsule.GeneratedAt = time.Now().Add(-35 * 24 * time.Hour)
+	oldCapsule.ExpiresAt = time.Now().Add(55 * 24 * time.Hour)
+	oldCapsule.Signature = resignCapsuleCLI(t, &oldCapsule, priv)
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("json.Unmarshal(): %v", err)
-	}
-
-	oldTime := time.Now().Add(-35 * 24 * time.Hour)
-	oldJSON, err := json.Marshal(oldTime)
+	patched, err := json.Marshal(&oldCapsule)
 	if err != nil {
-		t.Fatalf("json.Marshal(oldTime): %v", err)
-	}
-	raw["generated_at"] = oldJSON
-
-	patched, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("json.Marshal(patched): %v", err)
+		t.Fatalf("json.Marshal(oldCapsule): %v", err)
 	}
 
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -813,6 +896,123 @@ func writeOldProof(t *testing.T, dir string, capsule *posturepkg.Capsule) string
 		t.Fatalf("os.WriteFile(): %v", err)
 	}
 	return path
+}
+
+func resignCapsuleCLI(t *testing.T, capsule *posturepkg.Capsule, priv ed25519.PrivateKey) string {
+	t.Helper()
+
+	payload, err := signableCapsuleJSON(t, capsule)
+	if err != nil {
+		t.Fatalf("signableCapsuleJSON(): %v", err)
+	}
+	return hex.EncodeToString(ed25519.Sign(priv, payload))
+}
+
+func signableCapsuleJSON(t *testing.T, capsule *posturepkg.Capsule) ([]byte, error) {
+	t.Helper()
+
+	type signableCapsule struct {
+		SchemaVersion string                    `json:"schema_version"`
+		GeneratedAt   time.Time                 `json:"generated_at"`
+		ExpiresAt     time.Time                 `json:"expires_at"`
+		ToolVersion   string                    `json:"tool_version"`
+		ConfigHash    string                    `json:"config_hash"`
+		Evidence      posturepkg.EvidenceBundle `json:"evidence"`
+	}
+
+	raw, err := json.Marshal(signableCapsule{
+		SchemaVersion: capsule.SchemaVersion,
+		GeneratedAt:   capsule.GeneratedAt,
+		ExpiresAt:     capsule.ExpiresAt,
+		ToolVersion:   capsule.ToolVersion,
+		ConfigHash:    capsule.ConfigHash,
+		Evidence:      capsule.Evidence,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+
+	var parsed any
+	if err := dec.Decode(&parsed); err != nil {
+		return nil, err
+	}
+
+	var buf bytes.Buffer
+	if err := appendCanonicalJSON(&buf, parsed); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func appendCanonicalJSON(buf *bytes.Buffer, v any) error {
+	switch value := v.(type) {
+	case nil:
+		buf.WriteString("null")
+	case bool:
+		if value {
+			buf.WriteString("true")
+		} else {
+			buf.WriteString("false")
+		}
+	case string:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		buf.Write(data)
+	case json.Number:
+		buf.WriteString(value.String())
+	case float64:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		buf.Write(data)
+	case []any:
+		buf.WriteByte('[')
+		for i, item := range value {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			if err := appendCanonicalJSON(buf, item); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+	case map[string]any:
+		keys := make([]string, 0, len(value))
+		for key := range value {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		buf.WriteByte('{')
+		for i, key := range keys {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			keyJSON, err := json.Marshal(key)
+			if err != nil {
+				return err
+			}
+			buf.Write(keyJSON)
+			buf.WriteByte(':')
+			if err := appendCanonicalJSON(buf, value[key]); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+	default:
+		data, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		buf.Write(data)
+	}
+	return nil
 }
 
 func assertExitCode(t *testing.T, err error, wantCode int) {

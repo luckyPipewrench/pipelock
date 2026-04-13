@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,6 +30,7 @@ const (
 	verifyDefaultMinScore = 85
 	verifyDefaultMaxAge   = "30d"
 	verifyDefaultReceipt  = "7d"
+	maxProofJSONBytes     = 8 << 20
 
 	// errPolicyFailed is the sentinel message for policy-fail exit code.
 	errPolicyFailed = "posture verification failed: policy gates or minimum score not met"
@@ -90,17 +92,10 @@ Exit codes:
 				return fmt.Errorf("parsing --max-receipt-age: %w", err)
 			}
 
-			// Check capsule age. A stale capsule is a policy failure (exit 2),
-			// not an integrity failure (exit 1) — the capsule may be perfectly
-			// authentic but too old for the operator's freshness policy.
-			ageDays := int(time.Since(capsule.GeneratedAt).Hours() / 24)
-			if ageDays > maxAgeDays {
-				return cliutil.ExitCodeError(exitVerifyPolicyFail, fmt.Errorf("capsule age %dd exceeds max %dd", ageDays, maxAgeDays))
-			}
-
 			opts := posturepkg.VerifyOpts{
 				Policy:           policy,
 				MinScore:         minScore,
+				MaxAgeDays:       maxAgeDays,
 				MaxReceiptAge:    maxReceiptAgeDays,
 				RequireDiscovery: requireDiscovery,
 			}
@@ -242,9 +237,20 @@ func weightedSuffix(d posturepkg.FactorDetail) string {
 
 func loadProofFile(path string) (*posturepkg.Capsule, error) {
 	cleanPath := filepath.Clean(path)
-	data, err := os.ReadFile(cleanPath)
+	f, err := os.Open(cleanPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", cleanPath, err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxProofJSONBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", cleanPath, err)
+	}
+	if len(data) > maxProofJSONBytes {
+		return nil, fmt.Errorf("proof JSON exceeds %d bytes", maxProofJSONBytes)
 	}
 
 	var capsule posturepkg.Capsule

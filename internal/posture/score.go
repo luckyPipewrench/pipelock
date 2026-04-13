@@ -39,6 +39,7 @@ const (
 	ruleRecorderInactive    = "recorder_inactive"
 	ruleNoReceipts          = "no_receipts"
 	ruleStaleReceipts       = "stale_receipts"
+	ruleCapsuleTooOld       = "capsule_too_old"
 	ruleConfigHashMismatch  = "config_hash_mismatch"
 	ruleUnknownServers      = "unknown_servers"
 	ruleDiscoveryParseError = "discovery_parse_errors"
@@ -175,11 +176,11 @@ func EvaluatePolicy(policy string, evidence EvidenceBundle, opts VerifyOpts) ([]
 
 	maxAge := opts.MaxReceiptAge
 	if maxAge > 0 && evidence.FlightRecorder.LastReceiptAt != nil {
-		ageDays := int(time.Since(*evidence.FlightRecorder.LastReceiptAt).Hours() / 24)
-		if ageDays > maxAge {
+		elapsed := time.Since(*evidence.FlightRecorder.LastReceiptAt)
+		if elapsed > maxAgeDuration(maxAge) {
 			failures = append(failures, HardFailure{
 				Rule:   ruleStaleReceipts,
-				Detail: fmt.Sprintf("last receipt %dd ago (max: %dd)", ageDays, maxAge),
+				Detail: fmt.Sprintf("last receipt %s ago (max: %dd)", formatElapsedDays(elapsed), maxAge),
 			})
 		}
 	}
@@ -236,6 +237,16 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 	result.HardFailures = failures
 	result.Warnings = warnings
 
+	if opts.MaxAgeDays > 0 {
+		elapsed := time.Since(capsule.GeneratedAt)
+		if elapsed > maxAgeDuration(opts.MaxAgeDays) {
+			result.HardFailures = append(result.HardFailures, HardFailure{
+				Rule:   ruleCapsuleTooOld,
+				Detail: fmt.Sprintf("capsule age %s exceeds max %dd", formatElapsedDays(elapsed), opts.MaxAgeDays),
+			})
+		}
+	}
+
 	// Config hash mismatch as a hard failure.
 	if result.ConfigHashMatch != nil && !*result.ConfigHashMatch {
 		result.HardFailures = append(result.HardFailures, HardFailure{
@@ -246,8 +257,7 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 
 	// Require discovery gate.
 	if opts.RequireDiscovery {
-		totalScannable := capsule.Evidence.Discover.TotalServers + capsule.Evidence.Discover.ParseErrors
-		if totalScannable == 0 {
+		if capsule.Evidence.Discover.TotalServers == 0 {
 			result.HardFailures = append(result.HardFailures, HardFailure{
 				Rule:   "no_servers_discovered",
 				Detail: "0 servers discovered (--require-discovery)",
@@ -284,8 +294,7 @@ func computeRecorderPct(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAg
 		return 0
 	}
 	if maxAgeDays > 0 && fr.LastReceiptAt != nil {
-		ageDays := int(time.Since(*fr.LastReceiptAt).Hours() / 24)
-		if ageDays > maxAgeDays {
+		if time.Since(*fr.LastReceiptAt) > maxAgeDuration(maxAgeDays) {
 			// Active but stale.
 			return 50
 		}
@@ -309,6 +318,18 @@ func factor(rawPct, weight int) FactorDetail {
 		Weight:     weight,
 		Weighted:   (rawPct * weight) / 100,
 	}
+}
+
+func maxAgeDuration(days int) time.Duration {
+	return time.Duration(days) * 24 * time.Hour
+}
+
+func formatElapsedDays(elapsed time.Duration) string {
+	if elapsed <= 0 {
+		return "0d"
+	}
+	days := int((elapsed + (24 * time.Hour) - time.Nanosecond) / (24 * time.Hour))
+	return fmt.Sprintf("%dd", days)
 }
 
 // hasZeroDetectionCategory checks if any scenario category has total>0

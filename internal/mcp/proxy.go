@@ -863,6 +863,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Build per-invocation opts with session-specific recorder and tool baseline.
 	inputOpts := opts
 	inputOpts.Rec = rec
+	inputOpts.WarnContext = ctx
 
 	// Forward client input to server stdin (with optional input scanning).
 	var wg sync.WaitGroup

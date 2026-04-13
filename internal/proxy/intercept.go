@@ -414,7 +414,13 @@ func newInterceptHandler(
 		// scans the synthetic host URL; inside the intercepted tunnel we have
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
-		urlResult := ic.Scanner.Scan(r.Context(), targetURL)
+		interceptScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+			Method: r.Method, URL: targetURL, Target: target,
+			ClientIP: ic.ClientIP, RequestID: ic.RequestID,
+			Agent: ic.Agent, Transport: "intercept",
+		})
+		r = r.WithContext(interceptScanCtx)
+		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
 
 		// Capture observer: record intercept URL verdict for policy replay.
 		if ic.Proxy != nil {

@@ -129,7 +129,12 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	cfg := rp.cfgPtr.Load()
 	sc := rp.scPtr.Load()
 	clientIP, requestID := requestMeta(r)
-	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
+	agent, _ := r.Context().Value(ctxKeyAgent).(string)
+	ctx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+		Method: r.Method, URL: r.URL.String(), ClientIP: clientIP,
+		RequestID: requestID, Agent: agent, Transport: "reverse",
+	})
+	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
 	r = r.WithContext(ctx)
 

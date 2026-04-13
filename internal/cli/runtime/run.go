@@ -51,12 +51,56 @@ import (
 // operator-configured values.
 const (
 	configReloadAuditMethod = "CONFIG_RELOAD"
+	dlpWarnAuditMethod      = "DLP_WARN"
+	mcpAuditMethod          = "MCP"
 	serverReadTimeout       = 10 * time.Second
 	serverReadHeaderTimeout = 5 * time.Second
 	serverWriteTimeout      = 10 * time.Second
 	serverIdleTimeout       = 120 * time.Second
 	serverShutdownTimeout   = 5 * time.Second
+
+	// transportUnknown is the fallback transport label when DLPWarnContext
+	// does not carry a transport value.
+	transportUnknown = "unknown"
 )
+
+// dlpWarnLogContext builds the transport-appropriate audit context for a DLP
+// warn event. When the transport-specific constructor cannot build a complete
+// context, the caller should log the returned error and fall back to the
+// best-effort context from dlpWarnFallbackLogContext.
+func dlpWarnLogContext(wc scanner.DLPWarnContext) (audit.LogContext, error) {
+	switch wc.Transport {
+	case "connect":
+		return audit.NewConnectLogContext(wc.Target, wc.ClientIP, wc.RequestID, wc.Agent)
+	case "mcp_stdio", "mcp_http", "mcp_input", "mcp_http_listener", "mcp_ws":
+		method := wc.Method
+		if method == "" {
+			method = mcpAuditMethod
+		}
+		return audit.NewMCPLogContext(method, wc.Resource, wc.Agent)
+	default:
+		return audit.NewHTTPLogContext(wc.Method, wc.URL, wc.ClientIP, wc.RequestID, wc.Agent)
+	}
+}
+
+func dlpWarnFallbackLogContext(wc scanner.DLPWarnContext) audit.LogContext {
+	switch {
+	case wc.RequestID != "":
+		return audit.NewRequestLogContext(wc.RequestID)
+	case wc.Resource != "":
+		method := wc.Method
+		if method == "" {
+			method = mcpAuditMethod
+		}
+		return audit.NewResourceLogContext(method, wc.Resource)
+	case wc.Method != "":
+		return audit.NewMethodLogContext(wc.Method)
+	case wc.Transport != "":
+		return audit.NewMethodLogContext(dlpWarnAuditMethod)
+	default:
+		return audit.LogContext{}
+	}
+}
 
 // newHTTPServer creates an http.Server with the standard pipelock timeouts.
 // Callers that need non-default values (e.g. reverse proxy WriteTimeout) can
@@ -227,6 +271,19 @@ Examples:
 
 			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
+			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+				wc := scanner.DLPWarnContextFromCtx(ctx)
+				transport := wc.Transport
+				if transport == "" {
+					transport = transportUnknown
+				}
+				lctx, lctxErr := dlpWarnLogContext(wc)
+				if lctxErr != nil {
+					lctx = dlpWarnFallbackLogContext(wc)
+					logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
+				}
+				logger.LogDLPWarn(lctx, patternName, severity, transport)
+			})
 			defer sc.Close()
 			m := metrics.New()
 
@@ -545,6 +602,19 @@ Examples:
 								cmd.PrintErrf("WARNING: DEGRADED — standard pack failed after reload, running core patterns only\n")
 							}
 							newSc := scanner.New(newCfg)
+							newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+								wc := scanner.DLPWarnContextFromCtx(ctx)
+								transport := wc.Transport
+								if transport == "" {
+									transport = transportUnknown
+								}
+								lctx, lctxErr := dlpWarnLogContext(wc)
+								if lctxErr != nil {
+									lctx = dlpWarnFallbackLogContext(wc)
+									logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
+								}
+								logger.LogDLPWarn(lctx, patternName, severity, transport)
+							})
 							p.Reload(newCfg, newSc)
 							if reloadErr := p.LoadCertCache(newCfg); reloadErr != nil {
 								logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, configFile),

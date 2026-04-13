@@ -154,7 +154,12 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	actx := newHTTPAuditContext(log, "WS", targetURL, clientIP, requestID, agent)
 
 	// Run through all 9 scanner layers.
-	result := sc.Scan(r.Context(), scanURL)
+	wsScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
+		Method: "WS", URL: scanURL, ClientIP: clientIP,
+		RequestID: requestID, Agent: agent, Transport: "websocket",
+	})
+	r = r.WithContext(wsScanCtx)
+	result := sc.Scan(wsScanCtx, scanURL)
 
 	// Capture observer: record WebSocket URL verdict for policy replay.
 	{

@@ -24,7 +24,7 @@ type enterpriseEdition struct {
 // NewEdition creates an enterprise Edition from config. This is the
 // implementation behind edition.NewEditionFunc.
 func NewEdition(cfg *config.Config, sc *scanner.Scanner) (edition.Edition, error) {
-	reg, err := NewAgentRegistry(cfg)
+	reg, err := NewAgentRegistry(cfg, sc)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (e *enterpriseEdition) LookupProfile(name string) (*edition.ResolvedAgent, 
 // Reload rebuilds the edition from new config. Returns a NEW immutable
 // Edition instance. The caller atomically swaps and closes the old one.
 func (e *enterpriseEdition) Reload(cfg *config.Config, sc *scanner.Scanner) (edition.Edition, error) {
-	reg, err := NewAgentRegistry(cfg)
+	reg, err := NewAgentRegistry(cfg, sc)
 	if err != nil {
 		return nil, err
 	}

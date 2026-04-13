@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"context"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -21,6 +23,12 @@ import (
 // Returns (allowed, action, reason, budgetType). Action is "block" or "warn".
 // When action is "warn", the caller logs but does not block the request.
 type DoWCheckFunc func(toolName, argsJSON string) (allowed bool, action, reason, budgetType string)
+
+const (
+	transportMCPStdio = "mcp_stdio"
+	transportMCPHTTP  = "mcp_http"
+	mcpWarnMethod     = "MCP"
+)
 
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
 // Construct once per proxy invocation; pass by value so callers can
@@ -86,6 +94,10 @@ type MCPProxyOpts struct {
 	// "mcp_http_listener", or "mcp_ws".
 	Transport string
 
+	// WarnContext is the parent context used to attach per-request DLP warn
+	// metadata before MCP payload scans. Nil-safe: falls back to Background.
+	WarnContext context.Context
+
 	// ReceiptEmitter emits signed action receipts for MCP decisions.
 	// Nil-safe (no-op when nil).
 	ReceiptEmitter *receipt.Emitter
@@ -110,4 +122,11 @@ func (o MCPProxyOpts) captureObserver() capture.CaptureObserver {
 		return o.CaptureObs
 	}
 	return capture.NopObserver{}
+}
+
+func (o MCPProxyOpts) warnContext() context.Context {
+	if o.WarnContext != nil {
+		return o.WarnContext
+	}
+	return context.Background()
 }

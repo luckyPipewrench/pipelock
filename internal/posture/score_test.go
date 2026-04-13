@@ -5,6 +5,7 @@ package posture
 
 import (
 	"crypto/ed25519"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,6 +284,68 @@ func TestComputeScore(t *testing.T) {
 			}
 			if factors.DiscoveryCleanliness.RawPercent != tt.wantClean {
 				t.Errorf("cleanliness raw = %d, want %d", factors.DiscoveryCleanliness.RawPercent, tt.wantClean)
+			}
+		})
+	}
+}
+
+func TestComputeSimulatePct(t *testing.T) {
+	tests := []struct {
+		name string
+		sim  audit.SimulateResult
+		want int
+	}{
+		{
+			name: "scenarios take precedence over summary percentage",
+			sim: audit.SimulateResult{
+				Total:      2,
+				Passed:     2,
+				Percentage: 100,
+				Scenarios: []audit.ScenarioResult{
+					{Category: "DLP", Detected: true},
+					{Category: "DLP", Detected: false},
+				},
+			},
+			want: 50,
+		},
+		{
+			name: "summary counts used when scenarios absent",
+			sim: audit.SimulateResult{
+				Total:       5,
+				Passed:      3,
+				KnownLimits: 1,
+				Percentage:  100,
+			},
+			want: 75,
+		},
+		{
+			name: "raw percentage fallback without canonical counts",
+			sim: audit.SimulateResult{
+				Percentage: 88,
+			},
+			want: 88,
+		},
+		{
+			name: "raw percentage clamps above 100",
+			sim: audit.SimulateResult{
+				Percentage: 140,
+			},
+			want: 100,
+		},
+		{
+			name: "raw percentage clamps below 0",
+			sim: audit.SimulateResult{
+				Percentage: -5,
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeSimulatePct(tt.sim)
+			if got != tt.want {
+				t.Errorf("computeSimulatePct() = %d, want %d", got, tt.want)
 			}
 		})
 	}
@@ -892,17 +955,160 @@ func TestVerifyCapsule(t *testing.T) {
 	})
 
 	t.Run("default max receipt age applied", func(t *testing.T) {
-		capsule := emitCapsule(t, perfectEvidence)
+		staleEvidence := perfectEvidence
+		staleReceipt := time.Now().Add(-10 * 24 * time.Hour)
+		staleEvidence.FlightRecorder.LastReceiptAt = &staleReceipt
+		capsule := emitCapsule(t, staleEvidence)
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		if result.Passed {
+			t.Error("Passed = true, want false (default stale receipt gate)")
+		}
+		found := false
+		for _, f := range result.HardFailures {
+			if f.Rule == ruleStaleReceipts {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s hard failure: %v", ruleStaleReceipts, result.HardFailures)
+		}
+	})
+
+	t.Run("zero-value opts default policy and min score", func(t *testing.T) {
+		parseOnly := EvidenceBundle{
+			Discover: DiscoverEvidence{
+				ParseErrors: 2,
+			},
+			VerifyInstall: VerifyInstallEvidence{
+				FlightRecorderActive: true,
+				ReceiptCount:         10,
+			},
+			Simulate: audit.SimulateResult{
+				Percentage: 100,
+				Scenarios: []audit.ScenarioResult{
+					{Category: "DLP", Detected: true},
+				},
+			},
+			FlightRecorder: FlightRecorderCounts{
+				ReceiptCount:  10,
+				LastReceiptAt: &recentReceipt,
+			},
+		}
+		capsule := emitCapsule(t, parseOnly)
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		if result.Policy != PolicyEnterprise {
+			t.Errorf("Policy = %q, want %q", result.Policy, PolicyEnterprise)
+		}
+		if result.Score != 62 {
+			t.Errorf("Score = %d, want 62", result.Score)
+		}
+		if result.Passed {
+			t.Error("Passed = true, want false (default min score)")
+		}
+	})
+
+	t.Run("skip min score gate allows explicit zero threshold", func(t *testing.T) {
+		parseOnly := EvidenceBundle{
+			Discover: DiscoverEvidence{
+				ParseErrors: 2,
+			},
+			VerifyInstall: VerifyInstallEvidence{
+				FlightRecorderActive: true,
+				ReceiptCount:         10,
+			},
+			Simulate: audit.SimulateResult{
+				Percentage: 100,
+				Scenarios: []audit.ScenarioResult{
+					{Category: "DLP", Detected: true},
+				},
+			},
+			FlightRecorder: FlightRecorderCounts{
+				ReceiptCount:  10,
+				LastReceiptAt: &recentReceipt,
+			},
+		}
+		capsule := emitCapsule(t, parseOnly)
 		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
-			Policy:   testPolicyEnterprise,
-			MinScore: 0,
+			Policy:           testPolicyEnterprise,
+			MinScore:         0,
+			SkipMinScoreGate: true,
 		})
 		if err != nil {
 			t.Fatalf("VerifyCapsule(): %v", err)
 		}
-		// With recent receipt and default age, should pass.
-		if !result.Verified {
-			t.Error("Verified = false, want true")
+		if !result.Passed {
+			t.Errorf("Passed = false, want true (explicit zero threshold), failures: %v", result.HardFailures)
+		}
+	})
+
+	t.Run("skip receipt freshness disables default staleness gate", func(t *testing.T) {
+		staleEvidence := perfectEvidence
+		staleReceipt := time.Now().Add(-10 * 24 * time.Hour)
+		staleEvidence.FlightRecorder.LastReceiptAt = &staleReceipt
+		capsule := emitCapsule(t, staleEvidence)
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:               testPolicyEnterprise,
+			SkipReceiptFreshness: true,
+		})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		if !result.Passed {
+			t.Errorf("Passed = false, want true, failures: %v", result.HardFailures)
+		}
+	})
+
+	t.Run("future generated_at rejected", func(t *testing.T) {
+		capsule := emitCapsule(t, perfectEvidence)
+		capsule.GeneratedAt = time.Now().Add(defaultMaxFutureSkew + time.Minute)
+		capsule.ExpiresAt = capsule.GeneratedAt.Add(30 * 24 * time.Hour)
+		capsule.Signature = resignCapsule(t, capsule, priv)
+
+		_, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy: testPolicyEnterprise,
+		})
+		if err == nil {
+			t.Fatal("VerifyCapsule() error = nil, want future generated_at failure")
+		}
+		if got := err.Error(); got == "" || !containsAll(got, "generated_at", "future") {
+			t.Errorf("error = %q, want generated_at future failure", got)
+		}
+	})
+
+	t.Run("future last_receipt_at rejected", func(t *testing.T) {
+		capsule := emitCapsule(t, perfectEvidence)
+		futureReceipt := time.Now().Add(defaultMaxFutureSkew + time.Minute)
+		capsule.Evidence.FlightRecorder.LastReceiptAt = &futureReceipt
+		capsule.Signature = resignCapsule(t, capsule, priv)
+
+		_, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy: testPolicyEnterprise,
+		})
+		if err == nil {
+			t.Fatal("VerifyCapsule() error = nil, want future last_receipt_at failure")
+		}
+		if got := err.Error(); got == "" || !containsAll(got, "last_receipt_at", "future") {
+			t.Errorf("error = %q, want last_receipt_at future failure", got)
+		}
+	})
+
+	t.Run("invalid min score rejected", func(t *testing.T) {
+		capsule := emitCapsule(t, perfectEvidence)
+		_, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:   testPolicyEnterprise,
+			MinScore: 101,
+		})
+		if err == nil {
+			t.Fatal("VerifyCapsule() error = nil, want invalid min score failure")
+		}
+		if got := err.Error(); got == "" || !containsAll(got, "min_score", "101") {
+			t.Errorf("error = %q, want invalid min score failure", got)
 		}
 	})
 
@@ -997,4 +1203,13 @@ func TestFactorDetail(t *testing.T) {
 
 func bundleTimePtr(ts time.Time) *time.Time {
 	return &ts
+}
+
+func containsAll(s string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(s, part) {
+			return false
+		}
+	}
+	return true
 }

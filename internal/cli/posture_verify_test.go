@@ -240,6 +240,46 @@ func TestPostureVerifyJSONOutput(t *testing.T) {
 	}
 }
 
+func TestPostureVerifyJSONBadSignature(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	tamperedCapsule := *fix.Capsule
+	tamperedCapsule.ConfigHash = "tampered"
+	proofDir := filepath.Join(t.TempDir(), "tampered-json")
+	proofPath, err := posturepkg.WriteProofJSON(proofDir, &tamperedCapsule)
+	if err != nil {
+		t.Fatalf("WriteProofJSON(): %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", proofPath,
+		"--key", fix.PubKeyPath,
+		"--json",
+	})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+
+	var result posturepkg.VerifyResult
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("json.Unmarshal(): %v (output: %s)", jsonErr, stdout.String())
+	}
+	if result.Verified {
+		t.Error("result.Verified = true, want false")
+	}
+	if !strings.Contains(result.Error, "verification failed") {
+		t.Errorf("result.Error = %q, want verification failure", result.Error)
+	}
+}
+
 func TestPostureVerifyBadSignature(t *testing.T) {
 	fix := newTestVerifyFixture(t, perfectEvidence())
 
@@ -473,6 +513,42 @@ func TestPostureVerifyMissingProofFile(t *testing.T) {
 	assertExitCode(t, err, exitVerifyIntegrity)
 }
 
+func TestPostureVerifyJSONMissingProofFile(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
+	pubKeyPath := writeVersionedPubKey(t, pub)
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", "/nonexistent/proof.json",
+		"--key", pubKeyPath,
+		"--json",
+	})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for missing proof")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+
+	var result posturepkg.VerifyResult
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("json.Unmarshal(): %v (output: %s)", jsonErr, stdout.String())
+	}
+	if result.Verified {
+		t.Error("result.Verified = true, want false")
+	}
+	if !strings.Contains(result.Error, "loading proof") {
+		t.Errorf("result.Error = %q, want loading proof failure", result.Error)
+	}
+}
+
 func TestPostureVerifyBadKeyFile(t *testing.T) {
 	fix := newTestVerifyFixture(t, perfectEvidence())
 
@@ -495,6 +571,43 @@ func TestPostureVerifyBadKeyFile(t *testing.T) {
 		t.Fatal("cmd.Execute() = nil, want error for bad key")
 	}
 	assertExitCode(t, err, exitVerifyIntegrity)
+}
+
+func TestPostureVerifyJSONBadKeyFile(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	badKeyPath := filepath.Join(t.TempDir(), "bad-json.key")
+	if err := os.WriteFile(badKeyPath, []byte("not-a-key-at-all"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(): %v", err)
+	}
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", badKeyPath,
+		"--json",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for bad key")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+
+	var result posturepkg.VerifyResult
+	if jsonErr := json.Unmarshal(stdout.Bytes(), &result); jsonErr != nil {
+		t.Fatalf("json.Unmarshal(): %v (output: %s)", jsonErr, stdout.String())
+	}
+	if result.Verified {
+		t.Error("result.Verified = true, want false")
+	}
+	if !strings.Contains(result.Error, "loading public key") {
+		t.Errorf("result.Error = %q, want loading public key failure", result.Error)
+	}
 }
 
 func TestPostureVerifyBadMaxAge(t *testing.T) {
@@ -538,6 +651,28 @@ func TestPostureVerifyBadMaxReceiptAge(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parsing --max-receipt-age") {
 		t.Errorf("error = %v, want max-receipt-age parse error", err)
+	}
+}
+
+func TestPostureVerifyBadMinScore(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--min-score", "101",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for bad min-score")
+	}
+	if !strings.Contains(err.Error(), "--min-score must be between 0 and 100") {
+		t.Errorf("error = %v, want min-score validation error", err)
 	}
 }
 
@@ -688,6 +823,28 @@ func TestPostureVerifyPolicyTypo(t *testing.T) {
 		t.Fatal("cmd.Execute() = nil, want error for invalid policy")
 	}
 	assertExitCode(t, err, exitVerifyPolicyFail)
+}
+
+func TestPostureVerifyMaxAgeDisabledLabel(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--max-age", "0d",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute(): %v", err)
+	}
+	if !strings.Contains(stdout.String(), "max: disabled") {
+		t.Errorf("output missing disabled max-age label, got: %s", stdout.String())
+	}
 }
 
 func TestPostureVerifyOversizeProofFile(t *testing.T) {

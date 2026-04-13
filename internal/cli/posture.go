@@ -25,12 +25,11 @@ import (
 // Exit codes for posture verify. Exit 0 = passed, 1 = integrity failure
 // (bad signature, expired, bad schema), 2 = verified but policy failed.
 const (
-	exitVerifyIntegrity   = 1
-	exitVerifyPolicyFail  = 2
-	verifyDefaultMinScore = 85
-	verifyDefaultMaxAge   = "30d"
-	verifyDefaultReceipt  = "7d"
-	maxProofJSONBytes     = 8 << 20
+	exitVerifyIntegrity  = 1
+	exitVerifyPolicyFail = 2
+	verifyDefaultMaxAge  = "30d"
+	verifyDefaultReceipt = "7d"
+	maxProofJSONBytes    = 8 << 20
 
 	// errPolicyFailed is the sentinel message for policy-fail exit code.
 	errPolicyFailed = "posture verification failed: policy gates or minimum score not met"
@@ -72,16 +71,6 @@ Exit codes:
   2  Verified but policy failed (hard gate violation or score below minimum)`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			capsule, err := loadProofFile(proofFile)
-			if err != nil {
-				return cliutil.ExitCodeError(exitVerifyIntegrity, fmt.Errorf("loading proof: %w", err))
-			}
-
-			pubKey, err := loadPublicKey(keyFile)
-			if err != nil {
-				return cliutil.ExitCodeError(exitVerifyIntegrity, fmt.Errorf("loading public key: %w", err))
-			}
-
 			maxAgeDays, err := parseDays(maxAgeStr)
 			if err != nil {
 				return fmt.Errorf("parsing --max-age: %w", err)
@@ -91,13 +80,18 @@ Exit codes:
 			if err != nil {
 				return fmt.Errorf("parsing --max-receipt-age: %w", err)
 			}
+			if minScore < 0 || minScore > 100 {
+				return fmt.Errorf("--min-score must be between 0 and 100, got %d", minScore)
+			}
 
 			opts := posturepkg.VerifyOpts{
-				Policy:           policy,
-				MinScore:         minScore,
-				MaxAgeDays:       maxAgeDays,
-				MaxReceiptAge:    maxReceiptAgeDays,
-				RequireDiscovery: requireDiscovery,
+				Policy:               policy,
+				MinScore:             minScore,
+				SkipMinScoreGate:     minScore == 0,
+				MaxAgeDays:           maxAgeDays,
+				MaxReceiptAge:        maxReceiptAgeDays,
+				SkipReceiptFreshness: maxReceiptAgeDays == 0,
+				RequireDiscovery:     requireDiscovery,
 			}
 
 			// Compute local config hash for comparison if --config is set.
@@ -113,15 +107,23 @@ Exit codes:
 				opts.ConfigHash = hash
 			}
 
+			capsule, err := loadProofFile(proofFile)
+			if err != nil {
+				return exitVerifyIntegrityError(cmd, jsonOutput, policy, nil, fmt.Errorf("loading proof: %w", err))
+			}
+
+			pubKey, err := loadPublicKey(keyFile)
+			if err != nil {
+				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, fmt.Errorf("loading public key: %w", err))
+			}
+
 			result, err := posturepkg.VerifyCapsule(capsule, pubKey, opts)
 			if err != nil {
-				return cliutil.ExitCodeError(exitVerifyIntegrity, fmt.Errorf("verification failed: %w", err))
+				return exitVerifyIntegrityError(cmd, jsonOutput, policy, capsule, fmt.Errorf("verification failed: %w", err))
 			}
 
 			if jsonOutput {
-				enc := json.NewEncoder(cmd.OutOrStdout())
-				enc.SetIndent("", "  ")
-				if encErr := enc.Encode(result); encErr != nil {
+				if encErr := writeVerifyJSON(cmd, result); encErr != nil {
 					return fmt.Errorf("encoding JSON output: %w", encErr)
 				}
 				if !result.Passed {
@@ -142,7 +144,7 @@ Exit codes:
 	cmd.Flags().StringVar(&proofFile, "proof", "", "path to proof.json (required)")
 	cmd.Flags().StringVar(&keyFile, "key", "", "path to Ed25519 public key file (required)")
 	cmd.Flags().StringVar(&policy, "policy", posturepkg.PolicyEnterprise, "policy level: none, enterprise, strict")
-	cmd.Flags().IntVar(&minScore, "min-score", verifyDefaultMinScore, "minimum passing score (0-100)")
+	cmd.Flags().IntVar(&minScore, "min-score", posturepkg.DefaultMinScore, "minimum passing score (0-100)")
 	cmd.Flags().StringVar(&maxAgeStr, "max-age", verifyDefaultMaxAge, "maximum capsule age (e.g. 30d)")
 	cmd.Flags().StringVar(&maxReceiptAgeStr, "max-receipt-age", verifyDefaultReceipt, "maximum receipt staleness (e.g. 7d)")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "local config for hash comparison")
@@ -217,9 +219,12 @@ func printVerifyResult(cmd *cobra.Command, result *posturepkg.VerifyResult, caps
 	}
 
 	// Generated line.
-	ageDays := int(time.Since(capsule.GeneratedAt).Hours() / 24)
-	_, _ = fmt.Fprintf(w, "\n  Generated: %s (age: %dd, max: %dd)\n",
-		capsule.GeneratedAt.Format(time.RFC3339), ageDays, maxAgeDays)
+	maxAgeLabel := "disabled"
+	if maxAgeDays > 0 {
+		maxAgeLabel = fmt.Sprintf("%dd", maxAgeDays)
+	}
+	_, _ = fmt.Fprintf(w, "\n  Generated: %s (age: %s, max: %s)\n",
+		capsule.GeneratedAt.Format(time.RFC3339), formatVerifyAge(capsule.GeneratedAt), maxAgeLabel)
 
 	// Config hash.
 	if result.ConfigHashMatch != nil {
@@ -233,6 +238,49 @@ func printVerifyResult(cmd *cobra.Command, result *posturepkg.VerifyResult, caps
 
 func weightedSuffix(d posturepkg.FactorDetail) string {
 	return fmt.Sprintf(" [%d/%d]", d.Weighted, d.Weight)
+}
+
+func writeVerifyJSON(cmd *cobra.Command, result *posturepkg.VerifyResult) error {
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
+}
+
+func exitVerifyIntegrityError(
+	cmd *cobra.Command,
+	jsonOutput bool,
+	policy string,
+	capsule *posturepkg.Capsule,
+	err error,
+) error {
+	if jsonOutput {
+		result := &posturepkg.VerifyResult{
+			Verified:       false,
+			Passed:         false,
+			Error:          err.Error(),
+			Policy:         policy,
+			PolicyVersion:  posturepkg.SchemaVersion,
+			ScoringVersion: posturepkg.ScoringVersion,
+		}
+		if capsule != nil {
+			result.GeneratedAt = capsule.GeneratedAt
+			result.ExpiresAt = capsule.ExpiresAt
+			result.LastReceiptAt = capsule.Evidence.FlightRecorder.LastReceiptAt
+		}
+		if jsonErr := writeVerifyJSON(cmd, result); jsonErr != nil {
+			return fmt.Errorf("encoding JSON output: %w", jsonErr)
+		}
+	}
+	return cliutil.ExitCodeError(exitVerifyIntegrity, err)
+}
+
+func formatVerifyAge(ts time.Time) string {
+	elapsed := time.Since(ts)
+	if elapsed <= 0 {
+		return "0d"
+	}
+	days := int((elapsed + (24 * time.Hour) - time.Nanosecond) / (24 * time.Hour))
+	return fmt.Sprintf("%dd", days)
 }
 
 func loadProofFile(path string) (*posturepkg.Capsule, error) {

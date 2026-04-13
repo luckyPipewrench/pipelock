@@ -29,8 +29,13 @@ const (
 // ScoringVersion tracks the score model for reproducibility.
 const ScoringVersion = "1"
 
+// DefaultMinScore is the default minimum passing score for verification.
+const DefaultMinScore = 85
+
 // MaxReceiptAgeDays is the default max age for the most recent receipt.
 const MaxReceiptAgeDays = 7
+
+const defaultMaxFutureSkew = 5 * time.Minute
 
 // Hard failure rule names.
 const (
@@ -56,6 +61,7 @@ type VerifyResult struct {
 	FactorScores    FactorScores  `json:"factor_scores"`
 	HardFailures    []HardFailure `json:"hard_failures,omitempty"`
 	Warnings        []string      `json:"warnings,omitempty"`
+	Error           string        `json:"error,omitempty"`
 	Policy          string        `json:"policy"`
 	PolicyVersion   string        `json:"policy_version"`
 	ScoringVersion  string        `json:"scoring_version"`
@@ -88,19 +94,22 @@ type HardFailure struct {
 
 // VerifyOpts configures posture verification.
 type VerifyOpts struct {
-	Policy           string // "none", "enterprise", "strict"
-	MinScore         int
-	MaxAgeDays       int
-	MaxReceiptAge    int    // days; 0 = skip
-	ConfigHash       string // from local config; empty = skip
-	RequireDiscovery bool
+	Policy               string // "none", "enterprise", "strict"
+	MinScore             int
+	SkipMinScoreGate     bool // true = allow min score 0 without falling back to DefaultMinScore
+	MaxAgeDays           int
+	MaxReceiptAge        int           // days; defaults to MaxReceiptAgeDays unless SkipReceiptFreshness is true
+	SkipReceiptFreshness bool          // true = skip stale-receipt scoring and policy checks
+	MaxFutureSkew        time.Duration // 0 = default 5m skew allowance
+	ConfigHash           string        // from local config; empty = skip
+	RequireDiscovery     bool
 }
 
 // ComputeScore calculates the posture score from an evidence bundle.
 func ComputeScore(evidence EvidenceBundle, maxReceiptAgeDays int) (int, FactorScores) {
 	transportPct := computeTransportPct(evidence.Discover)
 	recorderPct := computeRecorderPct(evidence.VerifyInstall, evidence.FlightRecorder, maxReceiptAgeDays)
-	simulatePct := evidence.Simulate.Percentage
+	simulatePct := computeSimulatePct(evidence.Simulate)
 	cleanlinessPct := computeCleanlinessPct(evidence.Discover)
 
 	transport := factor(transportPct, WeightTransportRatio)
@@ -210,6 +219,13 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 	if err := Verify(capsule, trustedKey); err != nil {
 		return nil, err
 	}
+	opts, err := normalizeVerifyOpts(opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCapsuleTimes(capsule, opts.MaxFutureSkew); err != nil {
+		return nil, err
+	}
 
 	result := &VerifyResult{
 		Verified:       true,
@@ -271,6 +287,45 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 	return result, nil
 }
 
+func normalizeVerifyOpts(opts VerifyOpts) (VerifyOpts, error) {
+	if opts.Policy == "" {
+		opts.Policy = PolicyEnterprise
+	}
+	if opts.MinScore < 0 || opts.MinScore > 100 {
+		return opts, fmt.Errorf("min_score must be between 0 and 100, got %d", opts.MinScore)
+	}
+	if opts.MinScore == 0 && !opts.SkipMinScoreGate {
+		opts.MinScore = DefaultMinScore
+	}
+	if opts.MaxAgeDays < 0 {
+		return opts, fmt.Errorf("max_age_days must be >= 0, got %d", opts.MaxAgeDays)
+	}
+	if opts.MaxReceiptAge < 0 {
+		return opts, fmt.Errorf("max_receipt_age must be >= 0, got %d", opts.MaxReceiptAge)
+	}
+	if opts.MaxReceiptAge == 0 && !opts.SkipReceiptFreshness {
+		opts.MaxReceiptAge = MaxReceiptAgeDays
+	}
+	if opts.MaxFutureSkew <= 0 {
+		opts.MaxFutureSkew = defaultMaxFutureSkew
+	}
+	return opts, nil
+}
+
+func validateCapsuleTimes(capsule *Capsule, maxFutureSkew time.Duration) error {
+	now := time.Now().UTC()
+	maxAllowed := now.Add(maxFutureSkew)
+
+	if capsule.GeneratedAt.After(maxAllowed) {
+		return fmt.Errorf("generated_at %s is more than %s in the future", capsule.GeneratedAt.Format(time.RFC3339), maxFutureSkew)
+	}
+	if capsule.Evidence.FlightRecorder.LastReceiptAt != nil &&
+		capsule.Evidence.FlightRecorder.LastReceiptAt.After(maxAllowed) {
+		return fmt.Errorf("last_receipt_at %s is more than %s in the future", capsule.Evidence.FlightRecorder.LastReceiptAt.Format(time.RFC3339), maxFutureSkew)
+	}
+	return nil
+}
+
 func computeTransportPct(d DiscoverEvidence) int {
 	totalScannable := d.TotalServers + d.ParseErrors
 	if totalScannable == 0 {
@@ -300,6 +355,37 @@ func computeRecorderPct(vi VerifyInstallEvidence, fr FlightRecorderCounts, maxAg
 		}
 	}
 	return 100
+}
+
+func computeSimulatePct(sim audit.SimulateResult) int {
+	if len(sim.Scenarios) > 0 {
+		scorable := 0
+		passed := 0
+		for _, scenario := range sim.Scenarios {
+			if scenario.Limitation {
+				continue
+			}
+			scorable++
+			if scenario.Detected {
+				passed++
+			}
+		}
+		if scorable > 0 {
+			return (passed * 100) / scorable
+		}
+	}
+
+	scorable := sim.Total - sim.KnownLimits
+	if scorable > 0 {
+		return (sim.Passed * 100) / scorable
+	}
+	if sim.Percentage < 0 {
+		return 0
+	}
+	if sim.Percentage > 100 {
+		return 100
+	}
+	return sim.Percentage
 }
 
 func computeCleanlinessPct(d DiscoverEvidence) int {

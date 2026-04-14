@@ -155,13 +155,29 @@ func ValidateAgentName(name string) error {
 // Returns "anonymous" when no agent is specified.
 // Names are sanitized to prevent log injection.
 func ExtractAgent(r *http.Request) string {
+	return ExtractAgentWithDefault(r, "")
+}
+
+// ExtractAgentWithDefault reads the agent name from the request header or
+// query param, falling back to defaultIdentity before "anonymous".
+// Priority: header > query param > defaultIdentity > "anonymous".
+// Names are sanitized to prevent log injection.
+func ExtractAgentWithDefault(r *http.Request, defaultIdentity string) string {
 	agent := r.Header.Get(AgentHeader)
 	if agent == "" {
 		agent = r.URL.Query().Get("agent")
 	}
 	if agent == "" {
+		if defaultIdentity != "" {
+			return sanitizeAgentName(defaultIdentity)
+		}
 		return agentAnonymous
 	}
+	return sanitizeAgentName(agent)
+}
+
+// sanitizeAgentName strips disallowed characters and truncates.
+func sanitizeAgentName(agent string) string {
 	agent = agentNameRe.ReplaceAllString(agent, "_")
 	if len(agent) > maxAgentNameLen {
 		agent = agent[:maxAgentNameLen]
@@ -173,15 +189,25 @@ func ExtractAgent(r *http.Request) string {
 }
 
 // ResolveAgentIdentity determines agent identity from a request.
-// Priority: context override > header > query param > fallback.
+// Priority: context override > header > query param > defaultIdentity > fallback.
 // knownProfiles contains profile names that exist in the registry.
 // Unrecognized names get Profile=ProfileDefault (bounded cardinality).
-func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool) AgentIdentity {
+func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool, defaultIdentity string) AgentIdentity {
 	if profile, ok := AgentOverrideFromContext(r.Context()); ok {
 		return AgentIdentity{Name: profile, Profile: profile, Auth: envelope.ActorAuthBound}
 	}
 
+	// Check header/query first (agent-declared).
 	name := ExtractAgent(r)
+	if name == agentAnonymous && defaultIdentity != "" {
+		// Config-provided default: operator-configured, not agent-declared.
+		resolved := sanitizeAgentName(defaultIdentity)
+		if knownProfiles[resolved] {
+			return AgentIdentity{Name: resolved, Profile: resolved, Auth: envelope.ActorAuthConfigDefault}
+		}
+		return AgentIdentity{Name: resolved, Profile: ProfileDefault, Auth: envelope.ActorAuthConfigDefault}
+	}
+
 	if name == agentAnonymous {
 		return AgentIdentity{Name: "", Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
 	}

@@ -391,9 +391,10 @@ type Config struct {
 	Taint                 TaintConfig             `yaml:"taint"`
 	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
 	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
-	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
-	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
-	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
+	DefaultAgentIdentity  string                  `yaml:"default_agent_identity,omitempty"` // fallback agent name when no header/query identifies the caller
+	LicenseKey            string                  `yaml:"license_key,omitempty"`            // signed license token (from pipelock license issue)
+	LicenseFile           string                  `yaml:"license_file,omitempty"`           // path to file containing the license token (read at startup)
+	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"`     // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal              []string                `yaml:"internal"`
 	TrustedDomains        []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
 	SSRF                  SSRF                    `yaml:"ssrf"`

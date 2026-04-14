@@ -2064,6 +2064,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && responseScanExempt {
 		log.LogResponseScanExempt(actx, finalHost)
+		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportFetch)
 	}
 	var hiddenInjectionFound bool
 	if sc.ResponseScanningEnabled() && isHTML {
@@ -2134,6 +2135,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			for _, m := range scanResult.Matches {
 				if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
 					kept = append(kept, m)
+				} else {
+					p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportFetch)
 				}
 			}
 			scanResult.Matches = kept
@@ -2245,12 +2248,18 @@ func (p *Proxy) filterAndActOnResponseScan(
 ) (blocked bool, out string, found bool) {
 	out = content
 
-	// Filter out suppressed findings.
+	// Suppress filter: serves both the main response scan path (where the caller's
+	// inline loop already stripped suppressed matches before the capture observer) and
+	// the hidden content scan path (where this is the only suppress point). For the
+	// main path, no suppressed matches remain so this loop is a no-op. For the hidden
+	// content path, this loop filters and emits the metric correctly.
 	if !result.Clean && len(cfg.Suppress) > 0 {
 		var kept []scanner.ResponseMatch
 		for _, m := range result.Matches {
 			if !config.IsSuppressed(m.PatternName, displayURL, cfg.Suppress) {
 				kept = append(kept, m)
+			} else {
+				p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportFetch)
 			}
 		}
 		result.Matches = kept

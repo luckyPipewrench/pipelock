@@ -21,6 +21,13 @@ const (
 	TransportWS      = "websocket"
 	TransportMCP     = "mcp"
 	TransportScanAPI = "scan_api"
+	TransportReverse = "reverse"
+)
+
+// Exemption reason constants for the response_scan_exempt_total metric.
+const (
+	ExemptReasonDomain   = "exempt_domain"
+	ExemptReasonSuppress = "suppress"
 )
 
 // AirlockTierOrder maps tier names to numeric order for comparison.

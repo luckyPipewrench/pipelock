@@ -493,6 +493,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	if scanTextFrames && sc.ResponseScanningEnabled() && isResponseScanExempt(relay.hostname, cfg.ResponseScanning.ExemptDomains) {
 		log.LogResponseScanExempt(actx, relay.hostname)
+		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportWS)
 	}
 
 	stats := relay.run(r.Context())

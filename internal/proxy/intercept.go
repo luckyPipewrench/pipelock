@@ -1189,6 +1189,7 @@ func newInterceptHandler(
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
 		if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
+			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
 		if ic.Scanner.ResponseScanningEnabled() {
 			scanResult := ic.Scanner.ScanResponse(r.Context(), string(respBody))
@@ -1223,6 +1224,8 @@ func newInterceptHandler(
 				for _, m := range scanResult.Matches {
 					if !config.IsSuppressed(m.PatternName, r.URL.String(), ic.Config.Suppress) {
 						kept = append(kept, m)
+					} else {
+						ic.Metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportConnect)
 					}
 				}
 				scanResult.Matches = kept

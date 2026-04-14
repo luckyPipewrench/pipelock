@@ -1,0 +1,208 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package setup
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+)
+
+// Emit format constants.
+const (
+	emitPatch      = "patch"
+	emitKustomize  = "kustomize"
+	emitHelmValues = "helm-values"
+)
+
+type imageRef struct {
+	Repository string
+	Tag        string
+	Digest     string
+}
+
+// emitPatched writes the patched manifest in the requested format.
+func emitPatched(w io.Writer, result *sidecarPatchResult, opts sidecarOptions) error {
+	switch opts.emit {
+	case emitPatch:
+		return emitPatchFormat(w, result, opts)
+	case emitKustomize:
+		return emitKustomizeFormat(result, opts)
+	case emitHelmValues:
+		return emitHelmValuesFormat(w, result, opts)
+	default:
+		return fmt.Errorf("unknown emit format %q; supported: patch, kustomize, helm-values", opts.emit)
+	}
+}
+
+// emitPatchFormat writes the fully patched manifest YAML as a standalone applyable file.
+func emitPatchFormat(w io.Writer, result *sidecarPatchResult, opts sidecarOptions) error {
+	data, err := yaml.Marshal(result.PatchedManifest)
+	if err != nil {
+		return fmt.Errorf("marshaling patched manifest: %w", err)
+	}
+
+	// Append ConfigMap and NetworkPolicy as multi-document YAML.
+	output := string(data) + "---\n" + result.ConfigMapYAML + "---\n" + result.NetworkPolicyYAML
+
+	return writeOutput(w, []byte(output), opts.output, opts.force)
+}
+
+// emitKustomizeFormat writes a standalone kustomize overlay directory.
+func emitKustomizeFormat(result *sidecarPatchResult, opts sidecarOptions) error {
+	outDir := opts.output
+	if outDir == "" {
+		return fmt.Errorf("--output directory required for kustomize format")
+	}
+
+	cleanDir := filepath.Clean(outDir)
+	if err := os.MkdirAll(cleanDir, 0o750); err != nil {
+		return fmt.Errorf("creating output directory: %w", err)
+	}
+	if strings.TrimSpace(result.OriginalManifestYAML) == "" {
+		return fmt.Errorf("original workload manifest is required for kustomize format")
+	}
+
+	// Write the original workload so the overlay builds standalone.
+	workloadPath := filepath.Join(cleanDir, "workload.yaml")
+	if err := writeOutput(nil, []byte(result.OriginalManifestYAML), workloadPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", workloadPath, err)
+	}
+
+	// Write the sidecar patch.
+	patchData, err := yaml.Marshal(result.PatchedManifest)
+	if err != nil {
+		return fmt.Errorf("marshaling patch: %w", err)
+	}
+	patchPath := filepath.Join(cleanDir, "pipelock-sidecar-patch.yaml")
+	if err := writeOutput(nil, patchData, patchPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", patchPath, err)
+	}
+
+	// Write the ConfigMap.
+	cmPath := filepath.Join(cleanDir, "pipelock-configmap.yaml")
+	if err := writeOutput(nil, []byte(result.ConfigMapYAML), cmPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", cmPath, err)
+	}
+
+	// Write the NetworkPolicy.
+	npPath := filepath.Join(cleanDir, "pipelock-networkpolicy.yaml")
+	if err := writeOutput(nil, []byte(result.NetworkPolicyYAML), npPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", npPath, err)
+	}
+
+	// Write the kustomization.yaml.
+	kustomization := map[string]interface{}{
+		"apiVersion": "kustomize.config.k8s.io/v1beta1",
+		"kind":       "Kustomization",
+		"resources": []interface{}{
+			"workload.yaml",
+			"pipelock-configmap.yaml",
+			"pipelock-networkpolicy.yaml",
+		},
+		"patches": []interface{}{
+			map[string]interface{}{
+				"path": "pipelock-sidecar-patch.yaml",
+			},
+		},
+	}
+	kustomizationData, err := yaml.Marshal(kustomization)
+	if err != nil {
+		return fmt.Errorf("marshaling kustomization.yaml: %w", err)
+	}
+	kustomizationPath := filepath.Join(cleanDir, "kustomization.yaml")
+	if err := writeOutput(nil, kustomizationData, kustomizationPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", kustomizationPath, err)
+	}
+
+	return nil
+}
+
+// emitHelmValuesFormat writes a values.yaml fragment targeting the pipelock Helm chart.
+func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarOptions) error {
+	values := map[string]interface{}{
+		"image": map[string]interface{}{
+			"repository": defaultImageRepo,
+			"tag":        cliutil.Version,
+			"digest":     "",
+		},
+		"pipelock": map[string]interface{}{
+			"mode":                   opts.preset,
+			"default_agent_identity": result.AgentIdentity,
+		},
+		"networkPolicy": map[string]interface{}{
+			"enabled": true,
+		},
+	}
+
+	if opts.image != "" {
+		parsed := parseImageRef(opts.image)
+		img := values["image"].(map[string]interface{})
+		img["repository"] = parsed.Repository
+		img["tag"] = parsed.Tag
+		img["digest"] = parsed.Digest
+	}
+
+	data, err := yaml.Marshal(values)
+	if err != nil {
+		return fmt.Errorf("marshaling helm values: %w", err)
+	}
+
+	header := "# Pipelock Helm chart values fragment\n# Generated by: pipelock init sidecar --emit helm-values\n# Apply with: helm upgrade --install pipelock pipelock/pipelock -f <this-file>\n\n"
+
+	return writeOutput(w, []byte(header+string(data)), opts.output, opts.force)
+}
+
+// writeOutput writes data to a file or stdout.
+func writeOutput(w io.Writer, data []byte, outputPath string, force bool) error {
+	if outputPath == "" {
+		if w == nil {
+			w = os.Stdout
+		}
+		_, err := w.Write(data)
+		return err
+	}
+
+	cleanPath := filepath.Clean(outputPath)
+
+	// Refuse to overwrite without --force.
+	if _, err := os.Stat(cleanPath); err == nil && !force {
+		return fmt.Errorf("output file %s already exists; use --force to overwrite", cleanPath)
+	}
+
+	dir := filepath.Dir(cleanPath)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("creating directory %s: %w", dir, err)
+	}
+
+	if err := os.WriteFile(cleanPath, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", cleanPath, err)
+	}
+
+	return nil
+}
+
+// parseImageRef splits a container image reference into repository, tag, and digest.
+func parseImageRef(ref string) imageRef {
+	if repo, digest, ok := strings.Cut(ref, "@"); ok {
+		return imageRef{Repository: repo, Digest: digest}
+	}
+
+	lastSlash := strings.LastIndex(ref, "/")
+	lastColon := strings.LastIndex(ref, ":")
+	if lastColon > lastSlash {
+		return imageRef{
+			Repository: ref[:lastColon],
+			Tag:        ref[lastColon+1:],
+		}
+	}
+
+	return imageRef{Repository: ref, Tag: "latest"}
+}

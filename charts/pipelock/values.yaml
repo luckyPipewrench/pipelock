@@ -3,6 +3,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/luckypipewrench/pipelock
   tag: ""  # defaults to .Chart.AppVersion
+  digest: ""  # optional sha256 digest; when set, repository@digest is used
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []

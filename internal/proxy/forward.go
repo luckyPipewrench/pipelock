@@ -1205,6 +1205,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && fwdRespExempt {
 		p.logger.LogResponseScanExempt(actx, fwdRespHost)
+		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 	}
 	// Buffer the response when ANY of response scanning, browser shield, or
 	// media policy is enabled. Media policy cannot be gated behind the
@@ -1343,6 +1344,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				for _, m := range scanResult.Matches {
 					if !config.IsSuppressed(m.PatternName, targetURL, cfg.Suppress) {
 						kept = append(kept, m)
+					} else {
+						p.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportForward)
 					}
 				}
 				scanResult.Matches = kept

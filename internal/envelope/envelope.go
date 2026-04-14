@@ -32,6 +32,10 @@ const (
 	// but was self-declared via header or query param.
 	ActorAuthMatched ActorAuth = "matched"
 
+	// ActorAuthConfigDefault means the actor identity was resolved from the
+	// config default_agent_identity field. Operator-configured, not agent-declared.
+	ActorAuthConfigDefault ActorAuth = "config-default"
+
 	// ActorAuthSelfDeclared means the actor name is unknown or from the
 	// fallback path. Attacker-controllable. Informational only.
 	ActorAuthSelfDeclared ActorAuth = "self-declared"
@@ -235,7 +239,7 @@ func Parse(s string) (Envelope, error) {
 
 	// Validate ActorAuth against allowed values.
 	switch env.ActorAuth {
-	case ActorAuthBound, ActorAuthMatched, ActorAuthSelfDeclared, "":
+	case ActorAuthBound, ActorAuthMatched, ActorAuthConfigDefault, ActorAuthSelfDeclared, "":
 		// valid
 	default:
 		return Envelope{}, fmt.Errorf("unknown actor_auth value %q", env.ActorAuth)

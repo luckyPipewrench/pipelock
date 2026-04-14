@@ -150,7 +150,7 @@ func TestEnvelope_ToMCPMeta_OmitsOptionalEmptyFields(t *testing.T) {
 func TestActorAuth_Constants(t *testing.T) {
 	t.Parallel()
 
-	levels := []ActorAuth{ActorAuthBound, ActorAuthMatched, ActorAuthSelfDeclared}
+	levels := []ActorAuth{ActorAuthBound, ActorAuthMatched, ActorAuthConfigDefault, ActorAuthSelfDeclared}
 	seen := make(map[ActorAuth]bool)
 	for _, l := range levels {
 		if seen[l] {
@@ -203,7 +203,7 @@ func TestParse_RejectsUnknownActorAuth(t *testing.T) {
 func TestParse_AcceptsValidActorAuth(t *testing.T) {
 	t.Parallel()
 
-	for _, aa := range []string{"bound", "matched", "self-declared", ""} {
+	for _, aa := range []string{"bound", "matched", "config-default", "self-declared", ""} {
 		input := `v=1, act="read", vd="allow", rid="id-1", ts=1712345678`
 		if aa != "" {
 			input += `, aa="` + aa + `"`

@@ -239,7 +239,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				Action:     string(receipt.ClassifyHTTP(r.Method)),
 				Verdict:    forwardedVerdict,
 				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
-				Actor:      edition.ExtractAgent(r),
+				Actor:      edition.ExtractAgentWithDefault(r, cfg.DefaultAgentIdentity),
 				ActorAuth:  envelope.ActorAuthSelfDeclared, // Reverse proxy has no per-agent listener binding
 			}); envErr != nil {
 				rp.logger.LogAnomaly(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""), "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
@@ -500,6 +500,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	if revRespExempt {
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScanExempt(actx, revHost)
+		rp.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportReverse)
 	}
 
 	// Fail-closed on compressed responses: regex can't match gzipped content.
@@ -596,6 +597,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		for _, m := range result.Matches {
 			if !config.IsSuppressed(m.PatternName, resp.Request.URL.String(), cfg.Suppress) {
 				kept = append(kept, m)
+			} else {
+				rp.metrics.RecordResponseScanExempt(ExemptReasonSuppress, TransportReverse)
 			}
 		}
 		result.Matches = kept

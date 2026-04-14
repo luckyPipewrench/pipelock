@@ -1481,6 +1481,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			log.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            receipt.NewActionID(),
+				Verdict:             config.ActionBlock,
+				Layer:               result.Scanner,
+				Pattern:             result.Reason + " (escalated)",
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+			})
 			escalatedStatus := http.StatusForbidden
 			if result.Scanner == scanner.ScannerRateLimit {
 				escalatedStatus = http.StatusTooManyRequests
@@ -1497,6 +1517,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:            receipt.NewActionID(),
+			Verdict:             config.ActionBlock,
+			Layer:               "session_profiling",
+			Pattern:             sr.Detail,
+			Transport:           "fetch",
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1516,6 +1556,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:            receipt.NewActionID(),
+			Verdict:             config.ActionBlock,
+			Layer:               "session_deny",
+			Pattern:             "session escalation level " + session.EscalationLabel(sr.Level),
+			Transport:           "fetch",
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1569,6 +1629,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if headerBlocked {
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:            receipt.NewActionID(),
+			Verdict:             config.ActionBlock,
+			Layer:               "dlp_header",
+			Pattern:             "request header contains secret",
+			Transport:           "fetch",
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1583,6 +1663,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		headerSessionKey := CeeSessionKey(agent, clientIP)
 		log.LogAdaptiveUpgrade(headerSessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:            receipt.NewActionID(),
+			Verdict:             config.ActionBlock,
+			Layer:               "session_deny",
+			Pattern:             "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
+			Transport:           "fetch",
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		})
 		writeJSON(w, http.StatusForbidden, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1598,6 +1698,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		reason := err.Error()
 		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), "budget", time.Since(start), agentLabel)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:            receipt.NewActionID(),
+			Verdict:             config.ActionBlock,
+			Layer:               "budget",
+			Pattern:             reason,
+			Transport:           "fetch",
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		})
 		writeJSON(w, http.StatusTooManyRequests, FetchResponse{
 			URL:         displayURL,
 			Agent:       agent,
@@ -1650,6 +1770,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		if ceeRes.Blocked {
 			p.metrics.RecordBlocked(parsed.Hostname(), "cross_request", time.Since(start), agentLabel)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            receipt.NewActionID(),
+				Verdict:             config.ActionBlock,
+				Layer:               "cross_request",
+				Pattern:             ceeRes.Reason,
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+			})
 			writeJSON(w, http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
@@ -1664,6 +1804,26 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if fetchRec != nil && decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(fetchRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fetchRec.EscalationLevel()))
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            receipt.NewActionID(),
+				Verdict:             config.ActionBlock,
+				Layer:               "session_deny",
+				Pattern:             "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+			})
 			writeJSON(w, http.StatusForbidden, FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,

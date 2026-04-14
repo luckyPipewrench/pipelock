@@ -232,7 +232,7 @@ func TestProxy_ReceiptEmission_FetchAllow(t *testing.T) {
 			if uErr != nil {
 				t.Fatalf("unmarshal receipt: %v", uErr)
 			}
-			if r.ActionRecord.Verdict == "allow" {
+			if r.ActionRecord.Verdict == actionAllow {
 				found = true
 				if err := receipt.Verify(r); err != nil {
 					t.Fatalf("receipt verification failed: %v", err)

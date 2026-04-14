@@ -195,6 +195,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			log.LogBlocked(actx, result.Scanner, result.Reason)
 			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     result.Scanner,
+				Pattern:   result.Reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
@@ -213,6 +224,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			log.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     result.Scanner,
+				Pattern:   result.Reason + " (escalated)",
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			http.Error(w, "WebSocket blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
@@ -221,6 +243,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "session_profiling",
+			Pattern:   sr.Detail,
+			Transport: "websocket",
+			Method:    "WS",
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		http.Error(w, sr.Detail, http.StatusForbidden)
 		return
 	}
@@ -235,6 +268,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.metrics.RecordWSBlocked()
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "session_deny",
+			Pattern:   "session escalation level " + session.EscalationLabel(sr.Level),
+			Transport: "websocket",
+			Method:    "WS",
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		http.Error(w, "WebSocket blocked: session escalation level "+session.EscalationLabel(sr.Level), http.StatusForbidden)
 		return
 	}
@@ -244,6 +288,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		reason := err.Error()
 		log.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordWSBlocked()
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "budget",
+			Pattern:   reason,
+			Transport: "websocket",
+			Method:    "WS",
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		http.Error(w, "WebSocket blocked: "+reason, http.StatusTooManyRequests)
 		return
 	}
@@ -280,6 +335,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if cfg.EnforceEnabled() {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "dlp_header",
+				Pattern:   reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			http.Error(w, "WebSocket blocked: "+reason, http.StatusForbidden)
 			return
 		}
@@ -294,6 +360,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(headerSR.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(headerSR.Level))
 			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "session_deny",
+				Pattern:   "session escalation level " + session.EscalationLabel(headerSR.Level),
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			http.Error(w, "WebSocket blocked: session escalation level "+session.EscalationLabel(headerSR.Level), http.StatusForbidden)
 			return
 		}
@@ -332,6 +409,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			log.LogAirlockDeny(wsSess.key, tier, TransportWS, http.MethodGet, clientIP, requestID)
 			p.metrics.RecordAirlockDenial(tier, TransportWS, http.MethodGet)
 			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "airlock",
+				Pattern:   "airlock: WebSocket blocked during quarantine",
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, "airlock: WebSocket blocked during quarantine")
 			return
 		}
@@ -418,6 +506,20 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.LogWSClose(targetURL, clientIP, requestID, agent,
 		stats.clientToServer, stats.serverToClient,
 		stats.textFrames, stats.binaryFrames, duration)
+
+	closeVerdict := config.ActionAllow
+	if stats.blocked {
+		closeVerdict = config.ActionBlock
+	}
+	p.emitReceipt(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   closeVerdict,
+		Transport: "websocket",
+		Method:    "WS",
+		Target:    targetURL,
+		RequestID: requestID,
+		Agent:     agent,
+	})
 
 	sc.RecordRequest(relay.hostname, int(stats.clientToServer+stats.serverToClient))
 
@@ -597,6 +699,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "kill_switch",
+				Pattern:   "kill switch active",
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
 			blocked = true
@@ -622,6 +735,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), "", config.ActionBlock, "session_deny", r.clientIP, r.requestID)
 			r.proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(r.escalationLevel()))
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "session_deny",
+				Pattern:   "session escalation",
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
 			blocked = true
@@ -698,6 +822,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if !r.allowBinary {
 				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "ws_protocol",
+					Pattern:   "binary frames not allowed",
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
@@ -709,6 +844,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "ws_protocol", closeReason, r.clientIP, r.requestID)
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "ws_protocol",
+				Pattern:   closeReason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
 			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
@@ -766,6 +912,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
+						r.proxy.emitReceipt(receipt.EmitOpts{
+							ActionID:  receipt.NewActionID(),
+							Verdict:   config.ActionBlock,
+							Layer:     "dlp",
+							Pattern:   reason,
+							Transport: "websocket",
+							Method:    "WS",
+							Target:    r.targetURL,
+							RequestID: r.requestID,
+							Agent:     r.agent,
+						})
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
 						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 						blocked = true
@@ -785,6 +942,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 						reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
 						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
+						r.proxy.emitReceipt(receipt.EmitOpts{
+							ActionID:  receipt.NewActionID(),
+							Verdict:   config.ActionBlock,
+							Layer:     "dlp",
+							Pattern:   reason,
+							Transport: "websocket",
+							Method:    "WS",
+							Target:    r.targetURL,
+							RequestID: r.requestID,
+							Agent:     r.agent,
+						})
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
 						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 						blocked = true
@@ -835,6 +1003,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 							}
 							reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
 							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+							r.proxy.emitReceipt(receipt.EmitOpts{
+								ActionID:  receipt.NewActionID(),
+								Verdict:   config.ActionBlock,
+								Layer:     "address_protection",
+								Pattern:   reason,
+								Transport: "websocket",
+								Method:    "WS",
+								Target:    r.targetURL,
+								RequestID: r.requestID,
+								Agent:     r.agent,
+							})
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
 							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 							blocked = true
@@ -848,6 +1027,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 							r.recordSignal(session.SignalBlock, log)
 							reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
 							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+							r.proxy.emitReceipt(receipt.EmitOpts{
+								ActionID:  receipt.NewActionID(),
+								Verdict:   config.ActionBlock,
+								Layer:     "address_protection",
+								Pattern:   reason,
+								Transport: "websocket",
+								Method:    "WS",
+								Target:    r.targetURL,
+								RequestID: r.requestID,
+								Agent:     r.agent,
+							})
 							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
 							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 							blocked = true
@@ -886,6 +1076,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if ceeRes.Blocked {
 				log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "cross_request", ceeRes.Reason, r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("cross_request")
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "cross_request",
+					Pattern:   ceeRes.Reason,
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
 				blocked = true
@@ -923,6 +1124,17 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "kill_switch",
+				Pattern:   "kill switch active",
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
 			blocked = true
@@ -947,6 +1159,17 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), "", config.ActionBlock, "session_deny", r.clientIP, r.requestID)
 			r.proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(r.escalationLevel()))
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "session_deny",
+				Pattern:   "session escalation",
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
 			blocked = true
@@ -1022,6 +1245,17 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if !r.allowBinary {
 				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", "binary frames not allowed", r.clientIP, r.requestID)
 				r.proxy.metrics.RecordWSScanHit("ws_protocol")
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "ws_protocol",
+					Pattern:   "binary frames not allowed",
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
@@ -1033,6 +1267,17 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
 			log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "ws_protocol", closeReason, r.clientIP, r.requestID)
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "ws_protocol",
+				Pattern:   closeReason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
 			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
@@ -1093,6 +1338,17 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					case config.ActionBlock:
 						reason := fmt.Sprintf("injection detected: %s", strings.Join(patternNames, ", "))
 						log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "response_scan", reason, r.clientIP, r.requestID)
+						r.proxy.emitReceipt(receipt.EmitOpts{
+							ActionID:  receipt.NewActionID(),
+							Verdict:   config.ActionBlock,
+							Layer:     "response_scan",
+							Pattern:   reason,
+							Transport: "websocket",
+							Method:    "WS",
+							Target:    r.targetURL,
+							RequestID: r.requestID,
+							Agent:     r.agent,
+						})
 						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
 						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 						blocked = true

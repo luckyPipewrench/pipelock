@@ -4644,11 +4644,11 @@ func Defaults() *Config {
 				// Accepts either a URL query delimiter ([?&;]) OR line-start
 				// before the credential key. Line-start (via the (?m) flag +
 				// ^ anchor) catches body-first credentials like
-				//     password=hunter2
+				//     password=X  (where X is the secret value)
 				// that an HTTP form or env-dump log emits without a leading
 				// delimiter, while the delimiter alternative still catches
-				// standard query strings (?password=...) and connection
-				// strings (;password=...). Go-style struct assignments
+				// standard query strings and connection strings prefixed by
+				// ? or ; before the credential key. Go-style struct assignments
 				// (ep.Token = X, req.APIKey = Y) are still immune because
 				// the credential key is preceded by . or another word
 				// character, which is neither ^ nor [?&;]. The rule is

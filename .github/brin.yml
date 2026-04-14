@@ -1,0 +1,56 @@
+# Brin Security Scanner per-repo configuration.
+# Loaded by github.com/superagent-ai/brin-github via the GitHub App on
+# every PR (services/config.ts -> octokit.repos.getContent on the
+# default branch). Every field below is optional; the values pinned
+# here are the production-ready overrides for pipelock.
+#
+# Why the relaxed prScan.blockBelowScore:
+#
+# Pipelock is an agent firewall. Nearly every source file handles a
+# bearer token, an API key, a DLP regex, an MCP credential header,
+# or a proxy-auth code path by design. Brin's content-risk heuristic
+# treats credential-adjacent code as a "suspicious" signal across
+# the entire codebase, which produces a stable 20-30 score range for
+# legitimate pipelock changes — the upstream default of 30 would
+# reject most PRs that touch the admin API, scanner patterns, or
+# proxy authentication.
+#
+# Per src/lib/policy.ts evaluatePrScan, the only two paths that
+# produce a "blocking" check-run conclusion are:
+#
+#     verdict === "dangerous"      // always blocks regardless of score
+#     score < blockBelowScore      // configurable score gate
+#
+# Setting blockBelowScore: 10 keeps the dangerous-verdict gate fully
+# in place while letting normal pipelock work through. Verdicts in
+# suspiciousVerdicts (default ["suspicious"]) continue to surface as
+# "review" check-runs (neutral conclusion, non-blocking), so
+# reviewers still see the warning without it being a hard merge gate.
+# Based on observed pipelock PR ranges (20-36 for legitimate
+# credential-handling changes), 10 gives comfortable headroom below
+# the false-positive band while keeping the score gate active for
+# outlier drops — Brin's published policy does not document stable
+# semantic score bands, so the threshold is set empirically rather
+# than claimed as "malicious-only."
+
+prScan:
+  enabled: true
+  blockBelowScore: 10
+  suspiciousVerdicts: [suspicious]
+  tolerance: conservative
+
+contributorTrust:
+  enabled: true
+  safeVerdicts: [safe]
+  # trustedAuthors is only consulted by evaluateContributor in
+  # src/lib/policy.ts — it has no effect on the PR Scan blocking
+  # path. Kept at the upstream bot-pair default since Brin
+  # Contributor Trust already passes at 96/100 for maintainer-
+  # authored PRs; adding the maintainer here would broaden trust
+  # without solving any current false positive.
+  trustedAuthors:
+    - dependabot[bot]
+    - renovate[bot]
+
+comments:
+  mode: detailed

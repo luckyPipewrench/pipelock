@@ -42,20 +42,25 @@ func emitPatched(w io.Writer, result *sidecarPatchResult, opts sidecarOptions) e
 	}
 }
 
-// emitPatchFormat writes the fully patched manifest YAML as a standalone applyable file.
+// emitPatchFormat writes the full enforced topology bundle as standalone YAML.
 func emitPatchFormat(w io.Writer, result *sidecarPatchResult, opts sidecarOptions) error {
 	data, err := yaml.Marshal(result.PatchedManifest)
 	if err != nil {
 		return fmt.Errorf("marshaling patched manifest: %w", err)
 	}
 
-	// Append ConfigMap and NetworkPolicy as multi-document YAML.
-	output := string(data) + "---\n" + result.ConfigMapYAML + "---\n" + result.NetworkPolicyYAML
+	output := string(data) +
+		"---\n" + result.ConfigMapYAML +
+		"---\n" + result.DeploymentYAML +
+		"---\n" + result.ServiceYAML +
+		"---\n" + result.AgentNetworkPolicyYAML +
+		"---\n" + result.ProxyNetworkPolicyYAML +
+		"---\n" + result.PodDisruptionBudgetYAML
 
 	return writeOutput(w, []byte(output), opts.output, opts.force)
 }
 
-// emitKustomizeFormat writes a standalone kustomize overlay directory.
+// emitKustomizeFormat writes a standalone kustomize bundle directory.
 func emitKustomizeFormat(result *sidecarPatchResult, opts sidecarOptions) error {
 	outDir := opts.output
 	if outDir == "" {
@@ -66,24 +71,13 @@ func emitKustomizeFormat(result *sidecarPatchResult, opts sidecarOptions) error 
 	if err := os.MkdirAll(cleanDir, 0o750); err != nil {
 		return fmt.Errorf("creating output directory: %w", err)
 	}
-	if strings.TrimSpace(result.OriginalManifestYAML) == "" {
-		return fmt.Errorf("original workload manifest is required for kustomize format")
-	}
-
-	// Write the original workload so the overlay builds standalone.
-	workloadPath := filepath.Join(cleanDir, "workload.yaml")
-	if err := writeOutput(nil, []byte(result.OriginalManifestYAML), workloadPath, opts.force); err != nil {
-		return fmt.Errorf("writing %s: %w", workloadPath, err)
-	}
-
-	// Write the sidecar patch.
-	patchData, err := yaml.Marshal(result.PatchedManifest)
+	agentData, err := yaml.Marshal(result.PatchedManifest)
 	if err != nil {
-		return fmt.Errorf("marshaling patch: %w", err)
+		return fmt.Errorf("marshaling agent manifest: %w", err)
 	}
-	patchPath := filepath.Join(cleanDir, "pipelock-sidecar-patch.yaml")
-	if err := writeOutput(nil, patchData, patchPath, opts.force); err != nil {
-		return fmt.Errorf("writing %s: %w", patchPath, err)
+	workloadPath := filepath.Join(cleanDir, "agent-workload.yaml")
+	if err := writeOutput(nil, agentData, workloadPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", workloadPath, err)
 	}
 
 	// Write the ConfigMap.
@@ -92,25 +86,42 @@ func emitKustomizeFormat(result *sidecarPatchResult, opts sidecarOptions) error 
 		return fmt.Errorf("writing %s: %w", cmPath, err)
 	}
 
-	// Write the NetworkPolicy.
-	npPath := filepath.Join(cleanDir, "pipelock-networkpolicy.yaml")
-	if err := writeOutput(nil, []byte(result.NetworkPolicyYAML), npPath, opts.force); err != nil {
-		return fmt.Errorf("writing %s: %w", npPath, err)
+	deployPath := filepath.Join(cleanDir, "pipelock-deployment.yaml")
+	if err := writeOutput(nil, []byte(result.DeploymentYAML), deployPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", deployPath, err)
 	}
 
-	// Write the kustomization.yaml.
+	servicePath := filepath.Join(cleanDir, "pipelock-service.yaml")
+	if err := writeOutput(nil, []byte(result.ServiceYAML), servicePath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", servicePath, err)
+	}
+
+	agentPolicyPath := filepath.Join(cleanDir, "agent-networkpolicy.yaml")
+	if err := writeOutput(nil, []byte(result.AgentNetworkPolicyYAML), agentPolicyPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", agentPolicyPath, err)
+	}
+
+	proxyPolicyPath := filepath.Join(cleanDir, "pipelock-networkpolicy.yaml")
+	if err := writeOutput(nil, []byte(result.ProxyNetworkPolicyYAML), proxyPolicyPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", proxyPolicyPath, err)
+	}
+
+	pdbPath := filepath.Join(cleanDir, "pipelock-pdb.yaml")
+	if err := writeOutput(nil, []byte(result.PodDisruptionBudgetYAML), pdbPath, opts.force); err != nil {
+		return fmt.Errorf("writing %s: %w", pdbPath, err)
+	}
+
 	kustomization := map[string]interface{}{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",
 		"kind":       "Kustomization",
 		"resources": []interface{}{
-			"workload.yaml",
+			"agent-workload.yaml",
 			"pipelock-configmap.yaml",
+			"pipelock-deployment.yaml",
+			"pipelock-service.yaml",
+			"agent-networkpolicy.yaml",
 			"pipelock-networkpolicy.yaml",
-		},
-		"patches": []interface{}{
-			map[string]interface{}{
-				"path": "pipelock-sidecar-patch.yaml",
-			},
+			"pipelock-pdb.yaml",
 		},
 	}
 	kustomizationData, err := yaml.Marshal(kustomization)
@@ -125,20 +136,62 @@ func emitKustomizeFormat(result *sidecarPatchResult, opts sidecarOptions) error 
 	return nil
 }
 
-// emitHelmValuesFormat writes a values.yaml fragment targeting the pipelock Helm chart.
+// emitHelmValuesFormat writes a Helm bundle directory: chart values plus the
+// patched agent workload and the companion NetworkPolicies.
 func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarOptions) error {
+	_ = w
+	outDir := opts.output
+	if outDir == "" {
+		return fmt.Errorf("--output directory required for helm-values format")
+	}
+
 	values := map[string]interface{}{
+		"replicaCount":     proxyReplicaCount,
+		"fullnameOverride": result.ProxyName,
 		"image": map[string]interface{}{
 			"repository": defaultImageRepo,
 			"tag":        cliutil.Version,
 			"digest":     "",
+			"pullPolicy": "IfNotPresent",
+		},
+		"resources": map[string]interface{}{
+			"requests": map[string]interface{}{"cpu": proxyCPURequest, "memory": proxyMemoryRequest},
+			"limits":   map[string]interface{}{"cpu": proxyCPULimit, "memory": proxyMemoryLimit},
+		},
+		"podLabels": map[string]interface{}{
+			"app.kubernetes.io/component": "proxy",
+		},
+		"affinity": map[string]interface{}{
+			"podAntiAffinity": map[string]interface{}{
+				"preferredDuringSchedulingIgnoredDuringExecution": []interface{}{
+					map[string]interface{}{
+						"weight": 100,
+						"podAffinityTerm": map[string]interface{}{
+							"labelSelector": map[string]interface{}{
+								"matchExpressions": []interface{}{
+									map[string]interface{}{
+										"key":      "app.kubernetes.io/instance",
+										"operator": "In",
+										"values":   []interface{}{result.ProxyName},
+									},
+								},
+							},
+							"topologyKey": "kubernetes.io/hostname",
+						},
+					},
+				},
+			},
 		},
 		"pipelock": map[string]interface{}{
-			"mode":                   opts.preset,
-			"default_agent_identity": result.AgentIdentity,
+			"mode": opts.preset,
+			"forward_proxy": map[string]interface{}{
+				"enabled": true,
+			},
+			"default_agent_identity":      result.AgentIdentity,
+			"bind_default_agent_identity": true,
 		},
 		"networkPolicy": map[string]interface{}{
-			"enabled": true,
+			"enabled": false,
 		},
 	}
 
@@ -155,9 +208,43 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 		return fmt.Errorf("marshaling helm values: %w", err)
 	}
 
-	header := "# Pipelock Helm chart values fragment\n# Generated by: pipelock init sidecar --emit helm-values\n# Apply with: helm upgrade --install pipelock pipelock/pipelock -f <this-file>\n\n"
+	cleanDir := filepath.Clean(outDir)
+	if err := os.MkdirAll(cleanDir, 0o750); err != nil {
+		return fmt.Errorf("creating output directory: %w", err)
+	}
 
-	return writeOutput(w, []byte(header+string(data)), opts.output, opts.force)
+	header := "# Pipelock Helm bundle values\n# Generated by: pipelock init sidecar --emit helm-values\n# Use release name: " + result.ProxyName + "\n\n"
+	if err := writeOutput(nil, []byte(header+string(data)), filepath.Join(cleanDir, "values.yaml"), opts.force); err != nil {
+		return err
+	}
+
+	agentData, err := yaml.Marshal(result.PatchedManifest)
+	if err != nil {
+		return fmt.Errorf("marshaling agent manifest: %w", err)
+	}
+	if err := writeOutput(nil, agentData, filepath.Join(cleanDir, "agent-workload.yaml"), opts.force); err != nil {
+		return err
+	}
+	if err := writeOutput(nil, []byte(result.AgentNetworkPolicyYAML), filepath.Join(cleanDir, "agent-networkpolicy.yaml"), opts.force); err != nil {
+		return err
+	}
+	if err := writeOutput(nil, []byte(result.ProxyNetworkPolicyYAML), filepath.Join(cleanDir, "pipelock-networkpolicy.yaml"), opts.force); err != nil {
+		return err
+	}
+	if err := writeOutput(nil, []byte(result.PodDisruptionBudgetYAML), filepath.Join(cleanDir, "pipelock-pdb.yaml"), opts.force); err != nil {
+		return err
+	}
+
+	readme := fmt.Sprintf("helm upgrade --install %s pipelock/pipelock -f %s\nkubectl rollout status deployment/%s\nkubectl apply -f %s -f %s\nkubectl apply -f %s\nkubectl apply -f %s\n",
+		result.ProxyName,
+		filepath.Join(cleanDir, "values.yaml"),
+		result.ProxyName,
+		filepath.Join(cleanDir, "pipelock-networkpolicy.yaml"),
+		filepath.Join(cleanDir, "pipelock-pdb.yaml"),
+		filepath.Join(cleanDir, "agent-networkpolicy.yaml"),
+		filepath.Join(cleanDir, "agent-workload.yaml"),
+	)
+	return writeOutput(nil, []byte(readme), filepath.Join(cleanDir, "README.txt"), opts.force)
 }
 
 // writeOutput writes data to a file or stdout.

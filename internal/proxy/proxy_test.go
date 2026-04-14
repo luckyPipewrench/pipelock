@@ -1371,6 +1371,49 @@ func TestFetchEndpoint_AgentDefaultAnonymous(t *testing.T) {
 	}
 }
 
+func TestFetchEndpoint_BindDefaultAgentIdentityIgnoresHeaderAndQuery(t *testing.T) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "Hello world")
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.DefaultAgentIdentity = "deployment/my-sidecar"
+	cfg.BindDefaultAgentIdentity = true
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text&agent=query-agent", nil)
+	req.Header.Set(AgentHeader, "header-agent")
+	w := httptest.NewRecorder()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp FetchResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("expected valid JSON: %v", err)
+	}
+	if resp.Agent != "deployment_my-sidecar" {
+		t.Errorf("expected agent=deployment_my-sidecar, got %q", resp.Agent)
+	}
+}
+
 // --- Redirect Scanning Tests ---
 
 func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {

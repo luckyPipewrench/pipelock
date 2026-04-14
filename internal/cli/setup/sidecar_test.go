@@ -199,9 +199,8 @@ func TestRunSidecar_EmitPatch(t *testing.T) {
 func TestRunSidecar_Idempotent(t *testing.T) {
 	t.Parallel()
 
-	// First pass: generate a patched manifest.
 	dir := t.TempDir()
-	patchedPath := filepath.Join(dir, "patched.yaml")
+	outDir := filepath.Join(dir, "kustomize-out")
 
 	var buf1 bytes.Buffer
 	cmd1 := SidecarCmd()
@@ -209,7 +208,8 @@ func TestRunSidecar_Idempotent(t *testing.T) {
 	cmd1.SetErr(&buf1)
 	cmd1.SetArgs([]string{
 		"--inject-spec", testdataPath(t, "deployment.yaml"),
-		"--output", patchedPath,
+		"--emit", "kustomize",
+		"--output", outDir,
 		"--skip-canary",
 		"--skip-verify",
 	})
@@ -218,13 +218,14 @@ func TestRunSidecar_Idempotent(t *testing.T) {
 		t.Fatalf("first run: %v", err)
 	}
 
-	// Second pass: run against the already-patched manifest with JSON output.
+	agentWorkloadPath := filepath.Join(outDir, "agent-workload.yaml")
+
 	var buf2 bytes.Buffer
 	cmd2 := SidecarCmd()
 	cmd2.SetOut(&buf2)
 	cmd2.SetErr(&buf2)
 	cmd2.SetArgs([]string{
-		"--inject-spec", patchedPath,
+		"--inject-spec", agentWorkloadPath,
 		"--dry-run",
 		"--json",
 	})
@@ -352,10 +353,13 @@ func TestRunSidecar_EmitKustomize(t *testing.T) {
 	// Verify kustomize files exist.
 	for _, name := range []string{
 		"kustomization.yaml",
-		"workload.yaml",
-		"pipelock-sidecar-patch.yaml",
+		"agent-workload.yaml",
 		"pipelock-configmap.yaml",
+		"pipelock-deployment.yaml",
+		"pipelock-service.yaml",
+		"agent-networkpolicy.yaml",
 		"pipelock-networkpolicy.yaml",
+		"pipelock-pdb.yaml",
 	} {
 		path := filepath.Join(outDir, name)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -391,7 +395,7 @@ func TestRunSidecar_EmitHelmValues(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "values.yaml")
+	outDir := filepath.Join(dir, "helm-bundle")
 
 	var buf bytes.Buffer
 	cmd := SidecarCmd()
@@ -400,7 +404,7 @@ func TestRunSidecar_EmitHelmValues(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--inject-spec", testdataPath(t, "deployment.yaml"),
 		"--emit", "helm-values",
-		"--output", outPath,
+		"--output", outDir,
 		"--skip-canary",
 		"--skip-verify",
 	})
@@ -409,13 +413,55 @@ func TestRunSidecar_EmitHelmValues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Clean(outPath))
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(outDir, "values.yaml")))
 	if err != nil {
 		t.Fatalf("reading output: %v", err)
 	}
 
-	if !strings.Contains(string(data), "Helm chart values") {
+	if !strings.Contains(string(data), "Helm bundle values") {
 		t.Error("output should contain Helm header comment")
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "README.txt")); err != nil {
+		t.Fatalf("expected README.txt in helm bundle: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "pipelock-pdb.yaml")); err != nil {
+		t.Fatalf("expected pipelock-pdb.yaml in helm bundle: %v", err)
+	}
+}
+
+func TestRunSidecar_VerifyHealthy(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "patched.yaml")
+
+	var buf bytes.Buffer
+	cmd := SidecarCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--inject-spec", testdataPath(t, "deployment.yaml"),
+		"--output", outPath,
+		"--skip-canary",
+		"--json",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result sidecarResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if result.Verify == nil {
+		t.Fatal("verify field should not be nil")
+	}
+	if result.Verify.Skipped {
+		t.Fatal("verify should not be skipped")
+	}
+	if !result.Verify.Healthy {
+		t.Fatalf("verify should be healthy, got: %+v", result.Verify)
 	}
 }
 

@@ -1097,19 +1097,24 @@ The core principle: the model won't protect you, so the network layer must.
 
 ## Default Agent Identity
 
-When pipelock runs as a sidecar, incoming requests typically lack the `X-Pipelock-Agent` header because the upstream container sends traffic through `HTTPS_PROXY` without identity headers. Set `default_agent_identity` so sidecar traffic is attributed to the workload rather than showing as `anonymous` in logs, receipts, and metrics.
+When pipelock runs behind a workload-local proxy configuration, incoming requests typically lack the `X-Pipelock-Agent` header because the upstream container sends traffic through `HTTPS_PROXY` without identity headers. Set `default_agent_identity` so that traffic is attributed to the workload rather than showing as `anonymous` in logs, receipts, and metrics.
 
 ```yaml
 default_agent_identity: "deployment/my-agent"
 ```
 
-Resolution precedence: `X-Pipelock-Agent` header > `?agent=` query param > `default_agent_identity` > `anonymous`.
+If you also set `bind_default_agent_identity: true`, pipelock ignores caller-supplied `X-Pipelock-Agent` headers and `?agent=` query params and binds all traffic on that listener to the configured default identity. This is the recommended mode for the generated `pipelock init sidecar` companion topology.
 
-`pipelock init sidecar` sets this automatically from the workload kind and name (e.g., `deployment/my-agent`). Override with `--agent-identity`.
+Resolution precedence with binding disabled: `X-Pipelock-Agent` header > `default_agent_identity` > `?agent=` query param > `anonymous`.
+
+Resolution precedence with binding enabled: context override > `default_agent_identity` > `anonymous`.
+
+`pipelock init sidecar` sets both fields automatically from the workload kind and name (e.g., `deployment/my-agent`). Override the identity with `--agent-identity`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `default_agent_identity` | `string` | `""` (anonymous) | Fallback agent name when no header or query param is present |
+| `default_agent_identity` | `string` | `""` (anonymous) | Operator-configured agent name used when no stronger identity source resolves the caller |
+| `bind_default_agent_identity` | `bool` | `false` | Ignore caller-supplied `X-Pipelock-Agent` and `?agent=` values and bind requests to `default_agent_identity` |
 
 ## Agent Profiles
 

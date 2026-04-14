@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -685,6 +686,83 @@ func TestEnvelope_ReverseProxyInjectsHeader(t *testing.T) {
 	}
 	if env.ActorAuth != envelope.ActorAuthSelfDeclared {
 		t.Errorf("ActorAuth = %q, want %q", env.ActorAuth, envelope.ActorAuthSelfDeclared)
+	}
+}
+
+func TestEnvelope_ReverseProxyBindDefaultAgentIdentity(t *testing.T) {
+	t.Parallel()
+
+	var gotHeader headerCapture
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader.Set(r.Header.Get(envelope.HeaderName))
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	cfg := reverseTestConfig()
+	cfg.DefaultAgentIdentity = "deployment/my-sidecar"
+	cfg.BindDefaultAgentIdentity = true
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	t.Cleanup(logger.Close)
+
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+
+	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: testEnvelopeConfigHash})
+	var emPtr atomic.Pointer[envelope.Emitter]
+	emPtr.Store(em)
+	handler.SetEnvelopeEmitter(&emPtr)
+
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/test?agent=query-agent", nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set(edition.AgentHeader, "header-agent")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d; body: %s", resp.StatusCode, body)
+	}
+
+	header := gotHeader.Get()
+	if header == "" {
+		t.Fatal("upstream did not receive Pipelock-Mediation header via reverse proxy")
+	}
+
+	env, parseErr := envelope.Parse(header)
+	if parseErr != nil {
+		t.Fatalf("parse envelope: %v", parseErr)
+	}
+	if env.Actor != "deployment_my-sidecar" {
+		t.Errorf("Actor = %q, want %q", env.Actor, "deployment_my-sidecar")
+	}
+	if env.ActorAuth != envelope.ActorAuthConfigDefault {
+		t.Errorf("ActorAuth = %q, want %q", env.ActorAuth, envelope.ActorAuthConfigDefault)
 	}
 }
 

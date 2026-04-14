@@ -73,8 +73,7 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           volumeMounts:
             - name: config
-              mountPath: /etc/pipelock/pipelock.yaml
-              subPath: pipelock.yaml
+              mountPath: /etc/pipelock
       volumes:
         - name: config
           configMap:

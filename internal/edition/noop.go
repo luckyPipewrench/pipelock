@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -24,18 +23,7 @@ func newNoopEdition(cfg *config.Config, sc *scanner.Scanner) (Edition, error) {
 }
 
 func (e *noopEdition) ResolveAgent(_ context.Context, r *http.Request) (*ResolvedAgent, AgentIdentity) {
-	identity := AgentIdentity{Profile: ProfileDefault}
-
-	// Check header/query first (agent-declared).
-	name := ExtractAgent(r)
-	if name != agentAnonymous {
-		identity.Name = name
-		identity.Auth = envelope.ActorAuthSelfDeclared
-	} else if e.cfg.DefaultAgentIdentity != "" {
-		// Config-provided default: operator-configured, not agent-declared.
-		identity.Name = sanitizeAgentName(e.cfg.DefaultAgentIdentity)
-		identity.Auth = envelope.ActorAuthConfigDefault
-	}
+	identity := ResolveAgentIdentity(r, nil, e.cfg.DefaultAgentIdentity, e.cfg.BindDefaultAgentIdentity)
 
 	return &ResolvedAgent{
 		Name:    ProfileDefault,

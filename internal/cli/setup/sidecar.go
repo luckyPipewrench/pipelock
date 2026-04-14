@@ -5,6 +5,7 @@ package setup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -59,24 +60,24 @@ func SidecarCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "sidecar",
-		Short: "Inject a pipelock sidecar into a Kubernetes workload manifest",
-		Long: `Generate a pipelock sidecar injection patch for Kubernetes workloads.
+		Short: "Generate an enforced pipelock companion proxy for a Kubernetes workload",
+		Long: `Generate an enforced companion-proxy topology for Kubernetes workloads.
 
 Supported workload kinds: Deployment, StatefulSet, Job, CronJob.
 
 Phases:
   1. Detect:   parse the input manifest, identify workload kind
-  2. Generate: build the sidecar patch (container, volumes, env, probes)
-  3. Preview:  show a unified diff of changes
-  4. Apply:    write the patched manifest (or emit kustomize/helm-values)
-  5. Verify:   check sidecar health via port-forward (skippable)
+  2. Generate: patch the agent workload and build companion proxy resources
+  3. Preview:  show the workload diff plus generated companion resources
+  4. Apply:    write the enforced topology bundle
+  5. Verify:   statically verify proxy config and network policy boundaries
   6. Canary:   inject a synthetic secret and confirm DLP catches it
   7. Summary:  show results
 
 Examples:
   pipelock init sidecar --inject-spec deployment.yaml --dry-run
   pipelock init sidecar --inject-spec deployment.yaml --emit kustomize --output ./pipelock-overlay
-  pipelock init sidecar --inject-spec statefulset.yaml --emit helm-values --output values-override.yaml
+  pipelock init sidecar --inject-spec statefulset.yaml --emit helm-values --output ./pipelock-helm-bundle
   pipelock init sidecar --inject-spec cronjob.yaml --preset strict --agent-identity my-team/bot`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -90,10 +91,10 @@ Examples:
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "", "output path (default: stdout)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "show diff without writing files or running canary")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "overwrite existing output files")
-	cmd.Flags().StringVar(&opts.image, "image", "", "sidecar image (default: ghcr.io/luckypipewrench/pipelock:<version>)")
+	cmd.Flags().StringVar(&opts.image, "image", "", "companion proxy image (default: ghcr.io/luckypipewrench/pipelock:<version>)")
 	cmd.Flags().StringVar(&opts.preset, "preset", config.ModeBalanced, "config preset: strict, balanced, audit")
 	cmd.Flags().BoolVar(&opts.skipCanary, "skip-canary", false, "skip the canary detection test")
-	cmd.Flags().BoolVar(&opts.skipVerify, "skip-verify", false, "skip post-apply verification")
+	cmd.Flags().BoolVar(&opts.skipVerify, "skip-verify", false, "skip static topology verification")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "machine-readable JSON output")
 	cmd.Flags().StringVar(&opts.agentIdentity, "agent-identity", "", "default agent identity (default: <kind>/<name>)")
 
@@ -138,11 +139,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		return cliutil.ExitCodeError(initExitError, err)
 	}
 
-	podSpec, err := getPodSpec(manifest.Raw, manifest.Kind)
-	if err != nil {
-		return cliutil.ExitCodeError(initExitError, err)
-	}
-	alreadyPatched := hasPipelockContainer(podSpec)
+	alreadyPatched := hasPipelockTopology(manifest.Raw)
 
 	result.Detect = &sidecarDetectResult{
 		Kind:           manifest.Kind,
@@ -154,14 +151,14 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		_, _ = fmt.Fprintf(w, "  Kind: %s\n", manifest.Kind)
 		_, _ = fmt.Fprintf(w, "  Name: %s\n", manifest.Name)
 		if alreadyPatched {
-			_, _ = fmt.Fprintln(w, "  Status: already patched (pipelock container found)")
+			_, _ = fmt.Fprintln(w, "  Status: already patched (companion proxy annotations found)")
 		}
 		_, _ = fmt.Fprintln(w)
 	}
 
 	// Phase 2: Generate
 	if !opts.jsonOutput {
-		_, _ = fmt.Fprintln(w, "[2/7] Generating sidecar patch...")
+		_, _ = fmt.Fprintln(w, "[2/7] Generating companion proxy topology...")
 	}
 
 	patchResult, err := generateSidecarPatch(manifest, opts)
@@ -171,6 +168,8 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 
 	if !opts.jsonOutput {
 		_, _ = fmt.Fprintf(w, "  Agent identity: %s\n", patchResult.AgentIdentity)
+		_, _ = fmt.Fprintf(w, "  Proxy name: %s\n", patchResult.ProxyName)
+		_, _ = fmt.Fprintf(w, "  Proxy URL: %s\n", patchResult.ProxyURL)
 		_, _ = fmt.Fprintf(w, "  Image: %s\n", resolveImage(opts))
 		_, _ = fmt.Fprintf(w, "  Preset: %s\n\n", opts.preset)
 	}
@@ -235,7 +234,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 
 	// Phase 5: Verify (skipped in dry-run)
 	if !opts.jsonOutput {
-		_, _ = fmt.Fprintln(w, "[5/7] Verifying sidecar...")
+		_, _ = fmt.Fprintln(w, "[5/7] Verifying enforced topology...")
 	}
 	if opts.dryRun {
 		result.Verify = &sidecarVerifyResult{Skipped: true, Detail: "skipped (--dry-run)"}
@@ -243,7 +242,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 			_, _ = fmt.Fprintln(w, "  Skipped (--dry-run)")
 		}
 	} else {
-		result.Verify = runSidecarVerify(w, opts, opts.jsonOutput)
+		result.Verify = runSidecarVerify(w, patchResult, opts, opts.jsonOutput)
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintln(w)
 		}
@@ -259,14 +258,20 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 			_, _ = fmt.Fprintln(w, "  Skipped (--dry-run)")
 		}
 	} else {
-		cfg := buildConfig(opts.preset, nil)
-		result.Canary = runSidecarCanary(w, cfg, opts, opts.jsonOutput)
+		result.Canary = runSidecarCanary(w, patchResult.Config, opts, opts.jsonOutput)
 		if !opts.jsonOutput {
 			if result.Canary.Detected {
 				_, _ = fmt.Fprintln(w, "  Canary secret detected in URL scan. DLP is working.")
 			}
 			_, _ = fmt.Fprintln(w)
 		}
+	}
+
+	if result.Verify != nil && !result.Verify.Skipped && !result.Verify.Healthy {
+		return &cliutil.ExitError{Err: errors.New(result.Verify.Detail), Code: initExitFailure}
+	}
+	if result.Canary != nil && !result.Canary.Skipped && !result.Canary.Detected {
+		return &cliutil.ExitError{Err: fmt.Errorf("canary secret was not detected by DLP"), Code: initExitFailure}
 	}
 
 	// Phase 7: Summary
@@ -312,6 +317,14 @@ func renderDiff(manifest *workloadManifest, patchResult *sidecarPatchResult) (st
 		}
 	}
 
+	if patchResult.ProxyName != "" {
+		_, _ = fmt.Fprintf(&sb, "  + companion Deployment: %s\n", patchResult.ProxyName)
+		_, _ = fmt.Fprintf(&sb, "  + companion Service: %s\n", patchResult.ProxyName)
+		_, _ = fmt.Fprintln(&sb, "  + agent NetworkPolicy: DNS + proxy-only egress")
+		_, _ = fmt.Fprintln(&sb, "  + proxy NetworkPolicy: agent ingress + web-only egress")
+		_, _ = fmt.Fprintln(&sb, "  + companion PodDisruptionBudget: minAvailable=1")
+	}
+
 	if sb.Len() == 0 {
 		return "  (no changes)", nil
 	}
@@ -344,6 +357,8 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 			_, _ = fmt.Fprintln(w, "  Verify:          skipped")
 		} else if result.Verify.Healthy {
 			_, _ = fmt.Fprintln(w, "  Verify:          healthy")
+		} else {
+			_, _ = fmt.Fprintf(w, "  Verify:          %s\n", result.Verify.Detail)
 		}
 	}
 
@@ -371,14 +386,18 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 		}
 	case emitHelmValues:
 		if result.Patch.OutputPath != "" {
-			_, _ = fmt.Fprintf(w, "  helm upgrade --install pipelock pipelock/pipelock -f %s\n", result.Patch.OutputPath)
+			_, _ = fmt.Fprintf(w, "  helm upgrade --install <release-name> pipelock/pipelock -f %s/values.yaml\n", result.Patch.OutputPath)
+			_, _ = fmt.Fprintln(w, "  kubectl rollout status deployment/<release-name>")
+			_, _ = fmt.Fprintf(w, "  kubectl apply -f %s/pipelock-networkpolicy.yaml -f %s/pipelock-pdb.yaml\n", result.Patch.OutputPath, result.Patch.OutputPath)
+			_, _ = fmt.Fprintf(w, "  kubectl apply -f %s/agent-networkpolicy.yaml\n", result.Patch.OutputPath)
+			_, _ = fmt.Fprintf(w, "  kubectl apply -f %s/agent-workload.yaml\n", result.Patch.OutputPath)
 		} else {
-			_, _ = fmt.Fprintln(w, "  helm upgrade --install pipelock pipelock/pipelock -f <values-file>")
+			_, _ = fmt.Fprintln(w, "  helm upgrade --install <release-name> pipelock/pipelock -f <bundle-dir>/values.yaml")
 		}
 	default:
 		_, _ = fmt.Fprintln(w, "  kubectl apply -f <patched-manifest>")
 	}
-	_, _ = fmt.Fprintln(w, "  kubectl port-forward <pod> 8888:8888")
-	_, _ = fmt.Fprintln(w, "  curl http://localhost:8888/health")
+	_, _ = fmt.Fprintln(w, "  kubectl get networkpolicy")
+	_, _ = fmt.Fprintln(w, "  kubectl port-forward deploy/<proxy-name> 8888:8888")
 	_, _ = fmt.Fprintln(w)
 }

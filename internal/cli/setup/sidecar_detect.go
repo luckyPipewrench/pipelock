@@ -97,6 +97,7 @@ func getPodSpec(raw map[string]interface{}, kind string) (map[string]interface{}
 }
 
 // hasPipelockContainer returns true if a pipelock sidecar container already exists.
+// This remains as a legacy detector for pre-enforced same-pod patches.
 func hasPipelockContainer(podSpec map[string]interface{}) bool {
 	containers, ok := podSpec["containers"].([]interface{})
 	if !ok {

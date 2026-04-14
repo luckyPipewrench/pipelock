@@ -34,6 +34,25 @@ type Anomaly struct {
 	Score  float64 // anomaly score contribution
 }
 
+// maxRecentEvents caps the per-session event ring buffer. Operators viewing
+// an airlocked session through `pipelock session inspect` see the last N
+// notable events (blocks, anomalies, airlock transitions); older entries are
+// discarded to bound memory growth on long-lived sessions.
+const maxRecentEvents = 20
+
+// SessionEvent is a structured record of a notable event on a session used
+// by the operator admin API to explain airlock state and recent activity.
+// Events are pushed into a bounded ring buffer on SessionState and read out
+// in chronological order (oldest first).
+type SessionEvent struct {
+	At       time.Time `json:"at"`
+	Kind     string    `json:"kind"`     // e.g. "block", "anomaly", "airlock_enter"
+	Target   string    `json:"target"`   // hostname, tool name, or transport where observed
+	Detail   string    `json:"detail"`   // short human-readable description
+	Severity string    `json:"severity"` // info / warn / critical, mirrors audit severity
+	Score    float64   `json:"score"`    // scanner score at time of event (0 when N/A)
+}
+
 // SessionState tracks behavioral state for a single agent session.
 type SessionState struct {
 	mu           sync.Mutex
@@ -69,6 +88,12 @@ type SessionState struct {
 	// Task-boundary state for taint overrides and evidence binding.
 	task             session.TaskContext
 	runtimeOverrides []session.TrustOverride
+
+	// recentEvents is a bounded ring buffer of notable events (blocks,
+	// anomalies, airlock transitions). Read by the operator admin API to
+	// populate inspect/explain responses — written by recordSessionActivity
+	// and the airlock trigger path.
+	recentEvents []SessionEvent
 }
 
 // IsResettable returns whether this session can be reset via the admin API.
@@ -295,6 +320,39 @@ func (s *SessionState) EscalationLevel() int {
 	return s.escalationLevel
 }
 
+// RecordEvent appends evt to the session's recent-event ring buffer.
+// Events older than maxRecentEvents are dropped in FIFO order so an
+// attacker cannot grow SessionState memory by driving retries.
+// evt.At is set to time.Now() when zero.
+func (s *SessionState) RecordEvent(evt SessionEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if evt.At.IsZero() {
+		evt.At = time.Now()
+	}
+	if len(s.recentEvents) >= maxRecentEvents {
+		// Drop the oldest entry (index 0) by shifting the slice. In-place
+		// shift reuses the underlying array so the allocation is bounded.
+		copy(s.recentEvents, s.recentEvents[1:])
+		s.recentEvents = s.recentEvents[:maxRecentEvents-1]
+	}
+	s.recentEvents = append(s.recentEvents, evt)
+}
+
+// RecentEvents returns a copy of the session's recent-event ring buffer
+// in chronological order (oldest first). Returns an empty slice when no
+// events have been recorded.
+func (s *SessionState) RecentEvents() []SessionEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.recentEvents) == 0 {
+		return []SessionEvent{}
+	}
+	out := make([]SessionEvent, len(s.recentEvents))
+	copy(out, s.recentEvents)
+	return out
+}
+
 // Reset zeros all enforcement fields in place and refreshes lastActivity.
 // The session remains in the map so live Recorder pointers stay valid.
 // Returns previous score and level for the API response.
@@ -317,12 +375,15 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 	s.bytesTotal = 0
 	s.toolCalls = 0
 	s.uniqueTools = nil
+	s.recentEvents = nil
 
 	// Reset airlock to none tier. Direct field access is safe because
 	// we hold s.mu and SetTier only allows upward transitions.
 	s.airlock.mu.Lock()
 	s.airlock.tier = config.AirlockTierNone
 	s.airlock.enteredAt = time.Time{}
+	s.airlock.trigger = ""
+	s.airlock.source = ""
 	s.airlock.callCancelFuncsLocked()
 	s.airlock.mu.Unlock()
 
@@ -471,6 +532,20 @@ type SessionSnapshot struct {
 	TaintLevel       string    `json:"taint_level"`
 	Contaminated     bool      `json:"contaminated"`
 	LastActivity     time.Time `json:"last_activity"`
+}
+
+// sessionAdminSnapshot is the internal operator-facing expansion of
+// SessionSnapshot used by inspect/explain. It captures all fields in a
+// single pass so handlers do not mix a map snapshot with a second live
+// read from the session and return self-contradictory JSON under races.
+type sessionAdminSnapshot struct {
+	SessionSnapshot
+	AirlockEnteredAt     time.Time
+	InFlight             int64
+	EscalationLevelInt   int
+	AirlockTrigger       string
+	AirlockTriggerSource string
+	RecentEvents         []SessionEvent
 }
 
 // classifySessionKey determines whether a key is an identity key or an
@@ -1015,6 +1090,89 @@ func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.T
 	return applied, found, err
 }
 
+// SessionByKey returns a pointer to the session for the given key, or nil
+// when no such session exists. Unlike GetOrCreate, this does NOT create a
+// missing session — admin API lookups must not materialize phantom sessions.
+// The returned pointer is valid for the lifetime of the session; callers
+// must not hold it across operations that may trigger eviction.
+func (sm *SessionManager) SessionByKey(key string) *SessionState {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.sessions[key]
+}
+
+// SnapshotByKey returns a read-only snapshot of a single session and its
+// recent-event buffer, matching the shape of the Snapshot() slice element
+// with the event ring buffer attached. Returns (snap, events, true) when
+// the session exists, (zero, nil, false) when it does not. Copies state
+// under locks then releases them before returning.
+func (sm *SessionManager) SnapshotByKey(key string) (SessionSnapshot, []SessionEvent, bool) {
+	admin, ok := sm.AdminSnapshotByKey(key)
+	if !ok {
+		return SessionSnapshot{}, nil, false
+	}
+	return admin.SessionSnapshot, admin.RecentEvents, true
+}
+
+// AdminSnapshotByKey returns the operator-facing snapshot for a single
+// session. Unlike SnapshotByKey, it includes airlock timing, in-flight
+// count, numeric escalation, trigger provenance, and recent events captured
+// from one session state read so inspect/explain stay internally consistent.
+func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, bool) {
+	sm.mu.RLock()
+	sess, ok := sm.sessions[key]
+	sm.mu.RUnlock()
+	if !ok {
+		return sessionAdminSnapshot{}, false
+	}
+
+	sess.mu.Lock()
+	kind, agent, ip := classifySessionKey(key)
+	sess.airlock.mu.Lock()
+	airlockTier := sess.airlock.tier
+	airlockEnteredAt := sess.airlock.enteredAt
+	airlockTrigger := sess.airlock.trigger
+	airlockTriggerSource := sess.airlock.source
+	inFlight := sess.airlock.inFlightCount.Load()
+	sess.airlock.mu.Unlock()
+
+	levelInt := sess.escalationLevel
+	snap := sessionAdminSnapshot{
+		SessionSnapshot: SessionSnapshot{
+			Key:              key,
+			Agent:            agent,
+			ClientIP:         ip,
+			Kind:             kind,
+			CurrentTaskID:    sess.task.CurrentTaskID,
+			CurrentTaskLabel: sess.task.CurrentTaskLabel,
+			ThreatScore:      sess.threatScore,
+			EscalationLevel:  session.EscalationLabel(levelInt),
+			BlockAll:         sess.atBlockAll,
+			AirlockTier:      airlockTier,
+			TaintLevel:       sess.risk.Level.String(),
+			Contaminated:     sess.risk.Contaminated,
+			LastActivity:     sess.lastActivity,
+		},
+		AirlockEnteredAt:     airlockEnteredAt,
+		InFlight:             inFlight,
+		EscalationLevelInt:   levelInt,
+		AirlockTrigger:       airlockTrigger,
+		AirlockTriggerSource: airlockTriggerSource,
+	}
+	snap.RecentEvents = make([]SessionEvent, len(sess.recentEvents))
+	copy(snap.RecentEvents, sess.recentEvents)
+	sess.mu.Unlock()
+
+	return snap, true
+}
+
+// AirlockConfig returns the current airlock config pointer, or nil when
+// airlock is not configured. Used by admin API handlers that need timer
+// values and trigger mappings to explain session state.
+func (sm *SessionManager) AirlockConfig() *config.Airlock {
+	return sm.airlockCfgPtr.Load()
+}
+
 // ForceSetAirlockTier atomically looks up a session by key and sets the
 // airlock tier under sm.mu.RLock. This eliminates the TOCTOU race where a
 // session could be evicted between a separate lookup and ForceSetTier call.
@@ -1029,7 +1187,15 @@ func (sm *SessionManager) ForceSetAirlockTier(key, tier string) (found, changed 
 	// Hold RLock across the tier change so cleanup/eviction can't remove
 	// the session between lookup and mutation. ForceSetTier acquires its
 	// own mutex internally (lock ordering: sm.mu > airlock.mu).
-	changed, from, to = sess.Airlock().ForceSetTier(tier)
+	changed, from, to = sess.Airlock().ForceSetTierWithProvenance(tier, airlockTriggerManual, airlockSourceAdminAPI)
+	if changed {
+		sess.RecordEvent(SessionEvent{
+			Kind:     "airlock_override",
+			Target:   to,
+			Detail:   from + "->" + to,
+			Severity: "warn",
+		})
+	}
 	sm.mu.RUnlock()
 	return true, changed, from, to
 }
@@ -1185,6 +1351,12 @@ func (sm *SessionManager) sweepDeescalation() {
 		if airlockCfg := sm.airlockCfgPtr.Load(); airlockCfg != nil && airlockCfg.Enabled {
 			airlockChanged, airlockFrom, airlockTo := sess.airlock.TryDeescalate(&airlockCfg.Timers)
 			if airlockChanged {
+				sess.RecordEvent(SessionEvent{
+					Kind:     "airlock_deescalate",
+					Target:   airlockTo,
+					Detail:   airlockFrom + "->" + airlockTo,
+					Severity: "info",
+				})
 				if sm.metrics != nil {
 					sm.metrics.RecordAirlockTransition(airlockFrom, airlockTo, "timer")
 				}

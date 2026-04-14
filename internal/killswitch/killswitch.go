@@ -162,10 +162,13 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	if rt.apiExempt && !c.separatePort.Load() &&
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
 			path == "/api/v1/sessions" ||
+			IsSessionKeyPath(path) ||
 			IsSessionActionPath(path, "reset") ||
 			IsSessionActionPath(path, "airlock") ||
 			IsSessionActionPath(path, "task") ||
-			IsSessionActionPath(path, "trust")) {
+			IsSessionActionPath(path, "trust") ||
+			IsSessionActionPath(path, "explain") ||
+			IsSessionActionPath(path, "terminate")) {
 		return Decision{}
 	}
 
@@ -209,6 +212,19 @@ func IsSessionActionPath(path, action string) bool {
 	return segs[0] == "api" && segs[1] == "v1" && segs[2] == "sessions" &&
 		segs[3] != "" && !strings.Contains(segs[3], "\x00") &&
 		segs[4] == action
+}
+
+// IsSessionKeyPath validates that path matches /api/v1/sessions/{key} with
+// exactly four segments and a non-empty key. Used by the admin API router
+// to detect inspect lookups on the base session path. Applies the same
+// traversal-prevention rules as IsSessionActionPath.
+func IsSessionKeyPath(path string) bool {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segs) != 4 {
+		return false
+	}
+	return segs[0] == "api" && segs[1] == "v1" && segs[2] == "sessions" &&
+		segs[3] != "" && !strings.Contains(segs[3], "\x00")
 }
 
 // Reload updates the config-derived state atomically.

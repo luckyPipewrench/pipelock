@@ -48,7 +48,13 @@ func newTestSessionAPIHandler(t *testing.T, sm *SessionManager) *SessionAPIHandl
 	}
 	var etPtr atomic.Pointer[scanner.EntropyTracker]
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
-	return NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, audit.NewNop(), testSessionAPIToken)
+	return NewSessionAPIHandler(SessionAPIOptions{
+		SessionMgrPtr: &smPtr,
+		EntropyPtr:    &etPtr,
+		FragmentPtr:   &fbPtr,
+		Logger:        audit.NewNop(),
+		APIToken:      testSessionAPIToken,
+	})
 }
 
 func TestSessionAPI_HandleList(t *testing.T) {
@@ -183,7 +189,12 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		smPtr.Store(sm)
 		var etPtr atomic.Pointer[scanner.EntropyTracker]
 		var fbPtr atomic.Pointer[scanner.FragmentBuffer]
-		handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, audit.NewNop(), "") // empty token
+		handler := NewSessionAPIHandler(SessionAPIOptions{
+			SessionMgrPtr: &smPtr,
+			EntropyPtr:    &etPtr,
+			FragmentPtr:   &fbPtr,
+			Logger:        audit.NewNop(),
+		}) // empty token
 
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer some-token")
@@ -506,7 +517,14 @@ func TestSessionAPI_HandleReset_DecrementEscalatedMetrics(t *testing.T) {
 	smPtr.Store(sm)
 	var etPtr atomic.Pointer[scanner.EntropyTracker]
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
-	handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, m, audit.NewNop(), testSessionAPIToken)
+	handler := NewSessionAPIHandler(SessionAPIOptions{
+		SessionMgrPtr: &smPtr,
+		EntropyPtr:    &etPtr,
+		FragmentPtr:   &fbPtr,
+		Metrics:       m,
+		Logger:        audit.NewNop(),
+		APIToken:      testSessionAPIToken,
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-b%7C10.0.0.2/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
@@ -680,7 +698,13 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 	etPtr.Store(et)
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
 	fbPtr.Store(fb)
-	handler := NewSessionAPIHandler(&smPtr, &etPtr, &fbPtr, nil, audit.NewNop(), testSessionAPIToken)
+	handler := NewSessionAPIHandler(SessionAPIOptions{
+		SessionMgrPtr: &smPtr,
+		EntropyPtr:    &etPtr,
+		FragmentPtr:   &fbPtr,
+		Logger:        audit.NewNop(),
+		APIToken:      testSessionAPIToken,
+	})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)

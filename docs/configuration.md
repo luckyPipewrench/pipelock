@@ -773,16 +773,42 @@ When `kill_switch.api_token` is configured, the session admin API is available a
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/sessions` | GET | List all tracked sessions with escalation state |
+| `/api/v1/sessions` | GET | List all tracked sessions, optionally filtered by `?tier=none\|soft\|hard\|drain\|normal` |
+| `/api/v1/sessions/{key}` | GET | Full detail snapshot: tier entry time, in-flight, recent events |
+| `/api/v1/sessions/{key}/explain` | GET | Trigger/evidence/next de-escalation estimate for a session |
 | `/api/v1/sessions/{key}/reset` | POST | Reset enforcement state for a client identity |
+| `/api/v1/sessions/{key}/terminate` | POST | Destructive full tear-down (cancel in-flight, clear CEE) |
+| `/api/v1/sessions/{key}/airlock` | POST | Transition the session's airlock tier (admin override) |
+| `/api/v1/sessions/{key}/task` | POST | Rotate the session's task boundary |
+| `/api/v1/sessions/{key}/trust` | POST | Grant a task-scoped trust override |
 
 The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `my-agent%7C10.0.0.1`.
 
 **Reset scope:** identity-family scoped. Resetting a session clears the session's threat score, escalation level, and block_all flag. It also clears shared IP-level burst tracking for the client IP and cross-request exfiltration (CEE) state. Other sessions on the same IP will have their burst state cleared as a side effect.
 
-**Rate limiting:** only the POST /reset endpoint is rate-limited (10 requests/minute). GET /sessions is not rate-limited.
+**Rate limiting:** reset, inspect, explain, terminate, task, and trust are each rate-limited to 10 requests per minute per action. Each action tracks its own counter so abuse of one endpoint cannot starve another. GET /sessions and POST /airlock are not rate-limited — they are used during incident response and must remain available.
 
-Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset.
+Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset, mutated, or terminated.
+
+**Operator CLI:** the session admin API is also exposed through `pipelock session <subcommand>` for interactive recovery. See [cli/session.md](cli/session.md) for the full operator reference.
+
+### Airlock
+
+Per-session graduated quarantine with automatic recovery. When adaptive enforcement escalates a session, the airlock state machine can automatically transition the session through `soft` (observe-only), `hard` (reads allowed, writes blocked, long-lived connections torn down), and `drain` (no traffic, complete in-flight, then terminate). Configured timers drop the session back down a tier when no new incidents occur. Operators can override the tier at any time through the session admin API or the `pipelock session` CLI.
+
+```yaml
+airlock:
+  enabled: false
+  triggers:
+    on_elevated: none       # no airlock on elevated
+    on_high: soft           # soft quarantine on high
+    on_critical: hard       # hard quarantine on critical
+  timers:
+    soft_minutes: 5         # soft tier auto-recovers after 5 minutes
+    hard_minutes: 15        # hard tier auto-drops to soft after 15 minutes
+    drain_minutes: 0        # drain timer disabled
+    drain_timeout_seconds: 30  # drain deadline for in-flight completion
+```
 
 ## Event Emission
 

@@ -729,14 +729,14 @@ Examples:
 					apiToken = envToken
 				}
 				if apiToken != "" {
-					sessionAPI := proxy.NewSessionAPIHandler(
-						p.SessionMgrPtr(),
-						p.EntropyTrackerPtr(),
-						p.FragmentBufferPtr(),
-						m,
-						logger,
-						apiToken,
-					)
+					sessionAPI := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
+						SessionMgrPtr: p.SessionMgrPtr(),
+						EntropyPtr:    p.EntropyTrackerPtr(),
+						FragmentPtr:   p.FragmentBufferPtr(),
+						Metrics:       m,
+						Logger:        logger,
+						APIToken:      apiToken,
+					})
 					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
 					apiMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
 						path := r.URL.EscapedPath()
@@ -749,6 +749,12 @@ Examples:
 							sessionAPI.HandleTrust(w, r)
 						case killswitch.IsSessionActionPath(path, "reset"):
 							sessionAPI.HandleReset(w, r)
+						case killswitch.IsSessionActionPath(path, "explain"):
+							sessionAPI.HandleExplain(w, r)
+						case killswitch.IsSessionActionPath(path, "terminate"):
+							sessionAPI.HandleTerminate(w, r)
+						case killswitch.IsSessionKeyPath(path):
+							sessionAPI.HandleInspect(w, r)
 						default:
 							http.NotFound(w, r)
 						}

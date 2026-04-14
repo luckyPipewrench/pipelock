@@ -534,3 +534,18 @@ seed_phrase_detection:
 #   enabled: false
 #   listen: ":8890"
 #   upstream: "http://localhost:7899"
+
+# ---- airlock (per-session quarantine) ----
+# Per-session graduated containment: soft -> hard -> drain. Disabled in
+# presets — enable with deliberate trigger/timer tuning per deployment.
+airlock:
+  enabled: false
+  triggers:
+    on_elevated: none
+    on_high: soft
+    on_critical: hard
+  timers:
+    soft_minutes: 5
+    hard_minutes: 15
+    drain_minutes: 0
+    drain_timeout_seconds: 30

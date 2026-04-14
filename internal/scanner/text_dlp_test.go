@@ -1326,6 +1326,61 @@ func TestScanTextForDLP_CredentialInURL_ShortValueClean(t *testing.T) {
 	}
 }
 
+// TestScanTextForDLP_CredentialInURL_NoFPOnGoAssignment documents the
+// scope of the Credential in URL rule: it only fires when the credential
+// key is preceded by a URL query delimiter ([?&;]), so Go source files
+// that legitimately assign to credential-named struct fields do not
+// false-positive. Without this, every pipelock file that handles a
+// bearer token (session admin, CLI resolver, config loader) would need
+// a per-file exclude-paths entry in the GitHub Action workflow.
+func TestScanTextForDLP_CredentialInURL_NoFPOnGoAssignment(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	goLines := []string{
+		`ep.Token = deps.getenv(killswitch.EnvAPIToken)`,
+		`user.Password = hashedValue`,
+		`cfg.APIKey = loadFromFile(path)`,
+		`session.Secret = base64Encode(raw)`,
+		`req.APIToken = "placeholder"`,
+		`h.apiToken = opts.APIToken`,
+	}
+	for _, line := range goLines {
+		t.Run(line, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), line)
+			if !result.Clean {
+				t.Errorf("false positive on Go assignment %q: %+v", line, result.Matches)
+			}
+		})
+	}
+}
+
+// TestScanTextForDLP_CredentialInURL_StillCatchesQueryDelimiter locks in
+// the positive side of the rule: credentials in URL query strings are
+// still caught. Covers the ?, &, and ; delimiters for parity with how
+// browsers, form encoders, and connection strings carry parameters.
+func TestScanTextForDLP_CredentialInURL_StillCatchesQueryDelimiter(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	positives := []string{
+		"https://example.com/api?password=supersecret123",
+		"https://example.com/api?x=1&token=abcdef123456",
+		"jdbc:mysql://host/db;password=hunter2abcd",
+		"POSTed body: username=bob&apikey=realsecret123",
+	}
+	for _, s2 := range positives {
+		t.Run(s2, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), s2)
+			if result.Clean {
+				t.Errorf("expected catch on %q, got clean", s2)
+			}
+		})
+	}
+}
+
 func TestScanTextForDLP_EthereumAddressOptIn(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{

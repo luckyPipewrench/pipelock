@@ -215,7 +215,7 @@ dlp:
       severity: medium
     # Generic credential patterns
     - name: "Credential in URL"
-      regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
+      regex: '[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[^\s&]{4,}'
       severity: high
     - name: "Environment Variable Secret"
       regex: '(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*\S{8,}'

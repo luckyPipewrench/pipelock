@@ -4641,11 +4641,15 @@ func Defaults() *Config {
 				{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: "medium"},
 
 				// Generic credential patterns
-				// \b protects underscore-compound names (next_token, csrf_token_id) since _ is \w.
-				// Hyphen-compound names (show-password, x-token) are NOT protected since - is \W,
-				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
+				// Requires a URL query delimiter ([?&;]) before the credential key so
+				// Go-style struct assignments (ep.Token = X, req.APIKey = Y) in source
+				// files do not false-positive. The rule is scoped to URL-embedded
+				// credentials only — env-var dumps like DB_PASSWORD=... are handled by
+				// the separate Environment Variable Secret pattern below, and config
+				// files use different scanners. Hyphen-compound params (show-password)
+				// are still protected because the delimiter is always explicit.
 				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
-				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
+				{Name: "Credential in URL", Regex: `[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[^\s&]{4,}`, Severity: "high"},
 				// Environment variable credential patterns: catches env var dumps
 				// where the secret-bearing keyword is the terminal segment of an
 				// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,

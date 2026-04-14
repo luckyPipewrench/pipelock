@@ -510,6 +510,15 @@ func (p *Proxy) FragmentBufferPtr() *atomic.Pointer[scanner.FragmentBuffer] {
 	return &p.fragmentBufferPtr
 }
 
+// SessionAPI returns the proxy's admin session API handler, or nil when
+// no api_token is configured. run.go mounts this on the dedicated
+// kill-switch API port (when kill_switch.api_listen is set) instead of
+// building a second handler, so Reload's hot-reload token rotation
+// covers both the main and dedicated mounts with one SetAPIToken call.
+func (p *Proxy) SessionAPI() *SessionAPIHandler {
+	return p.sessionAPI
+}
+
 // EnvelopeEmitterPtr returns the atomic pointer to the envelope emitter.
 // Used by the reverse proxy handler to share the emitter and receive
 // hot-reload updates.
@@ -549,6 +558,19 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
+
+	// Hot-reload the admin API bearer token so operators can rotate
+	// kill_switch.api_token (or the env override) without restarting.
+	// Env var continues to take precedence over the YAML value, mirroring
+	// the bootstrap resolution in New().
+	if p.sessionAPI != nil {
+		newToken := cfg.KillSwitch.APIToken
+		if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
+			newToken = envToken
+		}
+		p.sessionAPI.SetAPIToken(newToken)
+	}
+
 	old := p.scannerPtr.Swap(sc)
 
 	if old != nil {

@@ -217,14 +217,59 @@ func TestClient_EmptyResponseBody(t *testing.T) {
 }
 
 func TestAPIError_ErrorString(t *testing.T) {
-	e := &APIError{Method: "GET", URL: "http://x", StatusCode: 404, Body: "not found"}
-	if got := e.Error(); !strings.Contains(got, "404") || !strings.Contains(got, "not found") {
+	e := &APIError{Method: "GET", URL: "http://x/api/v1/sessions/abc", StatusCode: 404, Body: "not found"}
+	got := e.Error()
+	if !strings.Contains(got, "404") || !strings.Contains(got, "not found") {
 		t.Errorf("unexpected error string: %s", got)
+	}
+	// scheme + host must be stripped so operators can paste error output
+	// into less-trusted channels without leaking the admin endpoint.
+	if strings.Contains(got, "http://") || strings.Contains(got, "://") {
+		t.Errorf("scheme should be stripped: %s", got)
+	}
+	if strings.Contains(got, "x/api") {
+		t.Errorf("host should be stripped: %s", got)
+	}
+	if !strings.Contains(got, "/api/v1/sessions/abc") {
+		t.Errorf("path should be preserved: %s", got)
 	}
 
 	e.RetryAfter = "30"
 	if got := e.Error(); !strings.Contains(got, "30") {
 		t.Errorf("should include retry-after: %s", got)
+	}
+}
+
+func TestAPIError_ErrorString_StripsQuery(t *testing.T) {
+	// Query strings are part of the path for display purposes — they
+	// belong in the error (they might say ?tier=hard) but the scheme
+	// and host still need stripping.
+	e := &APIError{
+		Method:     "GET",
+		URL:        "https://admin.internal.example:9090/api/v1/sessions?tier=hard",
+		StatusCode: 429,
+		Body:       "rate limit exceeded",
+	}
+	got := e.Error()
+	if strings.Contains(got, "https://") || strings.Contains(got, "admin.internal.example") {
+		t.Errorf("scheme/host should be stripped: %s", got)
+	}
+	if !strings.Contains(got, "/api/v1/sessions?tier=hard") {
+		t.Errorf("path+query should be preserved: %s", got)
+	}
+}
+
+func TestAPIError_ErrorString_FallbackOnUnparseable(t *testing.T) {
+	// When url.Parse cannot recover a Path — e.g. the caller handed us
+	// something exotic — fall back to the raw URL rather than emitting
+	// an empty path that would make the error unreadable.
+	e := &APIError{Method: "POST", URL: "not a url", StatusCode: 500, Body: "internal"}
+	got := e.Error()
+	if !strings.Contains(got, "500") || !strings.Contains(got, "internal") {
+		t.Errorf("missing status/body: %s", got)
+	}
+	if !strings.Contains(got, "not a url") {
+		t.Errorf("fallback should preserve raw URL: %s", got)
 	}
 }
 

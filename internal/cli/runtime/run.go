@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"os/signal"
 	"slices"
 	"syscall"
@@ -722,21 +721,13 @@ Examples:
 				apiMux.HandleFunc("/api/v1/killswitch", ksAPI.HandleToggle)
 				apiMux.HandleFunc("/api/v1/killswitch/status", ksAPI.HandleStatus)
 
-				// Session admin API on the dedicated port. Resolves the API
-				// token using the same env-var override as the kill switch.
-				apiToken := cfg.KillSwitch.APIToken
-				if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
-					apiToken = envToken
-				}
-				if apiToken != "" {
-					sessionAPI := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
-						SessionMgrPtr: p.SessionMgrPtr(),
-						EntropyPtr:    p.EntropyTrackerPtr(),
-						FragmentPtr:   p.FragmentBufferPtr(),
-						Metrics:       m,
-						Logger:        logger,
-						APIToken:      apiToken,
-					})
+				// Session admin API on the dedicated port. Mount the proxy's
+				// existing handler rather than building a second one so
+				// Reload's SetAPIToken rotation covers the dedicated-port
+				// mount too. p.SessionAPI() returns nil when no api_token is
+				// configured — in that case we skip registration and the
+				// admin routes simply don't exist on the listener.
+				if sessionAPI := p.SessionAPI(); sessionAPI != nil {
 					apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
 					apiMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
 						path := r.URL.EscapedPath()

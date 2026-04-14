@@ -119,15 +119,24 @@ func TestResolveEndpoint_ConfigMissingFields(t *testing.T) {
 }
 
 func TestCheckConfigPerms(t *testing.T) {
+	// Config files carrying the admin API token must be 0o600 or
+	// 0o400. Owner-execute (0o100), any group bit, or any world bit
+	// is rejected per CLAUDE.md guidance and to catch deployment
+	// smells where the config file is left world-readable or marked
+	// executable. The mask 0o177 matches the checkConfigPerms
+	// implementation in resolver.go.
 	tests := []struct {
 		name    string
 		mode    fs.FileMode
 		wantErr bool
 	}{
-		{"0600 OK", 0o600, false},
-		{"0644 rejected", 0o644, true},
-		{"0666 rejected", 0o666, true},
-		{"0700 OK (owner-only)", 0o700, false},
+		{"0600 rw owner OK", 0o600, false},
+		{"0400 r owner OK", 0o400, false},
+		{"0644 group/world read rejected", 0o644, true},
+		{"0666 group/world rw rejected", 0o666, true},
+		{"0700 owner-execute rejected", 0o700, true},
+		{"0500 owner-rx rejected", 0o500, true},
+		{"0620 group-write rejected", 0o620, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

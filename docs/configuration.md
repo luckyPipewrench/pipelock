@@ -786,13 +786,13 @@ The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `
 
 **Reset scope:** identity-family scoped. Resetting a session clears the session's threat score, escalation level, and block_all flag. It also clears shared IP-level burst tracking for the client IP and cross-request exfiltration (CEE) state. Other sessions on the same IP will have their burst state cleared as a side effect.
 
-**Rate limiting:** reset, inspect, explain, terminate, task, and trust are each rate-limited to 10 requests per minute per action. Each action tracks its own counter so abuse of one endpoint cannot starve another. GET /sessions and POST /airlock are not rate-limited — they are used during incident response and must remain available.
+**Rate limiting:** every mutating action (`reset`, `airlock`, `task`, `trust`, `terminate`) and every detail lookup (`inspect`, `explain`) is rate-limited to 10 requests per minute per action. Each action tracks its own sliding-window counter so abuse of one endpoint cannot starve another — an operator can still hit `/reset` or `/airlock` during incident response even if `/task` or `/trust` is under load. Only `GET /api/v1/sessions` (the list endpoint) is unbounded; it is used as the entry point for recovery tooling and has no destructive side effect. Responses that hit the limit return `429 Too Many Requests` with `Retry-After: 60`.
 
 Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset, mutated, or terminated.
 
 **Operator CLI:** the session admin API is also exposed through `pipelock session <subcommand>` for interactive recovery. See [cli/session.md](cli/session.md) for the full operator reference.
 
-> **Restart caveat:** `kill_switch.api_token` is captured once at process startup and is NOT hot-reloaded. Rotating the token via a config reload (SIGHUP or fsnotify) will re-parse the new value but the session admin API keeps accepting the old bearer until the process restarts. Plan token rotation alongside a full restart so the previous credential is actually revoked.
+**Token hot-reload:** `kill_switch.api_token` is hot-reloaded on SIGHUP or fsnotify config-file changes. Rotating the token in YAML (or via the `PIPELOCK_KILLSWITCH_API_TOKEN` env var, which wins over YAML) takes effect on the next admin API call without restarting the proxy. The previous bearer credential is revoked atomically: requests in flight at the moment of rotation complete against the token they were issued against; subsequent requests must present the new bearer. Setting `api_token` to the empty string disables the endpoint (HTTP 503) without tearing down the listener, so an operator can revoke access during an incident and restore it later with a second reload.
 
 ### Airlock
 

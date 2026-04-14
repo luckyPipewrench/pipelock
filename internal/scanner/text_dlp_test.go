@@ -1389,6 +1389,81 @@ func TestScanTextForDLP_CredentialInURL_StillCatchesQueryDelimiter(t *testing.T)
 	}
 }
 
+// TestScanTextForDLP_CredentialInURL_CatchesBodyStart asserts the
+// post-widening coverage for the "Credential in URL" DLP pattern. The
+// regex alternation `(?m)(?:^|[?&;])` catches credentials at the very
+// start of the scanned text (position 0, via ^) in addition to the
+// original URL-query-delimiter path ([?&;]). Common sources: env-var
+// dumps, log lines, cURL -d bodies where the first field has no
+// leading & or ?.
+//
+// Note on whitespace: ForDLP strips ASCII control chars (including \n)
+// before the regex runs, so embedded newlines collapse adjacent text.
+// The positive cases below are limited to inputs that stay caught
+// after that normalization. The mid-text-after-random-prose case is
+// a known FN that this PR deliberately does not close (it would
+// re-trigger the Go struct-assignment FP the narrowing originally
+// fixed). Split literals keep GitGuardian quiet on the fixtures.
+func TestScanTextForDLP_CredentialInURL_CatchesBodyStart(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	longVal := "hunter" + "x" + "abcd"
+	tokenVal := "abc" + "def" + "1234"
+
+	positives := []string{
+		"password=" + longVal,          // body-start, no leading anything
+		"token=" + tokenVal,            // body-start, different key
+		"?foo=bar&password=" + longVal, // classic URL query (original path)
+		"; password=" + longVal,        // semicolon delimiter (cookie-style)
+	}
+	for _, s2 := range positives {
+		t.Run(s2, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), s2)
+			if result.Clean {
+				t.Errorf("expected catch on %q, got clean", s2)
+			}
+		})
+	}
+}
+
+// TestScanTextForDLP_CredentialInURL_SkipsStructAssignment asserts the
+// narrowing from the earlier round is still in effect: Go struct-style
+// assignments where the credential key is preceded by a word-char or
+// dot must NOT trigger the pattern. Without this assertion a future
+// widening could accidentally re-introduce the tree-wide FP that the
+// narrowing closed.
+func TestScanTextForDLP_CredentialInURL_SkipsStructAssignment(t *testing.T) {
+	cfg := testConfig()
+	s := New(cfg)
+	defer s.Close()
+
+	longVal := "hunter" + "x" + "abcd"
+
+	// Go struct assignments — the credential key is preceded by `.` or
+	// another word char, not ^ or [?&;]. These must stay clean.
+	negatives := []string{
+		"ep.Token = " + longVal,
+		"req.APIKey = " + longVal,
+		"MyStruct{Password: " + longVal + "}",
+	}
+	for _, s2 := range negatives {
+		t.Run(s2, func(t *testing.T) {
+			result := s.ScanTextForDLP(context.Background(), s2)
+			// Accept either cleanly missed OR caught by a different
+			// pattern (e.g., entropy); just ensure the test name
+			// captures the intent rather than asserting the wrong
+			// pattern name.
+			for _, m := range result.Matches {
+				if m.PatternName == "Credential in URL" {
+					t.Errorf("expected Credential-in-URL to skip %q, but it matched", s2)
+				}
+			}
+		})
+	}
+}
+
 func TestScanTextForDLP_EthereumAddressOptIn(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{

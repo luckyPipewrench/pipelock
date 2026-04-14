@@ -198,11 +198,35 @@ type APIError struct {
 	Body       string
 }
 
-func (e *APIError) Error() string {
-	if e.RetryAfter != "" {
-		return fmt.Sprintf("%s %s: HTTP %d (Retry-After: %s): %s", e.Method, e.URL, e.StatusCode, e.RetryAfter, e.Body)
+// errorPath returns just the request path (plus raw query) for display.
+// The scheme and host are stripped so error strings never leak where the
+// admin API is actually running — operators often paste error output into
+// tickets, chat, or logs that are less trusted than the endpoint itself.
+// Falls back to the raw URL when url.Parse cannot recover a Path (which
+// should not happen in practice, since the client always constructs
+// target URLs from a validated base, but keeps the error useful in the
+// degenerate case instead of returning an empty string).
+func (e *APIError) errorPath() string {
+	if e.URL == "" {
+		return ""
 	}
-	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, e.URL, e.StatusCode, e.Body)
+	parsed, err := url.Parse(e.URL)
+	if err != nil || parsed.Path == "" {
+		return e.URL
+	}
+	path := parsed.Path
+	if parsed.RawQuery != "" {
+		path += "?" + parsed.RawQuery
+	}
+	return path
+}
+
+func (e *APIError) Error() string {
+	display := e.errorPath()
+	if e.RetryAfter != "" {
+		return fmt.Sprintf("%s %s: HTTP %d (Retry-After: %s): %s", e.Method, display, e.StatusCode, e.RetryAfter, e.Body)
+	}
+	return fmt.Sprintf("%s %s: HTTP %d: %s", e.Method, display, e.StatusCode, e.Body)
 }
 
 // IsNotFound reports whether err is an APIError with 404 status.

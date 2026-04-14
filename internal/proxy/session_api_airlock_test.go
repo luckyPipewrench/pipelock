@@ -244,6 +244,110 @@ func TestSessionAPI_HandleAirlock_SameTierNoop(t *testing.T) {
 	}
 }
 
+// TestSessionAPI_HandleAirlock_RateLimited asserts that /airlock is
+// gated by the same sliding-window limiter as /reset /task /trust. A
+// flood of tier-transition calls must not be able to starve other admin
+// endpoints nor mask a stuck session behind an infinite retry loop.
+func TestSessionAPI_HandleAirlock_RateLimited(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+
+	sm.GetOrCreate("agent-a|10.0.0.1")
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Exhaust the airlock limiter at the documented 10/min ceiling.
+	for range sessionAPIRateLimitMax {
+		body := strings.NewReader(`{"tier":"soft"}`)
+		req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+		w := httptest.NewRecorder()
+		handler.HandleAirlock(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request inside limit failed: code=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	// One more request should 429 with a Retry-After header.
+	body := strings.NewReader(`{"tier":"soft"}`)
+	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+	w := httptest.NewRecorder()
+	handler.HandleAirlock(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after limit exhausted, got %d: %s", w.Code, w.Body.String())
+	}
+	if retry := w.Header().Get("Retry-After"); retry != "60" {
+		t.Errorf("expected Retry-After: 60, got %q", retry)
+	}
+}
+
+// TestSessionAPI_SetAPIToken_HotReload asserts that SetAPIToken rotates
+// the bearer credential without a restart. Before the rotation, the old
+// token authenticates; after, the old token is rejected and the new
+// token is accepted. This proves the atomic.Pointer swap is live on the
+// authenticate path and that operators can rotate kill_switch.api_token
+// via SIGHUP without bouncing the proxy.
+func TestSessionAPI_SetAPIToken_HotReload(t *testing.T) {
+	sm, cleanup := setupSessionAPITestManager(t)
+	defer cleanup()
+	sm.GetOrCreate("agent-a|10.0.0.1")
+
+	handler := newTestSessionAPIHandler(t, sm)
+
+	// Old token accepted pre-rotation.
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+		w := httptest.NewRecorder()
+		handler.HandleList(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("pre-rotation: expected 200 with old token, got %d", w.Code)
+		}
+	}
+
+	// Rotate to a new token.
+	const newToken = "rotated-token-abc123"
+	handler.SetAPIToken(newToken)
+
+	// Old token must now be rejected.
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
+		w := httptest.NewRecorder()
+		handler.HandleList(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("post-rotation: expected 401 with old token, got %d", w.Code)
+		}
+	}
+
+	// New token must now be accepted.
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+newToken)
+		w := httptest.NewRecorder()
+		handler.HandleList(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("post-rotation: expected 200 with new token, got %d", w.Code)
+		}
+	}
+
+	// Rotating to empty string must disable the endpoint entirely —
+	// operators use this to revoke access without tearing down the
+	// listener. authenticate returns 503 (not configured), matching
+	// the bootstrap path when no api_token is in the YAML.
+	handler.SetAPIToken("")
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req.Header.Set("Authorization", "Bearer "+newToken)
+		w := httptest.NewRecorder()
+		handler.HandleList(w, req)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("post-revoke: expected 503, got %d", w.Code)
+		}
+	}
+}
+
 func TestExtractSessionKeyWithAction(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

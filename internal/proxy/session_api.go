@@ -79,6 +79,7 @@ const (
 	sessionAPIActionReset     = "reset"
 	sessionAPIActionTask      = "task"
 	sessionAPIActionTrust     = "trust"
+	sessionAPIActionAirlock   = "airlock"
 	sessionAPIActionInspect   = "inspect"
 	sessionAPIActionExplain   = "explain"
 	sessionAPIActionTerminate = "terminate"
@@ -104,17 +105,26 @@ type rateLimiterState struct {
 }
 
 // SessionAPIHandler handles the admin session management API.
+//
+// apiTokenPtr is an atomic.Pointer[string] so SetAPIToken can rotate the
+// admin bearer credential on config reload without racing the
+// authenticate() fast path. Storing the token inline would force a
+// mutex around every request or leave stale credentials live after a
+// SIGHUP. A nil or empty-string payload disables the endpoint entirely
+// (authenticate returns 503), matching the "service not configured"
+// bootstrap path.
 type SessionAPIHandler struct {
-	smPtr    *atomic.Pointer[SessionManager]
-	etPtr    *atomic.Pointer[scanner.EntropyTracker]
-	fbPtr    *atomic.Pointer[scanner.FragmentBuffer]
-	metrics  *metrics.Metrics
-	logger   *audit.Logger
-	apiToken string
+	smPtr       *atomic.Pointer[SessionManager]
+	etPtr       *atomic.Pointer[scanner.EntropyTracker]
+	fbPtr       *atomic.Pointer[scanner.FragmentBuffer]
+	metrics     *metrics.Metrics
+	logger      *audit.Logger
+	apiTokenPtr atomic.Pointer[string]
 
 	// limitMu guards all rate-limiter state. One limiter per admin
-	// action (reset/task/trust/inspect/explain/terminate) so /task abuse
-	// cannot suppress /reset during incident response, and vice versa.
+	// action (reset/task/trust/airlock/inspect/explain/terminate) so
+	// /task abuse cannot suppress /reset during incident response, and
+	// vice versa.
 	limitMu  sync.Mutex
 	limiters map[string]*rateLimiterState
 }
@@ -136,26 +146,58 @@ type SessionAPIOptions struct {
 
 // NewSessionAPIHandler creates a session API handler from the given options.
 func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
-	return &SessionAPIHandler{
-		smPtr:    opts.SessionMgrPtr,
-		etPtr:    opts.EntropyPtr,
-		fbPtr:    opts.FragmentPtr,
-		metrics:  opts.Metrics,
-		logger:   opts.Logger,
-		apiToken: opts.APIToken,
+	h := &SessionAPIHandler{
+		smPtr:   opts.SessionMgrPtr,
+		etPtr:   opts.EntropyPtr,
+		fbPtr:   opts.FragmentPtr,
+		metrics: opts.Metrics,
+		logger:  opts.Logger,
 		limiters: map[string]*rateLimiterState{
 			sessionAPIActionReset:     {windowStart: time.Now()},
 			sessionAPIActionTask:      {windowStart: time.Now()},
 			sessionAPIActionTrust:     {windowStart: time.Now()},
+			sessionAPIActionAirlock:   {windowStart: time.Now()},
 			sessionAPIActionInspect:   {windowStart: time.Now()},
 			sessionAPIActionExplain:   {windowStart: time.Now()},
 			sessionAPIActionTerminate: {windowStart: time.Now()},
 		},
 	}
+	// Seed the atomic token pointer from the constructor input. Stored via
+	// SetAPIToken so the nil-vs-empty logic stays in one place.
+	h.SetAPIToken(opts.APIToken)
+	return h
+}
+
+// SetAPIToken rotates the admin bearer credential used by authenticate.
+// Called from proxy.Reload so operators can rotate kill_switch.api_token
+// (or the PIPELOCK_KILLSWITCH_API_TOKEN env var) without restarting the
+// proxy. An empty string disables the endpoint (authenticate returns
+// 503), matching the "service not configured" bootstrap path.
+func (h *SessionAPIHandler) SetAPIToken(token string) {
+	if token == "" {
+		h.apiTokenPtr.Store(nil)
+		return
+	}
+	t := token
+	h.apiTokenPtr.Store(&t)
+}
+
+// currentAPIToken returns the active admin API bearer token, or empty
+// string when the endpoint is not configured.
+func (h *SessionAPIHandler) currentAPIToken() string {
+	if p := h.apiTokenPtr.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request) bool {
-	if h.apiToken == "" {
+	// Load the active token once per request. The atomic snapshot keeps
+	// the comparison safe against a concurrent SetAPIToken rotation and
+	// also pins the value across the constant-time compare below so a
+	// mid-call swap cannot flip us into a stale-credential accept.
+	activeToken := h.currentAPIToken()
+	if activeToken == "" {
 		http.Error(w, "session API not configured (no api_token)", http.StatusServiceUnavailable)
 		return false
 	}
@@ -165,7 +207,7 @@ func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request)
 	if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
 		token = auth[len(prefix):]
 	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.apiToken)) != 1 {
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(activeToken)) != 1 {
 		clientIP, _ := requestMeta(r)
 		h.logSessionAdmin("auth_failure", clientIP, "", "", http.StatusUnauthorized)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
@@ -516,6 +558,13 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 	}
 
 	clientIP, _ := requestMeta(r)
+
+	if !h.checkRateLimit(sessionAPIActionAirlock) {
+		h.logSessionAdmin("airlock_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 
 	sm := h.loadManager(w)
 	if sm == nil {

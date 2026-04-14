@@ -26,9 +26,12 @@
 # suspiciousVerdicts (default ["suspicious"]) continue to surface as
 # "review" check-runs (neutral conclusion, non-blocking), so
 # reviewers still see the warning without it being a hard merge gate.
-# A score below 10 is reserved for genuinely-malicious content
-# (heavy obfuscation, embedded payloads, malware-shaped diffs) and
-# remains a blocking signal even for trusted authors.
+# Based on observed pipelock PR ranges (20-36 for legitimate
+# credential-handling changes), 10 gives comfortable headroom below
+# the false-positive band while keeping the score gate active for
+# outlier drops — Brin's published policy does not document stable
+# semantic score bands, so the threshold is set empirically rather
+# than claimed as "malicious-only."
 
 prScan:
   enabled: true
@@ -39,8 +42,13 @@ prScan:
 contributorTrust:
   enabled: true
   safeVerdicts: [safe]
+  # trustedAuthors is only consulted by evaluateContributor in
+  # src/lib/policy.ts — it has no effect on the PR Scan blocking
+  # path. Kept at the upstream bot-pair default since Brin
+  # Contributor Trust already passes at 96/100 for maintainer-
+  # authored PRs; adding the maintainer here would broaden trust
+  # without solving any current false positive.
   trustedAuthors:
-    - luckyPipewrench
     - dependabot[bot]
     - renovate[bot]
 

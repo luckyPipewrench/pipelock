@@ -359,7 +359,22 @@ func (s *SessionState) RecentEvents() []SessionEvent {
 func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.airlock.mu.Lock()
+	defer s.airlock.mu.Unlock()
+	return s.resetWhileLocked()
+}
 
+// resetWhileLocked performs the in-place reset under the assumption
+// that the caller already holds both s.mu and s.airlock.mu. Extracted
+// so SnapshotAndResetIfResettable can take the snapshot and clear the
+// session in a single critical section — without this helper,
+// releasing the session/airlock locks between the snapshot copy and
+// Reset would let concurrent mutation slip state into the audit row
+// that never actually existed at the moment of terminate.
+//
+// Callers are responsible for holding s.mu AND s.airlock.mu. Lock
+// order is sess.mu > sess.airlock.mu; acquire in that order.
+func (s *SessionState) resetWhileLocked() (prevScore float64, prevLevel int) {
 	prevScore = s.threatScore
 	prevLevel = s.escalationLevel
 
@@ -377,15 +392,19 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 	s.uniqueTools = nil
 	s.recentEvents = nil
 
-	// Reset airlock to none tier. Direct field access is safe because
-	// we hold s.mu and SetTier only allows upward transitions.
-	s.airlock.mu.Lock()
+	// Release airlock quarantine. Fire pending cancel funcs so in-flight
+	// long-lived connections tear down, then clear the slice so stale
+	// callbacks cannot re-fire on a future hard/drain escalation. This
+	// mirrors ForceSetTierWithProvenance(none), which explicitly clears
+	// cancelFuncs on release. Without the nil assignment, Reset() +
+	// RegisterCancel() + SetTier(hard) would re-fire every cancel from
+	// before the reset.
 	s.airlock.tier = config.AirlockTierNone
 	s.airlock.enteredAt = time.Time{}
 	s.airlock.trigger = ""
 	s.airlock.source = ""
 	s.airlock.callCancelFuncsLocked()
-	s.airlock.mu.Unlock()
+	s.airlock.cancelFuncs = nil
 
 	return prevScore, prevLevel
 }
@@ -1025,13 +1044,16 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 	return prev, true, nil
 }
 
-// SnapshotAndResetIfResettable captures the pre-reset session state and
-// then resets the session under a single sm.mu.Lock, so HandleTerminate
-// can report `previous_tier`/`previous_level`/`previous_score` values
-// that describe one consistent point in time. Without this method the
-// caller would have to split the snapshot and the reset across two
-// independent critical sections, and a concurrent tier or score change
-// in between could produce an audit row that never actually existed.
+// SnapshotAndResetIfResettable captures the pre-reset session state
+// and then resets the session under a single critical section held
+// across sm.mu > sess.mu > sess.airlock.mu, so HandleTerminate can
+// report `previous_tier`/`previous_level`/`previous_score` values
+// that describe one consistent point in time. Splitting snapshot and
+// reset across separate locks would leave a mutation window where a
+// concurrent request-path goroutine could touch sess.threatScore,
+// sess.escalationLevel, or sess.airlock.tier between the capture and
+// the reset — resetWhileLocked closes that window by running the
+// reset with both session-level locks still held.
 //
 // Returns:
 //   - found=false, err=nil: session does not exist
@@ -1048,16 +1070,17 @@ func (sm *SessionManager) SnapshotAndResetIfResettable(key string) (preSnap sess
 		return sessionAdminSnapshot{}, false, nil
 	}
 
-	// Snapshot the session state under sess.mu BEFORE resetting. The
-	// airlock sub-lock is nested inside sess.mu per the documented lock
-	// ordering sm > sess > airlock.
 	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
 	kind := sess.kind
 	if kind != sessionKindIdentity {
-		sess.mu.Unlock()
 		return sessionAdminSnapshot{SessionSnapshot: SessionSnapshot{Key: key, Kind: kind}}, true, ErrInvocationReset
 	}
+
 	sess.airlock.mu.Lock()
+	defer sess.airlock.mu.Unlock()
+
 	levelInt := sess.escalationLevel
 	preSnap = sessionAdminSnapshot{
 		SessionSnapshot: SessionSnapshot{
@@ -1083,21 +1106,22 @@ func (sm *SessionManager) SnapshotAndResetIfResettable(key string) (preSnap sess
 	}
 	preSnap.RecentEvents = make([]SessionEvent, len(sess.recentEvents))
 	copy(preSnap.RecentEvents, sess.recentEvents)
-	sess.airlock.mu.Unlock()
-	sess.mu.Unlock()
 
 	// Clear IP-level state (shared across all identities on this IP).
+	// Safe under sm.mu.Lock.
 	if ip != "" {
 		delete(sm.ipDomains, ip)
 		delete(sm.ipBurstCooldown, ip)
 	}
 
-	// Reset session in place while still holding sm.mu to prevent an
-	// eviction race between lock release and Reset. sess.Reset reacquires
-	// sess.mu internally — safe because lock order sm > sess holds.
-	_, _ = sess.Reset()
+	// Perform the reset while still holding sess.mu and sess.airlock.mu
+	// so the snapshot fields above and the fields being cleared come
+	// from the same critical section. No concurrent goroutine can
+	// mutate sess or sess.airlock between the capture and the reset.
+	_, _ = sess.resetWhileLocked()
 
-	// Decrement adaptive gauge if session was escalated.
+	// Decrement adaptive gauge if session was escalated. Lock-free
+	// prometheus op; safe to call under the session locks.
 	if levelInt > 0 && sm.metrics != nil {
 		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(levelInt), -1)
 	}

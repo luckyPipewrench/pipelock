@@ -64,6 +64,33 @@ func extractReceiptsFromDir(t *testing.T, dir string) []receipt.Receipt {
 	return all
 }
 
+// waitForReceiptOrTimeout polls the recorder directory until at least one
+// JSONL file has non-zero size (i.e. a receipt has been flushed) or the
+// timeout expires. Deterministic alternative to time.Sleep that tolerates
+// slow CI without masking real failures: returns as soon as a receipt
+// appears on disk.
+//
+// The recorder flushes after every write (see recorder.writeEntry), so a
+// non-empty JSONL file reliably indicates that at least one receipt has
+// been persisted. Callers can then Close() the recorder and extract.
+func waitForReceiptOrTimeout(t *testing.T, dir string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		entries, _ := os.ReadDir(filepath.Clean(dir))
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
+				continue
+			}
+			info, err := e.Info()
+			if err == nil && info.Size() > 0 {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // newCoverageEmitter creates a recorder and emitter pair for coverage tests.
 // Returns the emitter and recorder; caller must close the recorder.
 func newCoverageEmitter(t *testing.T, dir string) (*receipt.Emitter, *recorder.Recorder, ed25519.PublicKey) {
@@ -465,54 +492,71 @@ func TestReceiptCoverage_VerifierRoundTrip_ConnectBlock(t *testing.T) {
 }
 
 // TestReceiptCoverage_WSFrameBurst_NoReceiptsForAllowed verifies the design
-// invariant that allowed WebSocket frames produce ZERO per-frame receipts.
-// Only session-level events (connect block, session close) emit receipts.
-// This prevents O(n) receipt growth from high-frequency frame traffic.
+// invariant that allowed WebSocket frames produce ZERO per-frame receipts by
+// driving a real WS relay end-to-end. 100 clean text frames flow through the
+// proxy; only the session_close receipt should be emitted. This protects
+// against an O(n) receipt-growth DoS vector where every frame could otherwise
+// trigger an emission.
 func TestReceiptCoverage_WSFrameBurst_NoReceiptsForAllowed(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	emitter, rec, pubKey := newCoverageEmitter(t, dir)
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
 
-	// Simulate what WOULD happen if per-frame receipts were emitted:
-	// only session-level receipts should exist.
-	// We emit a single session-close receipt (what the proxy actually does
-	// for a clean 100-frame WS session).
-	err := emitter.Emit(receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
-		Verdict:   config.ActionAllow,
-		Layer:     "session_close",
-		Transport: TransportWS,
-		Target:    "wss://clean.example.com/ws",
-		RequestID: "ws-burst-1",
-		Agent:     coverageTestAgent,
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, cleanup := setupWSProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
 	})
+	defer cleanup()
+
+	conn, err := dialWSConn(proxyAddr, backendAddr)
 	if err != nil {
-		t.Fatalf("Emit session close: %v", err)
+		t.Fatalf("dialWSConn: %v", err)
 	}
 
-	if err := rec.Close(); err != nil {
-		t.Fatalf("recorder.Close: %v", err)
+	// Send 100 clean frames and drain the echo reply for each, ensuring the
+	// relay goroutines fully process each frame before we close.
+	const burstCount = 100
+	for i := 0; i < burstCount; i++ {
+		if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello world")); writeErr != nil {
+			t.Fatalf("write frame %d: %v", i, writeErr)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, _, readErr := wsutil.ReadServerData(conn); readErr != nil {
+			t.Fatalf("read echo %d: %v", i, readErr)
+		}
 	}
 
-	receipts := extractReceiptsFromDir(t, dir)
+	// Clean client-initiated close. The proxy will forward this to upstream,
+	// the relay will exit, and handleWebSocket will emit the session_close
+	// receipt.
+	_ = ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
+	_ = conn.Close()
 
-	// Exactly 1 receipt: the session close. Not 100+ per-frame receipts.
-	if len(receipts) != 1 {
-		t.Fatalf("expected 1 receipt (session close only), got %d", len(receipts))
-	}
+	// Deterministic wait: poll the recorder dir until at least one receipt
+	// has been flushed, or timeout. This avoids a fixed time.Sleep that can
+	// fail under CI load.
+	waitForReceiptOrTimeout(t, rph.dir, 2*time.Second)
 
-	r := receipts[0]
-	keyHex := hex.EncodeToString(pubKey)
-	if err := receipt.VerifyWithKey(r, keyHex); err != nil {
-		t.Fatalf("VerifyWithKey: %v", err)
-	}
+	receipts := rph.findReceipts(t)
 
-	if r.ActionRecord.Layer != "session_close" {
-		t.Errorf("layer = %q, want %q", r.ActionRecord.Layer, "session_close")
+	// Count session_close vs other receipts. A burst of clean frames must
+	// emit exactly one session_close and zero per-frame receipts.
+	var sessionCloses int
+	var otherReceipts int
+	for _, r := range receipts {
+		if r.ActionRecord.Layer == "session_close" {
+			sessionCloses++
+		} else {
+			otherReceipts++
+			t.Logf("unexpected receipt: layer=%q verdict=%q", r.ActionRecord.Layer, r.ActionRecord.Verdict)
+		}
 	}
-	if r.ActionRecord.Verdict != actionAllow {
-		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, actionAllow)
+	if sessionCloses != 1 {
+		t.Errorf("expected exactly 1 session_close receipt, got %d", sessionCloses)
+	}
+	if otherReceipts != 0 {
+		t.Errorf("expected 0 non-close receipts for %d clean frames, got %d (DoS vector if > 0)", burstCount, otherReceipts)
 	}
 }
 
@@ -1401,8 +1445,9 @@ func TestReceiptCoverage_WSSessionClose_EmitsReceipt(t *testing.T) {
 	_ = ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
 	_ = conn.Close()
 
-	// Small delay for the proxy to finish logging.
-	time.Sleep(100 * time.Millisecond)
+	// Deterministic wait: poll the recorder dir for a flushed receipt with a
+	// generous timeout so slow CI doesn't produce a fixed-sleep flake.
+	waitForReceiptOrTimeout(t, rph.dir, 2*time.Second)
 
 	r := rph.requireReceipt(t, "session_close")
 

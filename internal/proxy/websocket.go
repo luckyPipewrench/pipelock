@@ -695,6 +695,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		select {
 		case <-ctx.Done():
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
+			blocked = true
 			return
 		default:
 		}
@@ -771,11 +772,13 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "control frame too large")
+			blocked = true
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			blocked = true
 			return
 		}
 
@@ -881,6 +884,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if !utf8.Valid(msg) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				blocked = true
 				return
 			}
 
@@ -1124,6 +1128,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		select {
 		case <-ctx.Done():
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
+			blocked = true
 			return
 		default:
 		}
@@ -1199,11 +1204,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "control frame too large")
+			blocked = true
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			blocked = true
 			return
 		}
 
@@ -1308,6 +1315,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if !utf8.Valid(msg) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				blocked = true
 				return
 			}
 

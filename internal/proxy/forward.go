@@ -588,7 +588,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
 				// Taint fields omitted: forwardTaint is computed after A2A header scanning.
 				p.emitReceipt(receipt.EmitOpts{
-					ActionID:  receipt.NewActionID(),
+					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     "a2a_header",
 					Pattern:   reason,
@@ -1107,7 +1107,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogBlocked(actx, "a2a_stream", "compressed A2A stream cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:            receipt.NewActionID(),
+				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               "a2a_stream",
 				Pattern:             "compressed A2A stream cannot be scanned",
@@ -1147,7 +1147,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogBlocked(actx, "a2a_stream", err.Error())
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
 				p.emitReceipt(receipt.EmitOpts{
-					ActionID:            receipt.NewActionID(),
+					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               "a2a_stream",
 					Pattern:             err.Error(),
@@ -1300,7 +1300,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if a2aAction == config.ActionBlock {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
 					p.emitReceipt(receipt.EmitOpts{
-						ActionID:            receipt.NewActionID(),
+						ActionID:            actionID,
 						Verdict:             config.ActionBlock,
 						Layer:               "a2a_response",
 						Pattern:             a2aReason,

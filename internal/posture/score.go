@@ -15,7 +15,7 @@ import (
 const (
 	PolicyNone       = "none"       // score only, no hard gates
 	PolicyEnterprise = "enterprise" // standard hard gates
-	PolicyStrict     = "strict"     // enterprise + unknown/parse_error gates
+	PolicyStrict     = "strict"     // enterprise + no-server/unknown/parse-error gates
 )
 
 // ScoreWeights are the factor weights (must sum to 100).
@@ -25,6 +25,10 @@ const (
 	WeightSimulatePassRate     = 35
 	WeightDiscoveryCleanliness = 25
 )
+
+// PolicyVersion tracks verification policy semantics for reproducibility.
+// Bump this when the same evidence may verify differently under new policy logic.
+const PolicyVersion = "2"
 
 // ScoringVersion tracks the score model for reproducibility.
 const ScoringVersion = "1"
@@ -157,9 +161,9 @@ func evaluatePolicyAt(policy string, evidence EvidenceBundle, opts VerifyOpts, n
 		return failures, warnings
 	}
 
-	// Warning: no servers discovered (vacuous truth, not a failure).
-	totalScannable := evidence.Discover.TotalServers + evidence.Discover.ParseErrors
-	if totalScannable == 0 {
+	// Enterprise warns when discovery produced no usable evidence at all.
+	// Strict upgrades zero successfully discovered servers to a hard failure.
+	if policy != PolicyStrict && noDiscoveryEvidence(evidence.Discover) {
 		warnings = append(warnings, warnNoServersDiscovered)
 	}
 
@@ -212,6 +216,13 @@ func evaluatePolicyAt(policy string, evidence EvidenceBundle, opts VerifyOpts, n
 
 	// Strict gates (superset of enterprise).
 	if policy == PolicyStrict {
+		if noServersDiscovered(evidence.Discover) {
+			failures = append(failures, HardFailure{
+				Rule:   ruleNoServersDiscovered,
+				Detail: "strict policy requires at least one discoverable MCP server",
+			})
+		}
+
 		if evidence.Discover.Unknown > 0 {
 			failures = append(failures, HardFailure{
 				Rule:   ruleUnknownServers,
@@ -247,7 +258,7 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 	result := &VerifyResult{
 		Verified:       true,
 		Policy:         opts.Policy,
-		PolicyVersion:  SchemaVersion,
+		PolicyVersion:  PolicyVersion,
 		ScoringVersion: ScoringVersion,
 		GeneratedAt:    capsule.GeneratedAt,
 		ExpiresAt:      capsule.ExpiresAt,
@@ -288,9 +299,10 @@ func VerifyCapsule(capsule *Capsule, trustedKey ed25519.PublicKey, opts VerifyOp
 		})
 	}
 
-	// Require discovery gate.
-	if opts.RequireDiscovery {
-		if capsule.Evidence.Discover.TotalServers == 0 {
+	// Require discovery gate. Strict policy already fails on empty discovery,
+	// so only add this for non-strict policies with the explicit flag.
+	if opts.RequireDiscovery && opts.Policy != PolicyStrict {
+		if noServersDiscovered(capsule.Evidence.Discover) {
 			result.HardFailures = append(result.HardFailures, HardFailure{
 				Rule:   ruleNoServersDiscovered,
 				Detail: "0 servers discovered (--require-discovery)",
@@ -345,6 +357,14 @@ func validateCapsuleTimesAt(capsule *Capsule, maxFutureSkew time.Duration, now t
 		return fmt.Errorf("last_receipt_at %s is more than %s in the future", capsule.Evidence.FlightRecorder.LastReceiptAt.Format(time.RFC3339), maxFutureSkew)
 	}
 	return nil
+}
+
+func noServersDiscovered(d DiscoverEvidence) bool {
+	return d.TotalServers == 0
+}
+
+func noDiscoveryEvidence(d DiscoverEvidence) bool {
+	return d.TotalServers == 0 && d.ParseErrors == 0
 }
 
 func computeTransportPct(d DiscoverEvidence) int {

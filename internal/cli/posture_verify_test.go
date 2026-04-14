@@ -238,6 +238,12 @@ func TestPostureVerifyJSONOutput(t *testing.T) {
 	if result.Score != 100 {
 		t.Errorf("result.Score = %d, want 100", result.Score)
 	}
+	if result.PolicyVersion != posturepkg.PolicyVersion {
+		t.Errorf("result.PolicyVersion = %q, want %q", result.PolicyVersion, posturepkg.PolicyVersion)
+	}
+	if result.ScoringVersion != posturepkg.ScoringVersion {
+		t.Errorf("result.ScoringVersion = %q, want %q", result.ScoringVersion, posturepkg.ScoringVersion)
+	}
 }
 
 func TestPostureVerifyJSONBadSignature(t *testing.T) {
@@ -277,6 +283,9 @@ func TestPostureVerifyJSONBadSignature(t *testing.T) {
 	}
 	if !strings.Contains(result.Error, "verification failed") {
 		t.Errorf("result.Error = %q, want verification failure", result.Error)
+	}
+	if result.PolicyVersion != posturepkg.PolicyVersion {
+		t.Errorf("result.PolicyVersion = %q, want %q", result.PolicyVersion, posturepkg.PolicyVersion)
 	}
 }
 
@@ -760,7 +769,7 @@ func TestPostureVerifyRequireDiscovery(t *testing.T) {
 	assertExitCode(t, err, exitVerifyPolicyFail)
 }
 
-func TestPostureVerifyRequireDiscoveryIgnoresParseErrors(t *testing.T) {
+func TestPostureVerifyRequireDiscoveryTreatsParseErrorsAsNoServers(t *testing.T) {
 	recent := time.Now().Add(-1 * time.Hour)
 	parseOnly := posturepkg.EvidenceBundle{
 		Discover: posturepkg.DiscoverEvidence{
@@ -803,6 +812,113 @@ func TestPostureVerifyRequireDiscoveryIgnoresParseErrors(t *testing.T) {
 		t.Fatal("cmd.Execute() = nil, want error for parse-errors-only discovery")
 	}
 	assertExitCode(t, err, exitVerifyPolicyFail)
+}
+
+func TestPostureVerifyStrictTreatsParseErrorsAsNoServers(t *testing.T) {
+	recent := time.Now().Add(-1 * time.Hour)
+	parseOnly := posturepkg.EvidenceBundle{
+		Discover: posturepkg.DiscoverEvidence{
+			ParseErrors: 2,
+		},
+		VerifyInstall: posturepkg.VerifyInstallEvidence{
+			FlightRecorderActive: true,
+			ReceiptCount:         10,
+		},
+		Simulate: audit.SimulateResult{
+			Total:      1,
+			Passed:     1,
+			Percentage: 100,
+			Scenarios: []audit.ScenarioResult{
+				{Category: "DLP", Detected: true},
+			},
+		},
+		FlightRecorder: posturepkg.FlightRecorderCounts{
+			ReceiptCount:  10,
+			LastReceiptAt: &recent,
+		},
+	}
+
+	fix := newTestVerifyFixture(t, parseOnly)
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyStrict,
+		"--min-score", "0",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for strict parse-errors-only discovery")
+	}
+	assertExitCode(t, err, exitVerifyPolicyFail)
+
+	output := stdout.String()
+	if !strings.Contains(output, "FAIL: no_servers_discovered") {
+		t.Fatalf("output missing no_servers_discovered failure, got: %s", output)
+	}
+	if !strings.Contains(output, "FAIL: discovery_parse_errors") {
+		t.Fatalf("output missing discovery_parse_errors failure, got: %s", output)
+	}
+	if strings.Contains(output, "WARN: no_servers_discovered") {
+		t.Fatalf("output should not duplicate no_servers_discovered as warning under strict, got: %s", output)
+	}
+}
+
+func TestPostureVerifyStrictFailsEmptyDiscovery(t *testing.T) {
+	recent := time.Now().Add(-1 * time.Hour)
+	emptyDiscover := posturepkg.EvidenceBundle{
+		Discover: posturepkg.DiscoverEvidence{},
+		VerifyInstall: posturepkg.VerifyInstallEvidence{
+			FlightRecorderActive: true,
+			ReceiptCount:         10,
+		},
+		Simulate: audit.SimulateResult{
+			Total:      1,
+			Passed:     1,
+			Percentage: 100,
+			Scenarios: []audit.ScenarioResult{
+				{Category: "DLP", Detected: true},
+			},
+		},
+		FlightRecorder: posturepkg.FlightRecorderCounts{
+			ReceiptCount:  10,
+			LastReceiptAt: &recent,
+		},
+	}
+
+	fix := newTestVerifyFixture(t, emptyDiscover)
+
+	var stdout bytes.Buffer
+	cmd := rootCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", fix.ProofPath,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyStrict,
+		"--min-score", "0",
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for strict empty discovery")
+	}
+	assertExitCode(t, err, exitVerifyPolicyFail)
+
+	output := stdout.String()
+	if !strings.Contains(output, "FAIL: no_servers_discovered") {
+		t.Fatalf("output missing no_servers_discovered failure, got: %s", output)
+	}
+	if strings.Contains(output, "WARN: no_servers_discovered") {
+		t.Fatalf("output should not duplicate no_servers_discovered as warning under strict, got: %s", output)
+	}
 }
 
 func TestPostureVerifyPolicyTypo(t *testing.T) {

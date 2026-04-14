@@ -15,7 +15,7 @@ const (
 	inspectShort = "Show the full detail snapshot of a session"
 )
 
-func inspectCmd() *cobra.Command {
+func inspectCmd(flags *rootFlags) *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   inspectUse,
@@ -31,7 +31,6 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	flags := addCommonFlags(cmd)
 	cmd.Flags().BoolVar(&jsonOutput, flagJSON, false, usageJSON)
 
 	cmd.RunE = func(c *cobra.Command, args []string) error {

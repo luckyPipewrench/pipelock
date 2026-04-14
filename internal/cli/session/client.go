@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
@@ -48,9 +49,17 @@ func newClient(ep endpoint) *Client {
 
 // newClientWithHTTP builds a session admin API client with an explicit
 // httpClientInterface. Tests use this to inject an httptest-backed
-// round tripper or a stub that records the calls it receives.
+// round tripper or a stub that records the calls it receives. Trailing
+// slashes on the base URL are stripped so `http://host:9090/` and
+// `http://host:9090` produce identical admin API request paths — leaving
+// them in would route `/api/v1/sessions` to `//api/v1/sessions` which
+// the admin router does not recognize.
 func newClientWithHTTP(ep endpoint, c httpClientInterface) *Client {
-	return &Client{base: ep.URL, token: ep.Token, http: c}
+	return &Client{
+		base:  strings.TrimRight(ep.URL, "/"),
+		token: ep.Token,
+		http:  c,
+	}
 }
 
 // listResponse mirrors the server-side anonymous struct returned by

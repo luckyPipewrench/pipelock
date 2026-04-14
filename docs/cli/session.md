@@ -43,7 +43,7 @@ escalation. Operator commands override both.
 
 ## Typical airlock recovery workflow
 
-```
+```sh
 # 1. Find quarantined sessions.
 pipelock session list --tier hard
 
@@ -60,10 +60,11 @@ pipelock session release "agent|10.0.0.1" --to none
 pipelock session terminate "agent|10.0.0.1"
 ```
 
-The interactive `pipelock session recover <key>` command runs steps
-1–4 in sequence, prompting the operator for the release action at the
-end. Use `--choice release-none|release-soft|terminate|leave` to
-script the workflow non-interactively.
+The interactive `pipelock session recover <key>` command runs the
+inspect → explain → action portion of this workflow for the supplied
+key (it does not perform the discovery/list step above). Use
+`--choice release-none|release-soft|terminate|leave` to script the
+workflow non-interactively.
 
 ## Resolving the admin API endpoint
 
@@ -84,7 +85,7 @@ read world- or group-readable files — restrict your token file to
 
 ## session list
 
-```
+```sh
 pipelock session list [--tier none|soft|hard|drain|normal] [--json]
 ```
 
@@ -97,7 +98,7 @@ all sessions regardless of tier.
 
 ## session inspect
 
-```
+```sh
 pipelock session inspect <key> [--json]
 ```
 
@@ -107,7 +108,7 @@ the tier entry time, the in-flight request count, and the most recent
 
 ## session explain
 
-```
+```sh
 pipelock session explain <key> [--json]
 ```
 
@@ -127,7 +128,7 @@ healthchecks.
 
 ## session release
 
-```
+```sh
 pipelock session release <key> --to none|soft
 ```
 
@@ -139,7 +140,7 @@ endpoint directly for upward admin overrides.
 
 ## session terminate
 
-```
+```sh
 pipelock session terminate <key>
 ```
 
@@ -155,7 +156,7 @@ safely mutable through the admin API.
 
 ## session recover
 
-```
+```sh
 pipelock session recover <key> [--choice release-none|release-soft|terminate|leave]
 ```
 

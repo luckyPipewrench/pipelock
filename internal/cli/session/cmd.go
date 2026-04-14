@@ -21,16 +21,21 @@ const (
 )
 
 // Shared usage strings so goconst stays quiet and help text is consistent.
+// The resolution order (flags → env → config file) is spelled out here so
+// `pipelock session --help` and each subcommand's --help both surface the
+// same fallback chain that resolveEndpoint actually implements.
 const (
-	usageAPIURL   = "admin API base URL (default: derived from config file kill_switch.api_listen)"
+	usageAPIURL   = "admin API base URL (default: PIPELOCK_API_URL env or derived from config file kill_switch.api_listen)"
 	usageAPIToken = "admin API bearer token (default: PIPELOCK_KILLSWITCH_API_TOKEN env or config file)"
 	usageConfig   = "pipelock config file path (default: PIPELOCK_CONFIG env, ~/.config/pipelock/pipelock.yaml, or /etc/pipelock/pipelock.yaml)"
 	usageJSON     = "machine-readable JSON output"
 )
 
 // rootFlags collects the flag values shared by every session subcommand.
-// Each subcommand binds its own copy of these via addCommonFlags so that
-// table-driven tests can construct isolated command instances.
+// The parent command binds them as persistent flags so both
+// `pipelock session --api-url X list` and `pipelock session list --api-url X`
+// route to the same storage; children take a pointer so tests can
+// construct isolated instances without going through Cmd().
 type rootFlags struct {
 	apiURL     string
 	apiToken   string
@@ -40,6 +45,7 @@ type rootFlags struct {
 // Cmd is the parent command for `pipelock session`. Exported so the root
 // CLI can register it alongside the other top-level commands.
 func Cmd() *cobra.Command {
+	flags := &rootFlags{}
 	cmd := &cobra.Command{
 		Use:   "session",
 		Short: "Inspect and recover airlocked agent sessions",
@@ -61,24 +67,25 @@ Examples:
   pipelock session terminate "agent|10.0.0.1"
   pipelock session recover "agent|10.0.0.1"`,
 	}
+	bindPersistentFlags(cmd, flags)
 	cmd.AddCommand(
-		listCmd(),
-		inspectCmd(),
-		explainCmd(),
-		releaseCmd(),
-		terminateCmd(),
-		recoverCmd(),
+		listCmd(flags),
+		inspectCmd(flags),
+		explainCmd(flags),
+		releaseCmd(flags),
+		terminateCmd(flags),
+		recoverCmd(flags),
 	)
 	return cmd
 }
 
-// addCommonFlags wires the shared --api-url, --api-token, --config flags
-// onto a subcommand. Returns a pointer to the flag-backed struct so the
-// subcommand's RunE closure can read the values at execution time.
-func addCommonFlags(cmd *cobra.Command) *rootFlags {
-	flags := &rootFlags{}
-	cmd.Flags().StringVar(&flags.apiURL, flagAPIURL, "", usageAPIURL)
-	cmd.Flags().StringVar(&flags.apiToken, flagAPIToken, "", usageAPIToken)
-	cmd.Flags().StringVar(&flags.configPath, flagConfig, "", usageConfig)
-	return flags
+// bindPersistentFlags wires the shared --api-url, --api-token, --config
+// flags onto the parent command's PersistentFlags so they are accepted
+// both before and after the subcommand name (`session --api-url X list`
+// and `session list --api-url X` both work) and appear in the parent's
+// --help output.
+func bindPersistentFlags(cmd *cobra.Command, flags *rootFlags) {
+	cmd.PersistentFlags().StringVar(&flags.apiURL, flagAPIURL, "", usageAPIURL)
+	cmd.PersistentFlags().StringVar(&flags.apiToken, flagAPIToken, "", usageAPIToken)
+	cmd.PersistentFlags().StringVar(&flags.configPath, flagConfig, "", usageConfig)
 }

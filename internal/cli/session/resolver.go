@@ -141,10 +141,13 @@ func resolveConfigPath(explicit string, userHomeDir func() (string, error), stat
 	return ""
 }
 
-// checkConfigPerms refuses world- and group-readable config files. The
-// admin API token is a shared secret — a loose file perm is treated as
-// a deployment error rather than a warning. Callers inject a stat
-// function for testability.
+// checkConfigPerms refuses any group- or world-accessible config file.
+// The admin API token is a shared secret — a loose file perm is treated
+// as a deployment error rather than a warning. The mask rejects group
+// and world read/write/execute bits; the error message is worded as
+// "any group/world permission" so operators who hit this on a 0o620 or
+// similar mode are not confused by a "readable" phrasing. Callers
+// inject a stat function for testability.
 func checkConfigPerms(path string, stat func(string) (os.FileInfo, error)) error {
 	info, err := stat(filepath.Clean(path))
 	if err != nil {
@@ -152,7 +155,7 @@ func checkConfigPerms(path string, stat func(string) (os.FileInfo, error)) error
 	}
 	mode := info.Mode().Perm()
 	if mode&0o077 != 0 {
-		return fmt.Errorf("config file %s is group/world readable (mode %o); restrict to 0600 before using it as an admin API source", path, mode)
+		return fmt.Errorf("config file %s has group/world permission bits set (mode %o); restrict to 0o600 before using it as an admin API source", path, mode)
 	}
 	return nil
 }

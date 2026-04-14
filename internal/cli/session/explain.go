@@ -15,7 +15,7 @@ const (
 	explainShort = "Explain why a session is in its current airlock state"
 )
 
-func explainCmd() *cobra.Command {
+func explainCmd(flags *rootFlags) *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   explainUse,
@@ -35,7 +35,6 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	flags := addCommonFlags(cmd)
 	cmd.Flags().BoolVar(&jsonOutput, flagJSON, false, usageJSON)
 
 	cmd.RunE = func(c *cobra.Command, args []string) error {

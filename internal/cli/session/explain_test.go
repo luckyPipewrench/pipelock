@@ -19,7 +19,7 @@ func TestExplainCmd_HappyPath(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(explainCmd(), testKeyIdent)
+	out, err := runCommand(explainCmd(&rootFlags{}), testKeyIdent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestExplainCmd_JSON(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(explainCmd(), testKeyIdent, "--json")
+	out, err := runCommand(explainCmd(&rootFlags{}), testKeyIdent, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestExplainCmd_NoneTierSession(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(explainCmd(), testKeyIdent)
+	out, err := runCommand(explainCmd(&rootFlags{}), testKeyIdent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestExplainCmd_NotFound(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(explainCmd(), testKeyIdent)
+	_, err := runCommand(explainCmd(&rootFlags{}), testKeyIdent)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not found, got %v", err)
 	}
@@ -81,7 +81,7 @@ func TestExplainCmd_NotFound(t *testing.T) {
 
 func TestExplainCmd_RequiresArg(t *testing.T) {
 	overrideClientFactory(t, &rootFlags{apiURL: "http://x:1", apiToken: testToken})
-	_, err := runCommand(explainCmd())
+	_, err := runCommand(explainCmd(&rootFlags{}))
 	if err == nil {
 		t.Error("expected error without key argument")
 	}

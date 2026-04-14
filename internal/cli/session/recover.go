@@ -80,7 +80,7 @@ func (httpDispatcher) Terminate(ctx context.Context, client *Client, key string,
 // recoverDispatcherFn is the variable tests override to inject a stub.
 var recoverDispatcherFn func() recoverDispatcher = func() recoverDispatcher { return httpDispatcher{} }
 
-func recoverCmd() *cobra.Command {
+func recoverCmd(flags *rootFlags) *cobra.Command {
 	var choiceFlag string
 	cmd := &cobra.Command{
 		Use:   "recover <key>",
@@ -99,7 +99,6 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	flags := addCommonFlags(cmd)
 	cmd.Flags().StringVar(&choiceFlag, "choice", "", "non-interactive choice (release-none|release-soft|terminate|leave)")
 
 	cmd.RunE = func(c *cobra.Command, args []string) error {

@@ -932,20 +932,14 @@ func (h *SessionAPIHandler) HandleTerminate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Capture the pre-terminate tier via SnapshotByKey so the response
-	// reflects what was in place at the moment of the request, not the
-	// zero-state returned by ResetSessionIfResettable.
-	preSnap, _, preFound := sm.SnapshotByKey(key)
-	if !preFound {
-		h.logSessionAdmin("terminate_not_found", clientIP, key, "session not found", http.StatusNotFound)
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
-	prev, found, resetErr := sm.ResetSessionIfResettable(key)
+	// Capture pre-terminate state and reset atomically under a single
+	// sm.mu.Lock so the response's previous_tier/previous_level/
+	// previous_score describe one consistent moment in time. Splitting
+	// the snapshot and the reset across two critical sections let a
+	// concurrent tier change slip an inconsistent row into the audit
+	// trail; SnapshotAndResetIfResettable closes that gap.
+	preSnap, found, resetErr := sm.SnapshotAndResetIfResettable(key)
 	if !found {
-		// Raced an evict between snapshot and reset — return 404 so the
-		// operator sees the same outcome as inspect would have shown.
 		h.logSessionAdmin("terminate_not_found", clientIP, key, "session not found", http.StatusNotFound)
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
@@ -979,8 +973,8 @@ func (h *SessionAPIHandler) HandleTerminate(w http.ResponseWriter, r *http.Reque
 		Key:             key,
 		Terminated:      true,
 		PreviousTier:    preSnap.AirlockTier,
-		PreviousLevel:   prev.EscalationLevel,
-		PreviousScore:   prev.ThreatScore,
+		PreviousLevel:   preSnap.EscalationLevel,
+		PreviousScore:   preSnap.ThreatScore,
 		IPStateCleared:  ip != "",
 		CEEStateCleared: ceeCleared,
 	})
@@ -1039,12 +1033,21 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 		exp.ElapsedInTier = time.Since(exp.EnteredAt)
 	}
 
-	attachMostRecentEvidence(&exp, snap.RecentEvents)
+	// Prefer evidence recorded at or before the tier-entry moment so a
+	// noisy quarantined session that keeps generating post-entry blocks
+	// doesn't overwrite the event that actually drove the escalation.
+	// Falls back to the newest event in the buffer if the original
+	// trigger has rotated out.
+	attachTierEntryEvidence(&exp, snap.RecentEvents, snap.AirlockEnteredAt)
 
+	// Only advertise auto-deescalation when the timer for the current
+	// tier is actually positive. A disabled timer (0) means manual
+	// recovery only — surfacing a next_deescalation_tier without an
+	// at= would tell operators a timer exists when it doesn't.
 	if airlockCfg != nil {
-		exp.NextDeescalationTier = nextDeescalationTier(tier)
-		if !exp.EnteredAt.IsZero() && exp.NextDeescalationTier != "" {
-			if dur := deescalationDuration(tier, &airlockCfg.Timers); dur > 0 {
+		if dur := deescalationDuration(tier, &airlockCfg.Timers); dur > 0 {
+			exp.NextDeescalationTier = nextDeescalationTier(tier)
+			if !exp.EnteredAt.IsZero() && exp.NextDeescalationTier != "" {
 				exp.NextDeescalationAt = exp.EnteredAt.Add(dur)
 			}
 		}
@@ -1053,23 +1056,51 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 	return exp
 }
 
-// attachMostRecentEvidence copies the most recent non-transition event into
-// the explanation as evidence. Falls back to transition events only when
-// there is nothing more specific in the ring buffer.
+// attachMostRecentEvidence copies the most recent non-transition event
+// into the explanation as evidence. Falls back to transition events only
+// when there is nothing more specific in the ring buffer. Used by the
+// none-tier explain path where there is no tier-entry timestamp to
+// prefer events against.
 func attachMostRecentEvidence(exp *SessionExplanation, events []SessionEvent) {
-	if attachEvidence(exp, events, false) {
+	if attachEvidence(exp, events, time.Time{}, false) {
 		return
 	}
-	_ = attachEvidence(exp, events, true)
+	_ = attachEvidence(exp, events, time.Time{}, true)
 }
 
-func attachEvidence(exp *SessionExplanation, events []SessionEvent, includeTransitions bool) bool {
+// attachTierEntryEvidence prefers the newest event recorded at or
+// before the tier-entry timestamp so quarantined sessions report the
+// evidence that actually drove the escalation, not whatever noise has
+// accumulated since. Falls back to (a) post-entry non-transition
+// events, then (b) any non-empty event, if the original tier-entry
+// evidence has already rotated out of the 20-slot ring buffer.
+func attachTierEntryEvidence(exp *SessionExplanation, events []SessionEvent, enteredAt time.Time) {
+	if !enteredAt.IsZero() {
+		if attachEvidence(exp, events, enteredAt, false) {
+			return
+		}
+	}
+	if attachEvidence(exp, events, time.Time{}, false) {
+		return
+	}
+	_ = attachEvidence(exp, events, time.Time{}, true)
+}
+
+// attachEvidence walks the event ring buffer newest-to-oldest and
+// stores the first matching event on exp. When cutoff is non-zero the
+// selector skips events strictly after the cutoff so the tier-entry
+// window can be preferred. When includeTransitions is false, airlock_*
+// transition events are skipped as well.
+func attachEvidence(exp *SessionExplanation, events []SessionEvent, cutoff time.Time, includeTransitions bool) bool {
 	for i := len(events) - 1; i >= 0; i-- {
 		e := events[i]
 		if e.Kind == "" && e.Detail == "" {
 			continue
 		}
 		if !includeTransitions && strings.HasPrefix(e.Kind, "airlock_") {
+			continue
+		}
+		if !cutoff.IsZero() && e.At.After(cutoff) {
 			continue
 		}
 		exp.EvidenceKind = e.Kind

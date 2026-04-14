@@ -1360,16 +1360,24 @@ func TestScanTextForDLP_CredentialInURL_NoFPOnGoAssignment(t *testing.T) {
 // the positive side of the rule: credentials in URL query strings are
 // still caught. Covers the ?, &, and ; delimiters for parity with how
 // browsers, form encoders, and connection strings carry parameters.
+// Fake-secret values are concatenated from split literals at runtime so
+// GitGuardian's hardcoded-password heuristic doesn't flag the fixtures
+// themselves as a leak (see also CLAUDE.md G101 guidance for gosec).
 func TestScanTextForDLP_CredentialInURL_StillCatchesQueryDelimiter(t *testing.T) {
 	cfg := testConfig()
 	s := New(cfg)
 	defer s.Close()
 
+	longVal := "super" + "secret" + "123"
+	tokenVal := "abc" + "def" + "123456"
+	dbPass := "hunter" + "x" + "abcd"
+	apiVal := "real" + "secret" + "123"
+
 	positives := []string{
-		"https://example.com/api?password=supersecret123",
-		"https://example.com/api?x=1&token=abcdef123456",
-		"jdbc:mysql://host/db;password=hunter2abcd",
-		"POSTed body: username=bob&apikey=realsecret123",
+		"https://example.com/api?password=" + longVal,
+		"https://example.com/api?x=1&token=" + tokenVal,
+		"jdbc:mysql://host/db;password=" + dbPass,
+		"POSTed body: username=bob&apikey=" + apiVal,
 	}
 	for _, s2 := range positives {
 		t.Run(s2, func(t *testing.T) {

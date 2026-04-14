@@ -26,7 +26,7 @@ func TestTerminateCmd_HappyPath(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(terminateCmd(), testKeyIdent)
+	out, err := runCommand(terminateCmd(&rootFlags{}), testKeyIdent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestTerminateCmd_InvocationRejected(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(terminateCmd(), testKeyInvoc)
+	_, err := runCommand(terminateCmd(&rootFlags{}), testKeyInvoc)
 	if err == nil || !strings.Contains(err.Error(), "bad request") {
 		t.Errorf("expected bad request, got %v", err)
 	}
@@ -62,7 +62,7 @@ func TestTerminateCmd_JSON(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(terminateCmd(), testKeyIdent, "--json")
+	out, err := runCommand(terminateCmd(&rootFlags{}), testKeyIdent, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestTerminateCmd_NotFound(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(terminateCmd(), testKeyIdent)
+	_, err := runCommand(terminateCmd(&rootFlags{}), testKeyIdent)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not found, got %v", err)
 	}
@@ -97,7 +97,7 @@ func TestTerminateCmd_RateLimited(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(terminateCmd(), testKeyIdent)
+	_, err := runCommand(terminateCmd(&rootFlags{}), testKeyIdent)
 	if err == nil || !strings.Contains(err.Error(), "rate") {
 		t.Errorf("expected rate limited error, got %v", err)
 	}

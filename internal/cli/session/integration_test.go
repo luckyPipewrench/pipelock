@@ -117,7 +117,7 @@ func TestSessionCLI_Integration_ListInspectRelease(t *testing.T) {
 	overrideClientFactory(t, flags)
 
 	// Step 1: list --tier hard should return exactly our seeded session.
-	out, err := runCommand(listCmd(), "--tier", "hard")
+	out, err := runCommand(listCmd(&rootFlags{}), "--tier", "hard")
 	if err != nil {
 		t.Fatalf("list: %v; out=%s", err, out)
 	}
@@ -126,7 +126,7 @@ func TestSessionCLI_Integration_ListInspectRelease(t *testing.T) {
 	}
 
 	// Step 2: inspect shows the full detail including the event.
-	out, err = runCommand(inspectCmd(), integSessionKey)
+	out, err = runCommand(inspectCmd(&rootFlags{}), integSessionKey)
 	if err != nil {
 		t.Fatalf("inspect: %v; out=%s", err, out)
 	}
@@ -135,7 +135,7 @@ func TestSessionCLI_Integration_ListInspectRelease(t *testing.T) {
 	}
 
 	// Step 3: release to none — wraps HandleAirlock with ForceSetTier.
-	out, err = runCommand(releaseCmd(), integSessionKey, "--to", "none")
+	out, err = runCommand(releaseCmd(&rootFlags{}), integSessionKey, "--to", "none")
 	if err != nil {
 		t.Fatalf("release: %v; out=%s", err, out)
 	}
@@ -218,7 +218,7 @@ func TestSessionCLI_Integration_Explain(t *testing.T) {
 	flags := &rootFlags{apiURL: srv.URL, apiToken: integToken}
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(explainCmd(), integSessionKey)
+	out, err := runCommand(explainCmd(&rootFlags{}), integSessionKey)
 	if err != nil {
 		t.Fatalf("explain: %v; out=%s", err, out)
 	}

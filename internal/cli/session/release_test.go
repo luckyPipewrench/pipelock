@@ -25,7 +25,7 @@ func TestReleaseCmd_DefaultToNone(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(releaseCmd(), testKeyIdent)
+	out, err := runCommand(releaseCmd(&rootFlags{}), testKeyIdent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestReleaseCmd_ToSoft(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	if _, err := runCommand(releaseCmd(), testKeyIdent, "--to", tierSoft); err != nil {
+	if _, err := runCommand(releaseCmd(&rootFlags{}), testKeyIdent, "--to", tierSoft); err != nil {
 		t.Fatal(err)
 	}
 	if tier != tierSoft {
@@ -58,7 +58,7 @@ func TestReleaseCmd_ToSoft(t *testing.T) {
 
 func TestReleaseCmd_InvalidTo(t *testing.T) {
 	overrideClientFactory(t, &rootFlags{apiURL: "http://x:1", apiToken: testToken})
-	_, err := runCommand(releaseCmd(), testKeyIdent, "--to", "hard")
+	_, err := runCommand(releaseCmd(&rootFlags{}), testKeyIdent, "--to", "hard")
 	if err == nil {
 		t.Error("expected error for upward transition")
 	}
@@ -72,7 +72,7 @@ func TestReleaseCmd_JSON(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(releaseCmd(), testKeyIdent, "--json")
+	out, err := runCommand(releaseCmd(&rootFlags{}), testKeyIdent, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestReleaseCmd_Unauthorized(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(releaseCmd(), testKeyIdent)
+	_, err := runCommand(releaseCmd(&rootFlags{}), testKeyIdent)
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Errorf("expected unauthorized, got %v", err)
 	}

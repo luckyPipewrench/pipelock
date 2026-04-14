@@ -19,7 +19,7 @@ func TestInspectCmd_HappyPathHuman(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(inspectCmd(), testKeyIdent)
+	out, err := runCommand(inspectCmd(&rootFlags{}), testKeyIdent)
 	if err != nil {
 		t.Fatalf("execute: %v; out=%s", err, out)
 	}
@@ -37,7 +37,7 @@ func TestInspectCmd_JSON(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(inspectCmd(), testKeyIdent, "--json")
+	out, err := runCommand(inspectCmd(&rootFlags{}), testKeyIdent, "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestInspectCmd_JSON(t *testing.T) {
 
 func TestInspectCmd_RequiresArg(t *testing.T) {
 	overrideClientFactory(t, &rootFlags{apiURL: "http://ignored:1", apiToken: testToken})
-	_, err := runCommand(inspectCmd())
+	_, err := runCommand(inspectCmd(&rootFlags{}))
 	if err == nil {
 		t.Error("expected error without key argument")
 	}
@@ -64,7 +64,7 @@ func TestInspectCmd_NotFound(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(inspectCmd(), testKeyIdent)
+	_, err := runCommand(inspectCmd(&rootFlags{}), testKeyIdent)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected not found, got %v", err)
 	}
@@ -76,7 +76,7 @@ func TestInspectCmd_Unauthorized(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(inspectCmd(), testKeyIdent)
+	_, err := runCommand(inspectCmd(&rootFlags{}), testKeyIdent)
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Errorf("expected unauthorized, got %v", err)
 	}

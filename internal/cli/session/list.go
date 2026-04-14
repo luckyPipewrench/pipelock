@@ -20,7 +20,7 @@ const (
 	listTierDoc = `filter sessions by airlock tier (none|soft|hard|drain|normal)`
 )
 
-func listCmd() *cobra.Command {
+func listCmd(flags *rootFlags) *cobra.Command {
 	var (
 		tier       string
 		jsonOutput bool
@@ -40,7 +40,6 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	flags := addCommonFlags(cmd)
 	cmd.Flags().StringVar(&tier, "tier", "", listTierDoc)
 	cmd.Flags().BoolVar(&jsonOutput, flagJSON, false, usageJSON)
 

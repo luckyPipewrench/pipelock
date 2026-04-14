@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
 
 func TestListCmd_HappyPathHuman(t *testing.T) {
@@ -17,7 +19,7 @@ func TestListCmd_HappyPathHuman(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(listCmd())
+	out, err := runCommand(listCmd(&rootFlags{}))
 	if err != nil {
 		t.Fatalf("execute: %v; out=%s", err, out)
 	}
@@ -35,7 +37,7 @@ func TestListCmd_JSONOutput(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(listCmd(), "--json")
+	out, err := runCommand(listCmd(&rootFlags{}), "--json")
 	if err != nil {
 		t.Fatalf("execute: %v; out=%s", err, out)
 	}
@@ -56,7 +58,7 @@ func TestListCmd_TierFilterForwarded(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	if _, err := runCommand(listCmd(), "--tier", tierHard); err != nil {
+	if _, err := runCommand(listCmd(&rootFlags{}), "--tier", tierHard); err != nil {
 		t.Fatal(err)
 	}
 	if gotTier != tierHard {
@@ -67,7 +69,7 @@ func TestListCmd_TierFilterForwarded(t *testing.T) {
 func TestListCmd_InvalidTierFailsLocally(t *testing.T) {
 	// Don't stand up a server — local validation catches this first.
 	overrideClientFactory(t, &rootFlags{apiURL: "http://ignored:1", apiToken: testToken})
-	_, err := runCommand(listCmd(), "--tier", "moist")
+	_, err := runCommand(listCmd(&rootFlags{}), "--tier", "moist")
 	if err == nil {
 		t.Error("expected error for bogus tier")
 	}
@@ -75,51 +77,75 @@ func TestListCmd_InvalidTierFailsLocally(t *testing.T) {
 
 func TestListCmd_404Maps_SessionNotFound(t *testing.T) {
 	// List returns 404 rarely, but the path is validated for robustness.
+	// Also pins the mapped exit code (1 = operational failure) so a
+	// regression that collapses 404 into exit 0 or exit 2 fails the
+	// test even if the error text is preserved.
 	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "nope", http.StatusNotFound)
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(listCmd())
+	_, err := runCommand(listCmd(&rootFlags{}))
 	if err == nil {
-		t.Error("expected error")
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected not-found text, got %v", err)
+	}
+	if code := cliutil.ExitCodeOf(err); code != 1 {
+		t.Errorf("exit code: got %d, want 1", code)
 	}
 }
 
 func TestListCmd_401Maps_Unauthorized(t *testing.T) {
+	// 401 is a setup error; exit code 2 signals scripts that the
+	// token/url should be fixed before retrying.
 	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "bad token", http.StatusUnauthorized)
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(listCmd())
+	_, err := runCommand(listCmd(&rootFlags{}))
 	if err == nil || !strings.Contains(err.Error(), "unauthorized") {
-		t.Errorf("expected unauthorized error, got %v", err)
+		t.Fatalf("expected unauthorized error, got %v", err)
+	}
+	if code := cliutil.ExitCodeOf(err); code != 2 {
+		t.Errorf("exit code: got %d, want 2", code)
 	}
 }
 
 func TestListCmd_429Maps_RateLimited(t *testing.T) {
+	// 429 is retry-able; exit code 1 signals scripts that a backoff
+	// retry is the right response.
 	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "slow down", http.StatusTooManyRequests)
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(listCmd())
+	_, err := runCommand(listCmd(&rootFlags{}))
 	if err == nil || !strings.Contains(err.Error(), "rate limited") {
-		t.Errorf("expected rate limited error, got %v", err)
+		t.Fatalf("expected rate limited error, got %v", err)
+	}
+	if code := cliutil.ExitCodeOf(err); code != 1 {
+		t.Errorf("exit code: got %d, want 1", code)
 	}
 }
 
 func TestListCmd_500Maps_ServerError(t *testing.T) {
+	// 500 is an operational failure on the server side. Scripts get
+	// exit code 1 so they can retry or escalate — same class as 404.
 	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "internal boom", http.StatusInternalServerError)
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(listCmd())
+	_, err := runCommand(listCmd(&rootFlags{}))
 	if err == nil || !strings.Contains(err.Error(), "server error") {
-		t.Errorf("expected server error wrapper, got %v", err)
+		t.Fatalf("expected server error wrapper, got %v", err)
+	}
+	if code := cliutil.ExitCodeOf(err); code != 1 {
+		t.Errorf("exit code: got %d, want 1", code)
 	}
 }
 
@@ -129,7 +155,7 @@ func TestListCmd_EmptyResultPrintsPlaceholder(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	out, err := runCommand(listCmd())
+	out, err := runCommand(listCmd(&rootFlags{}))
 	if err != nil {
 		t.Fatal(err)
 	}

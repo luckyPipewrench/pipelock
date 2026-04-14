@@ -1025,6 +1025,86 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 	return prev, true, nil
 }
 
+// SnapshotAndResetIfResettable captures the pre-reset session state and
+// then resets the session under a single sm.mu.Lock, so HandleTerminate
+// can report `previous_tier`/`previous_level`/`previous_score` values
+// that describe one consistent point in time. Without this method the
+// caller would have to split the snapshot and the reset across two
+// independent critical sections, and a concurrent tier or score change
+// in between could produce an audit row that never actually existed.
+//
+// Returns:
+//   - found=false, err=nil: session does not exist
+//   - found=true, err=ErrInvocationReset: session exists but is not resettable
+//   - found=true, err=nil: preSnap holds the pre-reset state
+func (sm *SessionManager) SnapshotAndResetIfResettable(key string) (preSnap sessionAdminSnapshot, found bool, err error) {
+	_, agent, ip := classifySessionKey(key)
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sess, ok := sm.sessions[key]
+	if !ok {
+		return sessionAdminSnapshot{}, false, nil
+	}
+
+	// Snapshot the session state under sess.mu BEFORE resetting. The
+	// airlock sub-lock is nested inside sess.mu per the documented lock
+	// ordering sm > sess > airlock.
+	sess.mu.Lock()
+	kind := sess.kind
+	if kind != sessionKindIdentity {
+		sess.mu.Unlock()
+		return sessionAdminSnapshot{SessionSnapshot: SessionSnapshot{Key: key, Kind: kind}}, true, ErrInvocationReset
+	}
+	sess.airlock.mu.Lock()
+	levelInt := sess.escalationLevel
+	preSnap = sessionAdminSnapshot{
+		SessionSnapshot: SessionSnapshot{
+			Key:              key,
+			Agent:            agent,
+			ClientIP:         ip,
+			Kind:             kind,
+			CurrentTaskID:    sess.task.CurrentTaskID,
+			CurrentTaskLabel: sess.task.CurrentTaskLabel,
+			ThreatScore:      sess.threatScore,
+			EscalationLevel:  session.EscalationLabel(levelInt),
+			BlockAll:         sess.atBlockAll,
+			AirlockTier:      sess.airlock.tier,
+			TaintLevel:       sess.risk.Level.String(),
+			Contaminated:     sess.risk.Contaminated,
+			LastActivity:     sess.lastActivity,
+		},
+		AirlockEnteredAt:     sess.airlock.enteredAt,
+		InFlight:             sess.airlock.inFlightCount.Load(),
+		EscalationLevelInt:   levelInt,
+		AirlockTrigger:       sess.airlock.trigger,
+		AirlockTriggerSource: sess.airlock.source,
+	}
+	preSnap.RecentEvents = make([]SessionEvent, len(sess.recentEvents))
+	copy(preSnap.RecentEvents, sess.recentEvents)
+	sess.airlock.mu.Unlock()
+	sess.mu.Unlock()
+
+	// Clear IP-level state (shared across all identities on this IP).
+	if ip != "" {
+		delete(sm.ipDomains, ip)
+		delete(sm.ipBurstCooldown, ip)
+	}
+
+	// Reset session in place while still holding sm.mu to prevent an
+	// eviction race between lock release and Reset. sess.Reset reacquires
+	// sess.mu internally — safe because lock order sm > sess holds.
+	_, _ = sess.Reset()
+
+	// Decrement adaptive gauge if session was escalated.
+	if levelInt > 0 && sm.metrics != nil {
+		sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(levelInt), -1)
+	}
+
+	return preSnap, true, nil
+}
+
 // withMutableIdentitySession looks up a resettable identity session and runs
 // mutate while still holding sm.mu.RLock. This blocks cleanup/eviction from
 // removing the session between map lookup and the session-scoped mutation.
@@ -1116,17 +1196,26 @@ func (sm *SessionManager) SnapshotByKey(key string) (SessionSnapshot, []SessionE
 
 // AdminSnapshotByKey returns the operator-facing snapshot for a single
 // session. Unlike SnapshotByKey, it includes airlock timing, in-flight
-// count, numeric escalation, trigger provenance, and recent events captured
-// from one session state read so inspect/explain stay internally consistent.
+// count, numeric escalation, trigger provenance, and recent events
+// captured from one session state read so inspect/explain stay
+// internally consistent.
+//
+// The manager read lock is held across the session copy so cleanup()
+// cannot evict and GetOrCreate() cannot recreate the same key mid-read
+// — that race would let inspect/explain serialize stale state from a
+// session the map no longer points at. Lock order is sm > sess.
 func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, bool) {
 	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
 	sess, ok := sm.sessions[key]
-	sm.mu.RUnlock()
 	if !ok {
 		return sessionAdminSnapshot{}, false
 	}
 
 	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
 	kind, agent, ip := classifySessionKey(key)
 	sess.airlock.mu.Lock()
 	airlockTier := sess.airlock.tier
@@ -1161,7 +1250,6 @@ func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, 
 	}
 	snap.RecentEvents = make([]SessionEvent, len(sess.recentEvents))
 	copy(snap.RecentEvents, sess.recentEvents)
-	sess.mu.Unlock()
 
 	return snap, true
 }

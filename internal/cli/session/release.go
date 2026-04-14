@@ -21,7 +21,7 @@ const (
 	releaseToUse = `target tier: none (fully release) or soft (observe-only)`
 )
 
-func releaseCmd() *cobra.Command {
+func releaseCmd(flags *rootFlags) *cobra.Command {
 	var (
 		toTier     string
 		jsonOutput bool
@@ -44,7 +44,6 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	flags := addCommonFlags(cmd)
 	cmd.Flags().StringVar(&toTier, "to", "none", releaseToUse)
 	cmd.Flags().BoolVar(&jsonOutput, flagJSON, false, usageJSON)
 

@@ -50,7 +50,7 @@ func TestRecoverCmd_ChoiceReleaseNone(t *testing.T) {
 	overrideClientFactory(t, flags)
 	stub := withStubDispatcher(t)
 
-	out, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "release-none")
+	out, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "release-none")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestRecoverCmd_ChoiceReleaseSoft(t *testing.T) {
 	overrideClientFactory(t, flags)
 	stub := withStubDispatcher(t)
 
-	if _, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "release-soft"); err != nil {
+	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "release-soft"); err != nil {
 		t.Fatal(err)
 	}
 	if stub.lastReleaseTo != tierSoft {
@@ -84,7 +84,7 @@ func TestRecoverCmd_ChoiceTerminate(t *testing.T) {
 	overrideClientFactory(t, flags)
 	stub := withStubDispatcher(t)
 
-	if _, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "terminate"); err != nil {
+	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "terminate"); err != nil {
 		t.Fatal(err)
 	}
 	if stub.terminateCalls != 1 {
@@ -97,7 +97,7 @@ func TestRecoverCmd_ChoiceLeave(t *testing.T) {
 	overrideClientFactory(t, flags)
 	stub := withStubDispatcher(t)
 
-	out, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "leave")
+	out, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "leave")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRecoverCmd_BadChoice(t *testing.T) {
 	overrideClientFactory(t, flags)
 	withStubDispatcher(t)
 
-	_, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "eat-it")
+	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "eat-it")
 	if err == nil {
 		t.Error("expected error for bogus choice")
 	}
@@ -126,7 +126,7 @@ func TestRecoverCmd_InteractiveStdin(t *testing.T) {
 	overrideClientFactory(t, flags)
 	stub := withStubDispatcher(t)
 
-	cmd := recoverCmd()
+	cmd := recoverCmd(&rootFlags{})
 	cmd.SetIn(strings.NewReader("1\n"))
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -146,7 +146,7 @@ func TestRecoverCmd_InteractiveStdin_InvalidInput(t *testing.T) {
 	overrideClientFactory(t, flags)
 	withStubDispatcher(t)
 
-	cmd := recoverCmd()
+	cmd := recoverCmd(&rootFlags{})
 	cmd.SetIn(strings.NewReader("xyz\n"))
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
@@ -177,7 +177,7 @@ func TestHTTPDispatcher_Inspect(t *testing.T) {
 	overrideClientFactory(t, flags)
 	// No stub — uses httpDispatcher{}.
 
-	_, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "leave")
+	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "leave")
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestHTTPDispatcher_Release_Real(t *testing.T) {
 	overrideClientFactory(t, flags)
 	// No stub — uses httpDispatcher{}.
 
-	if _, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "release-none"); err != nil {
+	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "release-none"); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 }
@@ -198,7 +198,7 @@ func TestHTTPDispatcher_Terminate_Real(t *testing.T) {
 	overrideClientFactory(t, flags)
 	// No stub — uses httpDispatcher{}.
 
-	if _, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "terminate"); err != nil {
+	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "terminate"); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 }
@@ -218,7 +218,7 @@ func TestHTTPDispatcher_InspectPropagatesError(t *testing.T) {
 	overrideClientFactory(t, flags)
 	// No stub — uses httpDispatcher.
 
-	_, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "leave")
+	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "leave")
 	if err == nil {
 		t.Error("expected error from inspect 404")
 	}
@@ -242,7 +242,7 @@ func errorServerExplain(t *testing.T) *rootFlags {
 func TestHTTPDispatcher_ExplainPropagatesError(t *testing.T) {
 	flags := errorServerExplain(t)
 	overrideClientFactory(t, flags)
-	_, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "leave")
+	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "leave")
 	if err == nil {
 		t.Error("expected error from explain 500")
 	}
@@ -261,7 +261,7 @@ func TestHTTPDispatcher_ReleasePropagatesError(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "release-none")
+	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "release-none")
 	if err == nil {
 		t.Error("expected error from release 500")
 	}
@@ -280,7 +280,7 @@ func TestHTTPDispatcher_TerminatePropagatesError(t *testing.T) {
 	}))
 	overrideClientFactory(t, flags)
 
-	_, err := runCommand(recoverCmd(), testKeyIdent, "--choice", "terminate")
+	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "terminate")
 	if err == nil {
 		t.Error("expected error from terminate 500")
 	}

@@ -16,7 +16,7 @@ const (
 	terminateShort = "Force a full tear-down of a session (destructive)"
 )
 
-func terminateCmd() *cobra.Command {
+func terminateCmd(flags *rootFlags) *cobra.Command {
 	var jsonOutput bool
 	cmd := &cobra.Command{
 		Use:   terminateUse,
@@ -42,7 +42,6 @@ Examples:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	flags := addCommonFlags(cmd)
 	cmd.Flags().BoolVar(&jsonOutput, flagJSON, false, usageJSON)
 
 	cmd.RunE = func(c *cobra.Command, args []string) error {

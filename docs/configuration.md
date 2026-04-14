@@ -792,9 +792,11 @@ Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.
 
 **Operator CLI:** the session admin API is also exposed through `pipelock session <subcommand>` for interactive recovery. See [cli/session.md](cli/session.md) for the full operator reference.
 
+> **Restart caveat:** `kill_switch.api_token` is captured once at process startup and is NOT hot-reloaded. Rotating the token via a config reload (SIGHUP or fsnotify) will re-parse the new value but the session admin API keeps accepting the old bearer until the process restarts. Plan token rotation alongside a full restart so the previous credential is actually revoked.
+
 ### Airlock
 
-Per-session graduated quarantine with automatic recovery. When adaptive enforcement escalates a session, the airlock state machine can automatically transition the session through `soft` (observe-only), `hard` (reads allowed, writes blocked, long-lived connections torn down), and `drain` (no traffic, complete in-flight, then terminate). Configured timers drop the session back down a tier when no new incidents occur. Operators can override the tier at any time through the session admin API or the `pipelock session` CLI.
+Per-session graduated quarantine with timer-based recovery. When adaptive enforcement escalates a session, the airlock state machine can transition the session through `soft` (observe-only), `hard` (reads allowed, writes blocked, long-lived connections torn down), and `drain` (no new traffic, existing in-flight requests complete within `drain_timeout_seconds`). All three tiers are **timed quarantines** that auto-recover back down through lower tiers as `soft_minutes`/`hard_minutes`/`drain_minutes` expire — `drain` is not a terminal state and is not equivalent to `POST /api/v1/sessions/{key}/terminate`. Operators can override the tier at any time through the session admin API or the `pipelock session` CLI; explicit termination (the destructive reset) lives behind the dedicated `terminate` endpoint.
 
 ```yaml
 airlock:

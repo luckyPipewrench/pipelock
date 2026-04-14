@@ -22,8 +22,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-// Exit codes for posture verify. Exit 0 = passed, 1 = integrity failure
-// (bad signature, expired, bad schema), 2 = verified but policy failed.
+// Exit codes for posture verify. These are part of the CLI's stable contract.
+// CI pipelines should key on these values:
+//
+//	0 = Verification passed: signature valid, score meets minimum, all policy gates passed.
+//	1 = Verification could not complete: flag parse error, bad proof file, bad key,
+//	    bad signature, expired capsule, or schema mismatch.
+//	2 = Verified but failed: signature is valid, but policy gates or minimum score not met.
+//	    This means the capsule is authentic but the environment doesn't meet the policy.
 const (
 	exitVerifyIntegrity  = 1
 	exitVerifyPolicyFail = 2
@@ -66,9 +72,10 @@ func postureVerifyCmd() *cobra.Command {
 proof.json capsule.
 
 Exit codes:
-  0  Verified and passed all policy gates
-  1  Integrity/authenticity failure (bad signature, expired, bad schema)
-  2  Verified but policy failed (hard gate violation or score below minimum)`,
+  0  Verification passed: signature valid, score meets minimum, all policy gates passed
+  1  Verification could not complete: flag parse error, bad proof file, bad key,
+     bad signature, expired capsule, or schema mismatch
+  2  Verified but failed: signature is valid, but policy gates or minimum score not met`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			maxAgeDays, err := parseDays(maxAgeStr)
@@ -259,7 +266,7 @@ func exitVerifyIntegrityError(
 			Passed:         false,
 			Error:          err.Error(),
 			Policy:         policy,
-			PolicyVersion:  posturepkg.SchemaVersion,
+			PolicyVersion:  posturepkg.PolicyVersion,
 			ScoringVersion: posturepkg.ScoringVersion,
 		}
 		if capsule != nil {

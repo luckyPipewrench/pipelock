@@ -643,6 +643,97 @@ func TestEvaluatePolicy(t *testing.T) {
 			wantWarnings: []string{warnNoServersDiscovered},
 		},
 		{
+			name:   "strict fails empty discovery",
+			policy: testPolicyStrict,
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{
+					Scenarios: []audit.ScenarioResult{
+						{Category: "DLP", Detected: true},
+					},
+				},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  10,
+					LastReceiptAt: &recentReceipt,
+				},
+			},
+			opts:         VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
+			wantFailures: []string{ruleNoServersDiscovered},
+		},
+		{
+			name:   "strict parse-errors-only also fails no discovery",
+			policy: testPolicyStrict,
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					ParseErrors: 2,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{
+					Scenarios: []audit.ScenarioResult{
+						{Category: "DLP", Detected: true},
+					},
+				},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  10,
+					LastReceiptAt: &recentReceipt,
+				},
+			},
+			opts:         VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
+			wantFailures: []string{ruleNoServersDiscovered, ruleDiscoveryParseError},
+		},
+		{
+			name:   "enterprise allows empty discovery with warning only",
+			policy: testPolicyEnterprise,
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{
+					Scenarios: []audit.ScenarioResult{
+						{Category: "DLP", Detected: true},
+					},
+				},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  10,
+					LastReceiptAt: &recentReceipt,
+				},
+			},
+			opts:         VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
+			wantWarnings: []string{warnNoServersDiscovered},
+		},
+		{
+			name:   "enterprise parse-errors-only no warning",
+			policy: testPolicyEnterprise,
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					ParseErrors: 2,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         10,
+				},
+				Simulate: audit.SimulateResult{
+					Scenarios: []audit.ScenarioResult{
+						{Category: "DLP", Detected: true},
+					},
+				},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  10,
+					LastReceiptAt: &recentReceipt,
+				},
+			},
+			opts: VerifyOpts{MaxReceiptAge: MaxReceiptAgeDays},
+		},
+		{
 			name:   "stale receipt check skipped when max age is 0",
 			policy: testPolicyEnterprise,
 			evidence: EvidenceBundle{
@@ -960,7 +1051,7 @@ func TestVerifyCapsule(t *testing.T) {
 		}
 	})
 
-	t.Run("require discovery ignores parse errors", func(t *testing.T) {
+	t.Run("require discovery treats parse errors as no servers", func(t *testing.T) {
 		parseOnly := EvidenceBundle{
 			Discover: DiscoverEvidence{
 				ParseErrors: 2,
@@ -998,6 +1089,62 @@ func TestVerifyCapsule(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("missing %s hard failure: %v", ruleNoServersDiscovered, result.HardFailures)
+		}
+	})
+
+	t.Run("strict treats parse errors as no successful discovery", func(t *testing.T) {
+		parseOnly := EvidenceBundle{
+			Discover: DiscoverEvidence{
+				ParseErrors: 2,
+			},
+			VerifyInstall: VerifyInstallEvidence{
+				FlightRecorderActive: true,
+				ReceiptCount:         10,
+			},
+			Simulate: audit.SimulateResult{
+				Percentage: 100,
+				Scenarios: []audit.ScenarioResult{
+					{Category: "DLP", Detected: true},
+				},
+			},
+			FlightRecorder: FlightRecorderCounts{
+				ReceiptCount:  10,
+				LastReceiptAt: &recentReceipt,
+			},
+		}
+		capsule := emitCapsule(t, parseOnly)
+		result, err := VerifyCapsule(capsule, pub, VerifyOpts{
+			Policy:        testPolicyStrict,
+			MinScore:      0,
+			MaxReceiptAge: MaxReceiptAgeDays,
+		})
+		if err != nil {
+			t.Fatalf("VerifyCapsule(): %v", err)
+		}
+		if result.Passed {
+			t.Error("Passed = true, want false (strict parse-errors-only discovery)")
+		}
+
+		foundNoServers := false
+		foundParseErrors := false
+		for _, f := range result.HardFailures {
+			if f.Rule == ruleNoServersDiscovered {
+				foundNoServers = true
+			}
+			if f.Rule == ruleDiscoveryParseError {
+				foundParseErrors = true
+			}
+		}
+		if !foundNoServers {
+			t.Fatalf("missing %s hard failure: %v", ruleNoServersDiscovered, result.HardFailures)
+		}
+		if !foundParseErrors {
+			t.Fatalf("missing %s hard failure: %v", ruleDiscoveryParseError, result.HardFailures)
+		}
+		for _, warn := range result.Warnings {
+			if warn == warnNoServersDiscovered {
+				t.Fatalf("unexpected %s warning under strict policy: %v", warnNoServersDiscovered, result.Warnings)
+			}
 		}
 	})
 
@@ -1236,8 +1383,8 @@ func TestVerifyCapsule(t *testing.T) {
 		if result.ScoringVersion != ScoringVersion {
 			t.Errorf("ScoringVersion = %q, want %q", result.ScoringVersion, ScoringVersion)
 		}
-		if result.PolicyVersion != SchemaVersion {
-			t.Errorf("PolicyVersion = %q, want %q", result.PolicyVersion, SchemaVersion)
+		if result.PolicyVersion != PolicyVersion {
+			t.Errorf("PolicyVersion = %q, want %q", result.PolicyVersion, PolicyVersion)
 		}
 	})
 }

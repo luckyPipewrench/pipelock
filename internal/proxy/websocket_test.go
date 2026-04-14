@@ -669,9 +669,13 @@ func TestWSProxyDLPAuditMode(t *testing.T) {
 	}
 }
 
+// TestWSProxyDLPAuditMode_PropagatesWarnContext verifies that the actual
+// client->upstream relay path preserves DLP warn metadata even though
+// wsRelay.run wraps the request context with context.WithTimeout.
 func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
+	wantURL := "http://" + backendAddr + "/"
 
 	logger := audit.NewNop()
 	cfg := config.Defaults()
@@ -747,8 +751,11 @@ func TestWSProxyDLPAuditMode_PropagatesWarnContext(t *testing.T) {
 	if got.Method != "WS" {
 		t.Fatalf("method = %q, want %q", got.Method, "WS")
 	}
-	if got.URL == "" {
-		t.Fatal("expected websocket warn context to carry URL")
+	if got.URL != wantURL {
+		t.Fatalf("url = %q, want %q", got.URL, wantURL)
+	}
+	if got.ClientIP == "" {
+		t.Fatal("expected websocket warn context to carry client IP")
 	}
 
 	reply, _, err := wsutil.ReadServerData(conn)
@@ -2493,6 +2500,7 @@ func TestWSProxyInjectionStrip(t *testing.T) {
 func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
+	wantURL := "http://" + backendAddr + "/"
 
 	// Use a file-backed logger to capture the anomaly log entry.
 	logFile := filepath.Join(t.TempDir(), "audit.log")
@@ -2587,6 +2595,9 @@ func TestWSProxyHeaderDLPAuditMode(t *testing.T) {
 	}
 	if got.Method != "WS" {
 		t.Fatalf("method = %q, want %q", got.Method, "WS")
+	}
+	if got.URL != wantURL {
+		t.Fatalf("url = %q, want %q", got.URL, wantURL)
 	}
 
 	// Verify the connection works (traffic allowed through despite DLP match).

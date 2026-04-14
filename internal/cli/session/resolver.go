@@ -68,7 +68,7 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 		ep.URL = deps.getenv(envAPIURL)
 	}
 	if ep.Token == "" {
-		ep.Token = deps.getenv(killswitch.EnvAPIToken)
+		ep.Token = deps.getenv(killswitch.EnvAPIToken) // pipelock:ignore Credential in URL
 	}
 
 	if ep.URL != "" && ep.Token != "" {
@@ -101,7 +101,7 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 		ep.URL = defaultScheme + cfg.KillSwitch.APIListen
 	}
 	if ep.Token == "" {
-		ep.Token = cfg.KillSwitch.APIToken
+		ep.Token = cfg.KillSwitch.APIToken // pipelock:ignore Credential in URL
 	}
 
 	if ep.URL == "" {

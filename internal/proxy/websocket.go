@@ -61,6 +61,7 @@ type wsRelay struct {
 	scanText     bool
 	allowBinary  bool
 	rec          session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
+	terminalOnce sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 }
 
 // escalationLevel returns the live escalation level from the session recorder.
@@ -514,6 +515,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	p.emitReceipt(receipt.EmitOpts{
 		ActionID:  receipt.NewActionID(),
 		Verdict:   closeVerdict,
+		Layer:     "session_close",
 		Transport: "websocket",
 		Method:    "WS",
 		Target:    targetURL,
@@ -699,16 +701,18 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
-			r.proxy.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
-				Verdict:   config.ActionBlock,
-				Layer:     "kill_switch",
-				Pattern:   "kill switch active",
-				Transport: "websocket",
-				Method:    "WS",
-				Target:    r.targetURL,
-				RequestID: r.requestID,
-				Agent:     r.agent,
+			r.terminalOnce.Do(func() {
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "kill_switch",
+					Pattern:   "kill switch active",
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
@@ -735,16 +739,18 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), "", config.ActionBlock, "session_deny", r.clientIP, r.requestID)
 			r.proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(r.escalationLevel()))
-			r.proxy.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
-				Verdict:   config.ActionBlock,
-				Layer:     "session_deny",
-				Pattern:   "session escalation",
-				Transport: "websocket",
-				Method:    "WS",
-				Target:    r.targetURL,
-				RequestID: r.requestID,
-				Agent:     r.agent,
+			r.terminalOnce.Do(func() {
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "session_deny",
+					Pattern:   "session escalation",
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
@@ -1124,16 +1130,18 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Kill switch: terminate WebSocket relay when activated mid-stream.
 		if r.proxy.ks != nil && r.proxy.ks.IsActive() {
-			r.proxy.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
-				Verdict:   config.ActionBlock,
-				Layer:     "kill_switch",
-				Pattern:   "kill switch active",
-				Transport: "websocket",
-				Method:    "WS",
-				Target:    r.targetURL,
-				RequestID: r.requestID,
-				Agent:     r.agent,
+			r.terminalOnce.Do(func() {
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "kill_switch",
+					Pattern:   "kill switch active",
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
@@ -1159,16 +1167,18 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), "", config.ActionBlock, "session_deny", r.clientIP, r.requestID)
 			r.proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(r.escalationLevel()))
-			r.proxy.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
-				Verdict:   config.ActionBlock,
-				Layer:     "session_deny",
-				Pattern:   "session escalation",
-				Transport: "websocket",
-				Method:    "WS",
-				Target:    r.targetURL,
-				RequestID: r.requestID,
-				Agent:     r.agent,
+			r.terminalOnce.Do(func() {
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "session_deny",
+					Pattern:   "session escalation",
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")

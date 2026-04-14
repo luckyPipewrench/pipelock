@@ -586,6 +586,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogAnomaly(actx, "a2a_header", reason, 0)
 			if action == config.ActionBlock {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
+				// Taint fields omitted: forwardTaint is computed after A2A header scanning.
 				p.emitReceipt(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,

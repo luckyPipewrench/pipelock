@@ -1,6 +1,6 @@
 # Receipt Transport Coverage
 
-Pipelock emits Ed25519-signed action receipts for every enforcement decision across all proxy transports. Receipts are written to the flight recorder as `action_receipt` entries and linked into a tamper-evident hash chain via `chain_prev_hash` and `chain_seq`.
+Pipelock emits Ed25519-signed action receipts for enforcement decisions across proxy transports. Receipts are written to the flight recorder as `action_receipt` entries and linked into a tamper-evident hash chain via `chain_prev_hash` and `chain_seq`.
 
 ## Transports and Event Kinds
 
@@ -30,7 +30,7 @@ Pipelock emits Ed25519-signed action receipts for every enforcement decision acr
 | `websocket` | Address protection | `address_protection` | Address poisoning detected |
 | `websocket` | Cross-request | `cross_request` | CEE exfiltration in frame |
 | `websocket` | Injection | `response_scan` | Prompt injection in upstream frame |
-| `websocket` | Session close | (empty) | Connection closed (verdict reflects blocked status) |
+| `websocket` | Session close | `session_close` | Connection closed (verdict reflects blocked status) |
 | `forward` | URL block | scanner layer name | URL scan finding |
 | `forward` | A2A header | `a2a_header` | A2A-Extensions header blocked URI |
 | `forward` | A2A stream | `a2a_stream` | SSE stream finding or compressed stream |

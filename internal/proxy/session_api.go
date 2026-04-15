@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -75,10 +76,24 @@ const (
 // Admin API action names used as rate-limiter keys. Extracted so
 // there is exactly one source of truth per endpoint label.
 const (
-	sessionAPIActionReset = "reset"
-	sessionAPIActionTask  = "task"
-	sessionAPIActionTrust = "trust"
+	sessionAPIActionReset     = "reset"
+	sessionAPIActionTask      = "task"
+	sessionAPIActionTrust     = "trust"
+	sessionAPIActionAirlock   = "airlock"
+	sessionAPIActionInspect   = "inspect"
+	sessionAPIActionExplain   = "explain"
+	sessionAPIActionTerminate = "terminate"
 )
+
+// tierNotQuarantinedReason is the explanation returned for sessions that
+// are not currently in any airlock tier. Operators may call explain on a
+// normal session too; returning 200 with this reason avoids confusing 404.
+const tierNotQuarantinedReason = "session not quarantined"
+
+// airlockTierAliasNormal is the human-friendly alias accepted alongside
+// "none" on admin API inputs. Kept here so every endpoint validates tiers
+// with the same vocabulary as HandleAirlock.
+const airlockTierAliasNormal = "normal"
 
 // rateLimiterState tracks a sliding-window request count for a
 // single admin action. One instance per action so high-volume abuse
@@ -90,47 +105,99 @@ type rateLimiterState struct {
 }
 
 // SessionAPIHandler handles the admin session management API.
+//
+// apiTokenPtr is an atomic.Pointer[string] so SetAPIToken can rotate the
+// admin bearer credential on config reload without racing the
+// authenticate() fast path. Storing the token inline would force a
+// mutex around every request or leave stale credentials live after a
+// SIGHUP. A nil or empty-string payload disables the endpoint entirely
+// (authenticate returns 503), matching the "service not configured"
+// bootstrap path.
 type SessionAPIHandler struct {
-	smPtr    *atomic.Pointer[SessionManager]
-	etPtr    *atomic.Pointer[scanner.EntropyTracker]
-	fbPtr    *atomic.Pointer[scanner.FragmentBuffer]
-	metrics  *metrics.Metrics
-	logger   *audit.Logger
-	apiToken string
+	smPtr       *atomic.Pointer[SessionManager]
+	etPtr       *atomic.Pointer[scanner.EntropyTracker]
+	fbPtr       *atomic.Pointer[scanner.FragmentBuffer]
+	metrics     *metrics.Metrics
+	logger      *audit.Logger
+	apiTokenPtr atomic.Pointer[string]
 
 	// limitMu guards all rate-limiter state. One limiter per admin
-	// action (reset/task/trust) so /task abuse cannot suppress
-	// /reset during incident response, and vice versa.
+	// action (reset/task/trust/airlock/inspect/explain/terminate) so
+	// /task abuse cannot suppress /reset during incident response, and
+	// vice versa.
 	limitMu  sync.Mutex
 	limiters map[string]*rateLimiterState
 }
 
-// NewSessionAPIHandler creates a session API handler.
-func NewSessionAPIHandler(
-	smPtr *atomic.Pointer[SessionManager],
-	etPtr *atomic.Pointer[scanner.EntropyTracker],
-	fbPtr *atomic.Pointer[scanner.FragmentBuffer],
-	m *metrics.Metrics,
-	logger *audit.Logger,
-	apiToken string,
-) *SessionAPIHandler {
-	return &SessionAPIHandler{
-		smPtr:    smPtr,
-		etPtr:    etPtr,
-		fbPtr:    fbPtr,
-		metrics:  m,
-		logger:   logger,
-		apiToken: apiToken,
+// SessionAPIOptions configures a SessionAPIHandler. Using an options struct
+// keeps the constructor signature stable as new endpoints land and new
+// collaborators wire in — CLAUDE.md caps positional parameters at six.
+// The APIToken field holds the bearer token used to authenticate admin
+// API requests; it is never serialized because this struct is never
+// marshaled — it exists only to carry constructor inputs.
+type SessionAPIOptions struct {
+	SessionMgrPtr *atomic.Pointer[SessionManager]
+	EntropyPtr    *atomic.Pointer[scanner.EntropyTracker]
+	FragmentPtr   *atomic.Pointer[scanner.FragmentBuffer]
+	Metrics       *metrics.Metrics
+	Logger        *audit.Logger
+	APIToken      string `json:"-"` //nolint:gosec // options input, never serialized
+}
+
+// NewSessionAPIHandler creates a session API handler from the given options.
+func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
+	h := &SessionAPIHandler{
+		smPtr:   opts.SessionMgrPtr,
+		etPtr:   opts.EntropyPtr,
+		fbPtr:   opts.FragmentPtr,
+		metrics: opts.Metrics,
+		logger:  opts.Logger,
 		limiters: map[string]*rateLimiterState{
-			sessionAPIActionReset: {windowStart: time.Now()},
-			sessionAPIActionTask:  {windowStart: time.Now()},
-			sessionAPIActionTrust: {windowStart: time.Now()},
+			sessionAPIActionReset:     {windowStart: time.Now()},
+			sessionAPIActionTask:      {windowStart: time.Now()},
+			sessionAPIActionTrust:     {windowStart: time.Now()},
+			sessionAPIActionAirlock:   {windowStart: time.Now()},
+			sessionAPIActionInspect:   {windowStart: time.Now()},
+			sessionAPIActionExplain:   {windowStart: time.Now()},
+			sessionAPIActionTerminate: {windowStart: time.Now()},
 		},
 	}
+	// Seed the atomic token pointer from the constructor input. Stored via
+	// SetAPIToken so the nil-vs-empty logic stays in one place.
+	h.SetAPIToken(opts.APIToken)
+	return h
+}
+
+// SetAPIToken rotates the admin bearer credential used by authenticate.
+// Called from proxy.Reload so operators can rotate kill_switch.api_token
+// (or the PIPELOCK_KILLSWITCH_API_TOKEN env var) without restarting the
+// proxy. An empty string disables the endpoint (authenticate returns
+// 503), matching the "service not configured" bootstrap path.
+func (h *SessionAPIHandler) SetAPIToken(token string) {
+	if token == "" {
+		h.apiTokenPtr.Store(nil)
+		return
+	}
+	t := token
+	h.apiTokenPtr.Store(&t)
+}
+
+// currentAPIToken returns the active admin API bearer token, or empty
+// string when the endpoint is not configured.
+func (h *SessionAPIHandler) currentAPIToken() string {
+	if p := h.apiTokenPtr.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request) bool {
-	if h.apiToken == "" {
+	// Load the active token once per request. The atomic snapshot keeps
+	// the comparison safe against a concurrent SetAPIToken rotation and
+	// also pins the value across the constant-time compare below so a
+	// mid-call swap cannot flip us into a stale-credential accept.
+	activeToken := h.currentAPIToken()
+	if activeToken == "" {
 		http.Error(w, "session API not configured (no api_token)", http.StatusServiceUnavailable)
 		return false
 	}
@@ -140,7 +207,7 @@ func (h *SessionAPIHandler) authenticate(w http.ResponseWriter, r *http.Request)
 	if len(auth) > len(prefix) && auth[:len(prefix)] == prefix {
 		token = auth[len(prefix):]
 	}
-	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.apiToken)) != 1 {
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(activeToken)) != 1 {
 		clientIP, _ := requestMeta(r)
 		h.logSessionAdmin("auth_failure", clientIP, "", "", http.StatusUnauthorized)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="pipelock"`)
@@ -160,6 +227,11 @@ func (h *SessionAPIHandler) loadManager(w http.ResponseWriter) *SessionManager {
 }
 
 // HandleList handles GET /api/v1/sessions.
+//
+// Supports an optional ?tier=none|soft|hard|drain|normal query parameter to
+// filter returned sessions by airlock tier. "normal" is accepted as an
+// alias for "none" (mirrors HandleAirlock) so operators and scripts share
+// the same tier vocabulary end to end.
 func (h *SessionAPIHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -174,9 +246,26 @@ func (h *SessionAPIHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snaps := sm.Snapshot()
-
 	clientIP, _ := requestMeta(r)
+
+	filter, filterErr := parseTierFilter(r.URL.Query().Get("tier"))
+	if filterErr != nil {
+		h.logSessionAdmin("list_bad_tier", clientIP, "", filterErr.Error(), http.StatusBadRequest)
+		http.Error(w, filterErr.Error(), http.StatusBadRequest)
+		return
+	}
+
+	snaps := sm.Snapshot()
+	if filter != "" {
+		kept := make([]SessionSnapshot, 0, len(snaps))
+		for _, s := range snaps {
+			if tierMatches(s.AirlockTier, filter) {
+				kept = append(kept, s)
+			}
+		}
+		snaps = kept
+	}
+
 	h.logSessionAdmin("list", clientIP, "", "ok", http.StatusOK)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -187,6 +276,38 @@ func (h *SessionAPIHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		Sessions: snaps,
 		Count:    len(snaps),
 	})
+}
+
+// parseTierFilter validates the optional ?tier= query parameter and
+// normalizes it to a canonical tier string. Empty input means no filter.
+// "normal" is accepted as an alias for "none" so admin API consumers can
+// use the same human-friendly vocabulary as HandleAirlock.
+func parseTierFilter(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	tier := raw
+	if tier == airlockTierAliasNormal {
+		tier = config.AirlockTierNone
+	}
+	switch tier {
+	case config.AirlockTierNone,
+		config.AirlockTierSoft,
+		config.AirlockTierHard,
+		config.AirlockTierDrain:
+		return tier, nil
+	}
+	return "", errors.New("invalid tier filter: must be none|soft|hard|drain|normal")
+}
+
+// tierMatches compares a session's current airlock tier against a filter
+// tier, treating the empty snapshot tier as equivalent to "none" (the zero
+// value left by sessions that never escalated).
+func tierMatches(snapshotTier, filter string) bool {
+	if snapshotTier == "" {
+		snapshotTier = config.AirlockTierNone
+	}
+	return snapshotTier == filter
 }
 
 // checkRateLimit enforces a sliding-window rate limit on a single
@@ -315,6 +436,23 @@ func (h *SessionAPIHandler) HandleReset(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// extractSessionKeyOnly extracts the session key from /api/v1/sessions/{key}
+// with no trailing action segment. Used by HandleInspect, which exposes the
+// full detail snapshot under the base session path. Mirrors the segment
+// validation pattern in extractSessionKey and extractSessionKeyWithAction.
+func extractSessionKeyOnly(r *http.Request) (string, bool) {
+	segs := strings.Split(strings.Trim(r.URL.EscapedPath(), "/"), "/")
+	// Expect exactly: api/v1/sessions/{encoded-key}
+	if len(segs) != 4 || segs[0] != apiPathSegment || segs[1] != apiVersionSegment || segs[2] != apiSessionsSegment {
+		return "", false
+	}
+	key, err := url.PathUnescape(segs[3])
+	if err != nil || key == "" || strings.ContainsAny(key, "/\x00") {
+		return "", false
+	}
+	return key, true
+}
+
 // extractSessionKeyWithAction extracts the session key and trailing action from
 // /api/v1/sessions/{key}/{action}. Reusable for both /reset and /airlock paths.
 func extractSessionKeyWithAction(r *http.Request, action string) (string, bool) {
@@ -341,6 +479,55 @@ type airlockResponse struct {
 	PreviousTier string `json:"previous_tier"`
 	NewTier      string `json:"new_tier"`
 	Changed      bool   `json:"changed"`
+}
+
+// SessionDetail is the response shape for GET /api/v1/sessions/{key}.
+// Embeds SessionSnapshot (flattened in JSON output) and adds the extra
+// fields operators need for airlock recovery: tier timing, request
+// in-flight gauge, numeric escalation level, and the recent event buffer.
+type SessionDetail struct {
+	SessionSnapshot
+	AirlockEnteredAt   time.Time      `json:"airlock_entered_at"`
+	InFlight           int64          `json:"in_flight"`
+	EscalationLevelInt int            `json:"escalation_level_int"`
+	RecentEvents       []SessionEvent `json:"recent_events"`
+}
+
+// SessionExplanation is the response shape for GET
+// /api/v1/sessions/{key}/explain. The answer to "why is this session in
+// the state it is in" — which trigger fired, what the score was, what
+// evidence (event excerpt) crossed the threshold, and when the next
+// automatic de-escalation will fire.
+type SessionExplanation struct {
+	Key                  string        `json:"key"`
+	Tier                 string        `json:"tier"`
+	Reason               string        `json:"reason"`
+	Trigger              string        `json:"trigger,omitempty"`
+	TriggerSource        string        `json:"trigger_source,omitempty"`
+	EnteredAt            time.Time     `json:"entered_at,omitempty"`
+	ElapsedInTier        time.Duration `json:"elapsed_in_tier_ns,omitempty"`
+	EscalationLevel      string        `json:"escalation_level"`
+	EscalationLevelInt   int           `json:"escalation_level_int"`
+	ThreatScore          float64       `json:"threat_score"`
+	EvidenceKind         string        `json:"evidence_kind,omitempty"`
+	EvidenceTarget       string        `json:"evidence_target,omitempty"`
+	EvidenceDetail       string        `json:"evidence_detail,omitempty"`
+	EvidenceAt           time.Time     `json:"evidence_at,omitempty"`
+	NextDeescalationTier string        `json:"next_deescalation_tier,omitempty"`
+	NextDeescalationAt   time.Time     `json:"next_deescalation_at,omitempty"`
+}
+
+// SessionTerminateResult is the response shape for POST
+// /api/v1/sessions/{key}/terminate. Captures the "before" snapshot so the
+// operator can audit what was in flight at the moment of termination.
+type SessionTerminateResult struct {
+	Key             string  `json:"key"`
+	Terminated      bool    `json:"terminated"`
+	PreviousTier    string  `json:"previous_tier"`
+	PreviousLevel   string  `json:"previous_level"`
+	PreviousScore   float64 `json:"previous_score"`
+	IPStateCleared  bool    `json:"ip_state_cleared"`
+	CEEStateCleared bool    `json:"cee_state_cleared"`
 }
 
 type taskRequest struct {
@@ -371,6 +558,13 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 	}
 
 	clientIP, _ := requestMeta(r)
+
+	if !h.checkRateLimit(sessionAPIActionAirlock) {
+		h.logSessionAdmin("airlock_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 
 	sm := h.loadManager(w)
 	if sm == nil {
@@ -621,6 +815,403 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 		GrantedBy:   applied.GrantedBy,
 		Reason:      applied.Reason,
 	})
+}
+
+// HandleInspect handles GET /api/v1/sessions/{key}. Returns a SessionDetail
+// with the session snapshot, airlock timing, in-flight count, and recent-
+// event ring buffer so operators can reason about quarantined sessions
+// without exec-ing into the pipelock container.
+func (h *SessionAPIHandler) HandleInspect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+
+	if !h.checkRateLimit(sessionAPIActionInspect) {
+		h.logSessionAdmin("inspect_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyOnly(r)
+	if !ok {
+		h.logSessionAdmin("inspect_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	adminSnap, found := sm.AdminSnapshotByKey(key)
+	if !found {
+		h.logSessionAdmin("inspect_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	detail := SessionDetail{
+		SessionSnapshot:    adminSnap.SessionSnapshot,
+		AirlockEnteredAt:   adminSnap.AirlockEnteredAt,
+		InFlight:           adminSnap.InFlight,
+		EscalationLevelInt: adminSnap.EscalationLevelInt,
+		RecentEvents:       adminSnap.RecentEvents,
+	}
+	if detail.RecentEvents == nil {
+		detail.RecentEvents = []SessionEvent{}
+	}
+
+	h.logSessionAdmin("inspect_ok", clientIP, key, adminSnap.AirlockTier, http.StatusOK)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(detail)
+}
+
+// HandleExplain handles GET /api/v1/sessions/{key}/explain. Answers the
+// operator question "why is this session in its current state" with the
+// trigger that fired, the evidence that crossed the threshold, and an
+// estimate of when the next automatic de-escalation will drop the tier.
+//
+// Sessions at the none tier are NOT 404 — explain returns 200 with a
+// "session not quarantined" reason so operators can sanity-check normal
+// sessions without special-casing the happy path in their tooling.
+func (h *SessionAPIHandler) HandleExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+
+	if !h.checkRateLimit(sessionAPIActionExplain) {
+		h.logSessionAdmin("explain_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "explain")
+	if !ok {
+		h.logSessionAdmin("explain_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	adminSnap, found := sm.AdminSnapshotByKey(key)
+	if !found {
+		h.logSessionAdmin("explain_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	exp := buildExplanation(adminSnap, h.airlockCfgFromManager(sm))
+
+	h.logSessionAdmin("explain_ok", clientIP, key, exp.Tier, http.StatusOK)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(exp)
+}
+
+// HandleTerminate handles POST /api/v1/sessions/{key}/terminate. Performs
+// a superset of reset: clears in-flight cancel functions, zeros all
+// enforcement state via ResetSessionIfResettable, and clears CEE entropy
+// and fragment-buffer state. Returns the previous tier/level/score so the
+// operator trail captures what was torn down.
+//
+// Invocation sessions (ephemeral MCP transport contexts) are rejected
+// with the same 400 error shape as HandleReset — terminate is a
+// destructive admin action scoped to identity sessions only.
+func (h *SessionAPIHandler) HandleTerminate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+
+	clientIP, _ := requestMeta(r)
+
+	if !h.checkRateLimit(sessionAPIActionTerminate) {
+		h.logSessionAdmin("terminate_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+
+	key, ok := extractSessionKeyWithAction(r, "terminate")
+	if !ok {
+		h.logSessionAdmin("terminate_bad_key", clientIP, "", "invalid path", http.StatusBadRequest)
+		http.Error(w, "missing or invalid session key in URL path", http.StatusBadRequest)
+		return
+	}
+
+	// Decode empty body. decodeJSONBody tolerates missing/empty bodies and
+	// enforces the shared size limit and DisallowUnknownFields contract,
+	// so callers sending stray fields get a 400 here instead of a silent
+	// accept that leaks the extra data into logs.
+	var empty struct{}
+	if err := decodeJSONBody(r, &empty); err != nil {
+		h.logSessionAdmin("terminate_bad_body", clientIP, key, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Capture pre-terminate state and reset atomically under a single
+	// sm.mu.Lock so the response's previous_tier/previous_level/
+	// previous_score describe one consistent moment in time. Splitting
+	// the snapshot and the reset across two critical sections let a
+	// concurrent tier change slip an inconsistent row into the audit
+	// trail; SnapshotAndResetIfResettable closes that gap.
+	preSnap, found, resetErr := sm.SnapshotAndResetIfResettable(key)
+	if !found {
+		h.logSessionAdmin("terminate_not_found", clientIP, key, "session not found", http.StatusNotFound)
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if resetErr != nil {
+		h.logSessionAdmin("terminate_rejected", clientIP, key, "invocation key", http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(struct {
+			Error string `json:"error"`
+		}{Error: "cannot terminate invocation session; only identity sessions are resettable"})
+		return
+	}
+
+	_, agent, ip := classifySessionKey(key)
+
+	ceeCleared := false
+	if h.etPtr != nil && h.fbPtr != nil {
+		et := h.etPtr.Load()
+		fb := h.fbPtr.Load()
+		if et != nil || fb != nil {
+			ResetCEEState(agent, ip, et, fb)
+			ceeCleared = true
+		}
+	}
+
+	h.logSessionAdmin("terminate_ok", clientIP, key, preSnap.AirlockTier, http.StatusOK)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(SessionTerminateResult{
+		Key:             key,
+		Terminated:      true,
+		PreviousTier:    preSnap.AirlockTier,
+		PreviousLevel:   preSnap.EscalationLevel,
+		PreviousScore:   preSnap.ThreatScore,
+		IPStateCleared:  ip != "",
+		CEEStateCleared: ceeCleared,
+	})
+}
+
+// airlockCfgFromManager fetches the active airlock config from the manager
+// if one is configured, returning a pointer safe for read-only use.
+// Returns nil when airlock is not configured — the explain builder handles
+// that case by omitting the next-deescalation estimate.
+func (h *SessionAPIHandler) airlockCfgFromManager(sm *SessionManager) *config.Airlock {
+	if sm == nil {
+		return nil
+	}
+	return sm.AirlockConfig()
+}
+
+// buildExplanation constructs a SessionExplanation from a snapshot, recent
+// events, and live session state. Trigger/source come from the airlock
+// entry metadata; the next-deescalation estimate is derived from the
+// airlock timer config when available.
+func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) SessionExplanation {
+	tier := snap.AirlockTier
+	if tier == "" {
+		tier = config.AirlockTierNone
+	}
+
+	exp := SessionExplanation{
+		Key:                snap.Key,
+		Tier:               tier,
+		EscalationLevel:    snap.EscalationLevel,
+		EscalationLevelInt: snap.EscalationLevelInt,
+		ThreatScore:        snap.ThreatScore,
+	}
+
+	if tier == config.AirlockTierNone {
+		exp.Reason = tierNotQuarantinedReason
+		// Still attach the most recent notable event as evidence so the
+		// operator can see what the session has been doing even when the
+		// tier is normal. Keeps explain useful outside of incident mode.
+		// Trigger/TriggerSource are left empty: a normal-tier session has
+		// no active quarantine cause, and reporting stale trigger metadata
+		// would contradict the "not quarantined" reason string.
+		attachMostRecentEvidence(&exp, snap.RecentEvents)
+		return exp
+	}
+
+	exp.Trigger = snap.AirlockTrigger
+	exp.TriggerSource = snap.AirlockTriggerSource
+	exp.Reason = "session quarantined at airlock tier " + tier
+	if exp.Trigger == "" {
+		exp.Trigger = airlockTriggerManual
+	}
+	if exp.TriggerSource == "" {
+		exp.TriggerSource = airlockSourceAdminAPI
+	}
+
+	exp.EnteredAt = snap.AirlockEnteredAt
+	if !exp.EnteredAt.IsZero() {
+		exp.ElapsedInTier = time.Since(exp.EnteredAt)
+	}
+
+	// Prefer evidence recorded at or before the tier-entry moment so a
+	// noisy quarantined session that keeps generating post-entry blocks
+	// doesn't overwrite the event that actually drove the escalation.
+	// Falls back to the newest event in the buffer if the original
+	// trigger has rotated out.
+	attachTierEntryEvidence(&exp, snap.RecentEvents, snap.AirlockEnteredAt)
+
+	// Only advertise auto-deescalation when the timer for the current
+	// tier is actually positive. A disabled timer (0) means manual
+	// recovery only — surfacing a next_deescalation_tier without an
+	// at= would tell operators a timer exists when it doesn't.
+	if airlockCfg != nil {
+		if dur := deescalationDuration(tier, &airlockCfg.Timers); dur > 0 {
+			exp.NextDeescalationTier = nextDeescalationTier(tier)
+			if !exp.EnteredAt.IsZero() && exp.NextDeescalationTier != "" {
+				exp.NextDeescalationAt = exp.EnteredAt.Add(dur)
+			}
+		}
+	}
+
+	return exp
+}
+
+// attachMostRecentEvidence copies the most recent non-transition event
+// into the explanation as evidence. Falls back to transition events only
+// when there is nothing more specific in the ring buffer. Used by the
+// none-tier explain path where there is no tier-entry timestamp to
+// prefer events against.
+func attachMostRecentEvidence(exp *SessionExplanation, events []SessionEvent) {
+	if attachEvidence(exp, events, time.Time{}, false) {
+		return
+	}
+	_ = attachEvidence(exp, events, time.Time{}, true)
+}
+
+// attachTierEntryEvidence prefers the newest event recorded at or
+// before the tier-entry timestamp so quarantined sessions report the
+// evidence that actually drove the escalation, not whatever noise has
+// accumulated since. Falls back to (a) post-entry non-transition
+// events, then (b) any non-empty event, if the original tier-entry
+// evidence has already rotated out of the 20-slot ring buffer.
+func attachTierEntryEvidence(exp *SessionExplanation, events []SessionEvent, enteredAt time.Time) {
+	if !enteredAt.IsZero() {
+		if attachEvidence(exp, events, enteredAt, false) {
+			return
+		}
+	}
+	if attachEvidence(exp, events, time.Time{}, false) {
+		return
+	}
+	_ = attachEvidence(exp, events, time.Time{}, true)
+}
+
+// attachEvidence walks the event ring buffer newest-to-oldest and
+// stores the first matching event on exp. When cutoff is non-zero the
+// selector skips events strictly after the cutoff so the tier-entry
+// window can be preferred. When includeTransitions is false, airlock_*
+// transition events are skipped as well.
+func attachEvidence(exp *SessionExplanation, events []SessionEvent, cutoff time.Time, includeTransitions bool) bool {
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Kind == "" && e.Detail == "" {
+			continue
+		}
+		if !includeTransitions && strings.HasPrefix(e.Kind, "airlock_") {
+			continue
+		}
+		if !cutoff.IsZero() && e.At.After(cutoff) {
+			continue
+		}
+		exp.EvidenceKind = e.Kind
+		exp.EvidenceTarget = e.Target
+		exp.EvidenceDetail = e.Detail
+		exp.EvidenceAt = e.At
+		return true
+	}
+	return false
+}
+
+// nextDeescalationTier returns the tier that an automatic de-escalation
+// would transition into from the given current tier. Mirrors the state
+// machine in AirlockState.TryDeescalate.
+func nextDeescalationTier(current string) string {
+	switch current {
+	case config.AirlockTierSoft:
+		return config.AirlockTierNone
+	case config.AirlockTierHard:
+		return config.AirlockTierSoft
+	case config.AirlockTierDrain:
+		return config.AirlockTierHard
+	}
+	return ""
+}
+
+// deescalationDuration returns the configured timer duration for the
+// given tier, or zero when the timer is disabled (0 = manual recovery).
+// Drain honors the shorter of DrainMinutes and DrainTimeoutSeconds as a
+// hard ceiling for in-flight completion.
+func deescalationDuration(tier string, timers *config.AirlockTimers) time.Duration {
+	if timers == nil {
+		return 0
+	}
+	switch tier {
+	case config.AirlockTierSoft:
+		if timers.SoftMinutes <= 0 {
+			return 0
+		}
+		return time.Duration(timers.SoftMinutes) * time.Minute
+	case config.AirlockTierHard:
+		if timers.HardMinutes <= 0 {
+			return 0
+		}
+		return time.Duration(timers.HardMinutes) * time.Minute
+	case config.AirlockTierDrain:
+		if timers.DrainMinutes <= 0 && timers.DrainTimeoutSeconds <= 0 {
+			return 0
+		}
+		d := time.Duration(timers.DrainMinutes) * time.Minute
+		if timers.DrainTimeoutSeconds > 0 {
+			drainTimeout := time.Duration(timers.DrainTimeoutSeconds) * time.Second
+			if d <= 0 || drainTimeout < d {
+				d = drainTimeout
+			}
+		}
+		return d
+	}
+	return 0
 }
 
 // logSessionAdmin logs a session admin API operation if a logger is available.

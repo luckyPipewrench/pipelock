@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Sidecar injection init:** `pipelock init sidecar --inject-spec <manifest>` generates a sidecar patch for Deployment, StatefulSet, Job, and CronJob workloads. Three output formats: strategic-merge patch, Kustomize overlay, and Helm values fragment. Includes canary verification, diff preview, and idempotent re-runs.
 - **Default agent identity:** new `default_agent_identity` config field provides a fallback agent name for sidecar deployments where the upstream container does not send an `X-Pipelock-Agent` header. Derived automatically from workload kind/name during `init sidecar`.
 - **Exemption audit emission:** response scan exemptions (exempt domains and suppressed findings) now emit a `pipelock_response_scan_exempt_total` Prometheus counter with `reason` and `transport` labels across all proxy transports.
+- **`pipelock session` operator CLI:** five subcommands (`list`, `inspect`, `explain`, `release`, `terminate`) plus an interactive `recover` wrapper for airlock recovery. The CLI talks to the session admin API and resolves the endpoint from `--api-url`/`--api-token` flags, `PIPELOCK_API_URL`/`PIPELOCK_KILLSWITCH_API_TOKEN` env vars, or the pipelock config file.
+- **Session admin API: inspect, explain, terminate endpoints.** `GET /api/v1/sessions/{key}` returns full session detail including airlock entry time, in-flight count, and recent events. `GET /api/v1/sessions/{key}/explain` returns the recorded trigger, evidence, and next auto-deescalation estimate. `POST /api/v1/sessions/{key}/terminate` performs a destructive full tear-down (cancel in-flight, reset enforcement, clear CEE state). Each endpoint has its own 10/minute rate-limit bucket.
+- **Session list tier filter.** `GET /api/v1/sessions?tier=hard` filters snapshots by current airlock tier. `normal` is accepted as an alias for `none`.
 
 ### Security Hardening
 

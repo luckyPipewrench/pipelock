@@ -773,16 +773,44 @@ When `kill_switch.api_token` is configured, the session admin API is available a
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/sessions` | GET | List all tracked sessions with escalation state |
+| `/api/v1/sessions` | GET | List all tracked sessions, optionally filtered by `?tier=none\|soft\|hard\|drain\|normal` |
+| `/api/v1/sessions/{key}` | GET | Full detail snapshot: tier entry time, in-flight, recent events |
+| `/api/v1/sessions/{key}/explain` | GET | Trigger/evidence/next de-escalation estimate for a session |
 | `/api/v1/sessions/{key}/reset` | POST | Reset enforcement state for a client identity |
+| `/api/v1/sessions/{key}/terminate` | POST | Destructive full tear-down (cancel in-flight, clear CEE) |
+| `/api/v1/sessions/{key}/airlock` | POST | Transition the session's airlock tier (admin override) |
+| `/api/v1/sessions/{key}/task` | POST | Rotate the session's task boundary |
+| `/api/v1/sessions/{key}/trust` | POST | Grant a task-scoped trust override |
 
 The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `my-agent%7C10.0.0.1`.
 
 **Reset scope:** identity-family scoped. Resetting a session clears the session's threat score, escalation level, and block_all flag. It also clears shared IP-level burst tracking for the client IP and cross-request exfiltration (CEE) state. Other sessions on the same IP will have their burst state cleared as a side effect.
 
-**Rate limiting:** only the POST /reset endpoint is rate-limited (10 requests/minute). GET /sessions is not rate-limited.
+**Rate limiting:** every mutating action (`reset`, `airlock`, `task`, `trust`, `terminate`) and every detail lookup (`inspect`, `explain`) is rate-limited to 10 requests per minute per action. Each action tracks its own sliding-window counter so abuse of one endpoint cannot starve another — an operator can still hit `/reset` or `/airlock` during incident response even if `/task` or `/trust` is under load. Only `GET /api/v1/sessions` (the list endpoint) is unbounded; it is used as the entry point for recovery tooling and has no destructive side effect. Responses that hit the limit return `429 Too Many Requests` with `Retry-After: 60`.
 
-Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset.
+Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset, mutated, or terminated.
+
+**Operator CLI:** the session admin API is also exposed through `pipelock session <subcommand>` for interactive recovery. See [cli/session.md](cli/session.md) for the full operator reference.
+
+**Token hot-reload:** `kill_switch.api_token` is hot-reloaded on SIGHUP or fsnotify config-file changes. Rotating the token in YAML (or via the `PIPELOCK_KILLSWITCH_API_TOKEN` env var, which wins over YAML) takes effect on the next admin API call without restarting the proxy. The previous bearer credential is revoked atomically: requests in flight at the moment of rotation complete against the token they were issued against; subsequent requests must present the new bearer. Setting `api_token` to the empty string disables the endpoint (HTTP 503) without tearing down the listener, so an operator can revoke access during an incident and restore it later with a second reload.
+
+### Airlock
+
+Per-session graduated quarantine with timer-based recovery. When adaptive enforcement escalates a session, the airlock state machine can transition the session through `soft` (observe-only), `hard` (reads allowed, writes blocked, long-lived connections torn down), and `drain` (no new traffic, existing in-flight requests complete within `drain_timeout_seconds`). All three tiers are **timed quarantines** that auto-recover back down through lower tiers as `soft_minutes`/`hard_minutes`/`drain_minutes` expire — `drain` is not a terminal state and is not equivalent to `POST /api/v1/sessions/{key}/terminate`. Operators can override the tier at any time through the session admin API or the `pipelock session` CLI; explicit termination (the destructive reset) lives behind the dedicated `terminate` endpoint.
+
+```yaml
+airlock:
+  enabled: false
+  triggers:
+    on_elevated: none       # no airlock on elevated
+    on_high: soft           # soft quarantine on high
+    on_critical: hard       # hard quarantine on critical
+  timers:
+    soft_minutes: 5         # soft tier auto-recovers after 5 minutes
+    hard_minutes: 15        # hard tier auto-drops to soft after 15 minutes
+    drain_minutes: 0        # drain timer disabled
+    drain_timeout_seconds: 30  # drain deadline for in-flight completion
+```
 
 ## Event Emission
 

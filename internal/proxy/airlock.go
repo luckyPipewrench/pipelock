@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,19 @@ const (
 const (
 	ExemptReasonDomain   = "exempt_domain"
 	ExemptReasonSuppress = "suppress"
+)
+
+// Airlock transition source and trigger labels emitted in explain output.
+const (
+	airlockSourceTriggers = "airlock_triggers"
+	airlockSourceAdminAPI = "admin_api"
+	airlockSourceTimers   = "airlock_timers"
+
+	airlockTriggerOnElevated = "on_elevated"
+	airlockTriggerOnHigh     = "on_high"
+	airlockTriggerOnCritical = "on_critical"
+	airlockTriggerManual     = "manual"
+	airlockTriggerTimer      = "timer"
 )
 
 // AirlockTierOrder maps tier names to numeric order for comparison.
@@ -53,6 +67,8 @@ type AirlockState struct {
 	mu          sync.Mutex
 	tier        string
 	enteredAt   time.Time
+	trigger     string
+	source      string
 	cancelFuncs []context.CancelFunc
 
 	// inFlightCount tracks active requests for drain coordination.
@@ -73,11 +89,49 @@ func (a *AirlockState) Tier() string {
 	return a.tier
 }
 
+// EnteredAt returns the wall-clock time the current tier was entered.
+// Zero value when the session has been reset or never escalated. Callers
+// use this to compute elapsed-in-tier for operator explain output and to
+// estimate the next auto-deescalation instant.
+func (a *AirlockState) EnteredAt() time.Time {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.enteredAt
+}
+
+// EntryProvenance returns the trigger/source pair that set the current tier.
+// Empty strings mean the tier was entered without explicit provenance.
+func (a *AirlockState) EntryProvenance() (trigger, source string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.trigger, a.source
+}
+
+// setEntryMetadataLocked records when and why the current tier was entered.
+// Entering the none tier clears quarantine metadata entirely.
+func (a *AirlockState) setEntryMetadataLocked(tier, trigger, source string) {
+	if tier == config.AirlockTierNone {
+		a.enteredAt = time.Time{}
+		a.trigger = ""
+		a.source = ""
+		return
+	}
+	a.enteredAt = time.Now()
+	a.trigger = trigger
+	a.source = source
+}
+
 // SetTier transitions the airlock to a new tier. Upward transitions fast-forward
 // through intermediate tiers atomically (none->hard skips soft). Downward
 // transitions are rejected; use TryDeescalate for timer-based recovery.
 // Returns whether the tier changed, and the previous/new tier for logging.
 func (a *AirlockState) SetTier(newTier string) (changed bool, from, to string) {
+	return a.SetTierWithProvenance(newTier, "", "")
+}
+
+// SetTierWithProvenance transitions the airlock to a new tier and records
+// the trigger/source that caused the entry.
+func (a *AirlockState) SetTierWithProvenance(newTier, trigger, source string) (changed bool, from, to string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -96,7 +150,7 @@ func (a *AirlockState) SetTier(newTier string) (changed bool, from, to string) {
 
 	from = a.tier
 	a.tier = newTier
-	a.enteredAt = time.Now()
+	a.setEntryMetadataLocked(newTier, trigger, source)
 
 	// On hard entry, half-close existing connections.
 	if newTier == config.AirlockTierHard {
@@ -162,7 +216,7 @@ func (a *AirlockState) TryDeescalate(timers *config.AirlockTimers) (changed bool
 
 	from = a.tier
 	a.tier = nextTier
-	a.enteredAt = time.Now()
+	a.setEntryMetadataLocked(nextTier, airlockTriggerTimer, airlockSourceTimers)
 	return true, from, nextTier
 }
 
@@ -363,6 +417,12 @@ func (r *FrozenToolRegistry) IsToolAllowed(stableKey, toolName string) bool {
 // Used by the admin API for manual releases and de-escalation where
 // operators need to move sessions to any tier including downward.
 func (a *AirlockState) ForceSetTier(newTier string) (changed bool, from, to string) {
+	return a.ForceSetTierWithProvenance(newTier, airlockTriggerManual, airlockSourceAdminAPI)
+}
+
+// ForceSetTierWithProvenance sets the airlock tier without transition
+// restrictions and records the trigger/source that caused the entry.
+func (a *AirlockState) ForceSetTierWithProvenance(newTier, trigger, source string) (changed bool, from, to string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -375,7 +435,7 @@ func (a *AirlockState) ForceSetTier(newTier string) (changed bool, from, to stri
 
 	from = a.tier
 	a.tier = newTier
-	a.enteredAt = time.Now()
+	a.setEntryMetadataLocked(newTier, trigger, source)
 
 	// Tear down connections on hard/drain, matching SetTier behavior.
 	// ForceSetTier is used by the admin API; operators expect immediate effect.
@@ -398,4 +458,22 @@ func (r *FrozenToolRegistry) Unfreeze(stableKey string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.entries, stableKey)
+}
+
+// ToolNames returns a sorted snapshot of the frozen tool names for the
+// given key. Returns nil when the key is not frozen. Sorted to give the
+// admin API a stable preview regardless of map iteration order.
+func (r *FrozenToolRegistry) ToolNames(stableKey string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	entry, exists := r.entries[stableKey]
+	if !exists {
+		return nil
+	}
+	names := make([]string, 0, len(entry.tools))
+	for name := range entry.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

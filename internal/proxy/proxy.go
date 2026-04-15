@@ -299,14 +299,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		apiToken = envToken
 	}
 	if apiToken != "" {
-		p.sessionAPI = NewSessionAPIHandler(
-			&p.sessionMgrPtr,
-			&p.entropyTrackerPtr,
-			&p.fragmentBufferPtr,
-			m,
-			logger,
-			apiToken,
-		)
+		p.sessionAPI = NewSessionAPIHandler(SessionAPIOptions{
+			SessionMgrPtr: &p.sessionMgrPtr,
+			EntropyPtr:    &p.entropyTrackerPtr,
+			FragmentPtr:   &p.fragmentBufferPtr,
+			Metrics:       m,
+			Logger:        logger,
+			APIToken:      apiToken,
+		})
 	}
 
 	p.dialer = &net.Dialer{
@@ -510,6 +510,15 @@ func (p *Proxy) FragmentBufferPtr() *atomic.Pointer[scanner.FragmentBuffer] {
 	return &p.fragmentBufferPtr
 }
 
+// SessionAPI returns the proxy's admin session API handler, or nil when
+// no api_token is configured. run.go mounts this on the dedicated
+// kill-switch API port (when kill_switch.api_listen is set) instead of
+// building a second handler, so Reload's hot-reload token rotation
+// covers both the main and dedicated mounts with one SetAPIToken call.
+func (p *Proxy) SessionAPI() *SessionAPIHandler {
+	return p.sessionAPI
+}
+
 // EnvelopeEmitterPtr returns the atomic pointer to the envelope emitter.
 // Used by the reverse proxy handler to share the emitter and receive
 // hot-reload updates.
@@ -549,6 +558,19 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
+
+	// Hot-reload the admin API bearer token so operators can rotate
+	// kill_switch.api_token (or the env override) without restarting.
+	// Env var continues to take precedence over the YAML value, mirroring
+	// the bootstrap resolution in New().
+	if p.sessionAPI != nil {
+		newToken := cfg.KillSwitch.APIToken
+		if envToken := os.Getenv(killswitch.EnvAPIToken); envToken != "" {
+			newToken = envToken
+		}
+		p.sessionAPI.SetAPIToken(newToken)
+	}
+
 	old := p.scannerPtr.Swap(sc)
 
 	if old != nil {
@@ -895,16 +917,27 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	// See the long comment at the `escalated` declaration above.
 	if cfg.Airlock.Enabled && escalated {
 		targetTier := ""
+		trigger := ""
 		switch session.EscalationLabel(level) {
 		case "elevated":
 			targetTier = cfg.Airlock.Triggers.OnElevated
+			trigger = airlockTriggerOnElevated
 		case "high":
 			targetTier = cfg.Airlock.Triggers.OnHigh
+			trigger = airlockTriggerOnHigh
 		case "critical":
 			targetTier = cfg.Airlock.Triggers.OnCritical
+			trigger = airlockTriggerOnCritical
 		}
 		if targetTier != "" && targetTier != config.AirlockTierNone {
-			if changed, from, to := sess.Airlock().SetTier(targetTier); changed {
+			if changed, from, to := sess.Airlock().SetTierWithProvenance(targetTier, trigger, airlockSourceTriggers); changed {
+				sess.RecordEvent(SessionEvent{
+					Kind:     "airlock_enter",
+					Target:   to,
+					Detail:   from + "->" + to,
+					Severity: "warn",
+					Score:    sess.ThreatScore(),
+				})
 				if log != nil {
 					log.LogAirlockEnter(key, to, "adaptive_"+session.EscalationLabel(level), clientIP, requestID)
 				}
@@ -919,9 +952,31 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 		log.LogSessionAnomaly(key, a.Type, a.Detail, clientIP, requestID, a.Score)
 		p.metrics.RecordSessionAnomaly(a.Type)
 
+		sess.RecordEvent(SessionEvent{
+			Kind:     "anomaly",
+			Target:   hostname,
+			Detail:   a.Detail,
+			Severity: "warn",
+			Score:    a.Score,
+		})
+
 		if cfg.SessionProfiling.AnomalyAction == config.ActionBlock && cfg.EnforceEnabled() {
 			return SessionResult{Blocked: true, Detail: fmt.Sprintf("session anomaly: %s", a.Detail), Level: level}
 		}
+	}
+
+	// Record a block event on any non-allowed scanner result so inspect/
+	// explain operators can see the specific evidence that drove escalation.
+	// Score-neutral cases (protective, config-mismatch) still record so the
+	// operator trail reflects the full picture; empty Reason is preserved.
+	if !result.Allowed {
+		sess.RecordEvent(SessionEvent{
+			Kind:     "block",
+			Target:   hostname,
+			Detail:   result.Reason,
+			Severity: "critical",
+			Score:    result.Score,
+		})
 	}
 
 	return SessionResult{Level: level}
@@ -1158,6 +1213,7 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 
 // sessionAPIRouter dispatches /api/v1/sessions/{key}/* requests to the
 // appropriate session API handler based on the trailing path segment.
+// The four-segment fallback (/api/v1/sessions/{key}) routes to HandleInspect.
 func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.EscapedPath()
 	switch {
@@ -1169,6 +1225,12 @@ func (p *Proxy) sessionAPIRouter(w http.ResponseWriter, r *http.Request) {
 		p.sessionAPI.HandleTrust(w, r)
 	case killswitch.IsSessionActionPath(path, "reset"):
 		p.sessionAPI.HandleReset(w, r)
+	case killswitch.IsSessionActionPath(path, "explain"):
+		p.sessionAPI.HandleExplain(w, r)
+	case killswitch.IsSessionActionPath(path, "terminate"):
+		p.sessionAPI.HandleTerminate(w, r)
+	case killswitch.IsSessionKeyPath(path):
+		p.sessionAPI.HandleInspect(w, r)
 	default:
 		http.NotFound(w, r)
 	}

@@ -137,7 +137,7 @@ dlp:
       severity: medium
     # Generic credential patterns
     - name: "Credential in URL"
-      regex: '\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
+      regex: '(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}'
       severity: high
 
 response_scanning:

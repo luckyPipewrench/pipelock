@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/policy"
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/cli/session"
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -98,6 +99,8 @@ Quick start:
 		runtime.SandboxCmd(),
 		runtime.InternalRedirectCmd(),
 		runtime.HealthcheckCmd(),
+		// Session admin (airlock recovery)
+		session.Cmd(),
 		// Setup (IDE integrations)
 		setup.InitCmd(),
 		setup.ClaudeCmd(),

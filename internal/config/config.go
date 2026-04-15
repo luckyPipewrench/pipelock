@@ -4641,11 +4641,25 @@ func Defaults() *Config {
 				{Name: "Google OAuth Client ID", Regex: `[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com`, Severity: "medium"},
 
 				// Generic credential patterns
-				// \b protects underscore-compound names (next_token, csrf_token_id) since _ is \w.
-				// Hyphen-compound names (show-password, x-token) are NOT protected since - is \W,
-				// so \b still fires. Accepted tradeoff: such params are rare in agent traffic.
+				// Accepts either a URL query delimiter ([?&;]) OR line-start
+				// before the credential key. Line-start (via the (?m) flag +
+				// ^ anchor) catches body-first credentials like
+				//     password=X  (where X is the secret value)
+				// that an HTTP form or env-dump log emits without a leading
+				// delimiter, while the delimiter alternative still catches
+				// standard query strings and connection strings prefixed by
+				// ? or ; before the credential key. Go-style struct assignments
+				// (ep.Token = X, req.APIKey = Y) are still immune because
+				// the credential key is preceded by . or another word
+				// character, which is neither ^ nor [?&;]. The rule is
+				// scoped to URL/body-embedded credentials only — env-var
+				// dumps like DB_PASSWORD=... are handled by the separate
+				// Environment Variable Secret pattern below, which requires
+				// UPPER_CASE identifiers. Hyphen-compound params
+				// (show-password) are still protected because the delimiter
+				// is always explicit.
 				// Case-insensitive matching is added automatically by scanner.New() via (?i) prefix.
-				{Name: "Credential in URL", Regex: `\b(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
+				{Name: "Credential in URL", Regex: `(?m)(?:^|[?&;])\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[^\s&]{4,}`, Severity: "high"},
 				// Environment variable credential patterns: catches env var dumps
 				// where the secret-bearing keyword is the terminal segment of an
 				// UPPER_CASE name (e.g., AWS_SECRET_ACCESS_KEY=..., STRIPE_SECRET_KEY=...,

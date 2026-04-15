@@ -362,6 +362,19 @@ Production recipes (Docker Compose with network isolation, Kubernetes sidecar + 
 
 Downloads a pre-built binary, runs `pipelock audit`, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow.
 
+### Runnable demo: tool-response injection
+
+The [`examples/tool-response-injection/`](examples/tool-response-injection/) harness runs an end-to-end demo where an MCP tool with a harmless name and description hides a prompt-injection payload in its response. Pipelock blocks the response before it reaches the agent and emits signed action receipts that a third party can verify. The same demo runs against three transports with one shared signing key:
+
+- MCP stdio (subprocess wrapping)
+- MCP HTTP upstream (stdio-to-HTTP bridge)
+- MCP HTTP reverse proxy
+
+```bash
+cd examples/tool-response-injection
+python3 demo.py    # needs python3 + cryptography + pipelock on PATH
+```
+
 ## Community Rules
 
 Signed rule bundles add detection patterns beyond the 48 built-in defaults. 28 community rules across DLP, injection, and tool-poison categories:

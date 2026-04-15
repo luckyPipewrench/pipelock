@@ -157,6 +157,27 @@ response_scanning:
 
 Switching from `block` to `warn` for response scanning gives visibility without interrupting the agent. This is useful during initial deployment when you're learning what your agent fetches.
 
+## Rolling out a new DLP pattern safely
+
+When you add a custom DLP pattern, the pattern may trigger on traffic you didn't anticipate. Shipping a pattern in audit-only mode first lets you watch for false positives on real traffic without breaking legitimate workflows.
+
+Set `action: warn` on the individual pattern (not the top-level `dlp.action`, which is reserved):
+
+```yaml
+dlp:
+  patterns:
+    - name: "AcmeInternalToken"
+      regex: "acme_[A-Za-z0-9]{32}"
+      severity: high
+      action: warn        # audit-only for rollout
+      exempt_domains:
+        - "billing.acme.internal"
+```
+
+Warn matches from that pattern appear in your audit sink (webhook, syslog, OTLP) with the pattern name, severity, transport, and request context, but the request is not blocked. Tune the regex and `exempt_domains` until the signal is clean, then remove the `action` line to return the pattern to default blocking behavior.
+
+Only `action: warn` and empty string are accepted on DLP patterns. `block`, `strip`, `ask`, `redirect`, or any other value is rejected at config load.
+
 ## Tuning Cross-Request Detection
 
 The entropy budget tracks cumulative high-entropy data across requests in a session. High-traffic API domains can exhaust the budget with legitimate traffic.

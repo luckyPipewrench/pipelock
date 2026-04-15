@@ -473,6 +473,31 @@ The detector uses a dedicated scanner (not regex). It tokenizes text, runs a sli
 
 Action follows the transport-level DLP action: URL scan always blocks, MCP input uses `mcp_input_scanning.action`, body/header uses `request_body_scanning.action`.
 
+### Per-Pattern Warn Mode (DLP Rollout)
+
+Individual DLP patterns can carry an explicit `action: warn` to run in audit-only mode. Warn matches route to an informational channel and emit audit events through the runtime lifecycle, but do not trigger enforcement. Use this to roll out new detections on production traffic before flipping them to default (block).
+
+```yaml
+dlp:
+  patterns:
+    - name: "AcmeInternalToken"
+      regex: "acme_[A-Za-z0-9]{32}"
+      severity: high
+      action: warn          # audit-only; does not block
+```
+
+Only `action: warn` and omitted (empty) are accepted on a per-pattern basis. `block`, `strip`, `ask`, `redirect`, or any other value is rejected at config load. The top-level `dlp.action` field is still reserved — it rejects every value including `block`.
+
+Matches from warn patterns appear in scan results as `InformationalMatches` (distinct from `Matches`) and emit structured audit events with the matched pattern name, severity, transport, and request context via the `DLPWarnHook`. Standard emission sinks (webhook, syslog, OTLP) pick these up.
+
+Recommended rollout flow:
+
+1. Ship the pattern with `action: warn`.
+2. Deploy and watch the audit sink for hits against real traffic.
+3. Tune the regex + `exempt_domains` until false-positive rate is acceptable.
+4. Remove the `action` line (or set it to empty string) to switch to default block.
+5. Roll out the change through your normal config-review process.
+
 ## Response Scanning
 
 Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection.
@@ -1764,6 +1789,88 @@ mcp_binary_integrity:
 | `action` | `warn` | Action on hash mismatch: `block` or `warn` |
 
 The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing.
+
+## Taint-Aware Policy Escalation (v2.1)
+
+Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. A session that just fetched a blog post cannot, without a trust override, then edit a file under `*/auth/*`. Runs across fetch, forward proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
+
+```yaml
+taint:
+  enabled: true                        # default: true
+  policy: balanced                     # strict, balanced, permissive (default: balanced)
+  recent_sources: 10                   # bounded history of recent taint-raising events (default: 10)
+  allowlisted_domains:                 # fetches from these domains do NOT raise session taint
+    - "docs.anthropic.com"
+    - "docs.github.com"
+    - "developer.mozilla.org"
+  protected_paths:                     # tainted sessions are blocked (or escalated) on these paths
+    - "*/auth/*"
+    - "*/security/*"
+    - "*/.github/workflows/*"
+    - "*/.env*"
+    - "*/secrets*"
+    - "*/policy*"
+    - "*/sandbox*"
+  elevated_paths:                      # tainted sessions trigger warn/ask on these paths
+    - "*/config/*"
+    - "*/middleware*"
+  trust_overrides:                     # narrow, expiring exemptions for specific workflows
+    - scope: "task"                    # session or task — task scopes to a single task ID
+      source_match: "docs.example.com"
+      action_match: "*/config/db.yaml"
+      expires_at: "2026-06-01T00:00:00Z"
+      granted_by: "platform-team"
+      reason: "migration runbook"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `true` | Master switch. Omit to get the security default (enabled). |
+| `policy` | string | `balanced` | `strict` blocks tainted actions on elevated paths; `balanced` warns; `permissive` observes only. |
+| `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
+| `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
+| `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |
+| `elevated_paths` | []string | `*/config/*`, `*/middleware*` | Globs that trigger warn/ask rather than block. |
+| `trust_overrides` | []object | empty | Narrow exemptions (see below). |
+
+### Trust overrides
+
+`trust_overrides` grants a scoped, time-limited exemption that lets a tainted session perform an otherwise-blocked action.
+
+| Field | Description |
+|-------|-------------|
+| `scope` | `session` (whole session) or `task` (only within the active task boundary — see below). |
+| `source_match` | Glob over the URL/domain that originated the taint. Only applies if that source matches. |
+| `action_match` | Glob over the path or tool-arg being attempted. |
+| `expires_at` | RFC3339 timestamp. After this instant the override is ignored. |
+| `granted_by` | Free-text owner attribution. Appears in receipts. |
+| `reason` | Free-text justification. Appears in receipts. |
+
+Overrides are additive and never *remove* taint — they permit a specific action class while the session remains tainted. Every use of an override is receipt-recorded with `authority_kind: trust-override` and the `granted_by` + `reason` fields.
+
+### Task boundaries
+
+A **task boundary** scopes a `trust_override` to an individual operation. When a task ID is active (set by the agent framework through the MCP session or injected via HTTP headers), the override applies only for that task. When the task completes or a new task starts, the override expires automatically — the session does not carry override permissions into unrelated work.
+
+Task boundaries are surfaced on every emitted receipt as `task_id`, and on the mediation envelope as the `task` wire field.
+
+### Classification details
+
+- **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content.
+- **Action sensitivity** is derived from the target path (or tool-argument path) against `protected_paths` and `elevated_paths`.
+- **Authority kind** records which authority type gated the action: `bound` (deployment-level binding), `matched` (policy match against protected path), `self-declared` (agent-asserted), or `trust-override` (one of the configured exemptions).
+
+### Receipts
+
+Every action taken under taint writes these fields to the signed receipt chain:
+
+- `session_taint_level` (`clean`, `observed`, `contaminated`)
+- `contaminated` (bool)
+- `recent_taint_sources` (up to `recent_sources` entries)
+- `authority_kind` and `authority_ref`
+- `decision_reason`
+
+The conformance suite (`sdk/conformance/`) includes golden fixtures for taint-escalated receipts so any third-party verifier can validate the taint fields byte-for-byte.
 
 ## Mediation Envelope (v2.1)
 

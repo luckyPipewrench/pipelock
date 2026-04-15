@@ -63,11 +63,84 @@ Consumers should verify:
 3. `signer_key_id` matches the trusted public key they expect.
 4. the Ed25519 signature matches the canonical JSON payload.
 
-The current scaffold exposes verification through the package API:
+The CLI `pipelock posture verify` is the primary verification surface; the Go package API is available for embedding.
 
 ```go
 err := posture.Verify(capsule, trustedPublicKey)
 ```
+
+## `pipelock posture verify`
+
+Verify a signed capsule against a named policy, with optional freshness and minimum-score gates. Intended for CI pipelines and release signing.
+
+```bash
+pipelock posture verify \
+  --proof .pipelock/posture/proof.json \
+  --key /path/to/pipelock-posture.pub \
+  --policy strict
+```
+
+Flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--proof` | `.pipelock/posture/proof.json` | Path to the signed capsule |
+| `--key` | (required) | Path to the Ed25519 public key PEM or hex |
+| `--policy` | `strict` | Policy name: `strict` or `enterprise` |
+| `--config` | (optional) | Path to local `pipelock.yaml` for config-hash comparison |
+| `--min-score` | `0` | Minimum weighted evidence score (0-100). `0` skips the score gate. |
+| `--max-age` | `30d` | Maximum capsule age. Use `0` to skip freshness. Accepts `d`, `h`, or bare seconds. |
+| `--max-receipt-age` | `7d` | Maximum age of the most recent flight-recorder receipt. `0` skips. |
+| `--require-discovery` | `false` | Require at least one discovered MCP server (strict already enforces). |
+| `--json` | `false` | Machine-readable output including per-factor score breakdown. |
+
+### Exit codes
+
+`pipelock posture verify` uses distinct exit codes so CI gates can distinguish integrity failure from policy failure:
+
+| Exit | Meaning |
+|------|---------|
+| `0` | Signature valid, schema supported, capsule fresh, policy gates passed (or `--min-score 0` skips the score gate). |
+| `10` | **Policy failed.** One or more named policy checks failed: score below `--min-score`, capsule older than `--max-age`, receipts stale, or a required factor missing. The capsule itself is valid. |
+| `11` | **Integrity failed.** Signature did not verify, schema is unsupported, the JSON would not parse, or the public key is unreadable. The capsule cannot be trusted. |
+
+### Policies
+
+Two named policies ship with the current `PolicyVersion = "2"`:
+
+- **`strict`** (default) — recommended for new installations. Requires flight recorder active, MCP discovery to have found at least one server (zero discovered is a hard failure, closes the vacuous-truth gap), receipts fresh within `--max-receipt-age`, and no parse errors in discovery.
+- **`enterprise`** — looser gate for environments where pipelock may legitimately see no MCP servers (e.g., non-MCP deployments, empty home directories). Zero discovery becomes a warning rather than a hard failure. All other checks are the same as strict.
+
+The policy evaluation produces hard failures (gate-blocking) and warnings (informational). JSON output lists both categories separately.
+
+### Scoring model
+
+The score (0-100) is a weighted sum of evidence factors. High-level factor groups:
+
+- **Discovery** — count of discovered MCP clients and servers, portion under pipelock protection, parse errors.
+- **Simulate** — pass rate on the built-in scenario corpus, grade (A/B/C/D/F).
+- **Flight recorder** — receipt count in the recent window, verdict distribution (proportion of clean vs blocked), recency of the most recent receipt.
+- **Verify install** — proxying active, flight recorder active.
+
+The weighting is encoded in `internal/posture/score.go` and bumps `PolicyVersion` whenever weights change. Capsule consumers should record the `policy_version` alongside score for reproducibility across pipelock upgrades.
+
+### CI example
+
+```yaml
+- name: Verify pipelock posture
+  run: |
+    pipelock posture emit \
+      --config pipelock.yaml \
+      --output .pipelock/posture
+    pipelock posture verify \
+      --proof .pipelock/posture/proof.json \
+      --key "${{ secrets.POSTURE_PUB_KEY_PATH }}" \
+      --policy strict \
+      --min-score 80 \
+      --json > posture-result.json
+```
+
+An exit code of `10` from the verify step fails the CI job because of a policy gate. A `11` fails because the capsule is not trustworthy — different remediation paths.
 
 ## Artifact shape
 
@@ -123,6 +196,6 @@ Minimal example:
 
 ## Notes
 
-- The scaffold writes only `proof.json`.
-- Human-readable summaries, CI gates, scores, SARIF, and badges are follow-up
-  work.
+- `pipelock posture emit` writes only `proof.json`. Companion artifacts (`proof.md`, `badge.svg`) are planned follow-ups.
+- The verify CLI is the supported gate surface. Earlier documentation called CI gates and scores "follow-up work" — both are shipping.
+- SARIF and human-readable summary output are planned for later releases.

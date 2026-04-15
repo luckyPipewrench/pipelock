@@ -456,9 +456,16 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 }
 
 // reloadEnvelopeEmitter handles envelope emitter lifecycle on config reload.
-// Nils the emitter when disabled, updates the config hash when an emitter
-// already exists, or creates a new emitter when first enabled. Must be called
-// under reloadMu.
+// Nils the emitter when disabled, updates the fallback policy hash when an
+// emitter already exists, or creates a new emitter when first enabled.
+// Must be called under reloadMu.
+//
+// The fallback hash is the GLOBAL config's CanonicalPolicyHash — what a
+// request without a resolved per-agent config sees. Transports that have
+// a per-agent effective *Config MUST pass envelope.PolicyHashFromHex of
+// that resolved config's canonical hash via BuildOpts.PolicyHash so the
+// envelope ph field reflects the agent's actual policy rather than the
+// global default. See the BuildOpts.PolicyHash doc comment.
 func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) {
 	if !cfg.MediationEnvelope.Enabled {
 		p.envelopeEmitterPtr.Store(nil)
@@ -466,11 +473,11 @@ func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) {
 	}
 	existing := p.envelopeEmitterPtr.Load()
 	if existing != nil {
-		existing.UpdateConfigHash(cfg.Hash())
+		existing.UpdateConfigHash(cfg.CanonicalPolicyHash())
 		return
 	}
 	em := envelope.NewEmitter(envelope.EmitterConfig{
-		ConfigHash: cfg.Hash(),
+		ConfigHash: cfg.CanonicalPolicyHash(),
 	})
 	p.envelopeEmitterPtr.Store(em)
 }

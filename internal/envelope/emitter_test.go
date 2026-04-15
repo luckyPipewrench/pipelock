@@ -152,6 +152,81 @@ func TestEmitter_UpdateConfigHash_Nil(t *testing.T) {
 	em.UpdateConfigHash("test") // Must not panic.
 }
 
+// TestEmitter_Build_PolicyHashOverride confirms that BuildOpts.PolicyHash,
+// when non-empty, wins over the emitter's fallback atomic hash. This is
+// how per-agent inject sites stamp an effective canonical ph without
+// clobbering the global reload-time default.
+func TestEmitter_Build_PolicyHashOverride(t *testing.T) {
+	t.Parallel()
+
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+	})
+	perAgent := PolicyHashFromHex("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100")
+
+	env := em.Build(BuildOpts{
+		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
+		Action:     "write",
+		Verdict:    "allow",
+		ActorAuth:  ActorAuthBound,
+		PolicyHash: perAgent,
+	})
+
+	if len(env.PolicyHash) != 16 {
+		t.Fatalf("PolicyHash length = %d, want 16", len(env.PolicyHash))
+	}
+	if string(env.PolicyHash) != string(perAgent) {
+		t.Errorf("BuildOpts.PolicyHash did not override fallback:\n  got  = %x\n  want = %x",
+			env.PolicyHash, perAgent)
+	}
+}
+
+// TestEmitter_Build_PolicyHashFallback confirms that when BuildOpts.PolicyHash
+// is empty, the emitter's atomic fallback drives ph — preserving backward
+// compatibility for transports that do not yet thread per-agent config
+// through inject calls.
+func TestEmitter_Build_PolicyHashFallback(t *testing.T) {
+	t.Parallel()
+
+	const globalHex = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+	em := NewEmitter(EmitterConfig{ConfigHash: globalHex})
+
+	env := em.Build(BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000002",
+		Action:    "read",
+		Verdict:   "allow",
+		ActorAuth: ActorAuthMatched,
+	})
+
+	want := PolicyHashFromHex(globalHex)
+	if string(env.PolicyHash) != string(want) {
+		t.Errorf("fallback PolicyHash:\n  got  = %x\n  want = %x", env.PolicyHash, want)
+	}
+}
+
+// TestPolicyHashFromHex_64CharHex confirms the exported helper decodes a
+// 64-char canonical-hash string into the 16-byte wire form.
+func TestPolicyHashFromHex_64CharHex(t *testing.T) {
+	t.Parallel()
+	const in = "0011223344556677889900aabbccddeeff00112233445566778899aabbccddee"
+	got := PolicyHashFromHex(in)
+	if len(got) != 16 {
+		t.Fatalf("PolicyHashFromHex length = %d, want 16", len(got))
+	}
+	// Expected first 16 bytes are the left half of the input hex string
+	// (each pair of hex nibbles → 1 byte).
+	wantBytes := []byte{
+		0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+		0x88, 0x99, 0x00, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+	}
+	for i := range wantBytes {
+		if got[i] != wantBytes[i] {
+			t.Errorf("PolicyHashFromHex bytes = %x, want %x", got, wantBytes)
+			break
+		}
+	}
+}
+
 func TestPolicyHashTruncated_EmptyString(t *testing.T) {
 	t.Parallel()
 	hash := policyHashTruncated("")

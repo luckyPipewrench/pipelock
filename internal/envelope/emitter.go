@@ -51,6 +51,17 @@ type BuildOpts struct {
 	AuthorityKind  string
 	AuthorityRef   string
 	RequiresReauth bool
+
+	// PolicyHash is the 16-byte canonical policy fingerprint for the
+	// effective config handling this request. When non-empty it wins
+	// over the emitter's fallback hash, so a per-agent handler can
+	// stamp its own canonical ph without contending with the global
+	// reload-time atomic. Callers produce this via PolicyHashFromHex
+	// on the output of (*config.Config).CanonicalPolicyHash() for the
+	// resolved per-request config. When empty, Build falls back to
+	// the emitter's last UpdateConfigHash value — intended for
+	// transports that do not yet thread per-agent config through.
+	PolicyHash []byte
 }
 
 // Build creates an Envelope from the scan decision context.
@@ -60,7 +71,12 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 		return Envelope{}
 	}
 
-	hash := policyHashTruncated(configHashString(e.configHash.Load()))
+	var hash []byte
+	if len(opts.PolicyHash) > 0 {
+		hash = opts.PolicyHash
+	} else {
+		hash = policyHashTruncated(configHashString(e.configHash.Load()))
+	}
 
 	return Envelope{
 		Version:        1,
@@ -100,9 +116,21 @@ func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) {
 	InjectMCP(meta, env)
 }
 
+// PolicyHashFromHex is the exported form of policyHashTruncated. Callers
+// hand it the 64-character hex string returned by
+// (*config.Config).CanonicalPolicyHash() (or the legacy raw Hash()) and
+// get back the 16-byte wire form used as the Pipelock-Mediation ph key.
+// Use this at transport inject sites to stamp the per-agent effective
+// canonical hash via BuildOpts.PolicyHash.
+func PolicyHashFromHex(hash string) []byte {
+	return policyHashTruncated(hash)
+}
+
 // policyHashTruncated returns the first 16 bytes of the config's policy hash.
-// cfg.Hash() already returns a hex-encoded SHA-256 digest, so we decode and
-// truncate rather than hashing again.
+// cfg.Hash() and cfg.CanonicalPolicyHash() both return hex-encoded SHA-256
+// digests, so we decode and truncate rather than hashing again. Non-hex
+// input (e.g. the legacy "sha256:..." prefix) falls through to a SHA-256
+// of the string itself so the output is still 16 bytes.
 func policyHashTruncated(hash string) []byte {
 	if hash == "" {
 		return make([]byte, 16)

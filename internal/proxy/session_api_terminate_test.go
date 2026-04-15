@@ -77,6 +77,10 @@ func TestSessionAPI_HandleTerminate_CEEStateCleared(t *testing.T) {
 	// Provide non-nil CEE state pointers so the handler clears them.
 	et := scanner.NewEntropyTracker(1000, 300)
 	fb := scanner.NewFragmentBuffer(1000, 2, 300)
+	t.Cleanup(func() {
+		et.Close()
+		fb.Close()
+	})
 	var etPtr atomic.Pointer[scanner.EntropyTracker]
 	etPtr.Store(et)
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]

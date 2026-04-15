@@ -1056,8 +1056,6 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 		EscalationLevel:    snap.EscalationLevel,
 		EscalationLevelInt: snap.EscalationLevelInt,
 		ThreatScore:        snap.ThreatScore,
-		Trigger:            snap.AirlockTrigger,
-		TriggerSource:      snap.AirlockTriggerSource,
 	}
 
 	if tier == config.AirlockTierNone {
@@ -1065,10 +1063,15 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 		// Still attach the most recent notable event as evidence so the
 		// operator can see what the session has been doing even when the
 		// tier is normal. Keeps explain useful outside of incident mode.
+		// Trigger/TriggerSource are left empty: a normal-tier session has
+		// no active quarantine cause, and reporting stale trigger metadata
+		// would contradict the "not quarantined" reason string.
 		attachMostRecentEvidence(&exp, snap.RecentEvents)
 		return exp
 	}
 
+	exp.Trigger = snap.AirlockTrigger
+	exp.TriggerSource = snap.AirlockTriggerSource
 	exp.Reason = "session quarantined at airlock tier " + tier
 	if exp.Trigger == "" {
 		exp.Trigger = airlockTriggerManual

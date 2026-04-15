@@ -6,6 +6,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -98,7 +99,11 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 	}
 
 	if ep.URL == "" && cfg.KillSwitch.APIListen != "" {
-		ep.URL = defaultScheme + cfg.KillSwitch.APIListen
+		apiURL, err := apiListenToURL(cfg.KillSwitch.APIListen)
+		if err != nil {
+			return endpoint{}, fmt.Errorf("invalid kill_switch.api_listen %q in %s: %w", cfg.KillSwitch.APIListen, cfgPath, err)
+		}
+		ep.URL = apiURL
 	}
 	if ep.Token == "" {
 		ep.Token = cfg.KillSwitch.APIToken
@@ -175,6 +180,24 @@ func normalizeEndpoint(ep endpoint) endpoint {
 		ep.URL = ep.URL[:len(ep.URL)-1]
 	}
 	return ep
+}
+
+// apiListenToURL converts a bind address (e.g. ":9090", "0.0.0.0:9090",
+// "[::]:9090") into a client-usable URL by mapping wildcard/unspecified
+// hosts to loopback. The admin API binds to a listen address but clients
+// need a concrete host to dial.
+func apiListenToURL(listen string) (string, error) {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return "", err
+	}
+	switch host {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	return defaultScheme + net.JoinHostPort(host, port), nil
 }
 
 // ensureScheme prepends http:// when a bare host:port slipped through.

@@ -47,18 +47,15 @@ Examples:
 	cmd.RunE = func(c *cobra.Command, args []string) error {
 		key := args[0]
 		return runClientCmd(flags, c.Context(), c.OutOrStdout(), func(ctx context.Context, client *Client, out io.Writer) error {
-			if !jsonOutput {
-				// Keep stdout machine-readable in --json mode.
-				_, _ = fmt.Fprintf(out, "WARNING: terminating session %s — in-flight connections will be cut.\n", key)
-			}
-
 			resp, err := client.Terminate(ctx, key)
 			if err != nil {
 				return err
 			}
 			if jsonOutput {
+				// Keep stdout machine-readable in --json mode.
 				return writeJSON(out, resp)
 			}
+			_, _ = fmt.Fprintf(out, "WARNING: terminated session %s — in-flight connections were cut.\n", key)
 			_, _ = fmt.Fprintf(out, "terminated %s: previous_tier=%s level=%s score=%.2f cee_cleared=%t\n",
 				resp.Key, resp.PreviousTier, resp.PreviousLevel, resp.PreviousScore, resp.CEEStateCleared)
 			return nil

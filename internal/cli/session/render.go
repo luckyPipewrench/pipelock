@@ -75,8 +75,12 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	if d.CurrentTaskLabel != "" {
 		fmt.Fprintf(buf, "  current_task:     %s\n", d.CurrentTaskLabel)
 	}
-	fmt.Fprintf(buf, "  last_activity:    %s (%s ago)\n",
-		d.LastActivity.UTC().Format(time.RFC3339), formatDuration(time.Since(d.LastActivity)))
+	if d.LastActivity.IsZero() {
+		fmt.Fprintln(buf, "  last_activity:    -")
+	} else {
+		fmt.Fprintf(buf, "  last_activity:    %s (%s ago)\n",
+			d.LastActivity.UTC().Format(time.RFC3339), formatDuration(time.Since(d.LastActivity)))
+	}
 
 	fmt.Fprintln(buf, "  recent_events:")
 	if len(d.RecentEvents) == 0 {

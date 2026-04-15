@@ -286,6 +286,53 @@ func TestResolveEndpoint_ConfigPermsRejected(t *testing.T) {
 	}
 }
 
+func TestApiListenToURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		listen  string
+		want    string
+		wantErr bool
+	}{
+		{"bare port", ":9090", "http://127.0.0.1:9090", false},
+		{"wildcard v4", "0.0.0.0:9090", "http://127.0.0.1:9090", false},
+		{"wildcard v6", "[::]:9090", "http://[::1]:9090", false},
+		{"loopback v4 preserved", "127.0.0.1:9090", "http://127.0.0.1:9090", false},
+		{"hostname preserved", "admin.local:8080", "http://admin.local:8080", false},
+		{"malformed no port", "notahost", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := apiListenToURL(tc.listen)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q", tc.listen)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveEndpoint_WildcardAPIListen(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.KillSwitch.APIListen = "0.0.0.0:9090"
+	cfg.KillSwitch.APIToken = "cfg-token"
+	deps := fakeDepsWithEnv(nil, cfg, nil)
+	ep, err := resolveEndpoint(&rootFlags{configPath: "/tmp/pipelock.yaml"}, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ep.URL != "http://127.0.0.1:9090" {
+		t.Fatalf("wildcard not normalized to loopback: got %q", ep.URL)
+	}
+}
+
 func TestResolveEndpoint_NoURLNoFlagsNoConfig(t *testing.T) {
 	deps := resolverDeps{
 		userHomeDir: func() (string, error) { return "", errors.New("no home") },

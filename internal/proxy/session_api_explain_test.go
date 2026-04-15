@@ -395,3 +395,29 @@ func TestBuildExplanation_NoneTierAttachesEvidence(t *testing.T) {
 		t.Errorf("EvidenceKind: got %q, want anomaly", exp.EvidenceKind)
 	}
 }
+
+// TestBuildExplanation_NoneTierOmitsTriggerMetadata guards against the
+// self-contradictory output where a normal-tier session returned a
+// "not quarantined" reason alongside stale trigger metadata from a prior
+// airlock entry. The explain contract is: tier=none means no active
+// quarantine cause, so Trigger and TriggerSource must be empty.
+func TestBuildExplanation_NoneTierOmitsTriggerMetadata(t *testing.T) {
+	snap := sessionAdminSnapshot{
+		SessionSnapshot: SessionSnapshot{
+			Key:         "agent|10.0.0.1",
+			AirlockTier: config.AirlockTierNone,
+		},
+		AirlockTrigger:       "stale_trigger_from_prior_entry",
+		AirlockTriggerSource: "prior_source",
+	}
+	exp := buildExplanation(snap, nil)
+	if exp.Reason != tierNotQuarantinedReason {
+		t.Errorf("Reason: got %q, want %q", exp.Reason, tierNotQuarantinedReason)
+	}
+	if exp.Trigger != "" {
+		t.Errorf("Trigger: got %q, want empty for tier=none", exp.Trigger)
+	}
+	if exp.TriggerSource != "" {
+		t.Errorf("TriggerSource: got %q, want empty for tier=none", exp.TriggerSource)
+	}
+}

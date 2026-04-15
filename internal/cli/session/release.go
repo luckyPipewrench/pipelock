@@ -53,6 +53,21 @@ Examples:
 			return cliutil.ExitCodeError(2, err)
 		}
 		return runClientCmd(flags, c.Context(), c.OutOrStdout(), func(ctx context.Context, client *Client, out io.Writer) error {
+			// Release is contract-downward. Fetch the current tier first and
+			// reject any move that would escalate the session. Without this
+			// check, `release --to soft` on a normal-tier session would
+			// ForceSetTier upward to soft, contradicting the command's
+			// recover-semantics. The inspect/release pair is best-effort
+			// (the tier could change between the two calls) but prevents
+			// the common misuse case; server-side enforcement would require
+			// a dedicated endpoint, out of scope here.
+			detail, err := client.Inspect(ctx, key)
+			if err != nil {
+				return err
+			}
+			if err := ensureDownward(detail.AirlockTier, toTier); err != nil {
+				return cliutil.ExitCodeError(2, err)
+			}
 			resp, err := client.Release(ctx, key, toTier)
 			if err != nil {
 				return err
@@ -78,4 +93,39 @@ func validateReleaseTier(tier string) error {
 		return nil
 	}
 	return errors.New("invalid --to: must be none|soft (use the airlock endpoint for upward transitions)")
+}
+
+// releaseTierRank maps each airlock tier to an ordinal for downward
+// comparison. Higher rank = more restrictive. A release target must be
+// less than or equal to the current rank. Empty tiers are normalized to
+// none (rank 0), matching runtime behavior where an unset AirlockTier
+// on a snapshot means the session is not quarantined.
+func releaseTierRank(tier string) int {
+	switch tier {
+	case "", config.AirlockTierNone, airlockTierAliasNormal:
+		return 0
+	case config.AirlockTierSoft:
+		return 1
+	case config.AirlockTierHard:
+		return 2
+	case config.AirlockTierDrain:
+		return 3
+	default:
+		// Unknown tiers are treated as maximum so a stale snapshot cannot
+		// accidentally authorize a release we don't understand.
+		return 99
+	}
+}
+
+// ensureDownward returns an error if target would raise the session's
+// tier. Same-rank moves are allowed (idempotent release).
+func ensureDownward(current, target string) error {
+	if releaseTierRank(target) > releaseTierRank(current) {
+		cur := current
+		if cur == "" {
+			cur = config.AirlockTierNone
+		}
+		return fmt.Errorf("refusing to escalate session: current tier %q, target %q — release is downward-only; use the airlock command to escalate", cur, target)
+	}
+	return nil
 }

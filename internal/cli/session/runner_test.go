@@ -5,7 +5,9 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -52,6 +54,51 @@ func TestMapClientError_NonAPIErrorIsExit1(t *testing.T) {
 	err := mapClientError(errors.New("boom"))
 	if code := cliutil.ExitCodeOf(err); code != 1 {
 		t.Errorf("exit code: got %d, want 1", code)
+	}
+}
+
+// TestRunClientCmd_PreservesExitCodeError guards against regression of a
+// bug where runClientCmd remapped every executor error through
+// mapClientError, stripping any pre-wrapped cliutil.ExitCodeError. The
+// interactive recover path relies on ExitConfig (2) for invalid-input
+// errors; without this passthrough those become ExitGeneral (1).
+func TestRunClientCmd_PreservesExitCodeError(t *testing.T) {
+	origFactory := newClientFn
+	t.Cleanup(func() { newClientFn = origFactory })
+	newClientFn = func(*rootFlags) (*Client, error) {
+		return newClient(endpoint{URL: "http://stub:0", Token: "t"}), nil
+	}
+
+	wrapped := cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("invalid input"))
+	err := runClientCmd(&rootFlags{}, context.Background(), io.Discard, func(context.Context, *Client, io.Writer) error {
+		return wrapped
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if code := cliutil.ExitCodeOf(err); code != cliutil.ExitConfig {
+		t.Errorf("exit code: got %d, want %d (original classification must survive)", code, cliutil.ExitConfig)
+	}
+}
+
+// TestRunClientCmd_UnclassifiedErrorsStillMapped keeps the default path
+// working: bare errors without ExitCodeError wrapping still get routed
+// through mapClientError.
+func TestRunClientCmd_UnclassifiedErrorsStillMapped(t *testing.T) {
+	origFactory := newClientFn
+	t.Cleanup(func() { newClientFn = origFactory })
+	newClientFn = func(*rootFlags) (*Client, error) {
+		return newClient(endpoint{URL: "http://stub:0", Token: "t"}), nil
+	}
+
+	err := runClientCmd(&rootFlags{}, context.Background(), io.Discard, func(context.Context, *Client, io.Writer) error {
+		return errors.New("bare error")
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if code := cliutil.ExitCodeOf(err); code != cliutil.ExitGeneral {
+		t.Errorf("bare error should map to ExitGeneral, got %d", code)
 	}
 }
 

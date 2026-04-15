@@ -45,6 +45,14 @@ func runClientCmd(
 		ctx = context.Background()
 	}
 	if err := executor(ctx, client, stdout); err != nil {
+		// Preserve any exit-code classification the executor already
+		// attached (e.g. recover's interactive invalid-input path wraps
+		// usage errors with ExitConfig). mapClientError is only for
+		// bare API/network errors that haven't been classified yet.
+		var classified *cliutil.ExitError
+		if errors.As(err, &classified) {
+			return err
+		}
 		return mapClientError(err)
 	}
 	return nil

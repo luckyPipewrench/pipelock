@@ -22,13 +22,15 @@ func newNoopEdition(cfg *config.Config, sc *scanner.Scanner) (Edition, error) {
 	return &noopEdition{cfg: cfg, sc: sc}, nil
 }
 
-func (e *noopEdition) ResolveAgent(_ context.Context, _ *http.Request) (*ResolvedAgent, AgentIdentity) {
+func (e *noopEdition) ResolveAgent(_ context.Context, r *http.Request) (*ResolvedAgent, AgentIdentity) {
+	identity := ResolveAgentIdentity(r, nil, e.cfg.DefaultAgentIdentity, e.cfg.BindDefaultAgentIdentity)
+
 	return &ResolvedAgent{
 		Name:    ProfileDefault,
 		Config:  e.cfg,
 		Scanner: e.sc,
 		Budget:  NoopBudget,
-	}, AgentIdentity{Name: "", Profile: ProfileDefault}
+	}, identity
 }
 
 func (e *noopEdition) LookupProfile(name string) (*ResolvedAgent, bool) {

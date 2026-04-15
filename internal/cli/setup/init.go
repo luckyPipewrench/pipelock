@@ -122,6 +122,8 @@ Examples:
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "machine-readable JSON output")
 	cmd.Flags().StringVar(&scanHome, "scan-home", "", "override home directory for discovery (default: $HOME)")
 
+	cmd.AddCommand(SidecarCmd())
+
 	return cmd
 }
 
@@ -346,7 +348,7 @@ func buildConfig(preset string, report *discover.Report) *config.Config {
 	}
 
 	// Enable MCP scanning if MCP servers were discovered.
-	if report.Summary.TotalServers > 0 {
+	if report != nil && report.Summary.TotalServers > 0 {
 		cfg.MCPInputScanning.Enabled = true
 		cfg.MCPInputScanning.Action = config.ActionWarn
 		cfg.MCPToolScanning.Enabled = true
@@ -355,7 +357,7 @@ func buildConfig(preset string, report *discover.Report) *config.Config {
 	}
 
 	// Enable tool chain detection for larger MCP installations.
-	if report.Summary.TotalServers > 3 {
+	if report != nil && report.Summary.TotalServers > 3 {
 		cfg.ToolChainDetection.Enabled = true
 		cfg.ToolChainDetection.Action = config.ActionWarn
 		cfg.ToolChainDetection.WindowSize = 20

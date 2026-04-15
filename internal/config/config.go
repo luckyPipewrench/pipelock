@@ -344,59 +344,61 @@ type SandboxFilesystem struct {
 
 // Config is the top-level Pipelock configuration.
 type Config struct {
-	Version               int                     `yaml:"version"`
-	Mode                  string                  `yaml:"mode"`           // strict, balanced, audit
-	Enforce               *bool                   `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
-	ExplainBlocks         *bool                   `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
-	APIAllowlist          []string                `yaml:"api_allowlist"`
-	Suppress              []SuppressEntry         `yaml:"suppress"`
-	FetchProxy            FetchProxy              `yaml:"fetch_proxy"`
-	ForwardProxy          ForwardProxy            `yaml:"forward_proxy"`
-	WebSocketProxy        WebSocketProxy          `yaml:"websocket_proxy"`
-	DLP                   DLP                     `yaml:"dlp"`
-	CanaryTokens          CanaryTokens            `yaml:"canary_tokens"`
-	ResponseScanning      ResponseScanning        `yaml:"response_scanning"`
-	MCPInputScanning      MCPInputScanning        `yaml:"mcp_input_scanning"`
-	MCPToolScanning       MCPToolScanning         `yaml:"mcp_tool_scanning"`
-	MCPToolPolicy         MCPToolPolicy           `yaml:"mcp_tool_policy"`
-	GitProtection         GitProtection           `yaml:"git_protection"`
-	Logging               LoggingConfig           `yaml:"logging"`
-	SessionProfiling      SessionProfiling        `yaml:"session_profiling"`
-	AdaptiveEnforcement   AdaptiveEnforcement     `yaml:"adaptive_enforcement"`
-	MCPSessionBinding     MCPSessionBinding       `yaml:"mcp_session_binding"`
-	RequestBodyScanning   RequestBodyScanning     `yaml:"request_body_scanning"`
-	KillSwitch            KillSwitch              `yaml:"kill_switch"`
-	Sentry                SentryConfig            `yaml:"sentry"`
-	MetricsListen         string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
-	Emit                  EmitConfig              `yaml:"emit"`
-	ToolChainDetection    ToolChainDetection      `yaml:"tool_chain_detection"`
-	MCPWSListener         MCPWSListener           `yaml:"mcp_ws_listener"`
-	TLSInterception       TLSInterception         `yaml:"tls_interception"`
-	CrossRequestDetection CrossRequestDetection   `yaml:"cross_request_detection"`
-	ReverseProxy          ReverseProxy            `yaml:"reverse_proxy"`
-	ScanAPI               ScanAPI                 `yaml:"scan_api"`
-	AddressProtection     AddressProtection       `yaml:"address_protection"`
-	SeedPhraseDetection   SeedPhraseDetection     `yaml:"seed_phrase_detection"`
-	Rules                 Rules                   `yaml:"rules"`
-	FileSentry            FileSentry              `yaml:"file_sentry"`
-	Sandbox               Sandbox                 `yaml:"sandbox"`
-	FlightRecorder        FlightRecorder          `yaml:"flight_recorder"`
-	MCPBinaryIntegrity    MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
-	MCPToolProvenance     MCPToolProvenance       `yaml:"mcp_tool_provenance"`
-	BehavioralBaseline    BehavioralBaseline      `yaml:"behavioral_baseline"`
-	Airlock               Airlock                 `yaml:"airlock"`
-	BrowserShield         BrowserShield           `yaml:"browser_shield"`
-	MediaPolicy           MediaPolicy             `yaml:"media_policy"`
-	A2AScanning           A2AScanning             `yaml:"a2a_scanning"`
-	Taint                 TaintConfig             `yaml:"taint"`
-	MediationEnvelope     MediationEnvelope       `yaml:"mediation_envelope"`
-	Agents                map[string]AgentProfile `yaml:"agents,omitempty"`
-	LicenseKey            string                  `yaml:"license_key,omitempty"`        // signed license token (from pipelock license issue)
-	LicenseFile           string                  `yaml:"license_file,omitempty"`       // path to file containing the license token (read at startup)
-	LicensePublicKey      string                  `yaml:"license_public_key,omitempty"` // hex-encoded Ed25519 public key for license verification (dev builds only)
-	Internal              []string                `yaml:"internal"`
-	TrustedDomains        []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
-	SSRF                  SSRF                    `yaml:"ssrf"`
+	Version                  int                     `yaml:"version"`
+	Mode                     string                  `yaml:"mode"`           // strict, balanced, audit
+	Enforce                  *bool                   `yaml:"enforce"`        // nil = true (default); false = detect & log without blocking
+	ExplainBlocks            *bool                   `yaml:"explain_blocks"` // nil = false (default); true = include hints in block responses
+	APIAllowlist             []string                `yaml:"api_allowlist"`
+	Suppress                 []SuppressEntry         `yaml:"suppress"`
+	FetchProxy               FetchProxy              `yaml:"fetch_proxy"`
+	ForwardProxy             ForwardProxy            `yaml:"forward_proxy"`
+	WebSocketProxy           WebSocketProxy          `yaml:"websocket_proxy"`
+	DLP                      DLP                     `yaml:"dlp"`
+	CanaryTokens             CanaryTokens            `yaml:"canary_tokens"`
+	ResponseScanning         ResponseScanning        `yaml:"response_scanning"`
+	MCPInputScanning         MCPInputScanning        `yaml:"mcp_input_scanning"`
+	MCPToolScanning          MCPToolScanning         `yaml:"mcp_tool_scanning"`
+	MCPToolPolicy            MCPToolPolicy           `yaml:"mcp_tool_policy"`
+	GitProtection            GitProtection           `yaml:"git_protection"`
+	Logging                  LoggingConfig           `yaml:"logging"`
+	SessionProfiling         SessionProfiling        `yaml:"session_profiling"`
+	AdaptiveEnforcement      AdaptiveEnforcement     `yaml:"adaptive_enforcement"`
+	MCPSessionBinding        MCPSessionBinding       `yaml:"mcp_session_binding"`
+	RequestBodyScanning      RequestBodyScanning     `yaml:"request_body_scanning"`
+	KillSwitch               KillSwitch              `yaml:"kill_switch"`
+	Sentry                   SentryConfig            `yaml:"sentry"`
+	MetricsListen            string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
+	Emit                     EmitConfig              `yaml:"emit"`
+	ToolChainDetection       ToolChainDetection      `yaml:"tool_chain_detection"`
+	MCPWSListener            MCPWSListener           `yaml:"mcp_ws_listener"`
+	TLSInterception          TLSInterception         `yaml:"tls_interception"`
+	CrossRequestDetection    CrossRequestDetection   `yaml:"cross_request_detection"`
+	ReverseProxy             ReverseProxy            `yaml:"reverse_proxy"`
+	ScanAPI                  ScanAPI                 `yaml:"scan_api"`
+	AddressProtection        AddressProtection       `yaml:"address_protection"`
+	SeedPhraseDetection      SeedPhraseDetection     `yaml:"seed_phrase_detection"`
+	Rules                    Rules                   `yaml:"rules"`
+	FileSentry               FileSentry              `yaml:"file_sentry"`
+	Sandbox                  Sandbox                 `yaml:"sandbox"`
+	FlightRecorder           FlightRecorder          `yaml:"flight_recorder"`
+	MCPBinaryIntegrity       MCPBinaryIntegrity      `yaml:"mcp_binary_integrity"`
+	MCPToolProvenance        MCPToolProvenance       `yaml:"mcp_tool_provenance"`
+	BehavioralBaseline       BehavioralBaseline      `yaml:"behavioral_baseline"`
+	Airlock                  Airlock                 `yaml:"airlock"`
+	BrowserShield            BrowserShield           `yaml:"browser_shield"`
+	MediaPolicy              MediaPolicy             `yaml:"media_policy"`
+	A2AScanning              A2AScanning             `yaml:"a2a_scanning"`
+	Taint                    TaintConfig             `yaml:"taint"`
+	MediationEnvelope        MediationEnvelope       `yaml:"mediation_envelope"`
+	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
+	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
+	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
+	LicenseKey               string                  `yaml:"license_key,omitempty"`                 // signed license token (from pipelock license issue)
+	LicenseFile              string                  `yaml:"license_file,omitempty"`                // path to file containing the license token (read at startup)
+	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`          // hex-encoded Ed25519 public key for license verification (dev builds only)
+	Internal                 []string                `yaml:"internal"`
+	TrustedDomains           []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
+	SSRF                     SSRF                    `yaml:"ssrf"`
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -2195,6 +2197,7 @@ func (c *Config) Validate() error {
 		c.validateAirlock,
 		c.validateBrowserShield,
 		c.validateTaint,
+		c.validateDefaultAgentIdentity,
 		c.validateMediationEnvelope,
 		c.validateMediaPolicy,
 	}
@@ -3465,6 +3468,17 @@ func (c *Config) validateBrowserShield() error {
 func (c *Config) validateMediationEnvelope() error {
 	// Only field today is Enabled (bool). Signing, SPIFFE actor format,
 	// and key management will add validation when they ship.
+	return nil
+}
+
+func (c *Config) validateDefaultAgentIdentity() error {
+	identity := strings.TrimSpace(c.DefaultAgentIdentity)
+	if c.BindDefaultAgentIdentity && identity == "" {
+		return fmt.Errorf("bind_default_agent_identity requires default_agent_identity")
+	}
+	if c.DefaultAgentIdentity != "" && identity != c.DefaultAgentIdentity {
+		return fmt.Errorf("default_agent_identity must not contain leading or trailing whitespace")
+	}
 	return nil
 }
 

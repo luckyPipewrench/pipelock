@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### New Features
 
 - Extend signed receipt emission to fetch handler error paths (audit-mode escalation, session profiling, header DLP, budget, CEE), WebSocket transport (handshake blocks, frame-level DLP/injection/address/CEE blocks, session close), and A2A transport in the forward proxy (header scan, stream scan, response body scan).
+- **Sidecar injection init:** `pipelock init sidecar --inject-spec <manifest>` generates a sidecar patch for Deployment, StatefulSet, Job, and CronJob workloads. Three output formats: strategic-merge patch, Kustomize overlay, and Helm values fragment. Includes canary verification, diff preview, and idempotent re-runs.
+- **Default agent identity:** new `default_agent_identity` config field provides a fallback agent name for sidecar deployments where the upstream container does not send an `X-Pipelock-Agent` header. Derived automatically from workload kind/name during `init sidecar`.
+- **Exemption audit emission:** response scan exemptions (exempt domains and suppressed findings) now emit a `pipelock_response_scan_exempt_total` Prometheus counter with `reason` and `transport` labels across all proxy transports.
 
 ### Security Hardening
 

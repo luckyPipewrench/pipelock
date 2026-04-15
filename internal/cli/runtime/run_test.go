@@ -587,7 +587,7 @@ func TestAgentHandler(t *testing.T) {
 	var resolved edition.AgentIdentity
 
 	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		resolved = edition.ResolveAgentIdentity(r, map[string]bool{testProfile: true})
+		resolved = edition.ResolveAgentIdentity(r, map[string]bool{testProfile: true}, "", false)
 	})
 
 	handler := AgentHandler(testProfile, inner)

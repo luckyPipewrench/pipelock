@@ -109,6 +109,9 @@ type Metrics struct {
 	shieldSkipped       *prometheus.CounterVec   // reason label
 	shieldLatency       *prometheus.HistogramVec // transport label
 
+	// Response scan exemption: tracks every response-scan skip for operator visibility.
+	responseScanExemptTotal *prometheus.CounterVec // reason, transport labels
+
 	wsConnectionCount int64
 
 	mu                sync.Mutex
@@ -456,6 +459,12 @@ func New() *Metrics {
 		Buckets:   []float64{0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1},
 	}, []string{"transport"})
 
+	responseScanExemptTotal := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "response_scan_exempt_total",
+		Help:      "Total response scan exemption skips by reason and transport.",
+	}, []string{"reason", "transport"})
+
 	reg.MustRegister(requestsTotal, scannerHits, requestLatency,
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
@@ -474,7 +483,8 @@ func New() *Metrics {
 		airlockSessions, airlockTransitions, airlockDenials,
 		airlockDrainCompleted, airlockDrainTimeout,
 		shieldRewrites, shieldBytesStripped, shieldShimsInjected,
-		shieldSkipped, shieldLatency)
+		shieldSkipped, shieldLatency,
+		responseScanExemptTotal)
 
 	return &Metrics{
 		registry:                    reg,
@@ -532,6 +542,7 @@ func New() *Metrics {
 		shieldShimsInjected:         shieldShimsInjected,
 		shieldSkipped:               shieldSkipped,
 		shieldLatency:               shieldLatency,
+		responseScanExemptTotal:     responseScanExemptTotal,
 		startTime:                   time.Now(),
 		topBlockedDomains:           make(map[string]int64),
 		topScannerHits:              make(map[string]int64),
@@ -1131,4 +1142,14 @@ func (m *Metrics) RecordShieldLatency(transport string, d time.Duration) {
 		return
 	}
 	m.shieldLatency.WithLabelValues(transport).Observe(d.Seconds())
+}
+
+// RecordResponseScanExempt increments the response scan exemption counter.
+// reason: "exempt_domain" (config exempt_domains match) or "suppress" (config suppress match).
+// transport: "fetch", "forward", "connect", "websocket", "reverse".
+func (m *Metrics) RecordResponseScanExempt(reason, transport string) {
+	if m == nil {
+		return
+	}
+	m.responseScanExemptTotal.WithLabelValues(reason, transport).Inc()
 }

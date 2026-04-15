@@ -1095,6 +1095,29 @@ What it enables beyond `strict`:
 
 The core principle: the model won't protect you, so the network layer must.
 
+## Default Agent Identity
+
+When pipelock runs behind a workload-local proxy configuration, incoming requests typically lack the `X-Pipelock-Agent` header because the upstream container sends traffic through `HTTPS_PROXY` without identity headers. Set `default_agent_identity` so that traffic is attributed to the workload rather than showing as `anonymous` in logs, receipts, and metrics.
+
+```yaml
+default_agent_identity: "deployment/my-agent"
+```
+
+If you also set `bind_default_agent_identity: true`, pipelock ignores caller-supplied `X-Pipelock-Agent` headers and `?agent=` query params and binds all traffic on that listener to the configured default identity. This is the recommended mode for the generated `pipelock init sidecar` companion topology.
+
+These precedences apply to default-identity resolution after listener-level and source-CIDR resolution have been evaluated. They do not override an agent profile that matched on listener address or source CIDR.
+
+Resolution precedence with binding disabled: context override > `X-Pipelock-Agent` header > `default_agent_identity` > `?agent=` query param > `anonymous`.
+
+Resolution precedence with binding enabled: context override > `default_agent_identity` > `anonymous`.
+
+`pipelock init sidecar` sets both fields automatically from the workload kind and name (e.g., `deployment/my-agent`). Override the identity with `--agent-identity`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `default_agent_identity` | `string` | `""` (anonymous) | Operator-configured agent name used when no stronger identity source resolves the caller |
+| `bind_default_agent_identity` | `bool` | `false` | Ignore caller-supplied `X-Pipelock-Agent` and `?agent=` values and bind requests to `default_agent_identity` |
+
 ## Agent Profiles
 
 Per-agent policy overrides. When multiple agents share one pipelock instance, each agent can have its own mode, allowlist, DLP patterns, rate limits, and request budgets. Scalar fields (mode, enforce) inherit from the base config when unset. `mcp_tool_policy` replaces the base section entirely when set on an agent profile (no deep merge). `session_profiling` replaces the per-agent fields (`domain_burst`, `anomaly_action`, `volume_spike_ratio`) unconditionally while preserving global-only fields (`max_sessions`, `session_ttl_minutes`, `cleanup_interval_seconds`). `rate_limit` overrides individual rate limit fields (non-zero values win). DLP merging follows separate rules (see below).

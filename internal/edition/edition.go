@@ -155,13 +155,53 @@ func ValidateAgentName(name string) error {
 // Returns "anonymous" when no agent is specified.
 // Names are sanitized to prevent log injection.
 func ExtractAgent(r *http.Request) string {
-	agent := r.Header.Get(AgentHeader)
-	if agent == "" {
-		agent = r.URL.Query().Get("agent")
+	return ExtractAgentWithDefault(r, "", false)
+}
+
+func boundDefaultIdentity(defaultIdentity string, bindDefaultIdentity bool) (string, bool) {
+	if !bindDefaultIdentity || defaultIdentity == "" {
+		return "", false
 	}
+	return sanitizeAgentName(defaultIdentity), true
+}
+
+func configDefaultIdentity(knownProfiles map[string]bool, defaultIdentity string) AgentIdentity {
+	resolved := sanitizeAgentName(defaultIdentity)
+	if knownProfiles[resolved] {
+		return AgentIdentity{Name: resolved, Profile: resolved, Auth: envelope.ActorAuthConfigDefault}
+	}
+	return AgentIdentity{Name: resolved, Profile: ProfileDefault, Auth: envelope.ActorAuthConfigDefault}
+}
+
+// ExtractAgentWithDefault reads the agent name from the request header,
+// default identity, or query param before "anonymous".
+// Priority:
+//   - when bindDefaultIdentity=true and defaultIdentity is set:
+//     defaultIdentity > "anonymous" (header/query ignored)
+//   - otherwise:
+//     header > defaultIdentity > query param > "anonymous"
+//
+// Names are sanitized to prevent log injection.
+func ExtractAgentWithDefault(r *http.Request, defaultIdentity string, bindDefaultIdentity bool) string {
+	if boundName, ok := boundDefaultIdentity(defaultIdentity, bindDefaultIdentity); ok {
+		return boundName
+	}
+	agent := r.Header.Get(AgentHeader)
+	if agent != "" {
+		return sanitizeAgentName(agent)
+	}
+	if defaultIdentity != "" {
+		return sanitizeAgentName(defaultIdentity)
+	}
+	agent = r.URL.Query().Get("agent")
 	if agent == "" {
 		return agentAnonymous
 	}
+	return sanitizeAgentName(agent)
+}
+
+// sanitizeAgentName strips disallowed characters and truncates.
+func sanitizeAgentName(agent string) string {
 	agent = agentNameRe.ReplaceAllString(agent, "_")
 	if len(agent) > maxAgentNameLen {
 		agent = agent[:maxAgentNameLen]
@@ -173,15 +213,35 @@ func ExtractAgent(r *http.Request) string {
 }
 
 // ResolveAgentIdentity determines agent identity from a request.
-// Priority: context override > header > query param > fallback.
+// Priority:
+//   - context override
+//   - bound defaultIdentity when bindDefaultIdentity=true
+//   - header > defaultIdentity > query param > fallback otherwise
+//
 // knownProfiles contains profile names that exist in the registry.
 // Unrecognized names get Profile=ProfileDefault (bounded cardinality).
-func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool) AgentIdentity {
+func ResolveAgentIdentity(r *http.Request, knownProfiles map[string]bool, defaultIdentity string, bindDefaultIdentity bool) AgentIdentity {
 	if profile, ok := AgentOverrideFromContext(r.Context()); ok {
 		return AgentIdentity{Name: profile, Profile: profile, Auth: envelope.ActorAuthBound}
 	}
 
-	name := ExtractAgent(r)
+	if _, ok := boundDefaultIdentity(defaultIdentity, bindDefaultIdentity); ok {
+		return configDefaultIdentity(knownProfiles, defaultIdentity)
+	}
+
+	headerName := sanitizeAgentName(r.Header.Get(AgentHeader))
+	if headerName != agentAnonymous {
+		if knownProfiles[headerName] {
+			return AgentIdentity{Name: headerName, Profile: headerName, Auth: envelope.ActorAuthMatched}
+		}
+		return AgentIdentity{Name: headerName, Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
+	}
+
+	if defaultIdentity != "" {
+		return configDefaultIdentity(knownProfiles, defaultIdentity)
+	}
+
+	name := sanitizeAgentName(r.URL.Query().Get("agent"))
 	if name == agentAnonymous {
 		return AgentIdentity{Name: "", Profile: ProfileDefault, Auth: envelope.ActorAuthSelfDeclared}
 	}

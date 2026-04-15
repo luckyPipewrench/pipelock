@@ -1715,3 +1715,38 @@ func TestRecordSessionAutoDeescalation_NilSafe(t *testing.T) {
 	var m *Metrics
 	m.RecordSessionAutoDeescalation("critical", "high") // must not panic
 }
+
+func TestRecordResponseScanExempt(t *testing.T) {
+	m := New()
+	m.RecordResponseScanExempt("exempt_domain", "fetch")
+	m.RecordResponseScanExempt("exempt_domain", "forward")
+	m.RecordResponseScanExempt("suppress", "connect")
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `pipelock_response_scan_exempt_total{reason="exempt_domain",transport="fetch"} 1`) {
+		t.Error("expected exempt_domain/fetch counter = 1")
+	}
+	if !strings.Contains(body, `pipelock_response_scan_exempt_total{reason="exempt_domain",transport="forward"} 1`) {
+		t.Error("expected exempt_domain/forward counter = 1")
+	}
+	if !strings.Contains(body, `pipelock_response_scan_exempt_total{reason="suppress",transport="connect"} 1`) {
+		t.Error("expected suppress/connect counter = 1")
+	}
+}
+
+func TestRecordResponseScanExempt_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordResponseScanExempt("exempt_domain", "fetch") // must not panic
+}
+
+func scrapeMetrics(t *testing.T, m *Metrics) string {
+	t.Helper()
+	handler := m.PrometheusHandler()
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body, err := io.ReadAll(rec.Body)
+	if err != nil {
+		t.Fatalf("reading metrics: %v", err)
+	}
+	return string(body)
+}

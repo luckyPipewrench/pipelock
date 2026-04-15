@@ -1340,6 +1340,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if r.scanText && r.scanner.ResponseScanningEnabled() {
 				scanResult := r.scanner.ScanResponse(ctx, string(msg))
 				if !scanResult.Clean {
+					if wsRespExempt {
+						r.proxy.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportWS)
+					}
 					patternNames := make([]string, len(scanResult.Matches))
 					for i, m := range scanResult.Matches {
 						patternNames[i] = m.PatternName

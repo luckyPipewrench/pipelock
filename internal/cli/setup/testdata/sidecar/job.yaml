@@ -1,0 +1,15 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-runner
+  namespace: jobs
+spec:
+  template:
+    metadata:
+      labels:
+        app: batch-runner
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: runner
+          image: batch-runner:latest

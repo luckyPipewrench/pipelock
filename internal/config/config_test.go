@@ -85,6 +85,9 @@ func TestDefaults(t *testing.T) {
 	if len(cfg.Internal) == 0 {
 		t.Error("expected non-empty internal CIDRs")
 	}
+	if cfg.BindDefaultAgentIdentity {
+		t.Error("expected bind_default_agent_identity to default false")
+	}
 }
 
 func TestDefaults_QuarantineDir(t *testing.T) {
@@ -126,6 +129,32 @@ func TestValidate_StrictModeRequiresAllowlist(t *testing.T) {
 	cfg.APIAllowlist = nil
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for strict mode with empty allowlist")
+	}
+}
+
+func TestValidate_BindDefaultAgentIdentityRequiresDefault(t *testing.T) {
+	cfg := Defaults()
+	cfg.BindDefaultAgentIdentity = true
+	cfg.DefaultAgentIdentity = ""
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when bind_default_agent_identity is true without default_agent_identity")
+	}
+}
+
+func TestValidate_BindDefaultAgentIdentityRejectsWhitespaceOnly(t *testing.T) {
+	cfg := Defaults()
+	cfg.BindDefaultAgentIdentity = true
+	cfg.DefaultAgentIdentity = "   \t  "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when bind_default_agent_identity is true and identity is whitespace-only")
+	}
+}
+
+func TestValidate_DefaultAgentIdentityRejectsLeadingTrailingWhitespace(t *testing.T) {
+	cfg := Defaults()
+	cfg.DefaultAgentIdentity = "  deployment/my-agent  "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when default_agent_identity has leading or trailing whitespace")
 	}
 }
 

@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-agent
+  namespace: agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-agent
+  template:
+    metadata:
+      labels:
+        app: my-agent
+    spec:
+      containers:
+        - name: agent
+          image: my-agent:latest
+          ports:
+            - containerPort: 8080

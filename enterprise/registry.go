@@ -174,7 +174,7 @@ func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Reques
 	for _, name := range profiles {
 		known[name] = true
 	}
-	id := edition.ResolveAgentIdentity(req, known)
+	id := edition.ResolveAgentIdentity(req, known, defaultCfg.DefaultAgentIdentity, defaultCfg.BindDefaultAgentIdentity)
 	return r.Lookup(id.Profile), id
 }
 

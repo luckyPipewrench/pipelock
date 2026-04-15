@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: my-db-agent
+  namespace: data
+spec:
+  serviceName: my-db-agent
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-db-agent
+  template:
+    metadata:
+      labels:
+        app: my-db-agent
+    spec:
+      containers:
+        - name: agent
+          image: my-db-agent:latest
+          ports:
+            - containerPort: 5432

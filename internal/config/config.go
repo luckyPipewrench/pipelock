@@ -408,6 +408,14 @@ type Config struct {
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
 	rawBytes []byte `yaml:"-"`
+
+	// canonicalHashCache memoises CanonicalPolicyHash() so repeated calls
+	// on the same *Config value do not re-walk and re-marshal the struct.
+	// Unexported — json.Marshal skips it, yaml does not see it, and test
+	// helpers that build fresh Config values always start with an empty
+	// atomic. Config instances are treated as immutable after Load(); any
+	// mutation after a hash has been computed will return a stale value.
+	canonicalHashCache canonicalHashCacheHolder `yaml:"-"`
 }
 
 // MCPInputScanning configures scanning of MCP JSON-RPC requests going from
@@ -968,12 +976,59 @@ type FlightRecorder struct {
 // MediationEnvelope configures sideband metadata on proxied requests.
 // When enabled, pipelock injects a Pipelock-Mediation header (HTTP) or
 // _meta["com.pipelock/mediation"] (MCP) carrying action type, verdict,
-// actor identity, and receipt correlation ID.
-//
-// Envelope signing (RFC 9421), SPIFFE actor format, and key management
-// are planned for a follow-up PR. See mediation-envelope-design.md.
+// actor identity, and receipt correlation ID. When Sign is also true,
+// pipelock attaches an RFC 9421 HTTP Message Signature over a per-
+// request component list, identified by the pipelock1 dictionary label
+// so the pipelock signature coexists with any upstream sig1 / web-bot
+// signature already on the request.
 type MediationEnvelope struct {
 	Enabled bool `yaml:"enabled"`
+
+	// Sign enables RFC 9421 HTTP Message Signatures on outbound mediated
+	// requests. HTTP only — MCP stdio cannot be signed in band.
+	// Default false; explicit opt-in. When true, SigningKeyPath is
+	// required and must load as an Ed25519 private key at startup and
+	// on every hot reload. Reload failures abort the reload rather
+	// than silently downgrading to unsigned.
+	Sign bool `yaml:"sign"`
+
+	// SigningKeyPath is the filesystem path to an Ed25519 private key
+	// in the format accepted by signing.LoadPrivateKeyFile (the same
+	// format used by receipt signing and flight recorder checkpoints).
+	// The key is loaded fresh on every reload to support file rotation.
+	// Capability separation: this path MUST live in pipelock's own
+	// privilege domain; the agent must not have read access.
+	SigningKeyPath string `yaml:"signing_key_path"`
+
+	// KeyID is the opaque identifier emitted as the Signature-Input
+	// keyid parameter. Verifiers use it to look up the corresponding
+	// public key. Defaults to "pipelock-mediation-v1" when sign is
+	// true and this field is empty.
+	KeyID string `yaml:"key_id"`
+
+	// SignedComponents declares the maximal RFC 9421 derived-component
+	// and header list that pipelock will sign. At request time the
+	// signer builds a dynamic subset: content-digest is dropped on
+	// body-less requests, and any optional header not present on the
+	// request is skipped. Defaults to ["@method", "@target-uri",
+	// "content-digest", "pipelock-mediation"] when sign is true and
+	// this slice is empty.
+	SignedComponents []string `yaml:"signed_components"`
+
+	// CreatedSkewSeconds is the tolerance (in seconds) applied to the
+	// created parameter on inbound verification. Not used on the
+	// outbound signing path today but stored here so the config surface
+	// is stable when inbound verify lands in a follow-up. Defaults to
+	// 60 when sign is true and this field is zero.
+	CreatedSkewSeconds int `yaml:"created_skew_seconds"`
+
+	// MaxBodyBytes caps the amount of request body the signer will
+	// buffer to compute Content-Digest when no upstream scanner has
+	// already buffered it. Defaults to 1 MiB when sign is true and
+	// this field is zero. Requests exceeding the cap are signed
+	// without content-digest (the component is dropped from the
+	// declared list for that request) rather than failing.
+	MaxBodyBytes int `yaml:"max_body_bytes"`
 }
 
 // TaintConfig configures exposure-based policy escalation for sessions that

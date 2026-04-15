@@ -526,9 +526,15 @@ func TestEnvelope_ReloadDisablesEmitter(t *testing.T) {
 	}
 }
 
-// TestEnvelope_ReloadUpdatesHash verifies that reloading with the emitter
-// already active updates the config hash without replacing the emitter.
-func TestEnvelope_ReloadUpdatesHash(t *testing.T) {
+// TestEnvelope_ReloadInstallsFreshEmitter verifies that each reload
+// installs a fresh *envelope.Emitter. This behavior changed when
+// envelope signing landed: the signer field is immutable per emitter
+// so key rotation requires constructing a new emitter. The swap is
+// atomic (atomic.Pointer.Store), so in-flight requests holding the
+// old pointer finish against the old signer while new requests pick
+// up the new one. The ph stamped into outbound envelopes moves to
+// the new canonical hash on the request that follows the reload.
+func TestEnvelope_ReloadInstallsFreshEmitter(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Defaults()
@@ -551,7 +557,8 @@ func TestEnvelope_ReloadUpdatesHash(t *testing.T) {
 		t.Fatal("expected non-nil emitter before reload")
 	}
 
-	// Reload with different config (changes hash) but same enabled state.
+	// Reload with different config (shifts canonical policy hash) but
+	// same enabled state.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -565,9 +572,23 @@ func TestEnvelope_ReloadUpdatesHash(t *testing.T) {
 	if newEmitter == nil {
 		t.Fatal("expected non-nil emitter after reload")
 	}
-	// Same emitter instance -- UpdateConfigHash was called, not replaced.
-	if newEmitter != origEmitter {
-		t.Fatal("expected same emitter instance (hash update, not replacement)")
+	// Post-reload: a fresh emitter is installed, reflecting the new
+	// canonical config hash and any signer rotation. Old pointer is
+	// still valid for requests holding it (atomic swap semantics).
+	if newEmitter == origEmitter {
+		t.Fatal("expected fresh emitter instance after reload (key rotation path requires this)")
+	}
+	// And the fresh emitter should reflect the reloaded config — its
+	// build produces a different policy hash than the pre-reload one.
+	wantPH := envelope.PolicyHashFromHex(reloadCfg.CanonicalPolicyHash())
+	got := newEmitter.Build(envelope.BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000099",
+		Action:    "read",
+		Verdict:   "allow",
+		ActorAuth: envelope.ActorAuthBound,
+	})
+	if string(got.PolicyHash) != string(wantPH) {
+		t.Errorf("post-reload ph = %x, want %x", got.PolicyHash, wantPH)
 	}
 }
 

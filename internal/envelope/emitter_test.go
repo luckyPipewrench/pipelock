@@ -4,8 +4,12 @@
 package envelope
 
 import (
+	"crypto/ed25519"
 	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/dunglas/httpsfv"
 )
 
 func TestEmitter_Build(t *testing.T) {
@@ -201,6 +205,152 @@ func TestEmitter_Build_PolicyHashFallback(t *testing.T) {
 	want := PolicyHashFromHex(globalHex)
 	if string(env.PolicyHash) != string(want) {
 		t.Errorf("fallback PolicyHash:\n  got  = %x\n  want = %x", env.PolicyHash, want)
+	}
+}
+
+// TestEmitter_HasSigner reports correctly for both sign-off and sign-on
+// emitter configurations.
+func TestEmitter_HasSigner(t *testing.T) {
+	t.Parallel()
+
+	offEmitter := NewEmitter(EmitterConfig{ConfigHash: "x"})
+	if offEmitter.HasSigner() {
+		t.Error("emitter built without Signer should report HasSigner()=false")
+	}
+
+	_, priv := testSignerKey(t)
+	signer := newTestSigner(t, priv)
+	onEmitter := NewEmitter(EmitterConfig{ConfigHash: "x", Signer: signer})
+	if !onEmitter.HasSigner() {
+		t.Error("emitter built with Signer should report HasSigner()=true")
+	}
+	if onEmitter.Signer() != signer {
+		t.Error("Signer() did not return the installed signer")
+	}
+
+	var nilEmitter *Emitter
+	if nilEmitter.HasSigner() || nilEmitter.Signer() != nil {
+		t.Error("nil emitter should behave as signer-less")
+	}
+}
+
+// TestEmitter_InjectAndSign_NoSigner proves that when the emitter has
+// no signer, InjectAndSign still sets the Pipelock-Mediation header but
+// does not touch Signature or Signature-Input.
+func TestEmitter_InjectAndSign_NoSigner(t *testing.T) {
+	t.Parallel()
+
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+	})
+	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+
+	if err := em.InjectAndSign(req, nil, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000001",
+		Action:    "read",
+		Verdict:   "allow",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	if req.Header.Get(HeaderName) == "" {
+		t.Error("Pipelock-Mediation header not set")
+	}
+	if req.Header.Get("Signature") != "" {
+		t.Error("Signature should be absent when signer is nil")
+	}
+	if req.Header.Get("Signature-Input") != "" {
+		t.Error("Signature-Input should be absent when signer is nil")
+	}
+}
+
+// TestEmitter_InjectAndSign_WithSigner proves the end-to-end inject +
+// sign path through an Emitter that has a signer attached: envelope
+// header, Content-Digest, Signature-Input/Signature all present and
+// the signature verifies.
+func TestEmitter_InjectAndSign_WithSigner(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	signer := newTestSigner(t, priv)
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		Signer:     signer,
+	})
+
+	body := []byte(`{"action":"write"}`)
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
+
+	if err := em.InjectAndSign(req, body, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000002",
+		Action:    "write",
+		Verdict:   "allow",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	if req.Header.Get(HeaderName) == "" {
+		t.Fatal("Pipelock-Mediation header not set")
+	}
+	if req.Header.Get("Content-Digest") == "" {
+		t.Error("Content-Digest not set")
+	}
+	if req.Header.Get("Signature-Input") == "" {
+		t.Fatal("Signature-Input not set")
+	}
+	if req.Header.Get("Signature") == "" {
+		t.Fatal("Signature not set")
+	}
+
+	// Reconstruct signature base and verify.
+	sigInputDict, err := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+	if err != nil {
+		t.Fatalf("Signature-Input parse: %v", err)
+	}
+	member, _ := sigInputDict.Get(pipelockSigLabel)
+	inner := member.(httpsfv.InnerList) //nolint:errcheck // type known
+	components := make([]string, 0, len(inner.Items))
+	for _, it := range inner.Items {
+		s, _ := it.Value.(string)
+		components = append(components, s)
+	}
+
+	base, err := buildSignatureBase(req, body, components, inner)
+	if err != nil {
+		t.Fatalf("buildSignatureBase: %v", err)
+	}
+
+	sigDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature"))
+	sigMember, _ := sigDict.Get(pipelockSigLabel)
+	sigBytes, _ := sigMember.(httpsfv.Item).Value.([]byte)
+
+	if !ed25519.Verify(pub, []byte(base), sigBytes) {
+		t.Errorf("signature verification failed over reconstructed base:\n%s", base)
+	}
+}
+
+// TestEmitter_InjectAndSign_NilRequest rejects a nil *http.Request so
+// transport call sites cannot quietly skip signing.
+func TestEmitter_InjectAndSign_NilRequest(t *testing.T) {
+	t.Parallel()
+	em := NewEmitter(EmitterConfig{ConfigHash: "x"})
+	if err := em.InjectAndSign(nil, nil, BuildOpts{}); err == nil {
+		t.Error("nil request should produce an error")
+	}
+}
+
+// TestEmitter_InjectAndSign_NilEmitter is a no-op.
+func TestEmitter_InjectAndSign_NilEmitter(t *testing.T) {
+	t.Parallel()
+	var em *Emitter
+	req := newTestRequest(t, http.MethodGet, "https://example.test/", nil)
+	if err := em.InjectAndSign(req, nil, BuildOpts{}); err != nil {
+		t.Errorf("nil emitter should return nil, got %v", err)
+	}
+	if req.Header.Get(HeaderName) != "" {
+		t.Error("nil emitter should not touch headers")
 	}
 }
 

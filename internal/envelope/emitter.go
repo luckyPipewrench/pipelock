@@ -6,6 +6,7 @@ package envelope
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -13,20 +14,57 @@ import (
 
 // Emitter builds and injects mediation envelopes. Nil-safe: all methods
 // are no-ops on a nil Emitter, matching the receipt.Emitter pattern.
+//
+// The Emitter's signer field is immutable after construction. Hot
+// reload installs a fresh *Emitter via (*Proxy).reloadEnvelopeEmitter
+// when either the config hash or the signing key material changes, so
+// the runtime swap is a single atomic pointer store.
 type Emitter struct {
 	configHash atomic.Value // stores string
+	signer     *Signer
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
 type EmitterConfig struct {
+	// ConfigHash is the hex-encoded canonical policy hash for the
+	// global config at construction time. Transports that thread a
+	// per-agent effective config through their inject call sites
+	// pass PolicyHash in BuildOpts to override this default.
 	ConfigHash string
+
+	// Signer is the optional RFC 9421 HTTP Message Signature signer.
+	// nil means "envelope signing disabled" — InjectAndSign still
+	// sets the Pipelock-Mediation header, it just does not attach a
+	// signature. When non-nil, the signer's Ed25519 key material is
+	// held for the lifetime of this Emitter; swapping the key
+	// requires installing a new Emitter.
+	Signer *Signer
 }
 
 // NewEmitter creates an envelope emitter.
 func NewEmitter(cfg EmitterConfig) *Emitter {
-	e := &Emitter{}
+	e := &Emitter{signer: cfg.Signer}
 	e.configHash.Store(cfg.ConfigHash)
 	return e
+}
+
+// HasSigner reports whether this Emitter is producing RFC 9421
+// signatures. Used by transport wiring (and tests) to decide whether
+// a request context that is missing a body needs to buffer one for
+// content-digest computation before calling InjectAndSign.
+func (e *Emitter) HasSigner() bool {
+	return e != nil && e.signer != nil
+}
+
+// Signer returns the Emitter's installed Signer, or nil if signing is
+// disabled. Exported so the redirect-refresh path can sign the
+// rebuilt request without re-plumbing the signer through additional
+// call sites.
+func (e *Emitter) Signer() *Signer {
+	if e == nil {
+		return nil
+	}
+	return e.signer
 }
 
 // UpdateConfigHash atomically updates the policy hash used in envelopes.
@@ -97,13 +135,52 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 }
 
 // InjectHTTPEnvelope builds an envelope and injects it as an HTTP header.
-// No-op if the emitter is nil.
+// No-op if the emitter is nil. This is the header-only call path used
+// for pre-dispatch injection sites that do not yet have the full
+// outbound *http.Request in hand (and so cannot sign). Call sites that
+// have the final outbound request should prefer InjectAndSign instead,
+// which also attaches the RFC 9421 signature when signing is enabled.
 func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 	if e == nil {
 		return nil
 	}
 	env := e.Build(opts)
 	return InjectHTTP(h, env)
+}
+
+// InjectAndSign injects the mediation envelope as the Pipelock-Mediation
+// header on req AND, if the Emitter has an installed signer, attaches an
+// RFC 9421 HTTP Message Signature over the per-request effective
+// component list via pipelock1. body is the already-buffered request
+// body, or nil for body-less requests. When signing is enabled and body
+// is non-nil, the signer populates Content-Digest itself before signing.
+//
+// Errors from the envelope serialize step or the signer's SignRequest
+// are returned to the caller. On error the request's existing headers
+// may be partially mutated (Pipelock-Mediation set but signature not
+// attached). Callers must fail closed on any non-nil return: the
+// request is not safe to forward with a partially-attached pipelock
+// signature slot.
+//
+// No-op and returns nil when called on a nil Emitter.
+func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) error {
+	if e == nil {
+		return nil
+	}
+	if req == nil {
+		return fmt.Errorf("envelope emitter: nil *http.Request")
+	}
+	env := e.Build(opts)
+	if err := InjectHTTP(req.Header, env); err != nil {
+		return fmt.Errorf("envelope emitter: inject header: %w", err)
+	}
+	if e.signer == nil {
+		return nil
+	}
+	if err := e.signer.SignRequest(req, body); err != nil {
+		return fmt.Errorf("envelope emitter: sign request: %w", err)
+	}
+	return nil
 }
 
 // InjectMCPEnvelope builds an envelope and injects it into an MCP _meta map.

@@ -456,30 +456,60 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 }
 
 // reloadEnvelopeEmitter handles envelope emitter lifecycle on config reload.
-// Nils the emitter when disabled, updates the fallback policy hash when an
-// emitter already exists, or creates a new emitter when first enabled.
-// Must be called under reloadMu.
+// Nils the emitter when disabled, installs a fresh emitter on every
+// reload when enabled so both the canonical policy hash AND the signing
+// key material are re-read from disk. Must be called under reloadMu.
 //
-// The fallback hash is the GLOBAL config's CanonicalPolicyHash — what a
-// request without a resolved per-agent config sees. Transports that have
-// a per-agent effective *Config MUST pass envelope.PolicyHashFromHex of
-// that resolved config's canonical hash via BuildOpts.PolicyHash so the
-// envelope ph field reflects the agent's actual policy rather than the
-// global default. See the BuildOpts.PolicyHash doc comment.
-func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) {
+// Return value semantics:
+//
+//   - nil error, new emitter installed — caller proceeds with the
+//     config swap.
+//   - non-nil error — caller MUST abort the config swap. The previous
+//     emitter is left in place so in-flight traffic keeps its signing
+//     invariant until operator intervention. This is the fail-closed
+//     resolution for the "reload with unreadable signing key" case:
+//     never silent-downgrade to unsigned.
+//
+// The fallback hash is the GLOBAL config's CanonicalPolicyHash — what
+// a request without a resolved per-agent config sees. Transports that
+// have a per-agent effective *Config MUST pass envelope.PolicyHashFromHex
+// of that resolved config's canonical hash via BuildOpts.PolicyHash so
+// the envelope ph field reflects the agent's actual policy rather than
+// the global default. See the BuildOpts.PolicyHash doc comment.
+func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) error {
 	if !cfg.MediationEnvelope.Enabled {
 		p.envelopeEmitterPtr.Store(nil)
-		return
+		return nil
 	}
-	existing := p.envelopeEmitterPtr.Load()
-	if existing != nil {
-		existing.UpdateConfigHash(cfg.CanonicalPolicyHash())
-		return
-	}
-	em := envelope.NewEmitter(envelope.EmitterConfig{
+
+	emCfg := envelope.EmitterConfig{
 		ConfigHash: cfg.CanonicalPolicyHash(),
-	})
-	p.envelopeEmitterPtr.Store(em)
+	}
+
+	// Load the signing key fresh on every reload so the file rotation
+	// story works without a process restart. If sign is disabled the
+	// resulting emitter has no signer attached and acts as a header-
+	// only envelope producer.
+	if cfg.MediationEnvelope.Sign {
+		privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(cfg.MediationEnvelope.SigningKeyPath))
+		if err != nil {
+			return fmt.Errorf("loading envelope signing key %q: %w",
+				cfg.MediationEnvelope.SigningKeyPath, err)
+		}
+		signer, err := envelope.NewSigner(envelope.SignerConfig{
+			PrivKey:          privKey,
+			KeyID:            cfg.MediationEnvelope.KeyID,
+			SignedComponents: cfg.MediationEnvelope.SignedComponents,
+			MaxBodyBytes:     cfg.MediationEnvelope.MaxBodyBytes,
+		})
+		if err != nil {
+			return fmt.Errorf("constructing envelope signer: %w", err)
+		}
+		emCfg.Signer = signer
+	}
+
+	p.envelopeEmitterPtr.Store(envelope.NewEmitter(emCfg))
+	return nil
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -561,7 +591,23 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	// decision. Without this ordering, requests racing with reload could
 	// get signed with the previous policy hash.
 	p.reloadReceiptEmitter(cfg)
-	p.reloadEnvelopeEmitter(cfg)
+
+	// Envelope signing reload is fail-closed: an unreadable / malformed
+	// mediation envelope key aborts the entire reload. The previous
+	// envelope emitter stays installed so in-flight traffic keeps its
+	// signing invariant until an operator fixes the file and retries
+	// the reload. All other state (cfg, scanner, edition, session
+	// manager, CEE) is also left unchanged — the rule is "never swap
+	// with a broken signer."
+	if err := p.reloadEnvelopeEmitter(cfg); err != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("envelope emitter reload failed, keeping old config: %w", err))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return
+	}
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)

@@ -243,3 +243,18 @@ bits. Group-read is allowed for Kubernetes `fsGroup` compatibility.
   hard-code SHA-512 for the Ed25519 algorithm. The external interop
   test exercises body-less GETs to avoid the mismatch; a follow-up
   will make the digest family configurable.
+- **Blank `aa` on anonymous requests:** when a request arrives with
+  no resolved agent binding (for example an unauthenticated fetch to
+  the `/fetch` endpoint), pipelock stamps `actor="anonymous"` and
+  `aa=""` on the envelope. Empty string is an accepted ActorAuth
+  value — pipelock's Parse deliberately allows it for backwards
+  compatibility — but it carries weaker trust semantics than
+  `self-declared`. Verifiers should treat `aa=""` as at-most
+  `self-declared` for admission decisions.
+- **`max_body_bytes: 0` means "use the default":** the config
+  validator at `validateMediationEnvelope` replaces a zero field with
+  the default 1 MiB. There is no YAML-facing way to disable the body
+  buffer cap on the signer; this is an intentional fail-closed
+  hardening. The `Signer.MaxBodyBytes == 0` code path ("no cap") is
+  reachable only from test callers that construct a `Signer`
+  directly.

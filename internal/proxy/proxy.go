@@ -541,28 +541,54 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	agentName, _ := req.Context().Value(ctxKeyAgent).(string)
 	actx := newHTTPAuditContext(p.logger, req.Method, req.URL.String(), clientIP, requestID, agentName)
 
-	// 1. Parse the inbound envelope. If it is absent (emitter was
-	//    nil at original-request time, e.g. envelope only turned on
-	//    between original and redirect) we still want to emit a
-	//    fresh envelope on the redirected leg so downstream sees
-	//    pipelock mediation from the first hop it observes.
-	var prev envelope.Envelope
-	if raw := req.Header.Get(envelope.HeaderName); raw != "" {
-		parsed, parseErr := envelope.Parse(raw)
+	// 1. Parse the ORIGINAL envelope. Identity fields (Actor,
+	//    ActorAuth, ReceiptID, Authority, Taint, TaskID, RequiresReauth)
+	//    are immutable across a redirect chain, so we always read
+	//    them from the first request in the chain. In the live
+	//    CheckRedirect path via[] is always non-empty and via[0] is
+	//    the original request; we intentionally do NOT read from
+	//    req.Header in that case because Go's net/http redirect
+	//    machinery copies headers from via[0] onto each new req,
+	//    overwriting any mutations a previous CheckRedirect hop made.
+	//    Reading from req.Header would therefore always observe
+	//    hop=0 and cap the counter at 1 regardless of chain depth.
+	//    Tests that call this helper directly pass via=nil to
+	//    exercise the refresh logic on a single request; fall back
+	//    to req.Header in that case so the test path still works.
+	var (
+		prev    envelope.Envelope
+		rawPrev string
+	)
+	if len(via) > 0 {
+		rawPrev = via[0].Header.Get(envelope.HeaderName)
+	} else {
+		rawPrev = req.Header.Get(envelope.HeaderName)
+	}
+	if rawPrev != "" {
+		parsed, parseErr := envelope.Parse(rawPrev)
 		if parseErr != nil {
 			p.logger.LogAnomaly(actx, "",
 				fmt.Sprintf("envelope refresh: parsing prior envelope failed: %v", parseErr), 0.1)
 			// Fall through with zero-value prev — the refresh will
-			// still install a new envelope using the via[0] request
-			// context we already have.
+			// still install a new envelope.
 		} else {
 			prev = parsed
 		}
 	}
 
-	// 2. Increment Hop. stdlib's CheckRedirect is called once per
-	//    hop, so a single +1 per call tracks the chain depth.
-	prev.Hop++
+	// 2. Authoritative hop counter. Use len(via) when available
+	//    (live CheckRedirect path): it is the number of requests
+	//    already dispatched in this redirect chain, and stdlib
+	//    calls CheckRedirect once per hop, so len(via) equals the
+	//    number of hops the refreshed request has traversed. Falls
+	//    back to prev.Hop+1 for direct test invocations where via
+	//    is nil, which mirrors "one refresh from the previous
+	//    observed value."
+	if len(via) > 0 {
+		prev.Hop = len(via)
+	} else {
+		prev.Hop++
+	}
 
 	// 3. Fresh body bytes via GetBody when available.
 	var body []byte

@@ -441,6 +441,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// headers the dialer hands to the upstream server. @target-uri in
 	// the signature base therefore matches the URL being dialed, even
 	// though the actual dial happens a few lines later in wsDialUpstream.
+	//
+	// Defense-in-depth note: targetURL was already parsed successfully
+	// at the top of this handler (the first url.Parse call), so the
+	// second Parse below cannot fail today. The check is intentional
+	// future-proofing — a later refactor that threads a different
+	// targetURL through this path must still fail closed on malformed
+	// input. A deliberately unreachable branch is cheaper than a
+	// silent unsigned envelope on a future regression.
 	actionID := receipt.NewActionID()
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
 		parsedTarget, parseErr := url.Parse(targetURL)

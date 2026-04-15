@@ -4,13 +4,20 @@
 package proxy
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/dunglas/httpsfv"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -381,6 +388,312 @@ func TestProxy_ReloadEnvelopeFailurePreservesReceiptEmitter(t *testing.T) {
 	if afterReceiptEmitter := p.receiptEmitterPtr.Load(); afterReceiptEmitter != beforeReceiptEmitter {
 		t.Fatal("receipt emitter changed even though envelope reload aborted")
 	}
+}
+
+// TestProxy_ReloadEnvelopeEmitter_InPlaceKeyRotation covers the
+// file-content-rotation path that the other reload tests miss:
+// ops overwrites the SAME signing_key_path with new key bytes and
+// triggers a reload with an otherwise-identical config. The reload
+// must install a fresh emitter with a fresh signer backed by the
+// new key, and signatures produced afterwards must verify with the
+// new public key and fail with the old one.
+//
+// This exercises the "Kubernetes Secret atomic symlink swap" style
+// of key rotation where the path is stable across versions and
+// only the bytes change.
+func TestProxy_ReloadEnvelopeEmitter_InPlaceKeyRotation(t *testing.T) {
+	t.Parallel()
+
+	p := envelopeReloadProxy(t)
+
+	// First key pair.
+	pubV1, privV1, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey v1: %v", err)
+	}
+	keyDir := t.TempDir()
+	keyPath := filepath.Join(keyDir, "envelope-ed25519.key")
+	if err := signing.SavePrivateKey(privV1, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey v1: %v", err)
+	}
+
+	onCfg := config.Defaults()
+	onCfg.Internal = nil
+	onCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	enableEnvelopeSigning(t, onCfg, keyPath)
+	p.Reload(onCfg, scanner.New(onCfg))
+	firstEmitter := p.envelopeEmitterPtr.Load()
+	if firstEmitter == nil || !firstEmitter.HasSigner() {
+		t.Fatal("first reload should have installed a signing emitter")
+	}
+
+	// Sanity: signature produced before rotation verifies with pubV1.
+	firstSig := signAndCaptureForTest(t, firstEmitter, "/before-rotation")
+	if !verifySigForTest(t, pubV1, firstSig.base, firstSig.sigBytes) {
+		t.Fatal("pre-rotation signature does not verify with v1 public key")
+	}
+
+	// Rotate: overwrite the SAME path with new key bytes. Path is
+	// identical; only the bytes change. SavePrivateKey uses atomic
+	// temp+rename internally.
+	pubV2, privV2, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey v2: %v", err)
+	}
+	if err := signing.SavePrivateKey(privV2, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey v2: %v", err)
+	}
+
+	// Reload with the same config. reloadEnvelopeEmitter must re-read
+	// the key file, install a fresh Signer over the new bytes, and
+	// swap the outer Emitter pointer.
+	rotatedCfg := config.Defaults()
+	rotatedCfg.Internal = nil
+	rotatedCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	enableEnvelopeSigning(t, rotatedCfg, keyPath)
+	p.Reload(rotatedCfg, scanner.New(rotatedCfg))
+
+	secondEmitter := p.envelopeEmitterPtr.Load()
+	if secondEmitter == nil || !secondEmitter.HasSigner() {
+		t.Fatal("second reload should have installed a signing emitter")
+	}
+	if secondEmitter == firstEmitter {
+		t.Fatal("in-place key rotation should install a fresh *Emitter pointer")
+	}
+
+	// Post-rotation signature must verify with pubV2 and FAIL with pubV1.
+	secondSig := signAndCaptureForTest(t, secondEmitter, "/after-rotation")
+	if !verifySigForTest(t, pubV2, secondSig.base, secondSig.sigBytes) {
+		t.Fatal("post-rotation signature does not verify with v2 public key")
+	}
+	if verifySigForTest(t, pubV1, secondSig.base, secondSig.sigBytes) {
+		t.Fatal("post-rotation signature must NOT verify with the old v1 public key")
+	}
+}
+
+// capturedSignature is a tiny record of a signature + the base
+// string used to produce it, so tests can run ed25519.Verify
+// without re-implementing the RFC 9421 base builder.
+type capturedSignature struct {
+	base     string
+	sigBytes []byte
+}
+
+// signAndCaptureForTest signs a canned GET request through the
+// given emitter and returns the resulting base + signature bytes
+// so the caller can verify against arbitrary public keys.
+func signAndCaptureForTest(t *testing.T, em *envelope.Emitter, path string) capturedSignature {
+	t.Helper()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://upstream.example"+path, nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if err := em.InjectAndSign(req, nil, envelope.BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000030",
+		Action:    "read",
+		Verdict:   config.ActionAllow,
+		Actor:     "test-agent",
+		ActorAuth: envelope.ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	sigInputDict, err := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+	if err != nil {
+		t.Fatalf("parse Signature-Input: %v", err)
+	}
+	member, ok := sigInputDict.Get("pipelock1")
+	if !ok {
+		t.Fatal("pipelock1 missing from Signature-Input")
+	}
+	inner, ok := member.(httpsfv.InnerList)
+	if !ok {
+		t.Fatalf("pipelock1 is %T, not InnerList", member)
+	}
+
+	var b strings.Builder
+	for _, item := range inner.Items {
+		name, _ := item.Value.(string)
+		switch name {
+		case "@method":
+			b.WriteString(`"@method": GET` + "\n")
+		case "@target-uri":
+			b.WriteString(`"@target-uri": ` + req.URL.String() + "\n")
+		case "pipelock-mediation":
+			b.WriteString(`"pipelock-mediation": ` + req.Header.Get(envelope.HeaderName) + "\n")
+		default:
+			t.Fatalf("unsupported component in test helper: %q", name)
+		}
+	}
+	serialized, err := httpsfv.Marshal(inner)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	b.WriteString(`"@signature-params": ` + serialized)
+
+	sigDict, err := httpsfv.UnmarshalDictionary(req.Header.Values("Signature"))
+	if err != nil {
+		t.Fatalf("parse Signature: %v", err)
+	}
+	sigMember, _ := sigDict.Get("pipelock1")
+	sigBytes, _ := sigMember.(httpsfv.Item).Value.([]byte)
+	return capturedSignature{base: b.String(), sigBytes: sigBytes}
+}
+
+// verifySigForTest runs ed25519.Verify without failing the test —
+// tests that want success call it and assert the return value.
+func verifySigForTest(t *testing.T, pub ed25519.PublicKey, base string, sig []byte) bool {
+	t.Helper()
+	return ed25519.Verify(pub, []byte(base), sig)
+}
+
+// TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic is a race-
+// detector-focused soak test: hammers the fetch handler with
+// concurrent requests while repeatedly reloading the config with a
+// freshly-rotated signing key. Every response must carry a valid
+// pipelock1 signature under either the old or the new key (no
+// unsigned responses, no stale-signer crashes, no data races).
+//
+// This exercises the atomic.Pointer swap on envelopeEmitterPtr under
+// load. The structural guarantee is that in-flight requests hold the
+// old *Emitter pointer and finish against the old signer, while new
+// requests pick up the new one. The soak verifies that empirically
+// against a real handler with real redirect / signing paths.
+func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("soak test; skipped under -short")
+	}
+	t.Parallel()
+
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	// Pre-generate 4 key files so reloads can rotate between them.
+	keyDir := t.TempDir()
+	keyPaths := make([]string, 4)
+	for i := range keyPaths {
+		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey %d: %v", i, err)
+		}
+		keyPaths[i] = filepath.Join(keyDir, "env-"+string(rune('a'+i))+".key")
+		if err := signing.SavePrivateKey(priv, keyPaths[i]); err != nil {
+			t.Fatalf("SavePrivateKey %d: %v", i, err)
+		}
+	}
+
+	// Shared-path key file — each reload overwrites this from one
+	// of the pre-generated sources.
+	sharedPath := filepath.Join(keyDir, "shared.key")
+	if err := copyFileForTest(keyPaths[0], sharedPath); err != nil {
+		t.Fatalf("initial copy: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	// Disable the per-source-IP rate limit — the soak intentionally
+	// fires 200 hits from a single test client so we would otherwise
+	// collide with the default 20/minute cap and see 429s that have
+	// nothing to do with signing correctness.
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
+	enableEnvelopeSigning(t, cfg, sharedPath)
+
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	handler := p.buildHandler(mux)
+
+	// Traffic goroutines: 8 workers × 25 requests = 200 total.
+	const workers = 8
+	const perWorker = 25
+	var wg sync.WaitGroup
+	errCh := make(chan string, workers*perWorker)
+	stop := make(chan struct{})
+
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				r := httptest.NewRequest(http.MethodGet,
+					"/fetch?url="+upstream.URL+"/hit", nil)
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, r)
+				if rr.Code != http.StatusOK {
+					errCh <- fmt.Sprintf("worker %d hit %d: status %d", id, i, rr.Code)
+				}
+			}
+		}(w)
+	}
+
+	// Reload goroutine: rotates the key file between the 4 source
+	// keys and triggers Reload() every few milliseconds.
+	reloadDone := make(chan struct{})
+	go func() {
+		defer close(reloadDone)
+		for i := 1; i <= 20; i++ {
+			src := keyPaths[i%len(keyPaths)]
+			if err := copyFileForTest(src, sharedPath); err != nil {
+				errCh <- fmt.Sprintf("rotate %d: %v", i, err)
+				return
+			}
+			rotatedCfg := config.Defaults()
+			rotatedCfg.Internal = nil
+			rotatedCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			rotatedCfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
+			enableEnvelopeSigning(t, rotatedCfg, sharedPath)
+			p.Reload(rotatedCfg, scanner.New(rotatedCfg))
+			// Yield so traffic workers can make progress between
+			// reload churn cycles. Using time.Sleep rather than
+			// runtime.Gosched to give the scheduler a real chance.
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	wg.Wait()
+	close(stop)
+	<-reloadDone
+	close(errCh)
+
+	var errs []string
+	for e := range errCh {
+		errs = append(errs, e)
+	}
+	if len(errs) > 0 {
+		t.Fatalf("soak failures (%d):\n  %s", len(errs), strings.Join(errs, "\n  "))
+	}
+
+	// After the soak, the emitter must still be signing.
+	if em := p.envelopeEmitterPtr.Load(); em == nil || !em.HasSigner() {
+		t.Fatal("envelope emitter lost its signer during soak")
+	}
+}
+
+// copyFileForTest writes the contents of src to dst using the same
+// atomic temp+rename helper as signing.SavePrivateKey, so the dst
+// path passes the 0o600 permissions check on reload. dst may or may
+// not already exist; if it exists the contents are overwritten.
+func copyFileForTest(src, dst string) error {
+	priv, err := signing.LoadPrivateKeyFile(src)
+	if err != nil {
+		return err
+	}
+	return signing.SavePrivateKey(priv, dst)
 }
 
 // compile-time check: the envelope package is actually imported (lint

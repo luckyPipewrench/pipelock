@@ -6,6 +6,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestRootCmd_Version(t *testing.T) {
@@ -134,6 +137,134 @@ func TestCheckCmd_InvalidConfig(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid config")
 	}
+}
+
+// TestCheckCmd_MediationEnvelopeSignRequiresKey proves that an operator
+// who ships a config with mediation_envelope.sign=true but no
+// signing_key_path gets a loud failure from `pipelock check` before
+// the binary ever starts serving traffic. This is the first line of
+// defence against "signing silently disabled because the key path was
+// a typo" regressions.
+func TestCheckCmd_MediationEnvelopeSignRequiresKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sign-no-key.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`
+mode: balanced
+mediation_envelope:
+  enabled: true
+  sign: true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"check", "--config", cfgPath})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected pipelock check to fail when sign:true is set without signing_key_path")
+	}
+	if !strings.Contains(err.Error(), "signing_key_path is required") {
+		t.Errorf("error = %q, want a signing_key_path message", err.Error())
+	}
+}
+
+// TestCheckCmd_MediationEnvelopeSignUnreadableKey proves that a
+// config pointing at a missing key file also fails loud at `check`
+// time. Mirrors the common "Kubernetes Secret did not mount yet"
+// misconfiguration.
+func TestCheckCmd_MediationEnvelopeSignUnreadableKey(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sign-missing-key.yaml")
+	keyPath := filepath.Join(dir, "does-not-exist.key")
+	yaml := `
+mode: balanced
+mediation_envelope:
+  enabled: true
+  sign: true
+  signing_key_path: ` + keyPath + `
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"check", "--config", cfgPath})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected pipelock check to fail when signing_key_path points at a missing file")
+	}
+	if !strings.Contains(err.Error(), "signing_key_path") {
+		t.Errorf("error = %q, want a signing_key_path message", err.Error())
+	}
+}
+
+// TestCheckCmd_MediationEnvelopeSignUnsupportedComponent proves that
+// a config listing a component outside the signer's supported set
+// (e.g. "host" or "authorization") is rejected at check time. Without
+// this, typos in signed_components would silently widen or weaken
+// coverage based on what the signer happened to support on that day.
+func TestCheckCmd_MediationEnvelopeSignUnsupportedComponent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sign-bad-component.yaml")
+	keyPath := filepath.Join(dir, "key")
+
+	// Need a real key for the file load to pass and the component
+	// validation to be the blocking error.
+	if err := writeTempEd25519Key(t, keyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	yaml := `
+mode: balanced
+mediation_envelope:
+  enabled: true
+  sign: true
+  signing_key_path: ` + keyPath + `
+  signed_components:
+    - "@method"
+    - "host"
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"check", "--config", cfgPath})
+
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected pipelock check to fail for unsupported signed_components entry")
+	}
+	if !strings.Contains(err.Error(), "signed_components") {
+		t.Errorf("error = %q, want a signed_components message", err.Error())
+	}
+}
+
+// writeTempEd25519Key generates a throwaway Ed25519 key and writes
+// it to path using the same SavePrivateKey helper that production
+// code uses so the file passes signing.LoadPrivateKeyFile's
+// permission + format checks.
+func writeTempEd25519Key(t *testing.T, path string) error {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	return signing.SavePrivateKey(priv, path)
 }
 
 func TestCheckCmd_NonexistentConfig(t *testing.T) {

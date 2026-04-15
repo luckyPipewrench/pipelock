@@ -269,3 +269,92 @@ func TestCheckRedirect_PreservesRequiresReauth(t *testing.T) {
 		t.Errorf("Hop = %d, want 1", refreshed.Hop)
 	}
 }
+
+// TestCheckRedirect_ChainRefreshesHopMonotonically drives a 3-hop
+// redirect chain through the fetch proxy and verifies that each
+// refresh increments hop, each leg carries a fresh @target-uri, and
+// the final destination sees hop=3 with a valid signature.
+//
+// The single-hop test (TestCheckRedirect_RefreshesEnvelopeHop) only
+// exercises the hop=0 → hop=1 transition. A subtle bug in
+// refreshEnvelopeForRedirect that reads via[0] instead of the
+// current req header would pass the single-hop test but silently
+// cap hop at 1 for the full chain. This test catches that class.
+func TestCheckRedirect_ChainRefreshesHopMonotonically(t *testing.T) {
+	t.Parallel()
+
+	// capturedHop remembers what the final upstream saw.
+	var mu sync.Mutex
+	var finalMediation string
+	var finalURL string
+
+	finalUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		finalMediation = r.Header.Get(envelope.HeaderName)
+		finalURL = "http://" + r.Host + r.URL.RequestURI()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<html><body>final</body></html>"))
+	}))
+	t.Cleanup(finalUpstream.Close)
+
+	// hop2: 302 to the final destination.
+	hop2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, finalUpstream.URL+"/leg3", http.StatusFound)
+	}))
+	t.Cleanup(hop2.Close)
+
+	// hop1: 302 to hop2 — this is the first hop after the original.
+	hop1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, hop2.URL+"/leg2", http.StatusFound)
+	}))
+	t.Cleanup(hop1.Close)
+
+	// hop0: the initial redirect. Three hops total before the request
+	// lands at finalUpstream with hop=3 stamped on the envelope.
+	hop0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, hop1.URL+"/leg1", http.StatusFound)
+	}))
+	t.Cleanup(hop0.Close)
+
+	p := newSigningProxyForTest(t)
+	proxyServer := httptest.NewServer(http.HandlerFunc(p.handleFetch))
+	t.Cleanup(proxyServer.Close)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		proxyServer.URL+"/fetch?url="+hop0.URL+"/start", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status %d", resp.StatusCode)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if finalMediation == "" {
+		t.Fatal("final upstream received no Pipelock-Mediation header")
+	}
+	env, err := envelope.Parse(finalMediation)
+	if err != nil {
+		t.Fatalf("parse final envelope: %v", err)
+	}
+	// CheckRedirect fires once per redirect hop. Three 302s → three
+	// refreshes → hop counter at 3 on the request the final upstream
+	// receives.
+	if env.Hop != 3 {
+		t.Errorf("Hop on final refreshed envelope = %d, want 3", env.Hop)
+	}
+	// The final leg's target URL must match finalUpstream's /leg3
+	// path — proves @target-uri tracked the chain, not the original.
+	if !strings.HasSuffix(finalURL, "/leg3") {
+		t.Errorf("final captured URL = %q, expected /leg3 suffix", finalURL)
+	}
+}

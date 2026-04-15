@@ -724,30 +724,33 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 // Creates a new emitter if a signing key appears, updates the config hash
 // if the emitter exists, or nils it if the key is removed. Must be called
 // under reloadMu.
-func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
+//
+// Return value semantics:
+//
+//   - nil error — receipt state is now aligned with cfg (or receipts are
+//     intentionally disabled because no key path / recorder is present).
+//   - non-nil error — caller MUST abort the config swap. Signed receipts are
+//     part of the evidence contract; swapping cfg while keeping an old
+//     receipt emitter would attest the wrong policy hash for future actions.
+func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) error {
 	keyPath := cfg.FlightRecorder.SigningKeyPath
 
 	if keyPath == "" {
 		// No signing key configured — disable receipts if they were on.
 		p.receiptEmitterPtr.Store(nil)
 		p.receiptKeyPath = ""
-		return
+		return nil
 	}
 
 	// Always reload the key file to detect both path changes and
 	// in-place content changes (key rotation at the same path).
 	if p.recorder == nil {
-		return
+		return nil
 	}
 
 	privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(keyPath))
 	if err != nil {
-		// Failure is non-fatal: log and keep the prior emitter (if any) so
-		// receipts continue with the old key rather than going dark entirely.
-		if p.logger != nil {
-			p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("loading receipt signing key: %w", err))
-		}
-		return
+		return fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
 	}
 
 	p.receiptEmitterPtr.Store(receipt.NewEmitter(receipt.EmitterConfig{
@@ -758,6 +761,7 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
 		Actor:      "pipelock",
 	}))
 	p.receiptKeyPath = keyPath
+	return nil
 }
 
 // reloadEnvelopeEmitter handles envelope emitter lifecycle on config reload.
@@ -912,7 +916,15 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	// after the fail-closed envelope reload succeeds and before the
 	// config swap so a broken envelope signer cannot partially advance
 	// receipt state for a config that never became active.
-	p.reloadReceiptEmitter(cfg)
+	if err := p.reloadReceiptEmitter(cfg); err != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("receipt emitter reload failed, keeping old config: %w", err))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return
+	}
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)

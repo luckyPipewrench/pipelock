@@ -119,12 +119,17 @@ The maximal list in `signed_components` declares what pipelock *will*
 sign when applicable. The signer builds a per-request subset:
 
 - `@method`, `@target-uri`, `pipelock-mediation` always apply.
+- The supported component allowlist today is:
+  `@method`, `@target-uri`, `@authority`, `content-digest`, and
+  `pipelock-mediation`. Any other entry is rejected by config
+  validation and signer construction rather than being silently
+  dropped.
 - `content-digest` is included only when the request has a body.
   Body-less GETs and WebSocket handshakes drop `content-digest` from
   the declared list; their `Signature-Input` carries only the other
   three components.
-- Any HTTP header field component is included only when the request
-  actually carries the header.
+- `@authority` is available for deployments that want host coverage in
+  addition to `@target-uri`, but it is not part of the default set.
 
 The per-request declared list appears on the outbound
 `Signature-Input` so verifiers reconstruct the same base string.
@@ -187,23 +192,26 @@ On every allowed redirect through the fetch or forward proxy client,
 `refreshEnvelopeForRedirect` rebuilds the Pipelock-Mediation header on
 the redirected request:
 
-1. Parse the previous envelope from `req.Header`.
-2. Increment `hop` by 1.
+1. Parse the original envelope from `via[0].Header` in the live
+   redirect path so immutable identity fields survive the full chain.
+   Direct helper/test calls that do not have a `via` slice fall back
+   to `req.Header`.
+2. Set `hop` from the authoritative redirect depth (`len(via)`).
 3. Recompute `action` and `side_effect` from the (possibly new)
    request method — a 303 that downgrades POST to GET shifts the
    action class.
 4. Drop any stale `Content-Digest` header that was copied from the
-   original response.
+   prior hop.
 5. Call the emitter to build a new envelope with the refreshed
-   fields, the per-agent canonical policy hash, and the incremented
+   fields, the per-agent canonical policy hash, and the refreshed
    hop.
 6. If signing is enabled, re-sign the request with the new
    `@target-uri`, dynamic component list, and (if the redirect
    preserves method + body via `GetBody`) a fresh Content-Digest.
 
-Errors from any step log an anomaly but do not fail the redirect:
-taking down an otherwise allowed hop on a signing accessory failure
-is the wrong trade-off.
+Errors from any step fail the redirect closed. In a `sign: true`
+deployment, continuing with a stale or unsigned redirected hop would
+break the integrity contract the verifier relies on.
 
 ## Capability separation
 

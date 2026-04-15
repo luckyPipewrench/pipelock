@@ -119,11 +119,34 @@ For K8s deployments, pipelock runs as a sidecar in the agent pod. The agent cont
 
 **Important caveat:** K8s NetworkPolicy is pod-scoped, not container-scoped. Since pipelock and the agent share a pod, any egress you allow for pipelock also applies to the agent container. NetworkPolicy alone cannot prevent the agent from bypassing the proxy. You need one of:
 
-1. **Separate proxy pod** (recommended): run pipelock as its own Deployment and use NetworkPolicy to restrict the agent pod's egress to only the pipelock Service IP.
+1. **Separate proxy pod** (recommended): run pipelock as its own Deployment and use NetworkPolicy to restrict the agent pod's egress to only the pipelock Service IP. Generate the full bundle with [`pipelock init sidecar`](../cli/init-sidecar.md) (see below).
 2. **CNI-level enforcement**: Cilium or Calico Enterprise support container-level network policies.
 3. **Application-level controls**: configure the agent runtime to only use `HTTPS_PROXY` and block raw socket access.
 
 The sidecar pattern below is convenient for getting started, but understand the limitation: it relies on the agent honoring `HTTPS_PROXY`, not on network-level enforcement.
+
+### Generated companion-proxy deployment (recommended)
+
+`pipelock init sidecar` generates the Tier 3 (Transparent) deployment automatically from a workload manifest. The command emits a companion pipelock Deployment, a ClusterIP Service, a PodDisruptionBudget, a pipelock ConfigMap, and a NetworkPolicy that locks the agent pod's egress to the pipelock Service. The agent container keeps its original spec plus the `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` envs pointing at the companion.
+
+```bash
+pipelock init sidecar --inject-spec my-agent-deployment.yaml --output enforced.yaml
+kubectl apply -f enforced.yaml
+```
+
+Three output formats are supported:
+
+| Flag | Output | Use |
+|------|--------|-----|
+| (default) | Strategic-merge patch + additional manifests | `kubectl apply` directly |
+| `--emit kustomize` | Kustomize overlay with `kustomization.yaml` | GitOps (Flux, Argo CD) |
+| `--emit helm-values` | `values.yaml` fragment for the pipelock Helm chart | Helm-based pipelines |
+
+The generated companion config sets `bind_default_agent_identity: true` so caller-supplied `X-Pipelock-Agent` headers and `?agent=` query parameters are ignored — identity is bound to the workload. This is the recommended mode for single-workload topologies. Shared-proxy multi-agent identity remains a deferred item on the roadmap (requires mTLS or workload-authenticated listener binding). Full reference: [`pipelock init sidecar`](../cli/init-sidecar.md).
+
+**Rollout order:** deploy the pipelock Deployment and wait for ready endpoints before patching the agent workload to route through it. The Helm output documents that order explicitly. Rolling the agent workload first creates a fail-closed brownout until the companion is up.
+
+**Airlock recovery:** when a session escalates into the hard or drain tier under adaptive enforcement, use the [`pipelock session`](../cli/session.md) operator CLI to inspect, explain, and (if needed) release the session. The CLI talks to the companion's admin API over the port configured by `kill_switch.api_listen`.
 
 ### Sidecar Deployment
 

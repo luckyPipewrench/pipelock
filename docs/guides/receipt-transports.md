@@ -39,6 +39,14 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `forward` | Response scan | `response_scan` | Prompt injection in response |
 | `forward` | Allow | (empty) | Successful forward |
 | `intercept` | (all layers) | various | TLS-intercepted traffic (19 emission points) |
+| `mcp_stdio` | Input scan | `mcp_input_scan` | DLP or injection in tool arguments |
+| `mcp_stdio` | Tool scan | `mcp_tool_scan` | Poisoned tool description / schema drift (rug-pull) |
+| `mcp_stdio` | Tool policy | `mcp_tool_policy` | Pre-execution allow/deny/redirect decision |
+| `mcp_stdio` | Chain detection | `mcp_chain` | Multi-call subsequence match |
+| `mcp_stdio` | Session binding | `mcp_session_binding` | Unknown tool appeared mid-session |
+| `mcp_stdio` | Response scan | `response_scan` | Prompt injection in tool result |
+| `mcp_http` | All of the above | — | Same set, HTTP / SSE transport variant |
+| `mcp_http_rev` | All of the above | — | Same set, reverse-proxy transport variant (listener-bound) |
 
 MCP response transports (`mcp_stdio`, `mcp_http`, `mcp_http_listener`, `mcp_ws`) emit `mcp_response_scan` for prompt-injection findings and `media_policy` when a tool result carries blocked base64 media in `content[].data`, `content[].blob`, or `content[].raw`.
 

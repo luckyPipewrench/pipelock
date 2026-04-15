@@ -448,14 +448,18 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
 | [Receipt Verification](docs/guides/receipt-verification.md) | verify-receipt CLI, conformance suite, chain integrity |
-| [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots for audit trails |
+| [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
+| [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests (strategic-merge, Kustomize, Helm values) |
+| [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |
 
 ## Project Structure
 
 ```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 20+ Cobra commands (run, check, init, generate, mcp, ...)
+  cli/                 20+ Cobra commands (run, check, init, generate, mcp, session, posture, rules, ...)
+    session/           `pipelock session` operator CLI — airlock inspection and recovery
+    setup/             `pipelock init sidecar` — companion-proxy manifest generation (K8s)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
   scanner/             11-layer URL scanning pipeline + response injection detection
   audit/               Structured JSON logging (zerolog) + event emission dispatch
@@ -465,9 +469,13 @@ internal/
   killswitch/          Emergency deny-all (4 sources) + port-isolated API
   envelope/            Mediation envelope (RFC 8941) for sideband metadata
   media/               Image metadata stripping (JPEG/PNG byte-level surgery)
+  normalize/           6-pass text normalization (NFKC + invisible + leetspeak + vowel + stego strip)
   receipt/             Action receipt signing + hash-chained evidence
+  posture/             Posture capsule schema, signing, scoring, verify policy
+  session/             Session state, taint classification, task boundaries, trust overrides
+  rules/               Bundle loader, tier taxonomy, RequiredFeatures enforcement
   sandbox/             Landlock, seccomp, netns, macOS sandbox-exec
-  shield/              Airlock, browser shield, SVG hardening, posture capsule
+  shield/              Airlock, browser shield, SVG hardening
   signing/             Ed25519 key management
   integrity/           SHA256 file integrity monitoring
   report/              HTML/JSON audit report generation

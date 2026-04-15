@@ -79,6 +79,7 @@ form data, multipart uploads, and HTTP headers on forward-proxy traffic.
 |--------|------|--------|-------------|
 | `pipelock_body_dlp_hits_total` | counter | `action` | Request body DLP detections. `action` is `warn` or `block`. |
 | `pipelock_header_dlp_hits_total` | counter | `action` | Request header DLP detections. `action` is `warn` or `block`. |
+| `pipelock_response_scan_exempt_total` | counter | `reason`, `transport` | Response scanning exemptions. `reason` is `exempt_domain` or `suppressed`; `transport` is `fetch`, `forward`, `intercept`, `reverse`, `ws`, `mcp_stdio`, `mcp_http`, or `a2a`. Every skipped response scan is counted so operators can quantify how much traffic bypasses injection scanning. |
 
 ## WebSocket Proxy Metrics
 

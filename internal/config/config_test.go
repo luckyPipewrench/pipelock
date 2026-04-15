@@ -1694,6 +1694,34 @@ func TestLoad_PresetYAMLFiles(t *testing.T) {
 	}
 }
 
+func TestLoad_ExampleYAMLFiles(t *testing.T) {
+	examples := []string{
+		"../../examples/quickstart/pipelock.yaml",
+		"../../examples/tool-response-injection/pipelock.yaml",
+	}
+
+	for _, path := range examples {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatalf("resolving %s: %v", path, err)
+		}
+
+		t.Run(filepath.Base(filepath.Dir(path))+"/"+filepath.Base(path), func(t *testing.T) {
+			cfg, err := Load(abs)
+			if err != nil {
+				t.Fatalf("failed to load example %s: %v", abs, err)
+			}
+
+			if cfg.Version != 1 {
+				t.Errorf("expected version 1, got %d", cfg.Version)
+			}
+			if cfg.FetchProxy.Listen == "" {
+				t.Error("expected non-empty listen address")
+			}
+		})
+	}
+}
+
 func TestDefaults_ContainsIPv6CIDRs(t *testing.T) {
 	cfg := Defaults()
 
@@ -1892,13 +1920,11 @@ func TestApplyDefaults_DoesNotOverwriteExistingValues(t *testing.T) {
 	}
 }
 
-func TestLoad_ExtraFieldsIgnored(t *testing.T) {
+func TestLoad_UnknownTopLevelFieldRejected(t *testing.T) {
 	yaml := `
 version: 1
 mode: audit
-unknown_field: "should be silently ignored"
-extra_section:
-  nested: "also ignored"
+unknown_field: "should be rejected"
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -1906,12 +1932,34 @@ extra_section:
 		t.Fatal(err)
 	}
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("unexpected error for config with extra fields: %v", err)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load to reject unknown top-level field, got nil")
 	}
-	if cfg.Mode != ModeAudit {
-		t.Errorf("expected mode audit, got %s", cfg.Mode)
+	if !strings.Contains(err.Error(), "unknown_field") {
+		t.Errorf("error should name the offending field; got: %v", err)
+	}
+}
+
+func TestLoad_UnknownNestedFieldRejected(t *testing.T) {
+	yaml := `
+version: 1
+mode: audit
+kill_switch:
+  sentinel_path: "/tmp/ks"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load to reject unknown nested field, got nil")
+	}
+	if !strings.Contains(err.Error(), "sentinel_path") {
+		t.Errorf("error should name the offending nested field; got: %v", err)
 	}
 }
 
@@ -8442,11 +8490,11 @@ func TestLoad_PartialSubsectionPreservesBoolDefaults(t *testing.T) {
 		"logging:\n" +
 		"  format: json\n" +
 		"dlp:\n" +
-		"  min_entropy: 4.0\n" +
+		"  min_env_secret_length: 16\n" +
 		"response_scanning:\n" +
 		"  action: warn\n" +
 		"git_protection:\n" +
-		"  secrets_in_diff: true\n" +
+		"  blocked_commands: []\n" +
 		"flight_recorder:\n" +
 		"  dir: " + filepath.Join(dir, "fr") + "\n" +
 		"mcp_tool_provenance:\n" +

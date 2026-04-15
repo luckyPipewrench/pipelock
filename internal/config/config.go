@@ -5,10 +5,12 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"mime"
 	"net"
@@ -1346,7 +1348,14 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	// Strict parse: reject unknown top-level and nested fields so typos like
+	// `sentinel_path` (should be `sentinel_file`) or `escalation_threshold`
+	// misspelled as `threshold` fail loud at startup instead of being
+	// silently dropped and leaving security features inert. yaml.v3 reports
+	// the offending line and field name in the error message.
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 

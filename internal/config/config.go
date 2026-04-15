@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // Mode constants for Pipelock operating modes.
@@ -3520,9 +3522,89 @@ func (c *Config) validateBrowserShield() error {
 	return nil
 }
 
+// Default values for the RFC 9421 envelope signer. These are used at
+// load time to fill unset fields when sign: true so an operator can opt
+// in with the minimum viable surface (sign: true + signing_key_path).
+const (
+	DefaultEnvelopeSignKeyID           = "pipelock-mediation-v1"
+	DefaultEnvelopeSignCreatedSkewSecs = 60
+	DefaultEnvelopeSignMaxBodyBytes    = 1 << 20 // 1 MiB
+)
+
+// DefaultEnvelopeSignedComponents returns the RFC 9421 component set
+// pipelock declares when sign: true and signed_components is empty.
+// Callers must not mutate the returned slice — it is returned by copy so
+// each caller gets its own backing array.
+func DefaultEnvelopeSignedComponents() []string {
+	return []string{"@method", "@target-uri", "content-digest", "pipelock-mediation"}
+}
+
 func (c *Config) validateMediationEnvelope() error {
-	// Only field today is Enabled (bool). Signing, SPIFFE actor format,
-	// and key management will add validation when they ship.
+	me := &c.MediationEnvelope
+
+	// Sign: true requires Enabled: true. Allowing sign without enabled
+	// would silently produce signatures that no transport ever attaches
+	// (the inject code paths are gated on Enabled). That is a
+	// configuration error, not a runtime fallback.
+	if me.Sign && !me.Enabled {
+		return fmt.Errorf("mediation_envelope.sign requires mediation_envelope.enabled")
+	}
+
+	if !me.Sign {
+		// Signing disabled — no further validation needed. Fill in
+		// zero defaults so nothing downstream has to branch.
+		return nil
+	}
+
+	// Require a signing key path. Fail closed: a missing key path with
+	// sign: true is an explicit misconfiguration, not a soft fallback.
+	if strings.TrimSpace(me.SigningKeyPath) == "" {
+		return fmt.Errorf("mediation_envelope.signing_key_path is required when mediation_envelope.sign is true")
+	}
+
+	// Load the key once at validate time so the pipelock binary refuses
+	// to start against an unreadable or malformed key rather than
+	// spawning a signer that cannot sign. The key material itself is
+	// discarded — runtime wiring re-reads the file on every reload so
+	// operators can rotate without touching the config file.
+	if _, err := signing.LoadPrivateKeyFile(me.SigningKeyPath); err != nil {
+		return fmt.Errorf("mediation_envelope.signing_key_path %q: %w", me.SigningKeyPath, err)
+	}
+
+	// Fill defaults for optional fields. Validation is the single
+	// write-back point so the hot-reload and startup paths see
+	// identical effective values.
+	if me.KeyID == "" {
+		me.KeyID = DefaultEnvelopeSignKeyID
+	}
+	if me.CreatedSkewSeconds == 0 {
+		me.CreatedSkewSeconds = DefaultEnvelopeSignCreatedSkewSecs
+	}
+	if me.CreatedSkewSeconds < 0 {
+		return fmt.Errorf("mediation_envelope.created_skew_seconds must be >= 0, got %d", me.CreatedSkewSeconds)
+	}
+	if me.MaxBodyBytes == 0 {
+		me.MaxBodyBytes = DefaultEnvelopeSignMaxBodyBytes
+	}
+	if me.MaxBodyBytes < 0 {
+		return fmt.Errorf("mediation_envelope.max_body_bytes must be >= 0, got %d", me.MaxBodyBytes)
+	}
+	if len(me.SignedComponents) == 0 {
+		me.SignedComponents = DefaultEnvelopeSignedComponents()
+	} else {
+		// Reject unknown components early. Each entry must either be an
+		// RFC 9421 derived component (starts with "@") or an HTTP header
+		// field name. We do not enforce the full RFC 9421 allowlist here
+		// — that belongs in the signer — but empty / whitespace-only
+		// entries are always wrong and would cause runtime signature
+		// base construction to panic.
+		for i, comp := range me.SignedComponents {
+			if strings.TrimSpace(comp) == "" {
+				return fmt.Errorf("mediation_envelope.signed_components[%d] must not be empty", i)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -4197,6 +4279,41 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			})
 			break
 		}
+	}
+
+	// Mediation envelope signing downgraded or disabled.
+	//
+	// Downgrading from sign:true to sign:false means every mediated
+	// request loses its RFC 9421 signature. Downstream verifiers that
+	// were relying on the signature as part of an admission decision
+	// will start accepting unsigned envelopes — a silent weakening of
+	// the trust chain. Warn the operator on every such transition so a
+	// revocation shows up in logs.
+	if old.MediationEnvelope.Sign && !updated.MediationEnvelope.Sign {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mediation_envelope.sign",
+			Message: "mediation envelope signing disabled — outbound requests will no longer carry an RFC 9421 signature",
+		})
+	}
+	// Disabling the envelope entirely is a bigger step: no mediation
+	// header at all. Same reasoning; warn separately so operators can
+	// distinguish "lost the signature" from "lost the whole envelope".
+	if old.MediationEnvelope.Enabled && !updated.MediationEnvelope.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "mediation_envelope.enabled",
+			Message: "mediation envelope disabled — outbound requests will no longer carry the Pipelock-Mediation header",
+		})
+	}
+	// Key rotation is not a downgrade, but an operator rotating the
+	// key id without first publishing the new public key will silently
+	// start emitting signatures no verifier can check. Warn on change.
+	if old.MediationEnvelope.Sign && updated.MediationEnvelope.Sign &&
+		old.MediationEnvelope.KeyID != updated.MediationEnvelope.KeyID {
+		warnings = append(warnings, ReloadWarning{
+			Field: "mediation_envelope.key_id",
+			Message: fmt.Sprintf("mediation envelope signing key_id changed from %q to %q — verifiers must have the new public key published",
+				old.MediationEnvelope.KeyID, updated.MediationEnvelope.KeyID),
+		})
 	}
 
 	return warnings

@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+// Test-local constants for envelope signing field values that repeat
+// across sensitivity / reload tests. goconst fires at 3+ occurrences
+// per repo policy; extract here rather than inline.
+const (
+	testEnvelopeKeyIDV1 = "pipelock-mediation-v1"
+	testEnvelopeKeyIDV2 = "pipelock-mediation-v2"
+)
+
 // canonicalHashOf builds a fresh Config from Defaults(), applies mut, and
 // returns the canonical policy hash computed on that value. Using a fresh
 // value every time avoids any interaction with the atomic cache — that
@@ -143,7 +151,7 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			mut: func(c *Config) {
 				c.MediationEnvelope.Enabled = true
 				c.MediationEnvelope.Sign = true
-				c.MediationEnvelope.KeyID = "pipelock-mediation-v2"
+				c.MediationEnvelope.KeyID = testEnvelopeKeyIDV2
 			},
 		},
 		{

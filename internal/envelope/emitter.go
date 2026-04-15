@@ -169,9 +169,9 @@ func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 //     will drain req.Body up to the signer's MaxBodyBytes cap,
 //     replace req.Body with a fresh reader over the buffered bytes,
 //     set req.GetBody for redirect replay, and sign with the
-//     buffered content. An over-cap body is treated as a body-less
-//     request — content-digest drops out of the declared list rather
-//     than failing the entire sign.
+//     buffered content. An over-cap body is signed without
+//     content-digest, but the original body is preserved for the
+//     upstream transport rather than being replaced with an empty one.
 //
 // Errors from the envelope serialize step or the signer's SignRequest
 // are returned to the caller. On error the request's existing headers
@@ -240,14 +240,24 @@ func requestHasBody(req *http.Request) bool {
 // maxBytes == 0 means "no cap" — read until EOF. A positive maxBytes
 // reads one extra byte past the cap to detect overflow; on overflow
 // the function returns nil and no error, signaling "signable without
-// content-digest" to the caller. The request body is left drained
-// (no replacement) in the overflow case because a) the excess bytes
-// are already consumed and b) returning a partial body would hand the
-// signer something it cannot faithfully reproduce from the wire.
+// content-digest" to the caller. Crucially, the original request body
+// is preserved for the upstream transport — oversize requests lose
+// only Content-Digest coverage, not their payload.
 func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
 		return nil, nil
 	}
+
+	// Known oversize: skip buffering entirely and let the request
+	// flow with its original body. The signer will omit
+	// content-digest because it receives nil body bytes.
+	if maxBytes > 0 && req.ContentLength > int64(maxBytes) {
+		return nil, nil
+	}
+
+	origBody := req.Body
+	origGetBody := req.GetBody
+	origContentLength := req.ContentLength
 
 	// Read maxBytes + 1 so we can distinguish "fits exactly" from
 	// "overflowed" without a second syscall. maxBytes == 0 uses the
@@ -257,27 +267,34 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 		err  error
 	)
 	if maxBytes > 0 {
-		data, err = io.ReadAll(io.LimitReader(req.Body, int64(maxBytes)+1))
+		data, err = io.ReadAll(io.LimitReader(origBody, int64(maxBytes)+1))
 	} else {
-		data, err = io.ReadAll(req.Body)
+		data, err = io.ReadAll(origBody)
 	}
-	// Close the original body — we are about to replace it. Best
-	// effort: a failing close on the inbound body does not affect
-	// the signer's correctness because we already have the bytes.
-	_ = req.Body.Close()
-
 	if err != nil {
 		return nil, fmt.Errorf("reading request body: %w", err)
 	}
 
-	// Overflow: the body did not fit under the cap. Fall through as
-	// "no buffered body" so the signer drops content-digest.
+	// Overflow: preserve the full original payload for upstream by
+	// replaying the bytes we already consumed, followed by the unread
+	// remainder of the original stream. We cannot synthesize a fresh
+	// GetBody without buffering the full request, so preserve the
+	// caller's original GetBody when one existed and otherwise leave it
+	// unset.
 	if maxBytes > 0 && len(data) > maxBytes {
-		req.Body = http.NoBody
-		req.ContentLength = 0
-		req.GetBody = func() (io.ReadCloser, error) { return http.NoBody, nil }
+		req.Body = &readPreservingCloser{
+			Reader: io.MultiReader(bytes.NewReader(data), origBody),
+			Closer: origBody,
+		}
+		req.ContentLength = origContentLength
+		req.GetBody = origGetBody
 		return nil, nil
 	}
+
+	// Close the original body — we are about to replace it. Best
+	// effort: a failing close on the inbound body does not affect
+	// the signer's correctness because we already have the bytes.
+	_ = origBody.Close()
 
 	// Install a fresh reader and a GetBody closure so redirect replay
 	// gets a clean bytes.Reader every time stdlib rewinds the request.
@@ -287,6 +304,14 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 		return io.NopCloser(bytes.NewReader(data)), nil
 	}
 	return data, nil
+}
+
+// readPreservingCloser wraps a Reader and delegates Close to the
+// original request body so overflow preservation does not leak the
+// underlying stream.
+type readPreservingCloser struct {
+	io.Reader
+	io.Closer
 }
 
 // InjectMCPEnvelope builds an envelope and injects it into an MCP _meta map.

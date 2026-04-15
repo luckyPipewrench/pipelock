@@ -6,6 +6,8 @@ package proxy
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +16,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -100,6 +104,56 @@ func TestProxy_ReloadEnvelopeEmitter_EnablesSigning(t *testing.T) {
 	}
 	if got := em.Signer().KeyID(); got != config.DefaultEnvelopeSignKeyID {
 		t.Errorf("signer KeyID = %q, want %q", got, config.DefaultEnvelopeSignKeyID)
+	}
+}
+
+// TestProxy_NewInitializesSigningEmitterAtStartup exercises the startup lane
+// that previously left sign:true configs with a header-only emitter until the
+// first reload. The first outbound request after New must already be signed.
+func TestProxy_NewInitializesSigningEmitterAtStartup(t *testing.T) {
+	t.Parallel()
+
+	var gotSigInput string
+	var gotSig string
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSigInput = r.Header.Get("Signature-Input")
+		gotSig = r.Header.Get("Signature")
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
+
+	// Mimic the pre-fix startup path: runtime hands proxy.New a header-only
+	// emitter. proxy.New must upgrade it to a signer-backed emitter before
+	// serving the first request.
+	startupEmitter := envelope.NewEmitter(envelope.EmitterConfig{
+		ConfigHash: cfg.Hash(),
+	})
+
+	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New(), WithEnvelopeEmitter(startupEmitter))
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	if em := p.envelopeEmitterPtr.Load(); em == nil || !em.HasSigner() {
+		t.Fatal("startup proxy should install a signing emitter immediately")
+	}
+
+	handler := p.buildHandler(p.buildMux())
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/signed", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotSigInput == "" || gotSig == "" {
+		t.Fatalf("first startup request was unsigned: Signature-Input=%q Signature=%q", gotSigInput, gotSig)
 	}
 }
 
@@ -238,6 +292,94 @@ func TestProxy_ReloadEnvelopeEmitter_DisabledNilsEmitter(t *testing.T) {
 	// not mask the assertion.
 	if em := p.envelopeEmitterPtr.Load(); em != nil {
 		t.Errorf("envelope emitter pointer should be nil after enabled=false reload, got %p", em)
+	}
+}
+
+// TestProxy_ReloadEnvelopeFailurePreservesReceiptEmitter verifies that a
+// fail-closed envelope reload does not partially advance the receipt emitter.
+// The config swap aborts, so the signed-receipt state must remain on the old
+// emitter rather than moving to a config that never became active.
+func TestProxy_ReloadEnvelopeFailurePreservesReceiptEmitter(t *testing.T) {
+	t.Parallel()
+
+	keyDir := t.TempDir()
+	_, receiptPrivA, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey receipt A: %v", err)
+	}
+	_, receiptPrivB, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey receipt B: %v", err)
+	}
+
+	receiptKeyA := filepath.Join(keyDir, "receiptA.key")
+	if err := signing.SavePrivateKey(receiptPrivA, receiptKeyA); err != nil {
+		t.Fatalf("SavePrivateKey receipt A: %v", err)
+	}
+	receiptKeyB := filepath.Join(keyDir, "receiptB.key")
+	if err := signing.SavePrivateKey(receiptPrivB, receiptKeyB); err != nil {
+		t.Fatalf("SavePrivateKey receipt B: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                t.TempDir(),
+		CheckpointInterval: 1000,
+	}, nil, receiptPrivA)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	initialReceiptEmitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    receiptPrivA,
+		ConfigHash: "hash-a",
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+
+	startCfg := config.Defaults()
+	startCfg.Internal = nil
+	startCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	startCfg.FlightRecorder.SigningKeyPath = receiptKeyA
+	enableEnvelopeSigning(t, startCfg, writeEnvelopeKey(t))
+
+	p, err := New(startCfg, audit.NewNop(), scanner.New(startCfg), metrics.New(),
+		WithRecorder(rec),
+		WithReceiptEmitter(initialReceiptEmitter),
+		WithReceiptKeyPath(receiptKeyA),
+	)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+
+	beforeReceiptEmitter := p.receiptEmitterPtr.Load()
+	if beforeReceiptEmitter == nil {
+		t.Fatal("expected initial receipt emitter")
+	}
+
+	brokenEnvelopeKey := writeEnvelopeKey(t)
+	if err := os.Remove(brokenEnvelopeKey); err != nil {
+		t.Fatalf("removing broken envelope key: %v", err)
+	}
+
+	brokenCfg := config.Defaults()
+	brokenCfg.Internal = nil
+	brokenCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	brokenCfg.FlightRecorder.SigningKeyPath = receiptKeyB
+	brokenCfg.MediationEnvelope.Enabled = true
+	brokenCfg.MediationEnvelope.Sign = true
+	brokenCfg.MediationEnvelope.SigningKeyPath = brokenEnvelopeKey
+	brokenCfg.MediationEnvelope.KeyID = config.DefaultEnvelopeSignKeyID
+	brokenCfg.MediationEnvelope.SignedComponents = config.DefaultEnvelopeSignedComponents()
+	brokenCfg.MediationEnvelope.CreatedSkewSeconds = config.DefaultEnvelopeSignCreatedSkewSecs
+	brokenCfg.MediationEnvelope.MaxBodyBytes = config.DefaultEnvelopeSignMaxBodyBytes
+
+	p.Reload(brokenCfg, scanner.New(brokenCfg))
+
+	if afterReceiptEmitter := p.receiptEmitterPtr.Load(); afterReceiptEmitter != beforeReceiptEmitter {
+		t.Fatal("receipt emitter changed even though envelope reload aborted")
 	}
 }
 

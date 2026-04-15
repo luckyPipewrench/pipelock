@@ -25,6 +25,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -1008,13 +1009,14 @@ type MediationEnvelope struct {
 	// true and this field is empty.
 	KeyID string `yaml:"key_id"`
 
-	// SignedComponents declares the maximal RFC 9421 derived-component
-	// and header list that pipelock will sign. At request time the
-	// signer builds a dynamic subset: content-digest is dropped on
-	// body-less requests, and any optional header not present on the
-	// request is skipped. Defaults to ["@method", "@target-uri",
-	// "content-digest", "pipelock-mediation"] when sign is true and
-	// this slice is empty.
+	// SignedComponents declares the maximal RFC 9421 component list
+	// that pipelock will sign. Supported values are "@method",
+	// "@target-uri", "@authority", "content-digest", and
+	// "pipelock-mediation". At request time the signer builds a
+	// dynamic subset: content-digest is dropped on body-less requests,
+	// and pipelock-mediation is skipped when the header is absent.
+	// Defaults to ["@method", "@target-uri", "content-digest",
+	// "pipelock-mediation"] when sign is true and this slice is empty.
 	SignedComponents []string `yaml:"signed_components"`
 
 	// CreatedSkewSeconds is the tolerance (in seconds) applied to the
@@ -3592,17 +3594,11 @@ func (c *Config) validateMediationEnvelope() error {
 	if len(me.SignedComponents) == 0 {
 		me.SignedComponents = DefaultEnvelopeSignedComponents()
 	} else {
-		// Reject unknown components early. Each entry must either be an
-		// RFC 9421 derived component (starts with "@") or an HTTP header
-		// field name. We do not enforce the full RFC 9421 allowlist here
-		// — that belongs in the signer — but empty / whitespace-only
-		// entries are always wrong and would cause runtime signature
-		// base construction to panic.
-		for i, comp := range me.SignedComponents {
-			if strings.TrimSpace(comp) == "" {
-				return fmt.Errorf("mediation_envelope.signed_components[%d] must not be empty", i)
-			}
+		normalized, err := envelope.NormalizeSignedComponents(me.SignedComponents)
+		if err != nil {
+			return errors.New("mediation_envelope." + err.Error())
 		}
+		me.SignedComponents = normalized
 	}
 
 	return nil
@@ -4314,6 +4310,37 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: fmt.Sprintf("mediation envelope signing key_id changed from %q to %q — verifiers must have the new public key published",
 				old.MediationEnvelope.KeyID, updated.MediationEnvelope.KeyID),
 		})
+	}
+	if old.MediationEnvelope.Sign && updated.MediationEnvelope.Sign {
+		updatedComponents := make(map[string]struct{}, len(updated.MediationEnvelope.SignedComponents))
+		for _, comp := range updated.MediationEnvelope.SignedComponents {
+			updatedComponents[strings.ToLower(strings.TrimSpace(comp))] = struct{}{}
+		}
+		removedComponents := make([]string, 0, len(old.MediationEnvelope.SignedComponents))
+		for _, comp := range old.MediationEnvelope.SignedComponents {
+			normalized := strings.ToLower(strings.TrimSpace(comp))
+			if normalized == "" {
+				continue
+			}
+			if _, ok := updatedComponents[normalized]; !ok && !slices.Contains(removedComponents, normalized) {
+				removedComponents = append(removedComponents, normalized)
+			}
+		}
+		if len(removedComponents) > 0 {
+			slices.Sort(removedComponents)
+			warnings = append(warnings, ReloadWarning{
+				Field: "mediation_envelope.signed_components",
+				Message: fmt.Sprintf("mediation envelope signed_components narrowed — removed %s from RFC 9421 coverage",
+					strings.Join(removedComponents, ", ")),
+			})
+		}
+		if updated.MediationEnvelope.MaxBodyBytes < old.MediationEnvelope.MaxBodyBytes {
+			warnings = append(warnings, ReloadWarning{
+				Field: "mediation_envelope.max_body_bytes",
+				Message: fmt.Sprintf("mediation envelope max_body_bytes reduced from %d to %d — fewer request bodies will carry content-digest coverage",
+					old.MediationEnvelope.MaxBodyBytes, updated.MediationEnvelope.MaxBodyBytes),
+			})
+		}
 	}
 
 	return warnings

@@ -220,3 +220,52 @@ func TestCheckRedirect_DropsStaleContentDigest(t *testing.T) {
 		t.Error("stale Content-Digest propagated through redirect — refresh did not strip")
 	}
 }
+
+// TestCheckRedirect_PreservesRequiresReauth verifies that redirect refresh
+// carries forward the reauth bit from the original envelope. Without this,
+// the redirected leg silently weakens the mediation contract even though it
+// is the same logical action.
+func TestCheckRedirect_PreservesRequiresReauth(t *testing.T) {
+	t.Parallel()
+
+	p := newSigningProxyForTest(t)
+	em := p.envelopeEmitterPtr.Load()
+	if em == nil {
+		t.Fatal("expected startup signing emitter")
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://redirected.example/final", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	ctx := context.WithValue(req.Context(), ctxKeyClientIP, "127.0.0.1")
+	ctx = context.WithValue(ctx, ctxKeyRequestID, "req-reauth")
+	req = req.WithContext(ctx)
+
+	prev := em.Build(envelope.BuildOpts{
+		ActionID:       "01961f3a-7b2c-7000-8000-000000000020",
+		Action:         "read",
+		Verdict:        config.ActionAllow,
+		Actor:          "agent",
+		ActorAuth:      envelope.ActorAuthBound,
+		RequiresReauth: true,
+	})
+	if err := envelope.InjectHTTP(req.Header, prev); err != nil {
+		t.Fatalf("inject previous envelope: %v", err)
+	}
+
+	if err := p.refreshEnvelopeForRedirect(req, nil, p.cfgPtr.Load()); err != nil {
+		t.Fatalf("refreshEnvelopeForRedirect: %v", err)
+	}
+
+	refreshed, err := envelope.Parse(req.Header.Get(envelope.HeaderName))
+	if err != nil {
+		t.Fatalf("parse refreshed envelope: %v", err)
+	}
+	if !refreshed.RequiresReauth {
+		t.Fatal("redirect refresh dropped reauth bit")
+	}
+	if refreshed.Hop != 1 {
+		t.Errorf("Hop = %d, want 1", refreshed.Hop)
+	}
+}

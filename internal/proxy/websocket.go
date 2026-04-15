@@ -445,7 +445,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
 		parsedTarget, parseErr := url.Parse(targetURL)
 		if parseErr != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope url parse failed: %v", parseErr), 0.1)
+			blockedErr := newEnvelopeBlockedRequest(parseErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordWSBlocked()
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
+			return
 		} else {
 			synthReq := &http.Request{
 				Method: http.MethodGet,
@@ -462,7 +466,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				ActorAuth:  id.Auth,
 				PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
 			}); envErr != nil {
-				log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+				blockedErr := newEnvelopeBlockedRequest(envErr)
+				log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+				p.metrics.RecordWSBlocked()
+				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
+				return
 			}
 		}
 	}

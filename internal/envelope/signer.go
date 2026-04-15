@@ -54,6 +54,14 @@ const (
 	headerPipelockMediation = "pipelock-mediation"
 )
 
+var supportedSignedComponents = map[string]struct{}{
+	derivedMethod:           {},
+	derivedTargetURI:        {},
+	derivedAuthority:        {},
+	headerContentDigest:     {},
+	headerPipelockMediation: {},
+}
+
 // ErrSignerDisabled is returned from (*Signer).SignRequest when called
 // on a nil receiver. Callers treat nil as "signing disabled" and skip
 // attaching a signature; the error exists so callers that want to
@@ -109,6 +117,35 @@ type SignerConfig struct {
 	NowFn func() time.Time
 }
 
+// NormalizeSignedComponents validates and canonicalizes the configured RFC 9421
+// component list. Components are lowercased, trimmed, deduplicated, and
+// restricted to the set the signer actually knows how to cover. This prevents
+// typos from silently weakening signature coverage.
+func NormalizeSignedComponents(components []string) ([]string, error) {
+	if len(components) == 0 {
+		return nil, errors.New("signed_components must contain at least one entry")
+	}
+
+	out := make([]string, 0, len(components))
+	seen := make(map[string]struct{}, len(components))
+	for i, raw := range components {
+		comp := strings.ToLower(strings.TrimSpace(raw))
+		if comp == "" {
+			return nil, fmt.Errorf("signed_components[%d] must not be empty", i)
+		}
+		if _, ok := supportedSignedComponents[comp]; !ok {
+			return nil, fmt.Errorf("signed_components[%d] %q is not supported", i, raw)
+		}
+		if _, dup := seen[comp]; dup {
+			return nil, fmt.Errorf("signed_components[%d] %q duplicates an earlier entry", i, comp)
+		}
+		seen[comp] = struct{}{}
+		out = append(out, comp)
+	}
+
+	return out, nil
+}
+
 // NewSigner validates the config and returns a Signer. The only
 // runtime error paths today are missing key, missing key id, and empty
 // component list — all of which the config validator will also catch
@@ -122,17 +159,14 @@ func NewSigner(cfg SignerConfig) (*Signer, error) {
 	if strings.TrimSpace(cfg.KeyID) == "" {
 		return nil, errors.New("envelope signer requires a non-empty key_id")
 	}
-	if len(cfg.SignedComponents) == 0 {
-		return nil, errors.New("envelope signer requires at least one signed component")
+	comps, err := NormalizeSignedComponents(cfg.SignedComponents)
+	if err != nil {
+		return nil, fmt.Errorf("envelope signer: %w", err)
 	}
 	now := cfg.NowFn
 	if now == nil {
 		now = time.Now
 	}
-	// Defensive copy so the caller cannot mutate our component list
-	// after construction.
-	comps := make([]string, len(cfg.SignedComponents))
-	copy(comps, cfg.SignedComponents)
 
 	return &Signer{
 		privKey:      cfg.PrivKey,
@@ -164,12 +198,11 @@ func (s *Signer) KeyID() string {
 // the signer declines to digest it — "content-digest" is dropped from
 // the declared list rather than being signed with an unknown value.
 //
-// Any header component in the Signer's configured list that is not
-// present on the request is skipped for that request (e.g. a
-// configured "authorization" component on a request without the
-// header). This is allowed by RFC 9421: Signature-Input declares the
-// actual components signed, and verifiers use that declaration to
-// reconstruct the signature base.
+// Any optional header component in the Signer's configured list that
+// is not present on the request is skipped for that request. This is
+// allowed by RFC 9421: Signature-Input declares the actual components
+// signed, and verifiers use that declaration to reconstruct the
+// signature base.
 //
 // SignRequest coexists with existing signatures: if the request
 // already has Signature or Signature-Input dictionary members, the
@@ -244,11 +277,7 @@ func (s *Signer) SignRequest(req *http.Request, body []byte) error {
 // nil, otherwise it is dropped.
 func (s *Signer) effectiveComponents(req *http.Request, body []byte) []string {
 	out := make([]string, 0, len(s.components))
-	for _, raw := range s.components {
-		comp := strings.ToLower(strings.TrimSpace(raw))
-		if comp == "" {
-			continue
-		}
+	for _, comp := range s.components {
 		switch comp {
 		case derivedMethod, derivedTargetURI, derivedAuthority:
 			out = append(out, comp)
@@ -262,11 +291,7 @@ func (s *Signer) effectiveComponents(req *http.Request, body []byte) []string {
 			// inbound value so a stale digest cannot survive.
 			req.Header.Set("Content-Digest", contentDigestHeaderValue(body))
 			out = append(out, comp)
-		default:
-			// Any other entry is an HTTP header field name. Include
-			// it in the declared list only when the request carries
-			// the header — otherwise we would sign a "" value which
-			// a verifier might reconstruct differently.
+		case headerPipelockMediation:
 			if req.Header.Get(comp) != "" {
 				out = append(out, comp)
 			}
@@ -376,14 +401,14 @@ func buildComponentValue(req *http.Request, body []byte, comp string) (string, e
 			v = contentDigestHeaderValue(body)
 		}
 		return v, nil
-	default:
-		// Header field component. Lower-cased lookup; the real
-		// value goes into the signature base as-is.
+	case headerPipelockMediation:
 		v := req.Header.Get(comp)
 		if v == "" {
 			return "", fmt.Errorf("header %q requested but not present", comp)
 		}
 		return v, nil
+	default:
+		return "", fmt.Errorf("unsupported signed component %q", comp)
 	}
 }
 

@@ -98,6 +98,69 @@ const (
 // requestCounter provides monotonic request IDs.
 var requestCounter atomic.Uint64
 
+const (
+	blockLayerMediationEnvelope  = "mediation_envelope"
+	mediationEnvelopeBlockReason = "mediation envelope signing failed"
+)
+
+// blockedRequestError signals a fail-closed block in a request path that still
+// travels through net/http error plumbing (redirect checks, reverse proxy
+// transports, and similar). reason is safe to return to the client; detail is
+// the fuller operator-facing log message.
+type blockedRequestError struct {
+	layer  string
+	reason string
+	detail string
+}
+
+func (e *blockedRequestError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.reason
+}
+
+func newBlockedRequestError(layer, reason, detail string) *blockedRequestError {
+	if detail == "" {
+		detail = reason
+	}
+	return &blockedRequestError{
+		layer:  layer,
+		reason: reason,
+		detail: detail,
+	}
+}
+
+func blockedRequestErrorFrom(err error) (*blockedRequestError, bool) {
+	var blockedErr *blockedRequestError
+	if !errors.As(err, &blockedErr) {
+		return nil, false
+	}
+	return blockedErr, true
+}
+
+func newRedirectBlockedRequest(reason string) *blockedRequestError {
+	fullReason := "redirect blocked: " + reason
+	return newBlockedRequestError("redirect", fullReason, fullReason)
+}
+
+func newEnvelopeBlockedRequest(err error) *blockedRequestError {
+	return newBlockedRequestError(
+		blockLayerMediationEnvelope,
+		mediationEnvelopeBlockReason,
+		mediationEnvelopeBlockReason+": "+err.Error(),
+	)
+}
+
+func newRedirectEnvelopeBlockedRequest(err error) *blockedRequestError {
+	reason := "redirect blocked: " + mediationEnvelopeBlockReason
+	return newBlockedRequestError(
+		blockLayerMediationEnvelope,
+		reason,
+		reason+": "+err.Error(),
+	)
+}
+
 // Regex patterns for extracting content from HTML hiding spots that
 // readability strips (comments, script bodies, style bodies). We scan
 // only these extracted fragments for injection, not the full HTML markup,
@@ -290,6 +353,23 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
 
+	// Startup envelope wiring mirrors the reload lane: ensure an
+	// enabled envelope always has the canonical policy hash installed,
+	// and when sign:true is configured, replace any header-only
+	// startup emitter with a signer-backed instance before the first
+	// request is served. This closes the cold-start gap where the
+	// runtime passed WithEnvelopeEmitter(header-only) and the signer
+	// would not appear until the first reload.
+	if cfg.MediationEnvelope.Enabled {
+		if em := p.envelopeEmitterPtr.Load(); em == nil || (cfg.MediationEnvelope.Sign && !em.HasSigner()) {
+			if err := p.reloadEnvelopeEmitter(cfg); err != nil {
+				return nil, fmt.Errorf("envelope emitter init: %w", err)
+			}
+		} else {
+			em.UpdateConfigHash(cfg.CanonicalPolicyHash())
+		}
+	}
+
 	// Build edition (agent registry in enterprise, noop in OSS).
 	ed, edErr := edition.NewEditionFunc(cfg, sc)
 	if edErr != nil {
@@ -398,7 +478,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
 					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
-					return fmt.Errorf("redirect blocked: %s", result.Reason)
+					return newRedirectBlockedRequest(result.Reason)
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
@@ -407,10 +487,12 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// reflect the redirected leg rather than the original.
 			// The stdlib has already copied headers from via[0] to
 			// req; we replace the Pipelock-Mediation slot and re-sign
-			// (if signing is active). Errors are logged but the
-			// redirect is allowed to proceed — a sign failure must
-			// not silently fail-open on an otherwise allowed hop.
-			p.refreshEnvelopeForRedirect(req, via, currentCfg)
+			// (if signing is active). Any refresh/signing error aborts
+			// the redirect so a sign:true deployment never silently
+			// degrades to an unsigned or stale-signature hop.
+			if err := p.refreshEnvelopeForRedirect(req, via, currentCfg); err != nil {
+				return err
+			}
 			return nil
 		},
 	}
@@ -445,13 +527,13 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 //     — the signer will set a fresh one if body bytes are present.
 //  5. Call emitter.InjectAndSign on req with the rebuilt BuildOpts.
 //
-// Errors from any step log an anomaly but do not fail the redirect
-// — the alternative is taking down an otherwise allowed hop on a
-// signing accessory failure, which is the wrong trade-off.
-func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Request, cfg *config.Config) {
+// Any failure to refresh or re-sign the redirected request aborts the
+// redirect. sign:true is a hard integrity contract: a redirected hop
+// must not continue with a stale or missing pipelock signature.
+func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Request, cfg *config.Config) error {
 	em := p.envelopeEmitterPtr.Load()
 	if em == nil {
-		return
+		return nil
 	}
 
 	clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
@@ -489,11 +571,15 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 			buffered, readErr := io.ReadAll(rc)
 			_ = rc.Close()
 			if readErr != nil {
-				p.logger.LogAnomaly(actx, "",
-					fmt.Sprintf("envelope refresh: draining GetBody failed: %v", readErr), 0.1)
-			} else {
-				body = buffered
+				return newRedirectEnvelopeBlockedRequest(
+					fmt.Errorf("draining redirect GetBody: %w", readErr),
+				)
 			}
+			body = buffered
+		} else if err != nil {
+			return newRedirectEnvelopeBlockedRequest(
+				fmt.Errorf("opening redirect GetBody: %w", err),
+			)
 		}
 	}
 
@@ -515,17 +601,18 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 		actionID = receipt.NewActionID()
 	}
 	opts := envelope.BuildOpts{
-		ActionID:      actionID,
-		Action:        string(receipt.ClassifyHTTP(req.Method)),
-		Verdict:       prev.Verdict,
-		SideEffect:    string(receipt.SideEffectFromMethod(req.Method)),
-		Actor:         prev.Actor,
-		ActorAuth:     prev.ActorAuth,
-		SessionTaint:  prev.SessionTaint,
-		TaskID:        prev.TaskID,
-		AuthorityKind: prev.AuthorityKind,
-		AuthorityRef:  prev.AuthorityRef,
-		PolicyHash:    envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
+		ActionID:       actionID,
+		Action:         string(receipt.ClassifyHTTP(req.Method)),
+		Verdict:        prev.Verdict,
+		SideEffect:     string(receipt.SideEffectFromMethod(req.Method)),
+		Actor:          prev.Actor,
+		ActorAuth:      prev.ActorAuth,
+		SessionTaint:   prev.SessionTaint,
+		TaskID:         prev.TaskID,
+		AuthorityKind:  prev.AuthorityKind,
+		AuthorityRef:   prev.AuthorityRef,
+		RequiresReauth: prev.RequiresReauth,
+		PolicyHash:     envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
 	}
 	if opts.Verdict == "" {
 		opts.Verdict = config.ActionAllow
@@ -540,9 +627,9 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	env := em.Build(opts)
 	env.Hop = prev.Hop
 	if err := envelope.InjectHTTP(req.Header, env); err != nil {
-		p.logger.LogAnomaly(actx, "",
-			fmt.Sprintf("envelope refresh: inject header failed: %v", err), 0.1)
-		return
+		return newRedirectEnvelopeBlockedRequest(
+			fmt.Errorf("injecting refreshed envelope: %w", err),
+		)
 	}
 
 	// Sign the refreshed envelope over the redirected request if
@@ -552,8 +639,9 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	// effective components.
 	if signer := em.Signer(); signer != nil {
 		if err := signer.SignRequest(req, body); err != nil {
-			p.logger.LogAnomaly(actx, "",
-				fmt.Sprintf("envelope refresh: re-sign failed: %v", err), 0.1)
+			return newRedirectEnvelopeBlockedRequest(
+				fmt.Errorf("re-signing redirect request: %w", err),
+			)
 		}
 	}
 
@@ -561,6 +649,7 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	// same chain by leaving req as-is. stdlib will copy this header
 	// to the next req when CheckRedirect fires again.
 	_ = via // reserved for future per-hop logging
+	return nil
 }
 
 // recordDecision writes an enforcement verdict to the flight recorder if enabled.
@@ -775,13 +864,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		return
 	}
 
-	// Receipt emitter lifecycle: create on first signing key appearance,
-	// update config hash on existing, nil on key removal. Must run BEFORE
-	// config swap so receipts always reflect the policy that governed the
-	// decision. Without this ordering, requests racing with reload could
-	// get signed with the previous policy hash.
-	p.reloadReceiptEmitter(cfg)
-
 	// Envelope signing reload is fail-closed: an unreadable / malformed
 	// mediation envelope key aborts the entire reload. The previous
 	// envelope emitter stays installed so in-flight traffic keeps its
@@ -798,6 +880,13 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		}
 		return
 	}
+
+	// Receipt emitter lifecycle: create on first signing key appearance,
+	// recreate on key rotation, nil on key removal. This must happen
+	// after the fail-closed envelope reload succeeds and before the
+	// config swap so a broken envelope signer cannot partially advance
+	// receipt state for a config that never became active.
+	p.reloadReceiptEmitter(cfg)
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
@@ -2181,31 +2270,60 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			AuthorityKind: fetchTaint.Authority.String(),
 			PolicyHash:    policyHash,
 		}); envErr != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			blockedErr := newEnvelopeBlockedRequest(envErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.recordDecision(config.ActionBlock, blockedErr.layer, blockedErr.reason, "fetch", requestID)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               blockedErr.layer,
+				Pattern:             blockedErr.reason,
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+			})
+			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: blockedErr.reason,
+			})
+			return
 		}
 	}
 
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
-		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
-		if strings.Contains(err.Error(), "redirect blocked:") {
-			reason := err.Error()
-			log.LogBlocked(actx, "redirect", reason)
-			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start), agentLabel)
+		// Detect fail-closed blocks from CheckRedirect and report them as blocked.
+		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: reason,
+				BlockReason: blockedErr.reason,
 			}
-			if cfg.ExplainBlocksEnabled() {
+			if blockedErr.layer == "redirect" && cfg.ExplainBlocksEnabled() {
 				resp.Hint = "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks."
 			}
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
-				Layer:     "redirect",
-				Pattern:   reason,
+				Layer:     blockedErr.layer,
+				Pattern:   blockedErr.reason,
 				Transport: "fetch",
 				Method:    http.MethodGet,
 				Target:    displayURL,

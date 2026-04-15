@@ -104,6 +104,32 @@ func TestNewSigner_RejectsEmptyComponents(t *testing.T) {
 	}
 }
 
+func TestNewSigner_RejectsUnsupportedComponent(t *testing.T) {
+	t.Parallel()
+	_, priv := testSignerKey(t)
+	_, err := NewSigner(SignerConfig{
+		PrivKey:          priv,
+		KeyID:            "test",
+		SignedComponents: []string{"@method", "host"},
+	})
+	if err == nil {
+		t.Error("expected error for unsupported signed_components entry")
+	}
+}
+
+func TestNewSigner_RejectsDuplicateComponents(t *testing.T) {
+	t.Parallel()
+	_, priv := testSignerKey(t)
+	_, err := NewSigner(SignerConfig{
+		PrivKey:          priv,
+		KeyID:            "test",
+		SignedComponents: []string{"@method", "@method"},
+	})
+	if err == nil {
+		t.Error("expected error for duplicate signed_components entry")
+	}
+}
+
 func TestSignRequest_NilSignerReturnsErrSignerDisabled(t *testing.T) {
 	t.Parallel()
 	var s *Signer

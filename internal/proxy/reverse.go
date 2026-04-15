@@ -285,7 +285,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // (*envelope.Emitter).InjectAndSign along with the final outbound
 // *http.Request. A nil emitter or missing build opts skips signing —
 // the transport is also used by reverse proxies configured without
-// mediation envelopes, and must not fail in that case.
+// mediation envelopes, and must not fail in that case. Any actual
+// signing failure returns a fail-closed block so sign:true never
+// degrades to unsigned upstream traffic.
 type reverseSigningRoundTripper struct {
 	base http.RoundTripper
 	rp   *ReverseProxyHandler
@@ -293,11 +295,7 @@ type reverseSigningRoundTripper struct {
 
 // RoundTrip implements http.RoundTripper. It runs envelope injection
 // and signing before handing the request off to the base transport.
-// Errors from InjectAndSign are logged and the request still proceeds
-// — a signing failure must not silently take down upstream traffic,
-// and the caller (httputil.ReverseProxy) cannot distinguish "no
-// signature" from "sign failed." Operators see the LogAnomaly entry
-// and Prometheus counter.
+// Errors from InjectAndSign fail closed and block the outbound request.
 func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t.rp == nil || t.rp.envelopeEmitterPtr == nil {
 		return t.base.RoundTrip(req)
@@ -313,14 +311,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	body, _ := req.Context().Value(ctxKeyReverseEnvelopeBody).([]byte)
 
 	if err := em.InjectAndSign(req, body, opts); err != nil {
-		clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
-		requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
-		t.rp.logger.LogAnomaly(
-			newHTTPAuditContext(t.rp.logger, req.Method, req.URL.String(), clientIP, requestID, ""),
-			"",
-			fmt.Sprintf("mediation envelope injection failed: %v", err),
-			0.1,
-		)
+		return nil, newEnvelopeBlockedRequest(err)
 	}
 	return t.base.RoundTrip(req)
 }
@@ -766,10 +757,18 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 // The concrete error is logged server-side but not exposed to the client
 // to avoid leaking internal topology (dial addresses, TLS state, DNS).
 func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 	actx := newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, "")
+	if blockedErr, ok := blockedRequestErrorFrom(err); ok {
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)
+		rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+		writeReverseProxyBlock(w, http.StatusForbidden, blockedErr.reason)
+		return
+	}
+
+	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
 	rp.logger.LogError(actx, err)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadGateway)

@@ -423,7 +423,7 @@ Examples:
 			// No signing key required — config hash is the only required field.
 			if cfg.MediationEnvelope.Enabled {
 				envEmitter = envelope.NewEmitter(envelope.EmitterConfig{
-					ConfigHash: cfg.Hash(),
+					ConfigHash: cfg.CanonicalPolicyHash(),
 				})
 				proxyOpts = append(proxyOpts, proxy.WithEnvelopeEmitter(envEmitter))
 				cmd.PrintErrf("  Envelope: enabled (mediation envelopes injected)\n")

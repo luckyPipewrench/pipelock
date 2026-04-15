@@ -934,7 +934,22 @@ func newInterceptHandler(
 					ActorAuth:  ic.ActorAuth,
 					PolicyHash: policyHash,
 				}); envErr != nil {
-					ic.Logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+					blockedErr := newEnvelopeBlockedRequest(envErr)
+					ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+					ic.Metrics.RecordTLSRequestBlocked(blockedErr.layer)
+					interceptEmitReceipt(ic, receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     blockedErr.layer,
+						Pattern:   blockedErr.reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					})
+					http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+					return
 				}
 			}
 		}

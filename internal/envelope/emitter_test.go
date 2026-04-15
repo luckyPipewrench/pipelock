@@ -427,8 +427,8 @@ func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
 // TestEmitter_InjectAndSign_OverCapBodyDropsDigest proves the
 // over-cap fallback: when the body exceeds the signer's MaxBodyBytes,
 // the signer drops content-digest from its declared list and still
-// attaches a valid signature. The request body is also cleared so
-// the upstream never sees partially-consumed bytes.
+// attaches a valid signature. The original request body must still be
+// preserved for the upstream transport.
 func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 	t.Parallel()
 
@@ -475,10 +475,116 @@ func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 		}
 	}
 
-	// The body was consumed — req.Body should now be http.NoBody.
-	if req.Body != http.NoBody {
-		t.Error("over-cap body path did not reset req.Body to http.NoBody")
+	// The original body must still be readable by the upstream path.
+	drained, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("reading preserved body: %v", err)
 	}
+	if got := string(drained); got != oversized {
+		t.Errorf("preserved body = %q, want %q", got, oversized)
+	}
+
+	// Existing GetBody support from http.NewRequest must survive so
+	// redirect replay is still possible when the original request was
+	// replayable.
+	if req.GetBody == nil {
+		t.Fatal("GetBody was lost on known-size over-cap request")
+	}
+	replay, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	replayBytes, err := io.ReadAll(replay)
+	if err != nil {
+		t.Fatalf("reading replay body: %v", err)
+	}
+	if got := string(replayBytes); got != oversized {
+		t.Errorf("replay body = %q, want %q", got, oversized)
+	}
+}
+
+// TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody covers the
+// unknown-length overflow path: the emitter reads past the cap to detect the
+// overflow, then rebuilds req.Body so the upstream still receives the full
+// payload even though content-digest is omitted.
+func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
+	t.Parallel()
+
+	_, priv := testSignerKey(t)
+	signer, err := NewSigner(SignerConfig{
+		PrivKey:          priv,
+		KeyID:            "cap-unknown-test",
+		SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
+		MaxBodyBytes:     32,
+		NowFn:            func() time.Time { return time.Unix(1712345678, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: "aa",
+		Signer:     signer,
+	})
+
+	oversized := strings.Repeat("Y", 4096)
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", nil)
+	origBody := &trackingReadCloser{Reader: strings.NewReader(oversized)}
+	req.Body = origBody
+	req.ContentLength = -1
+	req.GetBody = nil
+
+	if err := em.InjectAndSign(req, nil, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000012",
+		Action:    "write",
+		Verdict:   "allow",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	if got := req.Header.Get("Content-Digest"); got != "" {
+		t.Errorf("Content-Digest = %q, want empty", got)
+	}
+
+	sigInputDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+	member, _ := sigInputDict.Get(pipelockSigLabel)
+	list := member.(httpsfv.InnerList) //nolint:errcheck // type known
+	for _, it := range list.Items {
+		if s, _ := it.Value.(string); s == headerContentDigest {
+			t.Error("content-digest survived unknown-length over-cap case in declared list")
+		}
+	}
+
+	drained, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("reading preserved overflow body: %v", err)
+	}
+	if got := string(drained); got != oversized {
+		t.Errorf("preserved overflow body = %q, want %q", got, oversized)
+	}
+	if req.GetBody != nil {
+		t.Error("GetBody should stay nil when the original unknown-length body was not replayable")
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("closing preserved overflow body: %v", err)
+	}
+	if !origBody.closed {
+		t.Error("closing req.Body did not close the original body")
+	}
+}
+
+type trackingReadCloser struct {
+	Reader *strings.Reader
+	closed bool
+}
+
+func (t *trackingReadCloser) Read(p []byte) (int, error) {
+	return t.Reader.Read(p)
+}
+
+func (t *trackingReadCloser) Close() error {
+	t.closed = true
+	return nil
 }
 
 // TestEmitter_InjectAndSign_NilEmitter is a no-op.

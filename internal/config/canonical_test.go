@@ -159,7 +159,7 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			mut: func(c *Config) {
 				c.MediationEnvelope.Enabled = true
 				c.MediationEnvelope.Sign = true
-				c.MediationEnvelope.SignedComponents = []string{"@method", "host"}
+				c.MediationEnvelope.SignedComponents = []string{"@method", "@authority"}
 			},
 		},
 	}

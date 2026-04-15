@@ -1095,12 +1095,65 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			RequiresReauth: forwardRequiresReauth,
 			PolicyHash:     policyHash,
 		}); envErr != nil {
-			p.logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			blockedErr := newEnvelopeBlockedRequest(envErr)
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               blockedErr.layer,
+				Pattern:             blockedErr.reason,
+				Transport:           "forward",
+				Method:              r.Method,
+				Target:              targetURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+				SessionContaminated: forwardTaint.Risk.Contaminated,
+				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       forwardTaint.Authority.String(),
+				TaintDecision:       forwardTaint.Result.Decision.String(),
+				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+			})
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
 		}
 	}
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
+		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
+			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               blockedErr.layer,
+				Pattern:             blockedErr.reason,
+				Transport:           "forward",
+				Method:              r.Method,
+				Target:              targetURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+				SessionContaminated: forwardTaint.Risk.Contaminated,
+				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       forwardTaint.Authority.String(),
+				TaintDecision:       forwardTaint.Result.Decision.String(),
+				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+			})
+			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			if blockedErr.layer == "redirect" && cfg.ExplainBlocksEnabled() {
+				w.Header().Set("X-Pipelock-Hint", "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks.")
+			}
+			http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
 		p.logger.LogError(actx, err)
 		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
 		return

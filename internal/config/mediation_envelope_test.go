@@ -142,7 +142,7 @@ func TestValidateMediationEnvelope_CustomValuesPreserved(t *testing.T) {
 	c.MediationEnvelope.Sign = true
 	c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
 	c.MediationEnvelope.KeyID = testEnvelopeKeyIDV2
-	c.MediationEnvelope.SignedComponents = []string{"@method", "host"}
+	c.MediationEnvelope.SignedComponents = []string{" @Method ", "@AUTHORITY"}
 	c.MediationEnvelope.CreatedSkewSeconds = 120
 	c.MediationEnvelope.MaxBodyBytes = 512 * 1024
 
@@ -157,7 +157,7 @@ func TestValidateMediationEnvelope_CustomValuesPreserved(t *testing.T) {
 	if me.CreatedSkewSeconds != 120 || me.MaxBodyBytes != 512*1024 {
 		t.Errorf("custom skew/max not preserved: %+v", me)
 	}
-	if len(me.SignedComponents) != 2 || me.SignedComponents[0] != "@method" || me.SignedComponents[1] != "host" {
+	if len(me.SignedComponents) != 2 || me.SignedComponents[0] != "@method" || me.SignedComponents[1] != "@authority" {
 		t.Errorf("custom SignedComponents not preserved: %v", me.SignedComponents)
 	}
 }
@@ -197,10 +197,38 @@ func TestValidateMediationEnvelope_EmptyComponentRejected(t *testing.T) {
 	c.MediationEnvelope.Enabled = true
 	c.MediationEnvelope.Sign = true
 	c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
-	c.MediationEnvelope.SignedComponents = []string{"@method", "   ", "host"}
+	c.MediationEnvelope.SignedComponents = []string{"@method", "   ", "@authority"}
 
 	if err := c.validateMediationEnvelope(); err == nil {
 		t.Error("expected error for whitespace-only signed_components entry")
+	}
+}
+
+func TestValidateMediationEnvelope_UnsupportedComponentRejected(t *testing.T) {
+	t.Parallel()
+
+	c := Defaults()
+	c.MediationEnvelope.Enabled = true
+	c.MediationEnvelope.Sign = true
+	c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
+	c.MediationEnvelope.SignedComponents = []string{"@method", "host"}
+
+	if err := c.validateMediationEnvelope(); err == nil {
+		t.Error("expected error for unsupported signed_components entry")
+	}
+}
+
+func TestValidateMediationEnvelope_DuplicateComponentRejected(t *testing.T) {
+	t.Parallel()
+
+	c := Defaults()
+	c.MediationEnvelope.Enabled = true
+	c.MediationEnvelope.Sign = true
+	c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
+	c.MediationEnvelope.SignedComponents = []string{"@method", "@method"}
+
+	if err := c.validateMediationEnvelope(); err == nil {
+		t.Error("expected error for duplicate signed_components entry")
 	}
 }
 
@@ -273,6 +301,62 @@ func TestValidateReload_MediationEnvelopeKeyIDChange(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	if !reloadWarningHasField(warnings, "mediation_envelope.key_id") {
 		t.Errorf("expected mediation_envelope.key_id change warning, got %v", warnings)
+	}
+}
+
+func TestValidateReload_MediationEnvelopeSignedComponentsNarrowed(t *testing.T) {
+	t.Parallel()
+
+	keyPath := writeEnvelopeSigningKey(t)
+
+	old := Defaults()
+	old.MediationEnvelope.Enabled = true
+	old.MediationEnvelope.Sign = true
+	old.MediationEnvelope.SigningKeyPath = keyPath
+	if err := old.validateMediationEnvelope(); err != nil {
+		t.Fatalf("old validate: %v", err)
+	}
+
+	updated := Defaults()
+	updated.MediationEnvelope.Enabled = true
+	updated.MediationEnvelope.Sign = true
+	updated.MediationEnvelope.SigningKeyPath = keyPath
+	updated.MediationEnvelope.SignedComponents = []string{"@method", "@target-uri"}
+	if err := updated.validateMediationEnvelope(); err != nil {
+		t.Fatalf("updated validate: %v", err)
+	}
+
+	warnings := ValidateReload(old, updated)
+	if !reloadWarningHasField(warnings, "mediation_envelope.signed_components") {
+		t.Errorf("expected mediation_envelope.signed_components warning, got %v", warnings)
+	}
+}
+
+func TestValidateReload_MediationEnvelopeMaxBodyBytesReduced(t *testing.T) {
+	t.Parallel()
+
+	keyPath := writeEnvelopeSigningKey(t)
+
+	old := Defaults()
+	old.MediationEnvelope.Enabled = true
+	old.MediationEnvelope.Sign = true
+	old.MediationEnvelope.SigningKeyPath = keyPath
+	if err := old.validateMediationEnvelope(); err != nil {
+		t.Fatalf("old validate: %v", err)
+	}
+
+	updated := Defaults()
+	updated.MediationEnvelope.Enabled = true
+	updated.MediationEnvelope.Sign = true
+	updated.MediationEnvelope.SigningKeyPath = keyPath
+	updated.MediationEnvelope.MaxBodyBytes = old.MediationEnvelope.MaxBodyBytes / 2
+	if err := updated.validateMediationEnvelope(); err != nil {
+		t.Fatalf("updated validate: %v", err)
+	}
+
+	warnings := ValidateReload(old, updated)
+	if !reloadWarningHasField(warnings, "mediation_envelope.max_body_bytes") {
+		t.Errorf("expected mediation_envelope.max_body_bytes warning, got %v", warnings)
 	}
 }
 

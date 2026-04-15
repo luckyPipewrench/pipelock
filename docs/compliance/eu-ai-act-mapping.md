@@ -85,7 +85,7 @@ Article 14 requires AI systems to be designed for effective human oversight, inc
 |-------------|-----------------|----------|
 | Understand system operation (Art. 14(4)(a)) | Audit logs, Prometheus metrics, `/stats` endpoint, Grafana dashboard | Full |
 | Detect anomalies and dysfunctions (Art. 14(4)(a)) | Real-time threat detection via pattern matching and entropy threshold analysis | Partial |
-| Override or reverse output (Art. 14(4)(d)) | HITL `action: ask` lets the operator approve, deny, or strip on each flagged request | Full |
+| Override or reverse output (Art. 14(4)(d)) | HITL `action: ask` lets the operator approve, deny, or strip on each flagged request, but only for flagged traffic rather than all system outputs | Partial |
 | Intervene or interrupt via "stop button" (Art. 14(4)(e)) | Fail-closed design: HITL timeout defaults to block; context cancellation stops operation | Full |
 | Awareness of automation bias (Art. 14(4)(b)) | Configurable modes (audit/balanced/strict) force explicit enforcement decisions | Partial |
 | Commensurate with risk level (Art. 14(3)) | Three preset modes map to different risk tolerances; per-scanner thresholds configurable | Full |
@@ -104,7 +104,7 @@ Note: Art. 15(5) uses "adversarial examples" and "model evasion," not "prompt in
 | Requirement | Pipelock Feature | Coverage |
 |-------------|-----------------|----------|
 | **Adversarial examples / model evasion** (Art. 15(5)) | Content scanning on responses and MCP tool results; zero-width char stripping; NFKC normalization; case-insensitive matching; null byte stripping. Covers text-based injection patterns, not model-level evasion. | Partial |
-| **Confidentiality attacks** (Art. 15(5)) | DLP scanning (46 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
+| **Confidentiality attacks** (Art. 15(5)) | DLP scanning (48 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
 | **Data poisoning** (Art. 15(5)) | File integrity monitoring (SHA256 manifests), Ed25519 signing and verification, response scanning on fetched content | Partial |
 | **Resilient against unauthorized alteration** (Art. 15(5)) | Capability separation prevents agent from being manipulated into exfiltrating data; SSRF blocks access to internal infrastructure | Full |
 | **Technical redundancy / fail-safe** (Art. 15(4)) | Fail-closed architecture: scan error, HITL timeout, parse failure, DNS error, context cancellation all default to block | Full |
@@ -205,7 +205,7 @@ Mapping from individual Pipelock controls to both frameworks.
 | SSRF protection | Private IP blocking, DNS rebinding prevention, metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
 | Domain blocklist | Configurable deny/allow lists with wildcard support | Art. 9(5) | GOVERN 1.2, MANAGE 1.1 |
 | Rate limiting | Per-domain sliding window, base domain normalization | Art. 15(4) | MANAGE 1.1 |
-| DLP scanning | 46 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |
+| DLP scanning | 48 built-in credential patterns, custom regex, severity classification | Art. 15(5) | GOVERN 1.2, MEASURE 2.6 |
 | Env leak detection | Raw + base64 + hex, Shannon entropy > 3.0 | Art. 15(5) | MEASURE 2.6 |
 | Entropy analysis | Shannon entropy on URL path segments and query parameters | Art. 15(5) | MAP 2.1 |
 | Content scanning | Response scanning with zero-width stripping, NFKC, case-insensitive | Art. 15(5) | MAP 2.1, MEASURE 2.6 |

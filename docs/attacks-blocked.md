@@ -233,7 +233,7 @@ tool_chain_detection:
   max_gap: 3
 ```
 
-**Why it works:** Chain detection watches sequences of tool calls and matches against 8 built-in attack patterns. The `read -> stage -> exfiltrate` pattern is detected even if there are up to `max_gap` (3) innocent tool calls between each step. The `max_gap` parameter prevents the "insert 100 innocent calls" evasion that affects tail-only matchers.
+**Why it works:** Chain detection watches sequences of tool calls and matches against 10 built-in attack patterns. The `read -> stage -> exfiltrate` pattern is detected even if there are up to `max_gap` (3) innocent tool calls between each step. The `max_gap` parameter prevents the "insert 100 innocent calls" evasion that affects tail-only matchers.
 
 ---
 

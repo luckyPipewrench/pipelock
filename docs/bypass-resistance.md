@@ -71,7 +71,7 @@ These techniques hide injection payloads in fetched content or MCP tool results.
 
 | Technique | Example | Status | How |
 |-----------|---------|----------|-----|
-| Basic injection | "Ignore all previous instructions" | Tested | 21 built-in patterns, case-insensitive |
+| Basic injection | "Ignore all previous instructions" | Tested | 25 built-in patterns, case-insensitive |
 | Zero-width splitting | `ignore\u200ball\u200bprevious` | Tested | Pass 1: strip ZW chars |
 | Word boundary collapse | Words merged after ZW removal | Tested | Pass 2: replace invisible with space, re-scan |
 | Leetspeak substitution | `1GN0R3 4LL PR3V10US` | Tested | Pass 3: digit-to-letter folding |
@@ -104,8 +104,10 @@ These techniques try to exfiltrate secrets through request bodies or headers ins
 | Secret in POST body (JSON) | `{"key": "sk-ant-..."}` | Tested | Recursive JSON string extraction, DLP scan per field + joined |
 | Secret in JSON object key | `{"AKIA1234...": "value"}` | Tested | Both keys and values extracted from JSON |
 | Secret in form field | `token=sk-ant-...` | Tested | Form-urlencoded parsed, keys + values scanned |
-| Secret in multipart field | File upload form with secret in text field | Tested | Multipart text parts extracted, binary parts skipped |
+| Secret in multipart field | File upload form with secret in any part body | Tested | All multipart part bodies are scanned regardless of declared `Content-Type` |
 | Secret in multipart filename | `Content-Disposition: ...; filename="sk-ant-..."` | Tested | Filenames extracted and scanned; oversized filenames blocked |
+| Secret in custom multipart header | `X-Part-Token: sk-ant-...` on a part | Tested | Custom multipart part headers are extracted and scanned |
+| Transfer-encoding bypass | Base64 or quoted-printable secret in a part body | Tested | Multipart `Content-Transfer-Encoding` is decoded before scanning |
 | Content-Type spoofing | JSON body sent as `application/octet-stream` | Tested | Unknown types get fallback raw-text scan (never skipped) |
 | Compressed body bypass | gzip-encoded body to evade regex matching | Tested | Any non-identity Content-Encoding is fail-closed blocked |
 | Split secret across headers | `X-A: sk-ant-` + `X-B: api03-rest` | Tested | Joined scan concatenates all scanned header values |

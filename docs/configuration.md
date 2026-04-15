@@ -21,6 +21,8 @@ On reload, the scanner and session manager are atomically swapped. Kill switch s
 
 If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged.
 
+**Strict parsing:** Pipelock rejects unknown top-level and nested YAML fields at startup, and it only accepts a single YAML document per config file. Trailing `---` documents are a hard error. This prevents typos from silently disabling controls and blocks shadow-config bypasses.
+
 ## Top-Level Fields
 
 ```yaml
@@ -246,7 +248,7 @@ request_body_scanning:
 | `sensitive_headers` | (see above) | Headers to scan in `sensitive` mode |
 | `ignore_headers` | (hop-by-hop + structural) | Headers to skip in `all` mode |
 
-**Content-type dispatch:** JSON bodies have string values extracted recursively. Form-urlencoded bodies are parsed as key-value pairs. Multipart form data has text fields extracted (binary parts skipped, max 100 parts). Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, prevents Content-Type spoofing bypass).
+**Content-type dispatch:** JSON bodies have string values extracted recursively. Form-urlencoded bodies are parsed as key-value pairs. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 
 **Fail-closed behaviors** (always blocked regardless of `action` setting):
 - Bodies exceeding `max_body_bytes`
@@ -320,8 +322,8 @@ dlp:
 | `scan_env` | `true` | Scan environment variables for leaked values |
 | `secrets_file` | `""` | Path to file with known secrets (one per line) |
 | `min_env_secret_length` | `16` | Min env var value length to consider |
-| `include_defaults` | `true` | Merge your patterns with the 46 built-in patterns |
-| `patterns` | 46 built-in | DLP credential detection patterns |
+| `include_defaults` | `true` | Merge your patterns with the 48 built-in patterns |
+| `patterns` | 48 built-in | DLP credential detection patterns |
 | `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, or `wif` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 | `patterns[].action` | `""` | Per-pattern action override. Only `warn` is supported. When set to `warn`, matches allow traffic through without enforcement. See the [false positive tuning guide](guides/false-positive-tuning.md) for the rollout workflow. Built-in default patterns cannot be set to warn. |
@@ -1815,18 +1817,23 @@ taint:
     - "*/config/*"
     - "*/middleware*"
   trust_overrides:                     # narrow, expiring exemptions for specific workflows
-    - scope: "task"                    # session or task — task scopes to a single task ID
+    - scope: "action"                  # config-file scopes are "action" or "source"
       source_match: "docs.example.com"
       action_match: "*/config/db.yaml"
       expires_at: "2026-06-01T00:00:00Z"
       granted_by: "platform-team"
       reason: "migration runbook"
+    - scope: "source"
+      source_match: "developer.mozilla.org"
+      expires_at: "2026-06-01T00:00:00Z"
+      granted_by: "platform-team"
+      reason: "allowlisted reference workflow"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Master switch. Omit to get the security default (enabled). |
-| `policy` | string | `balanced` | `strict` blocks tainted actions on elevated paths; `balanced` warns; `permissive` observes only. |
+| `policy` | string | `balanced` | `strict` is the most conservative taint policy, `balanced` is the security default, and `permissive` observes taint without changing enforcement. |
 | `recent_sources` | int | `10` | How many recent taint sources to keep per session for receipt reporting. |
 | `allowlisted_domains` | []string | 3 high-trust documentation domains | Responses from these domains do not raise taint. Supports `MatchDomain` wildcards. |
 | `protected_paths` | []string | 7 patterns (see above) | Globs for file paths or tool args that are blocked for tainted sessions. |
@@ -1839,44 +1846,48 @@ taint:
 
 | Field | Description |
 |-------|-------------|
-| `scope` | `session` (whole session) or `task` (only within the active task boundary — see below). |
-| `source_match` | Glob over the URL/domain that originated the taint. Only applies if that source matches. |
-| `action_match` | Glob over the path or tool-arg being attempted. |
+| `scope` | `action` (requires `action_match`, optional `source_match`) or `source` (requires `source_match`, optional `action_match`). |
+| `source_match` | Glob over the URL/domain that originated the taint. Required for `scope: source`; optional additional filter for `scope: action`. |
+| `action_match` | Glob over the path or tool-arg being attempted. Required for `scope: action`; optional additional filter for `scope: source`. |
 | `expires_at` | RFC3339 timestamp. After this instant the override is ignored. |
 | `granted_by` | Free-text owner attribution. Appears in receipts. |
 | `reason` | Free-text justification. Appears in receipts. |
 
-Overrides are additive and never *remove* taint — they permit a specific action class while the session remains tainted. Every use of an override is receipt-recorded with `authority_kind: trust-override` and the `granted_by` + `reason` fields.
+Overrides are additive and never *remove* taint. Config-file overrides change the taint decision result to `allow` for the matching source or action while the session remains tainted. Receipts reflect that through `taint_decision_reason: "taint_trust_override"`. `authority_kind` continues to report the authority tier that backed the action (`user_broad`, `user_exact`, `operator_override`, and so on), not a synthetic `trust-override` value.
 
 ### Task boundaries
 
-A **task boundary** scopes a `trust_override` to an individual operation. When a task ID is active (set by the agent framework through the MCP session or injected via HTTP headers), the override applies only for that task. When the task completes or a new task starts, the override expires automatically — the session does not carry override permissions into unrelated work.
+A **task boundary** scopes runtime trust overrides to an individual operation. Config-file `taint.trust_overrides` only support `action` and `source` scopes. Task-scoped overrides are runtime-only session overrides created by the session workflow or admin API. When a task ID is active, that runtime override applies only for the matching task. When the task completes or a new task starts, the override expires automatically, so the session does not carry override permissions into unrelated work.
 
-Task boundaries are surfaced on every emitted receipt as `task_id`, and on the mediation envelope as the `task` wire field.
+Task boundaries are surfaced on every emitted receipt as `session_task_id`, and on the mediation envelope as the `task` wire field.
 
 ### Classification details
 
 - **Taint level** is raised when a response arrives from a non-allowlisted domain, when an MCP tool returns content from an external source, or when prompt-injection signals fire on response content.
 - **Action sensitivity** is derived from the target path (or tool-argument path) against `protected_paths` and `elevated_paths`.
-- **Authority kind** records which authority type gated the action: `bound` (deployment-level binding), `matched` (policy match against protected path), `self-declared` (agent-asserted), or `trust-override` (one of the configured exemptions).
+- **Authority kind** records which authority tier gated the action: `external`, `policy`, `user_broad`, `user_exact`, or `operator_override`.
 
 ### Receipts
 
 Every action taken under taint writes these fields to the signed receipt chain:
 
-- `session_taint_level` (`clean`, `observed`, `contaminated`)
-- `contaminated` (bool)
+- `session_taint_level` (`trusted`, `internal_generated`, `allowlisted_reference`, `external_low_risk`, `external_untrusted`, `external_hostile`)
+- `session_contaminated` (bool)
 - `recent_taint_sources` (up to `recent_sources` entries)
-- `authority_kind` and `authority_ref`
-- `decision_reason`
+- `session_task_id` and `session_task_label`
+- `authority_kind`
+- `taint_decision` and `taint_decision_reason`
+- `task_override_applied` (runtime task-scoped overrides only)
 
 The conformance suite (`sdk/conformance/`) includes golden fixtures for taint-escalated receipts so any third-party verifier can validate the taint fields byte-for-byte.
 
 ## Mediation Envelope (v2.1)
 
-Attaches sideband metadata to every proxied request so downstream services know pipelock's verdict, action, actor identity, and receipt correlation ID without parsing logs.
+Attaches sideband metadata to proxied requests so downstream services know pipelock's verdict, action, actor identity, and receipt correlation ID without parsing logs.
 
 HTTP requests get a `Pipelock-Mediation` header encoded as an RFC 8941 Structured Fields Dictionary. MCP requests get a `_meta["com.pipelock/mediation"]` map.
+
+Only requests forwarded downstream carry the envelope. Blocked decisions never reach the backend, so use signed receipts rather than headers to audit blocks.
 
 ```yaml
 mediation_envelope:
@@ -1892,11 +1903,11 @@ When enabled, the envelope carries these wire fields:
 | Wire Key | Field | Description |
 |----------|-------|-------------|
 | `v` | Version | Envelope schema version (currently `1`) |
-| `act` | Action | Action taken (`allow`, `block`, `warn`, `ask`, `strip`, `redirect`) |
-| `vd` | Verdict | Scanner verdict (`clean`, `blocked`, `warned`) |
+| `act` | Action | Classified action type (`read`, `derive`, `write`, `delegate`, `authorize`, `spend`, `commit`, `actuate`, `unclassified`) |
+| `vd` | Verdict | Enforcement verdict (`allow`, `block`, or `warn`) |
 | `se` | SideEffect | Side effect description (empty when none) |
 | `actor` | Actor | Agent identity string |
-| `aa` | ActorAuth | Trust level of the actor field: `bound`, `matched`, or `self-declared` |
+| `aa` | ActorAuth | Trust level of the actor field: `bound`, `matched`, `config-default`, or `self-declared` |
 | `ph` | PolicyHash | First 16 bytes of SHA-256 of the active policy config (base64-encoded in MCP) |
 | `rid` | ReceiptID | UUIDv7 receipt ID for correlation with flight recorder entries |
 | `ts` | Timestamp | Unix timestamp (seconds) |

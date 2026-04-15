@@ -33,7 +33,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **DLP scanning:** 47 regex patterns with 4 checksum validators (Luhn, mod97, ABA, WIF) detect secrets in tool arguments, URLs, headers, and request bodies. Patterns cover AWS, GitHub, Slack, Stripe, Anthropic, OpenAI, and 30+ other provider key formats.
+- **DLP scanning:** 48 regex patterns with 4 checksum validators (Luhn, mod97, ABA, WIF) detect secrets in tool arguments, URLs, headers, and request bodies. Patterns cover AWS, GitHub, Slack, Stripe, Anthropic, OpenAI, and 30+ other provider key formats.
 - **Environment leak detection:** `dlp.scan_env` reads the local environment and flags any outbound request containing env var values above a minimum length threshold.
 - **MCP input scanning:** scans tool call arguments (client-to-server) for secrets before they reach the MCP server. Catches agents forwarding credentials to untrusted tools.
 - **Encoding resistance:** 6-pass normalization decodes base64, hex, and URL encoding before pattern matching. Secrets encoded to evade detection are decoded and caught.

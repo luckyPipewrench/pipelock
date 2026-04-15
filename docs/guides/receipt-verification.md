@@ -163,4 +163,5 @@ A reference Python verifier is available at
 
 - [Flight recorder guide](flight-recorder.md) for configuring evidence logging
 - [Mediation envelope guide](mediation-envelope.md) for receipt ID correlation
+- [Receipt transport coverage](receipt-transports.md) for the per-transport emission matrix and error-path receipt coverage
 - [Configuration reference](../configuration.md#flight-recorder-v21) for all recorder fields

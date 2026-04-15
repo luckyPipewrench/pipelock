@@ -429,18 +429,41 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Inject mediation envelope after all admission checks but before the
 	// upstream handshake so the forwarded headers on the accepted connection
-	// carry the final verdict.
+	// carry the final verdict. WebSocket handshakes are body-less GETs, so
+	// content-digest is always dropped from the declared component list;
+	// signing covers @method, @target-uri, and pipelock-mediation.
+	//
+	// gobwas/ws does not expose the *http.Request it synthesizes before
+	// dialing, so we build a request value here that mirrors what the
+	// dialer will send: method=GET, URL=parsed(targetURL), Header=fwdHeaders,
+	// Host=parsed.Host. The signer mutates req.Header (i.e. fwdHeaders)
+	// in place, so Signature / Signature-Input land on the handshake
+	// headers the dialer hands to the upstream server. @target-uri in
+	// the signature base therefore matches the URL being dialed, even
+	// though the actual dial happens a few lines later in wsDialUpstream.
 	actionID := receipt.NewActionID()
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		if envErr := envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
-			ActionID:   actionID,
-			Action:     string(receipt.ActionDelegate),
-			Verdict:    config.ActionAllow,
-			SideEffect: string(receipt.SideEffectExternalWrite),
-			Actor:      agent,
-			ActorAuth:  id.Auth,
-		}); envErr != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+		parsedTarget, parseErr := url.Parse(targetURL)
+		if parseErr != nil {
+			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope url parse failed: %v", parseErr), 0.1)
+		} else {
+			synthReq := &http.Request{
+				Method: http.MethodGet,
+				URL:    parsedTarget,
+				Header: fwdHeaders,
+				Host:   parsedTarget.Host,
+			}
+			if envErr := envEmitter.InjectAndSign(synthReq, nil, envelope.BuildOpts{
+				ActionID:   actionID,
+				Action:     string(receipt.ActionDelegate),
+				Verdict:    config.ActionAllow,
+				SideEffect: string(receipt.SideEffectExternalWrite),
+				Actor:      agent,
+				ActorAuth:  id.Auth,
+				PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
+			}); envErr != nil {
+				log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			}
 		}
 	}
 

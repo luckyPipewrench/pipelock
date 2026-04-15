@@ -55,6 +55,34 @@ const (
 	ctxKeyAgent
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
+
+	// ctxKeyReverseEnvelopeOpts stores the envelope.BuildOpts that the
+	// reverse proxy pre-computes in ServeHTTP so the signing
+	// RoundTripper (wrapping proxy.Transport) can attach a signature
+	// AFTER httputil.ReverseProxy's Director has rewritten the URL to
+	// the upstream target. Without this flow, signing at ServeHTTP
+	// time would sign the inbound-relative @target-uri instead of the
+	// upstream-absolute one, and any verifier checking @target-uri
+	// would reject the signature.
+	ctxKeyReverseEnvelopeOpts
+	// ctxKeyReverseEnvelopeBody carries the scanner-buffered request
+	// body (or nil when body scanning was disabled) across the same
+	// boundary so the signer can compute content-digest without a
+	// second drain pass.
+	ctxKeyReverseEnvelopeBody
+	// ctxKeyReverseEnvelopeCfg carries the per-request *Config used
+	// by the reverse proxy dispatch so the RoundTripper sees the same
+	// config snapshot ServeHTTP loaded rather than re-loading the
+	// atomic pointer (which could race with a reload in flight).
+	ctxKeyReverseEnvelopeCfg
+
+	// ctxKeyRedirectTransport is the transport label ("fetch" or
+	// "forward") attached by the fetch and forward handlers before
+	// handing the request to p.client. The shared CheckRedirect
+	// closure reads it so redirect audit events are labelled with
+	// the transport that originated the request rather than the
+	// hardcoded default. See Info 2 on the envelope-signing review.
+	ctxKeyRedirectTransport
 )
 
 const (
@@ -354,7 +382,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			redirectWarnCtx.ClientIP = clientIP
 			redirectWarnCtx.RequestID = requestID
 			redirectWarnCtx.Agent = agentName
-			redirectWarnCtx.Transport = TransportFetch
+			// Derive transport from the original request context so
+			// forward-proxy redirects log and audit as "forward" and
+			// fetch-proxy redirects log as "fetch". Hard-coding
+			// TransportFetch here mislabels every forward-proxy
+			// redirect — both paths share p.client and therefore
+			// share this CheckRedirect closure.
+			if t, ok := req.Context().Value(ctxKeyRedirectTransport).(string); ok && t != "" {
+				redirectWarnCtx.Transport = t
+			} else {
+				redirectWarnCtx.Transport = TransportFetch
+			}
 			result := currentScanner.Scan(scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx), redirectURL)
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
@@ -364,6 +402,15 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
+			// Mediation envelope refresh: on every allowed redirect,
+			// rebuild the envelope on req so ph, hop, and @target-uri
+			// reflect the redirected leg rather than the original.
+			// The stdlib has already copied headers from via[0] to
+			// req; we replace the Pipelock-Mediation slot and re-sign
+			// (if signing is active). Errors are logged but the
+			// redirect is allowed to proceed — a sign failure must
+			// not silently fail-open on an otherwise allowed hop.
+			p.refreshEnvelopeForRedirect(req, via, currentCfg)
 			return nil
 		},
 	}
@@ -371,6 +418,149 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
+}
+
+// refreshEnvelopeForRedirect rebuilds the Pipelock-Mediation header
+// on a redirected request so ph, hop, and (if signing is active)
+// @target-uri reflect the redirected leg rather than the original.
+//
+// stdlib's redirect machinery copies headers from via[0] to the new
+// req before calling CheckRedirect. That copy includes the original
+// Pipelock-Mediation header verbatim — its @target-uri / action /
+// timestamp are now stale, and any pipelock1 signature on the
+// headers signs a base string for the pre-redirect URL. Without
+// this refresh a downstream verifier would reject the redirected
+// leg on @target-uri mismatch.
+//
+// Steps:
+//  1. Parse the inbound Pipelock-Mediation header to recover the
+//     original envelope fields we want to preserve (Actor, ActorAuth,
+//     ReceiptID, AuthorityKind, SessionTaint, TaskID, Action).
+//  2. Increment Hop.
+//  3. Derive fresh body bytes via req.GetBody when the redirect
+//     preserves method + body (307/308). On method-switching
+//     redirects (303 POST→GET) the stdlib nil's out req.Body and
+//     GetBody, so body bytes are nil and content-digest drops.
+//  4. Strip any stale Content-Digest the copy propagated from via[0]
+//     — the signer will set a fresh one if body bytes are present.
+//  5. Call emitter.InjectAndSign on req with the rebuilt BuildOpts.
+//
+// Errors from any step log an anomaly but do not fail the redirect
+// — the alternative is taking down an otherwise allowed hop on a
+// signing accessory failure, which is the wrong trade-off.
+func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Request, cfg *config.Config) {
+	em := p.envelopeEmitterPtr.Load()
+	if em == nil {
+		return
+	}
+
+	clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
+	requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
+	agentName, _ := req.Context().Value(ctxKeyAgent).(string)
+	actx := newHTTPAuditContext(p.logger, req.Method, req.URL.String(), clientIP, requestID, agentName)
+
+	// 1. Parse the inbound envelope. If it is absent (emitter was
+	//    nil at original-request time, e.g. envelope only turned on
+	//    between original and redirect) we still want to emit a
+	//    fresh envelope on the redirected leg so downstream sees
+	//    pipelock mediation from the first hop it observes.
+	var prev envelope.Envelope
+	if raw := req.Header.Get(envelope.HeaderName); raw != "" {
+		parsed, parseErr := envelope.Parse(raw)
+		if parseErr != nil {
+			p.logger.LogAnomaly(actx, "",
+				fmt.Sprintf("envelope refresh: parsing prior envelope failed: %v", parseErr), 0.1)
+			// Fall through with zero-value prev — the refresh will
+			// still install a new envelope using the via[0] request
+			// context we already have.
+		} else {
+			prev = parsed
+		}
+	}
+
+	// 2. Increment Hop. stdlib's CheckRedirect is called once per
+	//    hop, so a single +1 per call tracks the chain depth.
+	prev.Hop++
+
+	// 3. Fresh body bytes via GetBody when available.
+	var body []byte
+	if req.GetBody != nil {
+		if rc, err := req.GetBody(); err == nil && rc != nil {
+			buffered, readErr := io.ReadAll(rc)
+			_ = rc.Close()
+			if readErr != nil {
+				p.logger.LogAnomaly(actx, "",
+					fmt.Sprintf("envelope refresh: draining GetBody failed: %v", readErr), 0.1)
+			} else {
+				body = buffered
+			}
+		}
+	}
+
+	// 4. Strip stale Content-Digest. The signer will repopulate it
+	//    if body is non-nil AND content-digest is in the signer's
+	//    declared component list; otherwise its absence is correct.
+	req.Header.Del("Content-Digest")
+
+	// 5. Rebuild BuildOpts from prev + redirect context. Preserve
+	//    Actor / ActorAuth / ReceiptID / AuthorityKind / SessionTaint
+	//    / TaskID from the original envelope so the redirect chain
+	//    threads through as one logical action. Recompute Action
+	//    from the new method because the redirect could have
+	//    downgraded a POST to a GET (303).
+	actionID := prev.ReceiptID
+	if actionID == "" {
+		// No prior envelope to preserve ReceiptID from — mint a
+		// fresh one. This is unusual but survives a nil-prev hop.
+		actionID = receipt.NewActionID()
+	}
+	opts := envelope.BuildOpts{
+		ActionID:      actionID,
+		Action:        string(receipt.ClassifyHTTP(req.Method)),
+		Verdict:       prev.Verdict,
+		SideEffect:    string(receipt.SideEffectFromMethod(req.Method)),
+		Actor:         prev.Actor,
+		ActorAuth:     prev.ActorAuth,
+		SessionTaint:  prev.SessionTaint,
+		TaskID:        prev.TaskID,
+		AuthorityKind: prev.AuthorityKind,
+		AuthorityRef:  prev.AuthorityRef,
+		PolicyHash:    envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
+	}
+	if opts.Verdict == "" {
+		opts.Verdict = config.ActionAllow
+	}
+
+	// The envelope emitter cannot accept a Hop override via
+	// BuildOpts (the Hop field lives on the output envelope, not the
+	// build opts), so we build the envelope first and then
+	// overwrite its Hop before serializing. We do this by calling
+	// Emitter.Build directly and serializing by hand rather than
+	// going through InjectAndSign, which would reset Hop to zero.
+	env := em.Build(opts)
+	env.Hop = prev.Hop
+	if err := envelope.InjectHTTP(req.Header, env); err != nil {
+		p.logger.LogAnomaly(actx, "",
+			fmt.Sprintf("envelope refresh: inject header failed: %v", err), 0.1)
+		return
+	}
+
+	// Sign the refreshed envelope over the redirected request if
+	// a signer is installed. Content-Digest was cleared above, so
+	// the signer computes it fresh from the new body (if any) and
+	// the Signature-Input declared list reflects the per-request
+	// effective components.
+	if signer := em.Signer(); signer != nil {
+		if err := signer.SignRequest(req, body); err != nil {
+			p.logger.LogAnomaly(actx, "",
+				fmt.Sprintf("envelope refresh: re-sign failed: %v", err), 0.1)
+		}
+	}
+
+	// Preserve the hop/ph/sig across any future redirects in the
+	// same chain by leaving req as-is. stdlib will copy this header
+	// to the next req when CheckRedirect fires again.
+	_ = via // reserved for future per-hop logging
 }
 
 // recordDecision writes an enforcement verdict to the flight recorder if enabled.
@@ -1956,6 +2146,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
+	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		log.LogError(actx, err)

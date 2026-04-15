@@ -26,6 +26,15 @@ const pipelockSigLabel = "pipelock1"
 // Signature-Input. Verifiers use it to identify the signature's purpose.
 const pipelockSigTag = "pipelock-mediation"
 
+// pipelockSigAlg is the value of the ;alg= parameter on
+// Signature-Input. RFC 9421 makes the alg parameter optional, but
+// verifier libraries that discriminate algorithms by Signature-Input
+// (common-fate/httpsig, among others) require it to select the
+// verifying key. Pipelock's signer uses Ed25519 exclusively today; a
+// future algorithm agility pass would thread the selected algorithm
+// through SignerConfig and swap this constant for a per-signer field.
+const pipelockSigAlg = "ed25519"
+
 // Known RFC 9421 derived component names. Derived components carry
 // metadata about the request itself rather than the value of a literal
 // HTTP header. The signer supports the minimal set required for the
@@ -287,10 +296,19 @@ func buildSigParams(components []string, created int64, keyID string) httpsfv.In
 	for _, c := range components {
 		items = append(items, httpsfv.NewItem(c))
 	}
+	// Parameter order: keyid, alg, tag, created. RFC 9421 does not
+	// mandate an order, but common RFC 9421 implementations (including
+	// common-fate/httpsig and Cloudflare Web Bot Auth) serialize
+	// signature-params parameters in this order when rebuilding the
+	// signature base for verification. Pipelock matches that order so
+	// signatures cross-verify without the signer and verifier having
+	// to agree on a wire-preserving serializer — which httpsfv does
+	// not guarantee across versions.
 	params := httpsfv.NewParams()
-	params.Add("created", created)
 	params.Add("keyid", keyID)
+	params.Add("alg", pipelockSigAlg)
 	params.Add("tag", pipelockSigTag)
+	params.Add("created", created)
 	return httpsfv.InnerList{Items: items, Params: params}
 }
 

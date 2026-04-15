@@ -110,6 +110,16 @@ func NewReverseProxy(
 	// ErrorHandler returns a JSON error on upstream failures.
 	proxy.ErrorHandler = rp.errorHandler
 
+	// Signing transport: sits between httputil.ReverseProxy and
+	// http.DefaultTransport. Runs envelope injection + RFC 9421 signing
+	// on the post-Director request so @target-uri matches the upstream
+	// URL the transport is actually about to dial. A nil envelope
+	// emitter short-circuits to the base transport.
+	proxy.Transport = &reverseSigningRoundTripper{
+		base: http.DefaultTransport,
+		rp:   rp,
+	}
+
 	rp.proxy = proxy
 	return rp
 }
@@ -221,47 +231,111 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// Scan request body for DLP patterns (secret exfiltration).
 	forwardedVerdict := config.ActionAllow
+	var reverseBodyBytes []byte
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
-		blocked, verdict := rp.scanRequest(w, r, cfg, sc)
+		blocked, verdict, bodyBytes := rp.scanRequest(w, r, cfg, sc)
 		if blocked {
 			return
 		}
 		if verdict != "" {
 			forwardedVerdict = verdict
 		}
+		reverseBodyBytes = bodyBytes
 	}
 
-	// Inject mediation envelope before forwarding on allow path.
-	if rp.envelopeEmitterPtr != nil {
-		if envEmitter := rp.envelopeEmitterPtr.Load(); envEmitter != nil {
-			actorIdentity := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
-			actor := actorIdentity.Name
-			if actor == "" {
-				actor = "anonymous"
-			}
-			if envErr := envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
-				ActionID:   receipt.NewActionID(),
-				Action:     string(receipt.ClassifyHTTP(r.Method)),
-				Verdict:    forwardedVerdict,
-				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
-				Actor:      actor,
-				ActorAuth:  actorIdentity.Auth,
-			}); envErr != nil {
-				rp.logger.LogAnomaly(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""), "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
-			}
+	// Stash envelope build metadata on the request context so the
+	// signing RoundTripper (installed on rp.proxy.Transport) can
+	// attach a Pipelock-Mediation header and an RFC 9421 signature
+	// AFTER httputil.ReverseProxy's Director has rewritten the URL to
+	// the upstream target. Signing before Director would sign the
+	// inbound-relative @target-uri and any verifier checking the
+	// signature against the upstream host would reject it.
+	if rp.envelopeEmitterPtr != nil && rp.envelopeEmitterPtr.Load() != nil {
+		actorIdentity := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
+		actor := actorIdentity.Name
+		if actor == "" {
+			actor = "anonymous"
 		}
+		opts := envelope.BuildOpts{
+			ActionID:   receipt.NewActionID(),
+			Action:     string(receipt.ClassifyHTTP(r.Method)),
+			Verdict:    forwardedVerdict,
+			SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
+			Actor:      actor,
+			ActorAuth:  actorIdentity.Auth,
+			PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
+		}
+		ctx := context.WithValue(r.Context(), ctxKeyReverseEnvelopeOpts, opts)
+		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeBody, reverseBodyBytes)
+		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
+		r = r.WithContext(ctx)
 	}
 
 	// Forward to upstream. Response scanning happens in modifyResponse.
+	// Envelope signing happens in the signing RoundTripper wrapping
+	// rp.proxy.Transport so @target-uri reflects the post-Director URL.
 	rp.proxy.ServeHTTP(w, r)
 }
 
+// reverseSigningRoundTripper wraps the base transport used by
+// httputil.ReverseProxy so envelope signing runs AFTER Director has
+// rewritten the request URL to the upstream target. It reads the
+// pre-computed envelope.BuildOpts and buffered request body from the
+// request context (populated by ServeHTTP) and hands them to
+// (*envelope.Emitter).InjectAndSign along with the final outbound
+// *http.Request. A nil emitter or missing build opts skips signing —
+// the transport is also used by reverse proxies configured without
+// mediation envelopes, and must not fail in that case.
+type reverseSigningRoundTripper struct {
+	base http.RoundTripper
+	rp   *ReverseProxyHandler
+}
+
+// RoundTrip implements http.RoundTripper. It runs envelope injection
+// and signing before handing the request off to the base transport.
+// Errors from InjectAndSign are logged and the request still proceeds
+// — a signing failure must not silently take down upstream traffic,
+// and the caller (httputil.ReverseProxy) cannot distinguish "no
+// signature" from "sign failed." Operators see the LogAnomaly entry
+// and Prometheus counter.
+func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.rp == nil || t.rp.envelopeEmitterPtr == nil {
+		return t.base.RoundTrip(req)
+	}
+	em := t.rp.envelopeEmitterPtr.Load()
+	if em == nil {
+		return t.base.RoundTrip(req)
+	}
+	opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
+	if !ok {
+		return t.base.RoundTrip(req)
+	}
+	body, _ := req.Context().Value(ctxKeyReverseEnvelopeBody).([]byte)
+
+	if err := em.InjectAndSign(req, body, opts); err != nil {
+		clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
+		requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
+		t.rp.logger.LogAnomaly(
+			newHTTPAuditContext(t.rp.logger, req.Method, req.URL.String(), clientIP, requestID, ""),
+			"",
+			fmt.Sprintf("mediation envelope injection failed: %v", err),
+			0.1,
+		)
+	}
+	return t.base.RoundTrip(req)
+}
+
 // scanRequest reads and scans the request body for DLP patterns.
-// Returns true if the request was blocked (response already written).
-func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner) (bool, string) {
+// Returns (blocked, verdict, bodyBytes). When blocked is true the HTTP
+// response has already been written and the caller must return. When
+// blocked is false, bodyBytes is the buffered body (or nil if the
+// request had no scannable body) and the caller may hand it to the
+// envelope signer via ctxKeyReverseEnvelopeBody so the signing
+// RoundTripper can compute content-digest without a second drain.
+func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner) (blocked bool, verdict string, body []byte) {
 	// Skip binary content types — no secrets to scan in images/video.
 	if isBinaryMIME(r.Header.Get("Content-Type")) {
-		return false, ""
+		return false, "", nil
 	}
 
 	maxBytes := cfg.RequestBodyScanning.MaxBodyBytes
@@ -301,10 +375,18 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	}
 
 	if result.Clean {
-		// Re-wrap the buffered body so the reverse proxy can forward it.
+		// Re-wrap the buffered body so the reverse proxy can forward
+		// it. GetBody lets stdlib replay on redirect hops even though
+		// the reverse proxy's upstream client does not follow redirects
+		// by default — setting it is cheap and future-proofs the path
+		// against a future Transport override that does.
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
-		return false, config.ActionAllow
+		bodyBytesCopy := bodyBytes
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
+		}
+		return false, config.ActionAllow, bodyBytes
 	}
 
 	action := result.Action
@@ -337,20 +419,24 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
 		writeReverseProxyBlock(w, http.StatusForbidden, reason)
-		return true, config.ActionBlock
+		return true, config.ActionBlock, nil
 	}
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
 		writeReverseProxyBlock(w, http.StatusForbidden, reason)
-		return true, config.ActionBlock
+		return true, config.ActionBlock, nil
 	}
 
 	// Warn mode: re-wrap body and continue.
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	r.ContentLength = int64(len(bodyBytes))
-	return false, action
+	bodyBytesCopy := bodyBytes
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
+	}
+	return false, action, bodyBytes
 }
 
 // modifyResponse scans the upstream response body for prompt injection.

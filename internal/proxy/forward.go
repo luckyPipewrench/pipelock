@@ -1066,6 +1066,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
+	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = ""         // required for http.Client
 	outReq.Header.Del(AgentHeader) // strip internal identity header before upstream

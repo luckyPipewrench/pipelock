@@ -57,6 +57,13 @@ type Envelope struct {
 	AuthorityKind  string
 	AuthorityRef   string
 	RequiresReauth bool
+
+	// Hop is the redirect-refresh counter. Zero (the default, omitted
+	// from the serialized dictionary) means "original request, no
+	// redirect refresh yet." Each redirect refresh increments Hop by 1
+	// so a downstream verifier can distinguish the original envelope
+	// from one rebuilt by pipelock's CheckRedirect path.
+	Hop int
 }
 
 // Serialize encodes the envelope as an RFC 8941 Structured Fields Dictionary
@@ -77,6 +84,7 @@ const (
 	keyAuthority  = "auth"
 	keyAuthorityR = "authr"
 	keyReauth     = "reauth"
+	keyHop        = "hop"
 )
 
 func (e Envelope) Serialize() (string, error) {
@@ -105,6 +113,11 @@ func (e Envelope) Serialize() (string, error) {
 	}
 	if e.RequiresReauth {
 		dict.Add(keyReauth, httpsfv.NewItem(true))
+	}
+	// Hop is omitted from the wire when zero so the common case (no
+	// redirect refresh) does not spend bytes declaring the default.
+	if e.Hop > 0 {
+		dict.Add(keyHop, httpsfv.NewItem(int64(e.Hop)))
 	}
 
 	return httpsfv.Marshal(dict)
@@ -217,6 +230,16 @@ func Parse(s string) (Envelope, error) {
 			}
 		}
 	}
+	if m, ok := dict.Get(keyHop); ok {
+		if item, ok := m.(httpsfv.Item); ok {
+			if v, ok := item.Value.(int64); ok {
+				if v < 0 {
+					return Envelope{}, fmt.Errorf("invalid %q: must be >= 0, got %d", keyHop, v)
+				}
+				env.Hop = int(v)
+			}
+		}
+	}
 
 	// Reject envelopes missing required fields. A partial envelope
 	// could pass through trust decisions with zero-value defaults,
@@ -275,6 +298,9 @@ func (e Envelope) ToMCPMeta() map[string]any {
 	}
 	if e.RequiresReauth {
 		meta[keyReauth] = true
+	}
+	if e.Hop > 0 {
+		meta[keyHop] = e.Hop
 	}
 	return meta
 }

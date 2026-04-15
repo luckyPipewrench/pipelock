@@ -999,6 +999,17 @@ func RunHTTPListenerProxy(
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
 	// to prevent SSRF via crafted Location headers from the upstream.
 	// 30s timeout prevents hanging on unresponsive upstreams.
+	//
+	// Envelope-refresh implication: because redirects never follow,
+	// the mediation envelope signing refresh path that lives at
+	// internal/proxy/proxy.go:348 (CheckRedirect) is moot for the
+	// MCP HTTP transport — there is no second hop to rebuild an
+	// envelope over. If a future change enables redirect following
+	// here (for example, to support upstream servers that relocate
+	// endpoints) the refresh helper must be wired into the new
+	// CheckRedirect closure so signed envelopes do not flow with
+	// stale @target-uri / ph / hop values. The same applies to
+	// internal/mcp/transport/httpclient.go:45.
 	upstreamClient := &http.Client{
 		Timeout: 30 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

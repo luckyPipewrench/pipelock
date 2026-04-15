@@ -5,9 +5,13 @@ package envelope
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dunglas/httpsfv"
 )
@@ -338,6 +342,142 @@ func TestEmitter_InjectAndSign_NilRequest(t *testing.T) {
 	em := NewEmitter(EmitterConfig{ConfigHash: "x"})
 	if err := em.InjectAndSign(nil, nil, BuildOpts{}); err == nil {
 		t.Error("nil request should produce an error")
+	}
+}
+
+// TestEmitter_InjectAndSign_AutoBuffersBodyForSigner proves the
+// "scanner disabled, signing enabled" path: the caller hands in
+// body=nil but req.Body is populated. The Emitter drains req.Body,
+// replaces it with a fresh reader, sets GetBody for redirect replay,
+// and the signer digests the buffered bytes.
+func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	signer := newTestSigner(t, priv)
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		Signer:     signer,
+	})
+
+	body := []byte(`{"auto":true}`)
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
+
+	// Caller does NOT have bytes in hand — mirrors "request body
+	// scanning disabled, signing enabled."
+	if err := em.InjectAndSign(req, nil, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000010",
+		Action:    "write",
+		Verdict:   "allow",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	// Content-Digest must reflect the original body.
+	sum := sha256.Sum256(body)
+	wantDigest := "sha-256=:" + base64.StdEncoding.EncodeToString(sum[:]) + ":"
+	if got := req.Header.Get("Content-Digest"); got != wantDigest {
+		t.Errorf("Content-Digest = %q, want %q", got, wantDigest)
+	}
+
+	// Body must still be readable — a fresh NopCloser was installed.
+	drained, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("reading replaced body: %v", err)
+	}
+	if string(drained) != string(body) {
+		t.Errorf("replaced body = %q, want %q", string(drained), string(body))
+	}
+
+	// GetBody must return a fresh reader (redirect replay path).
+	if req.GetBody == nil {
+		t.Fatal("GetBody was not set")
+	}
+	replay, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	replayBytes, _ := io.ReadAll(replay)
+	if string(replayBytes) != string(body) {
+		t.Errorf("GetBody replay = %q, want %q", replayBytes, body)
+	}
+
+	// Signature must verify over the reconstructed base.
+	sigInputDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+	member, _ := sigInputDict.Get(pipelockSigLabel)
+	inner := member.(httpsfv.InnerList) //nolint:errcheck // type known
+	components := make([]string, 0, len(inner.Items))
+	for _, it := range inner.Items {
+		s, _ := it.Value.(string)
+		components = append(components, s)
+	}
+	base, err := buildSignatureBase(req, body, components, inner)
+	if err != nil {
+		t.Fatalf("buildSignatureBase: %v", err)
+	}
+	sigDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature"))
+	sigMember, _ := sigDict.Get(pipelockSigLabel)
+	sigBytes, _ := sigMember.(httpsfv.Item).Value.([]byte)
+	if !ed25519.Verify(pub, []byte(base), sigBytes) {
+		t.Error("signature verification failed over reconstructed base")
+	}
+}
+
+// TestEmitter_InjectAndSign_OverCapBodyDropsDigest proves the
+// over-cap fallback: when the body exceeds the signer's MaxBodyBytes,
+// the signer drops content-digest from its declared list and still
+// attaches a valid signature. The request body is also cleared so
+// the upstream never sees partially-consumed bytes.
+func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
+	t.Parallel()
+
+	_, priv := testSignerKey(t)
+	signer, err := NewSigner(SignerConfig{
+		PrivKey:          priv,
+		KeyID:            "cap-test",
+		SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
+		MaxBodyBytes:     32,
+		NowFn:            func() time.Time { return time.Unix(1712345678, 0).UTC() },
+	})
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: "aa",
+		Signer:     signer,
+	})
+
+	oversized := strings.Repeat("X", 4096)
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(oversized))
+
+	if err := em.InjectAndSign(req, nil, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000011",
+		Action:    "write",
+		Verdict:   "allow",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	// Content-Digest must be absent — over-cap body cannot be digested.
+	if got := req.Header.Get("Content-Digest"); got != "" {
+		t.Errorf("Content-Digest = %q, want empty", got)
+	}
+
+	// Signature-Input must not list content-digest either.
+	sigInputDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+	member, _ := sigInputDict.Get(pipelockSigLabel)
+	list := member.(httpsfv.InnerList) //nolint:errcheck // type known
+	for _, it := range list.Items {
+		if s, _ := it.Value.(string); s == headerContentDigest {
+			t.Error("content-digest survived over-cap body case in declared list")
+		}
+	}
+
+	// The body was consumed — req.Body should now be http.NoBody.
+	if req.Body != http.NoBody {
+		t.Error("over-cap body path did not reset req.Body to http.NoBody")
 	}
 }
 

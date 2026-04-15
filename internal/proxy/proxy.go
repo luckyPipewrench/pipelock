@@ -1970,9 +1970,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
 
-	// Inject mediation envelope before forwarding on allow path.
+	// Inject mediation envelope (and attach RFC 9421 signature when
+	// the envelope emitter has a signer) before forwarding on the
+	// allow path. The fetch handler only builds GET requests
+	// internally — there is no request body to sign over, so
+	// InjectAndSign is called with body=nil and the signer drops
+	// content-digest from the declared component list.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		if envErr := envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
+		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
+		if envErr := envEmitter.InjectAndSign(req, nil, envelope.BuildOpts{
 			ActionID:      actionID,
 			Action:        string(receipt.ActionRead),
 			Verdict:       config.ActionAllow,
@@ -1982,6 +1988,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			SessionTaint:  fetchTaint.Risk.Level.String(),
 			TaskID:        fetchTaint.Task.CurrentTaskID,
 			AuthorityKind: fetchTaint.Authority.String(),
+			PolicyHash:    policyHash,
 		}); envErr != nil {
 			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
 		}

@@ -4,9 +4,11 @@
 package envelope
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -151,9 +153,25 @@ func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 // InjectAndSign injects the mediation envelope as the Pipelock-Mediation
 // header on req AND, if the Emitter has an installed signer, attaches an
 // RFC 9421 HTTP Message Signature over the per-request effective
-// component list via pipelock1. body is the already-buffered request
-// body, or nil for body-less requests. When signing is enabled and body
-// is non-nil, the signer populates Content-Digest itself before signing.
+// component list via pipelock1.
+//
+// body is the already-buffered request body or nil. There are three
+// cases for body handling:
+//
+//  1. Caller has bytes in hand (e.g. the request body scanner has
+//     already buffered them): pass body as a non-nil slice. The
+//     signer uses those bytes for Content-Digest.
+//  2. Caller has no buffered bytes and req.Body is nil or http.NoBody:
+//     pass body as nil. The signer treats the request as body-less
+//     and drops content-digest from the declared component list.
+//  3. Caller has no buffered bytes but req.Body has content (request
+//     body scanning is disabled): pass body as nil. InjectAndSign
+//     will drain req.Body up to the signer's MaxBodyBytes cap,
+//     replace req.Body with a fresh reader over the buffered bytes,
+//     set req.GetBody for redirect replay, and sign with the
+//     buffered content. An over-cap body is treated as a body-less
+//     request — content-digest drops out of the declared list rather
+//     than failing the entire sign.
 //
 // Errors from the envelope serialize step or the signer's SignRequest
 // are returned to the caller. On error the request's existing headers
@@ -177,10 +195,98 @@ func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) 
 	if e.signer == nil {
 		return nil
 	}
+
+	// If the caller did not hand us body bytes but the request carries
+	// a non-empty body, buffer it here so the signer can compute
+	// Content-Digest. Use the signer's configured MaxBodyBytes as the
+	// ceiling. This is the "request body scanning disabled but signing
+	// enabled" path — without it, every body-bearing request would
+	// drop content-digest from its declared component list because
+	// SignRequest would see body == nil.
+	if body == nil && requestHasBody(req) {
+		buffered, err := bufferRequestBody(req, e.signer.maxBodyBytes)
+		if err != nil {
+			return fmt.Errorf("envelope emitter: buffering request body: %w", err)
+		}
+		body = buffered
+	}
+
 	if err := e.signer.SignRequest(req, body); err != nil {
 		return fmt.Errorf("envelope emitter: sign request: %w", err)
 	}
 	return nil
+}
+
+// requestHasBody reports whether req carries body bytes that should be
+// digested. http.NoBody and a nil Body both report false; a sentinel
+// zero-length Body may still report true but will produce an empty
+// byte slice when drained, which bufferRequestBody treats the same as
+// body-less.
+func requestHasBody(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	if req.Body == nil || req.Body == http.NoBody {
+		return false
+	}
+	return true
+}
+
+// bufferRequestBody reads req.Body into memory (bounded by maxBytes)
+// and replaces req.Body with a fresh reader over the buffered bytes.
+// GetBody is set to a closure that returns a fresh reader so the
+// stdlib redirect machinery can replay the body on 307/308.
+//
+// maxBytes == 0 means "no cap" — read until EOF. A positive maxBytes
+// reads one extra byte past the cap to detect overflow; on overflow
+// the function returns nil and no error, signaling "signable without
+// content-digest" to the caller. The request body is left drained
+// (no replacement) in the overflow case because a) the excess bytes
+// are already consumed and b) returning a partial body would hand the
+// signer something it cannot faithfully reproduce from the wire.
+func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil, nil
+	}
+
+	// Read maxBytes + 1 so we can distinguish "fits exactly" from
+	// "overflowed" without a second syscall. maxBytes == 0 uses the
+	// io.ReadAll path to mean "no limit".
+	var (
+		data []byte
+		err  error
+	)
+	if maxBytes > 0 {
+		data, err = io.ReadAll(io.LimitReader(req.Body, int64(maxBytes)+1))
+	} else {
+		data, err = io.ReadAll(req.Body)
+	}
+	// Close the original body — we are about to replace it. Best
+	// effort: a failing close on the inbound body does not affect
+	// the signer's correctness because we already have the bytes.
+	_ = req.Body.Close()
+
+	if err != nil {
+		return nil, fmt.Errorf("reading request body: %w", err)
+	}
+
+	// Overflow: the body did not fit under the cap. Fall through as
+	// "no buffered body" so the signer drops content-digest.
+	if maxBytes > 0 && len(data) > maxBytes {
+		req.Body = http.NoBody
+		req.ContentLength = 0
+		req.GetBody = func() (io.ReadCloser, error) { return http.NoBody, nil }
+		return nil, nil
+	}
+
+	// Install a fresh reader and a GetBody closure so redirect replay
+	// gets a clean bytes.Reader every time stdlib rewinds the request.
+	req.Body = io.NopCloser(bytes.NewReader(data))
+	req.ContentLength = int64(len(data))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
+	return data, nil
 }
 
 // InjectMCPEnvelope builds an envelope and injects it into an MCP _meta map.

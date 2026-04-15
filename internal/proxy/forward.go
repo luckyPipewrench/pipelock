@@ -804,7 +804,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Request body DLP scanning: read and scan body before Clone so the
-	// cloned request gets the re-wrapped buffered bytes.
+	// cloned request gets the re-wrapped buffered bytes. The scanned
+	// bytes are also hoisted out of the scanner block so the envelope
+	// signer below can pass them as content-digest input — otherwise
+	// the signer would have to re-drain req.Body itself and the caller
+	// would lose deterministic bookkeeping about byte counts.
+	var forwardBodyBytes []byte
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		buf, bodyResult := scanRequestBody(r.Context(), BodyScanRequest{
 			Body:            r.Body,
@@ -922,8 +927,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Re-wrap body so the forwarded request gets the buffered bytes.
+		// GetBody is set so stdlib can replay on 307/308 redirects when
+		// the forward proxy's client follows a method-preserving hop.
 		r.Body = io.NopCloser(bytes.NewReader(buf))
 		r.ContentLength = int64(len(buf))
+		bufCopy := buf
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bufCopy)), nil
+		}
+		forwardBodyBytes = buf
 	}
 
 	// Request header DLP scanning.
@@ -1059,9 +1071,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq.Header.Del(AgentHeader) // strip internal identity header before upstream
 	removeHopByHopHeaders(outReq.Header)
 
-	// Inject mediation envelope before forwarding on allow path.
+	// Inject mediation envelope (and attach RFC 9421 signature when the
+	// envelope emitter has a signer) before forwarding on the allow
+	// path. forwardBodyBytes is the buffered request body when body
+	// scanning is enabled; when body scanning is disabled but signing
+	// is enabled, InjectAndSign drains outReq.Body itself, bounded by
+	// mediation_envelope.max_body_bytes, and restores it with a fresh
+	// reader + GetBody for redirect replay.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		if envErr := envEmitter.InjectHTTPEnvelope(outReq.Header, envelope.BuildOpts{
+		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
+		if envErr := envEmitter.InjectAndSign(outReq, forwardBodyBytes, envelope.BuildOpts{
 			ActionID:       actionID,
 			Action:         string(receipt.ClassifyHTTP(r.Method)),
 			Verdict:        config.ActionAllow,
@@ -1073,6 +1092,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			AuthorityKind:  forwardTaint.Authority.String(),
 			AuthorityRef:   forwardTaint.ActionRef,
 			RequiresReauth: forwardRequiresReauth,
+			PolicyHash:     policyHash,
 		}); envErr != nil {
 			p.logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
 		}

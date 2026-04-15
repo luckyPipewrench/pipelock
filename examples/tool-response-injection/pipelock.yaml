@@ -21,15 +21,16 @@ ssrf:
     - 127.0.0.1/32
 
 # Keep non-response layers out of the story unless the demo is testing them.
+# This disables the standard DLP bundle for the demo while preserving the
+# immutable core safety floor baked into the scanner.
 dlp:
-  enabled: false
+  scan_env: false
+  include_defaults: false
 
 response_scanning:
   enabled: true
   action: block
   include_defaults: true
-  mitre_techniques:
-    enabled: true
 
 mcp_input_scanning:
   enabled: true

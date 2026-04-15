@@ -5,10 +5,12 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"mime"
 	"net"
@@ -1346,7 +1348,25 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg := &Config{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	// Strict parse: reject unknown top-level and nested fields so typos like
+	// `sentinel_path` (should be `sentinel_file`) or `escalation_threshold`
+	// misspelled as `threshold` fail loud at startup instead of being
+	// silently dropped and leaving security features inert. yaml.v3 reports
+	// the offending line and field name in the error message.
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
+	// Reject trailing documents. yaml.v3 Decoder.Decode consumes exactly one
+	// document per call, so a config with `---`-separated extra documents
+	// would otherwise silently load only the first. That is a bypass vector:
+	// an attacker who can inject a leading document could shadow the real
+	// config. Require a single document.
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err == nil {
+		return nil, fmt.Errorf("parsing config %s: multiple YAML documents not supported (pipelock config must be a single document)", path)
+	} else if !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 

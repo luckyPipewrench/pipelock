@@ -586,6 +586,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.logger.LogAnomaly(actx, "a2a_header", reason, 0)
 			if action == config.ActionBlock {
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_header", time.Since(start), agentLabel)
+				// Taint fields omitted: forwardTaint is computed after A2A header scanning.
+				p.emitReceipt(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     "a2a_header",
+					Pattern:   reason,
+					Transport: "forward",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: requestID,
+					Agent:     agent,
+				})
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
@@ -1094,6 +1106,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(actx, "a2a_stream", "compressed A2A stream cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               "a2a_stream",
+				Pattern:             "compressed A2A stream cannot be scanned",
+				Transport:           "forward",
+				Method:              r.Method,
+				Target:              targetURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+				SessionContaminated: forwardTaint.Risk.Contaminated,
+				RecentTaintSources:  forwardTaint.Risk.Sources,
+				SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       forwardTaint.Authority.String(),
+				TaintDecision:       forwardTaint.Result.Decision.String(),
+				TaintDecisionReason: forwardTaint.Result.Reason,
+				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+			})
 			http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
 			return
 		}
@@ -1114,6 +1146,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				p.logger.LogBlocked(actx, "a2a_stream", err.Error())
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+				p.emitReceipt(receipt.EmitOpts{
+					ActionID:            actionID,
+					Verdict:             config.ActionBlock,
+					Layer:               "a2a_stream",
+					Pattern:             err.Error(),
+					Transport:           "forward",
+					Method:              r.Method,
+					Target:              targetURL,
+					RequestID:           requestID,
+					Agent:               agent,
+					SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+					SessionContaminated: forwardTaint.Risk.Contaminated,
+					RecentTaintSources:  forwardTaint.Risk.Sources,
+					SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+					SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+					AuthorityKind:       forwardTaint.Authority.String(),
+					TaintDecision:       forwardTaint.Result.Decision.String(),
+					TaintDecisionReason: forwardTaint.Result.Reason,
+					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+				})
 			}
 		} else {
 			duration := time.Since(start)
@@ -1247,6 +1299,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAnomaly(actx, "a2a_response", a2aReason, 0)
 				if a2aAction == config.ActionBlock {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
+					p.emitReceipt(receipt.EmitOpts{
+						ActionID:            actionID,
+						Verdict:             config.ActionBlock,
+						Layer:               "a2a_response",
+						Pattern:             a2aReason,
+						Transport:           "forward",
+						Method:              r.Method,
+						Target:              targetURL,
+						RequestID:           requestID,
+						Agent:               agent,
+						SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+						SessionContaminated: forwardTaint.Risk.Contaminated,
+						RecentTaintSources:  forwardTaint.Risk.Sources,
+						SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+						SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+						AuthorityKind:       forwardTaint.Authority.String(),
+						TaintDecision:       forwardTaint.Result.Decision.String(),
+						TaintDecisionReason: forwardTaint.Result.Reason,
+						TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+					})
 					http.Error(w, "blocked: "+a2aReason, http.StatusForbidden)
 					return
 				}

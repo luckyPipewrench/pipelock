@@ -1048,6 +1048,11 @@ func setupFetchProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod f
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	// Proxy.Close tears down scanner + session manager + edition + entropy
+	// tracker goroutines but does NOT close the recorder (rph.rec has its
+	// own cleanup). Under t.Parallel(), leaking these across cases makes the
+	// test process noisier and occasionally flaky.
+	t.Cleanup(p.Close)
 
 	return p.buildHandler(p.buildMux())
 }
@@ -1116,6 +1121,7 @@ func setupWSProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod func
 	return ln.Addr().String(), func() {
 		cancel()
 		_ = ln.Close()
+		p.Close()
 	}
 }
 
@@ -1184,6 +1190,7 @@ func setupForwardProxyWithReceipts(t *testing.T, rph *receiptProxyHelper, cfgMod
 	return ln.Addr().String(), func() {
 		cancel()
 		_ = ln.Close()
+		p.Close()
 	}
 }
 

@@ -1358,6 +1358,17 @@ func Load(path string) (*Config, error) {
 	if err := decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	// Reject trailing documents. yaml.v3 Decoder.Decode consumes exactly one
+	// document per call, so a config with `---`-separated extra documents
+	// would otherwise silently load only the first. That is a bypass vector:
+	// an attacker who can inject a leading document could shadow the real
+	// config. Require a single document.
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err == nil {
+		return nil, fmt.Errorf("parsing config %s: multiple YAML documents not supported (pipelock config must be a single document)", path)
+	} else if !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
+	}
 
 	cfg.rawBytes = data
 

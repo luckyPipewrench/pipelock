@@ -1941,6 +1941,34 @@ unknown_field: "should be rejected"
 	}
 }
 
+func TestLoad_MultipleYAMLDocumentsRejected(t *testing.T) {
+	// yaml.v3 Decoder.Decode consumes exactly one document per call. Without
+	// an explicit second-Decode EOF check, a trailing `---` document would
+	// silently drop, which lets an attacker shadow the real config by
+	// prepending a benign-looking first document. Strict parsing must
+	// reject multi-document inputs for config files.
+	yaml := `
+version: 1
+mode: audit
+---
+version: 1
+mode: strict
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected Load to reject multi-document YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "multiple YAML documents") {
+		t.Errorf("error should mention multi-document rejection; got: %v", err)
+	}
+}
+
 func TestLoad_UnknownNestedFieldRejected(t *testing.T) {
 	yaml := `
 version: 1

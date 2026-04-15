@@ -1719,10 +1719,14 @@ func TestReceiptCoverage_ForwardA2AHeaderBlock_EmitsReceipt(t *testing.T) {
 func TestReceiptCoverage_ForwardA2ACompressedStream_EmitsReceipt(t *testing.T) {
 	t.Parallel()
 
-	// Backend returns SSE with a non-identity Content-Encoding.
+	// Backend returns SSE with a non-identity Content-Encoding. Use a
+	// transport-opaque token so Go's HTTP client does not transparently
+	// decompress and strip the header before the proxy sees it. The proxy
+	// blocks on any non-identity encoding, so the specific value does not
+	// matter as long as it is not "identity".
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Encoding", "x-test-encoding")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
 		// Write non-gzip bytes: we just need the proxy to see the encoding
@@ -1758,9 +1762,9 @@ func TestReceiptCoverage_ForwardA2ACompressedStream_EmitsReceipt(t *testing.T) {
 		_, _ = io.Copy(io.Discard, resp.Body)
 	}
 
-	// Look for the compressed-stream block receipt. The block path may not be
-	// reachable if the server or proxy strips Content-Encoding somewhere, so
-	// skip rather than fail when the receipt is missing.
+	// The non-standard Content-Encoding ensures the proxy sees the header
+	// verbatim and triggers the compressed-stream block path. The receipt
+	// must exist; any miss is a regression in the fail-closed invariant.
 	receipts := rph.findReceipts(t)
 	var found bool
 	for _, r := range receipts {
@@ -1780,9 +1784,7 @@ func TestReceiptCoverage_ForwardA2ACompressedStream_EmitsReceipt(t *testing.T) {
 		for _, r := range receipts {
 			layers = append(layers, r.ActionRecord.Layer)
 		}
-		t.Skipf("compressed A2A stream block path not triggered (layers seen: %v). "+
-			"Possible causes: Go HTTP client auto-decompression, backend Content-Encoding stripped, "+
-			"or transport layer intervened. Receipt is nonetheless wired.", layers)
+		t.Fatalf("no a2a_stream block receipt found among %d receipts (layers: %v)", len(receipts), layers)
 	}
 }
 

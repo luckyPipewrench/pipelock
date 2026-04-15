@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -513,7 +514,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		closeVerdict = config.ActionBlock
 	}
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  receipt.NewActionID(),
+		ActionID:  actionID,
 		Verdict:   closeVerdict,
 		Layer:     "session_close",
 		Transport: "websocket",
@@ -694,8 +695,16 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	for {
 		select {
 		case <-ctx.Done():
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
-			blocked = true
+			// ctx is canceled for two reasons: the max-connection deadline
+			// expired (real timeout — block) or the sibling relay goroutine
+			// returned and its defer cancel() fired (clean close — exit).
+			// Only the first should mark blocked and write a close frame;
+			// otherwise clean closes race into the blocked metric and turn
+			// session_close receipts into bogus "block" verdicts.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
+				blocked = true
+			}
 			return
 		default:
 		}
@@ -1127,8 +1136,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 	for {
 		select {
 		case <-ctx.Done():
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
-			blocked = true
+			// See clientToUpstream: distinguish real deadline expiry from
+			// sibling-triggered cancel so clean closes do not inflate the
+			// blocked metric.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
+				blocked = true
+			}
 			return
 		default:
 		}

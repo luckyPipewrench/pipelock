@@ -141,6 +141,23 @@ func TestValidate_BindDefaultAgentIdentityRequiresDefault(t *testing.T) {
 	}
 }
 
+func TestValidate_BindDefaultAgentIdentityRejectsWhitespaceOnly(t *testing.T) {
+	cfg := Defaults()
+	cfg.BindDefaultAgentIdentity = true
+	cfg.DefaultAgentIdentity = "   \t  "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when bind_default_agent_identity is true and identity is whitespace-only")
+	}
+}
+
+func TestValidate_DefaultAgentIdentityRejectsLeadingTrailingWhitespace(t *testing.T) {
+	cfg := Defaults()
+	cfg.DefaultAgentIdentity = "  deployment/my-agent  "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error when default_agent_identity has leading or trailing whitespace")
+	}
+}
+
 func TestValidate_InvalidDLPRegex(t *testing.T) {
 	cfg := Defaults()
 	cfg.DLP.Patterns = []DLPPattern{

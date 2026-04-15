@@ -3472,8 +3472,12 @@ func (c *Config) validateMediationEnvelope() error {
 }
 
 func (c *Config) validateDefaultAgentIdentity() error {
-	if c.BindDefaultAgentIdentity && c.DefaultAgentIdentity == "" {
+	identity := strings.TrimSpace(c.DefaultAgentIdentity)
+	if c.BindDefaultAgentIdentity && identity == "" {
 		return fmt.Errorf("bind_default_agent_identity requires default_agent_identity")
+	}
+	if c.DefaultAgentIdentity != "" && identity != c.DefaultAgentIdentity {
+		return fmt.Errorf("default_agent_identity must not contain leading or trailing whitespace")
 	}
 	return nil
 }

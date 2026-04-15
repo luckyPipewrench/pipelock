@@ -493,7 +493,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	if scanTextFrames && sc.ResponseScanningEnabled() && isResponseScanExempt(relay.hostname, cfg.ResponseScanning.ExemptDomains) {
 		log.LogResponseScanExempt(actx, relay.hostname)
-		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportWS)
 	}
 
 	stats := relay.run(r.Context())
@@ -1341,6 +1340,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			if r.scanText && r.scanner.ResponseScanningEnabled() {
 				scanResult := r.scanner.ScanResponse(ctx, string(msg))
 				if !scanResult.Clean {
+					if wsRespExempt {
+						r.proxy.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportWS)
+					}
 					patternNames := make([]string, len(scanResult.Matches))
 					for i, m := range scanResult.Matches {
 						patternNames[i] = m.PatternName

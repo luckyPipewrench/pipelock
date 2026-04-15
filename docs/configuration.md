@@ -1105,7 +1105,9 @@ default_agent_identity: "deployment/my-agent"
 
 If you also set `bind_default_agent_identity: true`, pipelock ignores caller-supplied `X-Pipelock-Agent` headers and `?agent=` query params and binds all traffic on that listener to the configured default identity. This is the recommended mode for the generated `pipelock init sidecar` companion topology.
 
-Resolution precedence with binding disabled: `X-Pipelock-Agent` header > `default_agent_identity` > `?agent=` query param > `anonymous`.
+These precedences apply to default-identity resolution after listener-level and source-CIDR resolution have been evaluated. They do not override an agent profile that matched on listener address or source CIDR.
+
+Resolution precedence with binding disabled: context override > `X-Pipelock-Agent` header > `default_agent_identity` > `?agent=` query param > `anonymous`.
 
 Resolution precedence with binding enabled: context override > `default_agent_identity` > `anonymous`.
 

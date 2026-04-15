@@ -14,7 +14,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
 
-.PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz
+.PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check
 
 build:
 	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
@@ -71,4 +71,7 @@ fuzz:
 	@echo "All fuzz targets complete."
 
 stats: ## Print canonical stats
-	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'PASS|FAIL|---'
+	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'DLP patterns|Response patterns|Chain patterns|Preset files|Direct deps|PASS|FAIL|---'
+
+docs-check: ## Check public docs for known stale claims and print canonical stats
+	@./scripts/docs-check.sh

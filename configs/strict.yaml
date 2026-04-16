@@ -557,3 +557,8 @@ airlock:
     hard_minutes: 15
     drain_minutes: 0
     drain_timeout_seconds: 30
+
+# Exposure-based policy escalation (v2.2.0)
+taint:
+  enabled: true
+  policy: strict

@@ -21,6 +21,8 @@ On reload, the scanner and session manager are atomically swapped. Kill switch s
 
 If a reload fails validation (invalid regex, security downgrade), the old config is retained and a warning is logged.
 
+**Reload exceptions:** the Sentry crash-report scrubber captures the DLP pattern list at startup and does **not** update on reload. If you add DLP patterns used to scrub Sentry events, restart pipelock to propagate them. A warning is logged on any reload that changes `dlp.patterns` while Sentry is enabled: `DLP patterns changed; Sentry scrubber uses init-time patterns until restart`.
+
 **Strict parsing:** Pipelock rejects unknown top-level and nested YAML fields at startup, and it only accepts a single YAML document per config file. Trailing `---` documents are a hard error. This prevents typos from silently disabling controls and blocks shadow-config bypasses.
 
 ## Top-Level Fields
@@ -754,7 +756,9 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 ## Kill Switch
 
-Emergency deny-all with four independent activation sources. Any one active blocks all traffic (OR-composed). See [Kill Switch](../README.md#kill-switch) for operational details.
+Emergency deny-all with four independent activation sources (`enabled`, `sentinel_file`, `api`, `SIGUSR1`). Any one active blocks all traffic (OR-composed). See [Kill Switch](../README.md#kill-switch) for operational details.
+
+> **Heads-up on `enabled`:** the `enabled` field is a source, not a subsystem switch. Setting `enabled: true` immediately activates the kill switch and denies all traffic from startup (all requests return HTTP 503). To configure the API/signal/sentinel sources for future activation without engaging the kill switch at startup, leave `enabled: false`.
 
 ```yaml
 kill_switch:
@@ -771,7 +775,7 @@ kill_switch:
 
 | Field | Default | Restart? | Description |
 |-------|---------|----------|-------------|
-| `enabled` | `false` | No | Config-based activation |
+| `enabled` | `false` | No | Config-source activation. `true` = kill switch active immediately (deny-all). Not a subsystem enable. |
 | `sentinel_file` | `""` | No | File presence activates kill switch |
 | `message` | `"Emergency deny-all active"` | No | Rejection message |
 | `health_exempt` | `true` | No | /health bypasses kill switch |
@@ -824,6 +828,8 @@ Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.
 ### Airlock
 
 Per-session graduated quarantine with timer-based recovery. When adaptive enforcement escalates a session, the airlock state machine can transition the session through `soft` (observe-only), `hard` (reads allowed, writes blocked, long-lived connections torn down), and `drain` (no new traffic, existing in-flight requests complete within `drain_timeout_seconds`). All three tiers are **timed quarantines** that auto-recover back down through lower tiers as `soft_minutes`/`hard_minutes`/`drain_minutes` expire — `drain` is not a terminal state and is not equivalent to `POST /api/v1/sessions/{key}/terminate`. Operators can override the tier at any time through the session admin API or the `pipelock session` CLI; explicit termination (the destructive reset) lives behind the dedicated `terminate` endpoint.
+
+> **Airlock requires triggers:** `airlock.enabled: true` alone is a no-op. Configure at least one trigger (`triggers.on_high`, `triggers.on_critical`) to specify which tier fires at each adaptive escalation level. All shipped presets wire `on_high: soft` + `on_critical: hard` by default. Freehand configs that set `enabled: true` with no triggers will reach critical escalation without ever entering airlock.
 
 ```yaml
 airlock:

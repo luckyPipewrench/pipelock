@@ -38,9 +38,9 @@ uses CONNECT tunnels (see below) and does not increment request counters.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_requests_total` | counter | `result`, `agent` | Total HTTP requests. `result` is `allowed` or `blocked`. `agent` is empty when no agent identity is attached. |
+| `pipelock_requests_total` | counter | `result`, `agent` | Total HTTP requests. `result` is `allowed` or `blocked`. `agent` is the agent *profile* name (matched against the `agents` config section), not the raw `X-Pipelock-Agent` header — bounded cardinality for Prometheus. Unknown/unmatched agents fall to `_default`. For per-request raw agent identity, read the `actor` field on signed receipts. |
 | `pipelock_request_duration_seconds` | histogram | (none) | HTTP request latency. Buckets: 10ms to 10s. |
-| `pipelock_scanner_hits_total` | counter | `scanner`, `agent` | Blocks by scanner type (e.g. `dlp`, `prompt_injection`, `domain`). |
+| `pipelock_scanner_hits_total` | counter | `scanner`, `agent` | Blocks by scanner type (e.g. `dlp`, `prompt_injection`, `domain`). `agent` follows the same profile-mapping rule as `pipelock_requests_total`. |
 
 ## CONNECT Tunnel Metrics
 

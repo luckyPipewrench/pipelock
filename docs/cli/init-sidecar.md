@@ -42,7 +42,7 @@ The command runs 7 phases: detect, generate, preview, emit, verify, canary, and 
 |------|---------|-------------|
 | `--inject-spec` | (required) | Path to the Kubernetes workload manifest |
 | `--emit` | `patch` | Output format: `patch`, `kustomize`, or `helm-values` |
-| `--output`, `-o` | stdout for `patch`; directory required for `kustomize` and `helm-values` | Output path |
+| `--output`, `-o` | stdout for `patch`; directory required for `kustomize` and `helm-values` | Output path. **`patch` expects a file path** (multi-doc YAML stream). **`kustomize` and `helm-values` expect a directory path** (multi-file bundle: overlay, resources, values.yaml, README). Passing a `.yaml` file path to a bundle format creates a directory with that name. |
 | `--dry-run` | false | Show the generated topology without writing files or running canary |
 | `--force` | false | Overwrite existing output files |
 | `--image` | `ghcr.io/luckypipewrench/pipelock:<version>` | Companion proxy image (tag or digest ref) |

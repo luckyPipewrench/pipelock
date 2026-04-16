@@ -456,30 +456,55 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			blockedErr := newEnvelopeBlockedRequest(parseErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
+			// Emit a block receipt so handshake-time envelope denials
+			// land in the audit chain. The CONNECT path already does
+			// this; WebSocket parity matters because operators lose
+			// visibility into sign failures otherwise.
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     blockedErr.layer,
+				Pattern:   blockedErr.reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
 			return
-		} else {
-			synthReq := &http.Request{
-				Method: http.MethodGet,
-				URL:    parsedTarget,
-				Header: fwdHeaders,
-				Host:   parsedTarget.Host,
-			}
-			if envErr := envEmitter.InjectAndSign(synthReq, nil, envelope.BuildOpts{
-				ActionID:   actionID,
-				Action:     string(receipt.ActionDelegate),
-				Verdict:    config.ActionAllow,
-				SideEffect: string(receipt.SideEffectExternalWrite),
-				Actor:      agent,
-				ActorAuth:  id.Auth,
-				PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
-			}); envErr != nil {
-				blockedErr := newEnvelopeBlockedRequest(envErr)
-				log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-				p.metrics.RecordWSBlocked()
-				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
-				return
-			}
+		}
+		synthReq := &http.Request{
+			Method: http.MethodGet,
+			URL:    parsedTarget,
+			Header: fwdHeaders,
+			Host:   parsedTarget.Host,
+		}
+		if envErr := envEmitter.InjectAndSign(synthReq, nil, envelope.BuildOpts{
+			ActionID:   actionID,
+			Action:     string(receipt.ActionDelegate),
+			Verdict:    config.ActionAllow,
+			SideEffect: string(receipt.SideEffectExternalWrite),
+			Actor:      agent,
+			ActorAuth:  id.Auth,
+			PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
+		}); envErr != nil {
+			blockedErr := newEnvelopeBlockedRequest(envErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     blockedErr.layer,
+				Pattern:   blockedErr.reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
+			return
 		}
 	}
 

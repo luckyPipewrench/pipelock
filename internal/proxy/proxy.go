@@ -139,9 +139,20 @@ func blockedRequestErrorFrom(err error) (*blockedRequestError, bool) {
 	return blockedErr, true
 }
 
-func newRedirectBlockedRequest(reason string) *blockedRequestError {
+// newRedirectBlockedRequest builds a typed block error for a redirect
+// that was denied by a scanner pass. originLayer is the scanner label
+// from the block source (SSRF, DLP, blocklist, …) so downstream metrics
+// and receipts can attribute the decision to the scanner that actually
+// made it, rather than collapsing every redirect denial into a generic
+// "redirect" bucket. An empty originLayer falls back to "redirect" so
+// call sites that genuinely do not know the scanner keep working.
+func newRedirectBlockedRequest(originLayer, reason string) *blockedRequestError {
 	fullReason := "redirect blocked: " + reason
-	return newBlockedRequestError("redirect", fullReason, fullReason)
+	layer := originLayer
+	if layer == "" {
+		layer = "redirect"
+	}
+	return newBlockedRequestError(layer, fullReason, fullReason)
 }
 
 func newEnvelopeBlockedRequest(err error) *blockedRequestError {
@@ -362,8 +373,12 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	// would not appear until the first reload.
 	if cfg.MediationEnvelope.Enabled {
 		if em := p.envelopeEmitterPtr.Load(); em == nil || (cfg.MediationEnvelope.Sign && !em.HasSigner()) {
-			if err := p.reloadEnvelopeEmitter(cfg); err != nil {
+			stage, err := p.buildEnvelopeEmitter(cfg)
+			if err != nil {
 				return nil, fmt.Errorf("envelope emitter init: %w", err)
+			}
+			if stage.enabled {
+				p.envelopeEmitterPtr.Store(stage.emitter)
 			}
 		} else {
 			em.UpdateConfigHash(cfg.CanonicalPolicyHash())
@@ -477,8 +492,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
-					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
-					return newRedirectBlockedRequest(result.Reason)
+					// Preserve the originating scanner label (SSRF,
+					// DLP, blocklist, …) in the typed block error so
+					// receipts, metrics, and /fetch hints can tell
+					// operators *which* scanner made the decision
+					// instead of reporting every denial as a generic
+					// "redirect" block.
+					logger.LogBlocked(actx, result.Scanner, fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
+					return newRedirectBlockedRequest(result.Scanner, result.Reason)
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
@@ -720,64 +741,101 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 	}
 }
 
-// reloadReceiptEmitter handles receipt emitter lifecycle on config reload.
-// Creates a new emitter if a signing key appears, updates the config hash
-// if the emitter exists, or nils it if the key is removed. Must be called
-// under reloadMu.
+// receiptEmitterStage is the staged result of a receipt-emitter reload.
+// Reload stages both the envelope and receipt emitters before publishing
+// either, so a failure in the second stage cannot leave the first already
+// stored under p.envelopeEmitterPtr while the config is still the old one.
+type receiptEmitterStage struct {
+	// emitter is the new *receipt.Emitter to install. A nil value means
+	// "receipts are intentionally disabled for this cfg" — either no
+	// signing key path is set or the recorder is nil. The caller should
+	// Store(nil) on publish in that case and also reset receiptKeyPath
+	// to "" via the keyPath field.
+	emitter *receipt.Emitter
+	// keyPath is the signing key path that was actually loaded, or ""
+	// when receipts are disabled. The caller assigns this to
+	// p.receiptKeyPath at publish time.
+	keyPath string
+}
+
+// buildReceiptEmitter stages the receipt emitter lifecycle transition for
+// cfg WITHOUT publishing anything to p.receiptEmitterPtr or
+// p.receiptKeyPath. Must be called under reloadMu from Reload, which
+// publishes the returned stage atomically after all other reload
+// preconditions succeed.
 //
 // Return value semantics:
 //
-//   - nil error — receipt state is now aligned with cfg (or receipts are
-//     intentionally disabled because no key path / recorder is present).
-//   - non-nil error — caller MUST abort the config swap. Signed receipts are
-//     part of the evidence contract; swapping cfg while keeping an old
-//     receipt emitter would attest the wrong policy hash for future actions.
-func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) error {
+//   - (stage, nil) — staging succeeded. Publish via Store/assignment.
+//   - (_, non-nil) — staging failed. Caller MUST abort the config swap.
+//     Signed receipts are part of the evidence contract; swapping cfg
+//     while keeping an old receipt emitter would attest the wrong policy
+//     hash for future actions.
+func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, error) {
 	keyPath := cfg.FlightRecorder.SigningKeyPath
 
 	if keyPath == "" {
-		// No signing key configured — disable receipts if they were on.
-		p.receiptEmitterPtr.Store(nil)
-		p.receiptKeyPath = ""
-		return nil
+		// No signing key configured — receipts are disabled for this
+		// cfg. Stage a nil emitter; Reload will clear both pointers.
+		return receiptEmitterStage{}, nil
+	}
+
+	if p.recorder == nil {
+		// No recorder means receipts have nowhere to land regardless
+		// of config. Treat this as "receipts disabled" from a staging
+		// perspective — the caller won't touch receipt state.
+		return receiptEmitterStage{keyPath: p.receiptKeyPath}, nil
 	}
 
 	// Always reload the key file to detect both path changes and
 	// in-place content changes (key rotation at the same path).
-	if p.recorder == nil {
-		return nil
-	}
-
 	privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(keyPath))
 	if err != nil {
-		return fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
+		return receiptEmitterStage{}, fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
 	}
 
-	p.receiptEmitterPtr.Store(receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:   p.recorder,
-		PrivKey:    privKey,
-		ConfigHash: cfg.Hash(),
-		Principal:  "local",
-		Actor:      "pipelock",
-	}))
-	p.receiptKeyPath = keyPath
-	return nil
+	return receiptEmitterStage{
+		emitter: receipt.NewEmitter(receipt.EmitterConfig{
+			Recorder:   p.recorder,
+			PrivKey:    privKey,
+			ConfigHash: cfg.Hash(),
+			Principal:  "local",
+			Actor:      "pipelock",
+		}),
+		keyPath: keyPath,
+	}, nil
 }
 
-// reloadEnvelopeEmitter handles envelope emitter lifecycle on config reload.
-// Nils the emitter when disabled, installs a fresh emitter on every
-// reload when enabled so both the canonical policy hash AND the signing
-// key material are re-read from disk. Must be called under reloadMu.
+// envelopeEmitterStage is the staged result of an envelope-emitter reload.
+// Like receiptEmitterStage, it lets Reload build the new emitter without
+// publishing it so both emitters can be swapped atomically after every
+// staging step has succeeded.
+type envelopeEmitterStage struct {
+	// enabled reports whether the cfg wants envelope emission at all.
+	// When false, the publish step should Store(nil) regardless of
+	// what emitter holds — the field mirrors the disable-path that
+	// used to live in reloadEnvelopeEmitter.
+	enabled bool
+	// emitter is the freshly constructed *envelope.Emitter to install
+	// when enabled is true. nil when enabled is false.
+	emitter *envelope.Emitter
+}
+
+// buildEnvelopeEmitter stages the envelope emitter lifecycle transition
+// for cfg WITHOUT publishing anything to p.envelopeEmitterPtr. Must be
+// called under reloadMu from Reload, which publishes the returned stage
+// atomically after all other reload preconditions succeed. New() also
+// calls this helper at startup to install the first signer-backed
+// emitter before serving the first request.
 //
 // Return value semantics:
 //
-//   - nil error, new emitter installed — caller proceeds with the
-//     config swap.
-//   - non-nil error — caller MUST abort the config swap. The previous
-//     emitter is left in place so in-flight traffic keeps its signing
-//     invariant until operator intervention. This is the fail-closed
-//     resolution for the "reload with unreadable signing key" case:
-//     never silent-downgrade to unsigned.
+//   - (stage, nil) — staging succeeded. Publish via Store on publish.
+//   - (_, non-nil) — staging failed. Caller MUST abort the config swap.
+//     The previous emitter is left in place so in-flight traffic keeps
+//     its signing invariant until operator intervention. This is the
+//     fail-closed resolution for the "reload with unreadable signing
+//     key" case: never silent-downgrade to unsigned.
 //
 // The fallback hash is the GLOBAL config's CanonicalPolicyHash — what
 // a request without a resolved per-agent config sees. Transports that
@@ -785,10 +843,9 @@ func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) error {
 // of that resolved config's canonical hash via BuildOpts.PolicyHash so
 // the envelope ph field reflects the agent's actual policy rather than
 // the global default. See the BuildOpts.PolicyHash doc comment.
-func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) error {
+func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, error) {
 	if !cfg.MediationEnvelope.Enabled {
-		p.envelopeEmitterPtr.Store(nil)
-		return nil
+		return envelopeEmitterStage{enabled: false}, nil
 	}
 
 	emCfg := envelope.EmitterConfig{
@@ -802,7 +859,7 @@ func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) error {
 	if cfg.MediationEnvelope.Sign {
 		privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(cfg.MediationEnvelope.SigningKeyPath))
 		if err != nil {
-			return fmt.Errorf("loading envelope signing key %q: %w",
+			return envelopeEmitterStage{}, fmt.Errorf("loading envelope signing key %q: %w",
 				cfg.MediationEnvelope.SigningKeyPath, err)
 		}
 		signer, err := envelope.NewSigner(envelope.SignerConfig{
@@ -812,13 +869,15 @@ func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) error {
 			MaxBodyBytes:     cfg.MediationEnvelope.MaxBodyBytes,
 		})
 		if err != nil {
-			return fmt.Errorf("constructing envelope signer: %w", err)
+			return envelopeEmitterStage{}, fmt.Errorf("constructing envelope signer: %w", err)
 		}
 		emCfg.Signer = signer
 	}
 
-	p.envelopeEmitterPtr.Store(envelope.NewEmitter(emCfg))
-	return nil
+	return envelopeEmitterStage{
+		enabled: true,
+		emitter: envelope.NewEmitter(emCfg),
+	}, nil
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -894,16 +953,33 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		return
 	}
 
-	// Envelope signing reload is fail-closed: an unreadable / malformed
-	// mediation envelope key aborts the entire reload. The previous
-	// envelope emitter stays installed so in-flight traffic keeps its
-	// signing invariant until an operator fixes the file and retries
-	// the reload. All other state (cfg, scanner, edition, session
-	// manager, CEE) is also left unchanged — the rule is "never swap
-	// with a broken signer."
-	if err := p.reloadEnvelopeEmitter(cfg); err != nil {
+	// Envelope and receipt emitters are staged BEFORE either is
+	// published, so a failure in the second stage cannot leave the
+	// first already stored under p.envelopeEmitterPtr while the rest
+	// of the config is still the old one. Both stages are fail-closed:
+	// any error aborts the whole reload and leaves in-flight traffic
+	// signing / attesting under the last good config.
+	//
+	// Without this staging, a narrow race window exists on the receipt
+	// reload failure path: reloadEnvelopeEmitter used to Store() into
+	// p.envelopeEmitterPtr directly, so a subsequent receipt-emitter
+	// failure would leave the new envelope signer already published
+	// while cfg stayed at the old value. Evidence chains produced in
+	// that window would attest the wrong policy hash.
+	envelopeStage, envErr := p.buildEnvelopeEmitter(cfg)
+	if envErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-			fmt.Errorf("envelope emitter reload failed, keeping old config: %w", err))
+			fmt.Errorf("envelope emitter reload failed, keeping old config: %w", envErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return
+	}
+	receiptStage, rcptErr := p.buildReceiptEmitter(cfg)
+	if rcptErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("receipt emitter reload failed, keeping old config: %w", rcptErr))
 		sc.Close()
 		if newEd != nil {
 			newEd.Close()
@@ -911,19 +987,27 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		return
 	}
 
-	// Receipt emitter lifecycle: create on first signing key appearance,
-	// recreate on key rotation, nil on key removal. This must happen
-	// after the fail-closed envelope reload succeeds and before the
-	// config swap so a broken envelope signer cannot partially advance
-	// receipt state for a config that never became active.
-	if err := p.reloadReceiptEmitter(cfg); err != nil {
-		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-			fmt.Errorf("receipt emitter reload failed, keeping old config: %w", err))
-		sc.Close()
-		if newEd != nil {
-			newEd.Close()
-		}
-		return
+	// Publish both emitters now that staging has fully succeeded. The
+	// atomic.Pointer swaps are individually atomic; between them, a
+	// request can observe "new envelope + old receipt" for a few
+	// nanoseconds, but that is the same race class the envelope and
+	// receipt emitters had before Reload was fail-closed, and neither
+	// emitter attests the other's policy hash.
+	if envelopeStage.enabled {
+		p.envelopeEmitterPtr.Store(envelopeStage.emitter)
+	} else {
+		p.envelopeEmitterPtr.Store(nil)
+	}
+	// Receipt publish: Store the staged emitter (may be nil) and
+	// mirror the receiptKeyPath field. When the recorder is missing
+	// we leave p.receiptKeyPath untouched so the startup-time invariant
+	// (receipts silently off when no recorder) is preserved.
+	if cfg.FlightRecorder.SigningKeyPath == "" {
+		p.receiptEmitterPtr.Store(nil)
+		p.receiptKeyPath = ""
+	} else if p.recorder != nil {
+		p.receiptEmitterPtr.Store(receiptStage.emitter)
+		p.receiptKeyPath = receiptStage.keyPath
 	}
 
 	oldCfg := p.cfgPtr.Load()
@@ -2354,7 +2438,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Blocked:     true,
 				BlockReason: blockedErr.reason,
 			}
-			if blockedErr.layer == "redirect" && cfg.ExplainBlocksEnabled() {
+			// Open-redirect hint: fires on any fail-closed redirect
+			// block regardless of which scanner layer owned the
+			// decision. Detect via the reason-string prefix rather
+			// than the layer label, because the layer now carries
+			// the scanner provenance (ssrf / dlp / blocklist / …)
+			// rather than a generic "redirect" bucket.
+			if strings.HasPrefix(blockedErr.reason, "redirect blocked:") && cfg.ExplainBlocksEnabled() {
 				resp.Hint = "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks."
 			}
 			p.emitReceipt(receipt.EmitOpts{

@@ -245,6 +245,19 @@ func (s *Signer) SignRequest(req *http.Request, body []byte) error {
 		return errors.New("envelope signer: no effective components for request")
 	}
 
+	// Clear a stale Content-Digest when content-digest is NOT in the
+	// effective list. Body-less, over-cap, or caller-declined-body
+	// requests previously left whatever Content-Digest header the
+	// caller (or an earlier redirect hop) had attached on req,
+	// forwarding an unsigned digest that an attacker could forge
+	// against an arbitrary payload. Fail closed by deleting it —
+	// effectiveComponents has already Set() a fresh value when
+	// content-digest IS in the list, so this Del only fires on the
+	// "declared list omits content-digest" branch.
+	if !containsComponent(effective, headerContentDigest) {
+		req.Header.Del("Content-Digest")
+	}
+
 	// Build the signature-params inner list (component list +
 	// parameters). This object is emitted on Signature-Input AND
 	// serialized into the last line of the signature base.
@@ -272,6 +285,19 @@ func (s *Signer) SignRequest(req *http.Request, body []byte) error {
 	}
 
 	return nil
+}
+
+// containsComponent returns true when name appears in the effective
+// component list. Used by SignRequest to decide whether to clear a
+// stale Content-Digest header for requests whose declared list
+// omits the content-digest component.
+func containsComponent(components []string, name string) bool {
+	for _, c := range components {
+		if c == name {
+			return true
+		}
+	}
+	return false
 }
 
 // effectiveComponents returns the per-request subset of the configured
@@ -386,10 +412,21 @@ func buildComponentValue(req *http.Request, body []byte, comp string) (string, e
 		}
 		return req.URL.String(), nil
 	case derivedAuthority:
+		// RFC 9421 §2.2.3: @authority is the on-wire authority the
+		// request is sent to, not the URL's host. When a caller
+		// overrides req.Host (common in reverse-proxy + Director
+		// rewrite paths, and in any host-spoof test), req.Host is
+		// what Go's http.Transport will actually send in the Host
+		// header, and that is what a verifier reconstructing the
+		// base from the wire will see. Prefer req.Host; fall back
+		// to req.URL.Host only when req.Host is blank.
+		if req.Host != "" {
+			return strings.ToLower(req.Host), nil
+		}
 		if req.URL != nil && req.URL.Host != "" {
 			return strings.ToLower(req.URL.Host), nil
 		}
-		return strings.ToLower(req.Host), nil
+		return "", errors.New("request has no authority")
 	case headerContentDigest:
 		// contentDigestHeaderValue was just written to the header in
 		// effectiveComponents, so read it back from there. That way a

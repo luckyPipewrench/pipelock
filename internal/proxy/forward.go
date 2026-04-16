@@ -1148,7 +1148,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
-			if blockedErr.layer == "redirect" && cfg.ExplainBlocksEnabled() {
+			// Open-redirect hint fires on any fail-closed redirect
+			// block regardless of scanner layer. Match on the reason
+			// prefix rather than the layer label because the layer
+			// now carries the scanner provenance (ssrf / dlp / …).
+			if strings.HasPrefix(blockedErr.reason, "redirect blocked:") && cfg.ExplainBlocksEnabled() {
 				w.Header().Set("X-Pipelock-Hint", "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks.")
 			}
 			http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)

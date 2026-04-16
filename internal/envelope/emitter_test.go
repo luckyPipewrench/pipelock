@@ -432,7 +432,7 @@ func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
 func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 	t.Parallel()
 
-	_, priv := testSignerKey(t)
+	pub, priv := testSignerKey(t)
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
 		KeyID:            "cap-test",
@@ -465,15 +465,10 @@ func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 		t.Errorf("Content-Digest = %q, want empty", got)
 	}
 
-	// Signature-Input must not list content-digest either.
-	sigInputDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
-	member, _ := sigInputDict.Get(pipelockSigLabel)
-	list := member.(httpsfv.InnerList) //nolint:errcheck // type known
-	for _, it := range list.Items {
-		if s, _ := it.Value.(string); s == headerContentDigest {
-			t.Error("content-digest survived over-cap body case in declared list")
-		}
-	}
+	// The remaining signature must still verify against the reduced
+	// component list. A regression that left a stale component in the
+	// base string, or that signed an empty body, would be caught here.
+	assertOverCapSignatureVerifies(t, pub, req)
 
 	// The original body must still be readable by the upstream path.
 	drained, err := io.ReadAll(req.Body)
@@ -510,7 +505,7 @@ func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 	t.Parallel()
 
-	_, priv := testSignerKey(t)
+	pub, priv := testSignerKey(t)
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
 		KeyID:            "cap-unknown-test",
@@ -546,14 +541,11 @@ func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 		t.Errorf("Content-Digest = %q, want empty", got)
 	}
 
-	sigInputDict, _ := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
-	member, _ := sigInputDict.Get(pipelockSigLabel)
-	list := member.(httpsfv.InnerList) //nolint:errcheck // type known
-	for _, it := range list.Items {
-		if s, _ := it.Value.(string); s == headerContentDigest {
-			t.Error("content-digest survived unknown-length over-cap case in declared list")
-		}
-	}
+	// The signature produced for the unknown-length overflow path
+	// must still verify against the reduced component list. A
+	// regression that left content-digest in the declared components
+	// would fail this verification.
+	assertOverCapSignatureVerifies(t, pub, req)
 
 	drained, err := io.ReadAll(req.Body)
 	if err != nil {
@@ -570,6 +562,73 @@ func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 	}
 	if !origBody.closed {
 		t.Error("closing req.Body did not close the original body")
+	}
+}
+
+// assertOverCapSignatureVerifies reconstructs the RFC 9421 signature
+// base from the signed request (without content-digest, which is what
+// the over-cap path drops) and runs ed25519.Verify against the
+// provided public key. Fails the test when the base reconstruction
+// omits a component the signer declared, when Signature-Input does
+// not declare exactly {@method, @target-uri, pipelock-mediation}, or
+// when the signature does not verify.
+func assertOverCapSignatureVerifies(t *testing.T, pub ed25519.PublicKey, req *http.Request) {
+	t.Helper()
+
+	sigInputDict, err := httpsfv.UnmarshalDictionary(req.Header.Values("Signature-Input"))
+	if err != nil {
+		t.Fatalf("parse Signature-Input: %v", err)
+	}
+	member, ok := sigInputDict.Get(pipelockSigLabel)
+	if !ok {
+		t.Fatalf("pipelock1 missing from Signature-Input")
+	}
+	inner, ok := member.(httpsfv.InnerList)
+	if !ok {
+		t.Fatalf("pipelock1 is %T, want httpsfv.InnerList", member)
+	}
+
+	// The over-cap path declares exactly these three components.
+	// Any divergence (e.g. content-digest leaking back into the
+	// declared list) is a regression the caller must see.
+	wantComponents := []string{derivedMethod, derivedTargetURI, headerPipelockMediation}
+	if len(inner.Items) != len(wantComponents) {
+		t.Fatalf("components = %d, want %d (%v)", len(inner.Items), len(wantComponents), wantComponents)
+	}
+	declared := make([]string, 0, len(inner.Items))
+	for i, item := range inner.Items {
+		name, _ := item.Value.(string)
+		if name != wantComponents[i] {
+			t.Errorf("component[%d] = %q, want %q", i, name, wantComponents[i])
+		}
+		declared = append(declared, name)
+	}
+
+	// Rebuild the signature base from the production helper, then
+	// verify. Passing body=nil mirrors what the signer saw on the
+	// over-cap branch.
+	base, err := buildSignatureBase(req, nil, declared, inner)
+	if err != nil {
+		t.Fatalf("buildSignatureBase: %v", err)
+	}
+	sigDict, err := httpsfv.UnmarshalDictionary(req.Header.Values("Signature"))
+	if err != nil {
+		t.Fatalf("parse Signature: %v", err)
+	}
+	sigMember, ok := sigDict.Get(pipelockSigLabel)
+	if !ok {
+		t.Fatalf("pipelock1 missing from Signature")
+	}
+	sigItem, ok := sigMember.(httpsfv.Item)
+	if !ok {
+		t.Fatalf("pipelock1 value is %T, want httpsfv.Item", sigMember)
+	}
+	sigBytes, ok := sigItem.Value.([]byte)
+	if !ok {
+		t.Fatalf("pipelock1 value is %T, want []byte", sigItem.Value)
+	}
+	if !ed25519.Verify(pub, []byte(base), sigBytes) {
+		t.Errorf("over-cap signature failed to verify over reconstructed base:\n%s", base)
 	}
 }
 

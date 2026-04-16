@@ -567,17 +567,34 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 	}
 	t.Parallel()
 
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// The upstream records the Signature / Signature-Input /
+	// Pipelock-Mediation headers it actually saw into a shared sync.Map
+	// keyed by request URL. The fetch handler strips upstream response
+	// headers before writing its own JSON response body back to the
+	// client, so an in-process observation map is the only way for the
+	// soak workers to see what pipelock sent on the wire.
+	var observations sync.Map
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed := soakObservedHeaders{
+			Signature:      r.Header.Get("Signature"),
+			SignatureInput: r.Header.Get("Signature-Input"),
+			Mediation:      r.Header.Get(envelope.HeaderName),
+		}
+		observations.Store(r.URL.RequestURI(), observed)
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer upstream.Close()
 
 	// Pre-generate 4 key files so reloads can rotate between them.
+	// The public halves stay in memory so the soak can verify each
+	// response signature against the full rotation set and accept a
+	// match from any one of them.
 	keyDir := t.TempDir()
 	keyPaths := make([]string, 4)
+	pubKeys := make([]ed25519.PublicKey, 4)
 	for i := range keyPaths {
-		_, priv, err := ed25519.GenerateKey(rand.Reader)
+		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatalf("GenerateKey %d: %v", i, err)
 		}
@@ -585,6 +602,7 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 		if err := signing.SavePrivateKey(priv, keyPaths[i]); err != nil {
 			t.Fatalf("SavePrivateKey %d: %v", i, err)
 		}
+		pubKeys[i] = pub
 	}
 
 	// Shared-path key file — each reload overwrites this from one
@@ -630,12 +648,37 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 					return
 				default:
 				}
+				// Each request gets a unique path so the shared
+				// observation map can key on it without collisions.
+				hitPath := fmt.Sprintf("/hit/w%d/n%d", id, i)
 				r := httptest.NewRequest(http.MethodGet,
-					"/fetch?url="+upstream.URL+"/hit", nil)
+					"/fetch?url="+upstream.URL+hitPath, nil)
 				rr := httptest.NewRecorder()
 				handler.ServeHTTP(rr, r)
 				if rr.Code != http.StatusOK {
 					errCh <- fmt.Sprintf("worker %d hit %d: status %d", id, i, rr.Code)
+					continue
+				}
+				// Pull the upstream-observed envelope + signature
+				// out of the shared observation map and verify it
+				// against one of the rotated public keys. Any hit
+				// without a signature, or with a signature that
+				// fails under every rotated key, is a fail-closed
+				// regression.
+				raw, ok := observations.Load(hitPath)
+				if !ok {
+					errCh <- fmt.Sprintf("worker %d hit %d: upstream never logged %s", id, i, hitPath)
+					continue
+				}
+				observed := raw.(soakObservedHeaders) //nolint:errcheck // type known by construction
+				if observed.Signature == "" || observed.SignatureInput == "" || observed.Mediation == "" {
+					errCh <- fmt.Sprintf("worker %d hit %d: upstream saw no pipelock envelope (sig=%q input=%q med=%q)",
+						id, i, observed.Signature, observed.SignatureInput, observed.Mediation)
+					continue
+				}
+				if !soakVerifyAgainstAnyKey(t, pubKeys, "GET", upstream.URL+hitPath,
+					observed.Mediation, observed.SignatureInput, observed.Signature) {
+					errCh <- fmt.Sprintf("worker %d hit %d: signature did not verify under any rotated key", id, i)
 				}
 			}
 		}(w)
@@ -682,6 +725,95 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 	if em := p.envelopeEmitterPtr.Load(); em == nil || !em.HasSigner() {
 		t.Fatal("envelope emitter lost its signer during soak")
 	}
+}
+
+// soakObservedHeaders is the envelope + signature payload the soak
+// upstream snapshots for each request. Workers look it up via a
+// sync.Map keyed by the unique request URL path.
+type soakObservedHeaders struct {
+	Signature      string
+	SignatureInput string
+	Mediation      string
+}
+
+// soakVerifyAgainstAnyKey reconstructs the RFC 9421 signature base
+// from the soak worker's captured outbound state (method, target-uri,
+// observed Pipelock-Mediation header) and tries to verify against
+// every public key in the rotation set. Returns true on the first
+// match. The soak test accepts ANY match because in-flight requests
+// can hold any of the rotated emitters during the key churn cycle.
+func soakVerifyAgainstAnyKey(t *testing.T, pubKeys []ed25519.PublicKey, method, targetURI, mediationHeader, sigInputHeader, sigHeader string) bool {
+	t.Helper()
+
+	sigInputDict, err := httpsfv.UnmarshalDictionary([]string{sigInputHeader})
+	if err != nil {
+		t.Logf("soak parse Signature-Input: %v (value=%q)", err, sigInputHeader)
+		return false
+	}
+	member, ok := sigInputDict.Get("pipelock1")
+	if !ok {
+		t.Logf("soak: pipelock1 missing from Signature-Input")
+		return false
+	}
+	inner, ok := member.(httpsfv.InnerList)
+	if !ok {
+		t.Logf("soak: pipelock1 is %T, want InnerList", member)
+		return false
+	}
+
+	const (
+		compMethod    = "@method"
+		compTargetURI = "@target-uri"
+		compMediation = "pipelock-mediation"
+	)
+	var b strings.Builder
+	for _, item := range inner.Items {
+		name, _ := item.Value.(string)
+		switch name {
+		case compMethod:
+			fmt.Fprintf(&b, `"%s": %s`+"\n", compMethod, strings.ToUpper(method))
+		case compTargetURI:
+			fmt.Fprintf(&b, `"%s": %s`+"\n", compTargetURI, targetURI)
+		case compMediation:
+			fmt.Fprintf(&b, `"%s": %s`+"\n", compMediation, mediationHeader)
+		default:
+			t.Logf("soak: unsupported component %q in Signature-Input", name)
+			return false
+		}
+	}
+	serialised, err := httpsfv.Marshal(inner)
+	if err != nil {
+		t.Logf("soak: marshal sig params: %v", err)
+		return false
+	}
+	fmt.Fprintf(&b, `"@signature-params": %s`, serialised)
+	base := b.String()
+
+	sigDict, err := httpsfv.UnmarshalDictionary([]string{sigHeader})
+	if err != nil {
+		t.Logf("soak parse Signature: %v", err)
+		return false
+	}
+	sigMember, ok := sigDict.Get("pipelock1")
+	if !ok {
+		t.Logf("soak: pipelock1 missing from Signature")
+		return false
+	}
+	sigItem, ok := sigMember.(httpsfv.Item)
+	if !ok {
+		return false
+	}
+	sigBytes, ok := sigItem.Value.([]byte)
+	if !ok {
+		return false
+	}
+
+	for _, pub := range pubKeys {
+		if ed25519.Verify(pub, []byte(base), sigBytes) {
+			return true
+		}
+	}
+	return false
 }
 
 // copyFileForTest writes the contents of src to dst using the same

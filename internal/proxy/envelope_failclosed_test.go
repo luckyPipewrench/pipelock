@@ -86,7 +86,11 @@ func TestInterceptHandler_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	cfg.TLSInterception.Enabled = true
+	// We intentionally do NOT set cfg.TLSInterception.Enabled here —
+	// the test exercises newInterceptHandler directly with a fake
+	// upstream RoundTripper, so no real TLS interception runs, and
+	// enabling it would force cfg.Validate() to demand a CA cert at
+	// ~/.pipelock/ca.pem that CI runners do not have.
 	cfg.RequestBodyScanning.Enabled = false
 	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
 

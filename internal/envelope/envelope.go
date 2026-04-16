@@ -88,6 +88,14 @@ const (
 )
 
 func (e Envelope) Serialize() (string, error) {
+	// Fail closed on malformed input. A negative hop would otherwise
+	// silently vanish from the wire (the hop > 0 guard below omits
+	// it), and a verifier would see a hop=0 original envelope where
+	// the emitter believed it was serialising a refreshed one.
+	if e.Hop < 0 {
+		return "", fmt.Errorf("invalid %q: must be >= 0, got %d", keyHop, e.Hop)
+	}
+
 	dict := httpsfv.NewDictionary()
 
 	dict.Add(keyVersion, httpsfv.NewItem(int64(e.Version)))
@@ -231,14 +239,22 @@ func Parse(s string) (Envelope, error) {
 		}
 	}
 	if m, ok := dict.Get(keyHop); ok {
-		if item, ok := m.(httpsfv.Item); ok {
-			if v, ok := item.Value.(int64); ok {
-				if v < 0 {
-					return Envelope{}, fmt.Errorf("invalid %q: must be >= 0, got %d", keyHop, v)
-				}
-				env.Hop = int(v)
-			}
+		// Strict parse: an unexpected member shape (non-Item, non-int)
+		// or a negative value is always an error. Silently treating a
+		// malformed hop as zero would mask attacker-crafted wire data
+		// and let a refreshed envelope look like an original.
+		item, itemOK := m.(httpsfv.Item)
+		if !itemOK {
+			return Envelope{}, fmt.Errorf("invalid %q: unexpected member type", keyHop)
 		}
+		v, intOK := item.Value.(int64)
+		if !intOK {
+			return Envelope{}, fmt.Errorf("invalid %q: must be integer", keyHop)
+		}
+		if v < 0 {
+			return Envelope{}, fmt.Errorf("invalid %q: must be >= 0, got %d", keyHop, v)
+		}
+		env.Hop = int(v)
 	}
 
 	// Reject envelopes missing required fields. A partial envelope

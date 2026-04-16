@@ -70,14 +70,6 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 		mut  func(*Config)
 	}{
 		{
-			name: "fetch_proxy.listen",
-			mut:  func(c *Config) { c.FetchProxy.Listen = ":19999" },
-		},
-		{
-			name: "forward_proxy operational knob",
-			mut:  func(c *Config) { c.ForwardProxy.IdleTimeoutSeconds = 9999 },
-		},
-		{
 			name: "metrics_listen",
 			mut:  func(c *Config) { c.MetricsListen = ":19997" },
 		},
@@ -160,6 +152,31 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 				c.MediationEnvelope.Enabled = true
 				c.MediationEnvelope.Sign = true
 				c.MediationEnvelope.SignedComponents = []string{"@method", "@authority"}
+			},
+		},
+		{
+			// Transport structs stay in the canonical view because
+			// they carry real enforcement knobs (Monitoring.Blocklist,
+			// rate limits, SNIVerification, etc.). Listen addresses
+			// also flip ph as a side effect — preferred false-positive
+			// over the blanket-zero approach that used to miss real
+			// policy changes. See canonical.go:policySemanticView.
+			name: "fetch_proxy.listen",
+			mut:  func(c *Config) { c.FetchProxy.Listen = ":19999" },
+		},
+		{
+			name: "forward_proxy.idle_timeout",
+			mut:  func(c *Config) { c.ForwardProxy.IdleTimeoutSeconds = 9999 },
+		},
+		{
+			name: "fetch_proxy.monitoring.blocklist (actual policy)",
+			mut:  func(c *Config) { c.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"} },
+		},
+		{
+			name: "forward_proxy.sni_verification disabled",
+			mut: func(c *Config) {
+				f := false
+				c.ForwardProxy.SNIVerification = &f
 			},
 		},
 	}

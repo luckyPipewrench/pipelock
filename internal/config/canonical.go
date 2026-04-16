@@ -20,9 +20,8 @@ import (
 //   - Whitespace and indentation changes
 //   - YAML comments
 //   - Reordering top-level sections
-//   - Adding or removing listen addresses, logging, telemetry, Sentry, emit
-//     destinations, flight recorder paths, license metadata, or any other
-//     transport/operational knob that does not affect a detection decision
+//   - Logging, telemetry, Sentry, emit destinations, flight recorder paths,
+//     license metadata, and the envelope signing key path
 //
 // It IS sensitive to anything that changes enforcement:
 //
@@ -31,11 +30,20 @@ import (
 //     (order-preserving — rule order is first-match-wins semantics)
 //   - scanner thresholds, action verdicts, allowlists/blocklists
 //   - kill switch sources, adaptive enforcement, taint, rules bundle
+//   - transport policy knobs under fetch_proxy / forward_proxy /
+//     websocket_proxy / reverse_proxy (Blocklist, entropy thresholds,
+//     SNIVerification, rate limits, RedirectWebSocketHosts). Listen
+//     addresses sit under those same structs so they also flip the
+//     hash, which is the correct fail-forward trade: false positives
+//     on cosmetic transport changes are less bad than missing a real
+//     policy change.
 //
-// The output is the first 32 hex characters of SHA-256 over a canonicalised
-// JSON encoding of the scanner-relevant config view. The envelope emitter
-// decodes this and truncates to 16 bytes for the mediation envelope ph
-// dictionary key.
+// The output is the full 64-character hex (32-byte) SHA-256 of a canonicalised
+// JSON encoding of the scanner-relevant config view. Callers that need the
+// shortened wire form (ph dictionary key) hand this string to the envelope
+// emitter, which decodes the hex and truncates to 16 bytes. Both
+// computeCanonicalPolicyHash and the cached CanonicalPolicyHash wrapper
+// return the full hex digest, not a truncated prefix.
 //
 // Per-effective-config: callers pass the resolved *Config for the specific
 // agent handling the request, not the global one. Per-agent profiles
@@ -99,11 +107,21 @@ func (c *Config) computeCanonicalPolicyHash() string {
 func (c *Config) policySemanticView() Config {
 	view := *c
 
-	// Transport / listen knobs — do not affect scanning decisions.
-	view.FetchProxy = FetchProxy{}
-	view.ForwardProxy = ForwardProxy{}
-	view.WebSocketProxy = WebSocketProxy{}
-	view.ReverseProxy = ReverseProxy{}
+	// Transport structs (FetchProxy, ForwardProxy, WebSocketProxy,
+	// ReverseProxy) stay in the canonical view because they carry
+	// enforcement-relevant fields: Monitoring.Blocklist, entropy
+	// thresholds, rate limits, ForwardProxy.SNIVerification,
+	// MaxTunnelSeconds, RedirectWebSocketHosts — all of which change
+	// what pipelock would decide about a scanned request. A blanket
+	// struct-zero would drop those policy knobs and leave ph
+	// insensitive to real policy changes, breaking the admission-grade
+	// contract.
+	//
+	// Listen addresses live under those structs. Including them in
+	// the hash means `fetch_proxy.listen: :8888 → :8889` shifts ph,
+	// even though no enforcement changed. That is the correct
+	// trade: false positives on cosmetic transport changes are the
+	// less-bad failure mode vs missing a real policy change.
 	view.MetricsListen = ""
 
 	// Telemetry and operational outputs — emit destinations, log

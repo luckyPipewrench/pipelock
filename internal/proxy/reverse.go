@@ -306,7 +306,16 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	}
 	opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
 	if !ok {
-		return t.base.RoundTrip(req)
+		// The envelope emitter is live but the per-request build opts
+		// never made it onto the context. Falling through to
+		// t.base.RoundTrip would forward the request unsigned, which
+		// is a silent downgrade past the fail-closed contract. Fail
+		// closed: return a typed envelope block error. The reverse
+		// proxy's errorHandler picks this up via blockedRequestErrorFrom
+		// and turns it into a 403 + recorded metric.
+		return nil, newEnvelopeBlockedRequest(
+			fmt.Errorf("reverse proxy envelope: missing build opts on context"),
+		)
 	}
 	body, _ := req.Context().Value(ctxKeyReverseEnvelopeBody).([]byte)
 

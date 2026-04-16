@@ -125,7 +125,7 @@ metrics are both observability and enforcement context.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_session_anomalies_total` | counter | `type` | Behavioral anomalies by type. |
-| `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by level transition (e.g. `warn` → `block`). These transitions feed adaptive enforcement decisions on later requests. |
+| `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by session enforcement level transition (e.g. `elevated` → `high`, `high` → `critical`). These transitions feed adaptive enforcement decisions on later requests. |
 | `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
 | `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
 | `pipelock_adaptive_sessions_current` | gauge | `level` | Currently escalated sessions by enforcement level. |

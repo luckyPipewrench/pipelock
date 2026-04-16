@@ -145,12 +145,18 @@ pipelock rules verify
 A bundle is a single YAML file with a header and a list of rules:
 
 ```yaml
-format_version: 1
+format_version: 2
 name: my-company-rules
-version: "2026.03.1"
+version: "2026.04.1"
 author: acme-security
 description: "Internal detection patterns for Acme Corp"
-min_pipelock: "1.4.0"
+min_pipelock: "2.2.0"
+tier: community
+monotonic_version: 1
+published_at: "2026-04-16T00:00:00Z"
+expires_at: "2027-04-16T00:00:00Z"
+required_features:
+  - dlp
 
 rules:
   - id: dlp-internal-api-key
@@ -163,6 +169,8 @@ rules:
     pattern:
       regex: 'acme_[a-zA-Z0-9]{32}'
 ```
+
+`format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `monotonic_version`, `published_at`, and `expires_at`.
 
 ### Rule types
 

@@ -499,7 +499,7 @@ Recommended rollout flow:
 1. Ship the pattern with `action: warn`.
 2. Deploy and watch the audit sink for hits against real traffic.
 3. Tune the regex + `exempt_domains` until false-positive rate is acceptable.
-4. Remove the `action` line (or set it to empty string) to switch to default block.
+4. Remove the `action` line (or set it to empty string) to revert the pattern to normal DLP enforcement semantics — the actual verdict then follows the transport-level DLP action and the session's `mode`/`enforce` state rather than being unconditionally block.
 5. Roll out the change through your normal config-review process.
 
 ## Response Scanning
@@ -756,7 +756,7 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 ## Kill Switch
 
-Emergency deny-all with four independent activation sources (`enabled`, `sentinel_file`, `api`, `SIGUSR1`). Any one active blocks all traffic (OR-composed). See [Kill Switch](../README.md#kill-switch) for operational details.
+Emergency deny-all with four independent activation sources (`enabled`, `sentinel_file`, `api`, `SIGUSR1`). Any one active denies normal traffic (OR-composed) except for configured exemptions (`health_exempt`, `metrics_exempt`, `api_exempt`, `allowlist_ips`). See [Kill Switch](../README.md#kill-switch) for operational details.
 
 > **Heads-up on `enabled`:** the `enabled` field is a source, not a subsystem switch. Setting `enabled: true` immediately activates the kill switch and denies all traffic from startup (all requests return HTTP 503). To configure the API/signal/sentinel sources for future activation without engaging the kill switch at startup, leave `enabled: false`.
 

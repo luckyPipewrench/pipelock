@@ -1494,6 +1494,16 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
+	// Eagerly warm the canonical policy hash cache so the hash is
+	// computed once against the post-Validate / post-ApplyDefaults
+	// snapshot that Load guarantees is immutable to the caller. Every
+	// subsequent CanonicalPolicyHash() call (reload, emitter wiring,
+	// per-request stamping) reads the same memoised value without
+	// observing any post-Load mutation. Documented in
+	// CanonicalPolicyHash's godoc; this is the Load-time half of the
+	// "Config is frozen after Load" contract.
+	_ = cfg.CanonicalPolicyHash()
+
 	return cfg, nil
 }
 
@@ -3552,9 +3562,20 @@ func (c *Config) validateMediationEnvelope() error {
 		return fmt.Errorf("mediation_envelope.sign requires mediation_envelope.enabled")
 	}
 
+	// Normalize signing-related fields unconditionally, even when
+	// sign is currently off. ValidateReload compares old.MediationEnvelope
+	// vs updated.MediationEnvelope for narrowing/downgrade warnings; if
+	// normalization only fires on the sign-true branch, warning behavior
+	// depends on whether validation had previously seen sign-true, not on
+	// operator intent. Run normalization first so both sides of every
+	// reload comparison are in canonical effective form.
+	if err := normalizeMediationEnvelope(me); err != nil {
+		return err
+	}
+
 	if !me.Sign {
-		// Signing disabled — no further validation needed. Fill in
-		// zero defaults so nothing downstream has to branch.
+		// Signing disabled — normalization is enough; skip the
+		// keyfile load that's only meaningful when signing is on.
 		return nil
 	}
 
@@ -3573,9 +3594,20 @@ func (c *Config) validateMediationEnvelope() error {
 		return fmt.Errorf("mediation_envelope.signing_key_path %q: %w", me.SigningKeyPath, err)
 	}
 
-	// Fill defaults for optional fields. Validation is the single
-	// write-back point so the hot-reload and startup paths see
-	// identical effective values.
+	return nil
+}
+
+// normalizeMediationEnvelope applies defaults and canonicalises
+// signing-related fields regardless of whether Sign is currently on.
+// Returns an error for any field whose raw value is syntactically
+// invalid (negative lengths, malformed component names).
+//
+// Keeping this separate from the sign-gated keyfile load means two
+// configs with identical effective policy but different histories
+// (one that was always sign=false, one that cycled through sign=true)
+// compare identically under ValidateReload. See the GPT-5.4 review
+// on PR #403 (validateMediationEnvelope inconsistency) for context.
+func normalizeMediationEnvelope(me *MediationEnvelope) error {
 	if me.KeyID == "" {
 		me.KeyID = DefaultEnvelopeSignKeyID
 	}
@@ -3600,7 +3632,6 @@ func (c *Config) validateMediationEnvelope() error {
 		}
 		me.SignedComponents = normalized
 	}
-
 	return nil
 }
 

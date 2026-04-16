@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -554,8 +555,17 @@ func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 	if got := string(drained); got != oversized {
 		t.Errorf("preserved overflow body = %q, want %q", got, oversized)
 	}
-	if req.GetBody != nil {
-		t.Error("GetBody should stay nil when the original unknown-length body was not replayable")
+	// An over-cap unknown-length body is not replayable. Per the
+	// GPT-5.4 PR #403 review we install a sentinel GetBody that
+	// errors loudly on 307/308 replay instead of silently dropping
+	// the body — stdlib otherwise follows the redirect with an
+	// empty payload. The first-hop upstream still gets the full
+	// payload via the MultiReader preserved in req.Body.
+	if req.GetBody == nil {
+		t.Fatal("GetBody must be set to a sentinel replay-error closure, got nil")
+	}
+	if _, err := req.GetBody(); !errors.Is(err, ErrOverCapRedirectReplay) {
+		t.Errorf("GetBody sentinel error = %v, want ErrOverCapRedirectReplay", err)
 	}
 	if err := req.Body.Close(); err != nil {
 		t.Fatalf("closing preserved overflow body: %v", err)

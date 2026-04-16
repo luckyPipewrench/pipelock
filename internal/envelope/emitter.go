@@ -174,11 +174,13 @@ func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 //     upstream transport rather than being replaced with an empty one.
 //
 // Errors from the envelope serialize step or the signer's SignRequest
-// are returned to the caller. On error the request's existing headers
-// may be partially mutated (Pipelock-Mediation set but signature not
-// attached). Callers must fail closed on any non-nil return: the
-// request is not safe to forward with a partially-attached pipelock
-// signature slot.
+// are returned to the caller. On error the emitter strips any
+// partially-attached envelope and signature headers (Pipelock-Mediation,
+// Signature, Signature-Input, Content-Digest) from req before returning
+// so a caller that ignores fail-closed convention cannot emit an
+// unsigned-but-authoritative-looking request downstream. Callers SHOULD
+// still fail closed — the contract here is defense in depth, not a
+// license to continue on error.
 //
 // No-op and returns nil when called on a nil Emitter.
 func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) error {
@@ -190,6 +192,7 @@ func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) 
 	}
 	env := e.Build(opts)
 	if err := InjectHTTP(req.Header, env); err != nil {
+		stripEnvelopeHeaders(req)
 		return fmt.Errorf("envelope emitter: inject header: %w", err)
 	}
 	if e.signer == nil {
@@ -206,15 +209,32 @@ func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) 
 	if body == nil && requestHasBody(req) {
 		buffered, err := bufferRequestBody(req, e.signer.maxBodyBytes)
 		if err != nil {
+			stripEnvelopeHeaders(req)
 			return fmt.Errorf("envelope emitter: buffering request body: %w", err)
 		}
 		body = buffered
 	}
 
 	if err := e.signer.SignRequest(req, body); err != nil {
+		stripEnvelopeHeaders(req)
 		return fmt.Errorf("envelope emitter: sign request: %w", err)
 	}
 	return nil
+}
+
+// stripEnvelopeHeaders removes every header InjectAndSign may have
+// written so an error return leaves req in the same shape as if
+// InjectAndSign had never been called. GPT-5.4 review on PR #403 flagged
+// the partially-mutated-on-error case as a risk for any caller that
+// logs-and-continues or retries the request on an alternate path.
+func stripEnvelopeHeaders(req *http.Request) {
+	if req == nil || req.Header == nil {
+		return
+	}
+	req.Header.Del(headerPipelockMediation)
+	req.Header.Del("Signature")
+	req.Header.Del("Signature-Input")
+	req.Header.Del(headerContentDigest)
 }
 
 // requestHasBody reports whether req carries body bytes that should be
@@ -278,16 +298,30 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 	// Overflow: preserve the full original payload for upstream by
 	// replaying the bytes we already consumed, followed by the unread
 	// remainder of the original stream. We cannot synthesize a fresh
-	// GetBody without buffering the full request, so preserve the
-	// caller's original GetBody when one existed and otherwise leave it
-	// unset.
+	// GetBody without buffering the full request. Two cases:
+	//
+	//   - Caller had an origGetBody (caller buffered once upstream):
+	//     preserve it. Redirect replay still works because the caller
+	//     can rewind from its own buffer.
+	//   - Caller had no origGetBody: install a sentinel GetBody that
+	//     errors loudly. 307/308 redirect replay on an over-cap
+	//     unrewindable body would otherwise fall through to stdlib's
+	//     silent drop-of-body behavior; we want a visible failure so
+	//     the operator sees that signing's body buffering collided
+	//     with a redirect rather than debugging mysterious truncated
+	//     upstreams later. GPT-5.4 review on PR #403 flagged the
+	//     silent case as a correctness gap.
 	if maxBytes > 0 && len(data) > maxBytes {
 		req.Body = &readPreservingCloser{
 			Reader: io.MultiReader(bytes.NewReader(data), origBody),
 			Closer: origBody,
 		}
 		req.ContentLength = origContentLength
-		req.GetBody = origGetBody
+		if origGetBody != nil {
+			req.GetBody = origGetBody
+		} else {
+			req.GetBody = overCapGetBody
+		}
 		return nil, nil
 	}
 
@@ -312,6 +346,17 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 type readPreservingCloser struct {
 	io.Reader
 	io.Closer
+}
+
+// ErrOverCapRedirectReplay is returned by the sentinel GetBody installed
+// when an over-cap body with unknown length is replaced by a
+// MultiReader. Stdlib redirect replay calls GetBody on 307/308; an
+// unrewindable body cannot be replayed, so we surface a loud error
+// instead of silently sending a partial or empty payload.
+var ErrOverCapRedirectReplay = fmt.Errorf("envelope: cannot replay over-cap request body on redirect (body larger than mediation_envelope.max_body_bytes and no upstream GetBody)")
+
+func overCapGetBody() (io.ReadCloser, error) {
+	return nil, ErrOverCapRedirectReplay
 }
 
 // InjectMCPEnvelope builds an envelope and injects it into an MCP _meta map.

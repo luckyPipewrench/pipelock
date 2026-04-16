@@ -74,6 +74,22 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 			mut:  func(c *Config) { c.MetricsListen = ":19997" },
 		},
 		{
+			// fetch_proxy.listen is operational plumbing — rebinding the
+			// port does not change any enforcement decision. Explicitly
+			// excluded in policySemanticView so ops can move the listen
+			// address without shifting ph. See canonical.go.
+			name: "fetch_proxy.listen",
+			mut:  func(c *Config) { c.FetchProxy.Listen = ":19999" },
+		},
+		{
+			name: "reverse_proxy.listen",
+			mut:  func(c *Config) { c.ReverseProxy.Listen = ":19998" },
+		},
+		{
+			name: "reverse_proxy.upstream",
+			mut:  func(c *Config) { c.ReverseProxy.Upstream = "http://other-upstream:9000" },
+		},
+		{
 			name: "logging.include_allowed",
 			mut:  func(c *Config) { c.Logging.IncludeAllowed = !c.Logging.IncludeAllowed },
 		},
@@ -155,16 +171,10 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			},
 		},
 		{
-			// Transport structs stay in the canonical view because
-			// they carry real enforcement knobs (Monitoring.Blocklist,
-			// rate limits, SNIVerification, etc.). Listen addresses
-			// also flip ph as a side effect — preferred false-positive
-			// over the blanket-zero approach that used to miss real
-			// policy changes. See canonical.go:policySemanticView.
-			name: "fetch_proxy.listen",
-			mut:  func(c *Config) { c.FetchProxy.Listen = ":19999" },
-		},
-		{
+			// Transport timeouts are enforcement-relevant (DoS
+			// exposure bound, tunnel lifetime) so they must flip ph.
+			// Listen / Upstream addresses are separately excluded as
+			// operational plumbing. See canonical.go:policySemanticView.
 			name: "forward_proxy.idle_timeout",
 			mut:  func(c *Config) { c.ForwardProxy.IdleTimeoutSeconds = 9999 },
 		},

@@ -32,11 +32,10 @@ import (
 //   - kill switch sources, adaptive enforcement, taint, rules bundle
 //   - transport policy knobs under fetch_proxy / forward_proxy /
 //     websocket_proxy / reverse_proxy (Blocklist, entropy thresholds,
-//     SNIVerification, rate limits, RedirectWebSocketHosts). Listen
-//     addresses sit under those same structs so they also flip the
-//     hash, which is the correct fail-forward trade: false positives
-//     on cosmetic transport changes are less bad than missing a real
-//     policy change.
+//     SNIVerification, rate limits, RedirectWebSocketHosts, timeouts
+//     that bound DoS exposure). Listen / Upstream addresses under those
+//     same structs are operational plumbing and are explicitly excluded
+//     so ops can rebind ports without shifting ph.
 //
 // The output is the full 64-character hex (32-byte) SHA-256 of a canonicalised
 // JSON encoding of the scanner-relevant config view. Callers that need the
@@ -117,12 +116,16 @@ func (c *Config) policySemanticView() Config {
 	// insensitive to real policy changes, breaking the admission-grade
 	// contract.
 	//
-	// Listen addresses live under those structs. Including them in
-	// the hash means `fetch_proxy.listen: :8888 → :8889` shifts ph,
-	// even though no enforcement changed. That is the correct
-	// trade: false positives on cosmetic transport changes are the
-	// less-bad failure mode vs missing a real policy change.
+	// Listen / Upstream addresses under those structs are operational
+	// plumbing and must not flow into ph. Rebinding `fetch_proxy.listen:
+	// :8888 → :8889` or pointing a reverse proxy at a different upstream
+	// changes where bytes go, not what gets enforced. Zero them
+	// surgically below — keeping the surrounding enforcement fields
+	// (Monitoring, SNIVerification, timeouts, etc.) intact.
 	view.MetricsListen = ""
+	view.FetchProxy.Listen = ""
+	view.ReverseProxy.Listen = ""
+	view.ReverseProxy.Upstream = ""
 
 	// Telemetry and operational outputs — emit destinations, log
 	// formatting, Sentry DSN, flight recorder path. None of these

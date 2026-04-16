@@ -31,7 +31,7 @@ These must be proven by tests, not assumed from docs or deployment.
 | Go | 1.25+ (CI tests 1.25 and 1.26) |
 | License | Apache 2.0 (core), ELv2 (`enterprise/`) |
 | Binary | Single static binary, ~18MB |
-| Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, x/time, x/sys, gobwas/ws, sentry-go, modernc.org/sqlite, otlp/proto, google/protobuf, go-landlock |
+| Deps | 21 direct deps — run `make stats` for the live count. Core set: cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, gobwas/ws, sentry-go, modernc.org/sqlite, otlp/proto, google/protobuf, go-landlock, cyclonedx-go, google/uuid, common-fate/httpsig (RFC 9421), dunglas/httpsfv (RFC 8941), plus x/crypto, x/net, x/sys, x/text, x/time. |
 
 ## Docs & README Messaging
 

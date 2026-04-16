@@ -55,6 +55,48 @@ const (
 	ctxKeyAgent
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
+
+	// ctxKeyReverseEnvelopeOpts stores the envelope.BuildOpts that the
+	// reverse proxy pre-computes in ServeHTTP so the signing
+	// RoundTripper (wrapping proxy.Transport) can attach a signature
+	// AFTER httputil.ReverseProxy's Director has rewritten the URL to
+	// the upstream target. Without this flow, signing at ServeHTTP
+	// time would sign the inbound-relative @target-uri instead of the
+	// upstream-absolute one, and any verifier checking @target-uri
+	// would reject the signature.
+	ctxKeyReverseEnvelopeOpts
+	// ctxKeyReverseEnvelopeBody carries the scanner-buffered request
+	// body (or nil when body scanning was disabled) across the same
+	// boundary so the signer can compute content-digest without a
+	// second drain pass.
+	ctxKeyReverseEnvelopeBody
+	// ctxKeyReverseEnvelopeCfg carries the per-request *Config used
+	// by the reverse proxy dispatch so the RoundTripper sees the same
+	// config snapshot ServeHTTP loaded rather than re-loading the
+	// atomic pointer (which could race with a reload in flight).
+	ctxKeyReverseEnvelopeCfg
+	// ctxKeyReverseEnvelopeEmitter snapshots the *envelope.Emitter at
+	// admission time so RoundTrip uses the same signing state that
+	// ServeHTTP used to decide "signing is on." Without this, a
+	// reload between ServeHTTP and RoundTrip could flip signing on/off
+	// mid-request — a TOCTOU race flagged by CodeRabbit on PR #403.
+	ctxKeyReverseEnvelopeEmitter
+
+	// ctxKeyEnvelopeEmitter snapshots the *envelope.Emitter at the
+	// point the fetch/forward handler first signs the outbound request.
+	// refreshEnvelopeForRedirect reads this instead of the global
+	// atomic so a reload mid-redirect-chain cannot flip signing
+	// state for an in-flight request. Same TOCTOU fix as
+	// ctxKeyReverseEnvelopeEmitter but for the client-side path.
+	ctxKeyEnvelopeEmitter
+
+	// ctxKeyRedirectTransport is the transport label ("fetch" or
+	// "forward") attached by the fetch and forward handlers before
+	// handing the request to p.client. The shared CheckRedirect
+	// closure reads it so redirect audit events are labelled with
+	// the transport that originated the request rather than the
+	// hardcoded default. See Info 2 on the envelope-signing review.
+	ctxKeyRedirectTransport
 )
 
 const (
@@ -69,6 +111,80 @@ const (
 
 // requestCounter provides monotonic request IDs.
 var requestCounter atomic.Uint64
+
+const (
+	blockLayerMediationEnvelope  = "mediation_envelope"
+	mediationEnvelopeBlockReason = "mediation envelope signing failed"
+)
+
+// blockedRequestError signals a fail-closed block in a request path that still
+// travels through net/http error plumbing (redirect checks, reverse proxy
+// transports, and similar). reason is safe to return to the client; detail is
+// the fuller operator-facing log message.
+type blockedRequestError struct {
+	layer  string
+	reason string
+	detail string
+}
+
+func (e *blockedRequestError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.reason
+}
+
+func newBlockedRequestError(layer, reason, detail string) *blockedRequestError {
+	if detail == "" {
+		detail = reason
+	}
+	return &blockedRequestError{
+		layer:  layer,
+		reason: reason,
+		detail: detail,
+	}
+}
+
+func blockedRequestErrorFrom(err error) (*blockedRequestError, bool) {
+	var blockedErr *blockedRequestError
+	if !errors.As(err, &blockedErr) {
+		return nil, false
+	}
+	return blockedErr, true
+}
+
+// newRedirectBlockedRequest builds a typed block error for a redirect
+// that was denied by a scanner pass. originLayer is the scanner label
+// from the block source (SSRF, DLP, blocklist, …) so downstream metrics
+// and receipts can attribute the decision to the scanner that actually
+// made it, rather than collapsing every redirect denial into a generic
+// "redirect" bucket. An empty originLayer falls back to "redirect" so
+// call sites that genuinely do not know the scanner keep working.
+func newRedirectBlockedRequest(originLayer, reason string) *blockedRequestError {
+	fullReason := "redirect blocked: " + reason
+	layer := originLayer
+	if layer == "" {
+		layer = "redirect"
+	}
+	return newBlockedRequestError(layer, fullReason, fullReason)
+}
+
+func newEnvelopeBlockedRequest(err error) *blockedRequestError {
+	return newBlockedRequestError(
+		blockLayerMediationEnvelope,
+		mediationEnvelopeBlockReason,
+		mediationEnvelopeBlockReason+": "+err.Error(),
+	)
+}
+
+func newRedirectEnvelopeBlockedRequest(err error) *blockedRequestError {
+	reason := "redirect blocked: " + mediationEnvelopeBlockReason
+	return newBlockedRequestError(
+		blockLayerMediationEnvelope,
+		reason,
+		reason+": "+err.Error(),
+	)
+}
 
 // Regex patterns for extracting content from HTML hiding spots that
 // readability strips (comments, script bodies, style bodies). We scan
@@ -262,6 +378,27 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
 
+	// Startup envelope wiring mirrors the reload lane: ensure an
+	// enabled envelope always has the canonical policy hash installed,
+	// and when sign:true is configured, replace any header-only
+	// startup emitter with a signer-backed instance before the first
+	// request is served. This closes the cold-start gap where the
+	// runtime passed WithEnvelopeEmitter(header-only) and the signer
+	// would not appear until the first reload.
+	if cfg.MediationEnvelope.Enabled {
+		if em := p.envelopeEmitterPtr.Load(); em == nil || (cfg.MediationEnvelope.Sign && !em.HasSigner()) {
+			stage, err := p.buildEnvelopeEmitter(cfg)
+			if err != nil {
+				return nil, fmt.Errorf("envelope emitter init: %w", err)
+			}
+			if stage.enabled {
+				p.envelopeEmitterPtr.Store(stage.emitter)
+			}
+		} else {
+			em.UpdateConfigHash(cfg.CanonicalPolicyHash())
+		}
+	}
+
 	// Build edition (agent registry in enterprise, noop in OSS).
 	ed, edErr := edition.NewEditionFunc(cfg, sc)
 	if edErr != nil {
@@ -354,15 +491,42 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			redirectWarnCtx.ClientIP = clientIP
 			redirectWarnCtx.RequestID = requestID
 			redirectWarnCtx.Agent = agentName
-			redirectWarnCtx.Transport = TransportFetch
+			// Derive transport from the original request context so
+			// forward-proxy redirects log and audit as "forward" and
+			// fetch-proxy redirects log as "fetch". Hard-coding
+			// TransportFetch here mislabels every forward-proxy
+			// redirect — both paths share p.client and therefore
+			// share this CheckRedirect closure.
+			if t, ok := req.Context().Value(ctxKeyRedirectTransport).(string); ok && t != "" {
+				redirectWarnCtx.Transport = t
+			} else {
+				redirectWarnCtx.Transport = TransportFetch
+			}
 			result := currentScanner.Scan(scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx), redirectURL)
 			if !result.Allowed {
 				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
 				if currentCfg.EnforceEnabled() {
-					logger.LogBlocked(actx, "redirect", fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
-					return fmt.Errorf("redirect blocked: %s", result.Reason)
+					// Preserve the originating scanner label (SSRF,
+					// DLP, blocklist, …) in the typed block error so
+					// receipts, metrics, and /fetch hints can tell
+					// operators *which* scanner made the decision
+					// instead of reporting every denial as a generic
+					// "redirect" block.
+					logger.LogBlocked(actx, result.Scanner, fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
+					return newRedirectBlockedRequest(result.Scanner, result.Reason)
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
+			}
+			// Mediation envelope refresh: on every allowed redirect,
+			// rebuild the envelope on req so ph, hop, and @target-uri
+			// reflect the redirected leg rather than the original.
+			// The stdlib has already copied headers from via[0] to
+			// req; we replace the Pipelock-Mediation slot and re-sign
+			// (if signing is active). Any refresh/signing error aborts
+			// the redirect so a sign:true deployment never silently
+			// degrades to an unsigned or stale-signature hop.
+			if err := p.refreshEnvelopeForRedirect(req, via, currentCfg); err != nil {
+				return err
 			}
 			return nil
 		},
@@ -371,6 +535,206 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.tlsTransport = newTLSInterceptTransport(p.ssrfSafeDialContext, m.RecordTLSHandshake, nil)
 
 	return p, nil
+}
+
+// refreshEnvelopeForRedirect rebuilds the Pipelock-Mediation header
+// on a redirected request so ph, hop, and (if signing is active)
+// @target-uri reflect the redirected leg rather than the original.
+//
+// stdlib's redirect machinery copies headers from via[0] to the new
+// req before calling CheckRedirect. That copy includes the original
+// Pipelock-Mediation header verbatim — its @target-uri / action /
+// timestamp are now stale, and any pipelock1 signature on the
+// headers signs a base string for the pre-redirect URL. Without
+// this refresh a downstream verifier would reject the redirected
+// leg on @target-uri mismatch.
+//
+// Steps:
+//  1. Parse the inbound Pipelock-Mediation header to recover the
+//     original envelope fields we want to preserve (Actor, ActorAuth,
+//     ReceiptID, AuthorityKind, SessionTaint, TaskID, Action).
+//  2. Increment Hop.
+//  3. Derive fresh body bytes via req.GetBody when the redirect
+//     preserves method + body (307/308). On method-switching
+//     redirects (303 POST→GET) the stdlib nil's out req.Body and
+//     GetBody, so body bytes are nil and content-digest drops.
+//  4. Strip any stale Content-Digest the copy propagated from via[0]
+//     — the signer will set a fresh one if body bytes are present.
+//  5. Call emitter.InjectAndSign on req with the rebuilt BuildOpts.
+//
+// Any failure to refresh or re-sign the redirected request aborts the
+// redirect. sign:true is a hard integrity contract: a redirected hop
+// must not continue with a stale or missing pipelock signature.
+func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Request, cfg *config.Config) error {
+	// Prefer the request-scoped snapshot so a reload mid-chain
+	// cannot flip signing state for this request. Fall back to the
+	// global atomic for backwards-compat with callers that don't
+	// set the context key (e.g. tests calling this helper directly).
+	em, _ := req.Context().Value(ctxKeyEnvelopeEmitter).(*envelope.Emitter)
+	if em == nil {
+		em = p.envelopeEmitterPtr.Load()
+	}
+	if em == nil {
+		return nil
+	}
+
+	clientIP, _ := req.Context().Value(ctxKeyClientIP).(string)
+	requestID, _ := req.Context().Value(ctxKeyRequestID).(string)
+	agentName, _ := req.Context().Value(ctxKeyAgent).(string)
+	actx := newHTTPAuditContext(p.logger, req.Method, req.URL.String(), clientIP, requestID, agentName)
+
+	// 1. Parse the ORIGINAL envelope. Identity fields (Actor,
+	//    ActorAuth, ReceiptID, Authority, Taint, TaskID, RequiresReauth)
+	//    are immutable across a redirect chain, so we always read
+	//    them from the first request in the chain. In the live
+	//    CheckRedirect path via[] is always non-empty and via[0] is
+	//    the original request; we intentionally do NOT read from
+	//    req.Header in that case because Go's net/http redirect
+	//    machinery copies headers from via[0] onto each new req,
+	//    overwriting any mutations a previous CheckRedirect hop made.
+	//    Reading from req.Header would therefore always observe
+	//    hop=0 and cap the counter at 1 regardless of chain depth.
+	//    Tests that call this helper directly pass via=nil to
+	//    exercise the refresh logic on a single request; fall back
+	//    to req.Header in that case so the test path still works.
+	var (
+		prev    envelope.Envelope
+		rawPrev string
+	)
+	if len(via) > 0 {
+		rawPrev = via[0].Header.Get(envelope.HeaderName)
+	} else {
+		rawPrev = req.Header.Get(envelope.HeaderName)
+	}
+	if rawPrev != "" {
+		parsed, parseErr := envelope.Parse(rawPrev)
+		if parseErr != nil {
+			p.logger.LogAnomaly(actx, "",
+				fmt.Sprintf("envelope refresh: parsing prior envelope failed: %v", parseErr), 0.1)
+			// Fall through with zero-value prev — the refresh will
+			// still install a new envelope.
+		} else {
+			prev = parsed
+		}
+	}
+
+	// 2. Authoritative hop counter. Use len(via) when available
+	//    (live CheckRedirect path): it is the number of requests
+	//    already dispatched in this redirect chain, and stdlib
+	//    calls CheckRedirect once per hop, so len(via) equals the
+	//    number of hops the refreshed request has traversed. Falls
+	//    back to prev.Hop+1 for direct test invocations where via
+	//    is nil, which mirrors "one refresh from the previous
+	//    observed value."
+	if len(via) > 0 {
+		prev.Hop = len(via)
+	} else {
+		prev.Hop++
+	}
+
+	// 3. Fresh body bytes via GetBody when available. Cap the read to
+	//    max_body_bytes so a redirect to a large-body endpoint cannot
+	//    spike memory past the signer's intended ceiling. Over-cap
+	//    bodies are signed without content-digest, matching the
+	//    first-hop InjectAndSign behavior.
+	var body []byte
+	if req.GetBody != nil {
+		if rc, err := req.GetBody(); err == nil && rc != nil {
+			maxBody := int64(cfg.MediationEnvelope.MaxBodyBytes)
+			var (
+				buffered []byte
+				readErr  error
+			)
+			if maxBody > 0 {
+				buffered, readErr = io.ReadAll(io.LimitReader(rc, maxBody+1))
+			} else {
+				buffered, readErr = io.ReadAll(rc)
+			}
+			_ = rc.Close()
+			if readErr != nil {
+				return newRedirectEnvelopeBlockedRequest(
+					fmt.Errorf("draining redirect GetBody: %w", readErr),
+				)
+			}
+			if maxBody > 0 && int64(len(buffered)) > maxBody {
+				body = nil
+			} else {
+				body = buffered
+			}
+		} else if err != nil {
+			return newRedirectEnvelopeBlockedRequest(
+				fmt.Errorf("opening redirect GetBody: %w", err),
+			)
+		}
+	}
+
+	// 4. Strip stale Content-Digest. The signer will repopulate it
+	//    if body is non-nil AND content-digest is in the signer's
+	//    declared component list; otherwise its absence is correct.
+	req.Header.Del("Content-Digest")
+
+	// 5. Rebuild BuildOpts from prev + redirect context. Preserve
+	//    Actor / ActorAuth / ReceiptID / AuthorityKind / SessionTaint
+	//    / TaskID from the original envelope so the redirect chain
+	//    threads through as one logical action. Recompute Action
+	//    from the new method because the redirect could have
+	//    downgraded a POST to a GET (303).
+	actionID := prev.ReceiptID
+	if actionID == "" {
+		// No prior envelope to preserve ReceiptID from — mint a
+		// fresh one. This is unusual but survives a nil-prev hop.
+		actionID = receipt.NewActionID()
+	}
+	opts := envelope.BuildOpts{
+		ActionID:       actionID,
+		Action:         string(receipt.ClassifyHTTP(req.Method)),
+		Verdict:        prev.Verdict,
+		SideEffect:     string(receipt.SideEffectFromMethod(req.Method)),
+		Actor:          prev.Actor,
+		ActorAuth:      prev.ActorAuth,
+		SessionTaint:   prev.SessionTaint,
+		TaskID:         prev.TaskID,
+		AuthorityKind:  prev.AuthorityKind,
+		AuthorityRef:   prev.AuthorityRef,
+		RequiresReauth: prev.RequiresReauth,
+		PolicyHash:     envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
+	}
+	if opts.Verdict == "" {
+		opts.Verdict = config.ActionAllow
+	}
+
+	// The envelope emitter cannot accept a Hop override via
+	// BuildOpts (the Hop field lives on the output envelope, not the
+	// build opts), so we build the envelope first and then
+	// overwrite its Hop before serializing. We do this by calling
+	// Emitter.Build directly and serializing by hand rather than
+	// going through InjectAndSign, which would reset Hop to zero.
+	env := em.Build(opts)
+	env.Hop = prev.Hop
+	if err := envelope.InjectHTTP(req.Header, env); err != nil {
+		return newRedirectEnvelopeBlockedRequest(
+			fmt.Errorf("injecting refreshed envelope: %w", err),
+		)
+	}
+
+	// Sign the refreshed envelope over the redirected request if
+	// a signer is installed. Content-Digest was cleared above, so
+	// the signer computes it fresh from the new body (if any) and
+	// the Signature-Input declared list reflects the per-request
+	// effective components.
+	if signer := em.Signer(); signer != nil {
+		if err := signer.SignRequest(req, body); err != nil {
+			return newRedirectEnvelopeBlockedRequest(
+				fmt.Errorf("re-signing redirect request: %w", err),
+			)
+		}
+	}
+
+	// Preserve the hop/ph/sig across any future redirects in the
+	// same chain by leaving req as-is. stdlib will copy this header
+	// to the next req when CheckRedirect fires again.
+	_ = via // reserved for future per-hop logging
+	return nil
 }
 
 // recordDecision writes an enforcement verdict to the flight recorder if enabled.
@@ -415,64 +779,143 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 	}
 }
 
-// reloadReceiptEmitter handles receipt emitter lifecycle on config reload.
-// Creates a new emitter if a signing key appears, updates the config hash
-// if the emitter exists, or nils it if the key is removed. Must be called
-// under reloadMu.
-func (p *Proxy) reloadReceiptEmitter(cfg *config.Config) {
+// receiptEmitterStage is the staged result of a receipt-emitter reload.
+// Reload stages both the envelope and receipt emitters before publishing
+// either, so a failure in the second stage cannot leave the first already
+// stored under p.envelopeEmitterPtr while the config is still the old one.
+type receiptEmitterStage struct {
+	// emitter is the new *receipt.Emitter to install. A nil value means
+	// "receipts are intentionally disabled for this cfg" — either no
+	// signing key path is set or the recorder is nil. The caller should
+	// Store(nil) on publish in that case and also reset receiptKeyPath
+	// to "" via the keyPath field.
+	emitter *receipt.Emitter
+	// keyPath is the signing key path that was actually loaded, or ""
+	// when receipts are disabled. The caller assigns this to
+	// p.receiptKeyPath at publish time.
+	keyPath string
+}
+
+// buildReceiptEmitter stages the receipt emitter lifecycle transition for
+// cfg WITHOUT publishing anything to p.receiptEmitterPtr or
+// p.receiptKeyPath. Must be called under reloadMu from Reload, which
+// publishes the returned stage atomically after all other reload
+// preconditions succeed.
+//
+// Return value semantics:
+//
+//   - (stage, nil) — staging succeeded. Publish via Store/assignment.
+//   - (_, non-nil) — staging failed. Caller MUST abort the config swap.
+//     Signed receipts are part of the evidence contract; swapping cfg
+//     while keeping an old receipt emitter would attest the wrong policy
+//     hash for future actions.
+func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, error) {
 	keyPath := cfg.FlightRecorder.SigningKeyPath
 
 	if keyPath == "" {
-		// No signing key configured — disable receipts if they were on.
-		p.receiptEmitterPtr.Store(nil)
-		p.receiptKeyPath = ""
-		return
+		// No signing key configured — receipts are disabled for this
+		// cfg. Stage a nil emitter; Reload will clear both pointers.
+		return receiptEmitterStage{}, nil
+	}
+
+	if p.recorder == nil {
+		// No recorder means receipts have nowhere to land regardless
+		// of config. Treat this as "receipts disabled" from a staging
+		// perspective — the caller won't touch receipt state.
+		return receiptEmitterStage{keyPath: p.receiptKeyPath}, nil
 	}
 
 	// Always reload the key file to detect both path changes and
 	// in-place content changes (key rotation at the same path).
-	if p.recorder == nil {
-		return
-	}
-
 	privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(keyPath))
 	if err != nil {
-		// Failure is non-fatal: log and keep the prior emitter (if any) so
-		// receipts continue with the old key rather than going dark entirely.
-		if p.logger != nil {
-			p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("loading receipt signing key: %w", err))
-		}
-		return
+		return receiptEmitterStage{}, fmt.Errorf("loading receipt signing key %q: %w", keyPath, err)
 	}
 
-	p.receiptEmitterPtr.Store(receipt.NewEmitter(receipt.EmitterConfig{
-		Recorder:   p.recorder,
-		PrivKey:    privKey,
-		ConfigHash: cfg.Hash(),
-		Principal:  "local",
-		Actor:      "pipelock",
-	}))
-	p.receiptKeyPath = keyPath
+	return receiptEmitterStage{
+		emitter: receipt.NewEmitter(receipt.EmitterConfig{
+			Recorder:   p.recorder,
+			PrivKey:    privKey,
+			ConfigHash: cfg.Hash(),
+			Principal:  "local",
+			Actor:      "pipelock",
+		}),
+		keyPath: keyPath,
+	}, nil
 }
 
-// reloadEnvelopeEmitter handles envelope emitter lifecycle on config reload.
-// Nils the emitter when disabled, updates the config hash when an emitter
-// already exists, or creates a new emitter when first enabled. Must be called
-// under reloadMu.
-func (p *Proxy) reloadEnvelopeEmitter(cfg *config.Config) {
+// envelopeEmitterStage is the staged result of an envelope-emitter reload.
+// Like receiptEmitterStage, it lets Reload build the new emitter without
+// publishing it so both emitters can be swapped atomically after every
+// staging step has succeeded.
+type envelopeEmitterStage struct {
+	// enabled reports whether the cfg wants envelope emission at all.
+	// When false, the publish step should Store(nil) regardless of
+	// what emitter holds — the field mirrors the disable-path that
+	// used to live in reloadEnvelopeEmitter.
+	enabled bool
+	// emitter is the freshly constructed *envelope.Emitter to install
+	// when enabled is true. nil when enabled is false.
+	emitter *envelope.Emitter
+}
+
+// buildEnvelopeEmitter stages the envelope emitter lifecycle transition
+// for cfg WITHOUT publishing anything to p.envelopeEmitterPtr. Must be
+// called under reloadMu from Reload, which publishes the returned stage
+// atomically after all other reload preconditions succeed. New() also
+// calls this helper at startup to install the first signer-backed
+// emitter before serving the first request.
+//
+// Return value semantics:
+//
+//   - (stage, nil) — staging succeeded. Publish via Store on publish.
+//   - (_, non-nil) — staging failed. Caller MUST abort the config swap.
+//     The previous emitter is left in place so in-flight traffic keeps
+//     its signing invariant until operator intervention. This is the
+//     fail-closed resolution for the "reload with unreadable signing
+//     key" case: never silent-downgrade to unsigned.
+//
+// The fallback hash is the GLOBAL config's CanonicalPolicyHash — what
+// a request without a resolved per-agent config sees. Transports that
+// have a per-agent effective *Config MUST pass envelope.PolicyHashFromHex
+// of that resolved config's canonical hash via BuildOpts.PolicyHash so
+// the envelope ph field reflects the agent's actual policy rather than
+// the global default. See the BuildOpts.PolicyHash doc comment.
+func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, error) {
 	if !cfg.MediationEnvelope.Enabled {
-		p.envelopeEmitterPtr.Store(nil)
-		return
+		return envelopeEmitterStage{enabled: false}, nil
 	}
-	existing := p.envelopeEmitterPtr.Load()
-	if existing != nil {
-		existing.UpdateConfigHash(cfg.Hash())
-		return
+
+	emCfg := envelope.EmitterConfig{
+		ConfigHash: cfg.CanonicalPolicyHash(),
 	}
-	em := envelope.NewEmitter(envelope.EmitterConfig{
-		ConfigHash: cfg.Hash(),
-	})
-	p.envelopeEmitterPtr.Store(em)
+
+	// Load the signing key fresh on every reload so the file rotation
+	// story works without a process restart. If sign is disabled the
+	// resulting emitter has no signer attached and acts as a header-
+	// only envelope producer.
+	if cfg.MediationEnvelope.Sign {
+		privKey, err := signing.LoadPrivateKeyFile(filepath.Clean(cfg.MediationEnvelope.SigningKeyPath))
+		if err != nil {
+			return envelopeEmitterStage{}, fmt.Errorf("loading envelope signing key %q: %w",
+				cfg.MediationEnvelope.SigningKeyPath, err)
+		}
+		signer, err := envelope.NewSigner(envelope.SignerConfig{
+			PrivKey:          privKey,
+			KeyID:            cfg.MediationEnvelope.KeyID,
+			SignedComponents: cfg.MediationEnvelope.SignedComponents,
+			MaxBodyBytes:     cfg.MediationEnvelope.MaxBodyBytes,
+		})
+		if err != nil {
+			return envelopeEmitterStage{}, fmt.Errorf("constructing envelope signer: %w", err)
+		}
+		emCfg.Signer = signer
+	}
+
+	return envelopeEmitterStage{
+		enabled: true,
+		emitter: envelope.NewEmitter(emCfg),
+	}, nil
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -548,13 +991,62 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		return
 	}
 
-	// Receipt emitter lifecycle: create on first signing key appearance,
-	// update config hash on existing, nil on key removal. Must run BEFORE
-	// config swap so receipts always reflect the policy that governed the
-	// decision. Without this ordering, requests racing with reload could
-	// get signed with the previous policy hash.
-	p.reloadReceiptEmitter(cfg)
-	p.reloadEnvelopeEmitter(cfg)
+	// Envelope and receipt emitters are staged BEFORE either is
+	// published, so a failure in the second stage cannot leave the
+	// first already stored under p.envelopeEmitterPtr while the rest
+	// of the config is still the old one. Both stages are fail-closed:
+	// any error aborts the whole reload and leaves in-flight traffic
+	// signing / attesting under the last good config.
+	//
+	// Without this staging, a narrow race window exists on the receipt
+	// reload failure path: reloadEnvelopeEmitter used to Store() into
+	// p.envelopeEmitterPtr directly, so a subsequent receipt-emitter
+	// failure would leave the new envelope signer already published
+	// while cfg stayed at the old value. Evidence chains produced in
+	// that window would attest the wrong policy hash.
+	envelopeStage, envErr := p.buildEnvelopeEmitter(cfg)
+	if envErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("envelope emitter reload failed, keeping old config: %w", envErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return
+	}
+	receiptStage, rcptErr := p.buildReceiptEmitter(cfg)
+	if rcptErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("receipt emitter reload failed, keeping old config: %w", rcptErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return
+	}
+
+	// Publish both emitters now that staging has fully succeeded. The
+	// atomic.Pointer swaps are individually atomic; between them, a
+	// request can observe "new envelope + old receipt" for a few
+	// nanoseconds, but that is the same race class the envelope and
+	// receipt emitters had before Reload was fail-closed, and neither
+	// emitter attests the other's policy hash.
+	if envelopeStage.enabled {
+		p.envelopeEmitterPtr.Store(envelopeStage.emitter)
+	} else {
+		p.envelopeEmitterPtr.Store(nil)
+	}
+	// Receipt publish: Store the staged emitter (may be nil) and
+	// mirror the receiptKeyPath field. When the recorder is missing
+	// we leave p.receiptKeyPath untouched so the startup-time invariant
+	// (receipts silently off when no recorder) is preserved.
+	if cfg.FlightRecorder.SigningKeyPath == "" {
+		p.receiptEmitterPtr.Store(nil)
+		p.receiptKeyPath = ""
+	} else if p.recorder != nil {
+		p.receiptEmitterPtr.Store(receiptStage.emitter)
+		p.receiptKeyPath = receiptStage.keyPath
+	}
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
@@ -1903,6 +2395,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
+	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		log.LogError(actx, err)
@@ -1917,9 +2410,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
 
-	// Inject mediation envelope before forwarding on allow path.
+	// Inject mediation envelope (and attach RFC 9421 signature when
+	// the envelope emitter has a signer) before forwarding on the
+	// allow path. The fetch handler only builds GET requests
+	// internally — there is no request body to sign over, so
+	// InjectAndSign is called with body=nil and the signer drops
+	// content-digest from the declared component list.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		if envErr := envEmitter.InjectHTTPEnvelope(req.Header, envelope.BuildOpts{
+		// Snapshot the emitter on the request context so
+		// refreshEnvelopeForRedirect uses the same signing state
+		// for the entire redirect chain, even if a reload fires.
+		req = req.WithContext(context.WithValue(req.Context(), ctxKeyEnvelopeEmitter, envEmitter))
+		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
+		if envErr := envEmitter.InjectAndSign(req, nil, envelope.BuildOpts{
 			ActionID:      actionID,
 			Action:        string(receipt.ActionRead),
 			Verdict:       config.ActionAllow,
@@ -1929,32 +2432,68 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			SessionTaint:  fetchTaint.Risk.Level.String(),
 			TaskID:        fetchTaint.Task.CurrentTaskID,
 			AuthorityKind: fetchTaint.Authority.String(),
+			PolicyHash:    policyHash,
 		}); envErr != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			blockedErr := newEnvelopeBlockedRequest(envErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.recordDecision(config.ActionBlock, blockedErr.layer, blockedErr.reason, "fetch", requestID)
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:            actionID,
+				Verdict:             config.ActionBlock,
+				Layer:               blockedErr.layer,
+				Pattern:             blockedErr.reason,
+				Transport:           "fetch",
+				Method:              http.MethodGet,
+				Target:              displayURL,
+				RequestID:           requestID,
+				Agent:               agent,
+				SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+				SessionContaminated: fetchTaint.Risk.Contaminated,
+				RecentTaintSources:  fetchTaint.Risk.Sources,
+				SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+				SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+				AuthorityKind:       fetchTaint.Authority.String(),
+				TaintDecision:       fetchTaint.Result.Decision.String(),
+				TaintDecisionReason: fetchTaint.Result.Reason,
+				TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+			})
+			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
+			writeJSON(w, http.StatusForbidden, FetchResponse{
+				URL:         displayURL,
+				Agent:       agent,
+				Blocked:     true,
+				BlockReason: blockedErr.reason,
+			})
+			return
 		}
 	}
 
 	resp, err := p.client.Do(req) //nolint:gosec // G704: URL validated by scanner pipeline before reaching here
 	if err != nil {
-		// Detect redirect blocks (from CheckRedirect) and report as blocked, not error.
-		if strings.Contains(err.Error(), "redirect blocked:") {
-			reason := err.Error()
-			log.LogBlocked(actx, "redirect", reason)
-			p.metrics.RecordBlocked(parsed.Hostname(), "redirect", time.Since(start), agentLabel)
+		// Detect fail-closed blocks from CheckRedirect and report them as blocked.
+		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 			resp := FetchResponse{
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: reason,
+				BlockReason: blockedErr.reason,
 			}
-			if cfg.ExplainBlocksEnabled() {
+			// Open-redirect hint: fires on any fail-closed redirect
+			// block regardless of which scanner layer owned the
+			// decision. Detect via the reason-string prefix rather
+			// than the layer label, because the layer now carries
+			// the scanner provenance (ssrf / dlp / blocklist / …)
+			// rather than a generic "redirect" bucket.
+			if strings.HasPrefix(blockedErr.reason, "redirect blocked:") && cfg.ExplainBlocksEnabled() {
 				resp.Hint = "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks."
 			}
 			p.emitReceipt(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
+				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
-				Layer:     "redirect",
-				Pattern:   reason,
+				Layer:     blockedErr.layer,
+				Pattern:   blockedErr.reason,
 				Transport: "fetch",
 				Method:    http.MethodGet,
 				Target:    displayURL,

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -485,7 +486,8 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 }
 
 // TestProxy_ReloadReceiptEmitter_BadKeyPath verifies that a bad signing key
-// path during reload logs an error and leaves the emitter nil.
+// path aborts the reload so the live config cannot advance without a receipt
+// emitter that attests the same policy hash.
 func TestProxy_ReloadReceiptEmitter_BadKeyPath(t *testing.T) {
 	t.Parallel()
 
@@ -530,8 +532,155 @@ func TestProxy_ReloadReceiptEmitter_BadKeyPath(t *testing.T) {
 	if p.receiptEmitterPtr.Load() != nil {
 		t.Fatal("expected nil emitter after reload with bad key path")
 	}
+	if p.CurrentConfig() != cfg {
+		t.Fatal("reload should abort and preserve the old config on bad receipt key path")
+	}
 
 	_ = rec.Close()
+}
+
+// TestProxy_ReloadReceiptEmitter_BadKeyPathPreservesLiveEmitter verifies that
+// when receipts are already enabled, a bad replacement key aborts the reload so
+// subsequent receipts keep attesting the old live config rather than mixing a
+// new config with an old signer/hash.
+func TestProxy_ReloadReceiptEmitter_BadKeyPathPreservesLiveEmitter(t *testing.T) {
+	t.Parallel()
+
+	recDir := t.TempDir()
+	keyDir := t.TempDir()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	keyPath := filepath.Join(keyDir, "receipt.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                recDir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	startCfgPath := filepath.Join(keyDir, "start.yaml")
+	startYAML := fmt.Sprintf(`mode: balanced
+flight_recorder:
+  signing_key_path: %s
+fetch_proxy:
+  monitoring:
+    blocklist:
+      - evil.example.com
+`, keyPath)
+	if err := os.WriteFile(startCfgPath, []byte(startYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile start config: %v", err)
+	}
+	cfg, err := config.Load(startCfgPath)
+	if err != nil {
+		t.Fatalf("config.Load start: %v", err)
+	}
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: cfg.Hash(),
+		Principal:  "local",
+		Actor:      "pipelock",
+	})
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	m := metrics.New()
+
+	p, pErr := New(cfg, logger, sc, m,
+		WithRecorder(rec),
+		WithReceiptEmitter(emitter),
+		WithReceiptKeyPath(keyPath),
+	)
+	if pErr != nil {
+		t.Fatalf("proxy.New: %v", pErr)
+	}
+	defer func() { _ = rec.Close() }()
+
+	beforeEmitter := p.receiptEmitterPtr.Load()
+	if beforeEmitter == nil {
+		t.Fatal("expected non-nil emitter before reload")
+	}
+
+	reloadCfgPath := filepath.Join(keyDir, "reload.yaml")
+	reloadYAML := `mode: balanced
+flight_recorder:
+  signing_key_path: /nonexistent/receipt.key
+fetch_proxy:
+  monitoring:
+    blocklist:
+      - other.example.com
+`
+	if err := os.WriteFile(reloadCfgPath, []byte(reloadYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile reload config: %v", err)
+	}
+	reloadCfg, err := config.Load(reloadCfgPath)
+	if err != nil {
+		t.Fatalf("config.Load reload: %v", err)
+	}
+	reloadCfg.Internal = nil
+	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	if cfg.Hash() == reloadCfg.Hash() {
+		t.Fatal("expected distinct raw config hashes for aborted-reload receipt test")
+	}
+	reloadSc := scanner.New(reloadCfg)
+
+	p.Reload(reloadCfg, reloadSc)
+
+	if p.CurrentConfig() != cfg {
+		t.Fatal("reload should abort and preserve the old config")
+	}
+	if afterEmitter := p.receiptEmitterPtr.Load(); afterEmitter != beforeEmitter {
+		t.Fatal("receipt emitter changed even though receipt reload aborted")
+	}
+
+	handler := p.buildHandler(p.buildMux())
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for old blocklist after aborted reload, got %d", w.Code)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	entries := readAllEntries(t, recDir)
+	for _, e := range entries {
+		if e.Type != receiptEntryType {
+			continue
+		}
+		detailJSON, mErr := json.Marshal(e.Detail)
+		if mErr != nil {
+			t.Fatalf("marshal detail: %v", mErr)
+		}
+		r, uErr := receipt.Unmarshal(detailJSON)
+		if uErr != nil {
+			t.Fatalf("unmarshal receipt: %v", uErr)
+		}
+		if r.ActionRecord.PolicyHash != cfg.Hash() {
+			t.Fatalf("expected aborted reload to preserve receipt policy hash %q, got %q", cfg.Hash(), r.ActionRecord.PolicyHash)
+		}
+		if r.ActionRecord.PolicyHash == reloadCfg.Hash() {
+			t.Fatal("receipt unexpectedly attested the aborted reload config hash")
+		}
+		return
+	}
+	t.Fatal("no receipt found after aborted reload")
 }
 
 // TestProxy_ReloadReceiptEmitter_NoRecorder verifies that when there is no

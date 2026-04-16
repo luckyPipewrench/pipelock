@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/dunglas/httpsfv"
 )
 
 func TestInjectHTTP(t *testing.T) {
@@ -50,11 +52,16 @@ func TestStripInbound(t *testing.T) {
 	t.Parallel()
 
 	h := http.Header{}
-	h.Set(HeaderName, "act=\"write\", vd=\"allow\"")
+	// Byte-sequence items in Signature / Signature-Input must carry
+	// valid base64 between the ":" delimiters, otherwise the RFC 8941
+	// dict parse in StripInbound rejects the whole header value. The
+	// literal bytes here are not verifiable signatures — they are just
+	// placeholder payloads that parse cleanly.
+	h.Set(HeaderName, "v=1, act=\"write\", vd=\"allow\"")
 	h.Set("Signature-Input", "pipelock1=(\"@method\");tag=\"pipelock-mediation\"")
-	h.Set("Signature", "pipelock1=:fakesig:")
+	h.Set("Signature", "pipelock1=:cGlwZWxvY2stZmFrZQ==:")
 	h.Add("Signature-Input", "sig1=(\"@method\");tag=\"web-bot-auth\"")
-	h.Add("Signature", "sig1=:realsig:")
+	h.Add("Signature", "sig1=:dXBzdHJlYW0tcmVhbA==:")
 
 	StripInbound(h)
 
@@ -86,6 +93,116 @@ func TestStripInbound_NoHeaders(t *testing.T) {
 	t.Parallel()
 	h := http.Header{}
 	StripInbound(h) // Must not panic.
+}
+
+// TestStripInbound_PipelockMemberWithQuotedComma is the regression test
+// for the strings.Split comma bug in stripPipelockSignatureMembers. An
+// attacker-controlled inbound request can carry a pipelock* dictionary
+// member whose quoted parameter value contains a literal comma — RFC 8941
+// permits this. strings.Split(val, ",") treats that comma as a top-level
+// member separator, producing a post-comma fragment (e.g. `b"`) that no
+// longer has the "pipelock" prefix. The buggy loop preserves the fragment
+// because HasPrefix(trimmed, "pipelock") is false, leaving broken noise
+// in the outbound Signature-Input. That both corrupts any surviving sig1
+// member and creates a downstream dictionary-parse failure — either of
+// which is a bypass vector for inbound sanitisation.
+func TestStripInbound_PipelockMemberWithQuotedComma(t *testing.T) {
+	t.Parallel()
+
+	h := http.Header{}
+	h.Add("Signature-Input", `pipelock1=("@method");tag="a,b", sig1=("@method");tag="web-bot-auth"`)
+	h.Add("Signature", `pipelock1=:cGlwZQ==:, sig1=:c2ln:`)
+
+	StripInbound(h)
+
+	// No output value may contain any lingering "pipelock" residue. The
+	// buggy path leaves a stray fragment like `b"` that still *parses*
+	// as a member but whose name is a broken quoted string.
+	for _, v := range h.Values("Signature-Input") {
+		if strings.Contains(v, "pipelock") {
+			t.Errorf("Signature-Input still references pipelock after strip: %q", v)
+		}
+	}
+
+	// The stripped header must parse cleanly as an RFC 8941 dictionary.
+	// The buggy strip yields `b", sig1=...` which fails dict parse.
+	dict, err := httpsfv.UnmarshalDictionary(h.Values("Signature-Input"))
+	if err != nil {
+		t.Fatalf("Signature-Input no longer parses as dictionary after strip: %v\nvalues=%q",
+			err, h.Values("Signature-Input"))
+	}
+
+	// Only sig1 should remain. No pipelock* and no fragment keys.
+	names := dict.Names()
+	if len(names) != 1 || names[0] != "sig1" {
+		t.Errorf("Signature-Input members = %v, want [sig1]", names)
+	}
+
+	// And the sig1 inner list's tag must still be "web-bot-auth" — the
+	// buggy path can truncate or drop it when dropping the pipelock1
+	// fragment ahead of it.
+	member, ok := dict.Get("sig1")
+	if !ok {
+		t.Fatal("sig1 member missing after strip")
+	}
+	inner, ok := member.(httpsfv.InnerList)
+	if !ok {
+		t.Fatalf("sig1 is %T, want httpsfv.InnerList", member)
+	}
+	tagVal, ok := inner.Params.Get("tag")
+	if !ok {
+		t.Fatal("sig1 lost its tag parameter after strip")
+	}
+	if tagStr, _ := tagVal.(string); tagStr != "web-bot-auth" {
+		t.Errorf("sig1 tag = %q, want %q", tagStr, "web-bot-auth")
+	}
+
+	// The Signature companion header must also round-trip cleanly.
+	sigDict, err := httpsfv.UnmarshalDictionary(h.Values("Signature"))
+	if err != nil {
+		t.Fatalf("Signature no longer parses as dictionary after strip: %v\nvalues=%q",
+			err, h.Values("Signature"))
+	}
+	if _, ok := sigDict.Get("sig1"); !ok {
+		t.Fatal("sig1 missing from Signature after strip")
+	}
+	if _, ok := sigDict.Get("pipelock1"); ok {
+		t.Error("pipelock1 survived strip in Signature")
+	}
+}
+
+// TestStripInbound_MultiLineDict exercises the multi-header-value form of
+// a Structured-Fields dictionary. httpsfv.UnmarshalDictionary accepts a
+// []string and must merge them. The old comma-split path processed each
+// value in isolation, so a member split across lines could survive.
+func TestStripInbound_MultiLineDict(t *testing.T) {
+	t.Parallel()
+
+	h := http.Header{}
+	// Two separate header lines, one with pipelock1 and one with sig1.
+	h.Add("Signature-Input", `pipelock1=("@method");tag="pipelock-mediation"`)
+	h.Add("Signature-Input", `sig1=("@method");tag="web-bot-auth"`)
+	h.Add("Signature", `pipelock1=:cGlwZQ==:`)
+	h.Add("Signature", `sig1=:YWJj:`)
+
+	StripInbound(h)
+
+	for _, v := range h.Values("Signature-Input") {
+		if strings.Contains(v, "pipelock") {
+			t.Errorf("Signature-Input still contains pipelock across multi-line: %q", v)
+		}
+	}
+	if len(h.Values("Signature-Input")) == 0 {
+		t.Error("StripInbound removed the surviving sig1 Signature-Input")
+	}
+	for _, v := range h.Values("Signature") {
+		if strings.Contains(v, "pipelock") {
+			t.Errorf("Signature still contains pipelock across multi-line: %q", v)
+		}
+	}
+	if len(h.Values("Signature")) == 0 {
+		t.Error("StripInbound removed the surviving sig1 Signature")
+	}
 }
 
 func TestInjectMCP(t *testing.T) {

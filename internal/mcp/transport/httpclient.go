@@ -40,8 +40,15 @@ func NewHTTPClient(url string, headers http.Header) *HTTPClient {
 		url:     url,
 		headers: headers.Clone(),
 		client: &http.Client{
-			// Disable redirects — the upstream URL is validated at the CLI layer,
-			// and following redirects could bypass that validation (SSRF vector).
+			// Disable redirects — the upstream URL is validated at the
+			// CLI layer, and following redirects could bypass that
+			// validation (SSRF vector). Envelope signing's redirect
+			// refresh helper at internal/proxy/proxy.go:348 is a no-op
+			// for this transport because no second hop ever happens;
+			// if a future change enables redirect following here, the
+			// CheckRedirect closure must call refreshEnvelopeForRedirect
+			// (or its MCP equivalent) or pipelock will ship envelopes
+			// with stale @target-uri on the redirected leg.
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 				return http.ErrUseLastResponse
 			},

@@ -429,18 +429,82 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Inject mediation envelope after all admission checks but before the
 	// upstream handshake so the forwarded headers on the accepted connection
-	// carry the final verdict.
+	// carry the final verdict. WebSocket handshakes are body-less GETs, so
+	// content-digest is always dropped from the declared component list;
+	// signing covers @method, @target-uri, and pipelock-mediation.
+	//
+	// gobwas/ws does not expose the *http.Request it synthesizes before
+	// dialing, so we build a request value here that mirrors what the
+	// dialer will send: method=GET, URL=parsed(targetURL), Header=fwdHeaders,
+	// Host=parsed.Host. The signer mutates req.Header (i.e. fwdHeaders)
+	// in place, so Signature / Signature-Input land on the handshake
+	// headers the dialer hands to the upstream server. @target-uri in
+	// the signature base therefore matches the URL being dialed, even
+	// though the actual dial happens a few lines later in wsDialUpstream.
+	//
+	// Defense-in-depth note: targetURL was already parsed successfully
+	// at the top of this handler (the first url.Parse call), so the
+	// second Parse below cannot fail today. The check is intentional
+	// future-proofing — a later refactor that threads a different
+	// targetURL through this path must still fail closed on malformed
+	// input. A deliberately unreachable branch is cheaper than a
+	// silent unsigned envelope on a future regression.
 	actionID := receipt.NewActionID()
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		if envErr := envEmitter.InjectHTTPEnvelope(fwdHeaders, envelope.BuildOpts{
+		parsedTarget, parseErr := url.Parse(targetURL)
+		if parseErr != nil {
+			blockedErr := newEnvelopeBlockedRequest(parseErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordWSBlocked()
+			// Emit a block receipt so handshake-time envelope denials
+			// land in the audit chain. The CONNECT path already does
+			// this; WebSocket parity matters because operators lose
+			// visibility into sign failures otherwise.
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     blockedErr.layer,
+				Pattern:   blockedErr.reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
+			return
+		}
+		synthReq := &http.Request{
+			Method: http.MethodGet,
+			URL:    parsedTarget,
+			Header: fwdHeaders,
+			Host:   parsedTarget.Host,
+		}
+		if envErr := envEmitter.InjectAndSign(synthReq, nil, envelope.BuildOpts{
 			ActionID:   actionID,
 			Action:     string(receipt.ActionDelegate),
 			Verdict:    config.ActionAllow,
 			SideEffect: string(receipt.SideEffectExternalWrite),
 			Actor:      agent,
 			ActorAuth:  id.Auth,
+			PolicyHash: envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash()),
 		}); envErr != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+			blockedErr := newEnvelopeBlockedRequest(envErr)
+			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordWSBlocked()
+			p.emitReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     blockedErr.layer,
+				Pattern:   blockedErr.reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
+			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation, blockedErr.reason)
+			return
 		}
 	}
 

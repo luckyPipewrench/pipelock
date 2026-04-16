@@ -57,6 +57,13 @@ type Envelope struct {
 	AuthorityKind  string
 	AuthorityRef   string
 	RequiresReauth bool
+
+	// Hop is the redirect-refresh counter. Zero (the default, omitted
+	// from the serialized dictionary) means "original request, no
+	// redirect refresh yet." Each redirect refresh increments Hop by 1
+	// so a downstream verifier can distinguish the original envelope
+	// from one rebuilt by pipelock's CheckRedirect path.
+	Hop int
 }
 
 // Serialize encodes the envelope as an RFC 8941 Structured Fields Dictionary
@@ -77,9 +84,18 @@ const (
 	keyAuthority  = "auth"
 	keyAuthorityR = "authr"
 	keyReauth     = "reauth"
+	keyHop        = "hop"
 )
 
 func (e Envelope) Serialize() (string, error) {
+	// Fail closed on malformed input. A negative hop would otherwise
+	// silently vanish from the wire (the hop > 0 guard below omits
+	// it), and a verifier would see a hop=0 original envelope where
+	// the emitter believed it was serialising a refreshed one.
+	if e.Hop < 0 {
+		return "", fmt.Errorf("invalid %q: must be >= 0, got %d", keyHop, e.Hop)
+	}
+
 	dict := httpsfv.NewDictionary()
 
 	dict.Add(keyVersion, httpsfv.NewItem(int64(e.Version)))
@@ -105,6 +121,11 @@ func (e Envelope) Serialize() (string, error) {
 	}
 	if e.RequiresReauth {
 		dict.Add(keyReauth, httpsfv.NewItem(true))
+	}
+	// Hop is omitted from the wire when zero so the common case (no
+	// redirect refresh) does not spend bytes declaring the default.
+	if e.Hop > 0 {
+		dict.Add(keyHop, httpsfv.NewItem(int64(e.Hop)))
 	}
 
 	return httpsfv.Marshal(dict)
@@ -217,6 +238,24 @@ func Parse(s string) (Envelope, error) {
 			}
 		}
 	}
+	if m, ok := dict.Get(keyHop); ok {
+		// Strict parse: an unexpected member shape (non-Item, non-int)
+		// or a negative value is always an error. Silently treating a
+		// malformed hop as zero would mask attacker-crafted wire data
+		// and let a refreshed envelope look like an original.
+		item, itemOK := m.(httpsfv.Item)
+		if !itemOK {
+			return Envelope{}, fmt.Errorf("invalid %q: unexpected member type", keyHop)
+		}
+		v, intOK := item.Value.(int64)
+		if !intOK {
+			return Envelope{}, fmt.Errorf("invalid %q: must be integer", keyHop)
+		}
+		if v < 0 {
+			return Envelope{}, fmt.Errorf("invalid %q: must be >= 0, got %d", keyHop, v)
+		}
+		env.Hop = int(v)
+	}
 
 	// Reject envelopes missing required fields. A partial envelope
 	// could pass through trust decisions with zero-value defaults,
@@ -275,6 +314,9 @@ func (e Envelope) ToMCPMeta() map[string]any {
 	}
 	if e.RequiresReauth {
 		meta[keyReauth] = true
+	}
+	if e.Hop > 0 {
+		meta[keyHop] = e.Hop
 	}
 	return meta
 }

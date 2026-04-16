@@ -560,7 +560,11 @@ func newInterceptHandler(
 		// This ensures responses arrive uncompressed so we can scan them.
 		r.Header.Del("Accept-Encoding")
 
-		// Request body DLP scanning.
+		// Request body DLP scanning. interceptBodyBytes is hoisted out
+		// of the scanner block so the envelope inject site below can
+		// hand the already-buffered bytes to InjectAndSign for
+		// content-digest computation without a second drain pass.
+		var interceptBodyBytes []byte
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 			bodyBytes, result := scanRequestBody(r.Context(), BodyScanRequest{
 				Body:            r.Body,
@@ -736,11 +740,21 @@ func newInterceptHandler(
 			}
 
 			// Re-wrap body so the forwarded request gets the buffered bytes.
-			// Always re-wrap after scanning since the original body was consumed.
+			// Always re-wrap after scanning since the original body was
+			// consumed. GetBody lets stdlib replay on a method-preserving
+			// redirect (307/308); without it, the replayed leg would ship
+			// an empty body and the envelope Content-Digest would be
+			// either absent or stale depending on the signer's component
+			// list.
 			if bodyBytes != nil {
 				r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 				r.ContentLength = int64(len(bodyBytes))
+				bodyBytesCopy := bodyBytes
+				r.GetBody = func() (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
+				}
 			}
+			interceptBodyBytes = bodyBytes
 		}
 
 		// Request header DLP scanning.
@@ -902,18 +916,40 @@ func newInterceptHandler(
 		// Remove hop-by-hop headers before forwarding.
 		removeHopByHopHeaders(r.Header)
 
-		// Inject mediation envelope before forwarding on allow path.
+		// Inject mediation envelope (and attach RFC 9421 signature when
+		// the envelope emitter has a signer) before forwarding on the
+		// allow path. interceptBodyBytes is the scanner-buffered body
+		// when body scanning is enabled; when body scanning is
+		// disabled but signing is enabled, InjectAndSign drains
+		// r.Body itself, bounded by mediation_envelope.max_body_bytes.
 		if ic.Proxy != nil {
 			if envEmitter := ic.Proxy.envelopeEmitterPtr.Load(); envEmitter != nil {
-				if envErr := envEmitter.InjectHTTPEnvelope(r.Header, envelope.BuildOpts{
+				policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
+				if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
 					ActionID:   actionID,
 					Action:     string(receipt.ClassifyHTTP(r.Method)),
 					Verdict:    config.ActionAllow,
 					SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
 					Actor:      ic.Agent,
 					ActorAuth:  ic.ActorAuth,
+					PolicyHash: policyHash,
 				}); envErr != nil {
-					ic.Logger.LogAnomaly(actx, "", fmt.Sprintf("mediation envelope injection failed: %v", envErr), 0.1)
+					blockedErr := newEnvelopeBlockedRequest(envErr)
+					ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+					ic.Metrics.RecordTLSRequestBlocked(blockedErr.layer)
+					interceptEmitReceipt(ic, receipt.EmitOpts{
+						ActionID:  actionID,
+						Verdict:   config.ActionBlock,
+						Layer:     blockedErr.layer,
+						Pattern:   blockedErr.reason,
+						Transport: "intercept",
+						Method:    r.Method,
+						Target:    targetURL,
+						RequestID: ic.RequestID,
+						Agent:     ic.Agent,
+					})
+					http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+					return
 				}
 			}
 		}

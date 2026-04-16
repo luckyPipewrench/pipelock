@@ -218,3 +218,97 @@ func TestParse_AcceptsValidActorAuth(t *testing.T) {
 		}
 	}
 }
+
+// TestEnvelope_Hop_RoundTrip proves Hop is omitted when zero and
+// round-trips losslessly when positive. Hop is how downstream
+// verifiers distinguish an original envelope from one rebuilt by the
+// redirect-refresh path at internal/proxy/proxy.go:328.
+func TestEnvelope_Hop_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	// Hop == 0 must not appear on the wire at all.
+	zero := Envelope{
+		Version:    1,
+		Action:     "read",
+		Verdict:    "allow",
+		ActorAuth:  ActorAuthBound,
+		ReceiptID:  "id-zero",
+		Timestamp:  1712345678,
+		PolicyHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+	}
+	out, err := zero.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize zero hop: %v", err)
+	}
+	if strings.Contains(out, "hop=") {
+		t.Errorf("hop=0 should be omitted from the wire, got %q", out)
+	}
+
+	// Hop == 3 must survive Serialize → Parse intact.
+	refreshed := zero
+	refreshed.Hop = 3
+	out2, err := refreshed.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize hop=3: %v", err)
+	}
+	if !strings.Contains(out2, "hop=3") {
+		t.Errorf("expected hop=3 in serialized envelope, got %q", out2)
+	}
+	parsed, err := Parse(out2)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if parsed.Hop != 3 {
+		t.Errorf("parsed Hop = %d, want 3", parsed.Hop)
+	}
+}
+
+// TestParse_RejectsNegativeHop confirms the hop wire key cannot
+// deserialize to a negative value. Negative hop is either a parser
+// bug or an attacker-crafted inbound envelope; either way, fail closed.
+func TestParse_RejectsNegativeHop(t *testing.T) {
+	t.Parallel()
+
+	input := `v=1, act="read", vd="allow", rid="id-1", ts=1712345678, hop=-1`
+	_, err := Parse(input)
+	if err == nil {
+		t.Error("Parse should reject hop=-1")
+	}
+}
+
+// TestSerialize_RejectsNegativeHop mirrors the Parse-side guard on the
+// Serialize side. Serialize never saw a negative Hop until the PR #403
+// refactor split redirect refresh out; guard it loudly so a future
+// caller that does `env.Hop--` below zero gets a build-time crash
+// rather than a silently-dropped wire key.
+func TestSerialize_RejectsNegativeHop(t *testing.T) {
+	t.Parallel()
+
+	env := Envelope{
+		Version:    1,
+		Action:     "read",
+		Verdict:    "allow",
+		ActorAuth:  ActorAuthBound,
+		ReceiptID:  "id-neg",
+		Timestamp:  1712345678,
+		PolicyHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		Hop:        -1,
+	}
+	if _, err := env.Serialize(); err == nil {
+		t.Error("Serialize should reject Hop = -1")
+	}
+}
+
+// TestParse_RejectsNonIntegerHop covers the typed rejection path: a hop
+// key that's structurally valid RFC 8941 but not an integer (e.g. a
+// string) must be refused. The parse path branches on item type, and
+// leaving the non-Integer case silent would be a soft-downgrade vector.
+func TestParse_RejectsNonIntegerHop(t *testing.T) {
+	t.Parallel()
+
+	// hop as a string instead of an integer.
+	input := `v=1, act="read", vd="allow", rid="id-str-hop", ts=1712345678, hop="three"`
+	if _, err := Parse(input); err == nil {
+		t.Error("Parse should reject non-integer hop value")
+	}
+}

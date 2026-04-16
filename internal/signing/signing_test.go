@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -789,6 +790,144 @@ func TestLoadPrivateKeyFile_Missing(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
+}
+
+func TestParsePublicKey(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+
+	// Build versioned and hex representations.
+	versioned := EncodePublicKey(pub)
+	hexKey := hex.EncodeToString(pub)
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		errMsg  string
+	}{
+		{name: "empty_string", input: "", wantErr: true, errMsg: "public key is empty"},
+		{name: "whitespace_only", input: "   \n\t  ", wantErr: true, errMsg: "public key is empty"},
+		{name: "valid_versioned", input: versioned, wantErr: false},
+		{name: "valid_hex", input: hexKey, wantErr: false},
+		{name: "invalid_hex", input: "zzzz_not_hex", wantErr: true, errMsg: "invalid public key"},
+		{name: "wrong_length_hex", input: hex.EncodeToString([]byte("short")), wantErr: true, errMsg: "invalid public key length"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key, err := ParsePublicKey(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errMsg)
+				}
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("error = %q, want substring %q", err.Error(), tt.errMsg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !bytes.Equal(key, pub) {
+				t.Error("parsed key does not match original")
+			}
+		})
+	}
+}
+
+func TestLoadPublicKey(t *testing.T) {
+	pub, _, _ := GenerateKeyPair()
+	versioned := EncodePublicKey(pub)
+	hexKey := hex.EncodeToString(pub)
+
+	t.Run("empty_input", func(t *testing.T) {
+		_, err := LoadPublicKey("")
+		if err == nil || !strings.Contains(err.Error(), "public key is empty") {
+			t.Fatalf("expected empty error, got: %v", err)
+		}
+	})
+
+	t.Run("valid_file_versioned", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "key.pub")
+		if err := os.WriteFile(path, []byte(versioned), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		key, err := LoadPublicKey(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(key, pub) {
+			t.Error("loaded key does not match")
+		}
+	})
+
+	t.Run("valid_file_hex", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "key.hex")
+		if err := os.WriteFile(path, []byte(hexKey), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		key, err := LoadPublicKey(path)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(key, pub) {
+			t.Error("loaded key does not match")
+		}
+	})
+
+	t.Run("file_exists_but_garbage", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "key.pub")
+		if err := os.WriteFile(path, []byte("not a key at all"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := LoadPublicKey(path)
+		if err == nil || !strings.Contains(err.Error(), "parsing public key file") {
+			t.Fatalf("expected parse error, got: %v", err)
+		}
+	})
+
+	t.Run("typo_path_with_slash", func(t *testing.T) {
+		_, err := LoadPublicKey("/nonexistent/typo.pub")
+		if err == nil {
+			t.Fatal("expected error for nonexistent file path")
+		}
+		if !strings.Contains(err.Error(), "reading public key file") {
+			t.Errorf("error = %q, want 'reading public key file'", err.Error())
+		}
+	})
+
+	t.Run("path_with_extension_not_found", func(t *testing.T) {
+		_, err := LoadPublicKey("missing-key.pem")
+		if err == nil {
+			t.Fatal("expected error for file-like input that doesn't exist")
+		}
+		if !strings.Contains(err.Error(), "reading public key file") {
+			t.Errorf("error = %q, want 'reading public key file'", err.Error())
+		}
+	})
+
+	t.Run("dotprefix_not_found", func(t *testing.T) {
+		_, err := LoadPublicKey("./relative.key")
+		if err == nil {
+			t.Fatal("expected error for dot-prefixed path")
+		}
+		if !strings.Contains(err.Error(), "reading public key file") {
+			t.Errorf("error = %q, want 'reading public key file'", err.Error())
+		}
+	})
+
+	t.Run("inline_hex_value", func(t *testing.T) {
+		key, err := LoadPublicKey(hexKey)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !bytes.Equal(key, pub) {
+			t.Error("inline hex key does not match")
+		}
+	})
 }
 
 func TestAtomicWrite_RenameError(t *testing.T) {

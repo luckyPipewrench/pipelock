@@ -784,6 +784,182 @@ func TestEmitter_ResumesChainAfterRestart(t *testing.T) {
 	}
 }
 
+func TestExtractReceiptsWithSessionID_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+	})
+
+	for i := 0; i < 3; i++ {
+		if err := e.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    chainTestTarget,
+			Verdict:   config.ActionBlock,
+			Transport: chainTestTransport,
+			Method:    http.MethodGet,
+		}); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+	_ = rec.Close()
+
+	// Find JSONL file.
+	entries, _ := os.ReadDir(dir)
+	var jsonlPath string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".jsonl") {
+			jsonlPath = filepath.Join(dir, entry.Name())
+			break
+		}
+	}
+	if jsonlPath == "" {
+		t.Fatal("no JSONL file found")
+	}
+
+	receipts, sessionID, err := ExtractReceiptsWithSessionID(jsonlPath)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsWithSessionID: %v", err)
+	}
+	if len(receipts) != 3 {
+		t.Fatalf("expected 3 receipts, got %d", len(receipts))
+	}
+	if sessionID == "" {
+		t.Fatal("expected non-empty session ID")
+	}
+
+	keyHex := hex.EncodeToString(pub)
+	result := VerifyChain(receipts, keyHex)
+	if !result.Valid {
+		t.Fatalf("extracted chain invalid: %s", result.Error)
+	}
+}
+
+func TestExtractReceiptsWithSessionID_EmptyFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	receipts, sessionID, err := ExtractReceiptsWithSessionID(emptyPath)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(receipts) != 0 {
+		t.Fatalf("expected 0 receipts, got %d", len(receipts))
+	}
+	if sessionID != "" {
+		t.Fatalf("expected empty session ID, got %q", sessionID)
+	}
+}
+
+func TestExtractReceiptsWithSessionID_BadPath(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := ExtractReceiptsWithSessionID("/nonexistent/path.jsonl")
+	if err == nil {
+		t.Fatal("expected error for nonexistent path")
+	}
+}
+
+func TestExtractReceiptsFromSessionDir_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+	})
+
+	for i := 0; i < 2; i++ {
+		if err := e.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    chainTestTarget,
+			Verdict:   config.ActionAllow,
+			Transport: chainTestTransport,
+			Method:    http.MethodGet,
+		}); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
+	}
+	_ = rec.Close()
+
+	// The recorder uses "proxy" as the session ID.
+	receipts, err := ExtractReceiptsFromSessionDir(dir, "proxy")
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	if len(receipts) != 2 {
+		t.Fatalf("expected 2 receipts, got %d", len(receipts))
+	}
+}
+
+func TestExtractReceiptsFromSessionDir_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	_, priv := generateTestKey(t)
+
+	rec, err := recorder.New(recorder.Config{
+		Enabled:            true,
+		Dir:                dir,
+		CheckpointInterval: 1000,
+	}, nil, priv)
+	if err != nil {
+		t.Fatalf("recorder.New: %v", err)
+	}
+	_ = rec.Close()
+
+	// Query with a session ID that doesn't match any files.
+	receipts, err := ExtractReceiptsFromSessionDir(dir, "nonexistent-session")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(receipts) != 0 {
+		t.Fatalf("expected 0 receipts, got %d", len(receipts))
+	}
+}
+
+func TestExtractReceiptsFromSessionDir_BadDir(t *testing.T) {
+	t.Parallel()
+
+	_, err := ExtractReceiptsFromSessionDir("/nonexistent/dir", "any-session")
+	if err == nil {
+		t.Fatal("expected error for nonexistent directory")
+	}
+}
+
 // readAllEntriesFromDir reads all recorder entries from JSONL files in dir.
 func readAllEntriesFromDir(t *testing.T, dir string) []recorder.Entry {
 	t.Helper()

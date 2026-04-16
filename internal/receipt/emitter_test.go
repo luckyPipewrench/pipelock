@@ -626,6 +626,84 @@ func TestSideEffectFromMCPAction(t *testing.T) {
 	}
 }
 
+func TestRecorderSeqStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+		want uint64
+	}{
+		{name: "normal", path: "session-5.jsonl", want: 5},
+		{name: "zero", path: "session-0.jsonl", want: 0},
+		{name: "no_dash", path: "nodash.jsonl", want: 0},
+		{name: "non_numeric", path: "foo-bar.jsonl", want: 0},
+		{name: "max_uint64", path: "session-18446744073709551615.jsonl", want: 18446744073709551615},
+		{name: "with_leading_dirs", path: "/tmp/evidence/session-7.jsonl", want: 7},
+		{name: "evidence_prefix", path: "evidence-proxy-42.jsonl", want: 42},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := recorderSeqStart(tt.path)
+			if got != tt.want {
+				t.Errorf("recorderSeqStart(%q) = %d, want %d", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecorderFiles_EmptyDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	files, err := recorderFiles(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("expected 0 files, got %d", len(files))
+	}
+}
+
+func TestRecorderFiles_EmptyDirString(t *testing.T) {
+	t.Parallel()
+
+	files, err := recorderFiles("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if files != nil {
+		t.Fatalf("expected nil, got %v", files)
+	}
+}
+
+func TestRecorderFiles_BadDir(t *testing.T) {
+	t.Parallel()
+
+	_, err := recorderFiles("/nonexistent/dir")
+	if err == nil {
+		t.Fatal("expected error for nonexistent dir")
+	}
+}
+
+func TestReceiptFromEntry_MarshalError(t *testing.T) {
+	t.Parallel()
+
+	// An entry whose Detail cannot be round-tripped properly.
+	// We use a channel value which json.Marshal will reject.
+	entry := recorder.Entry{
+		Sequence: 99,
+		Type:     recorderEntryType,
+		Detail:   make(chan int),
+	}
+	_, err := receiptFromEntry(entry)
+	if err == nil {
+		t.Fatal("expected error for unmarshalable detail")
+	}
+}
+
 // readReceiptFromDir reads the first action_receipt entry from JSONL files
 // in dir, parses the receipt, and verifies its signature.
 func readReceiptFromDir(t *testing.T, dir string, pub ed25519.PublicKey) Receipt {

@@ -4,12 +4,14 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -156,4 +158,77 @@ func TestForwardHTTP_EnvelopeSignedRedirectChain(t *testing.T) {
 	if gotBodyOnRedirect == "" {
 		t.Log("final handler received empty body (expected for GET)")
 	}
+}
+
+// TestForwardHTTP_EnvelopeSignedPOST exercises the forward HTTP proxy
+// signing path for body-bearing POST requests. This covers the
+// forwardBodyBytes hoisting, InjectAndSign with body, GetBody
+// installation, and Content-Digest computation in handleForwardHTTP —
+// all of which are uncovered by GET-only tests.
+func TestForwardHTTP_EnvelopeSignedPOST(t *testing.T) {
+	t.Parallel()
+
+	var gotSig, gotSigInput, gotMediation, gotDigest, gotBody string
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSig = r.Header.Get("Signature")
+		gotSigInput = r.Header.Get("Signature-Input")
+		gotMediation = r.Header.Get("Pipelock-Mediation")
+		gotDigest = r.Header.Get("Content-Digest")
+		bodyBytes, _ := io.ReadAll(r.Body)
+		gotBody = string(bodyBytes)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, _, proxyCleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
+	})
+	defer proxyCleanup()
+
+	requestBody := "signed-post-body"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		upstream.URL+"/signed-post",
+		bytes.NewReader([]byte(requestBody)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.ContentLength = int64(len(requestBody))
+
+	transport := &http.Transport{Proxy: http.ProxyURL(mustParseProxyURL(t, proxyAddr))}
+	client := &http.Client{Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("forward POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if gotSig == "" {
+		t.Error("upstream missing Signature header on POST")
+	}
+	if gotSigInput == "" {
+		t.Error("upstream missing Signature-Input header on POST")
+	}
+	if gotMediation == "" {
+		t.Error("upstream missing Pipelock-Mediation header on POST")
+	}
+	if gotDigest == "" {
+		t.Error("upstream missing Content-Digest header on signed POST body")
+	}
+	if gotBody != requestBody {
+		t.Errorf("upstream body = %q, want %q", gotBody, requestBody)
+	}
+}
+
+// mustParseProxyURL returns a *url.URL for the proxy address.
+func mustParseProxyURL(t *testing.T, addr string) *url.URL {
+	t.Helper()
+	u, err := url.Parse("http://" + addr)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	return u
 }

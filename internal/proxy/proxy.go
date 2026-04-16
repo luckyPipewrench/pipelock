@@ -82,6 +82,14 @@ const (
 	// mid-request — a TOCTOU race flagged by CodeRabbit on PR #403.
 	ctxKeyReverseEnvelopeEmitter
 
+	// ctxKeyEnvelopeEmitter snapshots the *envelope.Emitter at the
+	// point the fetch/forward handler first signs the outbound request.
+	// refreshEnvelopeForRedirect reads this instead of the global
+	// atomic so a reload mid-redirect-chain cannot flip signing
+	// state for an in-flight request. Same TOCTOU fix as
+	// ctxKeyReverseEnvelopeEmitter but for the client-side path.
+	ctxKeyEnvelopeEmitter
+
 	// ctxKeyRedirectTransport is the transport label ("fetch" or
 	// "forward") attached by the fetch and forward handlers before
 	// handing the request to p.client. The shared CheckRedirect
@@ -558,7 +566,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 // redirect. sign:true is a hard integrity contract: a redirected hop
 // must not continue with a stale or missing pipelock signature.
 func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Request, cfg *config.Config) error {
-	em := p.envelopeEmitterPtr.Load()
+	// Prefer the request-scoped snapshot so a reload mid-chain
+	// cannot flip signing state for this request. Fall back to the
+	// global atomic for backwards-compat with callers that don't
+	// set the context key (e.g. tests calling this helper directly).
+	em, _ := req.Context().Value(ctxKeyEnvelopeEmitter).(*envelope.Emitter)
+	if em == nil {
+		em = p.envelopeEmitterPtr.Load()
+	}
 	if em == nil {
 		return nil
 	}
@@ -2402,6 +2417,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// InjectAndSign is called with body=nil and the signer drops
 	// content-digest from the declared component list.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+		// Snapshot the emitter on the request context so
+		// refreshEnvelopeForRedirect uses the same signing state
+		// for the entire redirect chain, even if a reload fires.
+		req = req.WithContext(context.WithValue(req.Context(), ctxKeyEnvelopeEmitter, envEmitter))
 		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
 		if envErr := envEmitter.InjectAndSign(req, nil, envelope.BuildOpts{
 			ActionID:      actionID,

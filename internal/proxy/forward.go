@@ -1080,6 +1080,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// mediation_envelope.max_body_bytes, and restores it with a fresh
 	// reader + GetBody for redirect replay.
 	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+		outReq = outReq.WithContext(context.WithValue(outReq.Context(), ctxKeyEnvelopeEmitter, envEmitter))
 		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
 		if envErr := envEmitter.InjectAndSign(outReq, forwardBodyBytes, envelope.BuildOpts{
 			ActionID:       actionID,

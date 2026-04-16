@@ -232,55 +232,40 @@ func (s *Signer) SignRequest(req *http.Request, body []byte) error {
 		body = nil
 	}
 
-	// Compute the effective component list and set any headers the
-	// signer is responsible for populating before signing. Today the
-	// only signer-populated header is Content-Digest.
+	// Snapshot Content-Digest so we can restore on error. The
+	// effectiveComponents call below mutates req.Header.Set
+	// (Content-Digest); if a later step fails we must not leave the
+	// request with a signer-populated digest that no signature covers.
+	prevDigest := req.Header.Get("Content-Digest")
+
 	effective := s.effectiveComponents(req, body)
 	if len(effective) == 0 {
-		// No component on the request matches our declared list. This
-		// is a programming error — the inject path should have set the
-		// Pipelock-Mediation header before calling SignRequest, and
-		// @method and @target-uri always apply. Fail loudly rather
-		// than emitting an empty signature base.
+		req.Header.Set("Content-Digest", prevDigest)
 		return errors.New("envelope signer: no effective components for request")
 	}
 
-	// Clear a stale Content-Digest when content-digest is NOT in the
-	// effective list. Body-less, over-cap, or caller-declined-body
-	// requests previously left whatever Content-Digest header the
-	// caller (or an earlier redirect hop) had attached on req,
-	// forwarding an unsigned digest that an attacker could forge
-	// against an arbitrary payload. Fail closed by deleting it —
-	// effectiveComponents has already Set() a fresh value when
-	// content-digest IS in the list, so this Del only fires on the
-	// "declared list omits content-digest" branch.
 	if !containsComponent(effective, headerContentDigest) {
 		req.Header.Del("Content-Digest")
 	}
 
-	// Build the signature-params inner list (component list +
-	// parameters). This object is emitted on Signature-Input AND
-	// serialized into the last line of the signature base.
 	created := s.nowFn().UTC().Unix()
 	sigParams := buildSigParams(effective, created, s.keyID)
 
-	// Build the signature base per RFC 9421 §2.5.
 	base, err := buildSignatureBase(req, body, effective, sigParams)
 	if err != nil {
+		req.Header.Set("Content-Digest", prevDigest)
 		return fmt.Errorf("envelope signer: building signature base: %w", err)
 	}
 
 	rawSig := ed25519.Sign(s.privKey, []byte(base))
 
-	// Attach Signature-Input and Signature headers, preserving any
-	// existing sig1 / web-bot-auth members. If the request already
-	// carried a pipelock* member (from a previous pipelock hop, an
-	// attacker-controlled inbound, or a redirect refresh), replace
-	// it in place.
 	if err := mergeSignatureInput(req.Header, sigParams); err != nil {
+		req.Header.Set("Content-Digest", prevDigest)
 		return fmt.Errorf("envelope signer: merging Signature-Input: %w", err)
 	}
 	if err := mergeSignature(req.Header, rawSig); err != nil {
+		req.Header.Del("Signature-Input")
+		req.Header.Set("Content-Digest", prevDigest)
 		return fmt.Errorf("envelope signer: merging Signature: %w", err)
 	}
 
@@ -411,7 +396,13 @@ func buildComponentValue(req *http.Request, body []byte, comp string) (string, e
 		if req.URL == nil {
 			return "", errors.New("request has nil URL")
 		}
-		return req.URL.String(), nil
+		// RFC 9421 §2.2.2: @target-uri is the target URI of the request
+		// excluding any fragment component. Go never sends fragments on
+		// the wire, so a verifier reconstructing from the wire would not
+		// see them. Including fragments would cause verification failure.
+		u := *req.URL
+		u.Fragment = ""
+		return u.String(), nil
 	case derivedAuthority:
 		// RFC 9421 §2.2.3: @authority is the on-wire authority the
 		// request is sent to, not the URL's host. When a caller

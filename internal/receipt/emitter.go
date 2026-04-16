@@ -7,6 +7,11 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +35,7 @@ type Emitter struct {
 	configHash atomic.Value // stores string; updated on hot reload
 	principal  string
 	actor      string
+	initErr    error
 
 	// Chain state — mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
@@ -66,6 +72,7 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		chainPrevHash: GenesisHash,
 	}
 	e.configHash.Store(cfg.ConfigHash)
+	e.initErr = e.resumeChain()
 	return e
 }
 
@@ -75,6 +82,7 @@ type EmitOpts struct {
 	Verdict             string
 	Layer               string
 	Pattern             string
+	Severity            string
 	Transport           string
 	Method              string
 	Target              string
@@ -102,6 +110,9 @@ type EmitOpts struct {
 func (e *Emitter) Emit(opts EmitOpts) error {
 	if e == nil {
 		return nil
+	}
+	if e.initErr != nil {
+		return fmt.Errorf("resume receipt chain: %w", e.initErr)
 	}
 
 	actionType := e.classifyAction(opts)
@@ -152,6 +163,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Method:              opts.Method,
 		Layer:               opts.Layer,
 		Pattern:             opts.Pattern,
+		Severity:            opts.Severity,
 		RequestID:           opts.RequestID,
 		ChainPrevHash:       e.chainPrevHash,
 		ChainSeq:            e.chainSeq,
@@ -261,6 +273,9 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 	if e == nil {
 		return nil
 	}
+	if e.initErr != nil {
+		return fmt.Errorf("resume receipt chain: %w", e.initErr)
+	}
 
 	e.chainMu.Lock()
 	defer e.chainMu.Unlock()
@@ -302,4 +317,138 @@ func configHashString(v any) string {
 		return s
 	}
 	return ""
+}
+
+func (e *Emitter) resumeChain() error {
+	if e == nil || e.recorder == nil {
+		return nil
+	}
+
+	files, err := recorderFiles(e.recorder.Dir(), recorderSessionID)
+	if err != nil {
+		return err
+	}
+
+	var lastReceipt *Receipt
+	for i := len(files) - 1; i >= 0 && lastReceipt == nil; i-- {
+		entries, readErr := recorder.ReadEntries(files[i])
+		if readErr != nil {
+			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
+		}
+		for j := len(entries) - 1; j >= 0; j-- {
+			switch entries[j].Type {
+			case transcriptRootEntryType:
+				e.rootEmitted = true
+				return nil
+			case recorderEntryType:
+				rcpt, unmarshalErr := receiptFromEntry(entries[j])
+				if unmarshalErr != nil {
+					return unmarshalErr
+				}
+				lastReceipt = rcpt
+			}
+			if lastReceipt != nil {
+				break
+			}
+		}
+	}
+	if lastReceipt == nil {
+		return nil
+	}
+
+	var firstReceipt *Receipt
+	for _, file := range files {
+		entries, readErr := recorder.ReadEntries(file)
+		if readErr != nil {
+			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(file), readErr)
+		}
+		for _, entry := range entries {
+			if entry.Type != recorderEntryType {
+				continue
+			}
+			rcpt, unmarshalErr := receiptFromEntry(entry)
+			if unmarshalErr != nil {
+				return unmarshalErr
+			}
+			firstReceipt = rcpt
+			break
+		}
+		if firstReceipt != nil {
+			break
+		}
+	}
+
+	// Verify the tail receipt's signature before trusting its chain state.
+	// A tampered or partial evidence file must not silently corrupt the chain.
+	if e.privKey != nil {
+		keyHex := fmt.Sprintf("%x", e.privKey.Public().(ed25519.PublicKey))
+		if verifyErr := VerifyWithKey(*lastReceipt, keyHex); verifyErr != nil {
+			return fmt.Errorf("tail receipt signature invalid (seq %d): %w", lastReceipt.ActionRecord.ChainSeq, verifyErr)
+		}
+	}
+
+	hash, err := ReceiptHash(*lastReceipt)
+	if err != nil {
+		return fmt.Errorf("hashing existing receipt chain: %w", err)
+	}
+	e.chainPrevHash = hash
+	e.chainSeq = lastReceipt.ActionRecord.ChainSeq + 1
+	e.chainEnd = lastReceipt.ActionRecord.Timestamp
+	if firstReceipt != nil {
+		e.chainStart = firstReceipt.ActionRecord.Timestamp
+	}
+	return nil
+}
+
+func receiptFromEntry(entry recorder.Entry) (*Receipt, error) {
+	detailJSON, err := json.Marshal(entry.Detail)
+	if err != nil {
+		return nil, fmt.Errorf("marshal existing receipt detail at seq %d: %w", entry.Sequence, err)
+	}
+	rcpt, err := Unmarshal(detailJSON)
+	if err != nil {
+		return nil, fmt.Errorf("unmarshal existing receipt at seq %d: %w", entry.Sequence, err)
+	}
+	return &rcpt, nil
+}
+
+func recorderFiles(dir, sessionID string) ([]string, error) {
+	if dir == "" {
+		return nil, nil
+	}
+
+	dirEntries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return nil, fmt.Errorf("reading evidence directory: %w", err)
+	}
+
+	prefix := "evidence-" + sessionID + "-"
+	files := make([]string, 0)
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
+			files = append(files, filepath.Join(filepath.Clean(dir), name))
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return recorderSeqStart(files[i]) < recorderSeqStart(files[j])
+	})
+	return files, nil
+}
+
+func recorderSeqStart(path string) uint64 {
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".jsonl")
+	lastDash := strings.LastIndex(name, "-")
+	if lastDash < 0 {
+		return 0
+	}
+	seq, err := strconv.ParseUint(name[lastDash+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return seq
 }

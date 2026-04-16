@@ -84,13 +84,13 @@ func TestExtractText_EmptyContentArray(t *testing.T) {
 }
 
 func TestExtractText_BlocksWithNoTextField(t *testing.T) {
-	// Content blocks without a text field: no text extracted from content blocks,
-	// so falls through to fallback, which extracts the "type" string values.
-	// This is correct — the fallback is intentionally aggressive to catch
-	// non-standard shapes that might carry injection.
+	// Content blocks without a text field: returns empty after successful
+	// ToolResult parse. Falling through to ExtractStringsFromJSON would feed
+	// base64 media in data/blob/raw fields into prompt scanning, so we stop
+	// at the ToolResult parse boundary.
 	raw := json.RawMessage(`{"content":[{"type":"image"},{"type":"resource"}]}`)
 	got := ExtractText(raw)
-	want := "image\nresource"
+	want := ""
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

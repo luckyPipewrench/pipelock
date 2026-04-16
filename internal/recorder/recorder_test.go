@@ -95,6 +95,73 @@ func TestRecorder_HashChain(t *testing.T) {
 	}
 }
 
+func TestRecorder_ResumeChainAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	newRecorder := func() *recorder.Recorder {
+		rec, recErr := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+			SignCheckpoints:    true,
+		}, nil, priv)
+		if recErr != nil {
+			t.Fatalf("recorder.New(): %v", recErr)
+		}
+		return rec
+	}
+
+	rec1 := newRecorder()
+	for i := 0; i < 2; i++ {
+		if err := rec1.Record(recorder.Entry{
+			SessionID: testSessionID,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   fmt.Sprintf("entry-%d", i),
+			Detail:    map[string]any{"idx": i},
+		}); err != nil {
+			t.Fatalf("rec1.Record(%d): %v", i, err)
+		}
+	}
+	if err := rec1.Close(); err != nil {
+		t.Fatalf("rec1.Close(): %v", err)
+	}
+
+	rec2 := newRecorder()
+	if err := rec2.Record(recorder.Entry{
+		SessionID: testSessionID,
+		Type:      testType,
+		Transport: testTransport,
+		Summary:   "entry-2",
+		Detail:    map[string]any{"idx": 2},
+	}); err != nil {
+		t.Fatalf("rec2.Record(): %v", err)
+	}
+	if err := rec2.Close(); err != nil {
+		t.Fatalf("rec2.Close(): %v", err)
+	}
+
+	result, err := recorder.QuerySession(dir, testSessionID, nil)
+	if err != nil {
+		t.Fatalf("QuerySession(): %v", err)
+	}
+	if len(result.Entries) != 5 {
+		t.Fatalf("entry count = %d, want 5", len(result.Entries))
+	}
+	if err := recorder.VerifyChain(result.Entries, pub); err != nil {
+		t.Fatalf("VerifyChain(): %v", err)
+	}
+	for i, entry := range result.Entries {
+		if entry.Sequence != uint64(i) {
+			t.Fatalf("entry[%d].Sequence = %d, want %d", i, entry.Sequence, i)
+		}
+	}
+}
+
 func TestRecorder_Redaction(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Defaults()

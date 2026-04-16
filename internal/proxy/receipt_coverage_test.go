@@ -1414,6 +1414,67 @@ func TestReceiptCoverage_WSBinaryBlock_EmitsReceipt(t *testing.T) {
 	}
 }
 
+func TestReceiptCoverage_WSBinaryMediaBlock_EmitsReceipt(t *testing.T) {
+	t.Parallel()
+
+	jpeg := buildValidJPEG([]byte("Exif\x00\x00receipt-media-block"))
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			_, _, _ = wsutil.ReadClientData(conn)
+			_ = wsutil.WriteServerMessage(conn, ws.OpBinary, jpeg)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close() //nolint:errcheck // test
+	backendAddr := ln.Addr().String()
+
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, cleanup := setupWSProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
+		cfg.WebSocketProxy.AllowBinaryFrames = true
+		stripImages := true
+		cfg.MediaPolicy.StripImages = &stripImages
+	})
+	defer cleanup()
+
+	conn, err := dialWSConn(proxyAddr, backendAddr)
+	if err != nil {
+		t.Fatalf("dialWSConn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
+		t.Fatalf("WriteClientMessage: %v", writeErr)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, _ = wsutil.ReadServerData(conn)
+
+	r := rph.requireReceipt(t, "media_policy")
+
+	if verr := receipt.Verify(r); verr != nil {
+		t.Fatalf("Verify failed: %v", verr)
+	}
+	if r.ActionRecord.Transport != TransportWS {
+		t.Errorf("transport = %q, want %q", r.ActionRecord.Transport, TransportWS)
+	}
+	if r.ActionRecord.Verdict != config.ActionBlock {
+		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
+	}
+}
+
 // TestReceiptCoverage_WSSessionClose_EmitsReceipt boots a WS proxy with
 // receipt emission, connects, sends a text frame, receives the echo, closes
 // cleanly, and verifies a session_close receipt is emitted.

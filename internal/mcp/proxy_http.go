@@ -991,6 +991,7 @@ func RunHTTPListenerProxy(
 		ProvenanceCfg:       opts.ProvenanceCfg,
 		DoWCheck:            opts.DoWCheck,
 		A2ACfg:              opts.A2ACfg,
+		MediaPolicy:         opts.MediaPolicy,
 		TaintCfg:            opts.TaintCfg,
 		TaintExternalSource: true,
 		EnvelopeEmitter:     opts.EnvelopeEmitter,

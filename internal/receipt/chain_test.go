@@ -702,6 +702,88 @@ func TestEmitTranscriptRoot_TimeBounds(t *testing.T) {
 	t.Fatal("transcript_root entry not found")
 }
 
+func TestEmitter_ResumesChainAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+
+	newEmitter := func() (*recorder.Recorder, *Emitter) {
+		rec := newTestRecorder(t, dir, priv)
+		e := NewEmitter(EmitterConfig{
+			Recorder:   rec,
+			PrivKey:    priv,
+			ConfigHash: testConfigHash,
+			Principal:  "test",
+		})
+		if e == nil {
+			t.Fatal("NewEmitter() returned nil")
+		}
+		return rec, e
+	}
+
+	rec1, emitter1 := newEmitter()
+	for i := 0; i < 2; i++ {
+		if err := emitter1.Emit(EmitOpts{
+			ActionID:  NewActionID(),
+			Target:    chainTestTarget,
+			Verdict:   "allow",
+			Transport: chainTestTransport,
+			Method:    http.MethodGet,
+		}); err != nil {
+			t.Fatalf("emitter1.Emit(%d): %v", i, err)
+		}
+	}
+	if err := rec1.Close(); err != nil {
+		t.Fatalf("rec1.Close(): %v", err)
+	}
+
+	rec2, emitter2 := newEmitter()
+	if err := emitter2.Emit(EmitOpts{
+		ActionID:  NewActionID(),
+		Target:    chainTestTarget,
+		Verdict:   "allow",
+		Transport: chainTestTransport,
+		Method:    http.MethodGet,
+	}); err != nil {
+		t.Fatalf("emitter2.Emit(): %v", err)
+	}
+	if err := rec2.Close(); err != nil {
+		t.Fatalf("rec2.Close(): %v", err)
+	}
+
+	result, err := recorder.QuerySession(dir, "proxy", &recorder.QueryFilter{Type: recorderEntryType})
+	if err != nil {
+		t.Fatalf("QuerySession(): %v", err)
+	}
+	if len(result.Entries) != 3 {
+		t.Fatalf("receipt entry count = %d, want 3", len(result.Entries))
+	}
+
+	receipts := make([]Receipt, 0, len(result.Entries))
+	for _, entry := range result.Entries {
+		detailJSON, err := json.Marshal(entry.Detail)
+		if err != nil {
+			t.Fatalf("json.Marshal(detail): %v", err)
+		}
+		rcpt, err := Unmarshal(detailJSON)
+		if err != nil {
+			t.Fatalf("Unmarshal(): %v", err)
+		}
+		receipts = append(receipts, rcpt)
+	}
+
+	chainResult := VerifyChain(receipts, hex.EncodeToString(pub))
+	if !chainResult.Valid {
+		t.Fatalf("VerifyChain(): %s", chainResult.Error)
+	}
+	for i, rcpt := range receipts {
+		if rcpt.ActionRecord.ChainSeq != uint64(i) {
+			t.Fatalf("receipt[%d].ChainSeq = %d, want %d", i, rcpt.ActionRecord.ChainSeq, i)
+		}
+	}
+}
+
 // readAllEntriesFromDir reads all recorder entries from JSONL files in dir.
 func readAllEntriesFromDir(t *testing.T, dir string) []recorder.Entry {
 	t.Helper()

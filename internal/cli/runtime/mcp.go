@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -355,6 +357,7 @@ signed action receipts for MCP decisions.`,
 			// Rebuild scanner with the (possibly modified) resolved config.
 			sc := scanner.New(cfg)
 			defer sc.Close()
+			auditLogger := audit.NewNop()
 
 			ks := killswitch.New(cfg)
 
@@ -549,6 +552,9 @@ signed action receipts for MCP decisions.`,
 					cmd.PrintErrf("  Receipts: disabled — set flight_recorder.signing_key_path to enable signed action receipts\n")
 				}
 			}
+			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+				emitDLPWarn(auditLogger, nil, receiptEmitter, ctx, patternName, severity)
+			})
 
 			// Envelope emitter: create when mediation_envelope.enabled=true.
 			var envEmitter *envelope.Emitter
@@ -608,6 +614,7 @@ signed action receipts for MCP decisions.`,
 						EnvelopeEmitter: envEmitter,
 						DoWCheck:        dowCheck,
 						ReceiptEmitter:  receiptEmitter,
+						MediaPolicy:     &cfg.MediaPolicy,
 						TaintCfg:        &cfg.Taint,
 					}); err != nil {
 						if sentryClient != nil {
@@ -633,6 +640,7 @@ signed action receipts for MCP decisions.`,
 						RedirectRT:      buildRedirectRT(cfg),
 						DoWCheck:        dowCheck,
 						EnvelopeEmitter: envEmitter,
+						MediaPolicy:     &cfg.MediaPolicy,
 						TaintCfg:        &cfg.Taint,
 					}
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
@@ -659,6 +667,7 @@ signed action receipts for MCP decisions.`,
 					ReceiptEmitter:  receiptEmitter,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
+					MediaPolicy:     &cfg.MediaPolicy,
 					TaintCfg:        &cfg.Taint,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
@@ -789,6 +798,7 @@ signed action receipts for MCP decisions.`,
 					ReceiptEmitter:  receiptEmitter,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
+					MediaPolicy:     &cfg.MediaPolicy,
 					TaintCfg:        &cfg.Taint,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
@@ -893,6 +903,7 @@ signed action receipts for MCP decisions.`,
 				ReceiptEmitter:  receiptEmitter,
 				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg:   &cfg.MCPToolProvenance,
+				MediaPolicy:     &cfg.MediaPolicy,
 				TaintCfg:        &cfg.Taint,
 				Lineage:         lin, OnChildReady: onChildReady,
 			}

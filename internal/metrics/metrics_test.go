@@ -1739,6 +1739,26 @@ func TestRecordResponseScanExempt_NilSafe(t *testing.T) {
 	m.RecordResponseScanExempt("exempt_domain", "fetch") // must not panic
 }
 
+func TestRecordDLPWarnMatch(t *testing.T) {
+	m := New()
+	m.RecordDLPWarnMatch("warn-url", "fetch")
+	m.RecordDLPWarnMatch("warn-url", "fetch")
+	m.RecordDLPWarnMatch("warn-body", "mcp_http")
+
+	body := scrapeMetrics(t, m)
+	if !strings.Contains(body, `pipelock_dlp_warn_matches_total{pattern="warn-url",transport="fetch"} 2`) {
+		t.Error("expected warn-url/fetch counter = 2")
+	}
+	if !strings.Contains(body, `pipelock_dlp_warn_matches_total{pattern="warn-body",transport="mcp_http"} 1`) {
+		t.Error("expected warn-body/mcp_http counter = 1")
+	}
+}
+
+func TestRecordDLPWarnMatch_NilSafe(t *testing.T) {
+	var m *Metrics
+	m.RecordDLPWarnMatch("warn-url", "fetch") // must not panic
+}
+
 func scrapeMetrics(t *testing.T, m *Metrics) string {
 	t.Helper()
 	handler := m.PrometheusHandler()

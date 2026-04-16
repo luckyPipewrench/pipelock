@@ -467,7 +467,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 			Category: "dlp",
 			Attack:   "Legitimate URL — false positive check",
 			Run: func(sc *scanner.Scanner) vectorResult {
-				r := sc.Scan(context.Background(), "https://docs.example.com/api/v1/users")
+				r := sc.Scan(context.Background(), "https://github.com/luckyPipewrench/pipelock/issues")
 				return vectorResult{Blocked: !r.Allowed, Expected: false, Detail: r.Reason}
 			},
 		},
@@ -527,7 +527,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 			Category: "entropy",
 			Attack:   "Standard URL with readable path — false positive check",
 			Run: func(sc *scanner.Scanner) vectorResult {
-				r := sc.Scan(context.Background(), "https://example.com/blog/2026/how-to-build-apis")
+				r := sc.Scan(context.Background(), "https://github.com/luckyPipewrench/pipelock/blog/2026/how-to-build-apis")
 				return vectorResult{Blocked: !r.Allowed, Expected: false, Detail: r.Reason}
 			},
 		},
@@ -821,7 +821,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 			Category: "clean",
 			Attack:   "Standard docs URL — false positive check",
 			Run: func(sc *scanner.Scanner) vectorResult {
-				r := sc.Scan(context.Background(), "https://docs.python.org/3/library/json.html")
+				r := sc.Scan(context.Background(), "https://github.com/luckyPipewrench/pipelock")
 				return vectorResult{Blocked: !r.Allowed, Expected: false, Detail: r.Reason}
 			},
 		},
@@ -830,7 +830,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 			Category: "clean",
 			Attack:   "Typical SaaS API call — false positive check",
 			Run: func(sc *scanner.Scanner) vectorResult {
-				r := sc.Scan(context.Background(), "https://api.stripe.com/v1/charges")
+				r := sc.Scan(context.Background(), "https://api.openai.com/v1/models")
 				return vectorResult{Blocked: !r.Allowed, Expected: false, Detail: r.Reason}
 			},
 		},
@@ -839,7 +839,7 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 			Category: "clean",
 			Attack:   "Normal search query — false positive check",
 			Run: func(sc *scanner.Scanner) vectorResult {
-				r := sc.Scan(context.Background(), "https://www.google.com/search?q=golang+tutorials&page=1")
+				r := sc.Scan(context.Background(), "https://api.github.com/search/repositories?q=golang+tutorials&page=1")
 				return vectorResult{Blocked: !r.Allowed, Expected: false, Detail: r.Reason}
 			},
 		},

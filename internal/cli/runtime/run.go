@@ -268,23 +268,17 @@ Examples:
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
 
+			// Shared runtime components referenced by hooks and reload paths.
+			var receiptEmitter *receipt.Emitter
+			var m *metrics.Metrics
+
 			// Set up scanner, metrics, kill switch, and proxy
 			sc := scanner.New(cfg)
 			sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
-				wc := scanner.DLPWarnContextFromCtx(ctx)
-				transport := wc.Transport
-				if transport == "" {
-					transport = transportUnknown
-				}
-				lctx, lctxErr := dlpWarnLogContext(wc)
-				if lctxErr != nil {
-					lctx = dlpWarnFallbackLogContext(wc)
-					logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
-				}
-				logger.LogDLPWarn(lctx, patternName, severity, transport)
+				emitDLPWarn(logger, m, receiptEmitter, ctx, patternName, severity)
 			})
 			defer sc.Close()
-			m := metrics.New()
+			m = metrics.New()
 
 			ks := killswitch.New(cfg)
 			m.RegisterKillSwitchState(ks.Sources)
@@ -347,10 +341,6 @@ Examples:
 				captureWriter = cw
 				proxyOpts = append(proxyOpts, proxy.WithCaptureObserver(cw))
 			}
-
-			// Receipt emitter: declared at this scope so both the HTTP
-			// proxy and MCP proxy can share the same emitter instance.
-			var receiptEmitter *receipt.Emitter
 
 			// Envelope emitter: declared at this scope so it can be stored
 			// on the proxy after construction.
@@ -602,17 +592,7 @@ Examples:
 							}
 							newSc := scanner.New(newCfg)
 							newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
-								wc := scanner.DLPWarnContextFromCtx(ctx)
-								transport := wc.Transport
-								if transport == "" {
-									transport = transportUnknown
-								}
-								lctx, lctxErr := dlpWarnLogContext(wc)
-								if lctxErr != nil {
-									lctx = dlpWarnFallbackLogContext(wc)
-									logger.LogError(lctx, fmt.Errorf("build DLP warn audit context: %w", lctxErr))
-								}
-								logger.LogDLPWarn(lctx, patternName, severity, transport)
+								emitDLPWarn(logger, m, receiptEmitter, ctx, patternName, severity)
 							})
 							p.Reload(newCfg, newSc)
 							if reloadErr := p.LoadCertCache(newCfg); reloadErr != nil {

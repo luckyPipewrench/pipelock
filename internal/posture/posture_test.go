@@ -1139,3 +1139,31 @@ type invalidJSONMarshaler struct{}
 func (invalidJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return []byte("{"), nil
 }
+
+func TestCapsule_DisallowUnknownFields_TopLevel(t *testing.T) {
+	raw := []byte(`{"schema_version":"1","INJECTED":"x","config_hash":"a","generated_at":"2026-04-16T00:00:00Z","expires_at":"2026-05-16T00:00:00Z","tool_version":"t","evidence":{"discover":{},"verify_install":{},"simulate":{},"flight_recorder":{}},"signature":"de","signer_key_id":"ca"}`)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var c Capsule
+	if err := dec.Decode(&c); err == nil {
+		t.Fatal("expected error for unknown top-level field INJECTED")
+	}
+}
+
+func TestCapsule_DisallowUnknownFields_Nested(t *testing.T) {
+	raw := []byte(`{"schema_version":"1","config_hash":"a","generated_at":"2026-04-16T00:00:00Z","expires_at":"2026-05-16T00:00:00Z","tool_version":"t","evidence":{"discover":{},"verify_install":{},"simulate":{},"flight_recorder":{},"tampered":true},"signature":"de","signer_key_id":"ca"}`)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var c Capsule
+	if err := dec.Decode(&c); err == nil {
+		t.Fatal("expected error for unknown nested field evidence.tampered")
+	}
+}
+
+func TestCapsule_UnmarshalJSONRejectsTrailingPayload(t *testing.T) {
+	raw := []byte(`{"schema_version":"1","config_hash":"a","generated_at":"2026-04-16T00:00:00Z","expires_at":"2026-05-16T00:00:00Z","tool_version":"t","evidence":{"discover":{},"verify_install":{},"simulate":{},"flight_recorder":{}},"signature":"de","signer_key_id":"ca"}{"tampered":true}`)
+	var c Capsule
+	if err := json.Unmarshal(raw, &c); err == nil {
+		t.Fatal("expected error for trailing JSON payload")
+	}
+}

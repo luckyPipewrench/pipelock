@@ -147,6 +147,7 @@ type ActionRecord struct {
 	Method    string `json:"method,omitempty"`
 	Layer     string `json:"layer,omitempty"`
 	Pattern   string `json:"pattern,omitempty"`
+	Severity  string `json:"severity,omitempty"`
 	RequestID string `json:"request_id,omitempty"`
 
 	// Chain integrity — links receipts into a tamper-evident sequence.

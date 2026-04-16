@@ -6,7 +6,6 @@ package receipt
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -126,20 +125,49 @@ func ExtractReceipts(path string) ([]Receipt, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading entries: %w", err)
 	}
+	return extractReceiptsFromEntries(entries)
+}
+
+// ExtractReceiptsWithSessionID reads a flight recorder JSONL file and returns
+// both the receipts and the session ID from the first entry. The session ID
+// comes from the recorder entry metadata, which is lost in plain ExtractReceipts.
+// Returns an empty session ID when the file contains no entries.
+func ExtractReceiptsWithSessionID(path string) ([]Receipt, string, error) {
+	entries, err := recorder.ReadEntries(filepath.Clean(path))
+	if err != nil {
+		return nil, "", fmt.Errorf("reading entries: %w", err)
+	}
+	var sessionID string
+	if len(entries) > 0 {
+		sessionID = entries[0].SessionID
+	}
+	receipts, err := extractReceiptsFromEntries(entries)
+	return receipts, sessionID, err
+}
+
+// ExtractReceiptsFromSessionDir reads all evidence files for a session from a
+// recorder directory and returns the action receipts in chain order.
+func ExtractReceiptsFromSessionDir(dir, sessionID string) ([]Receipt, error) {
+	result, err := recorder.QuerySession(filepath.Clean(dir), sessionID, &recorder.QueryFilter{
+		Type: recorderEntryType,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("querying session receipts: %w", err)
+	}
+	return extractReceiptsFromEntries(result.Entries)
+}
+
+func extractReceiptsFromEntries(entries []recorder.Entry) ([]Receipt, error) {
 	var receipts []Receipt
 	for _, e := range entries {
 		if e.Type != recorderEntryType {
 			continue
 		}
-		detailJSON, err := json.Marshal(e.Detail)
+		r, err := receiptFromEntry(e)
 		if err != nil {
-			return nil, fmt.Errorf("seq %d: marshal detail: %w", e.Sequence, err)
+			return nil, err
 		}
-		r, err := Unmarshal(detailJSON)
-		if err != nil {
-			return nil, fmt.Errorf("seq %d: unmarshal receipt: %w", e.Sequence, err)
-		}
-		receipts = append(receipts, r)
+		receipts = append(receipts, *r)
 	}
 	return receipts, nil
 }

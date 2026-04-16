@@ -26,6 +26,7 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `websocket` | Airlock | `airlock` | Quarantine admission denied |
 | `websocket` | Kill switch | `kill_switch` | Kill switch activated mid-stream |
 | `websocket` | Protocol | `ws_protocol` | Binary frames denied, fragment violation, compressed frames |
+| `websocket` | Media policy | `media_policy` | Blocked binary media frame after content sniffing |
 | `websocket` | DLP | `dlp` | DLP match in text frame |
 | `websocket` | Address protection | `address_protection` | Address poisoning detected |
 | `websocket` | Cross-request | `cross_request` | CEE exfiltration in frame |
@@ -38,6 +39,8 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `forward` | Response scan | `response_scan` | Prompt injection in response |
 | `forward` | Allow | (empty) | Successful forward |
 | `intercept` | (all layers) | various | TLS-intercepted traffic (19 emission points) |
+
+MCP response transports (`mcp_stdio`, `mcp_http`, `mcp_http_listener`, `mcp_ws`) emit `mcp_response_scan` for prompt-injection findings and `media_policy` when a tool result carries blocked base64 media in `content[].data`, `content[].blob`, or `content[].raw`.
 
 ## Receipt Fields
 
@@ -73,7 +76,7 @@ Taint-aware fields (when session profiling is active):
 
 All receipts from a single proxy instance share a hash chain. The first receipt has `chain_prev_hash: "genesis"`. Each subsequent receipt's `chain_prev_hash` is the SHA-256 of the previous receipt's canonical JSON. `chain_seq` increments by 1 for each receipt.
 
-Verify chain integrity with `pipelock verify-receipt --chain <evidence-dir>`.
+Verify chain integrity across rotated or restarted evidence files with `pipelock verify-receipt --chain <evidence-dir>`.
 
 ## Fail-Open on Emit
 

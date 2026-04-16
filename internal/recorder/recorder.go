@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -129,6 +130,14 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	return r, nil
 }
 
+// Dir returns the recorder evidence directory. Empty for nil or no-op recorders.
+func (r *Recorder) Dir() string {
+	if r == nil || r.nop {
+		return ""
+	}
+	return r.cfg.Dir
+}
+
 // Record writes an entry to the chain. Thread-safe. The caller provides the
 // SessionID, Type, Transport, Summary, and Detail. Sequence, Timestamp,
 // PrevHash, Hash, and Version are set by the recorder.
@@ -153,7 +162,9 @@ func (r *Recorder) Record(e Entry) error {
 		return fmt.Errorf("recorder: session_id contains path separator")
 	}
 	if r.sessionID == "" {
-		r.sessionID = e.SessionID
+		if err := r.resumeSessionLocked(e.SessionID); err != nil {
+			return fmt.Errorf("recorder: resume chain state: %w", err)
+		}
 	}
 	if e.SessionID != r.sessionID {
 		return fmt.Errorf("recorder: session_id mismatch (expected %q, got %q)", r.sessionID, e.SessionID)
@@ -498,6 +509,79 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	}
 
 	return escrowPath, nil
+}
+
+func (r *Recorder) resumeSessionLocked(sessionID string) error {
+	// Use local variables so r.* fields stay untouched if any I/O fails.
+	resumedSeq := uint64(0)
+	resumedPrevHash := GenesisHash
+	resumedFirstSeqInSpan := uint64(0)
+
+	files, err := r.sessionFiles(sessionID)
+	if err != nil {
+		return err
+	}
+	for i := len(files) - 1; i >= 0; i-- {
+		entries, readErr := ReadEntries(files[i])
+		if readErr != nil {
+			return fmt.Errorf("reading existing evidence file %s: %w", filepath.Base(files[i]), readErr)
+		}
+		if len(entries) == 0 {
+			continue
+		}
+		last := entries[len(entries)-1]
+
+		// NOTE: We do NOT recompute and verify the tail hash here because
+		// ComputeHash is not round-trip stable for entries whose Detail was
+		// stored as json.RawMessage (e.g., receipt entries). ReadEntries
+		// deserializes Detail into map[string]interface{}, which re-marshals
+		// with alphabetically sorted keys, producing a different hash than
+		// the original struct-ordered JSON. Full chain verification (which
+		// has the same limitation) is done by verify-receipt / VerifyChain.
+		// The chain linkage (prevHash threading) is still enforced on each
+		// new Record call.
+		if last.Hash == "" {
+			return fmt.Errorf("evidence file %s: tail entry seq %d has empty hash",
+				filepath.Base(files[i]), last.Sequence)
+		}
+
+		resumedSeq = last.Sequence + 1
+		resumedPrevHash = last.Hash
+		resumedFirstSeqInSpan = resumedSeq
+		break
+	}
+
+	r.sessionID = sessionID
+	r.seq = resumedSeq
+	r.prevHash = resumedPrevHash
+	r.sinceCheckpoint = 0
+	r.firstSeqInSpan = resumedFirstSeqInSpan
+	return nil
+}
+
+func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
+	dir := filepath.Clean(r.cfg.Dir)
+	dirEntries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("reading evidence directory: %w", err)
+	}
+
+	prefix := "evidence-" + filepath.Base(sessionID) + "-"
+	files := make([]string, 0)
+	for _, de := range dirEntries {
+		if de.IsDir() {
+			continue
+		}
+		name := de.Name()
+		if strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") {
+			files = append(files, filepath.Join(dir, name))
+		}
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return extractSeqStart(files[i]) < extractSeqStart(files[j])
+	})
+	return files, nil
 }
 
 // ensureFile opens a JSONL file if none is open.

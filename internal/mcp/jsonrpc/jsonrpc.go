@@ -24,8 +24,13 @@ const Null = "null"
 
 // ContentBlock represents a single content block in an MCP tool result.
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Blob      string `json:"blob,omitempty"`
+	Raw       string `json:"raw,omitempty"`
+	MimeType  string `json:"mimeType,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
 }
 
 // ToolResult represents the result field of an MCP tool response.
@@ -99,9 +104,10 @@ func ExtractText(raw json.RawMessage) string {
 				texts = append(texts, block.Text)
 			}
 		}
-		if len(texts) > 0 {
-			return strings.Join(texts, " ")
-		}
+		// Always return after a successful ToolResult parse, even when
+		// texts is empty. Falling through to ExtractStringsFromJSON would
+		// feed base64 media in data/blob/raw fields into prompt scanning.
+		return strings.Join(texts, " ")
 	}
 
 	// Fallback: recursively extract all string values from arbitrary JSON.

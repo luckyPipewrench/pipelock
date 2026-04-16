@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1977,6 +1978,57 @@ func TestWSProxyBinaryBlocked_ServerSide(t *testing.T) {
 	_, _, readErr := wsutil.ReadServerData(conn)
 	if readErr == nil {
 		t.Fatal("expected close after server binary frame, got nil error")
+	}
+}
+
+func TestWSProxyBinaryMediaPolicy_StripsServerImage(t *testing.T) {
+	jpeg := buildValidJPEG([]byte("Exif\x00\x00secret-location-data"))
+
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			_, _, _ = wsutil.ReadClientData(conn)
+			_ = wsutil.WriteServerMessage(conn, ws.OpBinary, jpeg)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() { _ = srv.Serve(ln) }()
+	defer srv.Close() //nolint:errcheck // test
+	backendAddr := ln.Addr().String()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.AllowBinaryFrames = true
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if writeErr := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSTrigger)); writeErr != nil {
+		t.Fatalf("write: %v", writeErr)
+	}
+
+	msg, op, readErr := wsutil.ReadServerData(conn)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if op != ws.OpBinary {
+		t.Fatalf("opcode = %v, want binary", op)
+	}
+	if bytes.Contains(msg, []byte("secret-location-data")) {
+		t.Fatal("binary frame still contains stripped JPEG metadata")
+	}
+	if len(msg) >= len(jpeg) {
+		t.Fatalf("stripped JPEG length %d >= original %d", len(msg), len(jpeg))
 	}
 }
 

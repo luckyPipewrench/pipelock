@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -241,11 +242,22 @@ func (c Capsule) MarshalJSON() ([]byte, error) {
 	return canonicalize(alias(c))
 }
 
-// UnmarshalJSON decodes a posture capsule from JSON.
+// UnmarshalJSON decodes a posture capsule from JSON with strict field
+// matching. Unknown fields and trailing payload are rejected so unsigned
+// side-channel data cannot piggyback on an otherwise valid signed capsule.
 func (c *Capsule) UnmarshalJSON(data []byte) error {
 	type alias Capsule
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var raw alias
-	if err := json.Unmarshal(data, &raw); err != nil {
+	if err := dec.Decode(&raw); err != nil {
+		return err
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON payload")
+		}
 		return err
 	}
 	*c = Capsule(raw)

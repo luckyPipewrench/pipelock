@@ -9,6 +9,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -114,6 +116,29 @@ func DecodePublicKey(encoded string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(raw), nil
 }
 
+// ParsePublicKey decodes either the versioned pipelock public key format or a
+// raw hex-encoded Ed25519 public key.
+func ParsePublicKey(encoded string) (ed25519.PublicKey, error) {
+	trimmed := strings.TrimSpace(encoded)
+	if trimmed == "" {
+		return nil, fmt.Errorf("public key is empty")
+	}
+
+	versionedKey, versionedErr := DecodePublicKey(trimmed)
+	if versionedErr == nil {
+		return versionedKey, nil
+	}
+
+	raw, hexErr := hex.DecodeString(trimmed)
+	if hexErr != nil {
+		return nil, fmt.Errorf("invalid public key: %w", versionedErr)
+	}
+	if len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid public key length: got %d, want %d", len(raw), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(raw), nil
+}
+
 // EncodePrivateKey serializes a private key with a versioned header.
 func EncodePrivateKey(key ed25519.PrivateKey) string {
 	return privateKeyHeader + "\n" + base64.StdEncoding.EncodeToString(key) + "\n"
@@ -158,6 +183,40 @@ func LoadPublicKeyFile(path string) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("reading public key: %w", err)
 	}
 	return DecodePublicKey(string(data))
+}
+
+// LoadPublicKey resolves either a filesystem path or an inline public key
+// value. Files may contain the versioned pipelock format or raw hex.
+func LoadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
+	input := strings.TrimSpace(pathOrValue)
+	if input == "" {
+		return nil, fmt.Errorf("public key is empty")
+	}
+
+	cleanPath := filepath.Clean(input)
+	if _, err := os.Stat(cleanPath); err == nil {
+		data, readErr := os.ReadFile(cleanPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("reading public key: %w", readErr)
+		}
+		key, parseErr := ParsePublicKey(string(data))
+		if parseErr != nil {
+			return nil, fmt.Errorf("parsing public key file: %w", parseErr)
+		}
+		return key, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("reading public key: %w", err)
+	}
+
+	// If stat fails but input looks like a file path (contains path separators,
+	// starts with '.', or has a file extension), surface the file error directly
+	// instead of falling through to ParsePublicKey which would produce a
+	// confusing "invalid public key" error for typo'd file paths.
+	if strings.ContainsAny(input, "/\\") || strings.HasPrefix(input, ".") || filepath.Ext(input) != "" {
+		return nil, fmt.Errorf("reading public key file %s: %w", cleanPath, os.ErrNotExist)
+	}
+
+	return ParsePublicKey(input)
 }
 
 // LoadPrivateKeyFile reads and decodes a private key from a file.

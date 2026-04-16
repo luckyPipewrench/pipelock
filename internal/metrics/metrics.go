@@ -49,8 +49,9 @@ type Metrics struct {
 
 	sniTotal *prometheus.CounterVec
 
-	bodyDLPHits   *prometheus.CounterVec
-	headerDLPHits *prometheus.CounterVec
+	bodyDLPHits    *prometheus.CounterVec
+	headerDLPHits  *prometheus.CounterVec
+	dlpWarnMatches *prometheus.CounterVec
 
 	sessionAnomalies   *prometheus.CounterVec
 	sessionEscalations *prometheus.CounterVec
@@ -264,6 +265,12 @@ func New() *Metrics {
 		Help:      "Total request header DLP scan detections by action.",
 	}, []string{"action", "agent"})
 
+	dlpWarnMatches := prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "dlp_warn_matches_total",
+		Help:      "Total warn-mode DLP matches by pattern and transport.",
+	}, []string{"pattern", "transport"})
+
 	sessionAnomalies := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "session_anomalies_total",
@@ -469,7 +476,7 @@ func New() *Metrics {
 		tunnelsTotal, tunnelDuration, tunnelBytes, activeTunnels,
 		wsConnectionsTotal, wsDuration, wsBytes, activeWS, wsFrames, wsScanHits, wsRedirectHints,
 		killSwitchDenials, chainDetections, sniTotal,
-		bodyDLPHits, headerDLPHits,
+		bodyDLPHits, headerDLPHits, dlpWarnMatches,
 		sessionAnomalies, sessionEscalations, sessionsActive, sessionsEvicted,
 		tlsInterceptTotal, tlsCertCacheSize, tlsHandshakeDuration, tlsRequestBlocked, tlsResponseBlocked,
 		crossRequestEntropyExceeded, crossRequestDLPMatch, crossRequestFragmentBytes,
@@ -507,6 +514,7 @@ func New() *Metrics {
 		sniTotal:                    sniTotal,
 		bodyDLPHits:                 bodyDLPHits,
 		headerDLPHits:               headerDLPHits,
+		dlpWarnMatches:              dlpWarnMatches,
 		sessionAnomalies:            sessionAnomalies,
 		sessionEscalations:          sessionEscalations,
 		sessionsActive:              sessionsActive,
@@ -697,6 +705,14 @@ func (m *Metrics) RecordBodyDLP(action, agent string) {
 // RecordHeaderDLP increments the request header DLP scan counter by action.
 func (m *Metrics) RecordHeaderDLP(action, agent string) {
 	m.headerDLPHits.WithLabelValues(action, agent).Inc()
+}
+
+// RecordDLPWarnMatch increments the warn-mode DLP counter.
+func (m *Metrics) RecordDLPWarnMatch(pattern, transport string) {
+	if m == nil {
+		return
+	}
+	m.dlpWarnMatches.WithLabelValues(pattern, transport).Inc()
 }
 
 // RecordSessionAnomaly increments the session anomaly counter by type.

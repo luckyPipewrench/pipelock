@@ -4,8 +4,8 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -149,7 +149,7 @@ Exit codes:
 	}
 
 	cmd.Flags().StringVar(&proofFile, "proof", "", "path to proof.json (required)")
-	cmd.Flags().StringVar(&keyFile, "key", "", "path to Ed25519 public key file (required)")
+	cmd.Flags().StringVar(&keyFile, "key", "", "path to Ed25519 public key file or raw hex public key (required)")
 	cmd.Flags().StringVar(&policy, "policy", posturepkg.PolicyEnterprise, "policy level: none, enterprise, strict")
 	cmd.Flags().IntVar(&minScore, "min-score", posturepkg.DefaultMinScore, "minimum passing score (0-100)")
 	cmd.Flags().StringVar(&maxAgeStr, "max-age", verifyDefaultMaxAge, "maximum capsule age (e.g. 30d)")
@@ -308,38 +308,32 @@ func loadProofFile(path string) (*posturepkg.Capsule, error) {
 		return nil, fmt.Errorf("proof JSON exceeds %d bytes", maxProofJSONBytes)
 	}
 
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var capsule posturepkg.Capsule
-	if err := json.Unmarshal(data, &capsule); err != nil {
+	if err := dec.Decode(&capsule); err != nil {
+		return nil, fmt.Errorf("parsing proof JSON: %w", err)
+	}
+	if err := rejectTrailingJSON(dec); err != nil {
 		return nil, fmt.Errorf("parsing proof JSON: %w", err)
 	}
 	return &capsule, nil
 }
 
-// loadPublicKey reads a public key file, trying the pipelock versioned format
-// first, then falling back to raw hex encoding.
-func loadPublicKey(path string) (ed25519.PublicKey, error) {
-	// Try pipelock versioned format first.
-	key, err := signing.LoadPublicKeyFile(path)
-	if err == nil {
-		return key, nil
-	}
+// loadPublicKey resolves either a public key path or a raw hex argument.
+func loadPublicKey(pathOrValue string) (ed25519.PublicKey, error) {
+	return signing.LoadPublicKey(pathOrValue)
+}
 
-	// Fall back to raw hex encoding.
-	cleanPath := filepath.Clean(path)
-	data, readErr := os.ReadFile(cleanPath)
-	if readErr != nil {
-		return nil, fmt.Errorf("reading key file: %w", readErr)
+func rejectTrailingJSON(dec *json.Decoder) error {
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON payload")
+		}
+		return err
 	}
-
-	raw, hexErr := hex.DecodeString(strings.TrimSpace(string(data)))
-	if hexErr != nil {
-		// Return the original versioned-format error since it's more informative.
-		return nil, fmt.Errorf("loading public key: %w", err)
-	}
-	if len(raw) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("invalid public key length: got %d, want %d", len(raw), ed25519.PublicKeySize)
-	}
-	return ed25519.PublicKey(raw), nil
+	return nil
 }
 
 // parseDays parses a duration string like "30d" into days.

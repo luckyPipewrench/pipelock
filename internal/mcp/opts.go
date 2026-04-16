@@ -28,6 +28,7 @@ const (
 	transportMCPStdio = "mcp_stdio"
 	transportMCPHTTP  = "mcp_http"
 	mcpWarnMethod     = "MCP"
+	mcpServerResponse = "server_response"
 )
 
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.
@@ -72,6 +73,11 @@ type MCPProxyOpts struct {
 	// A2A protocol scanning (nil-safe).
 	A2ACfg       *config.A2AScanning
 	CardBaseline *CardBaseline
+
+	// MediaPolicy enforces response-side media handling for base64 tool
+	// result content blocks (image/audio/video) before generic text scanning.
+	// Nil-safe: MCP media policy is disabled when unset.
+	MediaPolicy *config.MediaPolicy
 
 	// Frozen tool enforcement for airlock hard tier (nil-safe).
 	// When non-nil and a stable key is frozen, only tools in the frozen set

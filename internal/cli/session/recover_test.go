@@ -158,6 +158,39 @@ func TestRecoverCmd_InteractiveStdin_InvalidInput(t *testing.T) {
 	}
 }
 
+func TestRecoverCmd_NoPrompt(t *testing.T) {
+	flags := stubRecoverServer(t)
+	overrideClientFactory(t, flags)
+	stub := withStubDispatcher(t)
+
+	out, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--no-prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stub.inspectCalls != 1 || stub.explainCalls != 1 {
+		t.Errorf("call counts: inspect=%d explain=%d", stub.inspectCalls, stub.explainCalls)
+	}
+	if stub.releaseCalls != 0 || stub.terminateCalls != 0 {
+		t.Errorf("no-prompt should not dispatch: release=%d terminate=%d", stub.releaseCalls, stub.terminateCalls)
+	}
+	if !strings.Contains(out, "no action selected") {
+		t.Errorf("expected no-prompt message, got: %s", out)
+	}
+}
+
+func TestRecoverCmd_NoPromptWithChoiceStillDispatches(t *testing.T) {
+	flags := stubRecoverServer(t)
+	overrideClientFactory(t, flags)
+	stub := withStubDispatcher(t)
+
+	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--no-prompt", "--choice", "release-none"); err != nil {
+		t.Fatal(err)
+	}
+	if stub.releaseCalls != 1 {
+		t.Errorf("expected release call with explicit choice, got %d", stub.releaseCalls)
+	}
+}
+
 func TestValidateRecoverChoice(t *testing.T) {
 	good := []string{"release-none", "release-soft", "terminate", "leave"}
 	for _, g := range good {

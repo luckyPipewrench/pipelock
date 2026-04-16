@@ -1385,8 +1385,41 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			continue
 		}
 
+		opCode := hdr.OpCode
+		if frag.Opcode != 0 {
+			opCode = frag.Opcode
+		}
+
 		// Complete message. Count and scan.
-		if frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText {
+		if opCode == ws.OpBinary {
+			actx := newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
+			mediaVerdict := applyMediaPolicy(r.cfg, "", msg)
+			logMediaExposureIfPresent(log, actx, mediaVerdict, "websocket")
+			if mediaVerdict.Blocked {
+				log.LogWSBlocked(r.targetURL, audit.DirectionServerToClient, "media_policy", mediaVerdict.BlockReason, r.clientIP, r.requestID)
+				r.proxy.metrics.RecordWSScanHit("media_policy")
+				r.proxy.emitReceipt(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Layer:     "media_policy",
+					Pattern:   mediaVerdict.BlockReason,
+					Transport: "websocket",
+					Method:    "WS",
+					Target:    r.targetURL,
+					RequestID: r.requestID,
+					Agent:     r.agent,
+				})
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "media blocked")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "media blocked")
+				blocked = true
+				return
+			}
+			if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
+				msg = mediaVerdict.Body
+			}
+		}
+
+		if opCode == ws.OpText {
 			textFrames++
 
 			// UTF-8 validation.
@@ -1503,10 +1536,6 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Forward complete message to client (proxy is SERVER, no masking).
-		opCode := hdr.OpCode
-		if frag.Opcode != 0 {
-			opCode = frag.Opcode
-		}
 		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
 		if err != nil {
 			return

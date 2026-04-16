@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestVerifyReceiptCmd_ValidReceipt(t *testing.T) {
@@ -109,6 +110,58 @@ func TestVerifyReceiptCmd_WithExpectedKey(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs([]string{path, "--key", keyHex})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "OK:") {
+		t.Errorf("expected OK in output, got: %s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_WithExpectedKeyFile(t *testing.T) {
+	t.Parallel()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pubKey := priv.Public().(ed25519.PublicKey)
+
+	ar := receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        receipt.NewActionID(),
+		ActionType:      receipt.ActionRead,
+		Timestamp:       time.Now().UTC(),
+		Target:          "https://example.com/receipt",
+		Verdict:         "allow",
+		Transport:       "fetch",
+		SideEffectClass: receipt.SideEffectExternalRead,
+		Reversibility:   receipt.ReversibilityFull,
+	}
+	r, err := receipt.Sign(ar, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	data, err := receipt.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	keyPath := filepath.Join(dir, "pub.key")
+	if err := os.WriteFile(keyPath, []byte(sigutil.EncodePublicKey(pubKey)), 0o600); err != nil {
+		t.Fatalf("WriteFile(key): %v", err)
+	}
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{path, "--key", keyPath})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -323,6 +376,54 @@ func buildChainJSONL(t *testing.T, count int) (string, ed25519.PublicKey) {
 	return "", nil
 }
 
+func buildRestartChainDir(t *testing.T, counts ...int) (string, ed25519.PublicKey) {
+	t.Helper()
+
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	for i, count := range counts {
+		rec, err := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+			MaxEntriesPerFile:  1,
+		}, nil, priv)
+		if err != nil {
+			t.Fatalf("recorder.New[%d]: %v", i, err)
+		}
+
+		emitter := receipt.NewEmitter(receipt.EmitterConfig{
+			Recorder:   rec,
+			PrivKey:    priv,
+			ConfigHash: "test-chain-hash",
+			Principal:  "test",
+			Actor:      "test",
+		})
+
+		for j := range count {
+			err := emitter.Emit(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   "allow",
+				Transport: "fetch",
+				Method:    "GET",
+				Target:    "https://example.com/restart/" + string(rune('a'+j)),
+			})
+			if err != nil {
+				t.Fatalf("Emit[%d][%d]: %v", i, j, err)
+			}
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("recorder.Close[%d]: %v", i, err)
+		}
+	}
+
+	return dir, pub
+}
+
 func TestVerifyReceiptCmd_ChainValid(t *testing.T) {
 	t.Parallel()
 
@@ -361,6 +462,28 @@ func TestVerifyReceiptCmd_ChainWithKey(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "CHAIN VALID") {
 		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+	}
+}
+
+func TestVerifyReceiptCmd_ChainDirAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	dir, pubKey := buildRestartChainDir(t, 2, 2)
+
+	cmd := VerifyReceiptCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--chain", dir, "--key", hex.EncodeToString(pubKey)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "CHAIN VALID") {
+		t.Errorf("expected CHAIN VALID, got: %s", output)
+	}
+	if !strings.Contains(output, "Receipts:  4") {
+		t.Errorf("expected 4 receipts, got: %s", output)
 	}
 }
 
@@ -430,6 +553,50 @@ func TestTranscriptRootCmd_Valid(t *testing.T) {
 	}
 }
 
+func TestTranscriptRootCmd_ChainDirAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	dir, pub := buildRestartChainDir(t, 2, 1)
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--chain", dir, "--key", hex.EncodeToString(pub)})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Transcript Root") {
+		t.Errorf("expected Transcript Root header, got: %s", output)
+	}
+	if !strings.Contains(output, "Receipt count: 3") {
+		t.Errorf("expected 3 receipts, got: %s", output)
+	}
+}
+
+func TestTranscriptRootCmd_KeyFile(t *testing.T) {
+	t.Parallel()
+
+	path, pub := buildChainJSONL(t, 4)
+	keyPath := filepath.Join(t.TempDir(), "pub.key")
+	if err := os.WriteFile(keyPath, []byte(sigutil.EncodePublicKey(pub)), 0o600); err != nil {
+		t.Fatalf("WriteFile(key): %v", err)
+	}
+
+	cmd := TranscriptRootCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--key", keyPath, path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if !strings.Contains(buf.String(), "Transcript Root") {
+		t.Errorf("expected Transcript Root header, got: %s", buf.String())
+	}
+}
+
 func TestTranscriptRootCmd_NoArgs(t *testing.T) {
 	t.Parallel()
 
@@ -451,5 +618,141 @@ func TestTranscriptRootCmd_MissingFile(t *testing.T) {
 	cmd.SetArgs([]string{"/nonexistent/file.jsonl"})
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestVerifyChainFromFile_ValidChain(t *testing.T) {
+	t.Parallel()
+
+	path, pubKey := buildChainJSONL(t, 3)
+	keyHex := hex.EncodeToString(pubKey)
+
+	var buf bytes.Buffer
+	err := verifyChainFromFile(&buf, path, keyHex)
+	if err != nil {
+		t.Fatalf("verifyChainFromFile: %v", err)
+	}
+	if !strings.Contains(buf.String(), "CHAIN VALID") {
+		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Receipts:  3") {
+		t.Errorf("expected 3 receipts, got: %s", buf.String())
+	}
+}
+
+func TestVerifyChainFromFile_BadSignature(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 2)
+
+	// Use a different key to force signature mismatch.
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	wrongKeyHex := hex.EncodeToString(otherPub)
+
+	var buf bytes.Buffer
+	err = verifyChainFromFile(&buf, path, wrongKeyHex)
+	if err == nil {
+		t.Fatal("expected error for wrong key")
+	}
+	if !strings.Contains(buf.String(), "CHAIN BROKEN") {
+		t.Errorf("expected CHAIN BROKEN, got: %s", buf.String())
+	}
+}
+
+func TestVerifyChainFromFile_EmptyFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.jsonl")
+	if err := os.WriteFile(emptyPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	err := verifyChainFromFile(&buf, emptyPath, "")
+	if err == nil {
+		t.Fatal("expected error for empty file")
+	}
+	if !strings.Contains(buf.String(), "No receipts found") {
+		t.Errorf("expected 'No receipts found' in output, got: %s", buf.String())
+	}
+}
+
+func TestVerifyChain_ValidReceiptsNoKey(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 4)
+	receipts, err := receipt.ExtractReceipts(path)
+	if err != nil {
+		t.Fatalf("ExtractReceipts: %v", err)
+	}
+
+	var buf bytes.Buffer
+	err = verifyChain(&buf, "test-chain", receipts, "")
+	if err != nil {
+		t.Fatalf("verifyChain: %v", err)
+	}
+	if !strings.Contains(buf.String(), "CHAIN VALID") {
+		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Receipts:  4") {
+		t.Errorf("expected 4 receipts, got: %s", buf.String())
+	}
+}
+
+func TestVerifyChain_EmptySlice(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := verifyChain(&buf, "empty-chain", nil, "")
+	if err == nil {
+		t.Fatal("expected error for empty receipt slice")
+	}
+	if !strings.Contains(buf.String(), "No receipts found") {
+		t.Errorf("expected 'No receipts found' in output, got: %s", buf.String())
+	}
+}
+
+func TestVerifyChainFromFile_NonexistentFile(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := verifyChainFromFile(&buf, "/nonexistent/path/receipt.jsonl", "")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "extracting receipts") {
+		t.Errorf("expected 'extracting receipts' in error, got: %v", err)
+	}
+}
+
+func TestVerifyChain_WrongKeyBreaksChain(t *testing.T) {
+	t.Parallel()
+
+	path, _ := buildChainJSONL(t, 3)
+	receipts, err := receipt.ExtractReceipts(path)
+	if err != nil {
+		t.Fatalf("ExtractReceipts: %v", err)
+	}
+
+	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	wrongKeyHex := hex.EncodeToString(otherPub)
+
+	var buf bytes.Buffer
+	err = verifyChain(&buf, "wrong-key-chain", receipts, wrongKeyHex)
+	if err == nil {
+		t.Fatal("expected error for wrong key")
+	}
+	if !strings.Contains(buf.String(), "CHAIN BROKEN") {
+		t.Errorf("expected CHAIN BROKEN, got: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), "Broke at:") {
+		t.Errorf("expected 'Broke at' detail, got: %s", buf.String())
 	}
 }

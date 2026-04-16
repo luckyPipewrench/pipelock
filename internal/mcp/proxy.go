@@ -228,6 +228,61 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
+		mediaResult := applyMCPResponseMediaPolicy(line, opts.MediaPolicy, opts.Transport)
+		if len(mediaResult.Exposures) > 0 && opts.AuditLogger != nil {
+			rpcID := extractRPCID(line)
+			target := mcpServerResponse
+			if requestID := canonicalID(rpcID); requestID != "" {
+				target = "response:" + requestID
+			}
+			actx := mustMCPAuditContext(opts.AuditLogger, mcpWarnMethod, target)
+			for _, info := range mediaResult.Exposures {
+				opts.AuditLogger.LogMediaExposure(actx, info)
+			}
+		}
+		if mediaResult.Blocked {
+			rpcID := extractRPCID(line)
+			requestID := canonicalID(rpcID)
+			target := mcpServerResponse
+			if requestID != "" {
+				target = "response:" + requestID
+			}
+			_, _ = fmt.Fprintf(logW, "pipelock: line %d: media policy blocked MCP response (%s)\n",
+				lineNum, mediaResult.BlockReason)
+			if opts.AuditLogger != nil {
+				opts.AuditLogger.LogBlocked(mustMCPAuditContext(opts.AuditLogger, mcpWarnMethod, target), "media_policy", mediaResult.BlockReason)
+			}
+			if m != nil {
+				m.RecordBlocked("mcp", "media_policy", 0, "")
+			}
+			if opts.ReceiptEmitter != nil {
+				if emitErr := opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   config.ActionBlock,
+					Transport: opts.Transport,
+					Target:    target,
+					RequestID: requestID,
+					Layer:     "media_policy",
+					Pattern:   mediaResult.BlockReason,
+				}); emitErr != nil {
+					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
+				}
+			}
+			if adaptiveCfg != nil && adaptiveCfg.Enabled {
+				decide.RecordSignal(rec, session.SignalBlock, decide.EscalationParams{
+					Threshold:     adaptiveCfg.EscalationThreshold,
+					Metrics:       m,
+					ConsoleWriter: logW,
+				})
+			}
+			resp := blockMediaPolicyResponse(rpcID, mediaResult.BlockReason)
+			if err := writer.WriteMessage(resp); err != nil {
+				return foundInjection, fmt.Errorf("writing media policy block: %w", err)
+			}
+			continue
+		}
+		line = mediaResult.Line
+
 		// Tool scanning runs first. tools/list responses contain instructional
 		// text ("you must call this tool") that the general injection scanner
 		// would flag as false positives. The dedicated tool scanner uses
@@ -563,6 +618,23 @@ func blockResponse(id json.RawMessage) []byte {
 		Error: rpcErrorDetail{
 			Code:    -32000,
 			Message: "pipelock: prompt injection detected in MCP response",
+		},
+	}
+	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
+	return data
+}
+
+// blockMediaPolicyResponse generates a JSON-RPC 2.0 error for media policy
+// violations. Uses error code -32002 (implementation-defined) with the specific
+// block reason so operators see a distinct media-policy denial, not the generic
+// "prompt injection detected" message.
+func blockMediaPolicyResponse(id json.RawMessage, reason string) []byte {
+	resp := rpcError{
+		JSONRPC: jsonrpc.Version,
+		ID:      id,
+		Error: rpcErrorDetail{
+			Code:    -32002,
+			Message: "pipelock: media policy blocked MCP response: " + reason,
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct

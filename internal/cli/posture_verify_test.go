@@ -317,6 +317,36 @@ func TestPostureVerifyBadSignature(t *testing.T) {
 	assertExitCode(t, err, exitVerifyIntegrity)
 }
 
+func TestPostureVerifyRejectsTrailingPayload(t *testing.T) {
+	fix := newTestVerifyFixture(t, perfectEvidence())
+
+	data, err := os.ReadFile(fix.ProofPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(): %v", err)
+	}
+	trailingProof := filepath.Join(t.TempDir(), "proof-trailing.json")
+	if err := os.WriteFile(trailingProof, append(bytes.TrimSpace(data), []byte(`{"tampered":true}`)...), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(): %v", err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"posture", "verify",
+		"--proof", trailingProof,
+		"--key", fix.PubKeyPath,
+		"--policy", testVerifyPolicyNone,
+		"--min-score", "0",
+	})
+
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("cmd.Execute() = nil, want error for trailing payload")
+	}
+	assertExitCode(t, err, exitVerifyIntegrity)
+}
+
 func TestPostureVerifyExpiredCapsule(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -1056,6 +1086,21 @@ func TestLoadPublicKeyHexFormat(t *testing.T) {
 	}
 
 	loaded, err := loadPublicKey(path)
+	if err != nil {
+		t.Fatalf("loadPublicKey(): %v", err)
+	}
+	if !pub.Equal(loaded) {
+		t.Error("loaded key does not match original")
+	}
+}
+
+func TestLoadPublicKeyRawHexArgument(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey(): %v", err)
+	}
+
+	loaded, err := loadPublicKey(hex.EncodeToString(pub))
 	if err != nil {
 		t.Fatalf("loadPublicKey(): %v", err)
 	}

@@ -82,6 +82,7 @@ var recoverDispatcherFn func() recoverDispatcher = func() recoverDispatcher { re
 
 func recoverCmd(flags *rootFlags) *cobra.Command {
 	var choiceFlag string
+	var noPrompt bool
 	cmd := &cobra.Command{
 		Use:   "recover <key>",
 		Short: "Interactive recovery workflow: inspect, explain, choose action",
@@ -90,16 +91,19 @@ explain for the given session, then prompts for an action: release
 the session to none, release to soft, terminate, or leave it alone.
 
 Use --choice to script the workflow non-interactively. Accepted
-values: release-none, release-soft, terminate, leave.
+values: release-none, release-soft, terminate, leave. Use --no-prompt
+to print inspect/explain output and exit without taking action.
 
 Examples:
   pipelock session recover "agent|10.0.0.1"
-  pipelock session recover "agent|10.0.0.1" --choice release-none`,
+  pipelock session recover "agent|10.0.0.1" --choice release-none
+  pipelock session recover "agent|10.0.0.1" --no-prompt`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	cmd.Flags().StringVar(&choiceFlag, "choice", "", "non-interactive choice (release-none|release-soft|terminate|leave)")
+	cmd.Flags().BoolVar(&noPrompt, "no-prompt", false, "print inspect/explain output and exit without taking action")
 
 	cmd.RunE = func(c *cobra.Command, args []string) error {
 		key := args[0]
@@ -124,6 +128,10 @@ Examples:
 			}
 
 			choice := recoveryChoice(choiceFlag)
+			if choiceFlag == "" && noPrompt {
+				_, _ = fmt.Fprintf(out, "\nno action selected; leaving %s unchanged\n", key)
+				return nil
+			}
 			if choiceFlag == "" {
 				var err error
 				choice, err = promptRecoveryChoice(c.InOrStdin(), out)

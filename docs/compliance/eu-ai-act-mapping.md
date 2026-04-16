@@ -6,7 +6,7 @@ How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 
-**Last updated:** April 2026 (reviewed against v2.1.3 feature set: mediation envelope, signed action receipts across all transports, taint-aware policy escalation, posture verify CLI, companion-proxy deployment, session operator CLI)
+**Last updated:** April 2026 (reviewed against v2.2.0 feature set: mediation envelope, signed action receipts across all transports, taint-aware policy escalation, posture verify CLI, companion-proxy deployment, session operator CLI)
 
 ---
 

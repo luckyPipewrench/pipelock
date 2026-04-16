@@ -136,7 +136,7 @@ Inserting, removing, or modifying any receipt breaks the chain at that point.
 ## Resume and rotation integrity
 
 When pipelock restarts or rotates the evidence file, the receipt emitter
-resumes the chain from the last persisted receipt. v2.1.3 hardens the
+resumes the chain from the last persisted receipt. v2.2.0 hardens the
 resume path in three ways:
 
 - **Tail signature verification:** the resume code verifies the Ed25519

@@ -148,7 +148,7 @@ Use `bound` in production by either assigning each agent its own listen port, or
 
 ## Signing
 
-RFC 9421 HTTP Message Signatures for the mediation envelope ship in v2.1.3. The signer uses a dedicated Ed25519 envelope key (separate from the receipt signing key), the `pipelock1` signature label, and the `pipelock-mediation` tag. Cloudflare Web Bot Auth (`sig1`, tag `web-bot-auth`) and other RFC 9421 signatures coexist on the same request via distinct signature labels — pipelock's inbound-strip only removes members tagged `pipelock-mediation` and never disturbs upstream signatures.
+RFC 9421 HTTP Message Signatures for the mediation envelope ship in v2.2.0. The signer uses a dedicated Ed25519 envelope key (separate from the receipt signing key), the `pipelock1` signature label, and the `pipelock-mediation` tag. Cloudflare Web Bot Auth (`sig1`, tag `web-bot-auth`) and other RFC 9421 signatures coexist on the same request via distinct signature labels — pipelock's inbound-strip only removes members tagged `pipelock-mediation` and never disturbs upstream signatures.
 
 **Canonical policy hash (`ph`).** The envelope's `ph` field is the first 16 bytes of SHA-256 over a canonicalised, slice-order-preserving JSON projection of the effective config. Reformatting, comments, and reordering noise fields no longer shift `ph`, while behavioural rule reorders (DLP patterns, MCP tool policy rules, chain rules) still do. Per-agent resolved configs compute their own canonical hash and stamp it via `BuildOpts.PolicyHash` at the transport inject site. This makes `ph` admission-grade for downstream verifiers.
 

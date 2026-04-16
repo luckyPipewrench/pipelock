@@ -6,7 +6,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 > **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. Pipelock is a network-layer proxy; some MCP risks require complementary controls at the client, server, or identity layer. This mapping is for informational purposes and does not constitute compliance certification.
 
-**Last updated:** April 2026 (reviewed against v2.1.3 feature set: mediation envelope, signed action receipts across all MCP transports including stdio / HTTP / HTTP reverse proxy, taint-aware policy escalation with task boundaries, media policy and SVG active-content hardening, posture verify CLI, companion-proxy deployment via `pipelock init sidecar`)
+**Last updated:** April 2026 (reviewed against v2.2.0 feature set: mediation envelope, signed action receipts across all MCP transports including stdio / HTTP / HTTP reverse proxy, taint-aware policy escalation with task boundaries, media policy and SVG active-content hardening, posture verify CLI, companion-proxy deployment via `pipelock init sidecar`)
 
 ---
 

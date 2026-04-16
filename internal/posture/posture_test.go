@@ -982,6 +982,42 @@ func TestAppendCanonicalMarshalFailures(t *testing.T) {
 	}
 }
 
+func TestHashConfig_PublicAPI(t *testing.T) {
+	t.Parallel()
+
+	cfgA := config.Defaults()
+	cfgB := config.Defaults()
+
+	hashA, err := HashConfig(cfgA)
+	if err != nil {
+		t.Fatalf("HashConfig(cfgA): %v", err)
+	}
+	hashB, err := HashConfig(cfgB)
+	if err != nil {
+		t.Fatalf("HashConfig(cfgB): %v", err)
+	}
+
+	if hashA != hashB {
+		t.Fatalf("identical configs produce different hashes: %s != %s", hashA, hashB)
+	}
+
+	// Different config should produce different hash.
+	cfgC := config.Defaults()
+	cfgC.Mode = "strict"
+	hashC, err := HashConfig(cfgC)
+	if err != nil {
+		t.Fatalf("HashConfig(cfgC): %v", err)
+	}
+	if hashA == hashC {
+		t.Fatal("different configs should produce different hashes")
+	}
+
+	// Hash should be a 64-char hex string (SHA-256).
+	if len(hashA) != 64 {
+		t.Errorf("hash length = %d, want 64", len(hashA))
+	}
+}
+
 func TestHashConfigDeterministic(t *testing.T) {
 	cfgA := config.Defaults()
 	cfgB := config.Defaults()

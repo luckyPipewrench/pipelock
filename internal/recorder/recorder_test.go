@@ -31,6 +31,47 @@ const (
 	testCheckpoint = "checkpoint"
 )
 
+func TestRecorder_Dir(t *testing.T) {
+	t.Run("returns_configured_dir", func(t *testing.T) {
+		dir := t.TempDir()
+		rec, err := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 100,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		if rec.Dir() != dir {
+			t.Errorf("Dir() = %q, want %q", rec.Dir(), dir)
+		}
+	})
+
+	t.Run("nil_recorder_returns_empty", func(t *testing.T) {
+		var rec *recorder.Recorder
+		if rec.Dir() != "" {
+			t.Errorf("nil Dir() = %q, want empty", rec.Dir())
+		}
+	})
+
+	t.Run("disabled_recorder_returns_empty", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{
+			Enabled: false,
+			Dir:     "/some/dir",
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		if rec.Dir() != "" {
+			t.Errorf("disabled Dir() = %q, want empty", rec.Dir())
+		}
+	})
+}
+
 func TestRecorder_HashChain(t *testing.T) {
 	dir := t.TempDir()
 	cfg := recorder.Config{

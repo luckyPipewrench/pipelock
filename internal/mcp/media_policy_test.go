@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -387,6 +388,300 @@ func TestForwardScanned_MediaPolicyStripsToolResultImage(t *testing.T) {
 	if len(decoded) >= len(jpeg) {
 		t.Fatalf("stripped MCP image length %d >= original %d", len(decoded), len(jpeg))
 	}
+}
+
+func TestMCPContentTypeIsGeneric(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mt   string
+		want bool
+	}{
+		{name: "empty", mt: "", want: true},
+		{name: "octet_stream", mt: "application/octet-stream", want: true},
+		{name: "binary_octet_stream", mt: "binary/octet-stream", want: true},
+		{name: "image_png", mt: "image/png", want: false},
+		{name: "text_plain", mt: "text/plain", want: false},
+		{name: "audio_mpeg", mt: "audio/mpeg", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := mcpContentTypeIsGeneric(tt.mt)
+			if got != tt.want {
+				t.Errorf("mcpContentTypeIsGeneric(%q) = %v, want %v", tt.mt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSniffMCPMediaType(t *testing.T) {
+	t.Parallel()
+
+	// PNG magic: 8-byte header.
+	pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	// JPEG magic: FF D8 FF.
+	jpegMagic := []byte{0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10}
+
+	tests := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "empty", body: nil, want: ""},
+		{name: "png_magic", body: pngMagic, want: "image/png"},
+		{name: "jpeg_magic", body: jpegMagic, want: "image/jpeg"},
+		{name: "plain_text", body: []byte("hello world this is plain text"), want: ""},
+		{name: "short_png", body: pngMagic[:4], want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sniffMCPMediaType(tt.body)
+			if got != tt.want {
+				t.Errorf("sniffMCPMediaType() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalMCPContentType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty", input: "", want: ""},
+		{name: "simple", input: "image/png", want: "image/png"},
+		{name: "with_params", input: "image/jpeg; quality=80", want: "image/jpeg"},
+		{name: "uppercase", input: "IMAGE/PNG", want: "image/png"},
+		{name: "invalid_with_semicolon", input: "bad type; extra", want: "bad type"},
+		{name: "invalid_bare", input: "garbage", want: "garbage"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := canonicalMCPContentType(tt.input)
+			if got != tt.want {
+				t.Errorf("canonicalMCPContentType(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMCPExposureOrNil(t *testing.T) {
+	t.Parallel()
+
+	info := &audit.MediaExposureInfo{ContentType: "image/png"}
+
+	t.Run("nil_policy", func(t *testing.T) {
+		t.Parallel()
+		got := mcpExposureOrNil(nil, info)
+		if got != nil {
+			t.Error("expected nil for nil policy")
+		}
+	})
+
+	t.Run("logging_disabled", func(t *testing.T) {
+		t.Parallel()
+		disabled := false
+		policy := &config.MediaPolicy{LogMediaExposure: &disabled}
+		got := mcpExposureOrNil(policy, info)
+		if got != nil {
+			t.Error("expected nil when logging disabled")
+		}
+	})
+
+	t.Run("logging_enabled", func(t *testing.T) {
+		t.Parallel()
+		policy := &config.MediaPolicy{LogMediaExposure: boolPtr(true)}
+		got := mcpExposureOrNil(policy, info)
+		if got == nil {
+			t.Error("expected non-nil when logging enabled")
+		}
+	})
+}
+
+func TestApplyMCPMediaPolicy_NilPolicy(t *testing.T) {
+	t.Parallel()
+
+	verdict := applyMCPMediaPolicy(nil, "image/png", []byte("data"), testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Error("nil policy should not block")
+	}
+}
+
+func TestApplyMCPMediaPolicy_NonMediaType(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "text/plain", []byte("hello"), testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Error("text/plain should not be blocked")
+	}
+}
+
+func TestApplyMCPMediaPolicy_GenericContentTypeSniffsImage(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	// PNG magic bytes with generic content type -- should be sniffed.
+	pngBody := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "application/octet-stream", pngBody, testMCPMediaTransport)
+	if verdict.MediaType != "image/png" {
+		t.Errorf("MediaType = %q, want image/png", verdict.MediaType)
+	}
+}
+
+func TestApplyMCPMediaPolicy_AudioStripped(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MediaPolicy.StripAudio = boolPtr(true)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "audio/mpeg", []byte("audio-data"), testMCPMediaTransport)
+	if !verdict.Blocked {
+		t.Error("audio should be blocked when strip_audio is true")
+	}
+	if !strings.Contains(verdict.BlockReason, "audio stripped") {
+		t.Errorf("BlockReason = %q, want 'audio stripped' substring", verdict.BlockReason)
+	}
+}
+
+func TestApplyMCPMediaPolicy_AudioAllowed(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MediaPolicy.StripAudio = boolPtr(false)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "audio/mpeg", []byte("audio-data"), testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Error("audio should not be blocked when strip_audio is false")
+	}
+}
+
+func TestApplyMCPMediaPolicy_VideoStripped(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MediaPolicy.StripVideo = boolPtr(true)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "video/mp4", []byte("video-data"), testMCPMediaTransport)
+	if !verdict.Blocked {
+		t.Error("video should be blocked when strip_video is true")
+	}
+	if !strings.Contains(verdict.BlockReason, "video stripped") {
+		t.Errorf("BlockReason = %q, want 'video stripped' substring", verdict.BlockReason)
+	}
+}
+
+func TestApplyMCPMediaPolicy_VideoAllowed(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MediaPolicy.StripVideo = boolPtr(false)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "video/mp4", []byte("video-data"), testMCPMediaTransport)
+	if verdict.Blocked {
+		t.Error("video should not be blocked when strip_video is false")
+	}
+}
+
+func TestApplyMCPMediaPolicy_ImageTypeNotAllowed(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MediaPolicy.AllowedImageTypes = []string{"image/png"}
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/gif", []byte{0x47, 0x49, 0x46, 0x38}, testMCPMediaTransport)
+	if !verdict.Blocked {
+		t.Error("image/gif should be blocked when not in allowed list")
+	}
+	if !strings.Contains(verdict.BlockReason, "not in allowed list") {
+		t.Errorf("BlockReason = %q, want 'not in allowed list' substring", verdict.BlockReason)
+	}
+}
+
+func TestApplyMCPMediaPolicy_ImageTooLarge(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.MediaPolicy.MaxImageBytes = 10
+	// A body bigger than 10 bytes.
+	bigBody := make([]byte, 20)
+	verdict := applyMCPMediaPolicy(&cfg.MediaPolicy, "image/png", bigBody, testMCPMediaTransport)
+	if !verdict.Blocked {
+		t.Error("oversized image should be blocked")
+	}
+	if !strings.Contains(verdict.BlockReason, "exceeds limit") {
+		t.Errorf("BlockReason = %q, want 'exceeds limit' substring", verdict.BlockReason)
+	}
+}
+
+func TestDecodeMCPMediaPayload(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		encoded string
+		wantOK  bool
+	}{
+		{name: "empty", encoded: "", wantOK: false},
+		{name: "whitespace_only", encoded: "   ", wantOK: false},
+		{name: "valid_std_base64", encoded: base64.StdEncoding.EncodeToString([]byte("hello")), wantOK: true},
+		{name: "valid_url_base64", encoded: base64.URLEncoding.EncodeToString([]byte("hello")), wantOK: true},
+		{name: "invalid_base64", encoded: "!!!not-base64!!!", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, ok := decodeMCPMediaPayload(tt.encoded)
+			if ok != tt.wantOK {
+				t.Errorf("decodeMCPMediaPayload() ok = %v, want %v", ok, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestApplyMCPResponseMediaPolicy_NilPolicy(t *testing.T) {
+	t.Parallel()
+
+	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[]}}`)
+	result := applyMCPResponseMediaPolicy(line, nil, testMCPMediaTransport)
+	if result.Blocked {
+		t.Error("nil policy should not block")
+	}
+	if result.Changed {
+		t.Error("nil policy should not change line")
+	}
+}
+
+func TestApplyMCPResponseMediaPolicy_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	line := []byte(`not valid json`)
+	result := applyMCPResponseMediaPolicy(line, &cfg.MediaPolicy, testMCPMediaTransport)
+	if result.Blocked {
+		t.Error("invalid JSON should pass through unchanged")
+	}
+}
+
+func TestApplyMCPResponseMediaPolicy_NoResult(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	line := []byte(`{"jsonrpc":"2.0","id":1}`)
+	result := applyMCPResponseMediaPolicy(line, &cfg.MediaPolicy, testMCPMediaTransport)
+	if result.Blocked || result.Changed {
+		t.Error("missing result should pass through unchanged")
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
 
 func TestForwardScanned_MediaPolicyBlocksToolResultAudio_EmitsReceipt(t *testing.T) {

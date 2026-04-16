@@ -25,13 +25,35 @@ Enable the mediation envelope when:
 
 ## Configuration
 
+Minimal (unsigned envelope):
+
 ```yaml
 mediation_envelope:
   enabled: true
 ```
 
-That is the only field today. Envelope signing (RFC 9421 HTTP Message
-Signatures), SPIFFE actor format, and key management are planned.
+Signed envelope (Ed25519, RFC 9421 HTTP Message Signatures):
+
+```yaml
+mediation_envelope:
+  enabled: true
+  sign: true
+  signing_key_path: /etc/pipelock/envelope-sign.key   # versioned pipelock ed25519 private key
+  key_id: pipelock-envelope-2026-04                   # passed as keyid in the signature input
+  signed_components:                                   # per-request component list
+    - "@method"
+    - "@target-uri"
+    - "pipelock-mediation"
+    - "content-digest"
+  created_skew_seconds: 30      # tolerance for clock drift between signer and verifier
+  max_body_bytes: 1048576       # upper bound on body bytes drained for Content-Digest
+```
+
+When `sign: true`, pipelock attaches an RFC 9421 HTTP Message Signature alongside the `Pipelock-Mediation` header. The signature uses the `pipelock1` dictionary label and the `pipelock-mediation` tag so it coexists with upstream `sig1` / Web Bot Auth signatures on the same request.
+
+Fail-closed semantics: if `sign: true` is set without a readable Ed25519 key, pipelock refuses to start. Hot-reload with an unreadable key aborts the entire config swap rather than silently downgrading to unsigned traffic.
+
+The signing key must use the versioned pipelock Ed25519 format (see `pipelock keygen`). The envelope signing key SHOULD be distinct from the receipt signing key so an envelope-key rotation does not invalidate historical receipts.
 
 ## HTTP header format
 
@@ -124,9 +146,19 @@ was active when the decision was made.
 
 Use `bound` in production by either assigning each agent its own listen port, or by running a generated companion-proxy deployment (`pipelock init sidecar`) which sets `bind_default_agent_identity: true` automatically. The `matched` and `self-declared` levels are informational and should not be trusted for authorization decisions without additional verification.
 
-## Signing (planned)
+## Signing
 
-RFC 9421 HTTP Message Signatures for the mediation envelope are planned for a follow-up release. The design targets a dedicated Ed25519 envelope key (separate from the receipt signing key), the `pipelock1` signature label, and the `pipelock-mediation` tag. Cloudflare Web Bot Auth (`sig1`, tag `web-bot-auth`) and other RFC 9421 signatures are expected to coexist on the same request via multi-signature labels. Stable policy canonicalization for the `ph` fingerprint and envelope refresh on redirects (method changes, content-digest recomputation) are part of that planned work. No envelope-signing config field ships in v2.1.3.
+RFC 9421 HTTP Message Signatures for the mediation envelope ship in v2.1.3. The signer uses a dedicated Ed25519 envelope key (separate from the receipt signing key), the `pipelock1` signature label, and the `pipelock-mediation` tag. Cloudflare Web Bot Auth (`sig1`, tag `web-bot-auth`) and other RFC 9421 signatures coexist on the same request via distinct signature labels — pipelock's inbound-strip only removes members tagged `pipelock-mediation` and never disturbs upstream signatures.
+
+**Canonical policy hash (`ph`).** The envelope's `ph` field is the first 16 bytes of SHA-256 over a canonicalised, slice-order-preserving JSON projection of the effective config. Reformatting, comments, and reordering noise fields no longer shift `ph`, while behavioural rule reorders (DLP patterns, MCP tool policy rules, chain rules) still do. Per-agent resolved configs compute their own canonical hash and stamp it via `BuildOpts.PolicyHash` at the transport inject site. This makes `ph` admission-grade for downstream verifiers.
+
+**Redirect refresh.** On every allowed redirect through the fetch or forward proxy, pipelock rebuilds the `Pipelock-Mediation` header on the redirected request so `@target-uri`, `hop`, `ph`, and `action` reflect the redirected leg. Stale `Content-Digest` is dropped and the signature is re-attached. The `hop` dictionary key counts refresh hops; original requests omit it.
+
+**Reverse-proxy signing.** For reverse-proxy transports, envelope signing runs in an `http.RoundTripper` wrapper installed on `httputil.ReverseProxy.Transport`, so `@target-uri` reflects the post-Director upstream URL rather than the inbound relative path. This prevents signature / URL mismatches when the reverse proxy rewrites the path.
+
+**Body plumbing.** Transport inject sites hand the already-scanned request body bytes to the signer so `Content-Digest` is computed without a second drain. When request body scanning is disabled but signing is enabled, the envelope emitter drains `req.Body` itself (bounded by `max_body_bytes`) and installs a fresh `GetBody` closure so the stdlib can replay the body on 307/308 redirects.
+
+Deferred to a later release: SPIFFE actor format and well-known envelope-key discovery (`/.well-known/pipelock-envelope-keys`). Until those ship, key distribution is an out-of-band deployment concern — publish the envelope public key (hex or versioned format) alongside your receipt public key and rotate via `key_id` changes.
 
 ## Example: reading the envelope in Go
 

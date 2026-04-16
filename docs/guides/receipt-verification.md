@@ -105,6 +105,13 @@ Transcript Root: evidence-proxy-0.jsonl
 The `--key` flag is required for transcript roots: the root is only
 meaningful if every receipt in the chain was verified against a trusted key.
 
+When verifying a file-based evidence capture, `transcript-root` derives the
+`SessionID` from the first entry in the file rather than the `--session`
+flag (which still controls the session ID for directory-based chain scans).
+An empty evidence file — zero receipts — fails with a non-zero exit code
+rather than silently printing a valid-looking root, so scripts can trust
+an exit-0 status to mean "receipts were present and the chain verified."
+
 ## How the chain works
 
 Each receipt contains:
@@ -125,6 +132,30 @@ Receipt 2:  chain_seq=2, chain_prev_hash=sha256(receipt_1)
 ```
 
 Inserting, removing, or modifying any receipt breaks the chain at that point.
+
+## Resume and rotation integrity
+
+When pipelock restarts or rotates the evidence file, the receipt emitter
+resumes the chain from the last persisted receipt. v2.1.3 hardens the
+resume path in three ways:
+
+- **Tail signature verification:** the resume code verifies the Ed25519
+  signature of the tail receipt before trusting its `chain_seq` and
+  chain hash. A tampered or partially-corrupted evidence file fails
+  fast rather than letting the next emitted receipt silently continue
+  from attacker-controlled state.
+- **Atomic resume:** the recorder computes the resumed sequence number,
+  previous hash, and first-sequence-in-span into local temporaries and
+  only mutates its internal state after all filesystem reads succeed.
+  A transient read error no longer leaves a half-initialised chain
+  that restarts from genesis.
+- **uint64 sequence parsing:** file ordering during resume uses
+  `strconv.ParseUint` so evidence filenames with sequence numbers
+  greater than `math.MaxInt` (or 32-bit builds) order correctly.
+
+These hardenings are transparent to verifiers — the wire format is
+unchanged. They protect the emitter side from bugs and tampering that
+would have produced broken or forgeable chains at restart.
 
 ## Cross-implementation conformance suite
 

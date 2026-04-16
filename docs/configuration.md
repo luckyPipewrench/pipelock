@@ -1895,14 +1895,41 @@ HTTP requests get a `Pipelock-Mediation` header encoded as an RFC 8941 Structure
 
 Only requests forwarded downstream carry the envelope. Blocked decisions never reach the backend, so use signed receipts rather than headers to audit blocks.
 
+Minimal (unsigned) configuration:
+
 ```yaml
 mediation_envelope:
   enabled: true
 ```
 
+Signed configuration (Ed25519 HTTP Message Signatures per RFC 9421):
+
+```yaml
+mediation_envelope:
+  enabled: true
+  sign: true
+  signing_key_path: /etc/pipelock/envelope-sign.key
+  key_id: pipelock-envelope-2026-04
+  signed_components:
+    - "@method"
+    - "@target-uri"
+    - "pipelock-mediation"
+    - "content-digest"
+  created_skew_seconds: 30
+  max_body_bytes: 1048576
+```
+
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable envelope injection on proxied requests |
+| `sign` | `false` | Attach an RFC 9421 HTTP Message Signature alongside the envelope. Fail-closed at startup and on reload if the key is missing or unreadable. |
+| `signing_key_path` | (none) | Path to the versioned pipelock Ed25519 private key used to sign the envelope. Required when `sign: true`. |
+| `key_id` | (none) | Identifier emitted as `keyid` in the signature-input so verifiers can rotate keys. Required when `sign: true`. |
+| `signed_components` | (see below) | Ordered list of RFC 9421 component identifiers covered by the signature. |
+| `created_skew_seconds` | `30` | Clock-drift tolerance (seconds) accepted between signer and verifier. |
+| `max_body_bytes` | `1048576` | Upper bound on the body drained for Content-Digest when body scanning is disabled. |
+
+Default `signed_components` covers `@method`, `@target-uri`, `pipelock-mediation`, and `content-digest`. Override only if your verifier requires a different component set.
 
 When enabled, the envelope carries these wire fields:
 
@@ -1923,9 +1950,13 @@ When enabled, the envelope carries these wire fields:
 | `authr` | AuthorityRef | Authority reference (omitted when absent) |
 | `reauth` | RequiresReauth | `true` when the action requires re-authorization (omitted when false) |
 
-**Inbound stripping:** Pipelock strips any inbound `Pipelock-Mediation` header and any `pipelock`-prefixed members from `Signature` and `Signature-Input` headers before processing. This prevents agents or upstream proxies from forging mediation metadata.
+**Inbound stripping:** Pipelock strips any inbound `Pipelock-Mediation` header and any `pipelock`-prefixed members from `Signature` and `Signature-Input` headers before processing. This prevents agents or upstream proxies from forging mediation metadata. The strip path parses `Signature` / `Signature-Input` as RFC 8941 dictionaries via httpsfv so commas inside quoted parameter values do not corrupt surviving members.
 
-**Planned:** Envelope signing (RFC 9421 HTTP Message Signatures), SPIFFE actor format, and key management are planned for a follow-up release.
+**Redirect refresh:** On every allowed redirect through the fetch or forward proxy, pipelock rebuilds the `Pipelock-Mediation` header on the redirected request so `@target-uri`, `hop`, `ph`, and `action` reflect the redirected leg. Stale `Content-Digest` is dropped and the signature is re-attached when signing is enabled. The `hop` dictionary key counts refresh hops; original requests omit it.
+
+**Reverse-proxy signing:** Envelope signing runs in an `http.RoundTripper` wrapper installed on `httputil.ReverseProxy.Transport`, so `@target-uri` reflects the post-Director upstream URL rather than the inbound relative path.
+
+**Deferred for follow-up:** SPIFFE actor format and well-known envelope-key discovery (`/.well-known/pipelock-envelope-keys`). Until those ship, distribute the envelope public key out-of-band alongside the receipt public key and rotate via `key_id`.
 
 ## Media Policy (v2.1)
 

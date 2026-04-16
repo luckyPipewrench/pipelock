@@ -129,6 +129,14 @@ The browser shield pipeline handles SVG separately, stripping:
 
 Namespace-prefixed variants (e.g. `svg:foreignObject`) are also caught.
 
+## MCP tool-result media
+
+Media policy also enforces on MCP tool results. When an MCP server returns a tool-result `content` block carrying base64 payload in any of the `data`, `blob`, or `raw` fields (plus an `image/*`, `audio/*`, or `video/*` MIME type, or bytes that sniff as such), pipelock evaluates the payload against the same size, type, and image-stripping rules used on HTTP responses.
+
+All three payload slots are evaluated — a malicious tool result cannot stash blocked media in `blob` while keeping a benign value in `data`. Pure-media tool results (no `text` blocks) are routed directly to media policy and are never fed as raw text into response-injection scanning. Content-type sniffing runs when the upstream server advertises a generic type like `application/octet-stream` or `binary/octet-stream`, so untyped binary media is still caught.
+
+Blocked MCP media returns a media-policy-specific JSON-RPC error to the client (distinct from the generic prompt-injection block response) so operators can tell the two enforcement paths apart.
+
 ## Decompression bomb protection
 
 The `max_image_bytes` limit is checked on the raw response body before any

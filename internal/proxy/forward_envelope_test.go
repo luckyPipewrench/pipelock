@@ -56,6 +56,7 @@ func TestForwardHTTP_EnvelopeSignedHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	// Fetch handler only allows GET. Use it with a GET to verify the
 	// signing path is exercised (Content-Digest won't be present on
@@ -83,11 +84,11 @@ func TestForwardHTTP_EnvelopeSignedHappyPath(t *testing.T) {
 	}
 }
 
-// TestForwardHTTP_EnvelopeSignedGetBody verifies that the forward proxy
-// sets req.GetBody on body-bearing POST requests so stdlib's redirect
-// machinery can replay the body on 307/308. Without this, signed POST
-// redirects silently drop the body.
-func TestForwardHTTP_EnvelopeSignedGetBody(t *testing.T) {
+// TestForwardHTTP_EnvelopeSignedRedirectChain verifies that signing
+// metadata (Signature + Pipelock-Mediation) survives a redirect chain
+// through the fetch handler. Body replay is covered by
+// redirect_refresh_test.go's multi-hop chain test.
+func TestForwardHTTP_EnvelopeSignedRedirectChain(t *testing.T) {
 	t.Parallel()
 
 	var gotBodyOnRedirect string
@@ -132,6 +133,7 @@ func TestForwardHTTP_EnvelopeSignedGetBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	handler := p.buildHandler(p.buildMux())
 

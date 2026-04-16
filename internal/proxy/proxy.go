@@ -75,6 +75,12 @@ const (
 	// config snapshot ServeHTTP loaded rather than re-loading the
 	// atomic pointer (which could race with a reload in flight).
 	ctxKeyReverseEnvelopeCfg
+	// ctxKeyReverseEnvelopeEmitter snapshots the *envelope.Emitter at
+	// admission time so RoundTrip uses the same signing state that
+	// ServeHTTP used to decide "signing is on." Without this, a
+	// reload between ServeHTTP and RoundTrip could flip signing on/off
+	// mid-request — a TOCTOU race flagged by CodeRabbit on PR #403.
+	ctxKeyReverseEnvelopeEmitter
 
 	// ctxKeyRedirectTransport is the transport label ("fetch" or
 	// "forward") attached by the fetch and forward handlers before
@@ -611,18 +617,35 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 		prev.Hop++
 	}
 
-	// 3. Fresh body bytes via GetBody when available.
+	// 3. Fresh body bytes via GetBody when available. Cap the read to
+	//    max_body_bytes so a redirect to a large-body endpoint cannot
+	//    spike memory past the signer's intended ceiling. Over-cap
+	//    bodies are signed without content-digest, matching the
+	//    first-hop InjectAndSign behavior.
 	var body []byte
 	if req.GetBody != nil {
 		if rc, err := req.GetBody(); err == nil && rc != nil {
-			buffered, readErr := io.ReadAll(rc)
+			maxBody := int64(cfg.MediationEnvelope.MaxBodyBytes)
+			var (
+				buffered []byte
+				readErr  error
+			)
+			if maxBody > 0 {
+				buffered, readErr = io.ReadAll(io.LimitReader(rc, maxBody+1))
+			} else {
+				buffered, readErr = io.ReadAll(rc)
+			}
 			_ = rc.Close()
 			if readErr != nil {
 				return newRedirectEnvelopeBlockedRequest(
 					fmt.Errorf("draining redirect GetBody: %w", readErr),
 				)
 			}
-			body = buffered
+			if maxBody > 0 && int64(len(buffered)) > maxBody {
+				body = nil
+			} else {
+				body = buffered
+			}
 		} else if err != nil {
 			return newRedirectEnvelopeBlockedRequest(
 				fmt.Errorf("opening redirect GetBody: %w", err),

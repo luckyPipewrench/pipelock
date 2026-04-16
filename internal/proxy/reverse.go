@@ -250,7 +250,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// the upstream target. Signing before Director would sign the
 	// inbound-relative @target-uri and any verifier checking the
 	// signature against the upstream host would reject it.
-	if rp.envelopeEmitterPtr != nil && rp.envelopeEmitterPtr.Load() != nil {
+	// Snapshot the emitter at admission time so RoundTrip uses the
+	// same signing decision that ServeHTTP made. Without this, a reload
+	// between here and RoundTrip could flip signing on/off mid-request.
+	var admissionEmitter *envelope.Emitter
+	if rp.envelopeEmitterPtr != nil {
+		admissionEmitter = rp.envelopeEmitterPtr.Load()
+	}
+	if admissionEmitter != nil {
 		actorIdentity := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
 		actor := actorIdentity.Name
 		if actor == "" {
@@ -268,6 +275,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		ctx := context.WithValue(r.Context(), ctxKeyReverseEnvelopeOpts, opts)
 		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeBody, reverseBodyBytes)
 		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
+		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeEmitter, admissionEmitter)
 		r = r.WithContext(ctx)
 	}
 
@@ -297,22 +305,17 @@ type reverseSigningRoundTripper struct {
 // and signing before handing the request off to the base transport.
 // Errors from InjectAndSign fail closed and block the outbound request.
 func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.rp == nil || t.rp.envelopeEmitterPtr == nil {
-		return t.base.RoundTrip(req)
-	}
-	em := t.rp.envelopeEmitterPtr.Load()
+	// Use the emitter snapshot from admission time, not the current
+	// global atomic. A reload between ServeHTTP and RoundTrip must
+	// not flip the signing decision for an in-flight request.
+	em, _ := req.Context().Value(ctxKeyReverseEnvelopeEmitter).(*envelope.Emitter)
 	if em == nil {
+		// No emitter was live at admission time — signing was off
+		// for this request. Forward unsigned.
 		return t.base.RoundTrip(req)
 	}
 	opts, ok := req.Context().Value(ctxKeyReverseEnvelopeOpts).(envelope.BuildOpts)
 	if !ok {
-		// The envelope emitter is live but the per-request build opts
-		// never made it onto the context. Falling through to
-		// t.base.RoundTrip would forward the request unsigned, which
-		// is a silent downgrade past the fail-closed contract. Fail
-		// closed: return a typed envelope block error. The reverse
-		// proxy's errorHandler picks this up via blockedRequestErrorFrom
-		// and turns it into a 403 + recorded metric.
 		return nil, newEnvelopeBlockedRequest(
 			fmt.Errorf("reverse proxy envelope: missing build opts on context"),
 		)

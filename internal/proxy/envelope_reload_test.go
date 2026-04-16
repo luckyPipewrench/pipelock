@@ -63,6 +63,7 @@ func envelopeReloadProxy(t *testing.T) *Proxy {
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
+	t.Cleanup(p.Close)
 	return p
 }
 
@@ -635,7 +636,8 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 	const workers = 8
 	const perWorker = 25
 	var wg sync.WaitGroup
-	errCh := make(chan string, workers*perWorker)
+	// Buffer covers workers + the reload goroutine so neither blocks.
+	errCh := make(chan string, workers*perWorker+20)
 	stop := make(chan struct{})
 
 	for w := 0; w < workers; w++ {

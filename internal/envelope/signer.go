@@ -405,7 +405,8 @@ func buildSignatureBase(req *http.Request, body []byte, components []string, sig
 func buildComponentValue(req *http.Request, body []byte, comp string) (string, error) {
 	switch comp {
 	case derivedMethod:
-		return strings.ToUpper(req.Method), nil
+		// RFC 9421 §2.2.1: no case transformation on the method value.
+		return req.Method, nil
 	case derivedTargetURI:
 		if req.URL == nil {
 			return "", errors.New("request has nil URL")

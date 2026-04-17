@@ -46,7 +46,7 @@ Glob patterns match against the file or directory base name. Common patterns to 
 
 ### Content Scanning
 
-When `scan_content` is true (the default), file sentry reads each modified file and runs pipelock's DLP scanner on the content. The same 46 credential patterns used for network traffic apply to file content.
+When `scan_content` is true (the default), file sentry reads each modified file and runs pipelock's DLP scanner on the content. The same 48 credential patterns used for network traffic apply to file content.
 
 Files larger than 10MB are skipped to avoid unbounded memory use.
 

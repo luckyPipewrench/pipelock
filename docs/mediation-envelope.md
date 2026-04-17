@@ -7,7 +7,7 @@ correlation ID that a downstream verifier needs to decide whether to
 trust the request and to correlate it with pipelock's receipt chain.
 
 This document describes the envelope wire format, the configuration
-surface, the signing contract added in v2.1.3, and the transport
+surface, the signing contract added in v2.2.0, and the transport
 coverage matrix.
 
 ## Wire format
@@ -36,7 +36,7 @@ The dictionary members are:
 | `auth` | string | Authority kind | optional |
 | `authr` | string | Authority reference | optional |
 | `reauth` | boolean | True when the action requires re-authentication | optional |
-| `hop` | integer | Redirect refresh counter (added in v2.1.3) | omitted when zero |
+| `hop` | integer | Redirect refresh counter (added in v2.2.0) | omitted when zero |
 
 Example Pipelock-Mediation header value on a forward-proxy POST that
 has been refreshed once across a redirect:
@@ -49,13 +49,13 @@ ts=1712345678, hop=1
 
 ## Canonical policy hash (`ph`)
 
-Before v2.1.3, `ph` was `first16(sha256(raw_yaml_bytes))`. Cosmetic
+Before v2.2.0, `ph` was `first16(sha256(raw_yaml_bytes))`. Cosmetic
 changes to the on-disk YAML (whitespace, comments, top-level section
 reorder) produced different `ph` values for semantically identical
 policies. Downstream verifiers could not use `ph` as a stable
 statement about the rules that governed a request.
 
-From v2.1.3 onwards, `ph` derives from a canonical projection of the
+From v2.2.0 onwards, `ph` derives from a canonical projection of the
 config:
 
 1. Shallow-copy the live `*config.Config`.
@@ -78,7 +78,7 @@ hash, so an agent whose profile overrides the global policy gets its
 own `ph` stamped on the requests it originates. The global hash is
 the fallback for requests without a resolved agent binding.
 
-## RFC 9421 envelope signing (v2.1.3)
+## RFC 9421 envelope signing (v2.2.0)
 
 When `mediation_envelope.sign: true` is configured, pipelock attaches
 an RFC 9421 HTTP Message Signature to outbound mediated requests on
@@ -174,7 +174,7 @@ replaced in place before the new one is added.
 | MCP stdio | yes | **no** | pre-dispatch (header-only `InjectHTTPEnvelope`) | n/a |
 | MCP HTTP / SSE | yes | **no** | pre-dispatch | **n/a — redirects disabled** |
 
-**MCP stdio is not signed in v2.1.3.** RFC 9421 is defined on HTTP
+**MCP stdio is not signed in v2.2.0.** RFC 9421 is defined on HTTP
 messages; the MCP stdio transport rides the envelope in JSON-RPC
 `_meta`, not on HTTP headers. Signing MCP stdio would require a
 different signature format and is explicitly out of scope for this
@@ -234,7 +234,7 @@ Ed25519 keys (receipt signing, flight recorder checkpoints, envelope
 signing) — rejects group-write, group-execute, and any other-access
 bits. Group-read is allowed for Kubernetes `fsGroup` compatibility.
 
-## Known limitations (v2.1.3)
+## Known limitations (v2.2.0)
 
 - **MCP stdio signing:** out of scope. Follow-up work will define an
   MCP-native signing envelope format.

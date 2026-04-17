@@ -31,7 +31,31 @@ These must be proven by tests, not assumed from docs or deployment.
 | Go | 1.25+ (CI tests 1.25 and 1.26) |
 | License | Apache 2.0 (core), ELv2 (`enterprise/`) |
 | Binary | Single static binary, ~18MB |
-| Deps | cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, x/text, x/net, x/time, x/sys, gobwas/ws, sentry-go, modernc.org/sqlite, otlp/proto, google/protobuf, go-landlock |
+| Deps | 21 direct deps — run `make stats` for the live count. Core set: cobra, zerolog, go-readability, yaml.v3, prometheus, fsnotify, gobwas/ws, sentry-go, modernc.org/sqlite, otlp/proto, google/protobuf, go-landlock, cyclonedx-go, google/uuid, common-fate/httpsig (RFC 9421), dunglas/httpsfv (RFC 8941), plus x/crypto, x/net, x/sys, x/text, x/time. |
+
+## Docs & README Messaging
+
+- Keep this file product- and repo-focused. Do not add personal preferences, private infrastructure notes, or ops-only workflow details.
+- Use exact casing for **Pipelock** in public docs.
+- Default category language: **agent firewall** or **open-source agent firewall**.
+- Default product sentence: **Pipelock sits between AI agents and the internet and blocks secret leaks, unsafe tool traffic, and prompt-injection responses.**
+- Do not describe the gauntlet as a neutral field-wide benchmark unless the page is explicitly talking about real third-party submitted results.
+- Keep the README, release docs, and guides aligned with the public site on these core ideas:
+  - agent firewall / agent egress security
+  - runtime inspection at the network and tool boundary
+  - gauntlet as proof, not hype
+  - honest deployment claims: binary-enforced vs deployment-enforced
+
+### Docs PR checklist
+
+Before merging a README or docs PR that changes positioning, release framing, or feature summaries:
+
+1. Read the current `README.md`, `docs/comparison.md`, and the public `/pipelock/` page together.
+2. Verify the first paragraph uses the right category and product sentence.
+3. Run `make stats` for local product counts before citing patterns, preset counts, or direct dependencies.
+4. For external proof counts like gauntlet corpus size, verify against the current benchmark repo or live results before citing them. If not verified, omit the hard number.
+5. Make sure screenshots, badges, and proof claims still match the current release.
+6. Keep SEO-style copy tight even in docs: strong title, clear first paragraph, no category drift, no fake benchmark claims.
 
 ## Build, Test, Lint
 

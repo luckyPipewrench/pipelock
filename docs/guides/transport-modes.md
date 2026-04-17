@@ -200,10 +200,29 @@ If your agent handles secrets and you need content-level DLP on HTTPS traffic, e
 | SDK compatibility | Requires `/fetch` API | Native `HTTPS_PROXY` | Native `HTTPS_PROXY` + CA trust |
 | Performance | Slower (extraction) | Fastest (pass-through) | Moderate (decrypt + scan + re-encrypt) |
 
+## Signed Action Receipt Coverage
+
+Every block or allow decision produces a signed action receipt. The table below enumerates which deny paths are covered on each transport. Every row has been exercised by a test in the signed-receipt-coverage suite.
+
+| Transport | Pre-forward blocks | Post-forward blocks | Transport-specific blocks | Receipt path |
+|-----------|-------------------|---------------------|---------------------------|--------------|
+| Fetch (`/fetch`) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, cross-request exfiltration | — | Direct emit to flight recorder |
+| CONNECT (no TLS intercept) | URL scan, DLP, SSRF, blocklist | — | Redirect inside tunnel (not visible) | Hostname-only receipts |
+| CONNECT + TLS interception | URL scan + full hostname DLP | Body DLP, header DLP, response injection | Authority mismatch | Full content receipts |
+| Absolute-URI (forward proxy) | URL scan, DLP, SSRF | Redirect block, response scan, audit-mode escalation, session profiling, header DLP, budget exhaustion, CEE | A2A header scan, A2A stream scan, A2A response body scan | Full content receipts |
+| WebSocket (`/ws`) | Handshake-time URL scan, DLP | Frame-level DLP, injection, address poisoning, CEE | Session close reason | Per-frame receipts + session close |
+| MCP stdio | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
+| MCP HTTP / SSE | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts, stream-aware |
+| MCP HTTP reverse proxy | Input scan, tool scan, policy | Response injection, chain detection, session binding drift | Tool call, tool response, policy decision | Full content receipts |
+
+All receipt emission is fire-and-forget on the async flight-recorder channel and survives config reload across all transports. Receipts chain via `chain_prev_hash` / `chain_seq` for tamper-evidence. See [`docs/guides/receipt-verification.md`](receipt-verification.md) for the verify CLI and the cross-implementation conformance suite.
+
 ## See Also
 
 - [Configuration Reference](../configuration.md) for all config fields controlling each proxy mode
 - [OpenClaw Integration](openclaw.md) for deploying pipelock with OpenClaw gateways
 - [Deployment Recipes](deployment-recipes.md) for Docker Compose, Kubernetes, and host-level enforcement
+- [`pipelock init sidecar`](../cli/init-sidecar.md) for the generated companion-proxy deployment
+- [`pipelock session`](../cli/session.md) for airlock inspection and recovery
 - [Bypass Resistance](../bypass-resistance.md) for details on how each scanning layer resists evasion
 - [Attacks Blocked](../attacks-blocked.md) for real-world attack examples across all transport modes

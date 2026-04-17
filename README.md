@@ -4,17 +4,23 @@
 
 # Pipelock
 
-[![CI](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml)
-[![Security](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg)](https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock)](https://goreportcard.com/report/github.com/luckyPipewrench/pipelock)
-[![GitHub Release](https://img.shields.io/github/v/release/luckyPipewrench/pipelock)](https://github.com/luckyPipewrench/pipelock/releases)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge)](https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/11948/badge?level=silver)](https://www.bestpractices.dev/projects/11948)
-[![codecov](https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg)](https://codecov.io/gh/luckyPipewrench/pipelock)
-[![CodeRabbit Reviews](https://img.shields.io/coderabbit/prs/github/luckyPipewrench/pipelock?labelColor=171717&color=FF570A&label=CodeRabbit+Reviews)](https://coderabbit.ai)
-[![License](https://img.shields.io/badge/Core-Apache_2.0-blue.svg)](LICENSE) [![License](https://img.shields.io/badge/Enterprise-ELv2-orange.svg)](enterprise/LICENSE)
+<p align="center">
+  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg"></a>
+  <a href="https://github.com/luckyPipewrench/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/luckyPipewrench/pipelock"></a>
+  <a href="LICENSE"><img alt="Core Apache 2.0" src="https://img.shields.io/badge/Core-Apache_2.0-blue.svg"></a>
+  <a href="enterprise/LICENSE"><img alt="Enterprise ELv2" src="https://img.shields.io/badge/Enterprise-ELv2-orange.svg"></a>
+</p>
 
-**Open-source [agent firewall](https://pipelab.org/agent-firewall/).** Network scanning, process containment, and tool policy enforcement in a single binary.
+<p align="center">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge"></a>
+  <a href="https://www.bestpractices.dev/projects/11948"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/11948/badge?level=silver"></a>
+  <a href="https://codecov.io/gh/luckyPipewrench/pipelock"><img alt="codecov" src="https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg"></a>
+  <a href="https://goreportcard.com/report/github.com/luckyPipewrench/pipelock"><img alt="Go Report" src="https://goreportcard.com/badge/github.com/luckyPipewrench/pipelock"></a>
+  <a href="https://github.com/luckyPipewrench/pipelock/blob/main/.github/workflows/ci.yaml#L21-L35"><img alt="pipelock self-scanned" src="https://img.shields.io/badge/pipelock-self--scanned-00FFC8?style=flat&labelColor=1A1A2E&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNCAxNCI+PHBhdGggZmlsbD0iIzAwRkZDOCIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik03IDAuNWMtMS45MyAwLTMuNSAxLjY2LTMuNSAzLjd2MS4zSDNjLS44MyAwLTEuNSAuNjctMS41IDEuNXY2YzAgLjgzLjY3IDEuNSAxLjUgMS41aDhjLjgzIDAgMS41LS42NyAxLjUtMS41VjdjMC0uODMtLjY3LTEuNS0xLjUtMS41aC0uNVY0LjJjMC0yLjA0LTEuNTctMy43LTMuNS0zLjdabS0yIDVWNC4yYzAtMS40OSAxLjEyLTIuNyAyLjUtMi43czIuNSAxLjIxIDIuNSAyLjd2MS4zSDVaTTIuNSA1aDJ2MS4yaC0yVjVabTcgMGgydjEuMmgtMlY1Wk03IDguMmMtLjY5IDAtMS4yNS41Ni0xLjI1IDEuMjUgMCAuNDQuMjMuODMuNTcgMS4wNXYxLjVoMS4zNnYtMS41Yy4zNC0uMjIuNTctLjYxLjU3LTEuMDUgMC0uNjktLjU2LTEuMjUtMS4yNS0xLjI1WiIvPjwvc3ZnPgo="></a>
+</p>
+
+**Open-source AI agent firewall with signed action receipts.** Network scanning, process containment, MCP-aware policy enforcement, and independently verifiable proof of what your agent did in a single binary. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
 
 **Works with:** Claude Code · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
@@ -74,7 +80,7 @@ gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:<version> --owner l
 
 ## What It Does
 
-Pipelock is an [agent firewall](https://pipelab.org/agent-firewall/): it sits inline between your AI agent and the internet, scanning outbound and inbound traffic.
+Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and [MCP security control](https://pipelab.org/learn/mcp-security/): it sits inline between your AI agent and the network, scans outbound and inbound traffic, and emits signed receipts plus mediation metadata for independent attestation.
 
 ### 11-Layer URL Scanner
 
@@ -196,6 +202,10 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **A2A Scanning** | Agent Card poisoning detection, card drift monitoring, session smuggling prevention for Google's Agent-to-Agent protocol |
 | **Behavioral Baseline** | Profile-then-lock for MCP tool behavior. Learns normal patterns during a window, flags deviations after ratification. |
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
+| **Taint Escalation** | Exposure-based policy escalation across MCP + task boundaries. Sessions that recently observed untrusted content get elevated scanning on protected operations until trust is explicitly restored. |
+| **Mediation Envelope** | RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, carrying action type, verdict, actor identity, policy hash, taint context, and receipt correlation ID. |
+| **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) plus the reference Python verifier, so receipts can be verified outside the Go implementation. |
+| **Media Policy** | Controls media response handling: strips steganographic metadata from JPEG/PNG (byte-level surgery, pixel-identical output), rejects audio/video by default, hardens SVG active content (foreignObject, event handlers, external hrefs), and enforces image size limits against decompression bombs. |
 | **Compliance Mappings** | OWASP MCP Top 10, OWASP Agentic Top 15, NIST 800-53, EU AI Act, SOC 2 coverage documentation |
 
 ![Pipelock Agent Egress Report showing risk rating, timeline, findings by category, and evidence appendix](examples/sample-report.png)
@@ -358,6 +368,19 @@ Production recipes (Docker Compose with network isolation, Kubernetes sidecar + 
 
 Downloads a pre-built binary, runs `pipelock audit`, scans the PR diff for leaked secrets, and uploads the audit report as a workflow artifact. See [`examples/ci-workflow.yaml`](examples/ci-workflow.yaml) for a complete workflow.
 
+### Runnable demo: tool-response injection
+
+The [`examples/tool-response-injection/`](examples/tool-response-injection/) harness runs an end-to-end demo where an MCP tool with a harmless name and description hides a prompt-injection payload in its response. Pipelock blocks the response before it reaches the agent and emits signed action receipts that a third party can verify. The same demo runs against three transports with one shared signing key:
+
+- MCP stdio (subprocess wrapping)
+- MCP HTTP upstream (stdio-to-HTTP bridge)
+- MCP HTTP reverse proxy
+
+```bash
+cd examples/tool-response-injection
+python3 demo.py    # needs python3 + cryptography + pipelock on PATH
+```
+
 ## Community Rules
 
 Signed rule bundles add detection patterns beyond the 48 built-in defaults. 28 community rules across DLP, injection, and tool-poison categories:
@@ -383,9 +406,9 @@ See [docs/rules.md](docs/rules.md) for details.
 | Process sandbox (no Docker) | Yes | No | No | Yes (kernel-level) |
 | Single binary, zero deps | Yes | No (Python) | No (npm) | No (kernel) |
 
-Full comparison: [docs/comparison.md](docs/comparison.md)
+Reference matrix: [docs/comparison.md](docs/comparison.md)
 
-Side-by-side breakdowns: [pipelab.org/compare](https://pipelab.org/compare/)
+Canonical comparison hub: [AI runtime security comparison](https://pipelab.org/compare/)
 
 <details>
 <summary>OWASP Agentic Top 10 Coverage</summary>
@@ -418,7 +441,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Bypass Resistance](docs/bypass-resistance.md) | Known evasion techniques, mitigations, limitations |
 | [Known Attacks Blocked](docs/attacks-blocked.md) | Real attacks with repro snippets |
 | [SIEM Integration](docs/guides/siem-integration.md) | Log schema, forwarding patterns, SIEM queries |
-| [Metrics Reference](docs/metrics.md) | All 45 Prometheus metrics, alert rules |
+| [Metrics Reference](docs/metrics.md) | Prometheus metric families, labels, JSON stats, and alert rules |
 | [Community Rules](docs/rules.md) | Install, configure, and create signed rule bundles |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments |
@@ -428,13 +451,23 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [EU AI Act](docs/compliance/eu-ai-act-mapping.md) | EU AI Act compliance mapping |
 | [NIST 800-53](docs/compliance/nist-800-53.md) | NIST SP 800-53 Rev. 5 controls mapping |
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
+| [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
+| [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
+| [Receipt Verification](docs/guides/receipt-verification.md) | verify-receipt CLI, conformance suite, chain integrity |
+| [Receipt Transport Coverage](docs/guides/receipt-transports.md) | Receipt emission matrix across fetch, forward, CONNECT/TLS, WebSocket, MCP, and A2A paths |
+| [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
+| [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests (strategic-merge, Kustomize, Helm values) |
+| [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |
+| [Badges](docs/badges.md) | Drop-in Markdown for the `scanned by pipelock` badge on downstream projects |
 
 ## Project Structure
 
 ```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 20+ Cobra commands (run, check, init, generate, mcp, ...)
+  cli/                 20+ Cobra commands (run, check, init, generate, mcp, session, posture, rules, ...)
+    session/           `pipelock session` operator CLI — airlock inspection and recovery
+    setup/             `pipelock init sidecar` — companion-proxy manifest generation (K8s)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
   scanner/             11-layer URL scanning pipeline + response injection detection
   audit/               Structured JSON logging (zerolog) + event emission dispatch
@@ -442,13 +475,20 @@ internal/
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains
   discover/            IDE/agent config discovery (Claude Code, Cursor, VS Code, JetBrains)
   killswitch/          Emergency deny-all (4 sources) + port-isolated API
+  envelope/            Mediation envelope (RFC 8941) for sideband metadata
+  media/               Image metadata stripping (JPEG/PNG byte-level surgery)
+  normalize/           6-pass text normalization (NFKC + invisible + leetspeak + vowel + stego strip)
   receipt/             Action receipt signing + hash-chained evidence
+  posture/             Posture capsule schema, signing, scoring, verify policy
+  session/             Session state, taint classification, task boundaries, trust overrides
+  rules/               Bundle loader, tier taxonomy, RequiredFeatures enforcement
   sandbox/             Landlock, seccomp, netns, macOS sandbox-exec
-  shield/              Airlock, browser shield, posture capsule
+  shield/              Airlock, browser shield, SVG hardening
   signing/             Ed25519 key management
   integrity/           SHA256 file integrity monitoring
   report/              HTML/JSON audit report generation
 enterprise/            Multi-agent features (ELv2)
+sdk/conformance/       Cross-implementation receipt verification test vectors
 charts/                Helm chart for Kubernetes deployment
 configs/               7 preset config files
 docs/                  Guides, references, compliance mappings
@@ -460,14 +500,14 @@ Pipelock is tested like a security product. The open-source core has thousands o
 
 | Metric | Value |
 |--------|-------|
-| Go tests (with `-race`) | 10,800+ |
+| Go tests (with `-race`) | Thousands across unit, integration, and end-to-end paths |
 | Statement coverage | 88%+ |
 | Evasion techniques tested | 230+ |
-| Scanner pipeline overhead | ~43us per URL scan |
+| Scanner pipeline overhead | ~40us per URL scan |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
-Run `make test` to verify locally. Independent benchmark: [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) (143 attack cases across 16 categories). [Live results](https://pipelab.org/gauntlet/).
+Run `make test` to verify locally. Independent benchmark: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/).
 
 ## Credits
 

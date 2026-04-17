@@ -57,6 +57,8 @@ tls_interception:
   ca_key: /etc/pipelock/tls/ca-key.pem
 ```
 
+> **Use `pipelock tls init` — don't hand-mint the CA with openssl RSA.** Pipelock's CA loader (`certgen.LoadCA`) calls `x509.ParseECPrivateKey` on the key file, so it requires an ECDSA private key (any curve the `crypto/ecdsa` package accepts — P-224, P-256, P-384, P-521). RSA and Ed25519 CA keys are rejected at startup with `load TLS CA: parse ec private key` and pipelock exits rather than run without interception. `pipelock tls init` generates a P-256 ECDSA CA, which is what end-entity certs pipelock mints at runtime also use; if you need an org-rooted CA chain, an ECDSA intermediate (e.g. `openssl ecparam -name prime256v1`) signed from your root will load. End-entity certs for your upstream servers signed by this CA can be RSA without issue — the ECDSA constraint is only on the CA key itself.
+
 ## Step 2: Trust the CA
 
 The agent (or whatever makes HTTPS connections through pipelock) must trust the CA certificate. Otherwise TLS handshakes fail with certificate verification errors.
@@ -155,7 +157,7 @@ tls_interception:
 
 Passthrough connections are spliced (bidirectional byte copy) without decryption. Hostname-level scanning (blocklist, SSRF, SNI verification) still applies.
 
-Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` but not `example.com` itself).
+Supports exact match (`api.example.com`) and wildcard prefix (`*.example.com` matches `sub.example.com` and `deep.sub.example.com`, but not the apex `example.com`).
 
 ### Fail-Closed Behavior
 

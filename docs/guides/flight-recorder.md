@@ -42,6 +42,16 @@ flight_recorder:
 
 The agent private key used for signing is the same key used for `pipelock assess` signing. It is loaded from the keystore at `~/.pipelock/` (or the path configured with `--keystore`).
 
+### Rotating the signing key
+
+Pipelock **rejects `flight_recorder.signing_key_path` changes at hot-reload time.** If you edit the config and SIGHUP (or rely on fsnotify), pipelock keeps the previously loaded key in memory, logs `WARNING: config reload: flight_recorder.signing_key_path changed — receipt chain cannot rotate at runtime, ignoring (restart required)`, and continues signing with the old key. This is intentional: rotating the key mid-run would break chain verification (consumers would see entries signed with two different public keys under one `chain_id`). To rotate safely:
+
+1. Stop pipelock so the old chain closes cleanly at its last checkpoint.
+2. Swap the key file referenced by `signing_key_path`.
+3. Start pipelock. It opens a new chain with the new key.
+
+The new chain is a separate verifiable unit. Verifiers that expect one chain per `session_id` must be updated to treat the key change as a chain boundary. A proper in-place rotation (key-rotation marker inside the chain, continuous verification across the switch) is tracked as a v2.2.1 feature.
+
 ## Evidence File Format
 
 Each file is named `evidence-<session_id>-<seq_start>.jsonl`. One JSON object per line. Example entry:

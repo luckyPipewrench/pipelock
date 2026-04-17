@@ -38,9 +38,9 @@ uses CONNECT tunnels (see below) and does not increment request counters.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_requests_total` | counter | `result` | Total HTTP requests. `result` is `allowed` or `blocked`. |
+| `pipelock_requests_total` | counter | `result`, `agent` | Total HTTP requests. `result` is `allowed` or `blocked`. `agent` is the agent *profile* name (matched against the `agents` config section), not the raw `X-Pipelock-Agent` header — bounded cardinality for Prometheus. Unknown/unmatched agents fall to `_default`. For per-request raw agent identity, read the `actor` field on signed receipts. |
 | `pipelock_request_duration_seconds` | histogram | (none) | HTTP request latency. Buckets: 10ms to 10s. |
-| `pipelock_scanner_hits_total` | counter | `scanner` | Blocks by scanner type (e.g. `dlp`, `prompt_injection`, `domain`). |
+| `pipelock_scanner_hits_total` | counter | `scanner`, `agent` | Blocks by scanner type (e.g. `dlp`, `prompt_injection`, `domain`). `agent` follows the same profile-mapping rule as `pipelock_requests_total`. |
 
 ## CONNECT Tunnel Metrics
 
@@ -50,11 +50,11 @@ traffic metrics for forward-proxy deployments.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_tunnels_total` | counter | `result` | Total CONNECT tunnels. `result` is `completed` or `blocked`. |
+| `pipelock_tunnels_total` | counter | `result`, `agent` | Total CONNECT tunnels. `result` is `completed` or `blocked`. |
 | `pipelock_tunnel_duration_seconds` | histogram | (none) | Tunnel lifetime. Buckets: 1s to 300s. |
 | `pipelock_tunnel_bytes_total` | counter | (none) | Total bytes transferred through all tunnels. |
 | `pipelock_active_tunnels` | gauge | (none) | Currently open CONNECT tunnels. |
-| `pipelock_sni_total` | counter | `category` | SNI verification results. `category` is `match`, `mismatch`, `not_tls`, `no_extension`, `malformed_tls`, or `timeout`. |
+| `pipelock_sni_total` | counter | `category`, `agent` | SNI verification results. `category` is `match`, `mismatch`, `not_tls`, `no_extension`, `malformed_tls`, or `timeout`. |
 
 ## TLS Interception Metrics
 
@@ -77,8 +77,9 @@ form data, multipart uploads, and HTTP headers on forward-proxy traffic.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `pipelock_body_dlp_hits_total` | counter | `action` | Request body DLP detections. `action` is `warn` or `block`. |
-| `pipelock_header_dlp_hits_total` | counter | `action` | Request header DLP detections. `action` is `warn` or `block`. |
+| `pipelock_body_dlp_hits_total` | counter | `action`, `agent` | Request body DLP detections. `action` is `warn` or `block`. |
+| `pipelock_header_dlp_hits_total` | counter | `action`, `agent` | Request header DLP detections. `action` is `warn` or `block`. |
+| `pipelock_response_scan_exempt_total` | counter | `reason`, `transport` | Response scanning exemptions. `reason` is `exempt_domain` or `suppress`; current emitters use transports such as `fetch`, `forward`, `connect`, `reverse`, and `websocket`. Every skipped response scan is counted so operators can quantify how much traffic bypasses injection scanning. |
 
 ## WebSocket Proxy Metrics
 
@@ -117,14 +118,14 @@ investigation.
 ## Session Profiling Metrics
 
 Pipelock tracks per-session behavioral profiles. Sessions that deviate
-from established patterns trigger anomalies and escalation events. In v1,
-escalation is observability-only (scoring and event emission); it does not
-automatically change enforcement behavior (warn vs block).
+from established patterns trigger anomalies and escalation events. Adaptive
+enforcement can upgrade later requests based on that session state, so these
+metrics are both observability and enforcement context.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_session_anomalies_total` | counter | `type` | Behavioral anomalies by type. |
-| `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by level transition (e.g. `warn` → `block`). In v1, these are observability events, not enforcement changes. |
+| `pipelock_session_escalations_total` | counter | `from`, `to` | Escalation events by session enforcement level transition (e.g. `elevated` → `high`, `high` → `critical`). These transitions feed adaptive enforcement decisions on later requests. |
 | `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
 | `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
 | `pipelock_adaptive_sessions_current` | gauge | `level` | Currently escalated sessions by enforcement level. |
@@ -144,7 +145,7 @@ active exfiltration attempts.
 
 ## Scan API Metrics
 
-The Scan API (`/v1/scan`) is an evaluation-plane endpoint for external
+The Scan API (`/api/v1/scan`) is an evaluation-plane endpoint for external
 integrations. Disabled by default; set `scan_api.listen` to enable.
 
 | Metric | Type | Labels | Description |
@@ -172,6 +173,26 @@ integrations. Disabled by default; set `scan_api.listen` to enable.
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_adaptive_upgrades_total` | counter | `from_action`, `to_action`, `level` | Requests where adaptive enforcement upgraded the action (e.g. warn to block). |
+
+## Airlock Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_airlock_sessions` | gauge | `tier` | Current sessions in each airlock tier. |
+| `pipelock_airlock_transitions_total` | counter | `from`, `to`, `trigger` | Airlock tier transitions. |
+| `pipelock_airlock_denials_total` | counter | `tier`, `transport`, `action_class` | Requests denied by airlock enforcement. `action_class` is the transport-provided action label such as `read`, `GET`, `POST`, or `CONNECT`. |
+| `pipelock_airlock_drain_completed_total` | counter | (none) | Sessions that completed drain cleanly. |
+| `pipelock_airlock_drain_timeout_total` | counter | (none) | Sessions whose drain timed out before in-flight work completed. |
+
+## Browser Shield Metrics
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `pipelock_shield_rewrites_total` | counter | `category`, `transport` | Browser shield rewrites by category and transport. |
+| `pipelock_shield_bytes_stripped_total` | counter | `category` | Bytes stripped by browser shield. |
+| `pipelock_shield_shims_injected_total` | counter | `transport` | Shim injections by transport. |
+| `pipelock_shield_skipped_total` | counter | `reason` | Shield skips by reason. |
+| `pipelock_shield_latency_seconds` | histogram | `transport` | Browser shield latency. |
 
 ## Reverse Proxy Metrics
 
@@ -241,10 +262,10 @@ An importable Grafana dashboard is included at
 [`configs/grafana-dashboard.json`](../configs/grafana-dashboard.json).
 Import it via **Dashboards → Import → Upload JSON file** in Grafana.
 
-The dashboard covers all 45 metric families across ten sections: fleet
-overview, agent status table, traffic, connection details, TLS interception,
-security events, WebSocket proxy, cross-request detection, adaptive
-enforcement, and Scan API.
+The bundled dashboard focuses on the core traffic, TLS interception, security
+event, WebSocket, adaptive enforcement, and Scan API panels. Newer metric
+families such as airlock and browser shield are exposed in Prometheus even if
+you add your own panels for them.
 
 ## Alert Rules
 

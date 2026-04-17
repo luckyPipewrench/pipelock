@@ -76,7 +76,7 @@ egress:
 
 Rules are evaluated top-to-bottom. First match wins. If no rule matches, `default` applies.
 
-Domain matching is case-insensitive. `*.example.com` matches `api.example.com` but not `example.com` itself. Use both `example.com` and `*.example.com` to cover both.
+Domain matching is case-insensitive. `*.example.com` matches `api.example.com` and the apex `example.com` itself.
 
 ## DLP Rules
 

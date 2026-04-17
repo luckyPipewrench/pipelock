@@ -932,6 +932,26 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
 
+	// Capture the child's process group ID immediately after Start, before
+	// cmd.Wait has any chance to reap and before cmd.Process.Pid can go
+	// stale. Because Setpgid=true above, the child is the leader of a
+	// fresh group, so the pgid equals the pid by construction. Storing
+	// the value explicitly (rather than re-reading cmd.Process.Pid at
+	// every kill site) prevents two classes of footgun: (1) signaling a
+	// recycled PID if the child is reaped before the post-Wait cleanup
+	// reads the pid field, and (2) drifting behaviour if the child ever
+	// joins a different group via setpgid after spawn — we will still
+	// signal the original group pipelock created, not whatever group the
+	// child migrated into.
+	//
+	// Getpgid confirms the kernel view matches our Setpgid expectation;
+	// fall back to cmd.Process.Pid on any unexpected error rather than
+	// giving up on teardown entirely.
+	childPgid := cmd.Process.Pid
+	if got, gerr := syscall.Getpgid(cmd.Process.Pid); gerr == nil {
+		childPgid = got
+	}
+
 	// Track child PID for file write attribution.
 	if lineage != nil {
 		lineage.TrackPID(cmd.Process.Pid)
@@ -950,9 +970,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	go func() {
 		select {
 		case <-ctx.Done():
-			if cmd.Process != nil {
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
-			}
+			_ = syscall.Kill(-childPgid, syscall.SIGTERM)
 		case <-pgidDone:
 		}
 	}()
@@ -1087,15 +1105,22 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	//      original pgid via setsid/double-fork should have reparented
 	//      to us once PR_SET_CHILD_SUBREAPER fired above. SIGKILL is
 	//      best-effort; ESRCH/EPERM are non-fatal.
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	// Use the pgid captured at Start rather than re-reading
+	// cmd.Process.Pid here. After cmd.Wait returns, cmd.Process.Pid
+	// refers to a reaped pid the kernel is free to recycle — signaling
+	// the negated pid at that point risks hitting an unrelated process
+	// that was assigned the same pgid. childPgid was locked in before
+	// Wait could reap the leader, so it remains the stable identifier
+	// for the process group we created.
+	if childPgid > 0 {
+		_ = syscall.Kill(-childPgid, syscall.SIGTERM)
 		termWait := make(chan struct{})
 		go func() {
 			defer close(termWait)
 			t := time.NewTimer(100 * time.Millisecond)
 			defer t.Stop()
 			<-t.C
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = syscall.Kill(-childPgid, syscall.SIGKILL)
 		}()
 		<-termWait
 		// Sweep orphans the pgid kill couldn't reach. Safe even on

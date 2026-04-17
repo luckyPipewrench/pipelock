@@ -256,6 +256,33 @@ func TestStripInbound_MalformedPipelockHeaderDropped(t *testing.T) {
 	}
 }
 
+// TestStripInbound_MalformedPipelockFormattingVariants exercises the
+// variations that the previous HasPrefix / "," / ", " heuristic missed:
+// tabs, other OWS between comma and pipelock member, uppercase PIPELOCK,
+// and pipelock appearing after a malformed leading fragment. All must
+// trigger fail-closed drop because the raw bytes mention the pipelock
+// namespace and the dictionary parse already failed.
+func TestStripInbound_MalformedPipelockFormattingVariants(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"sig1=:bad:,\tpipelock1=:x:",       // tab OWS between comma and member
+		"sig1=:bad:,\n\tpipelock1=:x:",     // line folding + tab
+		"sig1=:bad:,   pipelock1=:x:",      // multiple spaces
+		"PIPELOCK1=:x:, sig1=:dGVzdA==:",   // uppercase
+		"Pipelock1=:x:, sig1=:dGVzdA==:",   // title case
+		"garbage not-a-dict pipelock1=:x:", // wholly malformed, pipelock mid-value
+	}
+	for _, raw := range cases {
+		h := http.Header{}
+		h.Set("Signature", raw)
+		StripInbound(h)
+		if got := h.Get("Signature"); strings.Contains(strings.ToLower(got), "pipelock") {
+			t.Errorf("pipelock survived strip of %q: got %q", raw, got)
+		}
+	}
+}
+
 func TestInjectMCP(t *testing.T) {
 	t.Parallel()
 

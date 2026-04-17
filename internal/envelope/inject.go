@@ -114,22 +114,21 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 	h.Set(headerName, out)
 }
 
-// containsPipelockMember returns true when any of the raw header values
-// looks like it contains a dictionary member named with the pipelock
-// prefix. The check is case-insensitive on the prefix (RFC 8941 member
-// names are lowercase, but operators occasionally uppercase them) and
-// requires either a start-of-value match or a comma-preceded match so
-// substring noise like "pipelockless=..." is not flagged. This is only
-// used when strict RFC 8941 parsing has already failed — at which point
-// we need a cheap heuristic to decide whether pipelock is implicated.
+// containsPipelockMember returns true when any raw header value contains
+// the byte sequence "pipelock" (case-insensitive). Used only when strict
+// RFC 8941 parsing has already failed; at that point we cannot reason
+// about dictionary member boundaries, so any appearance of the pipelock
+// namespace is treated as sufficient reason to drop the malformed
+// header. An earlier implementation required a start-of-value or
+// comma-preceded match, but RFC 8941 permits OWS (spaces, tabs) and
+// separator variants between members that the pattern-based checks
+// missed — letting Pipelock-tagged bytes survive a parse failure. A
+// case-insensitive substring check is strictly fail-closed and matches
+// the same surface (any pipelock-prefixed member) the httpsfv path
+// catches on well-formed input.
 func containsPipelockMember(values []string) bool {
 	for _, v := range values {
-		lower := strings.ToLower(v)
-		if strings.HasPrefix(lower, pipelockMemberPrefix) {
-			return true
-		}
-		if strings.Contains(lower, ","+pipelockMemberPrefix) ||
-			strings.Contains(lower, ", "+pipelockMemberPrefix) {
+		if strings.Contains(strings.ToLower(v), pipelockMemberPrefix) {
 			return true
 		}
 	}

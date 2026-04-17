@@ -5,7 +5,11 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.2.0] - 2026-04-16
+
+### ⚠️ Breaking Changes
+
+- **Strict YAML config parsing (#390, #403).** `config.Load()` now rejects unknown top-level and nested fields with a clear error message naming the offending field and line. Configs that silently worked on v2.1.2 — for example, with typos like `sentinel_path` (real field: `sentinel_file`) or `threshold` (real field: `escalation_threshold`) — will fail to load on v2.2.0. **Migration:** run `pipelock check --config <path>` against every config before upgrading, or diff your configs against `configs/balanced.yaml` / the [Configuration Reference](docs/configuration.md). Known renamed fields emit a `staleFieldHint` in the error so the fix is usually one-line. Multi-document YAML (`---` separators) is also rejected; a single policy document per file is required.
 
 ### Highlights
 
@@ -59,7 +63,7 @@ The v2.2.0 operationalization arc wires the receipt system into every transport,
 
 ### Security Hardening
 
-- **Strict YAML config parsing:** `config.Load()` now rejects unknown top-level and nested fields with a clear error message naming the offending field and line, plus a `hint:` line suggesting the canonical field (or doc reference) for known stale fields. Typos like `sentinel_path` (real field: `sentinel_file`) or `threshold` (real field: `escalation_threshold`) previously silent-dropped and left security features inert; they now fail loud at startup. Multi-document YAML (`---` separators) is also rejected; a single policy document per file is required. **Breaking change** for any pipelock config that relied on the lenient parser — fix the typo or remove the stale field. Common stale fields that v2.2.0+ rejects: `scan_api.enabled` (listener auto-starts when `listen` + `auth.bearer_tokens` are set; no `enabled` field exists on `scan_api`), `flight_recorder.path` (renamed to `flight_recorder.dir`). Run `pipelock check --config <path>` after upgrade; the hint line points at the canonical field or doc reference. (#390, 08cad765)
+- **Stale-field `hint:` lines** accompany the strict-YAML error (see Breaking Changes above). Known rename map includes `scan_api.enabled` (removed; listener auto-starts when `listen` + `auth.bearer_tokens` are set) and `flight_recorder.path` → `flight_recorder.dir`. Run `pipelock check --config <path>` after upgrade; the hint points at the canonical field or doc reference.
 - **Typed LogContext refactor:** Structured log context fields split URL into semantic components (scheme, host, path, query) and route them through typed constructors. Eliminates an entire class of misrouted field bugs. (#378, #389)
 - **Exposure-based policy escalation across MCP transports:** Hardened the taint classification and authority evaluation across stdio, HTTP, and HTTP reverse proxy so a contaminated session cannot bypass protected-path gates by switching transports. (#383)
 - **Edge-triggered airlock regression test:** Dedicated test ensures airlock does not re-enter drain on plateaued escalated sessions. Closes the drain-hard-drain loop observed in adaptive enforcement testing. (#388)
@@ -101,6 +105,7 @@ The v2.2.0 operationalization arc wires the receipt system into every transport,
 - **govulncheck bumped to Go 1.26.2** in CI. (#376)
 - **Strict YAML validation of example configs** ensures every shipped preset loads cleanly under the new unknown-field rejection. (fae9e181)
 - **Example configs no longer embed self-scan-triggering credential strings.** Examples use `Credential`-with-colon text that reads naturally without matching DLP patterns. (421b79c2)
+- **Patch coverage raised on v2.2.0 additions.** `internal/signing` 95.6%, `internal/receipt` 91.4%, `internal/mcp` 90.4%, `internal/posture` 96.7%, `internal/recorder` 92.8%. New tests focus on the error paths that shipped in the pre-tag hardening PR. (#406)
 
 ## [2.1.2] - 2026-04-06
 

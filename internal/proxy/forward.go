@@ -1068,8 +1068,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	outReq := r.Clone(ctx)
-	outReq.RequestURI = ""         // required for http.Client
-	outReq.Header.Del(AgentHeader) // strip internal identity header before upstream
+	outReq.RequestURI = "" // required for http.Client
+	// Strip the internal identity header AND the ?agent= query param before
+	// the request leaves pipelock. Either vector could otherwise bleed an
+	// attacker-supplied identity hint to the destination service.
+	stripInternalIdentity(outReq)
 	removeHopByHopHeaders(outReq.Header)
 
 	// Inject mediation envelope (and attach RFC 9421 signature when the

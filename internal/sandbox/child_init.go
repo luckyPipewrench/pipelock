@@ -90,6 +90,17 @@ func RunInit() {
 	noNetNS := IsNoNetNS()
 	if noNetNS {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: DEGRADED (no namespace, best-effort mode)\n")
+		// Containers without user namespaces (CAP_SYS_ADMIN / CLONE_NEWUSER
+		// unavailable) cannot carve a private network namespace, so the
+		// scanner's proxy routing is enforced ONLY by HTTP(S)_PROXY env
+		// vars. A sandboxed process that unsets those env vars can open
+		// direct outbound sockets and bypass pipelock entirely (the pre-tag gate
+		// round-4 finding). This warning exists so operators running
+		// best-effort deployments know the network layer is advisory,
+		// not kernel-enforced, and can decide whether to alert on it.
+		_, _ = fmt.Fprintf(os.Stderr,
+			"[sandbox] WARNING: best-effort network mode relies on HTTP(S)_PROXY env; a child process that clears those can bypass pipelock. "+
+				"For kernel-enforced isolation, run under a user namespace (CLONE_NEWUSER) or use the companion-proxy topology from `pipelock init sidecar`.\n")
 	} else {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: ACTIVE (isolated namespace)\n")
 	}

@@ -63,11 +63,21 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 	dict, err := httpsfv.UnmarshalDictionary(values)
 	if err != nil {
 		// The inbound header is not a well-formed RFC 8941 dictionary.
-		// Fail closed: drop the entire header. An unparseable signature
-		// header is either an attack attempt or a broken upstream, and
-		// either way must not survive into the outbound request where a
-		// downstream verifier could interpret it differently than we do.
-		h.Del(headerName)
+		// Earlier behaviour failed closed by dropping the entire header,
+		// which broke legitimate (but httpsfv-picky) signatures like
+		// Cloudflare Web Bot Auth sig1 members whose values were not
+		// strict-base64. That turned pipelock into a signature-stripping
+		// middlebox for any upstream auth scheme it could not re-parse.
+		//
+		// Surgical fail-closed: only drop the header if the raw bytes
+		// contain the pipelock member prefix (indicating a plausible
+		// forged or broken pipelock member we must not let through).
+		// Otherwise, leave the header untouched — pipelock's scrubbing
+		// target is pipelock-tagged members, not malformed third-party
+		// signatures.
+		if containsPipelockMember(values) {
+			h.Del(headerName)
+		}
 		return
 	}
 
@@ -102,6 +112,27 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 		return
 	}
 	h.Set(headerName, out)
+}
+
+// containsPipelockMember returns true when any raw header value contains
+// the byte sequence "pipelock" (case-insensitive). Used only when strict
+// RFC 8941 parsing has already failed; at that point we cannot reason
+// about dictionary member boundaries, so any appearance of the pipelock
+// namespace is treated as sufficient reason to drop the malformed
+// header. An earlier implementation required a start-of-value or
+// comma-preceded match, but RFC 8941 permits OWS (spaces, tabs) and
+// separator variants between members that the pattern-based checks
+// missed — letting Pipelock-tagged bytes survive a parse failure. A
+// case-insensitive substring check is strictly fail-closed and matches
+// the same surface (any pipelock-prefixed member) the httpsfv path
+// catches on well-formed input.
+func containsPipelockMember(values []string) bool {
+	for _, v := range values {
+		if strings.Contains(strings.ToLower(v), pipelockMemberPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // InjectMCP adds the envelope to an MCP _meta map.

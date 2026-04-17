@@ -640,7 +640,12 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Network Exfiltration",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(curl|wget)\b.*(-d\s|--data|--upload-file|-T\s|-X\s+POST|--post-data)`,
+			// Match every curl/wget flag that uploads a payload: short/long
+			// forms of --data, --data-binary, --data-raw, --data-urlencode,
+			// --form (-F, multipart), --upload-file (-T), explicit POST,
+			// wget's --post-data / --post-file / --body-data / --body-file.
+			// round-4 of the pre-tag gate found `curl --form` bypassed the earlier pattern.
+			ArgPattern: `(?i)\b(curl|wget)\b.*(-d\s|-F\s|-T\s|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|-X\s+POST)`,
 		},
 		{
 			Name:        "Reverse Shell",

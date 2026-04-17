@@ -220,7 +220,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if rpcID != nil && !tracker.Validate(rpcID) {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
 					lineNum, string(rpcID))
-				resp := blockResponse(rpcID)
+				resp := blockResponseReason(rpcID, "unsolicited response ID (confused deputy)")
 				if err := writer.WriteMessage(resp); err != nil {
 					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 				}
@@ -309,7 +309,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if m != nil {
 						m.RecordBlocked("mcp", "provenance", 0, "")
 					}
-					resp := blockResponse(toolResult.RPCID)
+					resp := blockResponseReason(toolResult.RPCID, "tool provenance verification failed")
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing provenance block: %w", err)
 					}
@@ -379,7 +379,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 							ConsoleWriter: logW,
 						})
 					}
-					resp := blockResponse(toolResult.RPCID)
+					resp := blockResponseReason(toolResult.RPCID, "tool poisoning detected in tools/list")
 					if err := writer.WriteMessage(resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
@@ -433,7 +433,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					lineNum, strings.Join(names, ", "))
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocking unparseable response\n", lineNum)
-			resp := blockResponse(nil)
+			resp := blockResponseReason(nil, "upstream response is not parseable JSON-RPC")
 			if err := writer.WriteMessage(resp); err != nil {
 				return foundInjection, fmt.Errorf("writing block response: %w", err)
 			}
@@ -611,13 +611,25 @@ type rpcErrorDetail struct {
 
 // blockResponse generates a JSON-RPC 2.0 error response for a blocked message.
 // Code -32000 is in the implementation-defined error range.
+// Use this only when the block is genuinely driven by prompt-injection
+// detection. For other classes of block (unparseable upstream JSON-RPC,
+// confused-deputy unsolicited response IDs) use blockResponseReason so
+// operators debugging MCP do not chase a scanner false positive.
 func blockResponse(id json.RawMessage) []byte {
+	return blockResponseReason(id, "prompt injection detected in MCP response")
+}
+
+// blockResponseReason is like blockResponse but lets the caller supply a
+// specific reason string. Keeps the -32000 implementation-defined error
+// code so clients that previously switched on code keep working, while
+// surfacing the true classification to operators.
+func blockResponseReason(id json.RawMessage, reason string) []byte {
 	resp := rpcError{
 		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32000,
-			Message: "pipelock: prompt injection detected in MCP response",
+			Message: "pipelock: " + reason,
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct
@@ -853,6 +865,38 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	cmd.Stderr = safeLogW
 
+	// Put the child in its own process group so pipelock can tear down
+	// any grandchildren the MCP server spawned when the child exits.
+	// Without this, a malicious (or misbehaving) server that detaches
+	// aggressive descendants leaves them reparented to PID 1 — the
+	// pre-tag gate round-4 finding. setupChildProcessGroup is a no-op
+	// on Windows builds where process groups do not apply.
+	setupChildProcessGroup(cmd)
+
+	// Ask the kernel to SIGTERM the direct child if pipelock itself
+	// dies (e.g. operator runs `timeout 5s pipelock mcp proxy -- ...`
+	// or systemd kills the unit). Without this, the direct child
+	// survives pipelock's death long enough to spawn or re-adopt
+	// grandchildren that bypass the normal post-Wait teardown. Linux
+	// only — macOS/other Unix are no-op.
+	setPdeathsig(cmd)
+
+	// Enable PR_SET_CHILD_SUBREAPER (Linux) so orphaned grandchildren
+	// reparent to pipelock instead of PID 1 when the direct child exits.
+	// Without this, a grandchild that calls setsid() or double-forks
+	// escapes our pgid-based SIGKILL because its pgid differs from the
+	// direct child's. With subreaper active, any such descendant becomes
+	// our child, and killAdoptedDescendants after Wait can clean it up.
+	// round-7 of the pre-tag gate finding reproduced exactly this case (grandchild
+	// PPID=1, pgid != direct-child pgid).
+	//
+	// Idempotent and process-wide; safe to call before every subprocess
+	// spawn. Non-fatal on error — the later pgid-kill backstop still
+	// handles the common case.
+	if srErr := enableSubreaper(); srErr != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: warning: PR_SET_CHILD_SUBREAPER failed, grandchild subtree teardown will be incomplete: %v\n", srErr)
+	}
+
 	// Enable subreaper before starting the child so we adopt orphaned
 	// grandchildren. This lets the lineage tracker attribute file writes
 	// to the agent's process tree.
@@ -883,10 +927,39 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
 
+	// Capture the child's process group ID immediately after Start,
+	// before cmd.Wait has any chance to reap and before cmd.Process.Pid
+	// can go stale. Setpgid=true above guarantees pgid==pid at spawn
+	// time on unix; captureChildPgid returns that value (verified via
+	// Getpgid) so we can keep signaling the original group even after
+	// the leader is reaped and the kernel is free to recycle its PID.
+	// On Windows the helper returns 0 and the signal helpers below all
+	// no-op, matching the no-op setupChildProcessGroup call above.
+	childPgid := captureChildPgid(cmd.Process.Pid)
+
 	// Track child PID for file write attribution.
 	if lineage != nil {
 		lineage.TrackPID(cmd.Process.Pid)
 	}
+
+	// Proactive pgid teardown on context cancellation. exec.CommandContext
+	// delivers SIGKILL to the direct child's PID when ctx cancels, but
+	// that does not reach siblings in the same pgid or descendants that
+	// escaped into a fresh pgid via setsid. Sending SIGTERM to the
+	// negated pgid here gives cooperative descendants a chance to exit
+	// cleanly inside any `timeout`-style grace window, ahead of the
+	// post-Wait SIGKILL backstop that runs once cmd.Wait returns.
+	// pgidDone gates the goroutine's lifetime so it exits as soon as
+	// the post-Wait cleanup path claims ownership of teardown.
+	pgidDone := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			signalProcessGroupTerm(childPgid)
+		case <-pgidDone:
+		}
+	}()
+	defer close(pgidDone)
 
 	// Signal that the child is started and PID is tracked. The file sentry
 	// event loop starts here so attribution is ready before classifying writes.
@@ -1001,6 +1074,35 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Wait for subprocess to exit.
 	waitErr := cmd.Wait()
+
+	// After the direct child exits, tear down everything it spawned.
+	// Three layers of cleanup that together cover fast common-case
+	// grandchildren (same pgid), detached orphans (double-fork or
+	// setsid), and long-running cooperative descendants that ignore
+	// SIGTERM:
+	//
+	//   1. SIGTERM the original pgid so well-behaved descendants still
+	//      in the child's process group exit cleanly on a trap.
+	//   2. 100ms grace, then SIGKILL the pgid for anything that ignored
+	//      SIGTERM (the pre-tag gate harness grandchild did exactly this).
+	//   3. killAdoptedDescendants sweeps /proc for processes whose PPID
+	//      is now pipelock's own PID — any grandchild that escaped the
+	//      original pgid via setsid/double-fork should have reparented
+	//      to us once PR_SET_CHILD_SUBREAPER fired above. SIGKILL is
+	//      best-effort; ESRCH/EPERM are non-fatal.
+	// Use the pgid captured at Start rather than re-reading
+	// cmd.Process.Pid here. After cmd.Wait returns, cmd.Process.Pid
+	// refers to a reaped pid the kernel is free to recycle — signaling
+	// the negated pid at that point risks hitting an unrelated process
+	// that was assigned the same pgid. childPgid was locked in before
+	// Wait could reap the leader, so it remains the stable identifier
+	// for the process group we created. terminateProcessGroup runs the
+	// SIGTERM + 100ms grace + SIGKILL sequence; on Windows the helper
+	// no-ops because pgid is 0 there.
+	terminateProcessGroup(childPgid)
+	// Sweep orphans the pgid kill couldn't reach. Safe even on
+	// non-Linux builds — the stub is a no-op there.
+	killAdoptedDescendants()
 
 	// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 	wg.Wait()

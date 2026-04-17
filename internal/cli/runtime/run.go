@@ -470,6 +470,11 @@ Examples:
 				}()
 
 				go func() {
+					// Track the last reload event we actually emitted so we can
+					// dedup fsnotify+SIGHUP stacking (rc.4) without silencing
+					// single no-op SIGHUPs (rc.7 regression fix).
+					var lastReloadHash string
+					var lastReloadAt time.Time
 					for newCfg := range reloader.Changes() {
 						func() {
 							defer func() {
@@ -531,6 +536,39 @@ Examples:
 									newCfg.ScanAPI.ConnectionLimit = oldCfg.ScanAPI.ConnectionLimit
 									newCfg.ScanAPI.Timeouts = oldCfg.ScanAPI.Timeouts
 								}
+								// Block signing key rotation via reload. The receipt chain
+								// state is anchored to the current signing key; rotation
+								// mid-chain causes tail-signature verification to fail on
+								// resume, which in turn drops receipt persistence for
+								// every subsequent action (round-3 of the pre-tag gate finding). Proper
+								// chain rollover with a key-rotation marker is tracked
+								// for v2.2.1. Until then, preserve the old key and warn
+								// — operators must restart pipelock to rotate the receipt
+								// signing key.
+								if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
+									cmd.PrintErrf("WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
+										oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
+									newCfg.FlightRecorder.SigningKeyPath = oldCfg.FlightRecorder.SigningKeyPath
+								}
+
+								// Dedupe identical-hash reload EVENTS within a short
+								// window. fsnotify + SIGHUP stack up so a single
+								// `echo cfg > path; kill -HUP` sequence triggers two
+								// reload Changes() events in quick succession; the
+								// second is pure noise (round-3 of the pre-tag gate finding).
+								//
+								// rc.4 used `oldCfg.Hash() == newCfg.Hash()` as the
+								// dedup signal, but that also silently swallowed a
+								// single no-op SIGHUP (no file change at all) —
+								// operators lost the SIGHUP ack entirely
+								// (round-7 of the pre-tag gate regression). Switch to a time-
+								// windowed dedup keyed on the LAST EMITTED reload
+								// event: the first of a stacked pair still logs, any
+								// event with the same hash inside 2s skips silently.
+								if newCfg.Hash() == lastReloadHash && time.Since(lastReloadAt) < 2*time.Second {
+									return
+								}
+
 								// Block reverse proxy listener/upstream changes via reload.
 								// The listener binds at startup and the upstream is
 								// pinned in the handler. Requires restart.
@@ -621,6 +659,8 @@ Examples:
 								cmd.PrintErrln("WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 							}
 							logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), newCfg.Hash())
+							lastReloadHash = newCfg.Hash()
+							lastReloadAt = time.Now()
 						}()
 					}
 				}()

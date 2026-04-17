@@ -13,8 +13,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -870,13 +868,10 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Put the child in its own process group so pipelock can tear down
 	// any grandchildren the MCP server spawned when the child exits.
 	// Without this, a malicious (or misbehaving) server that detaches
-	// aggressive descendants leaves them reparented to PID 1 — the pre-tag gate
-	// round-4 finding. Setpgid is cross-platform on the Unix targets
-	// pipelock supports for stdio proxying.
-	if cmd.SysProcAttr == nil {
-		cmd.SysProcAttr = &syscall.SysProcAttr{}
-	}
-	cmd.SysProcAttr.Setpgid = true
+	// aggressive descendants leaves them reparented to PID 1 — the
+	// pre-tag gate round-4 finding. setupChildProcessGroup is a no-op
+	// on Windows builds where process groups do not apply.
+	setupChildProcessGroup(cmd)
 
 	// Ask the kernel to SIGTERM the direct child if pipelock itself
 	// dies (e.g. operator runs `timeout 5s pipelock mcp proxy -- ...`
@@ -932,25 +927,15 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		return fmt.Errorf("starting MCP server %q: %w", command[0], err)
 	}
 
-	// Capture the child's process group ID immediately after Start, before
-	// cmd.Wait has any chance to reap and before cmd.Process.Pid can go
-	// stale. Because Setpgid=true above, the child is the leader of a
-	// fresh group, so the pgid equals the pid by construction. Storing
-	// the value explicitly (rather than re-reading cmd.Process.Pid at
-	// every kill site) prevents two classes of footgun: (1) signaling a
-	// recycled PID if the child is reaped before the post-Wait cleanup
-	// reads the pid field, and (2) drifting behaviour if the child ever
-	// joins a different group via setpgid after spawn — we will still
-	// signal the original group pipelock created, not whatever group the
-	// child migrated into.
-	//
-	// Getpgid confirms the kernel view matches our Setpgid expectation;
-	// fall back to cmd.Process.Pid on any unexpected error rather than
-	// giving up on teardown entirely.
-	childPgid := cmd.Process.Pid
-	if got, gerr := syscall.Getpgid(cmd.Process.Pid); gerr == nil {
-		childPgid = got
-	}
+	// Capture the child's process group ID immediately after Start,
+	// before cmd.Wait has any chance to reap and before cmd.Process.Pid
+	// can go stale. Setpgid=true above guarantees pgid==pid at spawn
+	// time on unix; captureChildPgid returns that value (verified via
+	// Getpgid) so we can keep signaling the original group even after
+	// the leader is reaped and the kernel is free to recycle its PID.
+	// On Windows the helper returns 0 and the signal helpers below all
+	// no-op, matching the no-op setupChildProcessGroup call above.
+	childPgid := captureChildPgid(cmd.Process.Pid)
 
 	// Track child PID for file write attribution.
 	if lineage != nil {
@@ -970,7 +955,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = syscall.Kill(-childPgid, syscall.SIGTERM)
+			signalProcessGroupTerm(childPgid)
 		case <-pgidDone:
 		}
 	}()
@@ -1111,22 +1096,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// the negated pid at that point risks hitting an unrelated process
 	// that was assigned the same pgid. childPgid was locked in before
 	// Wait could reap the leader, so it remains the stable identifier
-	// for the process group we created.
-	if childPgid > 0 {
-		_ = syscall.Kill(-childPgid, syscall.SIGTERM)
-		termWait := make(chan struct{})
-		go func() {
-			defer close(termWait)
-			t := time.NewTimer(100 * time.Millisecond)
-			defer t.Stop()
-			<-t.C
-			_ = syscall.Kill(-childPgid, syscall.SIGKILL)
-		}()
-		<-termWait
-		// Sweep orphans the pgid kill couldn't reach. Safe even on
-		// non-Linux builds — the stub is a no-op there.
-		killAdoptedDescendants()
-	}
+	// for the process group we created. terminateProcessGroup runs the
+	// SIGTERM + 100ms grace + SIGKILL sequence; on Windows the helper
+	// no-ops because pgid is 0 there.
+	terminateProcessGroup(childPgid)
+	// Sweep orphans the pgid kill couldn't reach. Safe even on
+	// non-Linux builds — the stub is a no-op there.
+	killAdoptedDescendants()
 
 	// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
 	wg.Wait()

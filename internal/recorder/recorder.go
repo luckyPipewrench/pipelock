@@ -106,6 +106,20 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 		return nil, fmt.Errorf("creating evidence directory: %w", err)
 	}
 
+	// Writability probe: fail closed at startup if the evidence directory
+	// exists but is not writable. Without this, pipelock boots successfully
+	// with a read-only recorder dir (e.g. misconfigured volume mount or
+	// wrong filesystem perms) and silently drops every receipt's persistence
+	// while still enforcing policy — round-3 of the pre-tag gate finding. Operators end up
+	// running in a degraded, non-auditable state without a clear signal.
+	probe, probeErr := os.CreateTemp(filepath.Clean(cfg.Dir), ".pipelock-writability-probe-*")
+	if probeErr != nil {
+		return nil, fmt.Errorf("evidence directory %s is not writable (receipts would not persist): %w", cfg.Dir, probeErr)
+	}
+	probePath := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(probePath)
+
 	r := &Recorder{
 		cfg:                 cfg,
 		redactFn:            redactFn,
@@ -586,6 +600,35 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 
 // ensureFile opens a JSONL file if none is open.
 func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
+	// Detect evidence directory disappearance mid-run BEFORE the short-
+	// circuit on an already-open r.file. Linux keeps the inode alive
+	// through rm -rf as long as the fd is open; previous rc.4/rc.5
+	// guards only triggered when r.file was nil, so writes kept
+	// succeeding against an unlinked file and the operator saw nothing
+	// (the pre-tag gate rounds 3/4/5 — especially round 5's "recreation still
+	// silent" repro). Statting the configured dir on every call catches
+	// the disappearance while r.file is still the stale fd.
+	dir := filepath.Clean(r.cfg.Dir)
+	_, statErr := os.Stat(dir)
+	dirMissing := os.IsNotExist(statErr)
+	if dirMissing {
+		if mkErr := os.MkdirAll(dir, dirPermissions); mkErr != nil {
+			return fmt.Errorf("evidence directory %s disappeared and could not be recreated: %w", r.cfg.Dir, mkErr)
+		}
+		_, _ = fmt.Fprintf(os.Stderr,
+			"pipelock: recorder: evidence directory %s disappeared mid-run and was recreated; prior receipts are lost\n",
+			r.cfg.Dir)
+		// Drop the stale fd so the next OpenFile lands in the freshly
+		// recreated directory. Ignore close errors — the fd was
+		// already pointing at an unlinked inode.
+		if r.file != nil {
+			_ = r.file.Close()
+			r.file = nil
+			r.writer = nil
+			r.fileEntryCount = 0
+		}
+	}
+
 	if r.file != nil {
 		return nil
 	}

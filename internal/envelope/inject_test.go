@@ -205,6 +205,57 @@ func TestStripInbound_MultiLineDict(t *testing.T) {
 	}
 }
 
+// TestStripInbound_MalformedNonPipelockHeaderSurvives is the regression
+// test for the pre-tag gate-found bug where the entire Signature header was
+// deleted whenever httpsfv parsing failed, even when no pipelock member
+// was present. Cloudflare Web Bot Auth sig1 values with non-strict-base64
+// or otherwise parse-fragile members were silently dropped — turning
+// pipelock into a signature-stripping middlebox for unrelated auth
+// schemes.
+//
+// The surgical fail-closed behaviour: drop only when the raw header
+// bytes contain the pipelock member prefix. Otherwise preserve the
+// header so downstream verifiers still see the upstream signature.
+func TestStripInbound_MalformedNonPipelockHeaderSurvives(t *testing.T) {
+	t.Parallel()
+
+	// "legit" is not valid base64 → httpsfv.UnmarshalDictionary returns
+	// an error. Under the old fail-closed path, pipelock would delete the
+	// whole header. No pipelock member is present, so the new behaviour
+	// must preserve the bytes unchanged.
+	h := http.Header{}
+	h.Set("Signature", `sig1=:legit:`)
+	h.Set("Signature-Input", `sig1=("@method");created=1776380100;keyid="bot";tag="web-bot-auth"`)
+
+	StripInbound(h)
+
+	if got := h.Get("Signature"); got != `sig1=:legit:` {
+		t.Errorf("Signature mutated on non-pipelock malformed input: got %q, want sig1=:legit:", got)
+	}
+	if got := h.Get("Signature-Input"); !strings.Contains(got, "sig1") {
+		t.Errorf("Signature-Input lost sig1 member: got %q", got)
+	}
+}
+
+// TestStripInbound_MalformedPipelockHeaderDropped confirms the fail-closed
+// branch still fires when pipelock IS implicated in an unparseable header.
+// An attacker who sends malformed pipelock bytes should still see the
+// header removed, because any surviving representation could confuse a
+// downstream verifier.
+func TestStripInbound_MalformedPipelockHeaderDropped(t *testing.T) {
+	t.Parallel()
+
+	h := http.Header{}
+	h.Set("Signature", `pipelock1=:!!!notbase64!!!:, sig1=:dGVzdA==:`)
+
+	StripInbound(h)
+
+	got := h.Get("Signature")
+	if strings.Contains(strings.ToLower(got), "pipelock") {
+		t.Errorf("pipelock survived malformed-input strip: got %q", got)
+	}
+}
+
 func TestInjectMCP(t *testing.T) {
 	t.Parallel()
 

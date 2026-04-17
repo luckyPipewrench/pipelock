@@ -2636,3 +2636,141 @@ func TestInterceptTunnel_A2ARequestBodyAskFailsClosed(t *testing.T) {
 		t.Errorf("status = %d, want 403 (ask fails closed) or 200 (not detected), got unexpected code", resp.StatusCode)
 	}
 }
+
+// TestInterceptTunnel_AgentHeaderStripped pins the TLS-intercept path's
+// handling of X-Pipelock-Agent: when a caller supplies the internal
+// identity header, the intercepted outbound request must not carry it.
+// Regression anchor for the rc.8 gate (round 8 of the pre-tag gate row 1) where a
+// missing tls_interception config surfaced as an apparent header leak.
+func TestInterceptTunnel_AgentHeaderStripped(t *testing.T) {
+	var mu sync.Mutex
+	var gotAgent, gotQueryAgent string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAgent = r.Header.Get(AgentHeader)
+		gotQueryAgent = r.URL.Query().Get("agent")
+		mu.Unlock()
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://"+addr+"/r1?agent=evil-query", nil)
+	req.Header.Set(AgentHeader, "evil-header")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAgent != "" {
+		t.Errorf("upstream saw %s = %q, want stripped", AgentHeader, gotAgent)
+	}
+	if gotQueryAgent != "" {
+		t.Errorf("upstream saw ?agent = %q, want stripped", gotQueryAgent)
+	}
+}
+
+// TestInterceptTunnel_ForwardedHeadersScrubbed pins the TLS-intercept
+// path's handling of caller-supplied client-IP attribution headers
+// (X-Forwarded-For, X-Real-IP, Forwarded, Via, plus the X-Forwarded-*
+// family). Pipelock must not pass attacker-supplied origin hints
+// through to the upstream. Regression anchor for the rc.8 gate
+// (round 8 of the pre-tag gate row 3).
+func TestInterceptTunnel_ForwardedHeadersScrubbed(t *testing.T) {
+	var mu sync.Mutex
+	got := make(map[string]string)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		for _, h := range []string{
+			"X-Forwarded-For", "X-Real-IP", "X-Forwarded-Host",
+			"X-Forwarded-Proto", "X-Forwarded-Port", "Forwarded", "Via",
+		} {
+			got[h] = r.Header.Get(h)
+		}
+		mu.Unlock()
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/r3", nil)
+	req.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req.Header.Set("X-Real-IP", "1.2.3.4")
+	req.Header.Set("X-Forwarded-Host", "attacker.example")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	req.Header.Set("X-Forwarded-Port", "80")
+	req.Header.Set("Forwarded", "for=1.2.3.4;proto=https")
+	req.Header.Set("Via", "1.1 attacker-proxy")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for h, v := range got {
+		if v != "" {
+			t.Errorf("upstream saw %s = %q, want stripped", h, v)
+		}
+	}
+}
+
+// TestInterceptTunnel_CanaryBodyBlocked pins the TLS-intercept path's
+// handling of canary tokens in POST bodies: when the caller submits a
+// synthetic secret configured as a canary, the request must be blocked
+// (403) before reaching upstream. Regression anchor for the rc.8 gate
+// (round 8 of the pre-tag gate row 13) where a missing tls_interception config made
+// the CONNECT tunnel opaque and the canary appeared to pass through.
+func TestInterceptTunnel_CanaryBodyBlocked(t *testing.T) {
+	reached := false
+	var mu sync.Mutex
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		reached = true
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.CanaryTokens.Enabled = true
+	canaryValue := "AKIA" + "IOSFODNN7CANARY01"
+	cfg.CanaryTokens.Tokens = []config.CanaryToken{{
+		Name:  "test_canary",
+		Value: canaryValue,
+	}}
+	// Rebuild scanner so it compiles the canary token patterns.
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	body := "aws=" + canaryValue
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		"https://"+addr+"/r13", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status = %d, want 403 (canary body block)", resp.StatusCode)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if reached {
+		t.Error("upstream received the canary body, want blocked at pipelock")
+	}
+}

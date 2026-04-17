@@ -2011,8 +2011,19 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if result.Scanner == scanner.ScannerRateLimit {
 				status = http.StatusTooManyRequests
 			}
+			// Redact the echoed URL when the block came from a
+			// content-matching scanner (DLP, seed-phrase, address
+			// protection, etc.) — the URL itself likely carries the
+			// secret-shaped bytes that fired the match. Without this,
+			// the 403 response body leaks the credential back to the
+			// caller (round-5 of the pre-tag gate finding: structured log redaction
+			// was in place but client response still echoed).
+			echoURL := displayURL
+			if audit.IsContentScanner(result.Scanner) {
+				echoURL = audit.RedactContentBearingURL(displayURL)
+			}
 			resp := FetchResponse{
-				URL:         displayURL,
+				URL:         echoURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: result.Reason,
@@ -2059,8 +2070,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if result.Scanner == scanner.ScannerRateLimit {
 				escalatedStatus = http.StatusTooManyRequests
 			}
+			escalatedEchoURL := displayURL
+			if audit.IsContentScanner(result.Scanner) {
+				escalatedEchoURL = audit.RedactContentBearingURL(displayURL)
+			}
 			writeJSON(w, escalatedStatus, FetchResponse{
-				URL:         displayURL,
+				URL:         escalatedEchoURL,
 				Agent:       agent,
 				Blocked:     true,
 				BlockReason: result.Reason + " (escalated)",

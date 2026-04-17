@@ -561,8 +561,8 @@ func TestForwardScanned_NonJSON_WarnAction(t *testing.T) {
 	if strings.Contains(out.String(), nonJSON) {
 		t.Error("non-JSON should be blocked, not forwarded")
 	}
-	if !strings.Contains(out.String(), "pipelock: prompt injection detected") {
-		t.Errorf("expected block response, got: %s", out.String())
+	if !strings.Contains(out.String(), "not parseable JSON-RPC") {
+		t.Errorf("expected unparseable-JSON block response, got: %s", out.String())
 	}
 	if !strings.Contains(log.String(), "blocking unparseable response") {
 		t.Errorf("expected block log, got: %s", log.String())
@@ -2438,8 +2438,8 @@ func TestForwardScanned_ConfusedDeputy_UnsolicitedResponseBlocked(t *testing.T) 
 	if strings.Contains(out.String(), "hijacked") {
 		t.Error("unsolicited response should not be forwarded")
 	}
-	if !strings.Contains(out.String(), "injection detected") {
-		t.Error("expected block response for unsolicited ID")
+	if !strings.Contains(out.String(), "unsolicited response ID") {
+		t.Errorf("expected confused-deputy-specific block response, got %q", out.String())
 	}
 }
 

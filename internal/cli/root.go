@@ -116,6 +116,8 @@ Quick start:
 		clisigning.TlsCmd(),
 		clisigning.VerifyReceiptCmd(),
 		clisigning.TranscriptRootCmd(),
+		// Binary install helper for sidecar init containers.
+		installCmd(),
 		// Version
 		versionCmd(),
 	)

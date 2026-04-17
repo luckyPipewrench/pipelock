@@ -913,8 +913,13 @@ func newInterceptHandler(
 			return
 		}
 
-		// Remove hop-by-hop headers before forwarding.
+		// Remove hop-by-hop headers AND the internal identity channel
+		// (X-Pipelock-Agent header + ?agent= query param) before
+		// forwarding. Without the identity strip, an attacker-supplied
+		// value bleeds to the destination even though pipelock's own
+		// policy decision already bound the actor.
 		removeHopByHopHeaders(r.Header)
+		stripInternalIdentity(r)
 
 		// Inject mediation envelope (and attach RFC 9421 signature when
 		// the envelope emitter has a signer) before forwarding on the

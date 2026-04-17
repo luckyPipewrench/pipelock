@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +20,64 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/rs/zerolog"
 )
+
+// contentScanners identify block sources where the blocked URL (or target)
+// likely contains the very bytes that triggered the match — DLP firing on
+// a query-param-embedded API key, seed-phrase detection on an address
+// embedded in the path, etc. When a block comes from one of these
+// scanners, LogBlocked truncates the URL/target to scheme+host before
+// emitting to structured logs so the credential is not echoed verbatim
+// into the audit stream. Network-layer scanners (ssrf, blocklist) or
+// scanners that never see URL contents (airlock, kill_switch) are not in
+// this set; their full-URL logs are unambiguously safe.
+//
+// Pre-tag gate finding: a fetch URL containing a credential in the query
+// string was blocked by DLP but the client 403 body AND the structured
+// log both echoed the raw token back.
+var contentScanners = map[string]struct{}{
+	"dlp":                   {},
+	"body_dlp":              {},
+	"header_dlp":            {},
+	"mcp_input_scanning":    {},
+	"response_scan":         {},
+	"address_protection":    {},
+	"seed_phrase":           {},
+	"cross_request_entropy": {},
+}
+
+// IsContentScanner reports whether blocks attributed to the given scanner
+// name imply the URL/target contains the secret-shaped bytes that fired
+// the match. Callers constructing client-facing block responses (fetch,
+// reverse proxy, forward proxy) should redact the URL/target before
+// echoing it back so the credential is not returned to the caller.
+func IsContentScanner(name string) bool {
+	_, ok := contentScanners[name]
+	return ok
+}
+
+// RedactContentBearingURL returns a URL safe to echo when a
+// content-matching scanner fired. Keeps scheme + host; drops path,
+// query, and fragment. Falls back to a generic placeholder when parsing
+// fails rather than passing the raw string through. Exported for use
+// from the proxy package in client-facing block responses.
+func RedactContentBearingURL(raw string) string {
+	return redactContentBearingURL(raw)
+}
+
+// redactContentBearingURL is the internal implementation. Kept separate
+// from the exported wrapper so in-package callers (LogBlocked) and
+// out-of-package callers (proxy FetchResponse / reverse-proxy block
+// bodies) share a single source of truth.
+func redactContentBearingURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "[redacted-url]"
+	}
+	return u.Scheme + "://" + u.Host + "/[redacted]"
+}
 
 // sanitizeString strips control characters and ANSI escape sequences from a
 // string before logging. Prevents terminal escape injection via crafted URLs
@@ -452,11 +511,26 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 	technique := TechniqueForScanner(scanner)
 
+	// If the block came from a content-matching scanner, the URL/target
+	// likely contains the very bytes that triggered the match. Emit the
+	// scheme+host only so the credential is not echoed back into the
+	// audit stream. See contentScanners for the eligible sources.
+	loggedURL := ctx.url
+	loggedTarget := ctx.target
+	loggedResource := ctx.resource
+	if _, redact := contentScanners[scanner]; redact {
+		loggedURL = redactContentBearingURL(ctx.url)
+		loggedTarget = redactContentBearingURL(ctx.target)
+		if loggedResource != "" {
+			loggedResource = "[redacted]"
+		}
+	}
+
 	e := newLogEntry(l.zl.Warn(), EventBlocked).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
-		optStr("resource", ctx.resource).
+		optStr("url", loggedURL).
+		optStr("target", loggedTarget).
+		optStr("resource", loggedResource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		str("scanner", scanner).

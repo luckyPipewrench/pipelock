@@ -63,11 +63,21 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 	dict, err := httpsfv.UnmarshalDictionary(values)
 	if err != nil {
 		// The inbound header is not a well-formed RFC 8941 dictionary.
-		// Fail closed: drop the entire header. An unparseable signature
-		// header is either an attack attempt or a broken upstream, and
-		// either way must not survive into the outbound request where a
-		// downstream verifier could interpret it differently than we do.
-		h.Del(headerName)
+		// Earlier behaviour failed closed by dropping the entire header,
+		// which broke legitimate (but httpsfv-picky) signatures like
+		// Cloudflare Web Bot Auth sig1 members whose values were not
+		// strict-base64. That turned pipelock into a signature-stripping
+		// middlebox for any upstream auth scheme it could not re-parse.
+		//
+		// Surgical fail-closed: only drop the header if the raw bytes
+		// contain the pipelock member prefix (indicating a plausible
+		// forged or broken pipelock member we must not let through).
+		// Otherwise, leave the header untouched — pipelock's scrubbing
+		// target is pipelock-tagged members, not malformed third-party
+		// signatures.
+		if containsPipelockMember(values) {
+			h.Del(headerName)
+		}
 		return
 	}
 
@@ -102,6 +112,28 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 		return
 	}
 	h.Set(headerName, out)
+}
+
+// containsPipelockMember returns true when any of the raw header values
+// looks like it contains a dictionary member named with the pipelock
+// prefix. The check is case-insensitive on the prefix (RFC 8941 member
+// names are lowercase, but operators occasionally uppercase them) and
+// requires either a start-of-value match or a comma-preceded match so
+// substring noise like "pipelockless=..." is not flagged. This is only
+// used when strict RFC 8941 parsing has already failed — at which point
+// we need a cheap heuristic to decide whether pipelock is implicated.
+func containsPipelockMember(values []string) bool {
+	for _, v := range values {
+		lower := strings.ToLower(v)
+		if strings.HasPrefix(lower, pipelockMemberPrefix) {
+			return true
+		}
+		if strings.Contains(lower, ","+pipelockMemberPrefix) ||
+			strings.Contains(lower, ", "+pipelockMemberPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // InjectMCP adds the envelope to an MCP _meta map.

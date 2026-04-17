@@ -549,3 +549,15 @@ airlock:
     hard_minutes: 15
     drain_minutes: 0
     drain_timeout_seconds: 30
+
+# Exposure-based policy escalation (v2.2.0)
+# Strict policy: tainted sessions are blocked on protected paths immediately.
+taint:
+  enabled: true
+  policy: strict
+
+# Media policy: strip everything. Hostile model may embed instructions in media.
+media_policy:
+  strip_images: true
+  strip_audio: true
+  strip_video: true

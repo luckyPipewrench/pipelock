@@ -324,7 +324,7 @@ func (e *Emitter) resumeChain() error {
 		return nil
 	}
 
-	files, err := recorderFiles(e.recorder.Dir(), recorderSessionID)
+	files, err := recorderFiles(e.recorder.Dir())
 	if err != nil {
 		return err
 	}
@@ -412,7 +412,7 @@ func receiptFromEntry(entry recorder.Entry) (*Receipt, error) {
 	return &rcpt, nil
 }
 
-func recorderFiles(dir, sessionID string) ([]string, error) {
+func recorderFiles(dir string) ([]string, error) {
 	if dir == "" {
 		return nil, nil
 	}
@@ -422,7 +422,7 @@ func recorderFiles(dir, sessionID string) ([]string, error) {
 		return nil, fmt.Errorf("reading evidence directory: %w", err)
 	}
 
-	prefix := "evidence-" + sessionID + "-"
+	prefix := "evidence-" + recorderSessionID + "-"
 	files := make([]string, 0)
 	for _, de := range dirEntries {
 		if de.IsDir() {

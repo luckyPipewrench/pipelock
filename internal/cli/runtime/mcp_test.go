@@ -248,7 +248,15 @@ func TestMcpProxyCmd_EmitsSignedReceipts_StdioSubprocess(t *testing.T) {
 	configPath := writeMCPProxyConfig(t, evidenceDir, keyPath, true)
 
 	stdout, stderr, err := runMCPProxyCommand(t, configPath)
-	if err != nil {
+	// ErrSubprocessExit is an expected outcome when the wrapped Go-test
+	// helper exits non-zero. Under CI load the helper's testing.M
+	// cleanup (which prints "PASS\nok <pkg>" to stdout after the
+	// JSON-RPC scanner loop exits) can race with pipelock's pgid
+	// teardown and surface as "signal: killed". The test assertion is
+	// about receipts being emitted before the child exited, not about
+	// the child's own exit status, so only fail for non-subprocess
+	// errors.
+	if err != nil && !errors.Is(err, mcp.ErrSubprocessExit) {
 		t.Fatalf("run mcp proxy command: %v\nstderr:\n%s", err, stderr)
 	}
 

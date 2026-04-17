@@ -194,5 +194,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -fa v2 "${TAG_NAME}" -m "Update v2 to ${TAG_NAME}"
+          # The ^{} suffix dereferences TAG_NAME (annotated tag) to its commit.
+          # Without it, git tag -fa v2 "${TAG_NAME}" creates a nested tag
+          # (v2 -> v2.2.0 -> commit) which clutters ls-remote and some tooling rejects it.
+          git tag -fa v2 "${TAG_NAME}^{}" -m "Update v2 to ${TAG_NAME}"
           git push origin v2 --force

@@ -73,3 +73,77 @@ func TestInstall_RejectsNonRegularDest(t *testing.T) {
 		t.Errorf("install over directory: err = %v, want message mentioning non-regular", err)
 	}
 }
+
+// TestInstall_StatErrorSurfaces ensures the install subcommand returns
+// the Lstat error when a destination path cannot be stat'd for reasons
+// other than "does not exist" — for example, when the parent path is a
+// regular file so resolving the destination hits ENOTDIR. Without this
+// branch, install would silently swallow a meaningful filesystem
+// signal.
+func TestInstall_StatErrorSurfaces(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	parentAsFile := filepath.Join(tmp, "blocker")
+	if err := os.WriteFile(parentAsFile, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("seed blocker file: %v", err)
+	}
+	// Destination sits under a path whose parent component is a regular
+	// file — Lstat should return ENOTDIR rather than ENOENT.
+	dest := filepath.Join(parentAsFile, "pipelock")
+
+	cmd := installCmd()
+	cmd.SetArgs([]string{dest})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("install under non-dir parent: err = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "stat destination") {
+		t.Errorf("install under non-dir parent: err = %v, want stat destination message", err)
+	}
+}
+
+// TestInstall_HappyPath exercises the full copy + atomic-rename flow:
+// a fresh destination directory receives the running binary and ends
+// up with the executable bit set. Also covers the ReadFile path and
+// atomicfile.Write tempfile-rename semantics so any regression in
+// either drops coverage loudly.
+func TestInstall_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	dest := filepath.Join(tmp, "nested", "pipelock")
+
+	cmd := installCmd()
+	cmd.SetArgs([]string{dest})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install happy path: %v", err)
+	}
+
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat destination: %v", err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("dest mode = %v, want regular file", info.Mode())
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("dest mode = %v, want executable bit set", info.Mode())
+	}
+
+	// Source is the test binary itself (os.Executable during tests). It
+	// should be a non-empty file, so the copy should be non-empty too.
+	if info.Size() == 0 {
+		t.Error("dest size = 0, want non-empty copy")
+	}
+
+	// Re-running install over the now-existing regular file must
+	// succeed (idempotent update flow — an operator upgrading a sidecar
+	// expects to overwrite the prior binary without needing to rm it
+	// first).
+	cmd2 := installCmd()
+	cmd2.SetArgs([]string{dest})
+	if err := cmd2.Execute(); err != nil {
+		t.Fatalf("install idempotent re-run: %v", err)
+	}
+}

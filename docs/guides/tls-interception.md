@@ -57,6 +57,8 @@ tls_interception:
   ca_key: /etc/pipelock/tls/ca-key.pem
 ```
 
+> **Use `pipelock tls init` — don't hand-mint the CA with openssl RSA.** Pipelock's CA loader validates that the private key parses as an ECDSA P-256 key (`x509.ParseECPrivateKey`). A CA minted with `openssl genpkey -algorithm RSA` or a pre-existing organization RSA intermediate will fail to load at startup with `load TLS CA: parse ec private key` and pipelock will exit rather than run without interception. If you need an org-rooted CA chain, generate an ECDSA intermediate (`openssl ecparam -name prime256v1`) and sign it from your root; pipelock will accept the ECDSA intermediate + key. End-entity server certs that pipelock mints from its CA at runtime are ECDSA P-256; end-entity certs for your upstream servers signed by this CA (when minting with openssl for testing) can be RSA without issue — the constraint is only on the CA key itself.
+
 ## Step 2: Trust the CA
 
 The agent (or whatever makes HTTPS connections through pipelock) must trust the CA certificate. Otherwise TLS handshakes fail with certificate verification errors.

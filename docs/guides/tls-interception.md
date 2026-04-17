@@ -57,7 +57,7 @@ tls_interception:
   ca_key: /etc/pipelock/tls/ca-key.pem
 ```
 
-> **Use `pipelock tls init` — don't hand-mint the CA with openssl RSA.** Pipelock's CA loader validates that the private key parses as an ECDSA P-256 key (`x509.ParseECPrivateKey`). A CA minted with `openssl genpkey -algorithm RSA` or a pre-existing organization RSA intermediate will fail to load at startup with `load TLS CA: parse ec private key` and pipelock will exit rather than run without interception. If you need an org-rooted CA chain, generate an ECDSA intermediate (`openssl ecparam -name prime256v1`) and sign it from your root; pipelock will accept the ECDSA intermediate + key. End-entity server certs that pipelock mints from its CA at runtime are ECDSA P-256; end-entity certs for your upstream servers signed by this CA (when minting with openssl for testing) can be RSA without issue — the constraint is only on the CA key itself.
+> **Use `pipelock tls init` — don't hand-mint the CA with openssl RSA.** Pipelock's CA loader (`certgen.LoadCA`) calls `x509.ParseECPrivateKey` on the key file, so it requires an ECDSA private key (any curve the `crypto/ecdsa` package accepts — P-224, P-256, P-384, P-521). RSA and Ed25519 CA keys are rejected at startup with `load TLS CA: parse ec private key` and pipelock exits rather than run without interception. `pipelock tls init` generates a P-256 ECDSA CA, which is what end-entity certs pipelock mints at runtime also use; if you need an org-rooted CA chain, an ECDSA intermediate (e.g. `openssl ecparam -name prime256v1`) signed from your root will load. End-entity certs for your upstream servers signed by this CA can be RSA without issue — the ECDSA constraint is only on the CA key itself.
 
 ## Step 2: Trust the CA
 

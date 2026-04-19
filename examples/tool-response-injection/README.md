@@ -89,13 +89,22 @@ The receipt format is documented here: <https://pipelab.org/learn/action-receipt
 ## Independent Verification
 `demo.py` verifies every receipt inline with Python and the `cryptography` library. The chain-break subdemo also shells out to the Go CLI so the Python and Go verifiers agree on the same evidence file.
 
-As of 2026-04-10, we did not find a `pipelock-verify` package on PyPI. Use the Go CLI that ships with pipelock:
+Two interchangeable verifiers are available.
+
+The Go CLI ships with pipelock:
 
 ```bash
 pipelock verify-receipt evidence/evidence-proxy-0.jsonl --key <public-key-hex>
 ```
 
-You can also inspect the public key that `demo.py` prints and verify the JSONL file yourself from another implementation.
+The Python reference verifier is on PyPI as [`pipelock-verify`](https://pypi.org/project/pipelock-verify/) and mirrors the Go output byte-for-byte:
+
+```bash
+pip install pipelock-verify
+python -m pipelock_verify evidence/evidence-proxy-0.jsonl --key <public-key-hex>
+```
+
+Both return exit 0 on success, 1 on failure. You can also inspect the public key that `demo.py` prints and verify the JSONL file yourself from any other implementation of the spec.
 
 ## Adapting The Demo For Your Own MCP Server
 Swap `malicious_mcp_server.py` for your own server and keep the same `pipelock.yaml` shape.

@@ -3,6 +3,7 @@ package plsentry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -238,6 +239,19 @@ func TestCaptureError_EventIsScrubbed(t *testing.T) {
 				t.Errorf("secret leaked in exception value: %q", exc.Value)
 			}
 		}
+	}
+}
+
+func TestCaptureError_DropsContextCanceled(t *testing.T) {
+	c, transport := initTestClient(t, nil)
+	defer c.Close()
+
+	c.CaptureError(context.Canceled)
+	c.CaptureError(fmt.Errorf("mcp proxy: %w", context.Canceled))
+	_ = c.Flush(2 * time.Second)
+
+	if events := transport.Events(); len(events) != 0 {
+		t.Fatalf("expected no events for context.Canceled, got %d", len(events))
 	}
 }
 

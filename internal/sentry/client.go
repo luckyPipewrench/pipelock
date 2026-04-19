@@ -2,6 +2,8 @@ package plsentry
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,8 +100,13 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 }
 
 // CaptureError sends an error event to Sentry (scrubbed by BeforeSend).
+// context.Canceled is dropped because it signals normal shutdown propagation
+// (SIGINT, parent exit, session end), not a failure worth paging on.
 func (c *Client) CaptureError(err error) {
 	if c == nil || !c.enabled {
+		return
+	}
+	if errors.Is(err, context.Canceled) {
 		return
 	}
 	sentry.CaptureException(err)

@@ -33,6 +33,10 @@ const (
 	// ReasonDepthExceeded — JSON structure exceeded the configured nesting
 	// depth cap (defensive against resource-exhaustion JSON).
 	ReasonDepthExceeded BlockReason = "json_depth_exceeded"
+	// ReasonKeyCollision — rewriting two different object keys produced
+	// the same placeholder. Silently letting one key overwrite another
+	// changes the forwarded object's structure, so we fail closed.
+	ReasonKeyCollision BlockReason = "key_collision"
 )
 
 // BlockError is returned by Rewrite when redaction cannot safely proceed.

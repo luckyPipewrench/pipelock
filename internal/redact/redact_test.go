@@ -186,6 +186,40 @@ func TestRedactor_CustomClassAccepted(t *testing.T) {
 	}
 }
 
+// TestRedactor_PlaceholderCoercesInvalidClass guards against direct callers
+// that bypass AddDictionary validation. GPT review #3 (2026-04-19): a
+// malformed class with `:`, `>`, whitespace, or control characters could
+// perturb `<pl:CLASS:N>` for downstream parsers. Placeholder coerces any
+// malformed class to the sentinel "invalid".
+func TestRedactor_PlaceholderCoercesInvalidClass(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		class Class
+	}{
+		{"empty", Class("")},
+		{"uppercase", Class("Upper")},
+		{"colon", Class("with:colon")},
+		{"angle-open", Class("with<angle")},
+		{"angle-close", Class("with>angle")},
+		{"space", Class("with space")},
+		{"leading-hyphen", Class("-lead")},
+		{"leading-underscore", Class("_lead")},
+		{"control-char", Class("a\x00b")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := NewRedactor()
+			got := r.Placeholder(tc.class, "value")
+			want := "<pl:invalid:1>"
+			if got != want {
+				t.Fatalf("Placeholder(%q) = %q, want %q", tc.class, got, want)
+			}
+		})
+	}
+}
+
 func TestRedactor_EmptyOriginalStillPlaceholders(t *testing.T) {
 	t.Parallel()
 	// Defensive: DLP generally matches non-empty, but an empty original must

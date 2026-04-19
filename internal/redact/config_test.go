@@ -251,6 +251,62 @@ func TestConfig_BuildMatcherUnresolvedEntriesFile(t *testing.T) {
 	}
 }
 
+// TestConfig_ValidateAllowlistUnparseable enforces strict host-entry
+// canonicalisation. GPT review #4 (2026-04-19): fuzzy entries would
+// produce ambiguous match semantics once v1b enforcement lands.
+func TestConfig_ValidateAllowlistUnparseable(t *testing.T) {
+	t.Parallel()
+	mkCfg := func(hosts ...string) *Config {
+		return &Config{
+			Enabled:              true,
+			DefaultProfile:       "p",
+			Profiles:             map[string]ProfileSpec{"p": {Classes: []string{"ipv4"}}},
+			AllowlistUnparseable: hosts,
+		}
+	}
+
+	rejectCases := []struct {
+		name string
+		host string
+	}{
+		{"empty", ""},
+		{"has-scheme", "https://api.example.com"},
+		{"has-path", "api.example.com/v1"},
+		{"has-query", "api.example.com?x=1"},
+		{"has-port", "api.example.com:443"},
+		{"uppercase", "API.example.com"},
+		{"leading-dot", ".api.example.com"},
+		{"trailing-dot", "api.example.com."},
+		{"double-dot", "api..example.com"},
+		{"invalid-char", "api_example.com"},
+	}
+	for _, tc := range rejectCases {
+		t.Run("reject/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := mkCfg(tc.host).Validate()
+			if err == nil || !strings.Contains(err.Error(), "allowlist_unparseable") {
+				t.Fatalf("host %q should be rejected, got %v", tc.host, err)
+			}
+		})
+	}
+
+	acceptCases := []string{
+		"api.anthropic.com",
+		"api.openai.com",
+		"generativelanguage.googleapis.com",
+		"*.internal.example",
+		"my-host-42.example.com",
+	}
+	for _, h := range acceptCases {
+		t.Run("accept/"+h, func(t *testing.T) {
+			t.Parallel()
+			if err := mkCfg(h).Validate(); err != nil {
+				t.Fatalf("host %q should validate, got %v", h, err)
+			}
+		})
+	}
+}
+
 func TestConfig_LimitsSpecToLimitsPassthrough(t *testing.T) {
 	t.Parallel()
 	s := LimitsSpec{MaxBodyBytes: 1024, MaxRedactionsPerRequest: 42, MaxDepth: 5}

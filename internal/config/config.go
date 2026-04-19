@@ -2285,12 +2285,17 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateRedaction delegates to the redact package's own validator. Keeps
-// redaction schema ownership inside the redact package while hooking the
-// feature into pipelock's overall config validation chain.
+// validateRedaction delegates to the redact package's own validator and
+// additionally blocks operators from enabling the feature before the
+// request pipeline enforces it. Schema ownership stays inside redact; the
+// pipelock-level gate lives here so library tests can still exercise
+// Enabled=true via the package validator directly.
 func (c *Config) validateRedaction() error {
 	if err := c.Redaction.Validate(); err != nil {
 		return fmt.Errorf("redaction: %w", err)
+	}
+	if c.Redaction.Enabled {
+		return fmt.Errorf("redaction: enabled=true is not supported in this release — the request pipeline does not yet enforce redaction; set redaction.enabled: false until the proxy hook ships")
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ package redact
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Config is the top-level YAML config for redaction. Embedded into the
@@ -127,6 +128,48 @@ func (c *Config) Validate() error {
 		}
 		if len(d.Entries) == 0 && d.EntriesFile == "" {
 			return fmt.Errorf("redact: dictionary %q has no entries or entries_file", name)
+		}
+	}
+
+	for i, host := range c.AllowlistUnparseable {
+		if err := validateHostEntry(host); err != nil {
+			return fmt.Errorf("redact: allowlist_unparseable[%d] %q: %w", i, host, err)
+		}
+	}
+	return nil
+}
+
+// validateHostEntry rejects ambiguous host-allowlist entries so once v1b
+// enforcement lands the allowlist match semantics are unambiguous. The
+// rules: non-empty, no scheme/path/query, no port, no uppercase, no
+// leading/trailing dot, no consecutive dots, valid label characters only.
+func validateHostEntry(h string) error {
+	if h == "" {
+		return errors.New("empty")
+	}
+	if strings.ContainsAny(h, "/?#@") {
+		return errors.New("must not contain scheme, path, query, or userinfo")
+	}
+	if strings.ContainsRune(h, ':') {
+		return errors.New("must not contain a port (bare hostname only)")
+	}
+	if strings.ToLower(h) != h {
+		return errors.New("must be lowercase")
+	}
+	if strings.HasPrefix(h, ".") || strings.HasSuffix(h, ".") {
+		return errors.New("leading or trailing dot not permitted")
+	}
+	if strings.Contains(h, "..") {
+		return errors.New("consecutive dots not permitted")
+	}
+	for _, r := range h {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9',
+			r == '-', r == '.', r == '*':
+			continue
+		default:
+			return fmt.Errorf("invalid character %q", r)
 		}
 	}
 	return nil

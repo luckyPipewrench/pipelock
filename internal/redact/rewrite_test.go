@@ -273,6 +273,24 @@ func TestRewriteJSON_JSONKeyBypassClosed(t *testing.T) {
 	}
 }
 
+// TestRewriteJSON_KeyCollisionBlocks guards against silent sibling-field
+// drop when the rewritten version of one key equals the literal value of
+// another key in the same object. GPT review #2 (2026-04-19).
+func TestRewriteJSON_KeyCollisionBlocks(t *testing.T) {
+	t.Parallel()
+	// First key is a literal placeholder-shaped string (untouched).
+	// Second key contains an IPv4 that rewrites to the same string.
+	body := []byte(`{"<pl:ipv4:1>": "one", "10.0.0.1": "two"}`)
+	_, _, err := RewriteJSON(body, NewDefaultMatcher(), NewRedactor(), Limits{})
+	be, ok := asBlockError(err)
+	if !ok {
+		t.Fatalf("expected BlockError, got %v", err)
+	}
+	if be.Reason != ReasonKeyCollision {
+		t.Fatalf("reason = %q, want %q", be.Reason, ReasonKeyCollision)
+	}
+}
+
 func TestRewriteJSON_JSONKeyRedactionDedupesWithValue(t *testing.T) {
 	t.Parallel()
 	// Same secret appearing as both a key and a value should dedup to one

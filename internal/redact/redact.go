@@ -71,7 +71,16 @@ func NewRedactor() *Redactor {
 // form "<pl:CLASS:N>". Subsequent calls for the same pair return the same
 // placeholder (per-request dedup). Sequence numbers are per-class, starting
 // at 1.
+//
+// If class does not match the safe placeholder shape (lowercase, digits,
+// hyphens, underscores, starting with alphanumeric) the call coerces class
+// to the sentinel "invalid" so downstream parsers never see a perturbed
+// placeholder. AddDictionary rejects malformed class names up front; this
+// defensive check catches any direct caller that bypasses that API.
 func (r *Redactor) Placeholder(class Class, original string) string {
+	if !safePlaceholderClass(class) {
+		class = Class("invalid")
+	}
 	bucket, ok := r.dedup[class]
 	if !ok {
 		bucket = make(map[string]string)
@@ -85,6 +94,31 @@ func (r *Redactor) Placeholder(class Class, original string) string {
 	bucket[original] = ph
 	r.total++
 	return ph
+}
+
+// safePlaceholderClass reports whether c matches the placeholder-safe
+// shape `[a-z0-9][a-z0-9_-]*`. Checked by hand (not via regex) so this
+// runs in Placeholder's hot path without regex-compile amortisation
+// surprises during the first call.
+func safePlaceholderClass(c Class) bool {
+	s := string(c)
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			continue
+		case r == '-' || r == '_':
+			if i == 0 {
+				return false
+			}
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // Total returns the count of unique redactions applied so far — every dedup

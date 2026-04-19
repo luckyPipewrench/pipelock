@@ -116,11 +116,8 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 	case map[string]interface{}:
 		out := make(map[string]interface{}, len(v))
 		for k, child := range v {
-			// Scan and redact the key too. An adversarial agent can stuff
-			// a secret into a JSON key name (e.g. {"AKIA...": "safe"}); if
-			// we only scanned values, that path would bypass redaction.
-			// Rewriting the key preserves the fail-closed invariant that
-			// every string scalar at any position is scanned.
+			// Scan and redact the key. A secret stuffed into a JSON key
+			// name would otherwise bypass value-only scanning.
 			rewrittenKey, err := w.rewriteScalar(k)
 			if err != nil {
 				return nil, err
@@ -128,6 +125,13 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 			rewritten, err := w.walk(child, depth+1)
 			if err != nil {
 				return nil, err
+			}
+			// Detect key-rewrite collisions: if two distinct originals
+			// produce the same output key, silently overwriting the
+			// earlier sibling changes forwarded object structure and
+			// could be abused to drop fields. Fail closed.
+			if _, exists := out[rewrittenKey]; exists {
+				return nil, newBlock(ReasonKeyCollision, w.redactor.Total(), "two keys redact to the same placeholder")
 			}
 			out[rewrittenKey] = rewritten
 		}

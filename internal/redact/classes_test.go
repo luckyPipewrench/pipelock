@@ -41,6 +41,8 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},
 		{"ssn", "SSN " + "123-45-" + "6789 on file", ClassSSN},
 		{"credit-card-visa", "card " + "4111 1111 " + "1111 1111", ClassCreditCard},
+		{"credit-card-amex-15digit", "card " + "3782 822463 " + "10005", ClassCreditCard},
+		{"credit-card-amex-dashed", "card " + "3714-496353-" + "98431", ClassCreditCard},
 		{"hash-md5", "etag " + strings.Repeat("a", 32), ClassHashMD5},
 		{"hash-sha1", "sha1 " + strings.Repeat("b", 40), ClassHashSHA1},
 		{"hash-sha256", "sha256 " + strings.Repeat("c", 64), ClassHashSHA256},

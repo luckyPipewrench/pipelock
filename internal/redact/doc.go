@@ -11,8 +11,10 @@
 // Invariants enforced by this package:
 //
 //   - No vault, no reversibility: the placeholder is terminal.
-//   - Whole-body scan: every string scalar in a parsed request body is
-//     scanned, regardless of field position. No cache-safe exemption.
+//   - Whole-body scan: every string scalar and every object key in a
+//     parsed request body is scanned at every nesting depth, regardless
+//     of field position. Numeric JSON scalars matching a redaction
+//     pattern fail closed. No cache-safe exemption.
 //   - Fail-closed: if redaction is configured and cannot be applied safely
 //     (unparseable body, overflow, unsupported transport), the request is
 //     blocked rather than forwarded.

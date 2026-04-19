@@ -306,6 +306,42 @@ func TestRewriteJSON_JSONKeyRedactionDedupesWithValue(t *testing.T) {
 	}
 }
 
+// TestRewriteJSON_NumericScalarBypassBlocked guards the bypass reported
+// in CodeRabbit review (2026-04-19): a credit card stuffed into a bare
+// JSON number used to fall through the walker untouched because
+// json.Number wasn't scanned. Must block now.
+func TestRewriteJSON_NumericScalarBypassBlocked(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"visa-16", `{"cc": ` + "4111111111" + "111111}"},
+		{"mastercard-16", `{"cc": ` + "5555555555" + "554444}"},
+		{"amex-15", `{"cc": ` + "37828224" + "6310005}"},
+		{"ssn-shaped-would-not-match", `{"ssn_numeric": 123456789}`}, // SSN needs dashes, won't match — sanity check
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := RewriteJSON([]byte(tc.body), NewDefaultMatcher(), NewRedactor(), Limits{})
+			if tc.name == "ssn-shaped-would-not-match" {
+				if err != nil {
+					t.Fatalf("bare 9-digit number should NOT match SSN (needs dashes), got %v", err)
+				}
+				return
+			}
+			be, ok := asBlockError(err)
+			if !ok {
+				t.Fatalf("expected BlockError, got %v", err)
+			}
+			if be.Reason != ReasonSecretInNumericScalar {
+				t.Fatalf("reason = %q, want %q", be.Reason, ReasonSecretInNumericScalar)
+			}
+		})
+	}
+}
+
 func TestRewriteJSON_NonStringScalarsUntouched(t *testing.T) {
 	t.Parallel()
 	// A JSON array of numbers — no scalars to scan, no redactions.

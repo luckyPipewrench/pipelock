@@ -94,7 +94,28 @@ func (s LimitsSpec) ToLimits() Limits {
 
 // Validate returns nil iff cfg is internally consistent. Callers should
 // wire this into the overall config validation so startup fails closed.
+//
+// Structural checks on allowlist_unparseable host entries and dictionary
+// class names run UNCONDITIONALLY — they are cheap and must not depend on
+// the Enabled gate, because a disabled config with malformed fields can
+// still be loaded, and the fields are security-sensitive once Enabled
+// flips on. Skipping structure checks when disabled would defeat the
+// fail-fast posture (bots already flagged this on 2026-04-19).
 func (c *Config) Validate() error {
+	// Structural: allowlist host entries. Runs before the Enabled gate.
+	for i, host := range c.AllowlistUnparseable {
+		if err := validateHostEntry(host); err != nil {
+			return fmt.Errorf("redact: allowlist_unparseable[%d] %q: %w", i, host, err)
+		}
+	}
+	// Structural: dictionary class names must match the placeholder-safe
+	// shape so a runtime BuildMatcher call doesn't reject a "valid" config.
+	for name, d := range c.Dictionaries {
+		if d.Class != "" && !classNameRe.MatchString(d.Class) {
+			return fmt.Errorf("redact: dictionary %q class %q must match [a-z0-9][a-z0-9_-]*", name, d.Class)
+		}
+	}
+
 	if !c.Enabled {
 		return nil // inert; no further checks.
 	}
@@ -128,12 +149,6 @@ func (c *Config) Validate() error {
 		}
 		if len(d.Entries) == 0 && d.EntriesFile == "" {
 			return fmt.Errorf("redact: dictionary %q has no entries or entries_file", name)
-		}
-	}
-
-	for i, host := range c.AllowlistUnparseable {
-		if err := validateHostEntry(host); err != nil {
-			return fmt.Errorf("redact: allowlist_unparseable[%d] %q: %w", i, host, err)
 		}
 	}
 	return nil

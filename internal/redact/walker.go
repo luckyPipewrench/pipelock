@@ -84,9 +84,10 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(rewritten); err != nil {
-		// Should not happen for inputs decoded via encoding/json, but
-		// fail-closed if it does.
-		return nil, nil, newBlock(ReasonBodyUnparseable, r.Total(), "remarshal: "+err.Error())
+		// Input was parseable (we already decoded it above); only the
+		// rewritten tree failed to re-encode. Distinct reason so telemetry
+		// separates attacker-malformed input from an implementation bug.
+		return nil, nil, newBlock(ReasonRemarshalFailed, r.Total(), err.Error())
 	}
 	// Encoder appends a trailing newline; trim it so the output is a bare
 	// JSON value, matching what callers get from json.Marshal.
@@ -146,8 +147,26 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 			out[i] = rewritten
 		}
 		return out, nil
+	case json.Number:
+		// Numeric scalars are textually preserved by json.Decoder.UseNumber,
+		// so the digit string passes unredacted if we do not scan it. A
+		// credit card, SSN, or hash placed as a bare JSON number would
+		// therefore bypass pattern-based redaction. Scan the textual form
+		// and, on any pattern hit, fail closed: rewriting the number to a
+		// string placeholder would change the JSON type and almost always
+		// break the upstream API. Bodies that legitimately carry secrets
+		// as bare numbers should use string encoding instead.
+		if matches := w.matcher.Scan(string(v)); len(matches) > 0 {
+			return nil, newBlock(ReasonSecretInNumericScalar, w.redactor.Total(),
+				"secret pattern matched a numeric JSON scalar; encode sensitive values as strings")
+		}
+		return v, nil
+	case bool, nil:
+		// Booleans and JSON null carry no scannable content.
+		return v, nil
 	default:
-		// Numbers (json.Number), bools, nil, etc. Pass through untouched.
+		// Any other concrete Go type produced by encoding/json (none of
+		// them in practice with UseNumber enabled) passes through.
 		return v, nil
 	}
 }

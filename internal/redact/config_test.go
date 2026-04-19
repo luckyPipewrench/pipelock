@@ -254,6 +254,37 @@ func TestConfig_BuildMatcherUnresolvedEntriesFile(t *testing.T) {
 // TestConfig_ValidateAllowlistUnparseable enforces strict host-entry
 // canonicalisation. GPT review #4 (2026-04-19): fuzzy entries would
 // produce ambiguous match semantics once v1b enforcement lands.
+// TestConfig_ValidateStructureWhenDisabled enforces the CodeRabbit finding
+// (2026-04-19) that structural fields must be checked even when the
+// feature is inert. Loading a malformed allowlist or dictionary class
+// now must fail at startup regardless of Enabled so the fail-fast
+// posture is consistent.
+func TestConfig_ValidateStructureWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	// Malformed allowlist entry, feature disabled — must still reject.
+	c := Config{
+		Enabled:              false,
+		AllowlistUnparseable: []string{"UPPERCASE.example.com"},
+	}
+	if err := c.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "allowlist_unparseable") {
+		t.Fatalf("disabled-with-bad-allowlist should still fail, got %v", err)
+	}
+
+	// Malformed dictionary class, feature disabled — must still reject.
+	c = Config{
+		Enabled: false,
+		Dictionaries: map[string]DictionarySpec{
+			"d": {Class: "Upper", Entries: []string{"x"}},
+		},
+	}
+	if err := c.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "must match") {
+		t.Fatalf("disabled-with-bad-dict-class should still fail, got %v", err)
+	}
+}
+
 func TestConfig_ValidateAllowlistUnparseable(t *testing.T) {
 	t.Parallel()
 	mkCfg := func(hosts ...string) *Config {

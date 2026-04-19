@@ -37,6 +37,16 @@ const (
 	// the same placeholder. Silently letting one key overwrite another
 	// changes the forwarded object's structure, so we fail closed.
 	ReasonKeyCollision BlockReason = "key_collision"
+	// ReasonSecretInNumericScalar — a numeric JSON scalar (json.Number)
+	// matched a redaction pattern. Rewriting to a string placeholder would
+	// change the JSON type and likely break the upstream; redacting is
+	// impossible without type-coercion risk, so we fail closed. Legitimate
+	// bodies should not carry secrets as bare numbers.
+	ReasonSecretInNumericScalar BlockReason = "secret_in_numeric_scalar"
+	// ReasonRemarshalFailed — the redacted tree could not be re-encoded
+	// to JSON. Distinguished from ReasonBodyUnparseable so telemetry can
+	// separate attacker-malformed input from an implementation bug.
+	ReasonRemarshalFailed BlockReason = "remarshal_failed"
 )
 
 // BlockError is returned by Rewrite when redaction cannot safely proceed.

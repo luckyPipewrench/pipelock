@@ -68,7 +68,7 @@ runs:
         VERSION="$PIPELOCK_VERSION"
         if [ "$VERSION" = "latest" ]; then
           # Use GitHub API directly (no gh CLI dependency)
-          VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
+          VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 8 --retry-max-time 120 --retry-all-errors \
             -H "Authorization: token $GH_TOKEN" \
             "https://api.github.com/repos/luckyPipewrench/pipelock/releases/latest" \
             | jq -r '.tag_name' | sed 's/^v//')
@@ -104,8 +104,13 @@ runs:
         mkdir -p "$INSTALL_DIR"
 
         echo "Downloading pipelock v${VERSION} (${GOOS}/${GOARCH})..."
-        curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 2 --retry-all-errors "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
-        curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
+        # Retry budget ~2 min absorbs transient 504s from the release-assets
+        # CDN (Azure Blob behind Fastly) without stalling on real outages.
+        # Omitting --retry-delay lets curl use exponential backoff inside the
+        # --retry-max-time window, spacing later retries to give the CDN time
+        # to heal rather than hammering a degraded edge.
+        curl -fsSL --connect-timeout 10 --max-time 60 --retry 8 --retry-max-time 120 --retry-all-errors "${BASE_URL}/${ASSET}" -o "${INSTALL_DIR}/pipelock.tar.gz"
+        curl -fsSL --connect-timeout 10 --max-time 30 --retry 8 --retry-max-time 120 --retry-all-errors "${BASE_URL}/checksums.txt" -o "${INSTALL_DIR}/checksums.txt"
 
         # Verify checksum (portable: sha256sum on Linux, shasum on macOS)
         EXPECTED=$(awk -v asset="$ASSET" '$2 == asset || $NF == asset {print $1; exit}' "${INSTALL_DIR}/checksums.txt")
@@ -131,9 +136,12 @@ runs:
         # Graceful: warns if cosign unavailable or artifacts missing (older releases).
         COSIGN_SIG="${INSTALL_DIR}/checksums.txt.sig"
         COSIGN_PEM="${INSTALL_DIR}/checksums.txt.pem"
-        curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
+        # Optional fallback: older releases may 404. No --retry-all-errors so 404
+        # fails fast instead of consuming the full retry window; 5xx still retries
+        # with exponential backoff inside --retry-max-time.
+        curl -fsSL --connect-timeout 10 --max-time 30 --retry 5 --retry-max-time 60 \
           "${BASE_URL}/checksums.txt.sig" -o "$COSIGN_SIG" 2>/dev/null || true
-        curl -fsSL --connect-timeout 10 --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
+        curl -fsSL --connect-timeout 10 --max-time 30 --retry 5 --retry-max-time 60 \
           "${BASE_URL}/checksums.txt.pem" -o "$COSIGN_PEM" 2>/dev/null || true
 
         if [ -s "$COSIGN_SIG" ] && [ -s "$COSIGN_PEM" ]; then

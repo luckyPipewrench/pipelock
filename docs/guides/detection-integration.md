@@ -47,10 +47,16 @@ feed that detector.
 
 ## The primitive: signed action receipts
 
-Every enforcement decision pipelock makes is recorded as a signed
-action receipt. Receipts are Ed25519-signed, JSON-structured, and
-linked into a SHA-256 hash chain so any deletion or reordering is
-detectable after the fact.
+When `flight_recorder.signing_key_path` is set in the pipelock
+config, every proxy decision produces a signed action receipt.
+Receipts are Ed25519-signed, JSON-structured, and linked into a
+SHA-256 hash chain so any deletion or reordering is detectable
+after the fact. Without a signing key configured, pipelock still
+enforces, but the evidence stream is not produced.
+
+Generate a key with `pipelock keygen <name>`, add the path to
+`flight_recorder.signing_key_path`, and reload. Keys are rotatable
+via SIGHUP without restart.
 
 A receipt carries the fields a downstream detector needs to reason
 about the decision:
@@ -83,15 +89,26 @@ without modification.
 
 ### SIEM rules
 
-Forward the flight-recorder JSONL to Splunk, Datadog, Elastic, or any
-SIEM that ingests JSON. The fields map cleanly to structured search:
-group by `session_id` to reconstruct an agent's behavior, filter on
-`verdict=block` to audit enforcement events, alert on
-`pattern=aws_access_key` for secret-exfil attempts.
+Ship the flight-recorder JSONL file to Splunk, Datadog, Elastic, or
+any SIEM that ingests JSON. The standard pattern is a file shipper
+(Filebeat, Fluent Bit, Vector, or equivalent) tailing
+`flight_recorder.dir` and forwarding each line. Filter entries to
+`type == "action_receipt"` at the shipper or at the SIEM.
 
-See <siem-integration.md> for the webhook, syslog, and file-forwarder
-transports pipelock ships with. The receipt fields are the same on
-every transport.
+The receipt fields map cleanly to structured search: group by
+`detail.action_record.action_id` or by `session_id` to reconstruct
+an agent's behavior, filter on `detail.action_record.verdict=block`
+to audit enforcement events, alert on
+`detail.action_record.pattern=aws_access_key` for secret-exfil
+attempts.
+
+Pipelock also ships a separate real-time emit pipeline (webhook,
+syslog, OTLP) that streams a different envelope format focused on
+security events and severity levels. That pipeline is for operator
+alerting, not for forwarding the full receipt chain. See
+[`siem-integration.md`](siem-integration.md) for that format.
+Receipts and emit events are complementary streams, not the same
+stream in different wrappers.
 
 ### Analyst review
 
@@ -190,7 +207,12 @@ from typing import Callable, Iterator
 
 
 def verified_receipts(path: str, pubkey_hex: str) -> Iterator[dict]:
-    """Yield each receipt only if the full stream verifies."""
+    """Yield each receipt only if the full stream verifies.
+
+    Evidence files can contain non-receipt entries (checkpoints, other
+    event types). We filter for type == "action_receipt" and carry the
+    outer envelope's session_id into the yielded record, since it is
+    the primary grouping key detectors use."""
     check = subprocess.run(
         ["pipelock-verify", path, "--key", pubkey_hex],
         capture_output=True,
@@ -202,17 +224,23 @@ def verified_receipts(path: str, pubkey_hex: str) -> Iterator[dict]:
         )
     with open(path) as f:
         for line in f:
-            if line.strip():
-                yield json.loads(line)["detail"]["action_record"]
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            if entry.get("type") != "action_receipt":
+                continue
+            record = entry["detail"]["action_record"]
+            record.setdefault("session_id", entry.get("session_id"))
+            yield record
 
 
 def default_handler(receipt: dict) -> None:
     """Replace this with your SIEM forwarder, alert pipeline, or
     feature extractor for an LLM classifier."""
     print(
-        f"{receipt['timestamp']} {receipt['transport']:20s} "
-        f"{receipt['verdict']:10s} {receipt.get('layer', '-'):24s} "
-        f"{receipt.get('pattern', '-')}"
+        f"{receipt['timestamp']} {receipt.get('session_id', '-'):24s} "
+        f"{receipt['transport']:20s} {receipt['verdict']:10s} "
+        f"{receipt.get('layer', '-'):24s} {receipt.get('pattern', '-')}"
     )
 
 

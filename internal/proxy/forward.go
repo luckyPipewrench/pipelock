@@ -821,7 +821,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			RedactMatcher:              p.redactMatcherPtr.Load(),
 			RedactLimits:               cfg.Redaction.Limits.ToLimits(),
 			RedactAllowlistUnparseable: cfg.Redaction.AllowlistUnparseable,
-			Host:                       r.Host,
+			Host:                       r.URL.Hostname(),
 		})
 
 		// Capture observer: record forward body DLP verdict for policy replay.

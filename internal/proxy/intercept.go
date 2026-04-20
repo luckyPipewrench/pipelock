@@ -581,7 +581,7 @@ func newInterceptHandler(
 				RedactMatcher:              redactMatcher,
 				RedactLimits:               ic.Config.Redaction.Limits.ToLimits(),
 				RedactAllowlistUnparseable: ic.Config.Redaction.AllowlistUnparseable,
-				Host:                       r.Host,
+				Host:                       r.URL.Hostname(),
 			})
 
 			// Capture observer: record intercept body DLP verdict for policy replay.

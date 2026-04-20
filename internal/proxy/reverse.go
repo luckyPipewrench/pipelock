@@ -371,7 +371,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		RedactMatcher:              redactMatcher,
 		RedactLimits:               cfg.Redaction.Limits.ToLimits(),
 		RedactAllowlistUnparseable: cfg.Redaction.AllowlistUnparseable,
-		Host:                       r.Host,
+		Host:                       rp.upstream.Hostname(),
 	})
 
 	// Capture observer: record reverse proxy request DLP verdict for policy replay.

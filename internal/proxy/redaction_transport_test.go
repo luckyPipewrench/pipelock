@@ -88,6 +88,52 @@ func TestForwardProxy_Redaction_RewritesJSONBody(t *testing.T) {
 	}
 }
 
+// TestForwardProxy_Redaction_FailClosedNonJSONBlocksForward covers the
+// transport-level fail-closed path for the forward proxy: redaction is
+// enabled, request-body action is warn (non-blocking), but the body is
+// not JSON and the target host is not on allowlist_unparseable. The
+// proxy must refuse to forward regardless of enforce-mode because
+// redaction integrity failures are mode-independent.
+func TestForwardProxy_Redaction_FailClosedNonJSONBlocksForward(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+		enforceOff := false
+		cfg.Enforce = &enforceOff
+		applyRedactionTestProfile(cfg)
+	})
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+		upstream.URL+"/api", strings.NewReader("opaque binary payload"))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if upstreamHit.Load() {
+		t.Fatal("forward proxy forwarded a non-JSON body with redaction enabled and no allowlist entry")
+	}
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("expected block response, got %d", resp.StatusCode)
+	}
+}
+
 // TestReverseProxy_Redaction_RewritesJSONBody proves the reverse-proxy
 // call site wires the matcher correctly and redacts JSON bodies end to
 // end. Complements the existing non-JSON fail-closed test.

@@ -184,10 +184,16 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 					RedactionBlockReason: be.Reason,
 				}
 			}
+			// Non-BlockError from redact is currently unreachable because
+			// RewriteJSON always wraps failures in *BlockError. Setting
+			// the sentinel reason keeps isFailClosedBodyResult's check
+			// (RedactionBlockReason != "") reachable if that contract
+			// ever loosens, so audit-mode callers still block.
 			return buf, BodyScanResult{
-				Clean:  false,
-				Action: config.ActionBlock,
-				Reason: fmt.Sprintf("redaction error: %v", err),
+				Clean:                false,
+				Action:               config.ActionBlock,
+				Reason:               fmt.Sprintf("redaction error: %v", err),
+				RedactionBlockReason: redact.ReasonInternalError,
 			}
 		}
 		if report != nil {

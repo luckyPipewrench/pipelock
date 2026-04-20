@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1256,9 +1257,9 @@ func TestInterceptTunnel_BodyDLPAuditMode(t *testing.T) {
 }
 
 func TestInterceptTunnel_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
-	upstreamHit := false
+	var upstreamHit atomic.Bool
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamHit = true
+		upstreamHit.Store(true)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
@@ -1291,7 +1292,7 @@ func TestInterceptTunnel_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 (redaction fail-closed should block even with enforce disabled)", resp.StatusCode)
 	}
-	if upstreamHit {
+	if upstreamHit.Load() {
 		t.Fatal("intercept forwarded a fail-closed redaction request with enforce disabled")
 	}
 }

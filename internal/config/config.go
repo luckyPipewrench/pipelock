@@ -4399,6 +4399,23 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		}
 	}
 
+	// Redaction disabled or default profile changed under our feet — both
+	// are policy downgrades an operator should see in the reload log.
+	if old.Redaction.Enabled && !updated.Redaction.Enabled {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "redaction.enabled",
+			Message: "redaction disabled — request bodies will no longer be rewritten before forwarding",
+		})
+	}
+	if old.Redaction.Enabled && updated.Redaction.Enabled &&
+		old.Redaction.DefaultProfile != updated.Redaction.DefaultProfile {
+		warnings = append(warnings, ReloadWarning{
+			Field: "redaction.default_profile",
+			Message: fmt.Sprintf("redaction default_profile changed from %q to %q — matcher rules updated",
+				old.Redaction.DefaultProfile, updated.Redaction.DefaultProfile),
+		})
+	}
+
 	return warnings
 }
 

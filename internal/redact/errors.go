@@ -47,6 +47,11 @@ const (
 	// to JSON. Distinguished from ReasonBodyUnparseable so telemetry can
 	// separate attacker-malformed input from an implementation bug.
 	ReasonRemarshalFailed BlockReason = "remarshal_failed"
+	// ReasonInternalError is the sentinel for any non-BlockError returned
+	// by the redact API. Currently unreachable (RewriteJSON always wraps
+	// failures in BlockError) but exists so the fail-closed branch stays
+	// reachable if the contract ever loosens.
+	ReasonInternalError BlockReason = "internal_error"
 )
 
 // BlockError is returned by Rewrite when redaction cannot safely proceed.

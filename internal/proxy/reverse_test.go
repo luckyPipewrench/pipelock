@@ -736,9 +736,9 @@ func TestReverseProxy_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 		Limits: redact.DefaultLimits(),
 	}
 
-	upstreamHit := false
+	var upstreamHit atomic.Bool
 	upstream := func(w http.ResponseWriter, r *http.Request) {
-		upstreamHit = true
+		upstreamHit.Store(true)
 		_, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusOK)
 	}
@@ -750,7 +750,7 @@ func TestReverseProxy_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for fail-closed redaction block, got %d", resp.StatusCode)
 	}
-	if upstreamHit {
+	if upstreamHit.Load() {
 		t.Fatal("reverse proxy forwarded a fail-closed redaction request with enforce disabled")
 	}
 }

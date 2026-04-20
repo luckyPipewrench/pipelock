@@ -20,9 +20,11 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -53,6 +55,17 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 	logger := audit.NewNop()
 	m := metrics.New()
 	return cache, pool, cfg, sc, logger, m
+}
+
+func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {
+	t.Helper()
+	matcher, err := cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+	if err != nil {
+		t.Fatalf("build redact matcher: %v", err)
+	}
+	p := &Proxy{captureObs: capture.NopObserver{}}
+	p.redactMatcherPtr.Store(matcher)
+	return p
 }
 
 // interceptAndRequest performs a TLS MITM test: runs interceptTunnel in a
@@ -93,6 +106,63 @@ func interceptAndRequest(
 			ClientIP:   "10.0.0.1",
 			RequestID:  "test-req-1",
 			UpstreamRT: upstream.Client().Transport,
+		})
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: host,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp
+}
+
+func interceptAndRequestWithProxy(
+	t *testing.T,
+	upstream *httptest.Server,
+	cache *certgen.CertCache,
+	pool *x509.CertPool,
+	cfg *config.Config,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+	req *http.Request,
+	proxy *Proxy,
+) *http.Response {
+	t.Helper()
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host,
+			TargetPort: port,
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			UpstreamRT: upstream.Client().Transport,
+			Proxy:      proxy,
 		})
 	}()
 
@@ -1182,6 +1252,47 @@ func TestInterceptTunnel_BodyDLPAuditMode(t *testing.T) {
 	// Warn mode with enforce off: should forward, not block.
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (warn mode should forward)", resp.StatusCode)
+	}
+}
+
+func TestInterceptTunnel_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
+	upstreamHit := false
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	enforceOff := false
+	cfg.Enforce = &enforceOff
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+	proxy := testInterceptRedactProxy(t, cfg)
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader("opaque payload"))
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (redaction fail-closed should block even with enforce disabled)", resp.StatusCode)
+	}
+	if upstreamHit {
+		t.Fatal("intercept forwarded a fail-closed redaction request with enforce disabled")
 	}
 }
 

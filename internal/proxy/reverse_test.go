@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
@@ -84,6 +85,15 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 	ks := killswitch.New(cfg)
 
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+	if cfg.Redaction.Enabled {
+		matcher, err := cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+		if err != nil {
+			t.Fatalf("build redact matcher: %v", err)
+		}
+		var matcherPtr atomic.Pointer[redact.Matcher]
+		matcherPtr.Store(matcher)
+		handler.SetRedactMatcherPtr(&matcherPtr)
+	}
 	proxy := httptest.NewServer(handler)
 	t.Cleanup(proxy.Close)
 
@@ -710,6 +720,38 @@ func TestReverseProxy_EnforceDisabled(t *testing.T) {
 	}
 	if receivedBody != body {
 		t.Fatal("body not forwarded with enforce disabled")
+	}
+}
+
+func TestReverseProxy_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+
+	upstreamHit := false
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit = true
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+	resp := testPost(t, proxy.URL+"/api/send", "application/octet-stream", "opaque payload")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for fail-closed redaction block, got %d", resp.StatusCode)
+	}
+	if upstreamHit {
+		t.Fatal("reverse proxy forwarded a fail-closed redaction request with enforce disabled")
 	}
 }
 

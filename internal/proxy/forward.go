@@ -812,12 +812,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	var forwardBodyBytes []byte
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		buf, bodyResult := scanRequestBody(r.Context(), BodyScanRequest{
-			Body:            r.Body,
-			ContentType:     r.Header.Get("Content-Type"),
-			ContentEncoding: r.Header.Get("Content-Encoding"),
-			MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
-			Scanner:         sc,
-			AgentID:         agent,
+			Body:                       r.Body,
+			ContentType:                r.Header.Get("Content-Type"),
+			ContentEncoding:            r.Header.Get("Content-Encoding"),
+			MaxBytes:                   cfg.RequestBodyScanning.MaxBodyBytes,
+			Scanner:                    sc,
+			AgentID:                    agent,
+			RedactMatcher:              p.redactMatcherPtr.Load(),
+			RedactLimits:               cfg.Redaction.Limits.ToLimits(),
+			RedactAllowlistUnparseable: cfg.Redaction.AllowlistUnparseable,
+			Host:                       r.Host,
 		})
 
 		// Capture observer: record forward body DLP verdict for policy replay.

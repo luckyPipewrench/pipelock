@@ -28,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -566,13 +567,21 @@ func newInterceptHandler(
 		// content-digest computation without a second drain pass.
 		var interceptBodyBytes []byte
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
+			var redactMatcher *redact.Matcher
+			if ic.Proxy != nil {
+				redactMatcher = ic.Proxy.redactMatcherPtr.Load()
+			}
 			bodyBytes, result := scanRequestBody(r.Context(), BodyScanRequest{
-				Body:            r.Body,
-				ContentType:     r.Header.Get("Content-Type"),
-				ContentEncoding: r.Header.Get("Content-Encoding"),
-				MaxBytes:        ic.Config.RequestBodyScanning.MaxBodyBytes,
-				Scanner:         ic.Scanner,
-				AgentID:         ic.Agent,
+				Body:                       r.Body,
+				ContentType:                r.Header.Get("Content-Type"),
+				ContentEncoding:            r.Header.Get("Content-Encoding"),
+				MaxBytes:                   ic.Config.RequestBodyScanning.MaxBodyBytes,
+				Scanner:                    ic.Scanner,
+				AgentID:                    ic.Agent,
+				RedactMatcher:              redactMatcher,
+				RedactLimits:               ic.Config.Redaction.Limits.ToLimits(),
+				RedactAllowlistUnparseable: ic.Config.Redaction.AllowlistUnparseable,
+				Host:                       r.Host,
 			})
 
 			// Capture observer: record intercept body DLP verdict for policy replay.
@@ -644,11 +653,11 @@ func newInterceptHandler(
 					}
 				}
 
-				// Fail-closed: nil bodyBytes means body was consumed but couldn't
-				// be buffered (oversize, compressed, read error). Always block
-				// regardless of enforce mode to prevent forwarding an empty body.
-				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-				if bodyBytes == nil || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+				// Fail-closed transport errors (consumed-but-unreplayable body)
+				// and redaction gate failures must block regardless of enforce
+				// mode. ActionAsk also has no HITL terminal in intercepted
+				// tunnels, so it fails closed here.
+				if isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					if !dlpExempt {
 						interceptRecordSignal(ic, session.SignalBlock)
 					}

@@ -2285,17 +2285,20 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validateRedaction delegates to the redact package's own validator and
-// additionally blocks operators from enabling the feature before the
-// request pipeline enforces it. Schema ownership stays inside redact; the
-// pipelock-level gate lives here so library tests can still exercise
-// Enabled=true via the package validator directly.
+// validateRedaction delegates to the redact package's own schema
+// validator. The v1a startup gate that rejected enabled=true has been
+// removed now that the forward, intercept, and reverse proxy paths
+// invoke the redaction hook in scanRequestBody. A cross-check here
+// rejects the configuration where redaction is on but the body-scanning
+// path that hosts the hook is off, because that combination would
+// silently disable the feature — the exact footgun class the feature
+// is meant to prevent.
 func (c *Config) validateRedaction() error {
 	if err := c.Redaction.Validate(); err != nil {
 		return fmt.Errorf("redaction: %w", err)
 	}
-	if c.Redaction.Enabled {
-		return fmt.Errorf("redaction: enabled=true is not supported in this release — the request pipeline does not yet enforce redaction; set redaction.enabled: false until the proxy hook ships")
+	if c.Redaction.Enabled && !c.RequestBodyScanning.Enabled {
+		return fmt.Errorf("redaction: enabled=true requires request_body_scanning.enabled=true (the redaction hook lives in the body-scan path)")
 	}
 	return nil
 }

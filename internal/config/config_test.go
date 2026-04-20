@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"gopkg.in/yaml.v3"
 )
 
@@ -6737,6 +6738,25 @@ func TestValidate_RequestBodyScanning_ValidActions(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("unexpected validation error for action %q: %v", action, err)
 		}
+	}
+}
+
+func TestValidate_RedactionRequiresRequestBodyScanning(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+	cfg.ApplyDefaults()
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "enabled=true requires request_body_scanning.enabled=true") {
+		t.Fatalf("expected redaction/request_body_scanning cross-check error, got %v", err)
 	}
 }
 

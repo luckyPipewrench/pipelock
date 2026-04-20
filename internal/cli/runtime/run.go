@@ -1028,6 +1028,7 @@ Examples:
 					logger, m, ks, rpCaptureObs, p.ShieldEngine(),
 				)
 				rpHandler.SetEnvelopeEmitter(p.EnvelopeEmitterPtr())
+				rpHandler.SetRedactMatcherPtr(p.RedactMatcherPtr())
 
 				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
 				if lnErr != nil {

@@ -26,6 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -59,6 +60,10 @@ const (
 	ActionStrip    = "strip"
 	ActionForward  = "forward"
 	ActionAllow    = "allow"
+	// ActionRedact replaces the matched value with a typed placeholder
+	// (e.g. "<pl:ipv4:1>"). Irreversible: pipelock holds no mapping.
+	// See the redaction-v1 design spec in ops for the semantic model.
+	ActionRedact = "redact"
 )
 
 // Severity constants for chain detection and emit thresholds.
@@ -393,6 +398,7 @@ type Config struct {
 	A2AScanning              A2AScanning             `yaml:"a2a_scanning"`
 	Taint                    TaintConfig             `yaml:"taint"`
 	MediationEnvelope        MediationEnvelope       `yaml:"mediation_envelope"`
+	Redaction                redact.Config           `yaml:"redaction"`
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
 	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
 	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
@@ -2269,11 +2275,27 @@ func (c *Config) Validate() error {
 		c.validateDefaultAgentIdentity,
 		c.validateMediationEnvelope,
 		c.validateMediaPolicy,
+		c.validateRedaction,
 	}
 	for _, v := range validators {
 		if err := v(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// validateRedaction delegates to the redact package's own validator and
+// additionally blocks operators from enabling the feature before the
+// request pipeline enforces it. Schema ownership stays inside redact; the
+// pipelock-level gate lives here so library tests can still exercise
+// Enabled=true via the package validator directly.
+func (c *Config) validateRedaction() error {
+	if err := c.Redaction.Validate(); err != nil {
+		return fmt.Errorf("redaction: %w", err)
+	}
+	if c.Redaction.Enabled {
+		return fmt.Errorf("redaction: enabled=true is not supported in this release — the request pipeline does not yet enforce redaction; set redaction.enabled: false until the proxy hook ships")
 	}
 	return nil
 }
@@ -5162,6 +5184,9 @@ func Defaults() *Config {
 	for i := range cfg.ResponseScanning.Patterns {
 		cfg.ResponseScanning.Patterns[i].Compiled = true
 	}
+	// Redaction defaults to disabled. Operators opt in via YAML; see the
+	// redact package for the full schema.
+	cfg.Redaction = redact.DefaultConfig()
 	return cfg
 }
 

@@ -7,11 +7,11 @@ require (
 	github.com/common-fate/httpsig v0.2.1
 	github.com/dunglas/httpsfv v1.1.0
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/getsentry/sentry-go v0.45.0
+	github.com/getsentry/sentry-go v0.45.1
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gobwas/ws v1.4.0
 	github.com/google/uuid v1.6.0
-	github.com/landlock-lsm/go-landlock v0.7.0
+	github.com/landlock-lsm/go-landlock v0.8.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/rs/zerolog v1.35.0
 	github.com/spf13/cobra v1.10.2
@@ -23,7 +23,7 @@ require (
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
-	modernc.org/sqlite v1.48.2
+	modernc.org/sqlite v1.49.1
 )
 
 require (
@@ -49,7 +49,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	kernel.org/pub/linux/libs/security/libcap/psx v1.2.77 // indirect
-	modernc.org/libc v1.70.0 // indirect
+	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )

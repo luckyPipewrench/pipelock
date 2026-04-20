@@ -1743,7 +1743,7 @@ flight_recorder:
 | `retention_days` | `0` | Auto-expire files after N days (0 = keep forever) |
 | `redact` | `true` | DLP-redact evidence content before writing. Receipt entries get field-level redaction (target/pattern scrubbed, signature preserved). |
 | `sign_checkpoints` | `true` | Ed25519 sign checkpoint entries |
-| `signing_key_path` | (empty) | Ed25519 private key for action receipts. When set, every proxy decision produces a signed receipt. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file>`. Hot-reloadable: add, remove, or rotate keys via SIGHUP. |
+| `signing_key_path` | (empty) | Ed25519 private key for signed action receipts. When set, every proxy decision produces a signed receipt. Without it, the flight recorder can still write non-receipt evidence entries. Generate a key with `pipelock keygen <name>`. Verify receipts with `pipelock verify-receipt <file>`. In `pipelock run`, changing the configured path requires restart; reload re-reads updated key bytes only when the same path stays configured. |
 | `max_entries_per_file` | `10000` | Rotate to a new file after this many entries |
 | `raw_escrow` | `false` | Encrypt raw (pre-redaction) detail to sidecar files |
 | `escrow_public_key` | (required if raw_escrow) | X25519 public key (hex) for escrow encryption |

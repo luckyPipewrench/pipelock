@@ -16,8 +16,9 @@ line, not the last.
 This guide is for people building the layer that runs behind the gate.
 SIEM engineers, SOC analysts, and researchers training detection models
 all need the same thing upstream: structured, tamper-evident evidence of
-what the agent actually did. Pipelock emits that evidence as signed
-action receipts. This guide covers how to consume them.
+what the agent actually did. When receipt signing is enabled, pipelock
+emits that evidence as signed action receipts. This guide covers how to
+consume them.
 
 ## Real-time gateways are not enough
 
@@ -52,11 +53,14 @@ config, every proxy decision produces a signed action receipt.
 Receipts are Ed25519-signed, JSON-structured, and linked into a
 SHA-256 hash chain so any deletion or reordering is detectable
 after the fact. Without a signing key configured, pipelock still
-enforces, but the evidence stream is not produced.
+enforces, and the flight recorder can still write other evidence
+entries, but the signed receipt stream is not produced.
 
-Generate a key with `pipelock keygen <name>`, add the path to
-`flight_recorder.signing_key_path`, and reload. Keys are rotatable
-via SIGHUP without restart.
+Generate a key with `pipelock keygen <name>`, set
+`flight_recorder.signing_key_path`, and start or restart pipelock.
+If you replace the key file contents at the same configured path,
+reload will re-read that file. Changing the configured path still
+requires a restart.
 
 A receipt carries the fields a downstream detector needs to reason
 about the decision:
@@ -163,8 +167,9 @@ python3 demo.py
 
 The harness produces three artifacts worth looking at:
 
-1. **`evidence/evidence-proxy-0.jsonl`**: the signed receipt stream
-   from the MCP stdio run. Each line is an `action_receipt` record.
+1. **`evidence/evidence-proxy-0.jsonl`**: the MCP stdio evidence file.
+   It contains the signed receipt stream as `action_receipt` entries
+   and may also contain other recorder entries such as checkpoints.
 2. **`evidence-proxy-0.jsonl` from the HTTP upstream run**: same
    event shape, different `transport` field.
 3. **`signing.key.pub` hex output**: the public key printed to

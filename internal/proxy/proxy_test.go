@@ -2115,7 +2115,7 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 		t.Skip("reload soak; skipped under -short")
 	}
 
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "ok")
 	}))

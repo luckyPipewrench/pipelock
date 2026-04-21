@@ -549,7 +549,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		scanner:      sc,
 		proxy:        p,
 		cfg:          cfg,
-		redaction:    p.currentRedactionRuntime(),
+		redaction:    p.currentRedactionRuntimeFor(cfg),
 		agent:        agent,
 		clientIP:     clientIP,
 		requestID:    requestID,
@@ -1215,7 +1215,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte // rolling tail for cross-message DLP scanning
 	log := r.proxy.logger.With("agent", r.agent)
-	redactionEnabled := r.redaction != nil && r.redaction.matcher != nil
+	redactionEnabled := r.redaction != nil && r.redaction.required
 
 	for {
 		select {

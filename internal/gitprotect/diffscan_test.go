@@ -255,6 +255,51 @@ func TestReplaceGitProtectMatches_SkipsInvalidAndOverlappingSpans(t *testing.T) 
 	}
 }
 
+func TestScanDiff_ClassMatchStillRequiresConfiguredRegex(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	diff := makeDiffWithSecret("x.go", `var key = "`+key+`"`)
+	patterns := CompileDLPPatterns([]config.DLPPattern{{
+		Name:     "AWS Key",
+		Regex:    `ZZZ-NOT-A-MATCH`,
+		Severity: "critical",
+	}})
+
+	result, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatalf("ScanDiff: %v", err)
+	}
+	if len(result.Findings) != 0 {
+		t.Fatalf("expected configured regex to gate class match, got %+v", result.Findings)
+	}
+}
+
+func TestScanDiff_ClassAndRegexRedactionsAreAdditive(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	diff := makeDiffWithSecret("x.go", `payload = "`+key+` leaky_123"`)
+	patterns := CompileDLPPatterns([]config.DLPPattern{{
+		Name:     "AWS Key",
+		Regex:    `AKIA[0-9A-Z]{16}|leaky_[0-9]+`,
+		Severity: "critical",
+	}})
+
+	result, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatalf("ScanDiff: %v", err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result.Findings))
+	}
+	if strings.Contains(result.Findings[0].Content, key) {
+		t.Fatalf("redacted content leaked AWS key: %q", result.Findings[0].Content)
+	}
+	if strings.Contains(result.Findings[0].Content, "leaky_123") {
+		t.Fatalf("redacted content leaked regex-only secret: %q", result.Findings[0].Content)
+	}
+	if strings.Count(result.Findings[0].Content, "[REDACTED]") != 2 {
+		t.Fatalf("expected both secrets to be redacted, got %q", result.Findings[0].Content)
+	}
+}
+
 func TestScanDiff_NoFindings(t *testing.T) {
 	diff := `diff --git a/main.go b/main.go
 --- a/main.go

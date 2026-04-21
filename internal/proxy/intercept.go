@@ -576,7 +576,7 @@ func newInterceptHandler(
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 			redaction := ic.Redaction
 			if redaction == nil && ic.Proxy != nil {
-				redaction = ic.Proxy.currentRedactionRuntime()
+				redaction = ic.Proxy.currentRedactionRuntimeFor(ic.Config)
 			}
 			bodyReq := BodyScanRequest{
 				Body:            r.Body,

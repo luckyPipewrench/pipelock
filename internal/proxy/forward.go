@@ -475,7 +475,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			EntropyTracker: p.entropyTrackerPtr.Load(),
 			FragmentBuffer: p.fragmentBufferPtr.Load(),
 			SessionMgr:     p.sessionMgrPtr.Load(),
-			Redaction:      p.currentRedactionRuntime(),
+			Redaction:      p.currentRedactionRuntimeFor(cfg),
 			Proxy:          p,
 			Recorder:       interceptRec,
 			KillSwitch:     p.ks,
@@ -828,7 +828,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			AgentID:         agent,
 			Host:            r.URL.Hostname(),
 		}
-		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntime())
+		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
 
 		// Capture observer: record forward body DLP verdict for policy replay.

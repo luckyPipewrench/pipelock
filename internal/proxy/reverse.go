@@ -244,10 +244,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	forwardedVerdict := config.ActionAllow
 	var reverseBodyBytes []byte
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
-		var redaction *redactionRuntime
-		if rp.redactionRuntimePtr != nil {
-			redaction = rp.redactionRuntimePtr.Load()
-		}
+		redaction := currentRedactionRuntimeForConfig(cfg, rp.redactionRuntimePtr)
 		blocked, verdict, bodyBytes := rp.scanRequest(w, r, cfg, sc, redaction)
 		if blocked {
 			return

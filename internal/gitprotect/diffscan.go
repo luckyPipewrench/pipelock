@@ -260,7 +260,8 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 			for _, cp := range patterns {
 				redacted := ""
 				matched := false
-				if cp.Class != "" {
+				regexMatched := cp.regexMatches(al.content)
+				if cp.Class != "" && (cp.Re == nil || regexMatched) {
 					if matcher == nil {
 						matcher = redact.NewDefaultMatcher()
 					}
@@ -270,11 +271,15 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 						matched = true
 					}
 				}
-				if !matched {
-					if !cp.regexMatches(al.content) {
-						continue
+				if regexMatched {
+					if !matched {
+						redacted = al.content
 					}
-					redacted = cp.Re.ReplaceAllString(al.content, "[REDACTED]")
+					redacted = cp.Re.ReplaceAllString(redacted, "[REDACTED]")
+					matched = true
+				}
+				if !matched {
+					continue
 				}
 				f := Finding{
 					File:     file,

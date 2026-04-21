@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -49,6 +50,10 @@ const (
 )
 
 func intPtrHTTP(v int) *int { return &v }
+
+func testHTTPRedactionMatcher() *redact.Matcher {
+	return redact.NewDefaultMatcher()
+}
 
 func newTestReceiptEmitter(t *testing.T) (*receipt.Emitter, *recorder.Recorder, string) {
 	t.Helper()
@@ -161,6 +166,102 @@ func TestRunHTTPProxy_ForwardsCleanRequest(t *testing.T) {
 	}
 	if rpc.JSONRPC != jsonRPC20 {
 		t.Errorf("jsonrpc = %q, want %q", rpc.JSONRPC, jsonRPC20)
+	}
+}
+
+func TestRunHTTPProxy_RedactsToolCallArguments(t *testing.T) {
+	secret := mcpRedactionSecret()
+	var upstreamBody bytes.Buffer
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody.Write(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+	stdin := strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use ` + secret + ` to deploy"}}}` + "\n",
+	)
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{
+		Scanner:       sc,
+		RedactMatcher: testHTTPRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+		RedactProfile: "code",
+	})
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	var envelope struct {
+		Params struct {
+			Arguments struct {
+				Prompt string `json:"prompt"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(upstreamBody.Bytes(), &envelope); err != nil {
+		t.Fatalf("unmarshal upstream request: %v", err)
+	}
+	if strings.Contains(envelope.Params.Arguments.Prompt, secret) {
+		t.Fatalf("upstream request leaked secret: %s", upstreamBody.String())
+	}
+	if !strings.Contains(envelope.Params.Arguments.Prompt, mcpPlaceholderAWS) {
+		t.Fatalf("upstream request missing placeholder: %s", upstreamBody.String())
+	}
+}
+
+func TestRunHTTPProxy_BlocksToolCallRedactionFailure(t *testing.T) {
+	var upstreamHit atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	sc := testScannerForHTTP(t)
+	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"oops"}` + "\n")
+	var stdout, stderr bytes.Buffer
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{
+		Scanner:       sc,
+		RedactMatcher: testHTTPRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+		RedactProfile: "code",
+	})
+	if err != nil {
+		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	if upstreamHit.Load() {
+		t.Fatal("upstream should not receive blocked tools/call request")
+	}
+
+	var rpc struct {
+		JSONRPC string `json:"jsonrpc"`
+		Error   struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &rpc); err != nil {
+		t.Fatalf("invalid JSON on stdout: %v\noutput: %s", err, stdout.String())
+	}
+	if rpc.Error.Code != -32001 {
+		t.Fatalf("error code = %d, want -32001", rpc.Error.Code)
+	}
+	if rpc.Error.Message != "pipelock: request blocked by MCP redaction" {
+		t.Fatalf("error message = %q", rpc.Error.Message)
 	}
 }
 

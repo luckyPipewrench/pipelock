@@ -265,35 +265,36 @@ type editionSnapshot struct{ edition.Edition }
 
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
-	cfgPtr             atomic.Pointer[config.Config]
-	scannerPtr         atomic.Pointer[scanner.Scanner]
-	editionPtr         atomic.Pointer[editionSnapshot]
-	sessionMgrPtr      atomic.Pointer[SessionManager]         // nil when profiling disabled
-	certCachePtr       atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
-	entropyTrackerPtr  atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
-	fragmentBufferPtr  atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
-	redactMatcherPtr   atomic.Pointer[redact.Matcher]         // nil when redaction disabled
-	logger             *audit.Logger
-	metrics            *metrics.Metrics
-	ks                 *killswitch.Controller
-	ksAPI              *killswitch.APIHandler
-	sessionAPI         *SessionAPIHandler
-	dialer             *net.Dialer
-	client             *http.Client
-	tlsTransport       *http.Transport // shared Transport for TLS interception upstream connections
-	server             *http.Server
-	agentServers       []*http.Server // per-agent listeners (managed by CLI)
-	startTime          time.Time
-	reloadMu           sync.Mutex // serializes Reload calls
-	approver           *hitl.Approver
-	a2aCardBaseline    *mcp.CardBaseline // Agent Card drift detection across requests
-	captureObs         capture.CaptureObserver
-	recorder           *recorder.Recorder               // flight recorder for tamper-evident evidence (nil = disabled)
-	receiptEmitterPtr  atomic.Pointer[receipt.Emitter]  // action receipt emitter (nil = disabled)
-	receiptKeyPath     string                           // active signing key path, for reload comparison
-	envelopeEmitterPtr atomic.Pointer[envelope.Emitter] // mediation envelope emitter (nil = disabled)
-	shieldEngine       *shield.Engine                   // browser shield HTML/JS rewriter (nil = not initialized)
-	frozenTools        *FrozenToolRegistry              // frozen tool inventories for airlock hard tier
+	cfgPtr              atomic.Pointer[config.Config]
+	scannerPtr          atomic.Pointer[scanner.Scanner]
+	editionPtr          atomic.Pointer[editionSnapshot]
+	sessionMgrPtr       atomic.Pointer[SessionManager]         // nil when profiling disabled
+	certCachePtr        atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
+	entropyTrackerPtr   atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
+	fragmentBufferPtr   atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	redactionRuntimePtr atomic.Pointer[redactionRuntime]       // nil when redaction disabled
+	redactMatcherPtr    atomic.Pointer[redact.Matcher]         // nil when redaction disabled
+	logger              *audit.Logger
+	metrics             *metrics.Metrics
+	ks                  *killswitch.Controller
+	ksAPI               *killswitch.APIHandler
+	sessionAPI          *SessionAPIHandler
+	dialer              *net.Dialer
+	client              *http.Client
+	tlsTransport        *http.Transport // shared Transport for TLS interception upstream connections
+	server              *http.Server
+	agentServers        []*http.Server // per-agent listeners (managed by CLI)
+	startTime           time.Time
+	reloadMu            sync.Mutex // serializes Reload calls
+	approver            *hitl.Approver
+	a2aCardBaseline     *mcp.CardBaseline // Agent Card drift detection across requests
+	captureObs          capture.CaptureObserver
+	recorder            *recorder.Recorder               // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitterPtr   atomic.Pointer[receipt.Emitter]  // action receipt emitter (nil = disabled)
+	receiptKeyPath      string                           // active signing key path, for reload comparison
+	envelopeEmitterPtr  atomic.Pointer[envelope.Emitter] // mediation envelope emitter (nil = disabled)
+	shieldEngine        *shield.Engine                   // browser shield HTML/JS rewriter (nil = not initialized)
+	frozenTools         *FrozenToolRegistry              // frozen tool inventories for airlock hard tier
 }
 
 // Option configures optional Proxy behavior.
@@ -976,8 +977,10 @@ func (p *Proxy) EnvelopeEmitterPtr() *atomic.Pointer[envelope.Emitter] {
 }
 
 // RedactMatcherPtr returns the atomic pointer to the compiled redaction
-// matcher. Used by the reverse-proxy handler (which does not carry a
-// back-reference to *Proxy) so it picks up hot-reload swaps automatically.
+// matcher. Long-lived helpers outside package proxy (notably MCP startup
+// wiring) use this when they only need the matcher itself. Request paths use
+// RedactionRuntimePtr/currentRedactionRuntime instead so matcher, limits, and
+// allowlist publish as one coherent snapshot.
 func (p *Proxy) RedactMatcherPtr() *atomic.Pointer[redact.Matcher] {
 	return &p.redactMatcherPtr
 }
@@ -1037,16 +1040,13 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		}
 		return
 	}
-	// Stage the redaction matcher BEFORE cfgPtr.Store so a failed build
-	// aborts the whole reload instead of mixing new config limits/
-	// allowlist with the old matcher rules. Without this, an operator
-	// editing a dictionary or profile into an invalid state could leave
-	// the proxy in a mixed-policy state where the config says X but the
-	// compiled matcher still runs Y.
-	newRedactMatcher, redactErr := p.buildRedactMatcher(cfg)
+	// Stage the full redaction runtime BEFORE publication so a failed
+	// matcher build aborts the whole reload instead of mixing matcher,
+	// limits, and allowlist from different policy revisions.
+	newRedactionRuntime, redactErr := p.buildRedactionRuntime(cfg)
 	if redactErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
-			fmt.Errorf("redaction matcher reload failed, keeping old config: %w", redactErr))
+			fmt.Errorf("redaction runtime reload failed, keeping old config: %w", redactErr))
 		sc.Close()
 		if newEd != nil {
 			newEd.Close()
@@ -1075,6 +1075,17 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	} else if p.recorder != nil {
 		p.receiptEmitterPtr.Store(receiptStage.emitter)
 		p.receiptKeyPath = receiptStage.keyPath
+	}
+
+	// Publish the staged redaction runtime as one snapshot so body-scan
+	// request paths cannot observe a new matcher with old limits/allowlist
+	// or vice versa. Keep redactMatcherPtr mirrored for non-request users
+	// that only need the compiled matcher.
+	p.redactionRuntimePtr.Store(newRedactionRuntime)
+	if newRedactionRuntime != nil {
+		p.redactMatcherPtr.Store(newRedactionRuntime.matcher)
+	} else {
+		p.redactMatcherPtr.Store(nil)
 	}
 
 	oldCfg := p.cfgPtr.Load()
@@ -1144,12 +1155,6 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		oldFB.Close()
 	}
 	p.updateCEEStats()
-
-	// Publish the pre-staged redaction matcher. Building happened BEFORE
-	// cfgPtr.Store so a compile failure aborted the reload entirely; by
-	// the time we get here the matcher (possibly nil when redaction is
-	// disabled) is known-good and matches the already-published cfg.
-	p.redactMatcherPtr.Store(newRedactMatcher)
 
 	// Receipt emitter hash is updated by reloadReceiptEmitter above.
 	// No separate UpdateConfigHash needed — emitter is always (re)created
@@ -1230,12 +1235,11 @@ func (p *Proxy) setupCEE(ceeCfg *config.CrossRequestDetection) {
 	p.updateCEEStats()
 }
 
-// buildRedactMatcher compiles the active redaction profile into a Matcher
-// the body scanner can reuse across requests. Returns nil (no matcher) when
-// redaction is disabled or unresolved — callers are expected to treat that
-// as "redaction not active for this request". A compile error is returned
-// so callers can surface it at startup/reload time rather than silently
-// degrading.
+// buildRedactMatcher compiles the active redaction profile into a Matcher.
+// setupRedaction/buildRedactionRuntime wrap this in the per-request snapshot
+// that body-scan callers consume. Returns nil (no matcher) when redaction is
+// disabled or unresolved. A compile error is returned so callers can surface
+// it at startup/reload time rather than silently degrading.
 func (p *Proxy) buildRedactMatcher(cfg *config.Config) (*redact.Matcher, error) {
 	if !cfg.Redaction.Enabled {
 		return nil, nil
@@ -1243,15 +1247,20 @@ func (p *Proxy) buildRedactMatcher(cfg *config.Config) (*redact.Matcher, error) 
 	return cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
 }
 
-// setupRedaction stores the compiled matcher at startup and reload. When
-// redaction is disabled, the pointer is cleared so request handlers fall
+// setupRedaction stores the compiled redaction runtime at startup. When
+// redaction is disabled, the pointers are cleared so request handlers fall
 // through without running the redaction step.
 func (p *Proxy) setupRedaction(cfg *config.Config) error {
-	m, err := p.buildRedactMatcher(cfg)
+	rt, err := p.buildRedactionRuntime(cfg)
 	if err != nil {
-		return fmt.Errorf("redact matcher build: %w", err)
+		return fmt.Errorf("redaction runtime build: %w", err)
 	}
-	p.redactMatcherPtr.Store(m)
+	p.redactionRuntimePtr.Store(rt)
+	if rt != nil {
+		p.redactMatcherPtr.Store(rt.matcher)
+	} else {
+		p.redactMatcherPtr.Store(nil)
+	}
 	return nil
 }
 

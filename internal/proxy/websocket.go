@@ -4,7 +4,9 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
@@ -53,6 +56,7 @@ type wsRelay struct {
 	scanner      *scanner.Scanner
 	proxy        *Proxy
 	cfg          *config.Config
+	redaction    *redactionRuntime
 	agent        string
 	clientIP     string
 	requestID    string
@@ -544,6 +548,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		scanner:      sc,
 		proxy:        p,
 		cfg:          cfg,
+		redaction:    p.currentRedactionRuntime(),
 		agent:        agent,
 		clientIP:     clientIP,
 		requestID:    requestID,
@@ -749,12 +754,432 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	}
 }
 
+func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte, BodyScanResult) {
+	maxBytes := r.maxMsg
+	if cfgMax := r.cfg.RequestBodyScanning.MaxBodyBytes; cfgMax > 0 && cfgMax < maxBytes {
+		maxBytes = cfgMax
+	}
+
+	contentType := ""
+	if json.Valid(msg) {
+		contentType = contentTypeJSON
+	}
+
+	bodyReq := BodyScanRequest{
+		Body:        bytes.NewReader(msg),
+		ContentType: contentType,
+		MaxBytes:    maxBytes,
+		Scanner:     r.scanner,
+		AgentID:     r.agent,
+		Host:        r.hostname,
+	}
+	applyBodyScanRedaction(&bodyReq, r.redaction)
+	return scanRequestBody(ctx, bodyReq)
+}
+
+func updateWSCrossMessageTail(tail []byte, msg []byte) []byte {
+	if len(msg) >= crossMsgOverlap {
+		next := make([]byte, crossMsgOverlap)
+		copy(next, msg[len(msg)-crossMsgOverlap:])
+		return next
+	}
+
+	next := append(tail, msg...)
+	if len(next) > crossMsgOverlap {
+		next = next[len(next)-crossMsgOverlap:]
+	}
+	return next
+}
+
+func (r *wsRelay) scanClientText(ctx context.Context, log *audit.Logger, scanInput []byte) (blocked bool) {
+	dlpResult := r.scanner.ScanTextForDLP(ctx, string(scanInput))
+	var addrFindings []addressprotect.Finding
+	if checker := r.scanner.AddressChecker(); checker != nil {
+		addrFindings = checker.CheckText(string(scanInput), r.agent).Findings
+	}
+
+	return r.handleClientTextFindings(log, dlpResult.Matches, addrFindings)
+}
+
+func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Logger, tail []byte, msg []byte) (blocked bool) {
+	if len(tail) == 0 {
+		return false
+	}
+
+	combined := make([]byte, 0, len(tail)+len(msg))
+	combined = append(combined, tail...)
+	combined = append(combined, msg...)
+
+	combinedDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(combined))
+	prevDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(tail))
+	currDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(msg))
+
+	crossDLP, crossWarns := wsCrossMessageDLPMatches(combinedDLP, prevDLP, currDLP)
+	if len(crossWarns) > 0 {
+		r.scanner.EmitTextDLPWarnMatches(ctx, crossWarns)
+	}
+
+	var crossAddr []addressprotect.Finding
+	if checker := r.scanner.AddressChecker(); checker != nil {
+		combinedAddr := checker.CheckText(string(combined), r.agent)
+		if len(combinedAddr.Findings) > 0 {
+			prevAddr := checker.CheckText(string(tail), r.agent)
+			currAddr := checker.CheckText(string(msg), r.agent)
+			crossAddr = wsCrossMessageAddressFindings(combinedAddr.Findings, prevAddr.Findings, currAddr.Findings)
+		}
+	}
+
+	return r.handleClientTextFindings(log, crossDLP, crossAddr)
+}
+
+func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scanner.TextDLPMatch, addrFindings []addressprotect.Finding) (blocked bool) {
+	if len(dlpMatches) > 0 {
+		names := make([]string, len(dlpMatches))
+		for i, m := range dlpMatches {
+			names[i] = m.PatternName
+		}
+		wsBundleRules := dlpBundleRules(dlpMatches)
+		if r.cfg.EnforceEnabled() {
+			r.recordSignal(session.SignalBlock, log)
+			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
+			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     audit.ScannerDLP,
+				Pattern:   reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+			return true
+		}
+
+		baseAction := config.ActionWarn
+		effectiveAction := decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+		if effectiveAction == config.ActionBlock {
+			r.recordSignal(session.SignalBlock, log)
+			sessionKey := r.clientIP
+			if r.agent != "" && r.agent != agentAnonymous {
+				sessionKey = r.agent + "|" + r.clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), baseAction, effectiveAction, audit.ScannerDLP, r.clientIP, r.requestID)
+			r.proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(r.escalationLevel()))
+			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
+			r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     audit.ScannerDLP,
+				Pattern:   reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+			return true
+		}
+
+		r.recordSignal(session.SignalNearMiss, log)
+		log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpMatches), names, wsBundleRules)
+	}
+
+	if len(addrFindings) > 0 {
+		addrAction := addressprotect.StrictestAction(addrFindings)
+		names := make([]string, len(addrFindings))
+		for i, f := range addrFindings {
+			names[i] = f.Explanation
+		}
+		for _, f := range addrFindings {
+			verdictLabel := "unknown"
+			if f.Verdict == addressprotect.VerdictLookalike {
+				verdictLabel = "lookalike"
+			}
+			r.proxy.metrics.RecordAddressFinding(f.Chain, verdictLabel)
+		}
+
+		originalAddrAction := addrAction
+		addrAction = decide.UpgradeAction(addrAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+		if addrAction != originalAddrAction {
+			sessionKey := r.clientIP
+			if r.agent != "" && r.agent != agentAnonymous {
+				sessionKey = r.agent + "|" + r.clientIP
+			}
+			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), originalAddrAction, addrAction, scannerLabelAddressProtection, r.clientIP, r.requestID)
+			r.proxy.metrics.RecordAdaptiveUpgrade(originalAddrAction, addrAction, session.EscalationLabel(r.escalationLevel()))
+		}
+		if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
+			r.recordSignal(session.SignalBlock, log)
+			var blockExplanation string
+			for _, f := range addrFindings {
+				if f.Action == config.ActionBlock {
+					blockExplanation = f.Explanation
+					break
+				}
+			}
+			reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "address_protection",
+				Pattern:   reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
+			return true
+		}
+		if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
+			r.recordSignal(session.SignalBlock, log)
+			reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "address_protection",
+				Pattern:   reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
+			return true
+		}
+
+		r.recordSignal(session.SignalNearMiss, log)
+		log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(addrFindings), names, nil)
+	}
+
+	return false
+}
+
+func wsCrossMessageDLPMatches(
+	combined scanner.TextDLPResult,
+	prev scanner.TextDLPResult,
+	current scanner.TextDLPResult,
+) ([]scanner.TextDLPMatch, []scanner.TextDLPMatch) {
+	singleMessageMatches := make(map[string]struct{},
+		len(prev.Matches)+len(current.Matches)+len(prev.InformationalMatches)+len(current.InformationalMatches))
+	wsAddDLPMatchKeys(singleMessageMatches, prev.Matches)
+	wsAddDLPMatchKeys(singleMessageMatches, current.Matches)
+	wsAddDLPMatchKeys(singleMessageMatches, prev.InformationalMatches)
+	wsAddDLPMatchKeys(singleMessageMatches, current.InformationalMatches)
+
+	return wsFilterUniqueDLPMatches(combined.Matches, singleMessageMatches),
+		wsFilterUniqueDLPMatches(combined.InformationalMatches, singleMessageMatches)
+}
+
+func wsCrossMessageAddressFindings(
+	combined []addressprotect.Finding,
+	prev []addressprotect.Finding,
+	current []addressprotect.Finding,
+) []addressprotect.Finding {
+	singleMessageFindings := make(map[string]struct{}, len(prev)+len(current))
+	wsAddAddressFindingKeys(singleMessageFindings, prev)
+	wsAddAddressFindingKeys(singleMessageFindings, current)
+
+	filtered := make([]addressprotect.Finding, 0, len(combined))
+	seen := make(map[string]struct{}, len(combined))
+	for _, finding := range combined {
+		key := wsAddressFindingKey(finding)
+		if _, ok := singleMessageFindings[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, finding)
+	}
+	return filtered
+}
+
+func wsAddDLPMatchKeys(seen map[string]struct{}, matches []scanner.TextDLPMatch) {
+	for _, match := range matches {
+		seen[wsDLPMatchKey(match)] = struct{}{}
+	}
+}
+
+func wsFilterUniqueDLPMatches(matches []scanner.TextDLPMatch, excluded map[string]struct{}) []scanner.TextDLPMatch {
+	filtered := make([]scanner.TextDLPMatch, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		key := wsDLPMatchKey(match)
+		if _, ok := excluded[key]; ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, match)
+	}
+	return filtered
+}
+
+func wsDLPMatchKey(match scanner.TextDLPMatch) string {
+	return match.PatternName + "\x00" + match.Encoded
+}
+
+func wsAddAddressFindingKeys(seen map[string]struct{}, findings []addressprotect.Finding) {
+	for _, finding := range findings {
+		seen[wsAddressFindingKey(finding)] = struct{}{}
+	}
+}
+
+func wsAddressFindingKey(finding addressprotect.Finding) string {
+	return fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s", finding.Chain, finding.Normalized, finding.Verdict, finding.Action, finding.MatchedAddr)
+}
+
+func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []byte, result BodyScanResult) (blocked bool) {
+	if result.Clean {
+		return false
+	}
+
+	scannerLabel := scannerLabelBodyDLP
+	receiptLayer := audit.ScannerDLP
+	closeReason := "DLP violation"
+	if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
+		scannerLabel = scannerLabelAddressProtection
+		receiptLayer = "address_protection"
+		closeReason = "address poisoning detected"
+	}
+	if result.RedactionBlockReason != "" {
+		scannerLabel = "redaction"
+		receiptLayer = "redaction"
+		closeReason = string(result.RedactionBlockReason)
+	}
+
+	reason := result.Reason
+	if reason == "" {
+		patternNames := dlpMatchNames(result.DLPMatches)
+		if len(patternNames) > 0 {
+			reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+		}
+	}
+	if reason == "" && len(result.AddressFindings) > 0 {
+		reason = fmt.Sprintf("address poisoning: %s", result.AddressFindings[0].Explanation)
+	}
+	if reason == "" && result.RedactionBlockReason != "" {
+		reason = "redaction blocked request: " + string(result.RedactionBlockReason)
+	}
+	if reason == "" {
+		reason = "request body contains secret patterns"
+	}
+
+	if isFailClosedBodyResult(result, bodyBytes) {
+		r.recordSignal(session.SignalBlock, log)
+		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, reason, r.clientIP, r.requestID)
+		r.proxy.metrics.RecordWSScanHit(scannerLabel)
+		r.proxy.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     receiptLayer,
+			Pattern:   reason,
+			Transport: "websocket",
+			Method:    "WS",
+			Target:    r.targetURL,
+			RequestID: r.requestID,
+			Agent:     r.agent,
+		})
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closeReason)
+		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closeReason)
+		return true
+	}
+
+	action := result.Action
+	if action == "" {
+		if r.cfg.EnforceEnabled() {
+			action = config.ActionBlock
+		} else {
+			action = config.ActionWarn
+		}
+	}
+
+	originalAction := action
+	action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+	if action != originalAction {
+		sessionKey := r.clientIP
+		if r.agent != "" && r.agent != agentAnonymous {
+			sessionKey = r.agent + "|" + r.clientIP
+		}
+		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), originalAction, action, scannerLabel, r.clientIP, r.requestID)
+		r.proxy.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(r.escalationLevel()))
+	}
+
+	switch action {
+	case config.ActionBlock:
+		if !r.cfg.EnforceEnabled() && action == originalAction && len(result.AddressFindings) > 0 {
+			r.recordSignal(session.SignalNearMiss, log)
+			names := make([]string, len(result.AddressFindings))
+			for i, f := range result.AddressFindings {
+				names[i] = f.Explanation
+			}
+			log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(result.AddressFindings), names, nil)
+			return false
+		}
+		r.recordSignal(session.SignalBlock, log)
+		blockReason := reason
+		if !r.cfg.EnforceEnabled() && action != originalAction {
+			blockReason += " (escalated)"
+		}
+		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, blockReason, r.clientIP, r.requestID)
+		r.proxy.metrics.RecordWSScanHit(scannerLabel)
+		r.proxy.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     receiptLayer,
+			Pattern:   blockReason,
+			Transport: "websocket",
+			Method:    "WS",
+			Target:    r.targetURL,
+			RequestID: r.requestID,
+			Agent:     r.agent,
+		})
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closeReason)
+		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closeReason)
+		return true
+	case config.ActionWarn:
+		r.recordSignal(session.SignalNearMiss, log)
+		if len(result.DLPMatches) > 0 {
+			log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(result.DLPMatches), dlpMatchNames(result.DLPMatches), dlpBundleRules(result.DLPMatches))
+		}
+		if len(result.AddressFindings) > 0 {
+			names := make([]string, len(result.AddressFindings))
+			for i, f := range result.AddressFindings {
+				names[i] = f.Explanation
+			}
+			log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(result.AddressFindings), names, nil)
+		}
+	}
+
+	return false
+}
+
 // clientToUpstream reads frames from client, DLP-scans text, writes to upstream.
 func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFunc, idleTimeout time.Duration) (bytesTransferred, textFrames, binaryFrames int64, blocked bool) {
 	defer cancel()
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte // rolling tail for cross-message DLP scanning
 	log := r.proxy.logger.With("agent", r.agent)
+	redactionEnabled := r.redaction != nil && r.redaction.matcher != nil
 
 	for {
 		select {
@@ -922,6 +1347,27 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		if redactionEnabled && !hdr.OpCode.IsControl() && (!hdr.Fin || hdr.OpCode == ws.OpContinuation) {
+			reason := string(redact.ReasonWebSocketFragmented)
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "redaction", reason, r.clientIP, r.requestID)
+			r.proxy.metrics.RecordWSScanHit("redaction")
+			r.proxy.emitReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     "redaction",
+				Pattern:   reason,
+				Transport: "websocket",
+				Method:    "WS",
+				Target:    r.targetURL,
+				RequestID: r.requestID,
+				Agent:     r.agent,
+			})
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, reason)
+			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, reason)
+			blocked = true
+			return
+		}
+
 		// Fragment reassembly for text frames.
 		complete, msg, closeCode, closeReason := frag.Process(hdr, payload)
 		if closeCode != 0 {
@@ -950,7 +1396,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		// Complete message available. Count and scan.
-		if frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText {
+		isTextMessage := frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText
+		if isTextMessage {
 			textFrames++
 
 			// UTF-8 validation per RFC 6455.
@@ -960,177 +1407,36 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				blocked = true
 				return
 			}
+		}
 
-			// DLP scanning on reassembled text.
-			// Cross-message DLP: prepend tail of previous message to catch
-			// secrets split across separate WebSocket message boundaries.
-			if r.scanText {
-				var scanInput []byte
-				if len(crossMsgTail) > 0 {
-					scanInput = append(crossMsgTail, msg...)
+		if redactionEnabled {
+			buf, bodyResult := r.scanClientMessageBody(ctx, msg)
+			if r.handleClientMessageBodyResult(log, buf, bodyResult) {
+				blocked = true
+				return
+			}
+			msg = buf
+		}
+
+		if isTextMessage && r.scanText {
+			prevTail := crossMsgTail
+			var scanInput []byte
+			if !redactionEnabled {
+				if len(prevTail) > 0 {
+					scanInput = append(prevTail, msg...)
 				} else {
 					scanInput = msg
 				}
-				dlpResult := r.scanner.ScanTextForDLP(ctx, string(scanInput))
-
-				// Update rolling tail for next message (always, regardless of result).
-				if len(msg) >= crossMsgOverlap {
-					crossMsgTail = make([]byte, crossMsgOverlap)
-					copy(crossMsgTail, msg[len(msg)-crossMsgOverlap:])
-				} else {
-					crossMsgTail = append(crossMsgTail, msg...)
-					if len(crossMsgTail) > crossMsgOverlap {
-						crossMsgTail = crossMsgTail[len(crossMsgTail)-crossMsgOverlap:]
-					}
+			}
+			crossMsgTail = updateWSCrossMessageTail(prevTail, msg)
+			if !redactionEnabled {
+				if len(scanInput) > 0 && r.scanClientText(ctx, log, scanInput) {
+					blocked = true
+					return
 				}
-
-				if !dlpResult.Clean {
-					names := make([]string, len(dlpResult.Matches))
-					for i, m := range dlpResult.Matches {
-						names[i] = m.PatternName
-					}
-					wsBundleRules := dlpBundleRules(dlpResult.Matches)
-					if r.cfg.EnforceEnabled() {
-						r.recordSignal(session.SignalBlock, log)
-						reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
-						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
-						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-						r.proxy.emitReceipt(receipt.EmitOpts{
-							ActionID:  receipt.NewActionID(),
-							Verdict:   config.ActionBlock,
-							Layer:     "dlp",
-							Pattern:   reason,
-							Transport: "websocket",
-							Method:    "WS",
-							Target:    r.targetURL,
-							RequestID: r.requestID,
-							Agent:     r.agent,
-						})
-						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
-						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
-						blocked = true
-						return
-					}
-					// Audit mode: adaptive escalation may upgrade warn to block.
-					baseAction := config.ActionWarn
-					effectiveAction := decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
-					if effectiveAction == config.ActionBlock {
-						r.recordSignal(session.SignalBlock, log)
-						sessionKey := r.clientIP
-						if r.agent != "" && r.agent != agentAnonymous {
-							sessionKey = r.agent + "|" + r.clientIP
-						}
-						log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), baseAction, effectiveAction, audit.ScannerDLP, r.clientIP, r.requestID)
-						r.proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(r.escalationLevel()))
-						reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
-						log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, r.clientIP, r.requestID)
-						r.proxy.metrics.RecordWSScanHit(audit.ScannerDLP)
-						r.proxy.emitReceipt(receipt.EmitOpts{
-							ActionID:  receipt.NewActionID(),
-							Verdict:   config.ActionBlock,
-							Layer:     "dlp",
-							Pattern:   reason,
-							Transport: "websocket",
-							Method:    "WS",
-							Target:    r.targetURL,
-							RequestID: r.requestID,
-							Agent:     r.agent,
-						})
-						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "DLP violation")
-						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
-						blocked = true
-						return
-					}
-					// Warn/audit: near-miss signal so adaptive scoring sees the finding.
-					r.recordSignal(session.SignalNearMiss, log)
-					log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpResult.Matches), names, wsBundleRules)
-				}
-
-				// Address poisoning detection alongside DLP.
-				if checker := r.scanner.AddressChecker(); checker != nil {
-					addrResult := checker.CheckText(string(scanInput), r.agent)
-					if len(addrResult.Findings) > 0 {
-						addrAction := addressprotect.StrictestAction(addrResult.Findings)
-						names := make([]string, len(addrResult.Findings))
-						for i, f := range addrResult.Findings {
-							names[i] = f.Explanation
-						}
-						// Record metrics for every finding, not just the first.
-						for _, f := range addrResult.Findings {
-							verdictLabel := "unknown"
-							if f.Verdict == addressprotect.VerdictLookalike {
-								verdictLabel = "lookalike"
-							}
-							r.proxy.metrics.RecordAddressFinding(f.Chain, verdictLabel)
-						}
-						// Adaptive enforcement: upgrade the address action.
-						originalAddrAction := addrAction
-						addrAction = decide.UpgradeAction(addrAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
-						if addrAction != originalAddrAction {
-							sessionKey := r.clientIP
-							if r.agent != "" && r.agent != agentAnonymous {
-								sessionKey = r.agent + "|" + r.clientIP
-							}
-							log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(r.escalationLevel()), originalAddrAction, addrAction, scannerLabelAddressProtection, r.clientIP, r.requestID)
-							r.proxy.metrics.RecordAdaptiveUpgrade(originalAddrAction, addrAction, session.EscalationLabel(r.escalationLevel()))
-						}
-						if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
-							r.recordSignal(session.SignalBlock, log)
-							// Use the blocking finding for the reason, not necessarily Findings[0].
-							var blockExplanation string
-							for _, f := range addrResult.Findings {
-								if f.Action == config.ActionBlock {
-									blockExplanation = f.Explanation
-									break
-								}
-							}
-							reason := fmt.Sprintf("address poisoning: %s", blockExplanation)
-							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
-							r.proxy.emitReceipt(receipt.EmitOpts{
-								ActionID:  receipt.NewActionID(),
-								Verdict:   config.ActionBlock,
-								Layer:     "address_protection",
-								Pattern:   reason,
-								Transport: "websocket",
-								Method:    "WS",
-								Target:    r.targetURL,
-								RequestID: r.requestID,
-								Agent:     r.agent,
-							})
-							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
-							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
-							blocked = true
-							return
-						}
-						// Escalation can upgrade to block even in audit mode, but only
-						// when UpgradeAction actually changed the action. If addrAction
-						// was already block from config (not from escalation), audit
-						// mode allows it through and logs it below.
-						if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
-							r.recordSignal(session.SignalBlock, log)
-							reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
-							log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelAddressProtection, reason, r.clientIP, r.requestID)
-							r.proxy.emitReceipt(receipt.EmitOpts{
-								ActionID:  receipt.NewActionID(),
-								Verdict:   config.ActionBlock,
-								Layer:     "address_protection",
-								Pattern:   reason,
-								Transport: "websocket",
-								Method:    "WS",
-								Target:    r.targetURL,
-								RequestID: r.requestID,
-								Agent:     r.agent,
-							})
-							plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "address poisoning detected")
-							plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
-							blocked = true
-							return
-						}
-						// Warn/audit mode: near-miss signal for address findings.
-						r.recordSignal(session.SignalNearMiss, log)
-						log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(addrResult.Findings), names, nil)
-					}
-				}
+			} else if len(prevTail) > 0 && r.scanClientCrossMessageText(ctx, log, prevTail, msg) {
+				blocked = true
+				return
 			}
 		}
 

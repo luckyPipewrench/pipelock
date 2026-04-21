@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -78,6 +79,12 @@ type MCPProxyOpts struct {
 	// result content blocks (image/audio/video) before generic text scanning.
 	// Nil-safe: MCP media policy is disabled when unset.
 	MediaPolicy *config.MediaPolicy
+
+	// Request-side redaction for tools/call params.arguments. Nil matcher
+	// disables MCP redaction. Limits use redact package defaults when zero.
+	RedactMatcher *redact.Matcher
+	RedactLimits  redact.Limits
+	RedactProfile string
 
 	// Frozen tool enforcement for airlock hard tier (nil-safe).
 	// When non-nil and a stable key is frozen, only tools in the frozen set

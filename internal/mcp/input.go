@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -251,6 +252,42 @@ func ForwardScannedInput(
 			continue
 		}
 
+		pendingToolCallName := extractToolCallName(line)
+		pendingActionID := ""
+		if pendingToolCallName != "" {
+			pendingActionID = receipt.NewActionID()
+		}
+		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedaction(line, opts)
+		if redactErr != nil {
+			reason := redactErr.Error()
+			var blockErr *redact.BlockError
+			if errors.As(redactErr, &blockErr) {
+				reason = "tool arguments redaction blocked: " + string(blockErr.Reason)
+			}
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
+			recordAdaptiveSignal(session.SignalBlock)
+			if pendingActionID != "" {
+				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+					ActionID:         pendingActionID,
+					Verdict:          config.ActionBlock,
+					RedactionProfile: opts.RedactProfile,
+					Transport:        opts.Transport,
+					Target:           pendingToolCallName,
+					MCPMethod:        methodToolsCall,
+					ToolName:         pendingToolCallName,
+				})
+			}
+			blockedCh <- BlockedRequest{
+				ID:             extractRPCID(line),
+				IsNotification: isRPCNotification(extractRPCID(line)),
+				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redaction)", lineNum),
+				ErrorCode:      -32001,
+				ErrorMessage:   "pipelock: request blocked by MCP redaction",
+			}
+			continue
+		}
+		line = rewrittenLine
+
 		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
 		warnCtx.Transport = transportMCPStdio
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
@@ -446,7 +483,11 @@ func ForwardScannedInput(
 		// (tools/list, initialize, notifications) don't produce receipts.
 		actionID := ""
 		if verdict.Method == methodToolsCall {
-			actionID = receipt.NewActionID()
+			if pendingActionID != "" {
+				actionID = pendingActionID
+			} else {
+				actionID = receipt.NewActionID()
+			}
 		}
 
 		taintDecision := taintDecision{
@@ -460,6 +501,8 @@ func ForwardScannedInput(
 			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             receiptVerdict,
+				RedactionProfile:    opts.RedactProfile,
+				RedactionReport:     redactionReport,
 				Transport:           opts.Transport,
 				Target:              toolCallName,
 				MCPMethod:           verdict.Method,

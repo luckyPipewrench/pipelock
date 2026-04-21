@@ -9,6 +9,7 @@ import (
 	"github.com/getsentry/sentry-go"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 // safetyNetPatterns are always applied regardless of user config.
@@ -31,6 +32,7 @@ var urlParamValueRe = regexp.MustCompile(`([?&][^=&]+)=([^&\s]+)`)
 // Scrubber redacts secrets from strings and Sentry events using
 // DLP patterns from config plus hardcoded safety-net patterns.
 type Scrubber struct {
+	matcher  *redact.Matcher
 	patterns []*regexp.Regexp
 	secrets  []string
 }
@@ -38,11 +40,9 @@ type Scrubber struct {
 // NewScrubber creates a scrubber from the given DLP patterns and env secrets.
 func NewScrubber(dlpPatterns []config.DLPPattern, envSecrets []string) *Scrubber {
 	s := &Scrubber{
+		matcher: redact.NewDefaultMatcher(),
 		secrets: envSecrets,
 	}
-
-	// Add config DLP patterns with case-insensitive matching,
-	// mirroring the (?i) auto-prefix applied by scanner.New().
 	for _, p := range dlpPatterns {
 		pattern := p.Regex
 		if !strings.HasPrefix(pattern, "(?i)") {
@@ -50,12 +50,10 @@ func NewScrubber(dlpPatterns []config.DLPPattern, envSecrets []string) *Scrubber
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			continue // skip invalid patterns (already validated by config)
+			continue
 		}
 		s.patterns = append(s.patterns, re)
 	}
-
-	// Add safety-net patterns.
 	s.patterns = append(s.patterns, safetyNetPatterns...)
 
 	return s
@@ -69,7 +67,13 @@ func (s *Scrubber) ScrubString(input string) string {
 
 	result := input
 
-	// Apply DLP regex patterns.
+	// Shared matcher surface: typed secret classes from internal/redact.
+	if s.matcher != nil {
+		result = replaceMatchedSpans(result, s.matcher.Scan(result), func(redact.Match) string { return redacted })
+	}
+
+	// Safety-net patterns stay separate: they intentionally cover cases not
+	// yet modelled in the redact class registry (Bearer headers, URL auth).
 	for _, re := range s.patterns {
 		result = re.ReplaceAllString(result, redacted)
 	}
@@ -85,6 +89,27 @@ func (s *Scrubber) ScrubString(input string) string {
 	result = urlParamValueRe.ReplaceAllString(result, "${1}="+redacted)
 
 	return result
+}
+
+func replaceMatchedSpans(input string, matches []redact.Match, replacement func(redact.Match) string) string {
+	if input == "" || len(matches) == 0 {
+		return input
+	}
+
+	var b strings.Builder
+	b.Grow(len(input) + len(matches)*len(redacted))
+
+	cursor := 0
+	for _, match := range matches {
+		if match.Start < cursor || match.Start < 0 || match.End > len(input) || match.End <= match.Start {
+			continue
+		}
+		b.WriteString(input[cursor:match.Start])
+		b.WriteString(replacement(match))
+		cursor = match.End
+	}
+	b.WriteString(input[cursor:])
+	return b.String()
 }
 
 // scrubStacktrace redacts secrets in stacktrace frame variables.

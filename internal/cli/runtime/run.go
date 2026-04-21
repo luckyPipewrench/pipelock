@@ -1004,6 +1004,9 @@ Examples:
 						ProvenanceCfg:       &cfg.MCPToolProvenance,
 						ReceiptEmitter:      receiptEmitter,
 						EnvelopeEmitter:     envEmitter,
+						RedactMatcher:       p.RedactMatcherPtr().Load(),
+						RedactLimits:        cfg.Redaction.Limits.ToLimits(),
+						RedactProfile:       cfg.Redaction.DefaultProfile,
 						TaintCfg:            &cfg.Taint,
 						ToolFreezer:         p.FrozenTools(),
 						FrozenToolStableKey: mcpUpstream,
@@ -1028,7 +1031,7 @@ Examples:
 					logger, m, ks, rpCaptureObs, p.ShieldEngine(),
 				)
 				rpHandler.SetEnvelopeEmitter(p.EnvelopeEmitterPtr())
-				rpHandler.SetRedactMatcherPtr(p.RedactMatcherPtr())
+				rpHandler.SetRedactionRuntimePtr(p.RedactionRuntimePtr())
 
 				rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
 				if lnErr != nil {

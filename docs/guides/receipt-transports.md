@@ -26,6 +26,7 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `websocket` | Airlock | `airlock` | Quarantine admission denied |
 | `websocket` | Kill switch | `kill_switch` | Kill switch activated mid-stream |
 | `websocket` | Protocol | `ws_protocol` | Binary frames denied, fragment violation, compressed frames |
+| `websocket` | Request redaction | `redaction` | Redaction fail-closed on fragmented or non-JSON outbound messages |
 | `websocket` | Media policy | `media_policy` | Blocked binary media frame after content sniffing |
 | `websocket` | DLP | `dlp` | DLP match in text frame |
 | `websocket` | Address protection | `address_protection` | Address poisoning detected |
@@ -34,13 +35,14 @@ Pipelock emits Ed25519-signed action receipts for enforcement decisions across p
 | `websocket` | Session close | `session_close` | Connection closed (verdict reflects blocked status) |
 | `connect` | CONNECT deny / allow | scanner layer name, `airlock`, `kill_switch` | CONNECT tunnel admission decisions before interception |
 | `forward` | URL block | scanner layer name | URL scan finding |
+| `forward` | Request body | `dlp`, `address_protection`, or `redaction` | Request-body DLP, address finding, or redaction fail-closed before upstream |
 | `forward` | A2A header | `a2a_header` | A2A-Extensions header blocked URI |
 | `forward` | A2A stream | `a2a_stream` | SSE stream finding or compressed stream |
 | `forward` | A2A response | `a2a_response` | A2A response body finding |
 | `forward` | Response scan | `response_scan` | Prompt injection in response |
 | `forward` | Allow | (empty) | Successful forward |
-| `intercept` | Request / response / A2A scanning | various | TLS-intercepted traffic inside CONNECT tunnels, including response-scan, DLP, media policy, and A2A coverage |
-| `mcp_stdio` | Input scan | `mcp_input_scanning` | DLP or injection in tool arguments |
+| `intercept` | Request / response / A2A scanning | various | TLS-intercepted traffic inside CONNECT tunnels, including request-body redaction, response-scan, DLP, media policy, and A2A coverage |
+| `mcp_stdio` | Input scan | `mcp_input_scanning` | DLP, injection, or tools/call redaction block |
 | `mcp_stdio` | Tool scan | `mcp_response_scan` | Poisoned `tools/list` response or schema drift (rug-pull) |
 | `mcp_stdio` | Tool policy | `mcp_tool_policy` | Pre-execution allow/deny/redirect decision |
 | `mcp_stdio` | Chain detection | `chain_detection` | Multi-call subsequence match |
@@ -67,6 +69,7 @@ Every receipt contains these fields:
 | `layer` | Scanner layer name | Which scanning layer triggered |
 | `pattern` | Reason string | What was matched |
 | `request_id` | Per-request UUID | Request correlation |
+| `redaction` | Request redaction summary | Present only when request-side redaction replaced one or more values; includes `profile`, `total_redactions`, and `by_class` |
 | `agent` | Agent identity | Which agent made the request |
 | `chain_prev_hash` | SHA-256 of previous receipt | Hash chain linkage |
 | `chain_seq` | Monotonic counter | Position in chain |
@@ -85,6 +88,8 @@ Taint-aware fields (when session profiling is active):
 | `taint_decision` | Policy decision after taint evaluation |
 | `taint_decision_reason` | Stable reason string for the taint decision |
 | `task_override_applied` | True when a runtime task-scoped override allowed the action |
+
+When request-side redaction succeeds, the receipt keeps the underlying transport verdict and adds the `redaction` summary block. When no values were rewritten, the field is omitted so legacy receipts remain byte-identical.
 
 ## Chain Integrity
 

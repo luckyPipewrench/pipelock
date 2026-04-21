@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -228,13 +229,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	mcpMethod := ""
 	toolName := ""
 	actionID := ""
+	var redactionReport *redact.Report
 	taintEval := taintDecision{
 		Authority: session.AuthorityUserBroad,
 		Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
 	}
 	receiptVerdict := ""
 	defer func() {
-		emitMCPToolReceipt(opts, actionID, mcpMethod, toolName, receiptVerdict, taintEval)
+		emitMCPToolReceipt(opts, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
 	}()
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
@@ -276,6 +278,34 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return result
 	}
 
+	if pendingToolName := extractToolCallName(msg); pendingToolName != "" {
+		toolName = pendingToolName
+		mcpMethod = methodToolsCall
+		actionID = receipt.NewActionID()
+	}
+	rewrittenMsg, report, redactErr := applyMCPToolCallRedaction(msg, opts)
+	if redactErr != nil {
+		var blockErr *redact.BlockError
+		reason := redactErr.Error()
+		if errors.As(redactErr, &blockErr) {
+			reason = "tool arguments redaction blocked: " + string(blockErr.Reason)
+		}
+		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", reason)
+		recordAdaptiveSignal(session.SignalBlock)
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
+			ID:             extractRPCID(msg),
+			IsNotification: isRPCNotification(extractRPCID(msg)),
+			LogMessage:     "blocked (redaction)",
+			ErrorCode:      -32001,
+			ErrorMessage:   "pipelock: request blocked by MCP redaction",
+		}
+		return result
+	}
+	msg = rewrittenMsg
+	result.ForwardMessage = rewrittenMsg
+	redactionReport = report
+
 	// Determine input scanning parameters.
 	action := config.ActionWarn
 	onParseError := config.ActionBlock
@@ -313,7 +343,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	mcpMethod = verdict.Method
 	if verdict.Method == methodToolsCall {
-		actionID = receipt.NewActionID()
+		if actionID == "" {
+			actionID = receipt.NewActionID()
+		}
 		toolName = extractToolCallName(msg)
 	}
 

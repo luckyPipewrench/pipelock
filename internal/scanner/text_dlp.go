@@ -36,6 +36,37 @@ type TextDLPResult struct {
 // from MCP tool arguments. It applies zero-width stripping, NFKC normalization,
 // and checks encoded variants (base64, hex, base32) of the text for patterns.
 func (s *Scanner) ScanTextForDLP(ctx context.Context, text string) TextDLPResult {
+	return s.scanTextForDLP(ctx, text, true)
+}
+
+// ScanTextForDLPQuiet runs the same text-DLP detection logic as ScanTextForDLP
+// but suppresses warn-hook emission. Callers use this when they need to compare
+// multiple related scans without duplicating warn telemetry.
+func (s *Scanner) ScanTextForDLPQuiet(ctx context.Context, text string) TextDLPResult {
+	return s.scanTextForDLP(ctx, text, false)
+}
+
+// EmitTextDLPWarnMatches replays the warn hook for the provided informational
+// matches after a caller has filtered or deduplicated them.
+func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPMatch) {
+	if len(matches) == 0 {
+		return
+	}
+
+	warns := make([]WarnMatch, 0, len(matches))
+	for _, m := range matches {
+		if !m.Warn {
+			continue
+		}
+		warns = append(warns, WarnMatch{
+			PatternName: m.PatternName,
+			Severity:    m.Severity,
+		})
+	}
+	s.emitDLPWarns(ctx, deduplicateWarnMatches(warns))
+}
+
+func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns bool) TextDLPResult {
 	// Core DLP runs FIRST — immutable safety floor. Core matches are
 	// prepended to results; main scanner also runs to capture additional
 	// findings (env leaks, seed phrases, non-core patterns).
@@ -200,7 +231,7 @@ func (s *Scanner) ScanTextForDLP(ctx context.Context, text string) TextDLPResult
 	}
 
 	// Emit warn events through the shared helper so warn-hook behavior stays centralized.
-	if len(informational) > 0 {
+	if emitWarns && len(informational) > 0 {
 		warns := make([]WarnMatch, 0, len(informational))
 		for _, m := range informational {
 			warns = append(warns, WarnMatch{

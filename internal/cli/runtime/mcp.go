@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -373,6 +374,15 @@ signed action receipts for MCP decisions.`,
 				OnParseError: cfg.MCPInputScanning.OnParseError,
 			}
 
+			var mcpRedactMatcher *redact.Matcher
+			if cfg.Redaction.Enabled {
+				var redactErr error
+				mcpRedactMatcher, redactErr = cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+				if redactErr != nil {
+					return fmt.Errorf("build MCP redaction matcher: %w", redactErr)
+				}
+			}
+
 			// Auto-enable MCP tool scanning for proxy mode unless explicitly configured.
 			if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool scanning for proxy mode")
@@ -615,6 +625,9 @@ signed action receipts for MCP decisions.`,
 						DoWCheck:        dowCheck,
 						ReceiptEmitter:  receiptEmitter,
 						MediaPolicy:     &cfg.MediaPolicy,
+						RedactMatcher:   mcpRedactMatcher,
+						RedactLimits:    cfg.Redaction.Limits.ToLimits(),
+						RedactProfile:   cfg.Redaction.DefaultProfile,
 						TaintCfg:        &cfg.Taint,
 					}); err != nil {
 						if sentryClient != nil {
@@ -641,6 +654,9 @@ signed action receipts for MCP decisions.`,
 						DoWCheck:        dowCheck,
 						EnvelopeEmitter: envEmitter,
 						MediaPolicy:     &cfg.MediaPolicy,
+						RedactMatcher:   mcpRedactMatcher,
+						RedactLimits:    cfg.Redaction.Limits.ToLimits(),
+						RedactProfile:   cfg.Redaction.DefaultProfile,
 						TaintCfg:        &cfg.Taint,
 					}
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
@@ -668,6 +684,9 @@ signed action receipts for MCP decisions.`,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
 					MediaPolicy:     &cfg.MediaPolicy,
+					RedactMatcher:   mcpRedactMatcher,
+					RedactLimits:    cfg.Redaction.Limits.ToLimits(),
+					RedactProfile:   cfg.Redaction.DefaultProfile,
 					TaintCfg:        &cfg.Taint,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
@@ -799,6 +818,9 @@ signed action receipts for MCP decisions.`,
 					IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 					ProvenanceCfg:   &cfg.MCPToolProvenance,
 					MediaPolicy:     &cfg.MediaPolicy,
+					RedactMatcher:   mcpRedactMatcher,
+					RedactLimits:    cfg.Redaction.Limits.ToLimits(),
+					RedactProfile:   cfg.Redaction.DefaultProfile,
 					TaintCfg:        &cfg.Taint,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
@@ -904,6 +926,9 @@ signed action receipts for MCP decisions.`,
 				IntegrityCfg:    &cfg.MCPBinaryIntegrity,
 				ProvenanceCfg:   &cfg.MCPToolProvenance,
 				MediaPolicy:     &cfg.MediaPolicy,
+				RedactMatcher:   mcpRedactMatcher,
+				RedactLimits:    cfg.Redaction.Limits.ToLimits(),
+				RedactProfile:   cfg.Redaction.DefaultProfile,
 				TaintCfg:        &cfg.Taint,
 				Lineage:         lin, OnChildReady: onChildReady,
 			}

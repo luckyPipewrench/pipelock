@@ -192,6 +192,29 @@ func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 	return conn
 }
 
+func writeMaskedClientFrame(t *testing.T, conn net.Conn, fin bool, opcode ws.OpCode, payload []byte) {
+	t.Helper()
+
+	mask := ws.NewMask()
+	masked := make([]byte, len(payload))
+	copy(masked, payload)
+	ws.Cipher(masked, mask, 0)
+
+	hdr := ws.Header{
+		Fin:    fin,
+		OpCode: opcode,
+		Length: int64(len(masked)),
+		Masked: true,
+		Mask:   mask,
+	}
+	if err := ws.WriteHeader(conn, hdr); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := conn.Write(masked); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+}
+
 func waitForWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scope string) scanner.DLPWarnContext {
 	t.Helper()
 
@@ -350,6 +373,143 @@ func TestWSProxyBinaryAllowed(t *testing.T) {
 	}
 	if string(reply) != string(msg) {
 		t.Errorf("expected %x, got %x", msg, reply)
+	}
+}
+
+func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	secret := redactionE2ESecret()
+	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("opcode = %v, want OpText", op)
+	}
+	replyStr := string(reply)
+	if strings.Contains(replyStr, secret) {
+		t.Fatalf("echoed reply leaked secret: %q", replyStr)
+	}
+	if !strings.Contains(replyStr, placeholderAWS) {
+		t.Fatalf("echoed reply missing placeholder: %q", replyStr)
+	}
+}
+
+func TestWSProxyRedaction_BinaryNonJSONBlocked(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.AllowBinaryFrames = true
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpBinary, []byte("opaque-binary-payload")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, _, err := wsutil.ReadServerData(conn); err == nil {
+		t.Fatal("expected proxy to close on non-JSON binary frame when redaction is enabled")
+	}
+}
+
+func TestWSProxyRedaction_FragmentedMessageBlocked(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	secret := redactionE2ESecret()
+	firstFragment := []byte(`{"prompt":"` + secret[:8])
+	writeMaskedClientFrame(t, conn, false, ws.OpText, firstFragment)
+
+	if _, _, err := wsutil.ReadServerData(conn); err == nil {
+		t.Fatal("expected proxy to close after fragmented client message")
+	}
+}
+
+func TestWSProxyRedaction_CrossMessageScanSkipsSingleMessageAddressWarnings(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		applyRedactionTestProfile(cfg)
+		cfg.SessionProfiling.Enabled = true
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 1.0
+
+		cfg.AddressProtection.Enabled = true
+		cfg.AddressProtection.Action = config.ActionWarn
+		cfg.AddressProtection.UnknownAction = config.ActionAllow
+		cfg.AddressProtection.Similarity.PrefixLength = 4
+		cfg.AddressProtection.Similarity.SuffixLength = 4
+		cfg.AddressProtection.AllowedAddresses = []string{
+			"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",
+		}
+		eth := true
+		f := false
+		cfg.AddressProtection.Chains.ETH = &eth
+		cfg.AddressProtection.Chains.BTC = &f
+		cfg.AddressProtection.Chains.SOL = &f
+		cfg.AddressProtection.Chains.BNB = &f
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"note":"hello"}`)); err != nil {
+		t.Fatalf("write setup frame: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read setup frame: %v", err)
+	}
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testPoisonedETHAddr)); err != nil {
+		t.Fatalf("write address frame: %v", err)
+	}
+
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read address frame: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("opcode = %v, want OpText", op)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if got["to"] != "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e" {
+		t.Fatalf("reply to = %q, want poisoned address", got["to"])
+	}
+	if got["amount"] != "1.0" {
+		t.Fatalf("reply amount = %q, want 1.0", got["amount"])
 	}
 }
 

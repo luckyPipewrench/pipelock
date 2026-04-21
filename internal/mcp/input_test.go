@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -45,11 +46,20 @@ const (
 	testWarnContextAgent         = "agent-warnctx"
 	testWarnContextHTTPTransport = "mcp_http_listener"
 	testWarnContextTimeout       = 2 * time.Second
+	mcpPlaceholderAWS            = "<pl:aws-access-key:1>"
 )
 
 func base64Encode(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 func hexEncode(s string) string    { return hex.EncodeToString([]byte(s)) }
 func intPtrInput(v int) *int       { return &v }
+
+func mcpRedactionSecret() string {
+	return "AKIA" + "IOSFODNN7EXAMPLE"
+}
+
+func testRedactionMatcher() *redact.Matcher {
+	return redact.NewDefaultMatcher()
+}
 
 func TestIsRPCNotification(t *testing.T) {
 	tests := []struct {
@@ -290,6 +300,94 @@ func TestScanRequest(t *testing.T) {
 				t.Error("expected injection matches")
 			}
 		})
+	}
+}
+
+func TestForwardScannedInput_RedactsToolCallArguments(t *testing.T) {
+	sc := testInputScanner(t)
+	secret := mcpRedactionSecret()
+	msg := makeRequest(1, methodToolsCall, map[string]any{
+		"name": "echo",
+		"arguments": map[string]string{
+			"prompt": "use " + secret + " to deploy",
+		},
+	})
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher(), "code"))
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	if blocked, ok := <-blockedCh; ok {
+		t.Fatalf("unexpected blocked request: %+v", blocked)
+	}
+
+	forwarded := strings.TrimSpace(serverBuf.String())
+	if forwarded == "" {
+		t.Fatal("expected forwarded tools/call request")
+	}
+	var envelope struct {
+		Params struct {
+			Arguments struct {
+				Prompt string `json:"prompt"`
+			} `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal([]byte(forwarded), &envelope); err != nil {
+		t.Fatalf("unmarshal forwarded request: %v", err)
+	}
+	if strings.Contains(envelope.Params.Arguments.Prompt, secret) {
+		t.Fatalf("forwarded MCP request leaked secret: %s", forwarded)
+	}
+	if !strings.Contains(envelope.Params.Arguments.Prompt, mcpPlaceholderAWS) {
+		t.Fatalf("forwarded MCP request missing placeholder: %s", forwarded)
+	}
+}
+
+func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
+	sc := testInputScanner(t)
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"oops"}`
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher(), "code"))
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	if got := strings.TrimSpace(serverBuf.String()); got != "" {
+		t.Fatalf("unexpected forwarded request: %s", got)
+	}
+
+	blocked, ok := <-blockedCh
+	if !ok {
+		t.Fatal("expected blocked request")
+	}
+	if blocked.ErrorCode != -32001 {
+		t.Fatalf("error code = %d, want -32001", blocked.ErrorCode)
+	}
+	if blocked.ErrorMessage != "pipelock: request blocked by MCP redaction" {
+		t.Fatalf("error message = %q", blocked.ErrorMessage)
 	}
 }
 

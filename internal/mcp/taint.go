@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -229,13 +230,15 @@ func taintApprovalReason(decision taintDecision) string {
 	return fmt.Sprintf("%s after %s", decision.ActionClass.String(), decision.Result.Reason)
 }
 
-func emitMCPToolReceipt(opts MCPProxyOpts, actionID, mcpMethod, toolName, receiptVerdict string, decision taintDecision) {
+func emitMCPToolReceipt(opts MCPProxyOpts, actionID, mcpMethod, toolName, receiptVerdict string, decision taintDecision, report *redact.Report) {
 	if actionID == "" || opts.ReceiptEmitter == nil {
 		return
 	}
 	_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             receiptVerdict,
+		RedactionProfile:    opts.RedactProfile,
+		RedactionReport:     report,
 		Transport:           opts.Transport,
 		Target:              toolName,
 		MCPMethod:           mcpMethod,

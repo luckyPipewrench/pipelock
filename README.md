@@ -104,6 +104,10 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 25 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
+### Request Redaction
+
+Optional request-side redaction rewrites matched JSON values before they leave the agent. The same matcher covers HTTP request bodies, outbound WebSocket client messages, and MCP `tools/call` `params.arguments` across stdio, HTTP/SSE, and WebSocket transports. Replacements are typed placeholders such as `<pl:aws-access-key:1>`, and signed action receipts record only the active profile plus per-class counts.
+
 ### MCP Proxy
 
 Wraps any MCP server with bidirectional scanning. Three transport modes: stdio subprocess wrapping, Streamable HTTP bridging, and HTTP reverse proxy. Scans both directions: client requests checked for DLP leaks, server responses scanned for injection, and `tools/list` responses checked for poisoned descriptions and mid-session rug-pull changes.
@@ -175,7 +179,7 @@ The free summary shows your grade, section scores, and top findings. Licensed us
 
 ### Flight Recorder
 
-Hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. Every proxy decision is recorded as a tamper-evident entry linked to the previous one. Action receipts provide cryptographically signed proof of each mediated action (what happened, what the verdict was, which policy was active). Verify any receipt independently with `pipelock verify-receipt`.
+Hash-chained JSONL evidence log with Ed25519-signed checkpoints and DLP redaction. Every proxy decision is recorded as a tamper-evident entry linked to the previous one. Action receipts provide cryptographically signed proof of each mediated action (what happened, what the verdict was, which policy was active), and request-side rewrites add a compact `redaction` summary block instead of storing plaintext secrets. Verify any receipt independently with `pipelock verify-receipt`.
 
 ### Canary Tokens
 
@@ -435,6 +439,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | Document | What's In It |
 |----------|-------------|
 | [Configuration Reference](docs/configuration.md) | All config fields, defaults, hot-reload behavior, presets |
+| [Request Redaction](docs/guides/redaction.md) | JSON request rewriting across HTTP, WebSocket, and MCP transports |
 | [False Positive Tuning](docs/false-positive-tuning.md) | Identifying, suppressing, and tuning scanner findings |
 | [Scan API](docs/scan-api.md) | Evaluation endpoint for programmatic scanning |
 | [Deployment Recipes](docs/guides/deployment-recipes.md) | Docker Compose, K8s sidecar, iptables, macOS PF |

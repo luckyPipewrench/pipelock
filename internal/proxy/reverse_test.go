@@ -62,7 +62,7 @@ func testPost(t *testing.T, url, contentType, body string) *http.Response {
 func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 
-	upstream := httptest.NewServer(upstreamHandler)
+	upstream := newIPv4Server(t, upstreamHandler)
 	t.Cleanup(upstream.Close)
 
 	upstreamURL, err := url.Parse(upstream.URL)
@@ -86,15 +86,16 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	if cfg.Redaction.Enabled {
-		matcher, err := cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+		p := &Proxy{}
+		rt, err := p.buildRedactionRuntime(cfg)
 		if err != nil {
-			t.Fatalf("build redact matcher: %v", err)
+			t.Fatalf("build redaction runtime: %v", err)
 		}
-		var matcherPtr atomic.Pointer[redact.Matcher]
-		matcherPtr.Store(matcher)
-		handler.SetRedactMatcherPtr(&matcherPtr)
+		var runtimePtr atomic.Pointer[redactionRuntime]
+		runtimePtr.Store(rt)
+		handler.SetRedactionRuntimePtr(&runtimePtr)
 	}
-	proxy := httptest.NewServer(handler)
+	proxy := newIPv4Server(t, handler)
 	t.Cleanup(proxy.Close)
 
 	return proxy

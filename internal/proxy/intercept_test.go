@@ -60,12 +60,16 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 
 func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {
 	t.Helper()
-	matcher, err := cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
-	if err != nil {
-		t.Fatalf("build redact matcher: %v", err)
-	}
 	p := &Proxy{captureObs: capture.NopObserver{}}
-	p.redactMatcherPtr.Store(matcher)
+	rt, err := p.buildRedactionRuntime(cfg)
+	if err != nil {
+		t.Fatalf("build redaction runtime: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("expected redaction runtime")
+	}
+	p.redactionRuntimePtr.Store(rt)
+	p.redactMatcherPtr.Store(rt.matcher)
 	return p
 }
 

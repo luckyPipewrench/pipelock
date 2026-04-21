@@ -143,12 +143,13 @@ type ActionRecord struct {
 	TaskOverrideApplied bool                     `json:"task_override_applied,omitempty"`
 
 	// Transport context
-	Transport string `json:"transport"`
-	Method    string `json:"method,omitempty"`
-	Layer     string `json:"layer,omitempty"`
-	Pattern   string `json:"pattern,omitempty"`
-	Severity  string `json:"severity,omitempty"`
-	RequestID string `json:"request_id,omitempty"`
+	Transport string            `json:"transport"`
+	Method    string            `json:"method,omitempty"`
+	Layer     string            `json:"layer,omitempty"`
+	Pattern   string            `json:"pattern,omitempty"`
+	Severity  string            `json:"severity,omitempty"`
+	Redaction *RedactionSummary `json:"redaction,omitempty"`
+	RequestID string            `json:"request_id,omitempty"`
 
 	// Chain integrity — links receipts into a tamper-evident sequence.
 	// ChainPrevHash is "genesis" for the first receipt in a session.
@@ -163,6 +164,15 @@ type ActionRecord struct {
 	RemedyClass        string   `json:"remedy_class,omitempty"`
 	ContestationWindow string   `json:"contestation_window,omitempty"`
 	PrecedentRefs      []string `json:"precedent_refs,omitempty"`
+}
+
+// RedactionSummary captures the request-side redaction outcome for a mediated
+// action. Present only when redaction actually replaced one or more values.
+type RedactionSummary struct {
+	Profile           string         `json:"profile,omitempty"`
+	TotalRedactions   int            `json:"total_redactions,omitempty"`
+	ByClass           map[string]int `json:"by_class,omitempty"`
+	CacheBoundaryKept bool           `json:"cache_boundary_kept,omitempty"`
 }
 
 // Validate checks that required fields are populated and the action type is valid.

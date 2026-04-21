@@ -16,7 +16,7 @@ line, not the last.
 This guide is for people building the layer that runs behind the gate.
 SIEM engineers, SOC analysts, and researchers training detection models
 all need the same thing upstream: structured, tamper-evident evidence of
-what the agent actually did. When receipt signing is enabled, pipelock
+what the agent actually did. When receipt signing is enabled, Pipelock
 emits that evidence as signed action receipts. This guide covers how to
 consume them.
 
@@ -48,16 +48,16 @@ feed that detector.
 
 ## The primitive: signed action receipts
 
-When `flight_recorder.signing_key_path` is set in the pipelock
+When `flight_recorder.signing_key_path` is set in the Pipelock
 config, every proxy decision produces a signed action receipt.
 Receipts are Ed25519-signed, JSON-structured, and linked into a
 SHA-256 hash chain so any deletion or reordering is detectable
-after the fact. Without a signing key configured, pipelock still
+after the fact. Without a signing key configured, Pipelock still
 enforces, and the flight recorder can still write other evidence
 entries, but the signed receipt stream is not produced.
 
 Generate a key with `pipelock keygen <name>`, set
-`flight_recorder.signing_key_path`, and start or restart pipelock.
+`flight_recorder.signing_key_path`, and start or restart Pipelock.
 If you replace the key file contents at the same configured path,
 reload will re-read that file. Changing the configured path still
 requires a restart.
@@ -121,12 +121,12 @@ analyst can pull the full receipt stream for that `session_id` and
 reconstruct every decision in order. The hash chain confirms the
 stream has not been edited since it was written. The `policy_hash`
 confirms which policy version was in force. The `signature`
-confirms the record came from pipelock and not from a tampered
+confirms the record came from Pipelock and not from a tampered
 agent log.
 
 This is the audit-trail use case. Receipts are designed to be
 presentable to a third party (auditor, incident responder, internal
-review) without requiring trust in pipelock itself. The signature
+review) without requiring trust in Pipelock itself. The signature
 and the chain are the trust anchors.
 
 ### Long-window LLM detection
@@ -154,7 +154,7 @@ reasoning tokens are not.
 ## Worked example
 
 The [`tool-response-injection`](/examples/tool-response-injection/)
-example ships with pipelock and runs the whole loop end-to-end. It
+example ships with Pipelock and runs the whole loop end-to-end. It
 uses a deliberately malicious MCP server that returns a prompt-
 injection payload disguised as a game result.
 
@@ -183,7 +183,7 @@ pip install pipelock-verify
 python -m pipelock_verify evidence/evidence-proxy-0.jsonl --key <public-key-hex>
 ```
 
-Or use the Go CLI that ships with pipelock:
+Or use the Go CLI that ships with Pipelock:
 
 ```bash
 pipelock verify-receipt evidence/evidence-proxy-0.jsonl --key <public-key-hex>
@@ -278,8 +278,8 @@ fixed by the receipt spec.
 This is the important section. Signed receipts solve one narrow
 problem. They do not solve several others.
 
-**Compromised mediators can still lie.** A receipt proves pipelock
-recorded a decision. It does not prove pipelock made the right
+**Compromised mediators can still lie.** A receipt proves Pipelock
+recorded a decision. It does not prove Pipelock made the right
 decision. If a scanner pattern is wrong, the signed record is a
 signed wrong answer.
 
@@ -302,11 +302,11 @@ file access, shared memory), the receipts can document what the
 agent then tried to do, but they cannot prevent the compromise or
 retroactively verify the agent's internal state.
 
-**Same-user deployments have a known ceiling.** If pipelock runs
+**Same-user deployments have a known ceiling.** If Pipelock runs
 as the same Unix user as the agent, the agent can delete or
 truncate the receipt file. The `demo_capability_separation.py`
 script in the harness demonstrates this limit directly. Running
-pipelock under a separate user (or in a separate container) is a
+Pipelock under a separate user (or in a separate container) is a
 deployment-level fix, not a product-level one.
 
 ## Where to go from here
@@ -316,8 +316,8 @@ deployment-level fix, not a product-level one.
 - **SIEM transport options:** [`siem-integration.md`](siem-integration.md)
 - **Transport coverage matrix:** [`receipt-transports.md`](receipt-transports.md)
 - **Worked example:** [`examples/tool-response-injection/`](/examples/tool-response-injection/)
-- **PyPI verifier:** <https://pypi.org/project/pipelock-verify/>
+- **PyPI verifier:** <https://pypi.org/project/Pipelock-verify/>
 
-If you are integrating pipelock receipts into a detection pipeline
+If you are integrating Pipelock receipts into a detection pipeline
 and run into something the spec does not cover, open an issue at
-<https://github.com/luckyPipewrench/pipelock/issues>.
+<https://github.com/luckyPipewrench/Pipelock/issues>.

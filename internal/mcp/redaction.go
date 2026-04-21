@@ -43,17 +43,11 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 		return line, nil, nil
 	}
 	if isNullRawMessage(methodRaw) {
-		return nil, nil, &redact.BlockError{
-			Reason: redact.ReasonBodyUnparseable,
-			Detail: "MCP method field is null",
-		}
+		return line, nil, nil
 	}
 	var method string
 	if err := json.Unmarshal(methodRaw, &method); err != nil {
-		return nil, nil, &redact.BlockError{
-			Reason: redact.ReasonBodyUnparseable,
-			Detail: "MCP method field is not a string",
-		}
+		return line, nil, nil
 	}
 	if method != methodToolsCall {
 		return line, nil, nil

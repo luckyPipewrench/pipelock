@@ -40,7 +40,8 @@ flight_recorder:
 | `raw_escrow` | false | Write an encrypted sidecar with the unredacted detail for each entry. |
 | `escrow_public_key` | "" | X25519 hex public key for escrow encryption. Required when `raw_escrow: true`. |
 
-The agent private key used for signing is the same key used for `pipelock assess` signing. It is loaded from the keystore at `~/.pipelock/` (or the path configured with `--keystore`).
+The receipt-signing private key is loaded from
+`flight_recorder.signing_key_path`.
 
 ### Rotating the signing key
 
@@ -49,6 +50,12 @@ Pipelock **rejects `flight_recorder.signing_key_path` changes at hot-reload time
 1. Stop pipelock so the old chain closes cleanly at its last checkpoint.
 2. Swap the key file referenced by `signing_key_path`.
 3. Start pipelock. It opens a new chain with the new key.
+
+If you keep the same `signing_key_path` and replace the key file at
+that path, a reload re-reads the file contents. Treat that as an
+advanced operation: the documented operator-safe path is still a
+restart so the old chain closes cleanly before the new key starts
+signing.
 
 The new chain is a separate verifiable unit. Verifiers that expect one chain per `session_id` must be updated to treat the key change as a chain boundary. A proper in-place rotation (key-rotation marker inside the chain, continuous verification across the switch) is tracked as a v2.2.1 feature.
 

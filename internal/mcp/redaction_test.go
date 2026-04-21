@@ -79,6 +79,25 @@ func TestApplyMCPToolCallRedaction_MethodMustBeString(t *testing.T) {
 	}
 }
 
+func TestApplyMCPToolCallRedaction_MethodNullBlocks(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":null}`)
+
+	_, _, err := applyMCPToolCallRedaction(line, MCPProxyOpts{
+		RedactMatcher: testRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+	})
+	if err == nil {
+		t.Fatal("expected block error")
+	}
+	var blockErr *redact.BlockError
+	if !errors.As(err, &blockErr) {
+		t.Fatalf("expected BlockError, got %T", err)
+	}
+	if blockErr.Reason != redact.ReasonBodyUnparseable {
+		t.Fatalf("reason = %q, want %q", blockErr.Reason, redact.ReasonBodyUnparseable)
+	}
+}
+
 func TestApplyMCPToolCallRedaction_NoArgumentsBypasses(t *testing.T) {
 	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`)
 

@@ -427,10 +427,10 @@ func TestMcpProxyCmd_HTTPUpstreamRedactsToolCallArguments(t *testing.T) {
 	t.Parallel()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
-	var upstreamBody bytes.Buffer
+	var upstreamBody syncBuffer
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		upstreamBody.Write(body)
+		_, _ = upstreamBody.Write(body)
 
 		var request struct {
 			ID json.RawMessage `json:"id"`

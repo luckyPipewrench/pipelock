@@ -42,6 +42,12 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 	if !ok {
 		return line, nil, nil
 	}
+	if isNullRawMessage(methodRaw) {
+		return nil, nil, &redact.BlockError{
+			Reason: redact.ReasonBodyUnparseable,
+			Detail: "MCP method field is null",
+		}
+	}
 	var method string
 	if err := json.Unmarshal(methodRaw, &method); err != nil {
 		return nil, nil, &redact.BlockError{
@@ -98,11 +104,11 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 	if len(prefix) == 0 && len(suffix) == 0 {
 		return rewrittenLine, report, nil
 	}
-	rewritten := make([]byte, 0, len(prefix)+len(rewrittenLine)+len(suffix))
-	rewritten = append(rewritten, prefix...)
-	rewritten = append(rewritten, rewrittenLine...)
-	rewritten = append(rewritten, suffix...)
-	return rewritten, report, nil
+	var rewritten bytes.Buffer
+	_, _ = rewritten.Write(prefix)
+	_, _ = rewritten.Write(rewrittenLine)
+	_, _ = rewritten.Write(suffix)
+	return rewritten.Bytes(), report, nil
 }
 
 func marshalMCPMessage(v any) ([]byte, error) {
@@ -120,4 +126,8 @@ func reportTotal(report *redact.Report) int {
 		return 0
 	}
 	return report.TotalRedactions
+}
+
+func isNullRawMessage(raw json.RawMessage) bool {
+	return len(raw) != 0 && bytes.Equal(bytes.TrimSpace(raw), []byte(jsonrpc.Null))
 }

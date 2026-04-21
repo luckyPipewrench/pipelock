@@ -622,7 +622,9 @@ func newInterceptHandler(
 
 				// Determine scanner label: address_protection vs body_dlp.
 				scannerLabel := scannerLabelBodyDLP
-				if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
+				if result.RedactionBlockReason != "" {
+					scannerLabel = scannerLabelRedaction
+				} else if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
 					scannerLabel = scannerLabelAddressProtection
 				}
 
@@ -914,7 +916,7 @@ func newInterceptHandler(
 				ic.Proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
 			}
 			ic.Metrics.RecordTLSRequestBlocked("session_deny")
-			interceptEmitReceipt(ic, receipt.EmitOpts{
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "session_deny",
@@ -924,7 +926,7 @@ func newInterceptHandler(
 				Target:    targetURL,
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
-			})
+			}))
 			http.Error(w, "blocked: session escalation level "+session.EscalationLabel(recEscalationLevel(ic.Recorder)), http.StatusForbidden)
 			return
 		}

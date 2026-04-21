@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
+	"net"
 	"net/http"
 	"net/textproto"
 	"net/url"
@@ -24,10 +26,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
+	// contentTypeJSON is the canonical JSON media type. Used in multiple
+	// places (redaction content-type gate, existing body-text extract
+	// path); extracted to satisfy goconst.
+	contentTypeJSON = "application/json"
+
 	// maxMultipartParts caps the number of multipart form parts parsed.
 	// 100 is well above typical form submissions (usually <20 fields) while
 	// bounding memory to at most 100 * maxBodyBytes of buffered part data.
@@ -82,6 +90,14 @@ type BodyScanResult struct {
 	AddressFindings []addressprotect.Finding // crypto address poisoning findings
 	HeaderName      string                   // set when a header triggered the match
 	Reason          string                   // human-readable block reason
+	// RedactionReport is populated when ActionRedact ran against the body.
+	// Nil when the feature is disabled or the body was blocked before
+	// reaching the redaction step. Receipt emitters serialize a summary
+	// into the signed action record.
+	RedactionReport *redact.Report
+	// RedactionBlockReason carries a redact.BlockReason value when the
+	// fail-closed redaction path triggered a block. Empty otherwise.
+	RedactionBlockReason redact.BlockReason
 }
 
 // BodyScanRequest groups the parameters for scanRequestBody, keeping the
@@ -93,6 +109,22 @@ type BodyScanRequest struct {
 	MaxBytes        int
 	Scanner         *scanner.Scanner
 	AgentID         string
+	// RedactMatcher is the pre-compiled matcher for the active redaction
+	// profile. Nil disables redaction for this request. Callers construct
+	// this once per config reload via redact.Config.BuildMatcher and reuse
+	// it across requests.
+	RedactMatcher *redact.Matcher
+	// RedactLimits caps redaction-specific ceilings independently of the
+	// body scan's MaxBytes. Zero values fall through to redact package
+	// defaults.
+	RedactLimits redact.Limits
+	// RedactAllowlistUnparseable lists hostnames whose non-JSON bodies are
+	// permitted through as-is. When the Host is not in this list and the
+	// body is not JSON, redaction fails closed. Nil/empty = strict.
+	RedactAllowlistUnparseable []string
+	// Host is the upstream hostname being forwarded to, used for allowlist
+	// matching. Empty disables allowlist behavior (strict everywhere).
+	Host string
 }
 
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
@@ -133,6 +165,43 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		return buf, BodyScanResult{Clean: true}
 	}
 
+	// Redaction runs BEFORE DLP so that every forwarding path (including
+	// non-block DLP actions like warn / strip) forwards the redacted buf.
+	// Running redaction after DLP would mean a DLP-matched warn-mode
+	// request forwards the ORIGINAL unredacted body — the bypass
+	// reported in v1b round 1 review (2026-04-19). DLP then scans the
+	// redacted buf and catches anything redaction did not cover.
+	var redactReport *redact.Report
+	if req.RedactMatcher != nil {
+		rewritten, report, err := applyRedaction(buf, req)
+		if err != nil {
+			var be *redact.BlockError
+			if errors.As(err, &be) {
+				return buf, BodyScanResult{
+					Clean:                false,
+					Action:               config.ActionBlock,
+					Reason:               fmt.Sprintf("redaction blocked request: %s", be.Reason),
+					RedactionBlockReason: be.Reason,
+				}
+			}
+			// Non-BlockError from redact is currently unreachable because
+			// RewriteJSON always wraps failures in *BlockError. Setting
+			// the sentinel reason keeps isFailClosedBodyResult's check
+			// (RedactionBlockReason != "") reachable if that contract
+			// ever loosens, so audit-mode callers still block.
+			return buf, BodyScanResult{
+				Clean:                false,
+				Action:               config.ActionBlock,
+				Reason:               fmt.Sprintf("redaction error: %v", err),
+				RedactionBlockReason: redact.ReasonInternalError,
+			}
+		}
+		if report != nil {
+			buf = rewritten
+			redactReport = report
+		}
+	}
+
 	// Extract text strings from body based on content type.
 	texts, parseErr := extractBodyText(buf, req.ContentType, req.MaxBytes)
 	if parseErr != "" {
@@ -145,7 +214,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 
 	if len(texts) == 0 {
-		return buf, BodyScanResult{Clean: true}
+		return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
 	}
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
@@ -153,8 +222,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		result := req.Scanner.ScanTextForDLP(ctx, text)
 		if !result.Clean {
 			return buf, BodyScanResult{
-				Clean:      false,
-				DLPMatches: result.Matches,
+				Clean:           false,
+				DLPMatches:      result.Matches,
+				RedactionReport: redactReport,
 			}
 		}
 	}
@@ -168,8 +238,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	result := req.Scanner.ScanTextForDLP(ctx, joined)
 	if !result.Clean {
 		return buf, BodyScanResult{
-			Clean:      false,
-			DLPMatches: result.Matches,
+			Clean:           false,
+			DLPMatches:      result.Matches,
+			RedactionReport: redactReport,
 		}
 	}
 
@@ -185,11 +256,97 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 				Action:          addressprotect.StrictestAction(addrResult.Findings),
 				AddressFindings: addrResult.Findings,
 				Reason:          fmt.Sprintf("address poisoning detected: %s", addrResult.Findings[0].Explanation),
+				RedactionReport: redactReport,
 			}
 		}
 	}
 
-	return buf, BodyScanResult{Clean: true}
+	return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
+}
+
+// applyRedaction is the pre-DLP content-transformation step. Returns
+// (rewritten, nil, nil) when the body was redacted, (rewritten, nil, nil)
+// with rewritten==buf when the feature is a no-op for this body (non-JSON
+// host on the allowlist), and (_, _, *BlockError) when a fail-closed
+// redaction gate fired.
+func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
+	if !isJSONContentType(req.ContentType) {
+		if !hostAllowlisted(req.Host, req.RedactAllowlistUnparseable) {
+			return nil, nil, &redact.BlockError{
+				Reason: redact.ReasonNonJSONBody,
+				Detail: fmt.Sprintf("redaction enabled but body Content-Type %q is not JSON and host %q is not on redaction.allowlist_unparseable", req.ContentType, req.Host),
+			}
+		}
+		// Allowlisted host with non-JSON body: caller forwards as-is.
+		// Return nil report so the caller does not fabricate a redaction
+		// receipt summary for a body that was never scanned.
+		return buf, nil, nil
+	}
+	rewritten, report, err := redact.RewriteJSON(buf, req.RedactMatcher, redact.NewRedactor(), req.RedactLimits)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rewritten, report, nil
+}
+
+// isFailClosedBodyResult reports whether a body-scan result must block even
+// when request enforcement is disabled. This covers cases where forwarding the
+// request would violate the scanner's safety invariant, such as a consumed body
+// that cannot be replayed or a redaction gate that explicitly failed closed.
+func isFailClosedBodyResult(result BodyScanResult, bodyBytes []byte) bool {
+	return bodyBytes == nil || result.RedactionBlockReason != ""
+}
+
+// isJSONContentType reports whether ct is a recognised JSON media type,
+// tolerating parameters such as charset. Empty or unparseable types return
+// false so the redaction allowlist check picks them up.
+func isJSONContentType(ct string) bool {
+	if ct == "" {
+		return false
+	}
+	mt, _, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return false
+	}
+	mt = strings.ToLower(mt)
+	if mt == contentTypeJSON || mt == "text/json" {
+		return true
+	}
+	// +json suffix covers vendored variants like application/vnd.api+json.
+	return strings.HasSuffix(mt, "+json")
+}
+
+// hostAllowlisted reports whether host matches any entry in allowlist.
+// Supports exact hostname matches and leading-wildcard entries of the
+// form "*.domain". Entries are expected to be canonicalised via the
+// redact package's host validator at config load.
+//
+// host is normalised to lowercase and stripped of any port suffix before
+// matching. The redact validator rejects port-bearing entries, so most
+// real proxy traffic carries host:port (e.g. api.anthropic.com:443) and
+// would false-negative against bare-host allowlist entries if we did not
+// strip here.
+func hostAllowlisted(host string, allowlist []string) bool {
+	if host == "" || len(allowlist) == 0 {
+		return false
+	}
+	host = strings.ToLower(host)
+	// Trim trailing :port if present. net.SplitHostPort also handles
+	// bracketed IPv6 literals, but proxy Host headers in pipelock are
+	// hostname:port so a simple last-colon trim matches real traffic.
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	for _, entry := range allowlist {
+		entry = strings.ToLower(entry)
+		if entry == host {
+			return true
+		}
+		if strings.HasPrefix(entry, "*.") && strings.HasSuffix(host, entry[1:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasNonIdentityEncoding returns true if the Content-Encoding header contains
@@ -214,7 +371,7 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 	mediaType, params, _ := mime.ParseMediaType(contentType)
 
 	switch {
-	case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):
+	case mediaType == contentTypeJSON || strings.HasSuffix(mediaType, "+json"):
 		if !json.Valid(body) {
 			return nil, "invalid JSON body"
 		}

@@ -40,6 +40,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
@@ -271,6 +272,7 @@ type Proxy struct {
 	certCachePtr       atomic.Pointer[certgen.CertCache]      // nil when TLS interception disabled
 	entropyTrackerPtr  atomic.Pointer[scanner.EntropyTracker] // nil when entropy budget disabled
 	fragmentBufferPtr  atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
+	redactMatcherPtr   atomic.Pointer[redact.Matcher]         // nil when redaction disabled
 	logger             *audit.Logger
 	metrics            *metrics.Metrics
 	ks                 *killswitch.Controller
@@ -427,6 +429,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	p.frozenTools = NewFrozenToolRegistry()
 
 	p.setupCEE(&cfg.CrossRequestDetection)
+
+	if err := p.setupRedaction(cfg); err != nil {
+		return nil, err
+	}
 
 	// Create session admin API handler when an API token is configured.
 	// Mirrors the kill switch env-var override: PIPELOCK_KILLSWITCH_API_TOKEN
@@ -969,6 +975,13 @@ func (p *Proxy) EnvelopeEmitterPtr() *atomic.Pointer[envelope.Emitter] {
 	return &p.envelopeEmitterPtr
 }
 
+// RedactMatcherPtr returns the atomic pointer to the compiled redaction
+// matcher. Used by the reverse-proxy handler (which does not carry a
+// back-reference to *Proxy) so it picks up hot-reload swaps automatically.
+func (p *Proxy) RedactMatcherPtr() *atomic.Pointer[redact.Matcher] {
+	return &p.redactMatcherPtr
+}
+
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
 // Session manager lifecycle is toggled when session_profiling.enabled changes.
@@ -1018,6 +1031,22 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	if rcptErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 			fmt.Errorf("receipt emitter reload failed, keeping old config: %w", rcptErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return
+	}
+	// Stage the redaction matcher BEFORE cfgPtr.Store so a failed build
+	// aborts the whole reload instead of mixing new config limits/
+	// allowlist with the old matcher rules. Without this, an operator
+	// editing a dictionary or profile into an invalid state could leave
+	// the proxy in a mixed-policy state where the config says X but the
+	// compiled matcher still runs Y.
+	newRedactMatcher, redactErr := p.buildRedactMatcher(cfg)
+	if redactErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("redaction matcher reload failed, keeping old config: %w", redactErr))
 		sc.Close()
 		if newEd != nil {
 			newEd.Close()
@@ -1116,6 +1145,12 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	}
 	p.updateCEEStats()
 
+	// Publish the pre-staged redaction matcher. Building happened BEFORE
+	// cfgPtr.Store so a compile failure aborted the reload entirely; by
+	// the time we get here the matcher (possibly nil when redaction is
+	// disabled) is known-good and matches the already-published cfg.
+	p.redactMatcherPtr.Store(newRedactMatcher)
+
 	// Receipt emitter hash is updated by reloadReceiptEmitter above.
 	// No separate UpdateConfigHash needed — emitter is always (re)created
 	// with the current cfg.Hash() when a signing key is configured.
@@ -1193,6 +1228,31 @@ func (p *Proxy) setupCEE(ceeCfg *config.CrossRequestDetection) {
 	p.entropyTrackerPtr.Store(et)
 	p.fragmentBufferPtr.Store(fb)
 	p.updateCEEStats()
+}
+
+// buildRedactMatcher compiles the active redaction profile into a Matcher
+// the body scanner can reuse across requests. Returns nil (no matcher) when
+// redaction is disabled or unresolved — callers are expected to treat that
+// as "redaction not active for this request". A compile error is returned
+// so callers can surface it at startup/reload time rather than silently
+// degrading.
+func (p *Proxy) buildRedactMatcher(cfg *config.Config) (*redact.Matcher, error) {
+	if !cfg.Redaction.Enabled {
+		return nil, nil
+	}
+	return cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+}
+
+// setupRedaction stores the compiled matcher at startup and reload. When
+// redaction is disabled, the pointer is cleared so request handlers fall
+// through without running the redaction step.
+func (p *Proxy) setupRedaction(cfg *config.Config) error {
+	m, err := p.buildRedactMatcher(cfg)
+	if err != nil {
+		return fmt.Errorf("redact matcher build: %w", err)
+	}
+	p.redactMatcherPtr.Store(m)
+	return nil
 }
 
 // updateCEEStats registers a callback so CEE state is available through the

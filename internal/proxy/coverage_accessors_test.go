@@ -50,7 +50,17 @@ func TestProxy_Accessors(t *testing.T) {
 func TestSessionManager_SessionExists(t *testing.T) {
 	t.Parallel()
 
-	sm := NewSessionManager(&config.SessionProfiling{Enabled: true}, nil, metrics.New())
+	// Non-zero CleanupIntervalSeconds + SessionTTLMinutes are required: with
+	// zero values the cleanup goroutine fires time.NewTimer(0) immediately and
+	// cutoff=now matches a freshly created session's lastActivity, racing the
+	// test. Matches session_taint_test.go:43.
+	sm := NewSessionManager(&config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            10,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}, nil, metrics.New())
+	defer sm.Close()
 
 	if sm.SessionExists("nonexistent") {
 		t.Error("expected false for nonexistent session")

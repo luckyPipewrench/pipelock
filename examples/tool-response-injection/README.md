@@ -113,5 +113,12 @@ For stdio mode, replace the subprocess command in `demo.py` with your server com
 
 The harness is most useful when your server has an innocent tool description but a risky tool response body. That is the gap this example is meant to surface.
 
+## Using The Evidence Downstream
+The harness proves the receipt stream. What to do with it is a separate
+question. See [`docs/guides/detection-integration.md`](../../docs/guides/detection-integration.md)
+for how SIEM rules, analyst review, and long-window LLM detectors all
+consume the same receipt format, plus a forty-line Python example that
+verifies a stream and routes each receipt to a pluggable handler.
+
 ## Security Note
 This example emits deliberate prompt-injection payloads for testing and demonstration. It is a detector harness, not a weapon.

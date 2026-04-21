@@ -74,7 +74,7 @@ jobs:
 
       - name: Run Pipelock
         id: pipelock
-        uses: luckyPipewrench/pipelock@38801766549e8f86ee8bf9dc99e976fc12ee2ccf # v2
+        uses: luckyPipewrench/pipelock@51d5289495b6986e1346975b82c419e80ceadcd0 # v2
         env:
           PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
           PIPELOCK_CONFIG: ${{ inputs.config-path }}

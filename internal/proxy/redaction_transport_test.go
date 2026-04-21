@@ -129,8 +129,8 @@ func TestForwardProxy_Redaction_FailClosedNonJSONBlocksForward(t *testing.T) {
 	if upstreamHit.Load() {
 		t.Fatal("forward proxy forwarded a non-JSON body with redaction enabled and no allowlist entry")
 	}
-	if resp.StatusCode == http.StatusOK {
-		t.Fatalf("expected block response, got %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 block response, got %d", resp.StatusCode)
 	}
 }
 

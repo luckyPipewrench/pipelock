@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 func TestParseDiff_SingleFileAdded(t *testing.T) {
@@ -215,6 +216,42 @@ func TestScanDiff_FindsSecret(t *testing.T) {
 	// Verify secret is redacted — content should NOT contain the original key
 	if f.Content == `var key = "`+key+`"` {
 		t.Error("content should be redacted but contains original secret")
+	}
+}
+
+func TestCompileDLPPatterns_InvalidRegexWithKnownClassFallback(t *testing.T) {
+	patterns := CompileDLPPatterns([]config.DLPPattern{{
+		Name:     "AWS Key",
+		Regex:    "(",
+		Severity: "critical",
+	}})
+
+	if len(patterns) != 1 {
+		t.Fatalf("compiled patterns = %d, want 1", len(patterns))
+	}
+	if patterns[0].Class == "" {
+		t.Fatal("expected known class fallback for AWS Key")
+	}
+	if patterns[0].Re != nil {
+		t.Fatal("invalid regex should not produce compiled regexp")
+	}
+}
+
+func TestReplaceGitProtectMatches_SkipsInvalidAndOverlappingSpans(t *testing.T) {
+	key := fakeKey("EXAMPLE")
+	input := `prefix "` + key + `" suffix`
+	redacted := replaceGitProtectMatches(input, []redact.Match{
+		{Start: -1, End: 3},
+		{Start: 8, End: 28},
+		{Start: 10, End: 15},
+		{Start: 40, End: 35},
+	})
+
+	if strings.Count(redacted, "[REDACTED]") != 1 {
+		t.Fatalf("expected exactly one replacement, got %q", redacted)
+	}
+	if strings.Contains(redacted, key) {
+		t.Fatalf("redacted output leaked secret: %q", redacted)
 	}
 }
 

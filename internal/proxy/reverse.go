@@ -352,7 +352,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // RoundTripper can compute content-digest without a second drain.
 func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime) (blocked bool, verdict string, body []byte) {
 	// Skip binary content types — no secrets to scan in images/video.
-	if isBinaryMIME(r.Header.Get("Content-Type")) {
+	if isBinaryMIME(r.Header.Get("Content-Type")) && redaction == nil {
 		return false, "", nil
 	}
 
@@ -434,9 +434,13 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 
 	// Fail-closed transport errors (consumed-but-unreplayable body) and
 	// redaction gate failures must block regardless of enforce mode.
+	layer := "dlp"
+	if result.RedactionBlockReason != "" {
+		layer = scannerLabelRedaction
+	}
 	if isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
-		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
 		writeReverseProxyBlock(w, http.StatusForbidden, reason)
 		return true, config.ActionBlock, nil
 	}

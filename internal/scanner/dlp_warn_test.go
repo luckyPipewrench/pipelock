@@ -353,6 +353,31 @@ func TestDLPWarnHook_QuietTextDLPDoesNotEmit(t *testing.T) {
 	}
 }
 
+func TestDLPWarnHook_TextDLPDeduplicatesDuplicateWarns(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.DLP.Patterns = []config.DLPPattern{{
+		Name:     "dup-warn",
+		Regex:    `[A-Za-z0-9+/=]{8,}`,
+		Severity: config.SeverityHigh,
+		Action:   config.ActionWarn,
+	}}
+	s := New(cfg)
+
+	var called []string
+	s.SetDLPWarnHook(func(_ context.Context, patternName, _ string) {
+		called = append(called, patternName)
+	})
+
+	s.ScanTextForDLP(context.Background(), "QUJDREVGRw==")
+
+	if len(called) != 1 {
+		t.Fatalf("warn hook calls = %d, want 1", len(called))
+	}
+	if called[0] != "dup-warn" {
+		t.Fatalf("warn hook pattern = %q, want dup-warn", called[0])
+	}
+}
+
 func TestDLPWarnHook_URLDLP(t *testing.T) {
 	cfg := testDLPConfig("hook-url", `hook-url-[A-Za-z0-9]{10,}`, true)
 	s := New(cfg)

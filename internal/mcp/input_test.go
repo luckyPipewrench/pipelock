@@ -391,6 +391,45 @@ func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
 	}
 }
 
+func TestForwardScannedInput_BlocksToolCallRedactionFailureWithoutReceiptEmitter(t *testing.T) {
+	sc := testInputScanner(t)
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":"oops"}`
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	opts := buildTestOpts(sc, withRedaction(testRedactionMatcher(), "code"))
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	if got := strings.TrimSpace(serverBuf.String()); got != "" {
+		t.Fatalf("unexpected forwarded request: %s", got)
+	}
+
+	blocked, ok := <-blockedCh
+	if !ok {
+		t.Fatal("expected blocked request")
+	}
+	if string(blocked.ID) != "1" {
+		t.Fatalf("blocked id = %s, want 1", blocked.ID)
+	}
+	if blocked.IsNotification {
+		t.Fatal("request id should not be treated as notification")
+	}
+	if !strings.Contains(logBuf.String(), "tool arguments redaction blocked") {
+		t.Fatalf("log output missing redaction block reason: %s", logBuf.String())
+	}
+}
+
 func TestScanRequest_BatchScanning(t *testing.T) {
 	sc := testInputScanner(t)
 

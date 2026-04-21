@@ -53,6 +53,10 @@ const (
 	// scannerLabelAddressProtection is the scanner label for address poisoning
 	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
 	scannerLabelAddressProtection = "address_protection"
+
+	// scannerLabelRedaction is the scanner label for fail-closed request-side
+	// redaction gates and redaction-derived block receipts.
+	scannerLabelRedaction = "redaction"
 )
 
 // isDomainExempt checks if a hostname matches any pattern in a domain

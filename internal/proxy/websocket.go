@@ -65,6 +65,7 @@ type wsRelay struct {
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
+	redactionLog *redact.Report
 	rec          session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
 	terminalOnce sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 }
@@ -583,14 +584,16 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		closeVerdict = config.ActionBlock
 	}
 	p.emitReceipt(receipt.EmitOpts{
-		ActionID:  actionID,
-		Verdict:   closeVerdict,
-		Layer:     "session_close",
-		Transport: "websocket",
-		Method:    "WS",
-		Target:    targetURL,
-		RequestID: requestID,
-		Agent:     agent,
+		ActionID:         actionID,
+		Verdict:          closeVerdict,
+		Layer:            "session_close",
+		Transport:        "websocket",
+		Method:           "WS",
+		Target:           targetURL,
+		RequestID:        requestID,
+		Agent:            agent,
+		RedactionProfile: cfg.Redaction.DefaultProfile,
+		RedactionReport:  relay.redactionLog,
 	})
 
 	sc.RecordRequest(relay.hostname, int(stats.clientToServer+stats.serverToClient))
@@ -1048,6 +1051,35 @@ func wsAddressFindingKey(finding addressprotect.Finding) string {
 	return fmt.Sprintf("%s\x00%s\x00%d\x00%s\x00%s", finding.Chain, finding.Normalized, finding.Verdict, finding.Action, finding.MatchedAddr)
 }
 
+func wsMergeRedactionReport(dst **redact.Report, src *redact.Report) {
+	if src == nil || !src.Applied || src.TotalRedactions == 0 {
+		return
+	}
+	if *dst == nil {
+		byClass := make(map[redact.Class]int, len(src.ByClass))
+		for class, count := range src.ByClass {
+			byClass[class] = count
+		}
+		*dst = &redact.Report{
+			Applied:         true,
+			TotalRedactions: src.TotalRedactions,
+			ByClass:         byClass,
+		}
+		return
+	}
+	(*dst).Applied = true
+	(*dst).TotalRedactions += src.TotalRedactions
+	if len(src.ByClass) == 0 {
+		return
+	}
+	if (*dst).ByClass == nil {
+		(*dst).ByClass = make(map[redact.Class]int, len(src.ByClass))
+	}
+	for class, count := range src.ByClass {
+		(*dst).ByClass[class] += count
+	}
+}
+
 func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []byte, result BodyScanResult) (blocked bool) {
 	if result.Clean {
 		return false
@@ -1058,12 +1090,12 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	closeReason := "DLP violation"
 	if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
 		scannerLabel = scannerLabelAddressProtection
-		receiptLayer = "address_protection"
+		receiptLayer = scannerLabelAddressProtection
 		closeReason = "address poisoning detected"
 	}
 	if result.RedactionBlockReason != "" {
-		scannerLabel = "redaction"
-		receiptLayer = "redaction"
+		scannerLabel = scannerLabelRedaction
+		receiptLayer = scannerLabelRedaction
 		closeReason = string(result.RedactionBlockReason)
 	}
 
@@ -1089,15 +1121,17 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, reason, r.clientIP, r.requestID)
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
 		r.proxy.emitReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
-			Verdict:   config.ActionBlock,
-			Layer:     receiptLayer,
-			Pattern:   reason,
-			Transport: "websocket",
-			Method:    "WS",
-			Target:    r.targetURL,
-			RequestID: r.requestID,
-			Agent:     r.agent,
+			ActionID:         receipt.NewActionID(),
+			Verdict:          config.ActionBlock,
+			Layer:            receiptLayer,
+			Pattern:          reason,
+			Transport:        "websocket",
+			Method:           "WS",
+			Target:           r.targetURL,
+			RequestID:        r.requestID,
+			Agent:            r.agent,
+			RedactionProfile: r.cfg.Redaction.DefaultProfile,
+			RedactionReport:  result.RedactionReport,
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closeReason)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closeReason)
@@ -1143,15 +1177,17 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, blockReason, r.clientIP, r.requestID)
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)
 		r.proxy.emitReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
-			Verdict:   config.ActionBlock,
-			Layer:     receiptLayer,
-			Pattern:   blockReason,
-			Transport: "websocket",
-			Method:    "WS",
-			Target:    r.targetURL,
-			RequestID: r.requestID,
-			Agent:     r.agent,
+			ActionID:         receipt.NewActionID(),
+			Verdict:          config.ActionBlock,
+			Layer:            receiptLayer,
+			Pattern:          blockReason,
+			Transport:        "websocket",
+			Method:           "WS",
+			Target:           r.targetURL,
+			RequestID:        r.requestID,
+			Agent:            r.agent,
+			RedactionProfile: r.cfg.Redaction.DefaultProfile,
+			RedactionReport:  result.RedactionReport,
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closeReason)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closeReason)
@@ -1349,12 +1385,12 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		if redactionEnabled && !hdr.OpCode.IsControl() && (!hdr.Fin || hdr.OpCode == ws.OpContinuation) {
 			reason := string(redact.ReasonWebSocketFragmented)
-			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, "redaction", reason, r.clientIP, r.requestID)
-			r.proxy.metrics.RecordWSScanHit("redaction")
+			log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelRedaction, reason, r.clientIP, r.requestID)
+			r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
 			r.proxy.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
-				Layer:     "redaction",
+				Layer:     scannerLabelRedaction,
 				Pattern:   reason,
 				Transport: "websocket",
 				Method:    "WS",
@@ -1411,6 +1447,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		if redactionEnabled {
 			buf, bodyResult := r.scanClientMessageBody(ctx, msg)
+			wsMergeRedactionReport(&r.redactionLog, bodyResult.RedactionReport)
 			if r.handleClientMessageBodyResult(log, buf, bodyResult) {
 				blocked = true
 				return

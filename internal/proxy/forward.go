@@ -866,6 +866,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if len(bodyResult.AddressFindings) > 0 && len(bodyResult.DLPMatches) == 0 {
 				scannerLabel = scannerLabelAddressProtection
 			}
+			if bodyResult.RedactionBlockReason != "" {
+				scannerLabel = scannerLabelRedaction
+			}
 
 			patternNames := dlpMatchNames(bodyResult.DLPMatches)
 			bundleRules := dlpBundleRules(bodyResult.DLPMatches)

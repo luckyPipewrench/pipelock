@@ -31,3 +31,9 @@ func (b *syncBuffer) reset() {
 	defer b.mu.Unlock()
 	b.buf.Reset()
 }
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}

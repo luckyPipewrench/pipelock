@@ -756,6 +756,38 @@ func TestReverseProxy_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 	}
 }
 
+func TestReverseProxy_RedactionFailClosedForBinaryMIMEWhenEnforceDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+
+	var upstreamHit atomic.Bool
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+	resp := testPost(t, proxy.URL+"/api/send", "image/png", "not-a-real-png")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for binary MIME fail-closed redaction block, got %d", resp.StatusCode)
+	}
+	if upstreamHit.Load() {
+		t.Fatal("reverse proxy forwarded a binary MIME body with redaction enabled")
+	}
+}
+
 func TestReverseProxy_AskModeFailsClosed(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Action = config.ActionAsk

@@ -6,13 +6,16 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -574,6 +577,165 @@ logging:
 	case err := <-cmdErr:
 		if err != nil {
 			t.Errorf("RunCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunCmd did not exit within 5s")
+	}
+}
+
+func TestRunCmd_RedactionWiresMCPListenerAndReverseProxy(t *testing.T) {
+	mainAddr := freePort(t)
+	reverseAddr := freePort(t)
+	mcpAddr := freePort(t)
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+
+	var reverseBody atomic.Value
+	reverseUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reverseBody.Store(string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer reverseUpstream.Close()
+
+	var mcpBody atomic.Value
+	mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mcpBody.Store(string(body))
+
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result": map[string]any{
+				"content": []map[string]any{{
+					"type": "text",
+					"text": "ok",
+				}},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode(response): %v", err)
+		}
+	}))
+	defer mcpUpstream.Close()
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+  max_response_mb: 1
+request_body_scanning:
+  enabled: true
+  action: warn
+reverse_proxy:
+  enabled: true
+  listen: %q
+  upstream: %q
+redaction:
+  enabled: true
+  default_profile: code
+  profiles:
+    code:
+      classes:
+        - aws-access-key
+logging:
+  format: json
+  output: stdout
+`, mainAddr, reverseAddr, reverseUpstream.URL)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-redaction-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp config: %v", err)
+	}
+	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := RunCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"--config", tmpFile.Name(),
+		"--mcp-listen", mcpAddr,
+		"--mcp-upstream", mcpUpstream.URL,
+	})
+	var stderr syncBuffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	waitForPort(t, mainAddr)
+	waitForPort(t, reverseAddr)
+	waitForPort(t, mcpAddr)
+
+	reverseReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+reverseAddr+"/api",
+		strings.NewReader(`{"prompt":"use `+secret+` to deploy"}`))
+	if err != nil {
+		t.Fatalf("new reverse request: %v", err)
+	}
+	reverseReq.Header.Set("Content-Type", "application/json")
+	reverseResp, err := http.DefaultClient.Do(reverseReq)
+	if err != nil {
+		t.Fatalf("reverse proxy POST: %v", err)
+	}
+	_ = reverseResp.Body.Close()
+	if reverseResp.StatusCode != http.StatusOK {
+		t.Fatalf("reverse proxy status = %d, want 200", reverseResp.StatusCode)
+	}
+
+	mcpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+mcpAddr+"/",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use `+secret+` to deploy"}}}`))
+	if err != nil {
+		t.Fatalf("new mcp request: %v", err)
+	}
+	mcpReq.Header.Set("Content-Type", "application/json")
+	mcpResp, err := http.DefaultClient.Do(mcpReq)
+	if err != nil {
+		t.Fatalf("mcp listener POST: %v", err)
+	}
+	_ = mcpResp.Body.Close()
+	if mcpResp.StatusCode != http.StatusOK {
+		t.Fatalf("mcp listener status = %d, want 200", mcpResp.StatusCode)
+	}
+
+	gotReverse, _ := reverseBody.Load().(string)
+	if strings.Contains(gotReverse, secret) {
+		t.Fatalf("reverse upstream leaked secret: %s", gotReverse)
+	}
+	if !strings.Contains(gotReverse, "<pl:aws-access-key:1>") {
+		t.Fatalf("reverse upstream missing placeholder: %s", gotReverse)
+	}
+
+	gotMCP, _ := mcpBody.Load().(string)
+	if strings.Contains(gotMCP, secret) {
+		t.Fatalf("mcp upstream leaked secret: %s", gotMCP)
+	}
+	if !strings.Contains(gotMCP, "<pl:aws-access-key:1>") {
+		t.Fatalf("mcp upstream missing placeholder: %s", gotMCP)
+	}
+
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunCmd did not exit within 5s")

@@ -25,6 +25,10 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 	if len(trimmed) == 0 {
 		return line, nil, nil
 	}
+	leading := len(line) - len(bytes.TrimLeft(line, " \t\r\n"))
+	trailing := len(line) - len(bytes.TrimRight(line, " \t\r\n"))
+	prefix := line[:leading]
+	suffix := line[len(line)-trailing:]
 
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &env); err != nil {
@@ -73,7 +77,7 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 	}
 	params["arguments"] = rewrittenArgs
 
-	rewrittenParams, err := json.Marshal(params)
+	rewrittenParams, err := marshalMCPMessage(params)
 	if err != nil {
 		return nil, nil, &redact.BlockError{
 			Reason:             redact.ReasonRemarshalFailed,
@@ -83,7 +87,7 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 	}
 	env["params"] = rewrittenParams
 
-	rewrittenLine, err := json.Marshal(env)
+	rewrittenLine, err := marshalMCPMessage(env)
 	if err != nil {
 		return nil, nil, &redact.BlockError{
 			Reason:             redact.ReasonRemarshalFailed,
@@ -91,7 +95,24 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 			Detail:             fmt.Sprintf("marshal rewritten MCP message: %v", err),
 		}
 	}
-	return rewrittenLine, report, nil
+	if len(prefix) == 0 && len(suffix) == 0 {
+		return rewrittenLine, report, nil
+	}
+	rewritten := make([]byte, 0, len(prefix)+len(rewrittenLine)+len(suffix))
+	rewritten = append(rewritten, prefix...)
+	rewritten = append(rewritten, rewrittenLine...)
+	rewritten = append(rewritten, suffix...)
+	return rewritten, report, nil
+}
+
+func marshalMCPMessage(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 func reportTotal(report *redact.Report) int {

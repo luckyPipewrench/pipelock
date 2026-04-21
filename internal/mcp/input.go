@@ -257,6 +257,7 @@ func ForwardScannedInput(
 		if pendingToolCallName != "" {
 			pendingActionID = receipt.NewActionID()
 		}
+		rpcID := extractRPCID(line)
 		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedaction(line, opts)
 		if redactErr != nil {
 			reason := redactErr.Error()
@@ -266,7 +267,7 @@ func ForwardScannedInput(
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
 			recordAdaptiveSignal(session.SignalBlock)
-			if pendingActionID != "" {
+			if pendingActionID != "" && opts.ReceiptEmitter != nil {
 				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
 					ActionID:         pendingActionID,
 					Verdict:          config.ActionBlock,
@@ -278,8 +279,8 @@ func ForwardScannedInput(
 				})
 			}
 			blockedCh <- BlockedRequest{
-				ID:             extractRPCID(line),
-				IsNotification: isRPCNotification(extractRPCID(line)),
+				ID:             rpcID,
+				IsNotification: isRPCNotification(rpcID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (redaction)", lineNum),
 				ErrorCode:      -32001,
 				ErrorMessage:   "pipelock: request blocked by MCP redaction",

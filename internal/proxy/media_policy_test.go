@@ -19,6 +19,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const testMediaBlockReason = "test"
+
 // buildValidJPEG returns a minimal but structurally valid JPEG with an APP1
 // (EXIF-style) segment whose payload is identifiable. The media package
 // unit tests cover deeper parser behavior; this helper only needs a
@@ -378,7 +380,7 @@ func TestMediaExposureFields_ToEventFields(t *testing.T) {
 		MetadataRemoved: 3,
 		BytesRemoved:    120,
 		Blocked:         true,
-		BlockReason:     "test",
+		BlockReason:     testMediaBlockReason,
 	}
 	f = full.ToEventFields()
 	if f["format"] != "png" {
@@ -387,7 +389,7 @@ func TestMediaExposureFields_ToEventFields(t *testing.T) {
 	if f["metadata_segments_removed"].(int) != 3 {
 		t.Error("metadata_segments_removed missing")
 	}
-	if f["block_reason"] != "test" {
+	if f["block_reason"] != testMediaBlockReason {
 		t.Error("block_reason missing")
 	}
 }

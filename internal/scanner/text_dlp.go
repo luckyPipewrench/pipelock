@@ -239,7 +239,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 				Severity:    m.Severity,
 			})
 		}
-		s.emitDLPWarns(ctx, warns)
+		s.emitDLPWarns(ctx, deduplicateWarnMatches(warns))
 	}
 
 	return TextDLPResult{

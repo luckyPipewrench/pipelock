@@ -803,7 +803,7 @@ func newInterceptHandler(
 				if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					ic.Logger.LogBlocked(actx, "header_dlp", "request header contains secret")
 					ic.Metrics.RecordTLSRequestBlocked("header_dlp")
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     "header_dlp",
@@ -813,7 +813,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 					return
 				}

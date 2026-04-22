@@ -110,6 +110,7 @@ func TestResolveRuntime_SliceAliasingPrevented(t *testing.T) {
 	cfg.rawBytes = []byte("mode: balanced\n")
 	cfg.DLP.Patterns = []DLPPattern{{Name: "seed", Regex: ".", ExemptDomains: []string{"example.com"}}}
 	cfg.ResponseScanning.Patterns = []ResponseScanPattern{{Name: "seed", Regex: "."}}
+	cfg.ResponseScanning.ExemptDomains = []string{"seed.example.com"}
 	cfg.MCPToolPolicy.Rules = []ToolPolicyRule{{Name: "seed", ToolPattern: "."}}
 
 	resolved, _ := cfg.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeForward})
@@ -117,6 +118,7 @@ func TestResolveRuntime_SliceAliasingPrevented(t *testing.T) {
 	resolved.DLP.Patterns[0].Name = mutatedSentinel
 	resolved.DLP.Patterns[0].ExemptDomains[0] = "mutated.example"
 	resolved.ResponseScanning.Patterns[0].Name = mutatedSentinel
+	resolved.ResponseScanning.ExemptDomains[0] = "mutated.example.com"
 	resolved.MCPToolPolicy.Rules[0].Name = mutatedSentinel
 
 	if cfg.DLP.Patterns[0].Name == mutatedSentinel {
@@ -127,6 +129,9 @@ func TestResolveRuntime_SliceAliasingPrevented(t *testing.T) {
 	}
 	if cfg.ResponseScanning.Patterns[0].Name == mutatedSentinel {
 		t.Error("ResponseScanning.Patterns aliased")
+	}
+	if cfg.ResponseScanning.ExemptDomains[0] == "mutated.example.com" {
+		t.Error("ResponseScanning.ExemptDomains aliased — mutation on clone leaked into loaded config")
 	}
 	if cfg.MCPToolPolicy.Rules[0].Name == mutatedSentinel {
 		t.Error("MCPToolPolicy.Rules aliased")

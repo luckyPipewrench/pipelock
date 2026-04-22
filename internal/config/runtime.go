@@ -207,6 +207,15 @@ func (c *Config) Clone() *Config {
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
 	clone.ResponseScanning.Patterns = cloneResponseScanPatterns(c.ResponseScanning.Patterns)
+	// ExemptDomains is a reload-sensitive exemption surface: operators
+	// remove entries via hot-reload and ValidateReload warns when the
+	// list is cleared. Without deep-copying the slice here, a runtime
+	// caller that appends to clone.ResponseScanning.ExemptDomains would
+	// alias back into the loaded config, breaking the frozen-after-Load
+	// guarantee for this field.
+	if c.ResponseScanning.ExemptDomains != nil {
+		clone.ResponseScanning.ExemptDomains = append([]string(nil), c.ResponseScanning.ExemptDomains...)
+	}
 	clone.MCPToolPolicy.Rules = cloneToolPolicyRules(c.MCPToolPolicy.Rules)
 
 	return &clone

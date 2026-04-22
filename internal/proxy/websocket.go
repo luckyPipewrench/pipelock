@@ -831,6 +831,27 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 			crossAddr = wsCrossMessageAddressFindings(combinedAddr.Findings, prevAddr.Findings, currAddr.Findings)
 		}
 	}
+	if r.redaction != nil && r.redaction.required && len(crossDLP) > 0 {
+		reason := "redaction blocked request: websocket cross-message secret cannot be redacted"
+		r.recordSignal(session.SignalBlock, log)
+		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabelRedaction, reason, r.clientIP, r.requestID)
+		r.proxy.metrics.RecordWSScanHit(scannerLabelRedaction)
+		r.proxy.emitReceipt(receipt.EmitOpts{
+			ActionID:         receipt.NewActionID(),
+			Verdict:          config.ActionBlock,
+			Layer:            scannerLabelRedaction,
+			Pattern:          reason,
+			Transport:        "websocket",
+			Method:           "WS",
+			Target:           r.targetURL,
+			RequestID:        r.requestID,
+			Agent:            r.agent,
+			RedactionProfile: r.cfg.Redaction.DefaultProfile,
+		})
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-message secret cannot be redacted")
+		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-message secret cannot be redacted")
+		return true
+	}
 
 	return r.handleClientTextFindings(log, crossDLP, crossAddr)
 }

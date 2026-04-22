@@ -901,6 +901,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// Fail-closed: if the body cannot be replayed or redaction explicitly
 			// failed closed, never forward the partially-consumed request.
 			if isFailClosedBodyResult(bodyResult, buf) {
+				p.logger.LogBlocked(actx, scannerLabel, reason)
 				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,

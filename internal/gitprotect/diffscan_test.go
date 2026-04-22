@@ -14,6 +14,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
+const testPatternAWSKey = "AWS Key"
+
 func TestParseDiff_SingleFileAdded(t *testing.T) {
 	diff := `diff --git a/main.go b/main.go
 index abc1234..def5678 100644
@@ -171,7 +173,7 @@ func TestParseHunkNewStart(t *testing.T) {
 
 func testPatterns() []CompiledDLPPattern {
 	return CompileDLPPatterns([]config.DLPPattern{
-		{Name: "AWS Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
+		{Name: testPatternAWSKey, Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
 		{Name: "GitHub Token", Regex: `gh[ps]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
 	})
 }
@@ -207,8 +209,8 @@ func TestScanDiff_FindsSecret(t *testing.T) {
 	if f.Line != 2 {
 		t.Errorf("expected line 2, got %d", f.Line)
 	}
-	if f.Pattern != "AWS Key" {
-		t.Errorf("expected pattern 'AWS Key', got %q", f.Pattern)
+	if f.Pattern != testPatternAWSKey {
+		t.Errorf("expected pattern %q, got %q", testPatternAWSKey, f.Pattern)
 	}
 	if f.Severity != "critical" {
 		t.Errorf("expected severity 'critical', got %q", f.Severity)
@@ -221,7 +223,7 @@ func TestScanDiff_FindsSecret(t *testing.T) {
 
 func TestCompileDLPPatterns_InvalidRegexWithKnownClassFallback(t *testing.T) {
 	patterns := CompileDLPPatterns([]config.DLPPattern{{
-		Name:     "AWS Key",
+		Name:     testPatternAWSKey,
 		Regex:    "(",
 		Severity: "critical",
 	}})
@@ -234,6 +236,22 @@ func TestCompileDLPPatterns_InvalidRegexWithKnownClassFallback(t *testing.T) {
 	}
 	if patterns[0].Re != nil {
 		t.Fatal("invalid regex should not produce compiled regexp")
+	}
+
+	key := fakeKey("EXAMPLE")
+	diff := makeDiffWithSecret("x.go", `var key = "`+key+`"`)
+	result, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatalf("ScanDiff: %v", err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected known-class fallback finding, got %+v", result.Findings)
+	}
+	if result.Findings[0].Pattern != testPatternAWSKey {
+		t.Fatalf("expected %s finding, got %q", testPatternAWSKey, result.Findings[0].Pattern)
+	}
+	if strings.Contains(result.Findings[0].Content, key) {
+		t.Fatalf("redacted content leaked key: %q", result.Findings[0].Content)
 	}
 }
 
@@ -259,7 +277,7 @@ func TestScanDiff_ClassMatchStillRequiresConfiguredRegex(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("x.go", `var key = "`+key+`"`)
 	patterns := CompileDLPPatterns([]config.DLPPattern{{
-		Name:     "AWS Key",
+		Name:     testPatternAWSKey,
 		Regex:    `ZZZ-NOT-A-MATCH`,
 		Severity: "critical",
 	}})
@@ -277,7 +295,7 @@ func TestScanDiff_ClassAndRegexRedactionsAreAdditive(t *testing.T) {
 	key := fakeKey("EXAMPLE")
 	diff := makeDiffWithSecret("x.go", `payload = "`+key+` leaky_123"`)
 	patterns := CompileDLPPatterns([]config.DLPPattern{{
-		Name:     "AWS Key",
+		Name:     testPatternAWSKey,
 		Regex:    `AKIA[0-9A-Z]{16}|leaky_[0-9]+`,
 		Severity: "critical",
 	}})
@@ -400,7 +418,7 @@ func TestFormatFindings_NoFindings(t *testing.T) {
 
 func TestFormatFindings_WithFindings(t *testing.T) {
 	findings := []Finding{
-		{File: "main.go", Line: 10, Pattern: "AWS Key", Severity: "critical", Content: "export AWS_KEY=[REDACTED]"},
+		{File: "main.go", Line: 10, Pattern: testPatternAWSKey, Severity: "critical", Content: "export AWS_KEY=[REDACTED]"},
 	}
 	result := FormatFindings(findings)
 	if result == "" {
@@ -416,7 +434,7 @@ func TestFormatFindings_WithFindings(t *testing.T) {
 
 func TestFindingsJSON_WithFindings(t *testing.T) {
 	findings := []Finding{
-		{File: "main.go", Line: 42, Pattern: "AWS Key", Severity: "critical", Content: "[REDACTED]"},
+		{File: "main.go", Line: 42, Pattern: testPatternAWSKey, Severity: "critical", Content: "[REDACTED]"},
 	}
 	data, err := FindingsJSON(findings)
 	if err != nil {
@@ -436,8 +454,8 @@ func TestFindingsJSON_WithFindings(t *testing.T) {
 	if decoded[0].Line != 42 {
 		t.Errorf("expected line 42, got %d", decoded[0].Line)
 	}
-	if decoded[0].Pattern != "AWS Key" {
-		t.Errorf("expected pattern 'AWS Key', got %q", decoded[0].Pattern)
+	if decoded[0].Pattern != testPatternAWSKey {
+		t.Errorf("expected pattern %q, got %q", testPatternAWSKey, decoded[0].Pattern)
 	}
 }
 

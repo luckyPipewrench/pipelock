@@ -133,6 +133,44 @@ func TestApplyMCPToolCallRedaction_NoArgumentsBypasses(t *testing.T) {
 	}
 }
 
+func TestApplyMCPToolCallRedaction_InvalidArgumentsBypass(t *testing.T) {
+	tests := []struct {
+		name string
+		line []byte
+	}{
+		{
+			name: "null",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":null}}`),
+		},
+		{
+			name: "string",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":"oops"}}`),
+		},
+		{
+			name: "array",
+			line: []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":[]}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rewritten, report, err := applyMCPToolCallRedaction(tt.line, MCPProxyOpts{
+				RedactMatcher: testRedactionMatcher(),
+				RedactLimits:  redact.DefaultLimits().ToLimits(),
+			})
+			if err != nil {
+				t.Fatalf("applyMCPToolCallRedaction: %v", err)
+			}
+			if !bytes.Equal(rewritten, tt.line) {
+				t.Fatalf("invalid arguments should pass through unchanged\ngot:  %s\nwant: %s", rewritten, tt.line)
+			}
+			if report != nil {
+				t.Fatalf("report should be nil for invalid arguments, got %+v", report)
+			}
+		})
+	}
+}
+
 func TestReportTotal(t *testing.T) {
 	if got := reportTotal(nil); got != 0 {
 		t.Fatalf("reportTotal(nil) = %d, want 0", got)

@@ -2052,6 +2052,54 @@ func TestWSProxy_CrossMessageDLP_AnthropicKey(t *testing.T) {
 	}
 }
 
+func TestWSProxyRedaction_CrossMessageDLPFailClosedWhenEnforceDisabled(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+	applyRedactionTestProfile(cfg)
+	enforceOff := false
+	cfg.Enforce = &enforceOff
+
+	rt, err := p.buildRedactionRuntime(cfg)
+	if err != nil {
+		t.Fatalf("buildRedactionRuntime: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("expected redaction runtime")
+	}
+
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		scanner:      scanner.New(cfg),
+		proxy:        p,
+		cfg:          cfg,
+		redaction:    rt,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-cross-message-redaction",
+		targetURL:    "ws://example.com/socket",
+	}
+
+	blocked := relay.scanClientCrossMessageText(context.Background(), audit.NewNop(),
+		[]byte("AKIA"+"IOSFODNN7"),
+		[]byte(testWSExample),
+	)
+	if !blocked {
+		t.Fatal("expected cross-message DLP to fail closed when redaction is enabled")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Layer != scannerLabelRedaction {
+		t.Fatalf("receipt layer = %q, want %q", receipts[0].ActionRecord.Layer, scannerLabelRedaction)
+	}
+}
+
 func TestWSProxy_CrossMessageDLP_FragmentThenSplit(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

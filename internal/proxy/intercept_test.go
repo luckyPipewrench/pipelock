@@ -1301,6 +1301,46 @@ func TestInterceptTunnel_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_RedactionFailClosedWithoutProxyFallback(t *testing.T) {
+	var upstreamHit atomic.Bool
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	enforceOff := false
+	cfg.Enforce = &enforceOff
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+addr+"/api", strings.NewReader("opaque payload"))
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (redaction fail-closed should block even without Proxy fallback)", resp.StatusCode)
+	}
+	if upstreamHit.Load() {
+		t.Fatal("intercept forwarded a fail-closed redaction request without Proxy fallback")
+	}
+}
+
 // errorReader is an io.ReadCloser that returns an error after reading some bytes.
 type errorReader struct {
 	n   int

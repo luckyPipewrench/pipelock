@@ -70,6 +70,9 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 	if !ok || len(argsRaw) == 0 || string(argsRaw) == jsonrpc.Null {
 		return line, nil, nil
 	}
+	if !isJSONObjectRawMessage(argsRaw) {
+		return line, nil, nil
+	}
 
 	rewrittenArgs, report, err := redact.RewriteJSON(argsRaw, opts.RedactMatcher, redact.NewRedactor(), opts.RedactLimits)
 	if err != nil {
@@ -124,4 +127,9 @@ func reportTotal(report *redact.Report) int {
 
 func isNullRawMessage(raw json.RawMessage) bool {
 	return len(raw) != 0 && bytes.Equal(bytes.TrimSpace(raw), []byte(jsonrpc.Null))
+}
+
+func isJSONObjectRawMessage(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) != 0 && trimmed[0] == '{'
 }

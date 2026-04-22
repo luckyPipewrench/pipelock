@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -419,6 +420,95 @@ func TestMcpProxyCmd_EmitsSignedReceipts_HTTPUpstream(t *testing.T) {
 	}
 	if !blockFound {
 		t.Fatalf("expected at least one block receipt, got %d receipts", len(receipts))
+	}
+}
+
+func TestMcpProxyCmd_HTTPUpstreamRedactsToolCallArguments(t *testing.T) {
+	t.Parallel()
+
+	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	var upstreamBody syncBuffer
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_, _ = upstreamBody.Write(body)
+
+		var request struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result": map[string]any{
+				"content": []map[string]any{{
+					"type": "text",
+					"text": "ok",
+				}},
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode(response): %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	configPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+	content := `mode: balanced
+response_scanning:
+  enabled: true
+  action: warn
+mcp_input_scanning:
+  enabled: false
+  action: block
+mcp_tool_scanning:
+  enabled: false
+  action: warn
+mcp_tool_policy:
+  enabled: false
+  action: warn
+  rules: []
+redaction:
+  enabled: true
+  default_profile: code
+  profiles:
+    code:
+      classes:
+        - aws-access-key
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := McpCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetContext(ctx)
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader(strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use ` + secret + ` to deploy"}}}`,
+	}, "\n") + "\n"))
+	cmd.SetArgs([]string{
+		"proxy",
+		"--config", configPath,
+		"--upstream", srv.URL,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("run mcp proxy http upstream: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if strings.Contains(upstreamBody.String(), secret) {
+		t.Fatalf("upstream request leaked secret: %s", upstreamBody.String())
+	}
+	if !strings.Contains(upstreamBody.String(), "<pl:aws-access-key:1>") {
+		t.Fatalf("upstream request missing placeholder: %s", upstreamBody.String())
 	}
 }
 

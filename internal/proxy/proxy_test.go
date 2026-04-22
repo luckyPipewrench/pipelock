@@ -2110,6 +2110,107 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 	<-done
 }
 
+func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
+	if testing.Short() {
+		t.Skip("reload soak; skipped under -short")
+	}
+
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer backend.Close()
+
+	buildCfg := func(redactionEnabled bool) *config.Config {
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		cfg.APIAllowlist = nil
+		cfg.ForwardProxy.Enabled = true
+		cfg.ForwardProxy.MaxTunnelSeconds = 10
+		cfg.ForwardProxy.IdleTimeoutSeconds = 2
+		cfg.FetchProxy.TimeoutSeconds = 5
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		if redactionEnabled {
+			applyRedactionTestProfile(cfg)
+			// Old config allows non-JSON payloads for loopback hosts.
+			cfg.Redaction.AllowlistUnparseable = []string{"127.0.0.1"}
+		}
+		cfg.ApplyDefaults()
+		cfg.Internal = nil
+		return cfg
+	}
+
+	initialCfg := buildCfg(true)
+	initialSc := scanner.New(initialCfg)
+	p, err := New(initialCfg, audit.NewNop(), initialSc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	proxySrv := newIPv4Server(t, p.buildHandler(p.buildMux()))
+	defer proxySrv.Close()
+
+	client := proxyClient(strings.TrimPrefix(proxySrv.URL, "http://"))
+	targetURL := backend.URL + "/upload"
+
+	const workers = 6
+	const requestsPerWorker = 40
+	errCh := make(chan string, workers*requestsPerWorker+16)
+
+	var wg sync.WaitGroup
+	for workerID := range workers {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < requestsPerWorker; i++ {
+				req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodPost,
+					targetURL, strings.NewReader("opaque-non-json-body"))
+				if reqErr != nil {
+					errCh <- fmt.Sprintf("worker %d request %d: %v", id, i, reqErr)
+					return
+				}
+				req.Header.Set("Content-Type", "application/octet-stream")
+
+				resp, doErr := client.Do(req)
+				if doErr != nil {
+					errCh <- fmt.Sprintf("worker %d request %d: %v", id, i, doErr)
+					return
+				}
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					errCh <- fmt.Sprintf("worker %d request %d: status %d", id, i, resp.StatusCode)
+					return
+				}
+			}
+		}(workerID)
+	}
+
+	reloadDone := make(chan struct{})
+	go func() {
+		defer close(reloadDone)
+		for i := 0; i < 60; i++ {
+			enableRedaction := i%2 == 0
+			cfg := buildCfg(enableRedaction)
+			p.Reload(cfg, scanner.New(cfg))
+		}
+	}()
+
+	wg.Wait()
+	<-reloadDone
+	close(errCh)
+
+	var failures []string
+	for errMsg := range errCh {
+		failures = append(failures, errMsg)
+	}
+	if len(failures) > 0 {
+		t.Fatalf("reload/request mismatches (%d):\n  %s", len(failures), strings.Join(failures, "\n  "))
+	}
+}
+
 // --- Response Scan Default Action Test ---
 
 func TestFetchEndpoint_ResponseScan_DefaultAction(t *testing.T) {

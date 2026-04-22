@@ -25,7 +25,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
-	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
@@ -56,17 +55,17 @@ type ReverseProxyBlockResponse struct {
 // to a configured upstream URL. Request bodies are scanned for DLP patterns
 // (secret exfiltration) and response bodies are scanned for prompt injection.
 type ReverseProxyHandler struct {
-	upstream           *url.URL
-	proxy              *httputil.ReverseProxy
-	cfgPtr             *atomic.Pointer[config.Config]
-	scPtr              *atomic.Pointer[scanner.Scanner]
-	redactMatcherPtr   *atomic.Pointer[redact.Matcher]
-	logger             *audit.Logger
-	metrics            *metrics.Metrics
-	ks                 *killswitch.Controller
-	captureObs         capture.CaptureObserver
-	shieldEngine       *shield.Engine
-	envelopeEmitterPtr *atomic.Pointer[envelope.Emitter]
+	upstream            *url.URL
+	proxy               *httputil.ReverseProxy
+	cfgPtr              *atomic.Pointer[config.Config]
+	scPtr               *atomic.Pointer[scanner.Scanner]
+	redactionRuntimePtr *atomic.Pointer[redactionRuntime]
+	logger              *audit.Logger
+	metrics             *metrics.Metrics
+	ks                  *killswitch.Controller
+	captureObs          capture.CaptureObserver
+	shieldEngine        *shield.Engine
+	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
 }
 
 // NewReverseProxy creates a reverse proxy handler that scans request and
@@ -96,7 +95,7 @@ func NewReverseProxy(
 		captureObs:   captureObs,
 		shieldEngine: shieldEngine,
 	}
-	// redactMatcherPtr is attached via SetRedactMatcherPtr after
+	// redactionRuntimePtr is attached via SetRedactionRuntimePtr after
 	// construction so NewReverseProxy stays under the 6-parameter rule.
 
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
@@ -134,12 +133,12 @@ func (rp *ReverseProxyHandler) SetEnvelopeEmitter(ptr *atomic.Pointer[envelope.E
 	rp.envelopeEmitterPtr = ptr
 }
 
-// SetRedactMatcherPtr attaches the atomic pointer to the compiled
-// redaction matcher. The pointer dereferences to nil when redaction is
-// disabled, so scanRequestBody will skip the redaction step gracefully.
+// SetRedactionRuntimePtr attaches the atomic pointer to the request-body
+// redaction runtime snapshot. The pointer dereferences to nil when redaction
+// is disabled, so scanRequestBody will skip the redaction step gracefully.
 // Must be called before serving requests if redaction is enabled.
-func (rp *ReverseProxyHandler) SetRedactMatcherPtr(ptr *atomic.Pointer[redact.Matcher]) {
-	rp.redactMatcherPtr = ptr
+func (rp *ReverseProxyHandler) SetRedactionRuntimePtr(ptr *atomic.Pointer[redactionRuntime]) {
+	rp.redactionRuntimePtr = ptr
 }
 
 // ServeHTTP handles incoming requests: scan the request body for DLP,
@@ -245,7 +244,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	forwardedVerdict := config.ActionAllow
 	var reverseBodyBytes []byte
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
-		blocked, verdict, bodyBytes := rp.scanRequest(w, r, cfg, sc)
+		redaction := currentRedactionRuntimeForConfig(cfg, rp.redactionRuntimePtr)
+		blocked, verdict, bodyBytes := rp.scanRequest(w, r, cfg, sc, redaction)
 		if blocked {
 			return
 		}
@@ -347,9 +347,9 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // request had no scannable body) and the caller may hand it to the
 // envelope signer via ctxKeyReverseEnvelopeBody so the signing
 // RoundTripper can compute content-digest without a second drain.
-func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner) (blocked bool, verdict string, body []byte) {
+func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime) (blocked bool, verdict string, body []byte) {
 	// Skip binary content types — no secrets to scan in images/video.
-	if isBinaryMIME(r.Header.Get("Content-Type")) {
+	if isBinaryMIME(r.Header.Get("Content-Type")) && redaction == nil {
 		return false, "", nil
 	}
 
@@ -358,21 +358,16 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		maxBytes = reverseProxyMaxBodyBytes
 	}
 
-	var redactMatcher *redact.Matcher
-	if rp.redactMatcherPtr != nil {
-		redactMatcher = rp.redactMatcherPtr.Load()
+	bodyReq := BodyScanRequest{
+		Body:            r.Body,
+		ContentType:     r.Header.Get("Content-Type"),
+		ContentEncoding: r.Header.Get("Content-Encoding"),
+		MaxBytes:        maxBytes,
+		Scanner:         sc,
+		Host:            rp.upstream.Hostname(),
 	}
-	bodyBytes, result := scanRequestBody(r.Context(), BodyScanRequest{
-		Body:                       r.Body,
-		ContentType:                r.Header.Get("Content-Type"),
-		ContentEncoding:            r.Header.Get("Content-Encoding"),
-		MaxBytes:                   maxBytes,
-		Scanner:                    sc,
-		RedactMatcher:              redactMatcher,
-		RedactLimits:               cfg.Redaction.Limits.ToLimits(),
-		RedactAllowlistUnparseable: cfg.Redaction.AllowlistUnparseable,
-		Host:                       rp.upstream.Hostname(),
-	})
+	applyBodyScanRedaction(&bodyReq, redaction)
+	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 
 	// Capture observer: record reverse proxy request DLP verdict for policy replay.
 	{
@@ -436,9 +431,13 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 
 	// Fail-closed transport errors (consumed-but-unreplayable body) and
 	// redaction gate failures must block regardless of enforce mode.
+	layer := "dlp"
+	if result.RedactionBlockReason != "" {
+		layer = scannerLabelRedaction
+	}
 	if isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
-		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
 		writeReverseProxyBlock(w, http.StatusForbidden, reason)
 		return true, config.ActionBlock, nil
 	}

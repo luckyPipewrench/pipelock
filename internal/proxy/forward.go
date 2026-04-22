@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -474,6 +475,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			EntropyTracker: p.entropyTrackerPtr.Load(),
 			FragmentBuffer: p.fragmentBufferPtr.Load(),
 			SessionMgr:     p.sessionMgrPtr.Load(),
+			Redaction:      p.currentRedactionRuntimeFor(cfg),
 			Proxy:          p,
 			Recorder:       interceptRec,
 			KillSwitch:     p.ks,
@@ -556,6 +558,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		agent = agentAnonymous
 	}
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
+	var forwardRedactionReport *redact.Report
+	withForwardRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
+		opts.RedactionProfile = cfg.Redaction.DefaultProfile
+		opts.RedactionReport = forwardRedactionReport
+		return opts
+	}
 
 	targetURL := r.URL.String()
 	actx := newHTTPAuditContext(p.logger, r.Method, targetURL, clientIP, requestID, agent)
@@ -811,18 +819,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// would lose deterministic bookkeeping about byte counts.
 	var forwardBodyBytes []byte
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-		buf, bodyResult := scanRequestBody(r.Context(), BodyScanRequest{
-			Body:                       r.Body,
-			ContentType:                r.Header.Get("Content-Type"),
-			ContentEncoding:            r.Header.Get("Content-Encoding"),
-			MaxBytes:                   cfg.RequestBodyScanning.MaxBodyBytes,
-			Scanner:                    sc,
-			AgentID:                    agent,
-			RedactMatcher:              p.redactMatcherPtr.Load(),
-			RedactLimits:               cfg.Redaction.Limits.ToLimits(),
-			RedactAllowlistUnparseable: cfg.Redaction.AllowlistUnparseable,
-			Host:                       r.URL.Hostname(),
-		})
+		bodyReq := BodyScanRequest{
+			Body:            r.Body,
+			ContentType:     r.Header.Get("Content-Type"),
+			ContentEncoding: r.Header.Get("Content-Encoding"),
+			MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,
+			Scanner:         sc,
+			AgentID:         agent,
+			Host:            r.URL.Hostname(),
+		}
+		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
+		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
 
 		// Capture observer: record forward body DLP verdict for policy replay.
 		{
@@ -845,6 +852,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Outcome:         captureOutcome(bodyAction, bodyResult.Clean),
 			})
 		}
+		forwardRedactionReport = bodyResult.RedactionReport
 
 		if !bodyResult.Clean {
 			hasFinding = true
@@ -857,6 +865,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			scannerLabel := scannerLabelBodyDLP
 			if len(bodyResult.AddressFindings) > 0 && len(bodyResult.DLPMatches) == 0 {
 				scannerLabel = scannerLabelAddressProtection
+			}
+			if bodyResult.RedactionBlockReason != "" {
+				scannerLabel = scannerLabelRedaction
 			}
 
 			patternNames := dlpMatchNames(bodyResult.DLPMatches)
@@ -887,11 +898,30 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogBodyScan(actx, audit.EventAddressProtection, action, len(bodyResult.AddressFindings), addrNames)
 			}
 
-			// Fail-closed: when buf is nil the body was consumed but couldn't
-			// be buffered (oversize, compressed, read error, multipart parse
-			// error). Always block regardless of enforce mode — forwarding an
-			// empty body corrupts the upstream request.
-			if buf == nil {
+			// Fail-closed: if the body cannot be replayed or redaction explicitly
+			// failed closed, never forward the partially-consumed request.
+			if isFailClosedBodyResult(bodyResult, buf) {
+				p.logger.LogBlocked(actx, scannerLabel, reason)
+				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+					ActionID:            actionID,
+					Verdict:             config.ActionBlock,
+					Layer:               scannerLabel,
+					Pattern:             reason,
+					Transport:           "forward",
+					Method:              r.Method,
+					Target:              targetURL,
+					RequestID:           requestID,
+					Agent:               agent,
+					SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+					SessionContaminated: forwardTaint.Risk.Contaminated,
+					RecentTaintSources:  forwardTaint.Risk.Sources,
+					SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+					SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+					AuthorityKind:       forwardTaint.Authority.String(),
+					TaintDecision:       forwardTaint.Result.Decision.String(),
+					TaintDecisionReason: forwardTaint.Result.Reason,
+					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
@@ -918,12 +948,52 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if action == config.ActionBlock && cfg.EnforceEnabled() {
+				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+					ActionID:            actionID,
+					Verdict:             config.ActionBlock,
+					Layer:               scannerLabel,
+					Pattern:             reason,
+					Transport:           "forward",
+					Method:              r.Method,
+					Target:              targetURL,
+					RequestID:           requestID,
+					Agent:               agent,
+					SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+					SessionContaminated: forwardTaint.Risk.Contaminated,
+					RecentTaintSources:  forwardTaint.Risk.Sources,
+					SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+					SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+					AuthorityKind:       forwardTaint.Authority.String(),
+					TaintDecision:       forwardTaint.Result.Decision.String(),
+					TaintDecisionReason: forwardTaint.Result.Reason,
+					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason, http.StatusForbidden)
 				return
 			}
 			// Escalation can upgrade to block even in audit mode.
 			if action == config.ActionBlock && !cfg.EnforceEnabled() {
+				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+					ActionID:            actionID,
+					Verdict:             config.ActionBlock,
+					Layer:               scannerLabel,
+					Pattern:             reason + " (escalated)",
+					Transport:           "forward",
+					Method:              r.Method,
+					Target:              targetURL,
+					RequestID:           requestID,
+					Agent:               agent,
+					SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+					SessionContaminated: forwardTaint.Risk.Contaminated,
+					RecentTaintSources:  forwardTaint.Risk.Sources,
+					SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+					SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+					AuthorityKind:       forwardTaint.Authority.String(),
+					TaintDecision:       forwardTaint.Result.Decision.String(),
+					TaintDecisionReason: forwardTaint.Result.Reason,
+					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
+				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
 				http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
 				return
@@ -1105,7 +1175,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}); envErr != nil {
 			blockedErr := newEnvelopeBlockedRequest(envErr)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-			p.emitReceipt(receipt.EmitOpts{
+			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
@@ -1124,7 +1194,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-			})
+			}))
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 			http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
@@ -1135,7 +1205,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if blockedErr, ok := blockedRequestErrorFrom(err); ok {
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-			p.emitReceipt(receipt.EmitOpts{
+			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
@@ -1154,7 +1224,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-			})
+			}))
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
 			// Open-redirect hint fires on any fail-closed redirect
 			// block regardless of scanner layer. Match on the reason
@@ -1192,7 +1262,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(actx, "a2a_stream", "compressed A2A stream cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
-			p.emitReceipt(receipt.EmitOpts{
+			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               "a2a_stream",
@@ -1211,7 +1281,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-			})
+			}))
 			http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
 			return
 		}
@@ -1232,7 +1302,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			} else {
 				p.logger.LogBlocked(actx, "a2a_stream", err.Error())
 				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
-				p.emitReceipt(receipt.EmitOpts{
+				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               "a2a_stream",
@@ -1251,12 +1321,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaintDecision:       forwardTaint.Result.Decision.String(),
 					TaintDecisionReason: forwardTaint.Result.Reason,
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-				})
+				}))
 			}
 		} else {
 			duration := time.Since(start)
 			p.metrics.RecordAllowed(duration, agentLabel)
-			p.emitReceipt(receipt.EmitOpts{
+			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionAllow,
 				Transport:           "forward",
@@ -1273,7 +1343,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaintDecision:       forwardTaint.Result.Decision.String(),
 				TaintDecisionReason: forwardTaint.Result.Reason,
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-			})
+			}))
 			p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
 			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 				forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -1386,7 +1456,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAnomaly(actx, "a2a_response", a2aReason, 0)
 				if a2aAction == config.ActionBlock {
 					p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_response", time.Since(start), agentLabel)
-					p.emitReceipt(receipt.EmitOpts{
+					p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 						ActionID:            actionID,
 						Verdict:             config.ActionBlock,
 						Layer:               "a2a_response",
@@ -1405,7 +1475,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						TaintDecision:       forwardTaint.Result.Decision.String(),
 						TaintDecisionReason: forwardTaint.Result.Reason,
 						TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-					})
+					}))
 					http.Error(w, "blocked: "+a2aReason, http.StatusForbidden)
 					return
 				}
@@ -1553,7 +1623,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
-		p.emitReceipt(receipt.EmitOpts{
+		p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 			ActionID:            actionID,
 			Verdict:             config.ActionAllow,
 			Transport:           "forward",
@@ -1570,7 +1640,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			TaintDecision:       forwardTaint.Result.Decision.String(),
 			TaintDecisionReason: forwardTaint.Result.Reason,
 			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-		})
+		}))
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
@@ -1598,7 +1668,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	p.emitReceipt(receipt.EmitOpts{
+	p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             config.ActionAllow,
 		Transport:           "forward",
@@ -1615,7 +1685,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		TaintDecision:       forwardTaint.Result.Decision.String(),
 		TaintDecisionReason: forwardTaint.Result.Reason,
 		TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
-	})
+	}))
 	p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 	if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)

@@ -65,6 +65,7 @@ type InterceptContext struct {
 	EntropyTracker *scanner.EntropyTracker
 	FragmentBuffer *scanner.FragmentBuffer
 	SessionMgr     *SessionManager
+	Redaction      *redactionRuntime
 	Proxy          *Proxy
 	Recorder       session.Recorder
 	KillSwitch     *killswitch.Controller
@@ -410,6 +411,12 @@ func newInterceptHandler(
 		// RecordClean is only applied when the request was fully clean so that
 		// warn/strip findings do not contribute to score decay.
 		hasFinding := false
+		var interceptRedactionReport *redact.Report
+		withInterceptRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
+			opts.RedactionProfile = ic.Config.Redaction.DefaultProfile
+			opts.RedactionReport = interceptRedactionReport
+			return opts
+		}
 
 		// Scan the full URL through the DLP pipeline. The CONNECT handler only
 		// scans the synthetic host URL; inside the intercepted tunnel we have
@@ -567,22 +574,25 @@ func newInterceptHandler(
 		// content-digest computation without a second drain pass.
 		var interceptBodyBytes []byte
 		if ic.Config.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
-			var redactMatcher *redact.Matcher
-			if ic.Proxy != nil {
-				redactMatcher = ic.Proxy.redactMatcherPtr.Load()
+			redaction := ic.Redaction
+			if redaction == nil {
+				if ic.Proxy != nil {
+					redaction = ic.Proxy.currentRedactionRuntimeFor(ic.Config)
+				} else {
+					redaction = currentRedactionRuntimeForConfig(ic.Config, nil)
+				}
 			}
-			bodyBytes, result := scanRequestBody(r.Context(), BodyScanRequest{
-				Body:                       r.Body,
-				ContentType:                r.Header.Get("Content-Type"),
-				ContentEncoding:            r.Header.Get("Content-Encoding"),
-				MaxBytes:                   ic.Config.RequestBodyScanning.MaxBodyBytes,
-				Scanner:                    ic.Scanner,
-				AgentID:                    ic.Agent,
-				RedactMatcher:              redactMatcher,
-				RedactLimits:               ic.Config.Redaction.Limits.ToLimits(),
-				RedactAllowlistUnparseable: ic.Config.Redaction.AllowlistUnparseable,
-				Host:                       r.URL.Hostname(),
-			})
+			bodyReq := BodyScanRequest{
+				Body:            r.Body,
+				ContentType:     r.Header.Get("Content-Type"),
+				ContentEncoding: r.Header.Get("Content-Encoding"),
+				MaxBytes:        ic.Config.RequestBodyScanning.MaxBodyBytes,
+				Scanner:         ic.Scanner,
+				AgentID:         ic.Agent,
+				Host:            r.URL.Hostname(),
+			}
+			applyBodyScanRedaction(&bodyReq, redaction)
+			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 
 			// Capture observer: record intercept body DLP verdict for policy replay.
 			if ic.Proxy != nil {
@@ -605,6 +615,7 @@ func newInterceptHandler(
 					Outcome:         captureOutcome(bodyAction, result.Clean),
 				})
 			}
+			interceptRedactionReport = result.RedactionReport
 
 			if !result.Clean {
 				hasFinding = true
@@ -615,7 +626,9 @@ func newInterceptHandler(
 
 				// Determine scanner label: address_protection vs body_dlp.
 				scannerLabel := scannerLabelBodyDLP
-				if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
+				if result.RedactionBlockReason != "" {
+					scannerLabel = scannerLabelRedaction
+				} else if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
 					scannerLabel = scannerLabelAddressProtection
 				}
 
@@ -663,7 +676,7 @@ func newInterceptHandler(
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason)
 					ic.Metrics.RecordTLSRequestBlocked(scannerLabel)
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     scannerLabel,
@@ -673,7 +686,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
 				}
@@ -688,7 +701,7 @@ func newInterceptHandler(
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason+" (escalated)")
 					ic.Metrics.RecordTLSRequestBlocked(scannerLabel)
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     scannerLabel,
@@ -698,7 +711,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
 				}
@@ -729,7 +742,7 @@ func newInterceptHandler(
 						}
 						ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)
 						ic.Metrics.RecordTLSRequestBlocked(scannerLabelA2A)
-						interceptEmitReceipt(ic, receipt.EmitOpts{
+						interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 							ActionID:  actionID,
 							Verdict:   config.ActionBlock,
 							Layer:     scannerLabelA2A,
@@ -739,7 +752,7 @@ func newInterceptHandler(
 							Target:    targetURL,
 							RequestID: ic.RequestID,
 							Agent:     ic.Agent,
-						})
+						}))
 						http.Error(w, "blocked: "+reason, http.StatusForbidden)
 						return
 					}
@@ -796,7 +809,7 @@ func newInterceptHandler(
 				if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					ic.Logger.LogBlocked(actx, "header_dlp", "request header contains secret")
 					ic.Metrics.RecordTLSRequestBlocked("header_dlp")
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     "header_dlp",
@@ -806,7 +819,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
 					return
 				}
@@ -864,7 +877,7 @@ func newInterceptHandler(
 
 			if ceeRes.Blocked {
 				ic.Metrics.RecordTLSRequestBlocked("cross_request")
-				interceptEmitReceipt(ic, receipt.EmitOpts{
+				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     "cross_request",
@@ -874,7 +887,7 @@ func newInterceptHandler(
 					Target:    targetURL,
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
-				})
+				}))
 				http.Error(w, "blocked: "+ceeRes.Reason, http.StatusForbidden)
 				return
 			}
@@ -907,7 +920,7 @@ func newInterceptHandler(
 				ic.Proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
 			}
 			ic.Metrics.RecordTLSRequestBlocked("session_deny")
-			interceptEmitReceipt(ic, receipt.EmitOpts{
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "session_deny",
@@ -917,7 +930,7 @@ func newInterceptHandler(
 				Target:    targetURL,
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
-			})
+			}))
 			http.Error(w, "blocked: session escalation level "+session.EscalationLabel(recEscalationLevel(ic.Recorder)), http.StatusForbidden)
 			return
 		}
@@ -951,7 +964,7 @@ func newInterceptHandler(
 					blockedErr := newEnvelopeBlockedRequest(envErr)
 					ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 					ic.Metrics.RecordTLSRequestBlocked(blockedErr.layer)
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     blockedErr.layer,
@@ -961,7 +974,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
 					return
 				}
@@ -982,7 +995,7 @@ func newInterceptHandler(
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
 			ic.Metrics.RecordTLSResponseBlocked("compressed")
-			interceptEmitReceipt(ic, receipt.EmitOpts{
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "tls_response_blocked",
@@ -992,7 +1005,7 @@ func newInterceptHandler(
 				Target:    targetURL,
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
-			})
+			}))
 			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
 			return
 		}
@@ -1008,7 +1021,7 @@ func newInterceptHandler(
 			if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 				ic.Logger.LogBlocked(actx, scannerLabelA2A, "compressed A2A stream cannot be scanned")
 				ic.Metrics.RecordTLSResponseBlocked(scannerLabelA2A)
-				interceptEmitReceipt(ic, receipt.EmitOpts{
+				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     scannerLabelA2A,
@@ -1018,7 +1031,7 @@ func newInterceptHandler(
 					Target:    targetURL,
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
-				})
+				}))
 				http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
 				return
 			}
@@ -1042,7 +1055,7 @@ func newInterceptHandler(
 				} else {
 					ic.Logger.LogBlocked(actx, scannerLabelA2A, streamErr.Error())
 					ic.Metrics.RecordTLSResponseBlocked(scannerLabelA2A)
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     scannerLabelA2A,
@@ -1052,12 +1065,12 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 				}
 			}
 			// Emit receipt for completed A2A SSE stream (clean or warn-only).
 			if streamErr == nil || (errors.Is(streamErr, mcp.ErrA2AStreamFinding) && ic.Config.A2AScanning.Action == config.ActionWarn) {
-				interceptEmitReceipt(ic, receipt.EmitOpts{
+				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionAllow,
 					Transport: "intercept",
@@ -1065,7 +1078,7 @@ func newInterceptHandler(
 					Target:    targetURL,
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
-				})
+				}))
 			}
 			return
 		}
@@ -1079,7 +1092,7 @@ func newInterceptHandler(
 		if readErr != nil {
 			ic.Logger.LogError(actx, readErr)
 			ic.Metrics.RecordTLSResponseBlocked("read_error")
-			interceptEmitReceipt(ic, receipt.EmitOpts{
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "tls_response_blocked",
@@ -1089,14 +1102,14 @@ func newInterceptHandler(
 				Target:    targetURL,
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
-			})
+			}))
 			http.Error(w, "blocked: response read error", http.StatusForbidden)
 			return
 		}
 		if int64(len(respBody)) > maxResp {
 			ic.Logger.LogBlocked(actx, "tls_response_blocked", "response too large for scanning")
 			ic.Metrics.RecordTLSResponseBlocked("oversized")
-			interceptEmitReceipt(ic, receipt.EmitOpts{
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "tls_response_blocked",
@@ -1106,7 +1119,7 @@ func newInterceptHandler(
 				Target:    targetURL,
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
-			})
+			}))
 			http.Error(w, "blocked: response too large for scanning", http.StatusForbidden)
 			return
 		}
@@ -1144,7 +1157,7 @@ func newInterceptHandler(
 			// correlates with the allow envelope already injected on
 			// this request. A fresh ID here would orphan the evidence
 			// pair and break downstream causality reconstruction.
-			interceptEmitReceipt(ic, receipt.EmitOpts{
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     "media_policy",
@@ -1154,7 +1167,7 @@ func newInterceptHandler(
 				Target:    targetURL,
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
-			})
+			}))
 			http.Error(w, "blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
 			return
 		}
@@ -1215,7 +1228,7 @@ func newInterceptHandler(
 					}
 					ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)
 					ic.Metrics.RecordTLSResponseBlocked(scannerLabelA2A)
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     scannerLabelA2A,
@@ -1225,7 +1238,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: "+reason, http.StatusForbidden)
 					return
 				}
@@ -1320,7 +1333,7 @@ func newInterceptHandler(
 					}
 					ic.Logger.LogBlocked(actx, "response_scan", reason)
 					ic.Metrics.RecordTLSResponseBlocked("injection")
-					interceptEmitReceipt(ic, receipt.EmitOpts{
+					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     "response_scan",
@@ -1330,7 +1343,7 @@ func newInterceptHandler(
 						Target:    targetURL,
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
-					})
+					}))
 					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
 					return
 				case config.ActionStrip:
@@ -1387,7 +1400,7 @@ func newInterceptHandler(
 		// Use agentAnonymous (bounded cardinality) since intercept handler
 		// doesn't resolve agent profiles — avoids Prometheus label explosion.
 		ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
-		interceptEmitReceipt(ic, receipt.EmitOpts{
+		interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionAllow,
 			Transport: "intercept",
@@ -1395,7 +1408,7 @@ func newInterceptHandler(
 			Target:    targetURL,
 			RequestID: ic.RequestID,
 			Agent:     ic.Agent,
-		})
+		}))
 
 		// Forward response to client.
 		for k, vv := range resp.Header {

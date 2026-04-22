@@ -53,6 +53,10 @@ const (
 	// scannerLabelAddressProtection is the scanner label for address poisoning
 	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
 	scannerLabelAddressProtection = "address_protection"
+
+	// scannerLabelRedaction is the scanner label for fail-closed request-side
+	// redaction gates and redaction-derived block receipts.
+	scannerLabelRedaction = "redaction"
 )
 
 // isDomainExempt checks if a hostname matches any pattern in a domain
@@ -122,6 +126,10 @@ type BodyScanRequest struct {
 	// permitted through as-is. When the Host is not in this list and the
 	// body is not JSON, redaction fails closed. Nil/empty = strict.
 	RedactAllowlistUnparseable []string
+	// RedactionRequired indicates the request-scoped policy expects redaction
+	// to run. When the matching runtime is unavailable during a reload window,
+	// scanRequestBody fails closed instead of silently forwarding raw bytes.
+	RedactionRequired bool
 	// Host is the upstream hostname being forwarded to, used for allowlist
 	// matching. Empty disables allowlist behavior (strict everywhere).
 	Host string
@@ -172,6 +180,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	// reported in v1b round 1 review (2026-04-19). DLP then scans the
 	// redacted buf and catches anything redaction did not cover.
 	var redactReport *redact.Report
+	if req.RedactionRequired && req.RedactMatcher == nil && !allowlistSkipsRedactionRewrite(req) {
+		return buf, BodyScanResult{
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               "redaction runtime unavailable during reload",
+			RedactionBlockReason: redact.ReasonInternalError,
+		}
+	}
 	if req.RedactMatcher != nil {
 		rewritten, report, err := applyRedaction(buf, req)
 		if err != nil {
@@ -262,6 +278,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 
 	return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
+}
+
+func allowlistSkipsRedactionRewrite(req BodyScanRequest) bool {
+	return !isJSONContentType(req.ContentType) && hostAllowlisted(req.Host, req.RedactAllowlistUnparseable)
 }
 
 // applyRedaction is the pre-DLP content-transformation step. Returns

@@ -21,10 +21,12 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
@@ -37,6 +39,22 @@ const (
 	testPoisonedETHAddr = `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e", "amount": "1.0"}`
 	testWarnHookTimeout = 10 * time.Second
 )
+
+type discardConn struct{}
+
+func (discardConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
+func (discardConn) Write(p []byte) (int, error)        { return len(p), nil }
+func (discardConn) Close() error                       { return nil }
+func (discardConn) LocalAddr() net.Addr                { return testAddr("local") }
+func (discardConn) RemoteAddr() net.Addr               { return testAddr("remote") }
+func (discardConn) SetDeadline(_ time.Time) error      { return nil }
+func (discardConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (discardConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type testAddr string
+
+func (a testAddr) Network() string { return "test" }
+func (a testAddr) String() string  { return string(a) }
 
 // wsEchoServer creates a WebSocket server that echoes text frames back.
 func wsEchoServer(t *testing.T) (string, func()) {
@@ -190,6 +208,29 @@ func dialWS(t *testing.T, proxyAddr, backendAddr string) net.Conn {
 		t.Fatalf("ws dial: %v", err)
 	}
 	return conn
+}
+
+func writeMaskedClientFrame(t *testing.T, conn net.Conn, fin bool, opcode ws.OpCode, payload []byte) {
+	t.Helper()
+
+	mask := ws.NewMask()
+	masked := make([]byte, len(payload))
+	copy(masked, payload)
+	ws.Cipher(masked, mask, 0)
+
+	hdr := ws.Header{
+		Fin:    fin,
+		OpCode: opcode,
+		Length: int64(len(masked)),
+		Masked: true,
+		Mask:   mask,
+	}
+	if err := ws.WriteHeader(conn, hdr); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := conn.Write(masked); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
 }
 
 func waitForWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scope string) scanner.DLPWarnContext {
@@ -350,6 +391,366 @@ func TestWSProxyBinaryAllowed(t *testing.T) {
 	}
 	if string(reply) != string(msg) {
 		t.Errorf("expected %x, got %x", msg, reply)
+	}
+}
+
+func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	secret := redactionE2ESecret()
+	msg := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("opcode = %v, want OpText", op)
+	}
+	replyStr := string(reply)
+	if strings.Contains(replyStr, secret) {
+		t.Fatalf("echoed reply leaked secret: %q", replyStr)
+	}
+	if !strings.Contains(replyStr, placeholderAWS) {
+		t.Fatalf("echoed reply missing placeholder: %q", replyStr)
+	}
+}
+
+func TestWSProxyRedaction_BinaryNonJSONBlocked(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.AllowBinaryFrames = true
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpBinary, []byte("opaque-binary-payload")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, _, err := wsutil.ReadServerData(conn); err == nil {
+		t.Fatal("expected proxy to close on non-JSON binary frame when redaction is enabled")
+	}
+}
+
+func TestWSProxyRedaction_FragmentedMessageBlocked(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		applyRedactionTestProfile(cfg)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	secret := redactionE2ESecret()
+	firstFragment := []byte(`{"prompt":"` + secret[:8])
+	writeMaskedClientFrame(t, conn, false, ws.OpText, firstFragment)
+
+	if _, _, err := wsutil.ReadServerData(conn); err == nil {
+		t.Fatal("expected proxy to close after fragmented client message")
+	}
+}
+
+func TestWSFilterUniqueDLPMatches_SkipsExcludedAndDuplicates(t *testing.T) {
+	excluded := make(map[string]struct{})
+	wsAddDLPMatchKeys(excluded, []scanner.TextDLPMatch{{
+		PatternName: "dup",
+		Encoded:     "base64",
+	}})
+
+	filtered := wsFilterUniqueDLPMatches([]scanner.TextDLPMatch{
+		{PatternName: "dup", Encoded: "base64"},
+		{PatternName: "dup", Encoded: "hex"},
+		{PatternName: "dup", Encoded: "hex"},
+		{PatternName: "other", Encoded: ""},
+	}, excluded)
+
+	if len(filtered) != 2 {
+		t.Fatalf("filtered matches = %d, want 2", len(filtered))
+	}
+	if wsDLPMatchKey(filtered[0]) != "dup\x00hex" {
+		t.Fatalf("first filtered key = %q, want dup\\x00hex", wsDLPMatchKey(filtered[0]))
+	}
+	if wsDLPMatchKey(filtered[1]) != "other\x00" {
+		t.Fatalf("second filtered key = %q, want other\\x00", wsDLPMatchKey(filtered[1]))
+	}
+}
+
+func TestWSMergeRedactionReport_AggregatesCounts(t *testing.T) {
+	var merged *redact.Report
+	wsMergeRedactionReport(&merged, &redact.Report{
+		Applied:         true,
+		TotalRedactions: 1,
+		ByClass: map[redact.Class]int{
+			redact.ClassAWSAccessKey: 1,
+		},
+	})
+	wsMergeRedactionReport(&merged, &redact.Report{
+		Applied:         true,
+		TotalRedactions: 2,
+		ByClass: map[redact.Class]int{
+			redact.ClassAWSAccessKey: 1,
+			redact.ClassGitHubToken:  1,
+		},
+	})
+
+	if merged == nil {
+		t.Fatal("merged report should not be nil")
+	}
+	if merged.TotalRedactions != 3 {
+		t.Fatalf("total redactions = %d, want 3", merged.TotalRedactions)
+	}
+	if got := merged.ByClass[redact.ClassAWSAccessKey]; got != 2 {
+		t.Fatalf("aws-access-key count = %d, want 2", got)
+	}
+	if got := merged.ByClass[redact.ClassGitHubToken]; got != 1 {
+		t.Fatalf("github-token count = %d, want 1", got)
+	}
+}
+
+func TestWSRelay_HandleClientMessageBodyResult_FailClosedRedactionReceipt(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+	cfg.Redaction.Enabled = true
+	cfg.Redaction.DefaultProfile = "code"
+
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		proxy:        p,
+		cfg:          cfg,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-redaction",
+		targetURL:    "ws://example.com/socket",
+	}
+
+	blocked := relay.handleClientMessageBodyResult(audit.NewNop(), []byte("opaque"), BodyScanResult{
+		Clean:                false,
+		RedactionBlockReason: redact.ReasonNonJSONBody,
+		Reason:               "redaction blocked request: non_json_body",
+	})
+	if !blocked {
+		t.Fatal("expected fail-closed redaction block")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Layer != "redaction" {
+		t.Fatalf("receipt layer = %q, want redaction", receipts[0].ActionRecord.Layer)
+	}
+}
+
+func TestWSRelay_HandleClientMessageBodyResult_BlockAfterRedactionCarriesSummary(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+	cfg.Redaction.Enabled = true
+	cfg.Redaction.DefaultProfile = "code"
+
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		proxy:        p,
+		cfg:          cfg,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-redacted-block",
+		targetURL:    "ws://example.com/socket",
+	}
+
+	blocked := relay.handleClientMessageBodyResult(audit.NewNop(), []byte(`{"prompt":"clean"}`), BodyScanResult{
+		Clean:  false,
+		Action: config.ActionBlock,
+		Reason: "residual DLP after redaction",
+		DLPMatches: []scanner.TextDLPMatch{{
+			PatternName: "AWS Key",
+			Severity:    config.SeverityCritical,
+		}},
+		RedactionReport: &redact.Report{
+			Applied:         true,
+			TotalRedactions: 1,
+			ByClass: map[redact.Class]int{
+				redact.ClassAWSAccessKey: 1,
+			},
+		},
+	})
+	if !blocked {
+		t.Fatal("expected block after redaction")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Redaction == nil {
+		t.Fatal("expected redaction summary on websocket block receipt")
+	}
+	if got := receipts[0].ActionRecord.Redaction.ByClass[string(redact.ClassAWSAccessKey)]; got != 1 {
+		t.Fatalf("aws-access-key redactions = %d, want 1", got)
+	}
+}
+
+func TestWSRelay_HandleClientTextFindings_DLPBlockReceipt(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		proxy:        p,
+		cfg:          cfg,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-dlp",
+		targetURL:    "ws://example.com/socket",
+	}
+
+	blocked := relay.handleClientTextFindings(audit.NewNop(), []scanner.TextDLPMatch{{
+		PatternName: "AWS Key",
+		Severity:    config.SeverityCritical,
+	}}, nil)
+	if !blocked {
+		t.Fatal("expected DLP findings to block with enforcement enabled")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Layer != audit.ScannerDLP {
+		t.Fatalf("receipt layer = %q, want %q", receipts[0].ActionRecord.Layer, audit.ScannerDLP)
+	}
+}
+
+func TestWSRelay_HandleClientTextFindings_AddressBlockReceipt(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		proxy:        p,
+		cfg:          cfg,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-address",
+		targetURL:    "ws://example.com/socket",
+	}
+
+	blocked := relay.handleClientTextFindings(audit.NewNop(), nil, []addressprotect.Finding{{
+		Hit: addressprotect.Hit{
+			Chain:      "eth",
+			Normalized: "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+		},
+		Verdict:     addressprotect.VerdictLookalike,
+		Action:      config.ActionBlock,
+		MatchedAddr: "0x742d35...38f44e",
+		Explanation: "lookalike payout address",
+	}})
+	if !blocked {
+		t.Fatal("expected address poisoning findings to block with enforcement enabled")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Layer != "address_protection" {
+		t.Fatalf("receipt layer = %q, want address_protection", receipts[0].ActionRecord.Layer)
+	}
+}
+
+func TestWSProxyRedaction_CrossMessageScanSkipsSingleMessageAddressWarnings(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		applyRedactionTestProfile(cfg)
+		cfg.SessionProfiling.Enabled = true
+		cfg.AdaptiveEnforcement.Enabled = true
+		cfg.AdaptiveEnforcement.EscalationThreshold = 1.0
+
+		cfg.AddressProtection.Enabled = true
+		cfg.AddressProtection.Action = config.ActionWarn
+		cfg.AddressProtection.UnknownAction = config.ActionAllow
+		cfg.AddressProtection.Similarity.PrefixLength = 4
+		cfg.AddressProtection.Similarity.SuffixLength = 4
+		cfg.AddressProtection.AllowedAddresses = []string{
+			"0x742d35cc6634c0532925a3b844bc9e7595f2bd3e",
+		}
+		eth := true
+		f := false
+		cfg.AddressProtection.Chains.ETH = &eth
+		cfg.AddressProtection.Chains.BTC = &f
+		cfg.AddressProtection.Chains.SOL = &f
+		cfg.AddressProtection.Chains.BNB = &f
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"note":"hello"}`)); err != nil {
+		t.Fatalf("write setup frame: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read setup frame: %v", err)
+	}
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testPoisonedETHAddr)); err != nil {
+		t.Fatalf("write address frame: %v", err)
+	}
+
+	reply, op, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read address frame: %v", err)
+	}
+	if op != ws.OpText {
+		t.Fatalf("opcode = %v, want OpText", op)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(reply, &got); err != nil {
+		t.Fatalf("unmarshal reply: %v", err)
+	}
+	if got["to"] != "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e" {
+		t.Fatalf("reply to = %q, want poisoned address", got["to"])
+	}
+	if got["amount"] != "1.0" {
+		t.Fatalf("reply amount = %q, want 1.0", got["amount"])
 	}
 }
 
@@ -1648,6 +2049,54 @@ func TestWSProxy_CrossMessageDLP_AnthropicKey(t *testing.T) {
 	_, _, err := wsutil.ReadServerData(conn)
 	if err == nil {
 		t.Fatal("expected connection closed on part2 (cross-message Anthropic key DLP), got nil")
+	}
+}
+
+func TestWSProxyRedaction_CrossMessageDLPFailClosedWhenEnforceDisabled(t *testing.T) {
+	rph := newReceiptProxyHelper(t)
+	p := &Proxy{logger: audit.NewNop(), metrics: metrics.New()}
+	p.receiptEmitterPtr.Store(rph.emitter)
+
+	cfg := config.Defaults()
+	applyRedactionTestProfile(cfg)
+	enforceOff := false
+	cfg.Enforce = &enforceOff
+
+	rt, err := p.buildRedactionRuntime(cfg)
+	if err != nil {
+		t.Fatalf("buildRedactionRuntime: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("expected redaction runtime")
+	}
+
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		scanner:      scanner.New(cfg),
+		proxy:        p,
+		cfg:          cfg,
+		redaction:    rt,
+		agent:        agentAnonymous,
+		clientIP:     "127.0.0.1",
+		requestID:    "req-cross-message-redaction",
+		targetURL:    "ws://example.com/socket",
+	}
+
+	blocked := relay.scanClientCrossMessageText(context.Background(), audit.NewNop(),
+		[]byte("AKIA"+"IOSFODNN7"),
+		[]byte(testWSExample),
+	)
+	if !blocked {
+		t.Fatal("expected cross-message DLP to fail closed when redaction is enabled")
+	}
+
+	receipts := rph.findReceipts(t)
+	if len(receipts) != 1 {
+		t.Fatalf("receipt count = %d, want 1", len(receipts))
+	}
+	if receipts[0].ActionRecord.Layer != scannerLabelRedaction {
+		t.Fatalf("receipt layer = %q, want %q", receipts[0].ActionRecord.Layer, scannerLabelRedaction)
 	}
 }
 

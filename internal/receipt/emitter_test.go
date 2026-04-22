@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,9 +14,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -240,6 +243,117 @@ func TestEmitter_Emit_TaintFields(t *testing.T) {
 	}
 	if !got.ActionRecord.TaskOverrideApplied {
 		t.Fatal("expected task_override_applied to be true")
+	}
+}
+
+func TestEmitter_Emit_RedactionSummary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+
+	err := e.Emit(EmitOpts{
+		ActionID:         NewActionID(),
+		Target:           testTarget,
+		Verdict:          config.ActionAllow,
+		Transport:        testTransport,
+		Method:           http.MethodPost,
+		RedactionProfile: "code",
+		RedactionReport: &redact.Report{
+			Applied:         true,
+			TotalRedactions: 2,
+			ByClass: map[redact.Class]int{
+				redact.ClassAWSAccessKey: 1,
+				redact.ClassFQDN:         1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Emit() error: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close() error: %v", err)
+	}
+
+	got := readReceiptFromDir(t, dir, pub)
+	if got.ActionRecord.Redaction == nil {
+		t.Fatal("expected redaction summary in receipt")
+	}
+	if got.ActionRecord.Redaction.Profile != "code" {
+		t.Fatalf("profile = %q, want %q", got.ActionRecord.Redaction.Profile, "code")
+	}
+	if got.ActionRecord.Redaction.TotalRedactions != 2 {
+		t.Fatalf("total_redactions = %d, want 2", got.ActionRecord.Redaction.TotalRedactions)
+	}
+	if got.ActionRecord.Redaction.ByClass[string(redact.ClassAWSAccessKey)] != 1 {
+		t.Fatalf("aws-access-key count = %d, want 1", got.ActionRecord.Redaction.ByClass[string(redact.ClassAWSAccessKey)])
+	}
+}
+
+func TestEmitter_Emit_NilRedactionReportOmitted(t *testing.T) {
+	t.Parallel()
+
+	makeActionRecordJSON := func(t *testing.T, opts EmitOpts) []byte {
+		t.Helper()
+
+		dir := t.TempDir()
+		pub, priv := generateTestKey(t)
+		rec := newTestRecorder(t, dir, priv)
+		e := NewEmitter(EmitterConfig{
+			Recorder:   rec,
+			PrivKey:    priv,
+			ConfigHash: testConfigHash,
+			Principal:  testPrincipal,
+			Actor:      testActor,
+		})
+		if err := e.Emit(opts); err != nil {
+			t.Fatalf("Emit() error: %v", err)
+		}
+		if err := rec.Close(); err != nil {
+			t.Fatalf("recorder.Close() error: %v", err)
+		}
+		got := readReceiptFromDir(t, dir, pub)
+		got.ActionRecord.Timestamp = time.Time{}
+		data, err := json.Marshal(got.ActionRecord)
+		if err != nil {
+			t.Fatalf("json.Marshal(ActionRecord): %v", err)
+		}
+		if bytes.Contains(data, []byte(`"redaction"`)) {
+			t.Fatalf("redaction block should be omitted, got %s", data)
+		}
+		return data
+	}
+
+	baseOpts := EmitOpts{
+		ActionID:  "fixed-action-id",
+		Target:    testTarget,
+		Verdict:   config.ActionAllow,
+		Transport: testTransport,
+		Method:    http.MethodGet,
+	}
+
+	baseJSON := makeActionRecordJSON(t, baseOpts)
+	nilReportJSON := makeActionRecordJSON(t, EmitOpts{
+		ActionID:         baseOpts.ActionID,
+		Target:           baseOpts.Target,
+		Verdict:          baseOpts.Verdict,
+		Transport:        baseOpts.Transport,
+		Method:           baseOpts.Method,
+		RedactionProfile: "code",
+		RedactionReport:  nil,
+	})
+
+	if !bytes.Equal(baseJSON, nilReportJSON) {
+		t.Fatalf("action record JSON changed when redaction report was nil\nbase: %s\nnil : %s", baseJSON, nilReportJSON)
 	}
 }
 

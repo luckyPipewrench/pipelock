@@ -62,7 +62,7 @@ func testPost(t *testing.T, url, contentType, body string) *http.Response {
 func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 
-	upstream := httptest.NewServer(upstreamHandler)
+	upstream := newIPv4Server(t, upstreamHandler)
 	t.Cleanup(upstream.Close)
 
 	upstreamURL, err := url.Parse(upstream.URL)
@@ -86,15 +86,16 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	if cfg.Redaction.Enabled {
-		matcher, err := cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+		p := &Proxy{}
+		rt, err := p.buildRedactionRuntime(cfg)
 		if err != nil {
-			t.Fatalf("build redact matcher: %v", err)
+			t.Fatalf("build redaction runtime: %v", err)
 		}
-		var matcherPtr atomic.Pointer[redact.Matcher]
-		matcherPtr.Store(matcher)
-		handler.SetRedactMatcherPtr(&matcherPtr)
+		var runtimePtr atomic.Pointer[redactionRuntime]
+		runtimePtr.Store(rt)
+		handler.SetRedactionRuntimePtr(&runtimePtr)
 	}
-	proxy := httptest.NewServer(handler)
+	proxy := newIPv4Server(t, handler)
 	t.Cleanup(proxy.Close)
 
 	return proxy
@@ -752,6 +753,38 @@ func TestReverseProxy_RedactionFailClosedWhenEnforceDisabled(t *testing.T) {
 	}
 	if upstreamHit.Load() {
 		t.Fatal("reverse proxy forwarded a fail-closed redaction request with enforce disabled")
+	}
+}
+
+func TestReverseProxy_RedactionFailClosedForBinaryMIMEWhenEnforceDisabled(t *testing.T) {
+	cfg := reverseTestConfig()
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.Redaction = redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+
+	var upstreamHit atomic.Bool
+	upstream := func(w http.ResponseWriter, r *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+	resp := testPost(t, proxy.URL+"/api/send", "image/png", "not-a-real-png")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for binary MIME fail-closed redaction block, got %d", resp.StatusCode)
+	}
+	if upstreamHit.Load() {
+		t.Fatal("reverse proxy forwarded a binary MIME body with redaction enabled")
 	}
 }
 

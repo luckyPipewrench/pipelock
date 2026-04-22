@@ -63,6 +63,20 @@ request_body_scanning:
     - Proxy-Authorization
     - X-Goog-Api-Key
 
+redaction:
+  enabled: false
+  default_profile: code
+  profiles:
+    code:
+      classes:
+        - aws-access-key
+        - google-api-key
+        - github-token
+        - slack-token
+        - jwt
+        - ssh-private-key
+  allowlist_unparseable: []
+
 websocket_proxy:
   enabled: false
   max_message_bytes: 1048576

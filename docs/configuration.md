@@ -267,9 +267,65 @@ request_body_scanning:
 
 **Note on `scan_headers`:** The config default is `true`, but omitting the field from your YAML file gives `false` (Go's zero value overrides the default). Always set `scan_headers: true` explicitly in your config if you want header scanning enabled.
 
+## Redaction
+
+Optional request-side redaction rewrites matched JSON scalars before a request is forwarded upstream. It runs before request-body DLP so warn-mode traffic still forwards the redacted payload instead of the original secret. The same matcher is used for HTTP request bodies, outbound WebSocket client messages, and MCP `tools/call` `params.arguments` across stdio, HTTP/SSE, and WebSocket transports.
+
+```yaml
+request_body_scanning:
+  enabled: true
+  action: warn
+
+redaction:
+  enabled: true
+  default_profile: code
+  profiles:
+    code:
+      classes:
+        - aws-access-key
+        - google-api-key
+        - github-token
+        - slack-token
+        - jwt
+        - ssh-private-key
+  allowlist_unparseable:
+    - api.anthropic.com
+    - api.openai.com
+  limits:
+    max_body_bytes: 10485760
+    max_redactions_per_request: 10000
+    max_depth: 64
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable request-side redaction |
+| `default_profile` | `""` | Profile name applied when redaction is enabled |
+| `profiles` | `{}` | Named profile map |
+| `profiles.<name>.classes` | `[]` | Built-in redaction classes enabled for the profile |
+| `profiles.<name>.dictionaries` | `[]` | Named custom dictionaries attached to the profile |
+| `dictionaries` | `{}` | Custom literal dictionaries |
+| `dictionaries.<name>.class` | required when used | Placeholder and receipt class tag for dictionary hits |
+| `dictionaries.<name>.entries` | `[]` | Inline literal strings to redact |
+| `dictionaries.<name>.entries_file` | `""` | YAML/JSON file containing a string list |
+| `dictionaries.<name>.case_insensitive` | `false` | Case-insensitive dictionary matching |
+| `dictionaries.<name>.word_boundary` | `false` | Require word boundaries around dictionary entries |
+| `dictionaries.<name>.priority` | `0` | Overlap priority versus built-in classes |
+| `limits.max_body_bytes` | `10485760` | Max JSON body size the redactor will rewrite |
+| `limits.max_redactions_per_request` | `10000` | Fail-closed cap on unique placeholders per request |
+| `limits.max_depth` | `64` | Max JSON nesting depth the redactor will traverse |
+| `strict_reload` | `false` | Fail reload closed if an active dictionary disappears or corrupts |
+| `allowlist_unparseable` | `[]` | Bare hostnames allowed to pass non-JSON bodies/messages unchanged |
+
+**Requirements and fail-closed behavior:**
+- `redaction.enabled: true` requires `request_body_scanning.enabled: true` because the rewrite hook lives in the request-body scan path.
+- Rewrites only operate on complete JSON payloads. Non-JSON HTTP bodies and non-JSON complete WebSocket messages are blocked unless the destination host is on `allowlist_unparseable`.
+- Outbound WebSocket fragments are blocked while redaction is enabled. The proxy cannot safely rewrite partial JSON messages.
+- Successful rewrites add a `redaction` summary to the signed action receipt only when one or more values were replaced; untouched requests keep the legacy receipt bytes unchanged.
+
 ## WebSocket Proxy
 
-Bidirectional WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly handles split messages.
+Bidirectional WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly handles split messages in scan-only mode; when `redaction.enabled` is on, outbound fragmented client messages fail closed because the proxy only rewrites complete JSON messages.
 
 ```yaml
 websocket_proxy:
@@ -557,6 +613,8 @@ mcp_input_scanning:
 | `on_parse_error` | `"block"` | What to do with malformed JSON-RPC |
 
 Auto-enabled when running `pipelock mcp proxy`.
+
+If top-level `redaction.enabled` is also set, `tools/call` `params.arguments` are rewritten through the same matcher before input DLP runs. The behavior is identical across stdio, HTTP/SSE upstream mode, HTTP listener mode, and MCP-over-WebSocket.
 
 ## MCP Tool Scanning
 

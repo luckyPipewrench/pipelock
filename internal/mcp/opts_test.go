@@ -5,6 +5,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -49,4 +50,12 @@ func withRec(rec session.Recorder) testOptsFunc {
 
 func withAdaptive(cfg *config.AdaptiveEnforcement) testOptsFunc {
 	return func(o *MCPProxyOpts) { o.AdaptiveCfg = cfg }
+}
+
+func withRedaction(m *redact.Matcher, profile string) testOptsFunc {
+	return func(o *MCPProxyOpts) {
+		o.RedactMatcher = m
+		o.RedactLimits = redact.DefaultLimits().ToLimits()
+		o.RedactProfile = profile
+	}
 }

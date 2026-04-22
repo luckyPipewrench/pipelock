@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -83,6 +84,8 @@ type EmitOpts struct {
 	Layer               string
 	Pattern             string
 	Severity            string
+	RedactionProfile    string
+	RedactionReport     *redact.Report
 	Transport           string
 	Method              string
 	Target              string
@@ -164,6 +167,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Layer:               opts.Layer,
 		Pattern:             opts.Pattern,
 		Severity:            opts.Severity,
+		Redaction:           redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
 		RequestID:           opts.RequestID,
 		ChainPrevHash:       e.chainPrevHash,
 		ChainSeq:            e.chainSeq,
@@ -317,6 +321,23 @@ func configHashString(v any) string {
 		return s
 	}
 	return ""
+}
+
+func redactionSummaryFromReport(profile string, report *redact.Report) *RedactionSummary {
+	if report == nil || report.TotalRedactions == 0 {
+		return nil
+	}
+	byClass := make(map[string]int, len(report.ByClass))
+	for class, count := range report.ByClass {
+		if count > 0 {
+			byClass[string(class)] = count
+		}
+	}
+	return &RedactionSummary{
+		Profile:         profile,
+		TotalRedactions: report.TotalRedactions,
+		ByClass:         byClass,
+	}
 }
 
 func (e *Emitter) resumeChain() error {

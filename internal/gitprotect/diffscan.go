@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -126,33 +127,49 @@ func parseHunkNewStart(hunkLine string) int {
 
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.
 type CompiledDLPPattern struct {
+	Class    redact.Class
 	Name     string
 	Re       *regexp.Regexp
 	Severity string
 	validate func(string) bool // post-match checksum (Luhn, mod-97, etc.), nil = regex-only
 }
 
-// CompileDLPPatterns compiles config DLP patterns into reusable compiled patterns.
-// Forces case-insensitive matching ((?i) prefix) to match scanner.go behavior —
-// secrets in git diffs should be caught regardless of casing.
-// Wires up post-match validators (Luhn, mod-97, etc.) from scanner.DLPValidators
-// to maintain parity with runtime DLP. Invalid patterns are skipped.
+var gitProtectClassByPatternName = map[string]redact.Class{
+	"AWS Key":         redact.ClassAWSAccessKey,
+	"Google API Key":  redact.ClassGoogleAPIKey,
+	"GitHub Token":    redact.ClassGitHubToken,
+	"Slack Token":     redact.ClassSlackToken,
+	"JWT":             redact.ClassJWT,
+	"SSH Private Key": redact.ClassSSHPrivateKey,
+}
+
+// CompileDLPPatterns compiles config DLP patterns into reusable scanners.
+// Patterns that map cleanly to the shared redact matcher surface use matcher
+// class spans; custom/validated patterns stay on the legacy regex path so git
+// hooks preserve operator-defined detection semantics.
 func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 	var compiled []CompiledDLPPattern
 	for _, p := range patterns {
+		cp := CompiledDLPPattern{
+			Name:     p.Name,
+			Severity: p.Severity,
+		}
+		if class, ok := gitProtectClassByPatternName[p.Name]; ok && p.Validator == "" {
+			cp.Class = class
+		}
+
 		pattern := p.Regex
 		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
+			if cp.Class != "" {
+				compiled = append(compiled, cp)
+			}
 			continue
 		}
-		cp := CompiledDLPPattern{
-			Name:     p.Name,
-			Re:       re,
-			Severity: p.Severity,
-		}
+		cp.Re = re
 		if p.Validator != "" {
 			cp.validate = scanner.DLPValidators[p.Validator]
 		}
@@ -161,17 +178,32 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 	return compiled
 }
 
-// matches returns true if the text contains a regex match that also passes
-// the post-match validator (if any). For patterns without validators, this is
-// equivalent to re.MatchString. For validated patterns (credit cards, IBANs),
-// all regex hits are checked and true is returned if any pass validation.
-// This mirrors scanner.compiledPattern.matches() for runtime/scan-diff parity.
-func (cp *CompiledDLPPattern) matches(text string) bool {
+func (cp *CompiledDLPPattern) classMatches(matches []redact.Match) []redact.Match {
+	if len(matches) == 0 {
+		return nil
+	}
+	filtered := make([]redact.Match, 0, len(matches))
+	for _, match := range matches {
+		if match.Class != cp.Class {
+			continue
+		}
+		if cp.validate != nil && !cp.validate(match.Original) {
+			continue
+		}
+		filtered = append(filtered, match)
+	}
+	return filtered
+}
+
+func (cp *CompiledDLPPattern) regexMatches(text string) bool {
+	if cp.Re == nil {
+		return false
+	}
 	if cp.validate == nil {
 		return cp.Re.MatchString(text)
 	}
-	for _, m := range cp.Re.FindAllString(text, -1) {
-		if cp.validate(m) {
+	for _, match := range cp.Re.FindAllString(text, -1) {
+		if cp.validate(match) {
 			return true
 		}
 	}
@@ -212,6 +244,7 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 
 	var findings []Finding
 	var suppressed []Finding
+	var matcher *redact.Matcher
 	for file, lines := range addedLines {
 		for _, al := range lines {
 			// Respect pipelock:ignore inline comments.
@@ -225,10 +258,29 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 			}
 
 			for _, cp := range patterns {
-				if !cp.matches(al.content) {
+				redacted := ""
+				matched := false
+				regexMatched := cp.regexMatches(al.content)
+				if cp.Class != "" && (cp.Re == nil || regexMatched) {
+					if matcher == nil {
+						matcher = redact.NewDefaultMatcher()
+					}
+					matches := cp.classMatches(matcher.Scan(al.content))
+					if len(matches) > 0 {
+						redacted = replaceGitProtectMatches(al.content, matches)
+						matched = true
+					}
+				}
+				if regexMatched {
+					if !matched {
+						redacted = al.content
+					}
+					redacted = cp.Re.ReplaceAllString(redacted, "[REDACTED]")
+					matched = true
+				}
+				if !matched {
 					continue
 				}
-				redacted := cp.Re.ReplaceAllString(al.content, "[REDACTED]")
 				f := Finding{
 					File:     file,
 					Line:     al.lineNum,
@@ -257,6 +309,25 @@ func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, e
 	sortFindings(suppressed)
 
 	return ScanDiffResult{Findings: findings, Suppressed: suppressed}, nil
+}
+
+func replaceGitProtectMatches(input string, matches []redact.Match) string {
+	if input == "" || len(matches) == 0 {
+		return input
+	}
+
+	var b strings.Builder
+	cursor := 0
+	for _, match := range matches {
+		if match.Start < cursor || match.Start < 0 || match.End > len(input) || match.End <= match.Start {
+			continue
+		}
+		b.WriteString(input[cursor:match.Start])
+		b.WriteString("[REDACTED]")
+		cursor = match.End
+	}
+	b.WriteString(input[cursor:])
+	return b.String()
 }
 
 // FindingsJSON returns the findings as a JSON-encoded byte slice.

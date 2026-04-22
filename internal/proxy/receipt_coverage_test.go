@@ -29,12 +29,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // Test-scoped constants to avoid goconst triggers.
 const (
-	actionAllow = "allow"
+	actionAllow              = "allow"
+	testReceiptLayerDLP      = audit.ScannerDLP
+	testRedactionProfileCode = "code"
 
 	coverageTestPrincipal  = "test-principal"
 	coverageTestActor      = "test-actor"
@@ -263,8 +266,8 @@ func TestReceiptCoverage_VerifierRoundTrip_WebSocketBlock(t *testing.T) {
 	if r.ActionRecord.Verdict != actionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, actionBlock)
 	}
-	if r.ActionRecord.Layer != "dlp" {
-		t.Errorf("layer = %q, want %q", r.ActionRecord.Layer, "dlp")
+	if r.ActionRecord.Layer != testReceiptLayerDLP {
+		t.Errorf("layer = %q, want %q", r.ActionRecord.Layer, testReceiptLayerDLP)
 	}
 	if r.ActionRecord.Pattern != "test-secret-pattern" {
 		t.Errorf("pattern = %q, want %q", r.ActionRecord.Pattern, "test-secret-pattern")
@@ -1528,6 +1531,59 @@ func TestReceiptCoverage_WSSessionClose_EmitsReceipt(t *testing.T) {
 	// session_close for a clean session is "allow".
 	if r.ActionRecord.Verdict != config.ActionAllow {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionAllow)
+	}
+}
+
+func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
+	t.Parallel()
+
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	rph := newReceiptProxyHelper(t)
+	proxyAddr, cleanup := setupWSProxyWithReceipts(t, rph, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(true)
+		applyRedactionTestProfile(cfg)
+	})
+	defer cleanup()
+
+	conn, err := dialWSConn(proxyAddr, backendAddr)
+	if err != nil {
+		t.Fatalf("dialWSConn: %v", err)
+	}
+
+	secret := redactionE2ESecret()
+	payload := []byte(`{"prompt":"use ` + secret + ` to deploy"}`)
+	if writeErr := wsutil.WriteClientText(conn, payload); writeErr != nil {
+		t.Fatalf("WriteClientText: %v", writeErr)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	data, _, readErr := wsutil.ReadServerData(conn)
+	if readErr != nil {
+		t.Fatalf("ReadServerData: %v", readErr)
+	}
+	if !strings.Contains(string(data), placeholderAWS) {
+		t.Fatalf("echoed payload missing redaction placeholder: %q", string(data))
+	}
+
+	_ = ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
+	_ = conn.Close()
+
+	waitForReceiptOrTimeout(t, rph.dir, 2*time.Second)
+
+	r := rph.requireReceipt(t, "session_close")
+	if r.ActionRecord.Redaction == nil {
+		t.Fatal("session_close receipt missing redaction summary")
+	}
+	if r.ActionRecord.Redaction.Profile != testRedactionProfileCode {
+		t.Fatalf("redaction profile = %q, want %s", r.ActionRecord.Redaction.Profile, testRedactionProfileCode)
+	}
+	if r.ActionRecord.Redaction.TotalRedactions != 1 {
+		t.Fatalf("total redactions = %d, want 1", r.ActionRecord.Redaction.TotalRedactions)
+	}
+	if got := r.ActionRecord.Redaction.ByClass[string(redact.ClassAWSAccessKey)]; got != 1 {
+		t.Fatalf("aws-access-key redactions = %d, want 1", got)
 	}
 }
 

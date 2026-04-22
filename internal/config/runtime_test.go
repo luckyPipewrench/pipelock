@@ -331,8 +331,14 @@ func TestClone_FreshCanonicalHashCache(t *testing.T) {
 	_ = cfg.CanonicalPolicyHash()
 
 	clone := cfg.Clone()
-	if clone.canonicalHashCache.Load() != nil {
-		t.Error("Clone returned a *Config with a pre-warmed canonical hash cache")
+	if clone.canonicalHashCache == nil {
+		t.Fatal("Clone returned a *Config with a nil canonical hash cache holder; expected a fresh allocation")
+	}
+	if clone.canonicalHashCache == cfg.canonicalHashCache {
+		t.Error("Clone aliased the receiver's canonical hash cache pointer; expected a separate holder")
+	}
+	if cached := clone.canonicalHashCache.Load(); cached != nil {
+		t.Errorf("Clone returned a *Config with a pre-warmed canonical hash cache: %v", cached)
 	}
 
 	// Clone computes its own hash.
@@ -545,11 +551,59 @@ func TestRuntimeMode_WrapsMCP(t *testing.T) {
 		{RuntimeForward, false},
 		{RuntimeForwardWithMCPListener, true},
 		{RuntimeMCPProxy, true},
+		{RuntimeMCPScan, false}, // scan consumes stdin, not a proxy
 		{RuntimeMode(0), false}, // zero value
 	}
 	for _, tc := range cases {
 		if got := tc.mode.WrapsMCP(); got != tc.want {
 			t.Errorf("RuntimeMode(%d).WrapsMCP() = %v, want %v", tc.mode, got, tc.want)
 		}
+	}
+}
+
+// TestRuntimeMode_NeedsResponseScanningFallback: both proxy and scan
+// modes process MCP responses and need the response-scanning fallback
+// to fire; forward-only modes do not.
+func TestRuntimeMode_NeedsResponseScanningFallback(t *testing.T) {
+	cases := []struct {
+		mode RuntimeMode
+		want bool
+	}{
+		{RuntimeForward, false},
+		{RuntimeForwardWithMCPListener, false},
+		{RuntimeMCPProxy, true},
+		{RuntimeMCPScan, true},
+		{RuntimeMode(0), false},
+	}
+	for _, tc := range cases {
+		if got := tc.mode.NeedsResponseScanningFallback(); got != tc.want {
+			t.Errorf("RuntimeMode(%d).NeedsResponseScanningFallback() = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+// TestResolveRuntime_MCPScanFallbackNoAutoEnable: RuntimeMCPScan should
+// enable the response-scanning fallback but leave MCP input / tool /
+// policy sections alone (scan mode never wraps an upstream server).
+func TestResolveRuntime_MCPScanFallbackNoAutoEnable(t *testing.T) {
+	cfg := Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.MCPInputScanning = MCPInputScanning{}
+	cfg.MCPToolScanning = MCPToolScanning{}
+	cfg.MCPToolPolicy = MCPToolPolicy{}
+
+	resolved, info := cfg.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeMCPScan})
+
+	if !info.ResponseScanningFallback {
+		t.Error("RuntimeMCPScan should fire the response-scanning fallback when operator disabled it")
+	}
+	if !resolved.ResponseScanning.Enabled {
+		t.Error("resolved ResponseScanning.Enabled = false; fallback didn't take effect")
+	}
+	if info.MCPInputScanningAutoEnabled || info.MCPToolScanningAutoEnabled || info.MCPToolPolicyAutoEnabled {
+		t.Errorf("RuntimeMCPScan should not fire any MCP auto-enable flags: %+v", info)
+	}
+	if resolved.MCPInputScanning.Enabled || resolved.MCPToolScanning.Enabled || resolved.MCPToolPolicy.Enabled {
+		t.Error("MCP scanning sections auto-enabled under RuntimeMCPScan; expected to stay off")
 	}
 }

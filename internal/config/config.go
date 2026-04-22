@@ -421,10 +421,15 @@ type Config struct {
 	// canonicalHashCache memoises CanonicalPolicyHash() so repeated calls
 	// on the same *Config value do not re-walk and re-marshal the struct.
 	// Unexported — json.Marshal skips it, yaml does not see it, and test
-	// helpers that build fresh Config values always start with an empty
-	// atomic. Config instances are treated as immutable after Load(); any
-	// mutation after a hash has been computed will return a stale value.
-	canonicalHashCache canonicalHashCacheHolder `yaml:"-"`
+	// helpers that build fresh Config values always start with a nil
+	// pointer (lazy-initialised on first hash read). The field is a
+	// pointer rather than an embedded atomic.Value so that struct copies
+	// (e.g., Config.Clone's `clone := *c`) duplicate the pointer only —
+	// atomic.Value forbids copying after first use, and every caller that
+	// wants a fresh cache explicitly reassigns the pointer. Config
+	// instances are treated as immutable after Load(); any mutation after
+	// a hash has been computed will return a stale value.
+	canonicalHashCache *canonicalHashCacheHolder `yaml:"-"`
 }
 
 // MCPInputScanning configures scanning of MCP JSON-RPC requests going from

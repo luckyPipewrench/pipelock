@@ -144,13 +144,19 @@ Examples:
 				return err
 			}
 
-			// Ensure response scanning is enabled -- that's the command's purpose.
-			if !cfg.ResponseScanning.Enabled {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
-				cfg.ResponseScanning = config.Defaults().ResponseScanning
-			}
-
-			bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
+			// Resolve effective policy for scan mode: response-scanning
+			// fallback + bundle merge on a cloned config. The scan
+			// command does not auto-enable MCP scanning because it never
+			// wraps an upstream server; RuntimeMCPProxy mode supplies the
+			// response-scanning fallback behavior the command needs.
+			var bundleResult *rules.LoadResult
+			var resolveInfo config.ResolveRuntimeInfo
+			cfg, resolveInfo = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+				Mode: config.RuntimeMCPScan,
+				MergeBundles: func(c *config.Config) {
+					bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
+				},
+			})
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
@@ -160,6 +166,7 @@ Examples:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
+			emitResolveInfoLogs(cmd.ErrOrStderr(), resolveInfo, "scan")
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
@@ -351,18 +358,7 @@ signed action receipts for MCP decisions.`,
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
-			if resolveInfo.ResponseScanningFallback {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
-			}
-			if resolveInfo.MCPInputScanningAutoEnabled {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP input scanning for proxy mode")
-			}
-			if resolveInfo.MCPToolScanningAutoEnabled {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool scanning for proxy mode")
-			}
-			if resolveInfo.MCPToolPolicyAutoEnabled {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
-			}
+			emitResolveInfoLogs(cmd.ErrOrStderr(), resolveInfo, "proxy")
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
 			// Rebuild scanner with the (possibly modified) resolved config.

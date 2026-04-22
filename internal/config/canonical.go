@@ -56,6 +56,13 @@ import (
 // Config after a canonical hash has been computed will silently return
 // a stale hash. Tests must use fresh Config values for sensitivity.
 func (c *Config) CanonicalPolicyHash() string {
+	if c.canonicalHashCache == nil {
+		// Lazy-init for *Config values constructed outside Load() /
+		// Clone() (tests using Defaults() directly). Load-time callers
+		// drive a single serial init via Load()'s eager warm; concurrent
+		// first-touch on a Defaults() value is not a supported pattern.
+		c.canonicalHashCache = &canonicalHashCacheHolder{}
+	}
 	if cached := c.canonicalHashCache.Load(); cached != nil {
 		if s, ok := cached.(string); ok {
 			return s

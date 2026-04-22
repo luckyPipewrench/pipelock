@@ -1,0 +1,101 @@
+name: Hardening
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['v*']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: hardening-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Workflow and release audit
+        run: make release-audit
+
+  runtime-critical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25'
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run runtime-critical packages
+        run: make test-runtime-critical
+
+  hardening-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25'
+
+      - name: Runtime policy audit (warning-only on PRs; blocking in release workflow)
+        id: policy
+        continue-on-error: true
+        run: make runtime-policy-audit
+
+      - name: Debt report (warning-only)
+        id: debt
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        with:
+          version: v2.10.1
+          skip-cache: true
+          args: --disable-all --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
+
+      - name: Summarize hardening report
+        if: always()
+        env:
+          POLICY_OUTCOME: ${{ steps.policy.outcome }}
+          DEBT_OUTCOME: ${{ steps.debt.outcome }}
+        run: |
+          {
+            echo "## Hardening Report"
+            if [ "$POLICY_OUTCOME" = "failure" ]; then
+              echo "- runtime-policy audit: findings present; release workflow will block until they are fixed"
+            else
+              echo "- runtime-policy audit: clean"
+            fi
+            if [ "$DEBT_OUTCOME" = "failure" ]; then
+              echo "- debt report: complexity/duplication debt findings present; review the job log before release"
+            else
+              echo "- debt report: clean for configured linters"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$POLICY_OUTCOME" = "failure" ] || [ "$DEBT_OUTCOME" = "failure" ]; then
+            echo "::warning::Hardening report found follow-up work. See the workflow summary and logs."
+          fi

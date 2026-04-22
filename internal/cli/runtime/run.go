@@ -285,15 +285,7 @@ Examples:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
-			if resolveInfo.MCPInputScanningAutoEnabled {
-				cmd.PrintErrln("pipelock: auto-enabling MCP input scanning for listener mode")
-			}
-			if resolveInfo.MCPToolScanningAutoEnabled {
-				cmd.PrintErrln("pipelock: auto-enabling MCP tool scanning for listener mode")
-			}
-			if resolveInfo.MCPToolPolicyAutoEnabled {
-				cmd.PrintErrln("pipelock: auto-enabling MCP tool call policy for listener mode")
-			}
+			emitResolveInfoLogs(cmd.ErrOrStderr(), resolveInfo, "listener")
 
 			// Shared runtime components referenced by hooks and reload paths.
 			var receiptEmitter *receipt.Emitter

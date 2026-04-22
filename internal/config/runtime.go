@@ -27,12 +27,28 @@ const (
 	// response scanning (response scanning is the MCP proxy's primary
 	// injection surface).
 	RuntimeMCPProxy
+
+	// RuntimeMCPScan runs `pipelock mcp scan`, the one-shot stdin-driven
+	// scanner for MCP responses. Response scanning is the command's sole
+	// purpose so the fallback still fires, but the command does not wrap
+	// an upstream server and therefore skips MCP input / tool / policy
+	// auto-enable.
+	RuntimeMCPScan
 )
 
 // WrapsMCP reports whether the mode routes MCP traffic through pipelock and
-// therefore needs MCP scanning auto-enable defaults.
+// therefore needs MCP scanning auto-enable defaults. Scan mode is
+// excluded: it consumes responses from stdin without ever proxying.
 func (m RuntimeMode) WrapsMCP() bool {
 	return m == RuntimeForwardWithMCPListener || m == RuntimeMCPProxy
+}
+
+// NeedsResponseScanningFallback reports whether the mode requires the
+// response-scanning defaults to be re-enabled when the operator disabled
+// them. Both `mcp proxy` and `mcp scan` process MCP responses and rely on
+// response scanning for injection detection.
+func (m RuntimeMode) NeedsResponseScanningFallback() bool {
+	return m == RuntimeMCPProxy || m == RuntimeMCPScan
 }
 
 // RuntimeResolveOpts controls how ResolveRuntime assembles the effective
@@ -99,7 +115,7 @@ func (c *Config) ResolveRuntime(opts RuntimeResolveOpts) (*Config, ResolveRuntim
 	clone := c.Clone()
 	var info ResolveRuntimeInfo
 
-	if opts.Mode == RuntimeMCPProxy && !clone.ResponseScanning.Enabled {
+	if opts.Mode.NeedsResponseScanningFallback() && !clone.ResponseScanning.Enabled {
 		// MCP proxy mode re-enables default response scanning if the
 		// operator disabled it. Response scanning is the primary injection
 		// defence on the MCP response path; silently running without it
@@ -173,10 +189,12 @@ func (c *Config) Clone() *Config {
 	}
 	clone := *c
 
-	// atomic.Value must not be copied after first use. Replace with a
-	// fresh zero value so the clone starts with an empty canonical hash
-	// cache and computes against its own post-resolve state.
-	clone.canonicalHashCache = canonicalHashCacheHolder{}
+	// The field is a *canonicalHashCacheHolder so the struct copy above
+	// duplicated the pointer, not the atomic.Value (atomic.Value forbids
+	// copying after first use). Allocate a fresh holder so the clone
+	// starts with an empty cache and computes against its own
+	// post-resolve state.
+	clone.canonicalHashCache = &canonicalHashCacheHolder{}
 
 	// Copy rawBytes so mutations to the clone's byte buffer do not alias
 	// back to the receiver. Hash() on the clone continues to reflect the

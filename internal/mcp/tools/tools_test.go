@@ -500,6 +500,11 @@ func TestCheckToolPoison_DangerousCapability(t *testing.T) {
 		"Run a shell script on the host system",
 		"Launch arbitrary commands on the server",
 		"Executes a script provided by the user",
+		// Coverage for the spawn* verb-form branch: the strict regex
+		// enumerates each verb family by hand, so each family needs at
+		// least one true-positive case to guard against a future edit
+		// accidentally dropping a branch.
+		"Spawns arbitrary commands on the host system",
 		// Download + execute patterns (MCPHammer download_and_execute style).
 		"Downloads files from HTTP/HTTPS URLs and optionally executes them immediately",
 		"Fetch a remote payload and execute it",
@@ -538,6 +543,17 @@ func TestCheckToolPoison_DangerousCapability_NoFalsePositive(t *testing.T) {
 		// "fetch...run" on different objects must not trigger.
 		"Fetch data from the API and run the analysis pipeline",
 		"Downloads reports and runs the formatter",
+		// Regression: noun forms that start with a verb stem. Before the
+		// strict verb-form regex, `(execut|run|launch|spawn)\w*` matched
+		// `runtime`, `runner`, `launcher`, `spawner` as if they were verbs.
+		// An agent tool description containing "OpenClaw runtime ... local
+		// file" was blocked as a false positive on that basis.
+		"OpenClaw runtime attaches absolute local files for analysis",
+		"The container runtime manages shell scripts per pod",
+		"This tool is a Python runner for a build script",
+		"Launcher process supervises system command execution",
+		"Spawner daemon provides the file watcher",
+		"Runtime environment handles arbitrary command arguments",
 	}
 	for _, text := range benign {
 		name := text

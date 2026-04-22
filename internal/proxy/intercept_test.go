@@ -2930,3 +2930,86 @@ func TestInterceptTunnel_CanaryBodyBlocked(t *testing.T) {
 		t.Error("upstream received the canary body, want blocked at pipelock")
 	}
 }
+
+// TestInterceptTunnel_ShieldOversizeTransportParity exercises the TLS
+// intercept response-handling path so applyShield is reached through the
+// CONNECT tunnel (TransportConnect), not just via the direct helper in
+// shield_integration_test.go. Pairs with TestForwardHTTP_ShieldOversize-
+// TransportParity to prove the transport parity invariant. Uses
+// interceptAndRequestWithProxy because the shield block inside
+// interceptTunnel is gated on ic.Proxy being non-nil.
+func TestInterceptTunnel_ShieldOversizeTransportParity(t *testing.T) {
+	t.Run("non-shieldable oversized passes through", func(t *testing.T) {
+		// application/pdf is non-shieldable (DetectPipeline returns
+		// PipelineNone) and is not parsed by media_policy, so this
+		// content reaches applyShield unimpeded by other scanners.
+		body := make([]byte, 1024)
+		copy(body, []byte("%PDF-1.4\n"))
+		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write(body)
+		}))
+		defer upstream.Close()
+
+		cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+		cfg.DLP.Patterns = nil
+		cfg.ResponseScanning.Enabled = false
+		cfg.BrowserShield.Enabled = true
+		cfg.BrowserShield.MaxShieldBytes = 100
+		cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+		testLogger, _ := audit.New("json", "stdout", "", false, false)
+		p, err := New(cfg, testLogger, sc, m)
+		if err != nil {
+			t.Fatalf("proxy.New: %v", err)
+		}
+		t.Cleanup(func() { p.Close() })
+
+		addr := upstream.Listener.Addr().String()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/doc.pdf", nil)
+
+		resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("non-shieldable PDF over MaxShieldBytes must pass through TLS intercept; got status %d", resp.StatusCode)
+		}
+		got, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if len(got) != len(body) {
+			t.Errorf("TLS intercept truncated non-shieldable body (got %d bytes, want %d); shield oversize must not rewrite media responses", len(got), len(body))
+		}
+	})
+
+	t.Run("shieldable oversized still blocks", func(t *testing.T) {
+		body := make([]byte, 1024)
+		copy(body, []byte("<!DOCTYPE html><html><body>"))
+		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write(body)
+		}))
+		defer upstream.Close()
+
+		cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+		cfg.BrowserShield.Enabled = true
+		cfg.BrowserShield.MaxShieldBytes = 100
+		cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+		testLogger, _ := audit.New("json", "stdout", "", false, false)
+		p, err := New(cfg, testLogger, sc, m)
+		if err != nil {
+			t.Fatalf("proxy.New: %v", err)
+		}
+		t.Cleanup(func() { p.Close() })
+
+		addr := upstream.Listener.Addr().String()
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/large.html", nil)
+
+		resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("shieldable HTML over MaxShieldBytes must still block via TLS intercept (fail-closed); got status %d", resp.StatusCode)
+		}
+	})
+}

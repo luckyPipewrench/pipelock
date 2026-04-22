@@ -2933,3 +2933,89 @@ func TestSSRFSafeDialContext_MalysScenario_AllowlistAndTrusted(t *testing.T) {
 	}
 	_ = conn.Close()
 }
+
+// TestForwardHTTP_ShieldOversizeTransportParity exercises the full
+// absolute-URI forward proxy request/response path so the applyShield
+// call at forward.go (TransportForward) is reached in a real HTTP
+// round-trip, not just a direct helper call. Complements the direct
+// TestProxy_ApplyShield_* regressions in shield_integration_test.go per
+// the "transport parity must be proven, not claimed" invariant.
+func TestForwardHTTP_ShieldOversizeTransportParity(t *testing.T) {
+	t.Run("non-shieldable oversized passes through", func(t *testing.T) {
+		// application/pdf is non-shieldable (DetectPipeline returns
+		// PipelineNone) and is not parsed by media_policy (which only
+		// validates image formats it knows how to inspect), so this
+		// content reaches applyShield with no other scanner intercepting.
+		body := make([]byte, 1024)
+		copy(body, []byte("%PDF-1.4\n"))
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write(body)
+		}))
+		defer backend.Close()
+
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		cfg.APIAllowlist = nil
+		cfg.ForwardProxy.Enabled = true
+		// Isolate the shield-oversize path: disable DLP + response scanning
+		// so the body reaches applyShield without being flagged by unrelated
+		// scanners. media_policy only validates known image formats and
+		// leaves application/pdf alone.
+		cfg.DLP.Patterns = nil
+		cfg.ResponseScanning.Enabled = false
+		cfg.BrowserShield.Enabled = true
+		cfg.BrowserShield.MaxShieldBytes = 100
+		cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+
+		proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+		defer cleanup()
+
+		resp := doGet(t, proxyClient(proxyAddr), backend.URL+"/doc.pdf")
+		defer resp.Body.Close() //nolint:errcheck // test
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("non-shieldable PDF over MaxShieldBytes must pass through forward proxy; got status %d", resp.StatusCode)
+		}
+		got, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if len(got) != len(body) {
+			t.Errorf("forward proxy truncated non-shieldable body (got %d bytes, want %d); shield oversize must not rewrite media responses", len(got), len(body))
+		}
+	})
+
+	t.Run("shieldable oversized still blocks", func(t *testing.T) {
+		body := make([]byte, 1024)
+		copy(body, []byte("<!DOCTYPE html><html><body>"))
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write(body)
+		}))
+		defer backend.Close()
+
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		cfg.APIAllowlist = nil
+		cfg.ForwardProxy.Enabled = true
+		// Isolate the shield-oversize path: disable DLP + response scanning
+		// so the body reaches applyShield without being flagged by unrelated
+		// scanners (the PNG magic-prefix pad can otherwise trip pattern checks).
+		cfg.DLP.Patterns = nil
+		cfg.ResponseScanning.Enabled = false
+		cfg.BrowserShield.Enabled = true
+		cfg.BrowserShield.MaxShieldBytes = 100
+		cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+
+		proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+		defer cleanup()
+
+		resp := doGet(t, proxyClient(proxyAddr), backend.URL+"/large.html")
+		defer resp.Body.Close() //nolint:errcheck // test
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("shieldable HTML over MaxShieldBytes must still block via forward proxy (fail-closed); got status %d", resp.StatusCode)
+		}
+	})
+}

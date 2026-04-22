@@ -358,6 +358,12 @@ signed action receipts for MCP decisions.`,
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
+			for _, w := range bundleResult.Warnings {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: %s\n", w)
+			}
+			if bundleResult.Degraded {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
+			}
 			emitResolveInfoLogs(cmd.ErrOrStderr(), resolveInfo, "proxy")
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 

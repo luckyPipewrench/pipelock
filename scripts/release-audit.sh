@@ -40,7 +40,9 @@ while IFS= read -r match; do
 	rest="${match#*:}"
 	line="${rest%%:*}"
 	uses="${rest#*:}"
-	ref="$(printf '%s\n' "$uses" | sed -E 's/^[[:space:]]*-[[:space:]]*uses:[[:space:]]*//; s/[[:space:]]+#.*$//')"
+	# Strip either step-level (leading dash) or job-level (no dash)
+	# `uses:` prefix so reusable-workflow calls are audited too.
+	ref="$(printf '%s\n' "$uses" | sed -E 's/^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*//; s/[[:space:]]+#.*$//')"
 
 	case "$ref" in
 		./*|docker://*)
@@ -57,7 +59,7 @@ while IFS= read -r match; do
 	if [[ ! "$version" =~ ^[0-9a-f]{40}$ ]]; then
 		fail "${file}:${line} action is not pinned to a full commit SHA (${ref})"
 	fi
-done < <(rg -n '^[[:space:]]*-[[:space:]]*uses:[[:space:]]*[^[:space:]]+' .github/workflows/*.y*ml || true)
+done < <(rg -n '^[[:space:]]*(-[[:space:]]*)?uses:[[:space:]]*[^[:space:]]+' .github/workflows/*.y*ml || true)
 
 note "release audit: checking pull_request workflows stay secret-light"
 
@@ -66,8 +68,40 @@ while IFS= read -r workflow; do
 		continue
 	fi
 
-	if ! rg -q 'persist-credentials:[[:space:]]*false' "$workflow"; then
-		fail "${workflow} handles pull_request but does not disable checkout credential persistence"
+	# Per-step validation: every actions/checkout invocation must have
+	# persist-credentials: false within its own step block. Checking the
+	# workflow as a whole (the previous behavior) lets a second
+	# actions/checkout without the flag piggy-back on the first step's
+	# setting and evade the audit.
+	#
+	# Step boundaries in GitHub Actions workflows are `-` list items
+	# under `steps:` whose first key is `uses:`, `name:`, `run:`, `id:`,
+	# `if:`, `with:`, `env:`, `continue-on-error:`, or `timeout-minutes:`.
+	# We walk each file, track whether the current step is a checkout,
+	# and emit the checkout line number when its step ends without
+	# persist-credentials: false.
+	missing_checkouts="$(awk '
+		function flush() {
+			if (in_checkout && !found_persist) {
+				printf "%s:%d\n", FILENAME, checkout_line
+			}
+			in_checkout = 0
+			found_persist = 0
+		}
+		/^[[:space:]]*-[[:space:]]+(uses|name|run|id|if|env|with|continue-on-error|timeout-minutes):/ {
+			flush()
+			if ($0 ~ /uses:[[:space:]]*actions\/checkout(@|[[:space:]]|$)/) {
+				in_checkout = 1
+				checkout_line = NR
+			}
+			next
+		}
+		in_checkout && /persist-credentials:[[:space:]]*false/ { found_persist = 1 }
+		END { flush() }
+	' "$workflow")"
+	if [[ -n "$missing_checkouts" ]]; then
+		fail "${workflow} has actions/checkout step(s) without persist-credentials: false:"
+		note "$missing_checkouts"
 	fi
 
 	secrets_matches="$(rg -n 'secrets\.[A-Za-z0-9_]+' "$workflow" || true)"

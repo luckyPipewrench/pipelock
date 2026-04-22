@@ -15,6 +15,26 @@ tagging a release.
 - Runtime policy changes must be resolved through config-level clone-and-resolve
   logic, not by mutating loaded config inside runtime packages.
 
+### A note on the runtime policy audit
+
+`make runtime-policy-audit` is a coarse regex tripwire: it scans
+`internal/cli/runtime`, `internal/mcp`, and `internal/proxy` for direct
+assignment of a fixed set of policy-relevant config fields outside of test
+files. It catches the common regression class (copy-paste of the pre-refactor
+in-place mutation pattern) but it is not a complete control. Mutation routed
+through a helper, a different field name, or an adjacent package can slip
+past it. Treat its green output as "no obvious regression", not "the
+invariant is proven".
+
+The load-bearing invariants are enforced by Go tests in
+`internal/config/runtime_test.go`: `ResolveRuntime` never mutates its
+receiver, the clone's raw `Hash()` equals the receiver's `Hash()` while
+`CanonicalPolicyHash()` may diverge, deep-clone prevents slice aliasing,
+and the MCP proxy response-scanning fallback runs before the bundle merge.
+A future tightening is an AST analyzer that walks runtime packages and
+asserts every consumer of the loaded config flows through
+`config.ResolveRuntime`; tracked as a follow-up.
+
 ## Required Automated Checks
 
 Run these before tagging locally, and keep the matching GitHub Actions checks

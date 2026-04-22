@@ -1510,7 +1510,7 @@ forward_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1522,7 +1522,7 @@ forward_proxy:
 
 	// Verify health shows forward_proxy_enabled=true
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	resp, err := client.Do(req) //nolint:gosec // test-only
+	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
 		t.Fatalf("health request failed: %v", err)
@@ -1600,7 +1600,7 @@ forward_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1630,7 +1630,7 @@ forward_proxy:
 
 	// Verify forward_proxy is still disabled (reload was rejected)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	resp, err := client.Do(req) //nolint:gosec // test-only
+	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
 		t.Fatalf("health request failed: %v", err)
@@ -1775,7 +1775,7 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1788,7 +1788,7 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 	// Verify MCP listener health endpoint.
 	mcpHealthURL := "http://" + mcpAddr + "/health"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, mcpHealthURL, nil)
-	resp, err := client.Do(req) //nolint:gosec // test-only
+	resp, err := client.Do(req)
 	if err != nil {
 		cancel()
 		t.Fatalf("MCP health request failed: %v", err)
@@ -1910,7 +1910,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -1942,7 +1942,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
@@ -2041,7 +2041,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -2054,7 +2054,7 @@ fetch_proxy:
 	statusURL := "http://" + fetchAddr + "/api/v1/killswitch/status"
 	statusReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	statusReq.Header.Set("Authorization", "Bearer reload-token")
-	resp, err := client.Do(statusReq) //nolint:gosec // test-only
+	resp, err := client.Do(statusReq)
 	if err != nil {
 		cancel()
 		t.Fatalf("kill switch status request failed before reload: %v", err)
@@ -2089,7 +2089,7 @@ kill_switch:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 		req.Header.Set("Authorization", "Bearer reload-token")
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -2240,7 +2240,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -2330,7 +2330,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -2420,7 +2420,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -2509,7 +2509,7 @@ fetch_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -2607,7 +2607,7 @@ websocket_proxy:
 		default:
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		resp, rerr := client.Do(req)
 		if rerr == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {

@@ -111,22 +111,29 @@ while IFS= read -r workflow; do
 	# and emit the checkout line number when its step ends without
 	# persist-credentials: false.
 	missing_checkouts="$(awk '
+		# Track each step window independently of which key the step
+		# starts with. A step that begins with `- name: Checkout` and
+		# has `uses: actions/checkout` on a later indented line is
+		# still one step; scanning the whole window catches it.
 		function flush() {
-			if (in_checkout && !found_persist) {
+			if (in_step && is_checkout && !found_persist) {
 				printf "%s:%d\n", FILENAME, checkout_line
 			}
-			in_checkout = 0
+			in_step = 0
+			is_checkout = 0
 			found_persist = 0
+			checkout_line = 0
 		}
-		/^[[:space:]]*-[[:space:]]+(uses|name|run|id|if|env|with|continue-on-error|timeout-minutes):/ {
+		# A new step begins on any `- <key>:` list item under steps:.
+		/^[[:space:]]*-[[:space:]]+[A-Za-z_-]+:/ {
 			flush()
-			if ($0 ~ /uses:[[:space:]]*actions\/checkout(@|[[:space:]]|$)/) {
-				in_checkout = 1
-				checkout_line = NR
-			}
-			next
+			in_step = 1
 		}
-		in_checkout && /persist-credentials:[[:space:]]*false/ { found_persist = 1 }
+		in_step && /uses:[[:space:]]*actions\/checkout(@|[[:space:]]|$)/ {
+			is_checkout = 1
+			if (!checkout_line) checkout_line = NR
+		}
+		in_step && /persist-credentials:[[:space:]]*false/ { found_persist = 1 }
 		END { flush() }
 	' "$workflow")"
 	if [[ -n "$missing_checkouts" ]]; then

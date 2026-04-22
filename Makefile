@@ -14,7 +14,8 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
 
-.PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check
+.PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check \
+	test-runtime-critical release-audit runtime-policy-audit debt-check release-check
 
 build:
 	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
@@ -24,6 +25,9 @@ install:
 
 test:
 	go test -race -count=1 ./...
+
+test-runtime-critical:
+	go test -race -count=1 ./internal/config ./internal/cli ./internal/mcp ./internal/proxy
 
 test-cover:
 	go test -race -coverprofile=coverage.out ./...
@@ -41,6 +45,17 @@ vet:
 
 lint: vet
 	golangci-lint run ./...
+
+release-audit:
+	./scripts/release-audit.sh
+
+runtime-policy-audit:
+	./scripts/runtime-policy-audit.sh
+
+debt-check:
+	golangci-lint run --disable-all --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
+
+release-check: test lint test-runtime-critical release-audit runtime-policy-audit
 
 tidy-check:
 	go mod tidy

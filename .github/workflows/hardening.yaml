@@ -1,0 +1,112 @@
+name: Hardening
+
+on:
+  push:
+    branches: [main]
+    tags-ignore: ['v*']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: hardening-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Workflow and release audit
+        run: make release-audit
+
+  runtime-critical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25'
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Run runtime-critical packages
+        run: make test-runtime-critical
+
+  runtime-policy:
+    # Blocking on PRs, not just at release-tag time: a runtime package
+    # that re-introduces direct mutation of policy-relevant config would
+    # otherwise land on main and only get caught when someone tags a
+    # release. The release workflow still runs this audit as a defense-
+    # in-depth gate; this job catches regressions earlier.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Runtime policy audit
+        run: make runtime-policy-audit
+
+  hardening-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.25'
+
+      - name: Debt report (warning-only)
+        id: debt
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@1e7e51e771db61008b38414a730f564565cf7c20 # v9
+        with:
+          version: v2.10.1
+          skip-cache: true
+          args: --disable-all --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
+
+      - name: Summarize hardening report
+        if: always()
+        env:
+          DEBT_OUTCOME: ${{ steps.debt.outcome }}
+        run: |
+          {
+            echo "## Hardening Report"
+            if [ "$DEBT_OUTCOME" = "failure" ]; then
+              echo "- debt report: complexity/duplication debt findings present; review the job log before release"
+            else
+              echo "- debt report: clean for configured linters"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DEBT_OUTCOME" = "failure" ]; then
+            echo "::warning::Debt report flagged follow-up work. See the workflow summary and logs."
+          fi

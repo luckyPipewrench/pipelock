@@ -27,6 +27,18 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Run release audit
+        run: make release-audit
+
+      - name: Run runtime-critical packages
+        run: make test-runtime-critical
+
+      - name: Run runtime policy audit
+        run: make runtime-policy-audit
+
       - name: Run tests
         run: go test -race -count=1 ./...
 

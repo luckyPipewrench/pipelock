@@ -344,7 +344,16 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		// Standalone "script"/"file" require a determiner (a/the/any) to avoid
 		// false positives on "Execute the deployment script" or "Run the build
 		// script". Qualified forms (local/shell/arbitrary/system) match directly.
-		re: regexp.MustCompile(`(?i)(execut|run|launch|spawn)\w*\s+.{0,40}(` +
+		//
+		// The leading verb group is strict: it matches only actual verb forms
+		// of execute/run/launch/spawn, not any word that begins with those
+		// stems. `(execut|run|launch|spawn)\w*` accepted `runtime`, `runner`,
+		// `launcher`, `spawner` as noun false positives (PR #348 widening
+		// regressed on `runtime` specifically, blocking agents whose tool
+		// descriptions used it in phrases like "OpenClaw runtime ... local
+		// file"). RE2 has no negative lookahead, so each verb family's
+		// inflections are enumerated explicitly.
+		re: regexp.MustCompile(`(?i)\b(execut(?:e[ds]?|ing)|run(?:s|ning)?|launch(?:e[ds]?|ing)?|spawn(?:s|ed|ing)?)\b\s+.{0,40}(` +
 			`local\s+(?:file|script)|` +
 			`(?:a|the|any)\s+(?:file|script)\b|` +
 			`(?:shell|arbitrary|system)\s+(?:command|script))`,

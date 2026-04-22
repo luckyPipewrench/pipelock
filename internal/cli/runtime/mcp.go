@@ -333,25 +333,35 @@ signed action receipts for MCP decisions.`,
 				defer sentryClient.Close()
 			}
 
-			if !cfg.ResponseScanning.Enabled {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
-				cfg.ResponseScanning = config.Defaults().ResponseScanning
-			}
-
-			// Auto-enable MCP input scanning for proxy mode unless the user explicitly
-			// configured the section. Action is only set by ApplyDefaults when Enabled
-			// is true, so Action=="" with Enabled=false means unconfigured. OnParseError
-			// is always defaulted by ApplyDefaults, so we don't check it here.
-			if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP input scanning for proxy mode")
-				cfg.MCPInputScanning.Enabled = true
-				cfg.MCPInputScanning.Action = config.ActionBlock
-			}
-
-			// Merge community rule bundles before building the scanner.
-			bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
+			// Resolve effective runtime policy on a clone. The MCP proxy
+			// mode response-scanning fallback, MCP scanning auto-enable,
+			// and bundle merges all run inside ResolveRuntime so the
+			// loaded cfg is never mutated and the clone's CanonicalPolicyHash
+			// reflects the effective policy every downstream emitter,
+			// scanner, and receipt stamp consumes.
+			var bundleResult *rules.LoadResult
+			var resolveInfo config.ResolveRuntimeInfo
+			cfg, resolveInfo = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+				Mode: config.RuntimeMCPProxy,
+				MergeBundles: func(c *config.Config) {
+					bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
+				},
+				DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
+			})
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
+			}
+			if resolveInfo.ResponseScanningFallback {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: response scanning was disabled in config, enabling with defaults")
+			}
+			if resolveInfo.MCPInputScanningAutoEnabled {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP input scanning for proxy mode")
+			}
+			if resolveInfo.MCPToolScanningAutoEnabled {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool scanning for proxy mode")
+			}
+			if resolveInfo.MCPToolPolicyAutoEnabled {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
 			}
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 
@@ -383,14 +393,6 @@ signed action receipts for MCP decisions.`,
 				}
 			}
 
-			// Auto-enable MCP tool scanning for proxy mode unless explicitly configured.
-			if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool scanning for proxy mode")
-				cfg.MCPToolScanning.Enabled = true
-				cfg.MCPToolScanning.Action = config.ActionWarn
-				cfg.MCPToolScanning.DetectDrift = true
-			}
-
 			var toolCfg *tools.ToolScanConfig
 			if cfg.MCPToolScanning.Enabled {
 				toolCfg = &tools.ToolScanConfig{
@@ -403,15 +405,6 @@ signed action receipts for MCP decisions.`,
 					toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction
 					toolCfg.BindingNoBaselineAction = cfg.MCPSessionBinding.NoBaselineAction
 				}
-			}
-
-			// Auto-enable MCP tool call policy for proxy mode unless explicitly configured.
-			// Action=="" with Enabled=false and no rules means unconfigured.
-			if !cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action == "" && len(cfg.MCPToolPolicy.Rules) == 0 {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "pipelock: auto-enabling MCP tool call policy for proxy mode")
-				cfg.MCPToolPolicy.Enabled = true
-				cfg.MCPToolPolicy.Action = config.ActionWarn
-				cfg.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
 			}
 
 			var policyCfg *policy.Config
@@ -541,6 +534,15 @@ signed action receipts for MCP decisions.`,
 				}
 				defer func() { _ = rec.Close() }()
 
+				// ConfigHash here uses cfg.Hash() (raw YAML bytes) — the
+				// receipt is a point-in-time audit fingerprint of the
+				// loaded configuration file. The envelope emitter below
+				// uses cfg.CanonicalPolicyHash() because its contract is
+				// about effective policy equivalence, not file identity.
+				// Intentional split, preserved across the runtime-resolve
+				// refactor: the resolved cfg carries the original rawBytes
+				// so Hash() still reflects the on-disk YAML even after
+				// bundle merge and auto-enable.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
 					Recorder:   rec,
 					PrivKey:    recPrivKey,

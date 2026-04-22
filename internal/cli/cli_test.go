@@ -1851,6 +1851,280 @@ func TestRunCmd_MCPListenStartupFailure(t *testing.T) {
 	}
 }
 
+func TestRunCmd_MCPListenReloadUsesResolvedConfigForWarnings(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	ln2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpAddr := ln2.Addr().String()
+	_ = ln2.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, fetchAddr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--mcp-listen", mcpAddr,
+		"--mcp-upstream", "http://localhost:19999",
+	})
+	cmd.SetOut(io.Discard)
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + fetchAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: strict
+api_allowlist:
+  - "api.example.com"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, fetchAddr)
+	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadDeadline := time.Now().Add(5 * time.Second)
+	reloaded := false
+	for time.Now().Before(reloadDeadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early during reload: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			_ = resp.Body.Close()
+			if health["mode"] == config.ModeStrict {
+				reloaded = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !reloaded {
+		t.Fatal("hot reload did not apply strict mode before timeout")
+	}
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	output := stderr.String()
+	for _, field := range []string{
+		"mcp_input_scanning.enabled",
+		"mcp_tool_scanning.enabled",
+		"mcp_tool_policy.enabled",
+	} {
+		if strings.Contains(output, field) {
+			t.Errorf("unexpected false-positive reload warning for %s:\n%s", field, output)
+		}
+	}
+}
+
+func TestRunCmd_MCPListenReloadStrictAllowsKillSwitchAPIToken(t *testing.T) {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchAddr := ln.Addr().String()
+	_ = ln.Close()
+
+	ln2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpAddr := ln2.Addr().String()
+	_ = ln2.Close()
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	cfgContent := fmt.Sprintf(`version: 1
+mode: strict
+api_allowlist:
+  - "api.example.com"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, fetchAddr)
+	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := rootCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"run",
+		"--config", cfgPath,
+		"--mcp-listen", mcpAddr,
+		"--mcp-upstream", "http://localhost:19999",
+	})
+	cmd.SetOut(io.Discard)
+	var stderr bytes.Buffer
+	cmd.SetErr(&stderr)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Execute()
+	}()
+
+	client := &http.Client{Timeout: time.Second}
+	healthURL := "http://" + fetchAddr + "/health"
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	statusURL := "http://" + fetchAddr + "/api/v1/killswitch/status"
+	statusReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+	statusReq.Header.Set("Authorization", "Bearer reload-token")
+	resp, err := client.Do(statusReq) //nolint:gosec // test-only
+	if err != nil {
+		cancel()
+		t.Fatalf("kill switch status request failed before reload: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 before reload, got %d", resp.StatusCode)
+	}
+
+	updatedCfg := fmt.Sprintf(`version: 1
+mode: strict
+api_allowlist:
+  - "api.example.com"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+kill_switch:
+  api_token: "reload-token"
+`, fetchAddr)
+	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadDeadline := time.Now().Add(5 * time.Second)
+	reloaded := false
+	for time.Now().Before(reloadDeadline) {
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited early during reload: %v", cmdErr)
+		default:
+		}
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		req.Header.Set("Authorization", "Bearer reload-token")
+		resp, rerr := client.Do(req) //nolint:gosec // test-only
+		if rerr == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				reloaded = true
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !reloaded {
+		t.Fatal("kill switch API token did not become active after strict-mode reload")
+	}
+
+	cancel()
+	select {
+	case cmdErr := <-errCh:
+		if cmdErr != nil {
+			t.Errorf("unexpected error: %v", cmdErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("run did not shut down")
+	}
+
+	output := stderr.String()
+	for _, field := range []string{
+		"mcp_input_scanning.enabled",
+		"mcp_tool_scanning.enabled",
+		"mcp_tool_policy.enabled",
+	} {
+		if strings.Contains(output, field) {
+			t.Errorf("unexpected false-positive reload warning for %s:\n%s", field, output)
+		}
+	}
+}
+
 func TestGenerateCmd_WriteError(t *testing.T) {
 	// Generate config with -o pointing to a read-only directory.
 	dir := t.TempDir()

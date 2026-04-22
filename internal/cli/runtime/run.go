@@ -256,8 +256,26 @@ Examples:
 			defer func() { _ = emitter.Close() }()
 			logger.SetEmitter(emitter)
 
-			// Merge community rule bundles before building the scanner.
-			bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)
+			// Resolve effective runtime policy on a clone. Bundle merges
+			// and MCP auto-enable run inside ResolveRuntime against the
+			// clone, so the loaded cfg stays frozen and the resolved
+			// clone's CanonicalPolicyHash reflects the policy the proxy
+			// actually enforces. Every downstream consumer (scanner,
+			// emitter, proxy, hot-reload diff) reads from the resolved
+			// clone.
+			runtimeMode := config.RuntimeForward
+			if hasMCPListen {
+				runtimeMode = config.RuntimeForwardWithMCPListener
+			}
+			var bundleResult *rules.LoadResult
+			var resolveInfo config.ResolveRuntimeInfo
+			cfg, resolveInfo = cfg.ResolveRuntime(config.RuntimeResolveOpts{
+				Mode: runtimeMode,
+				MergeBundles: func(c *config.Config) {
+					bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
+				},
+				DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
+			})
 			for _, e := range bundleResult.Errors {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
@@ -266,6 +284,15 @@ Examples:
 			}
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
+			}
+			if resolveInfo.MCPInputScanningAutoEnabled {
+				cmd.PrintErrln("pipelock: auto-enabling MCP input scanning for listener mode")
+			}
+			if resolveInfo.MCPToolScanningAutoEnabled {
+				cmd.PrintErrln("pipelock: auto-enabling MCP tool scanning for listener mode")
+			}
+			if resolveInfo.MCPToolPolicyAutoEnabled {
+				cmd.PrintErrln("pipelock: auto-enabling MCP tool call policy for listener mode")
 			}
 
 			// Shared runtime components referenced by hooks and reload paths.
@@ -391,6 +418,17 @@ Examples:
 				// Action receipt emitter: signs every proxy decision with
 				// Ed25519 and writes to the flight recorder. Requires a
 				// signing key — nil emitter means receipts are disabled.
+				//
+				// ConfigHash here uses cfg.Hash() (raw YAML bytes) rather
+				// than cfg.CanonicalPolicyHash() because the receipt is a
+				// point-in-time audit fingerprint of the loaded
+				// configuration file: two deployments that happened to
+				// produce the same effective policy through different
+				// YAML should still be distinguishable in a forensic
+				// trail. Envelope attestation (below) uses the
+				// policy-semantic hash because its contract is the
+				// opposite — identical effective policy should produce
+				// identical envelope ph regardless of YAML formatting.
 				receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{
 					Recorder:   rec,
 					PrivKey:    recPrivKey,
@@ -482,19 +520,8 @@ Examples:
 									ReloadPanicHandler(r, sentryClient, logger, configFile)
 								}
 							}()
-							// Check for security downgrades before applying
 							oldCfg := p.CurrentConfig()
 							if oldCfg != nil {
-								warnings := config.ValidateReload(oldCfg, newCfg)
-								for _, w := range warnings {
-									cmd.PrintErrf("WARNING: config reload: %s - %s\n", w.Field, w.Message)
-								}
-								// Block downgrades from strict mode (security-critical).
-								if oldCfg.Mode == config.ModeStrict && len(warnings) > 0 {
-									logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, configFile),
-										fmt.Errorf("rejected: security downgrade from strict mode"))
-									return
-								}
 								// Block enabling forward proxy via reload. WriteTimeout is
 								// set at server start and cannot change at runtime; tunnels
 								// would be killed prematurely. Restart to enable.
@@ -618,7 +645,22 @@ Examples:
 								// old value until restart.
 								newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
 							}
-							reloadBundleResult := rules.MergeIntoConfig(newCfg, cliutil.Version)
+							// Resolve runtime policy on a clone of the newly
+							// loaded config so the reloaded cfg stored in
+							// the proxy reflects the same bundle-merge +
+							// auto-enable pipeline startup uses and its
+							// canonical hash is computed fresh. The live
+							// runtime mode tracks the startup flags:
+							// reload cannot toggle MCP listener or forward
+							// proxy enablement (both gated above).
+							var reloadBundleResult *rules.LoadResult
+							newCfg, _ = newCfg.ResolveRuntime(config.RuntimeResolveOpts{
+								Mode: runtimeMode,
+								MergeBundles: func(c *config.Config) {
+									reloadBundleResult = rules.MergeIntoConfig(c, cliutil.Version)
+								},
+								DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
+							})
 							for _, e := range reloadBundleResult.Errors {
 								cmd.PrintErrf("WARNING: config reload: bundle %s: %s\n", e.Name, e.Reason)
 							}
@@ -627,6 +669,21 @@ Examples:
 							}
 							if reloadBundleResult.Degraded {
 								cmd.PrintErrf("WARNING: DEGRADED — standard pack failed after reload, running core patterns only\n")
+							}
+							if oldCfg != nil {
+								// Compare resolved-vs-resolved configs so bundle merges
+								// and MCP listener auto-enable do not look like policy
+								// downgrades during hot reload.
+								warnings := config.ValidateReload(oldCfg, newCfg)
+								for _, w := range warnings {
+									cmd.PrintErrf("WARNING: config reload: %s - %s\n", w.Field, w.Message)
+								}
+								// Block downgrades from strict mode (security-critical).
+								if oldCfg.Mode == config.ModeStrict && len(warnings) > 0 {
+									logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, configFile),
+										fmt.Errorf("rejected: security downgrade from strict mode"))
+									return
+								}
 							}
 							newSc := scanner.New(newCfg)
 							newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
@@ -888,24 +945,9 @@ Examples:
 			// Start MCP HTTP listener in background if configured.
 			var mcpErr chan error
 			if hasMCPListen {
-				// Auto-enable MCP scanning features for listener mode.
-				if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
-					cmd.PrintErrln("pipelock: auto-enabling MCP input scanning for listener mode")
-					cfg.MCPInputScanning.Enabled = true
-					cfg.MCPInputScanning.Action = config.ActionBlock
-				}
-				if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
-					cmd.PrintErrln("pipelock: auto-enabling MCP tool scanning for listener mode")
-					cfg.MCPToolScanning.Enabled = true
-					cfg.MCPToolScanning.Action = config.ActionWarn
-					cfg.MCPToolScanning.DetectDrift = true
-				}
-				if !cfg.MCPToolPolicy.Enabled && cfg.MCPToolPolicy.Action == "" && len(cfg.MCPToolPolicy.Rules) == 0 {
-					cmd.PrintErrln("pipelock: auto-enabling MCP tool call policy for listener mode")
-					cfg.MCPToolPolicy.Enabled = true
-					cfg.MCPToolPolicy.Action = config.ActionWarn
-					cfg.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
-				}
+				// MCP scanning sections auto-enable inside ResolveRuntime
+				// above when the operator did not configure them; the
+				// effective cfg already reflects those defaults.
 
 				inputCfg := &mcp.InputScanConfig{
 					Enabled:      cfg.MCPInputScanning.Enabled,

@@ -180,9 +180,12 @@ func TestProxy_ApplyShield_NonShieldableContentBypassesOversize(t *testing.T) {
 			cfg.BrowserShield.MaxShieldBytes = 100
 			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
 
-			// Pad the head with plausible magic bytes, then fill to 500 bytes
-			// so the total exceeds MaxShieldBytes by a clear margin.
-			body := make([]byte, 500)
+			// Pad the head with plausible magic bytes, then fill to 1024
+			// bytes so the total exceeds both MaxShieldBytes and the 512-byte
+			// prefix cap used by DetectPipeline. Exercising the >512 path
+			// is part of the regression; a smaller body would leave the
+			// prefix-truncation branch in applyShield uncovered.
+			body := make([]byte, 1024)
 			copy(body, tc.bodyHead)
 
 			result, blocked := p.applyShield(body, tc.contentType, "example.com", nil, cfg, audit.LogContext{}, "127.0.0.1", "req1", TransportFetch)
@@ -220,7 +223,10 @@ func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.
 			cfg.BrowserShield.MaxShieldBytes = 100
 			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
 
-			body := make([]byte, 500)
+			// 1024 bytes exceeds both MaxShieldBytes and the 512-byte
+			// prefix cap, exercising the prefix-truncation branch on the
+			// shieldable path too.
+			body := make([]byte, 1024)
 			copy(body, tc.bodyHead)
 			for i := len(tc.bodyHead); i < len(body); i++ {
 				body[i] = 'A'

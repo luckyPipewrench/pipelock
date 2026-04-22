@@ -24,6 +24,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Workflow and release audit
         run: make release-audit
 
@@ -61,6 +64,9 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Runtime policy audit
         run: make runtime-policy-audit

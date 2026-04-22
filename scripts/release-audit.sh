@@ -4,6 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Fail closed if ripgrep is missing. Several of the checks below use
+# `rg -q ... || true`, which would otherwise silently pass (exit 127
+# gets swallowed and the branch behaves as if "no match"). Runners
+# without ripgrep must fail loudly, not scan nothing and report OK.
+if ! command -v rg >/dev/null 2>&1; then
+	printf '%s\n' "ERROR: ripgrep (rg) is required for the release audit and is not on PATH." >&2
+	printf '%s\n' "Install ripgrep (e.g., apt-get install -y ripgrep) before running this script." >&2
+	exit 127
+fi
+
 errors=0
 
 note() {
@@ -15,15 +25,35 @@ fail() {
 	errors=1
 }
 
+# rg_search runs ripgrep and distinguishes "no matches" (exit 1, clean)
+# from a search error (exit >=2, which `|| true` would otherwise mask
+# and let the audit pass with zero scans — exactly what happened on
+# runners that lack ripgrep before this fix).
+rg_search() {
+	local status
+	set +e
+	rg_output="$(rg "$@")"
+	status=$?
+	set -e
+	if [[ "$status" -gt 1 ]]; then
+		note "ERROR: ripgrep exited with $status while running: rg $*"
+		note "The release audit is a release-blocking tripwire and must fail closed on scan errors."
+		errors=1
+		return 2
+	fi
+	return 0
+}
+
 check_no_matches() {
 	local pattern="$1"
 	local message="$2"
-	local matches
 
-	matches="$(rg -n "$pattern" .github/workflows || true)"
-	if [[ -n "$matches" ]]; then
+	if ! rg_search -n "$pattern" .github/workflows; then
+		return
+	fi
+	if [[ -n "$rg_output" ]]; then
 		fail "$message"
-		note "$matches"
+		note "$rg_output"
 	fi
 }
 

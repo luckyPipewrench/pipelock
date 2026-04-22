@@ -4,6 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# Fail closed if ripgrep is missing. The release-blocking tripwire must
+# not silently pass when its only scan tool is unavailable.
+if ! command -v rg >/dev/null 2>&1; then
+	printf '%s\n' "ERROR: ripgrep (rg) is required for the runtime policy audit and is not on PATH." >&2
+	printf '%s\n' "Install ripgrep (e.g., apt-get install -y ripgrep) before running this script." >&2
+	exit 127
+fi
+
 pattern='MCPInputScanning\.(Enabled|Action)\s*=|MCPToolScanning\.(Enabled|Action|DetectDrift)\s*=|MCPToolPolicy\.(Enabled|Action|Rules)\s*=|ResponseScanning\s*=|ResponseScanning\.(Enabled|Patterns)\s*=|DLP\.Patterns\s*=|Internal\s*='
 
 # Capture rg's exit code explicitly. ripgrep returns:

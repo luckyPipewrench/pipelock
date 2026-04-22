@@ -1560,7 +1560,26 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		return body, false
 	}
 
-	// Max shield bytes: enforce oversize action.
+	// Content-type gate: skip shield entirely for non-shieldable media
+	// (image/*, audio/*, video/*, application/pdf, arbitrary octet-stream
+	// that does not sniff as HTML/JS/SVG, etc.). This MUST run before the
+	// max_shield_bytes ceiling so a large binary payload from a legitimate
+	// media API is not blocked as "oversize" when the shield would return
+	// PipelineNone anyway. runShieldPipeline performs the same detection
+	// on the rewrite path; we short-circuit here for binary bodies so the
+	// oversize ceiling only applies to content the shield would actually
+	// rewrite (HTML, JS, SVG).
+	prefixLen := len(body)
+	if prefixLen > 512 {
+		prefixLen = 512
+	}
+	if shield.DetectPipeline(contentType, body[:prefixLen]) == shield.PipelineNone {
+		p.metrics.RecordShieldSkipped("non_shieldable_content")
+		return body, false
+	}
+
+	// Max shield bytes: enforce oversize action. Only runs for content the
+	// shield would rewrite (HTML/JS/SVG) per the gate above.
 	if cfg.BrowserShield.MaxShieldBytes > 0 && len(body) > cfg.BrowserShield.MaxShieldBytes {
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {

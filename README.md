@@ -21,7 +21,9 @@
   <a href="https://github.com/luckyPipewrench/pipelock/blob/main/.github/workflows/ci.yaml#L21-L35"><img alt="pipelock self-scanned" src="https://img.shields.io/badge/pipelock-self--scanned-00FFC8?style=flat&labelColor=1A1A2E&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNCAxNCI+PHBhdGggZmlsbD0iIzAwRkZDOCIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik03IDAuNWMtMS45MyAwLTMuNSAxLjY2LTMuNSAzLjd2MS4zSDNjLS44MyAwLTEuNSAuNjctMS41IDEuNXY2YzAgLjgzLjY3IDEuNSAxLjUgMS41aDhjLjgzIDAgMS41LS42NyAxLjUtMS41VjdjMC0uODMtLjY3LTEuNS0xLjUtMS41aC0uNVY0LjJjMC0yLjA0LTEuNTctMy43LTMuNS0zLjdabS0yIDVWNC4yYzAtMS40OSAxLjEyLTIuNyAyLjUtMi43czIuNSAxLjIxIDIuNSAyLjd2MS4zSDVaTTIuNSA1aDJ2MS4yaC0yVjVabTcgMGgydjEuMmgtMlY1Wk03IDguMmMtLjY5IDAtMS4yNS41Ni0xLjI1IDEuMjUgMCAuNDQuMjMuODMuNTcgMS4wNXYxLjVoMS4zNnYtMS41Yy4zNC0uMjIuNTctLjYxLjU3LTEuMDUgMC0uNjktLjU2LTEuMjUtMS4yNS0xLjI1WiIvPjwvc3ZnPgo="></a>
 </p>
 
-**Open-source AI agent firewall with signed action receipts.** Network scanning, process containment, MCP-aware policy enforcement, and independently verifiable proof of what your agent did in a single binary. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
+**Open-source AI agent firewall with mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) from outside the agent trust boundary.** Network scanning, process containment, MCP-aware policy enforcement, and independently verifiable proof of what your agent did in a single binary. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
+
+**Agent-external attestation built in.** Receipts are signed by the mediator, outside the agent process and outside its credentials, so evidence does not depend on the agent attesting to itself.
 
 **Works with:** Claude Code · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 

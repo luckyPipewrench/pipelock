@@ -151,6 +151,98 @@ func TestProxy_ApplyShield_OversizeWarn(t *testing.T) {
 	}
 }
 
+func TestProxy_ApplyShield_NonShieldableContentBypassesOversize(t *testing.T) {
+	// Regression: v2.2.0 blocked legitimate binary responses (image/audio/
+	// video) from media generation APIs when the payload exceeded
+	// max_shield_bytes, even though DetectPipeline would have returned
+	// PipelineNone and the shield would not have rewritten anything. The
+	// Content-Type gate in applyShield must short-circuit before the
+	// oversize ceiling for non-shieldable media.
+	t.Parallel()
+
+	nonShieldable := []struct {
+		name        string
+		contentType string
+		bodyHead    []byte
+	}{
+		{"png", "image/png", []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}},
+		{"jpeg", "image/jpeg", []byte{0xff, 0xd8, 0xff, 0xe0}},
+		{"webp", "image/webp", []byte("RIFF\x00\x00\x00\x00WEBP")},
+		{"mp4", "video/mp4", []byte{0x00, 0x00, 0x00, 0x20, 0x66, 0x74, 0x79, 0x70}},
+		{"mpeg", "audio/mpeg", []byte{0x49, 0x44, 0x33, 0x04}},
+		{"pdf", "application/pdf", []byte("%PDF-1.4")},
+	}
+	for _, tc := range nonShieldable {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestProxy(t)
+			cfg := config.Defaults()
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.MaxShieldBytes = 100
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+
+			// Pad the head with plausible magic bytes, then fill to 1024
+			// bytes so the total exceeds both MaxShieldBytes and the 512-byte
+			// prefix cap used by DetectPipeline. Exercising the >512 path
+			// is part of the regression; a smaller body would leave the
+			// prefix-truncation branch in applyShield uncovered.
+			body := make([]byte, 1024)
+			copy(body, tc.bodyHead)
+
+			result, blocked := p.applyShield(body, tc.contentType, "example.com", nil, cfg, audit.LogContext{}, "127.0.0.1", "req1", TransportFetch)
+			if blocked {
+				t.Fatalf("%s: non-shieldable media must not be blocked as shield_oversize", tc.contentType)
+			}
+			if len(result) != len(body) {
+				t.Fatalf("%s: body length changed (got %d, want %d); shield should pass non-shieldable content through unchanged", tc.contentType, len(result), len(body))
+			}
+		})
+	}
+}
+
+func TestProxy_ApplyShield_ShieldableContentStillBlockedWhenOversize(t *testing.T) {
+	// Complement to the non-shieldable bypass test: verify the oversize
+	// ceiling still fires for content the shield would rewrite. Ensures
+	// the Content-Type gate did not accidentally disable fail-closed
+	// behavior on HTML, JS, or SVG.
+	t.Parallel()
+
+	shieldable := []struct {
+		name        string
+		contentType string
+		bodyHead    []byte
+	}{
+		{"html", "text/html", []byte("<!DOCTYPE html><html>")},
+		{"js", "application/javascript", []byte("function run() {")},
+		{"svg", "image/svg+xml", []byte("<svg xmlns='http://www.w3.org/2000/svg'>")},
+	}
+	for _, tc := range shieldable {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestProxy(t)
+			cfg := config.Defaults()
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.MaxShieldBytes = 100
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+
+			// 1024 bytes exceeds both MaxShieldBytes and the 512-byte
+			// prefix cap, exercising the prefix-truncation branch on the
+			// shieldable path too.
+			body := make([]byte, 1024)
+			copy(body, tc.bodyHead)
+			for i := len(tc.bodyHead); i < len(body); i++ {
+				body[i] = 'A'
+			}
+
+			result, blocked := p.applyShield(body, tc.contentType, "example.com", nil, cfg, audit.LogContext{}, "127.0.0.1", "req1", TransportFetch)
+			if !blocked {
+				t.Fatalf("%s: shieldable content over MaxShieldBytes must still block (fail-closed invariant)", tc.contentType)
+			}
+			if result != nil {
+				t.Fatalf("%s: blocked body must be nil, got %d bytes", tc.contentType, len(result))
+			}
+		})
+	}
+}
+
 func TestProxy_ApplyShield_OversizeScanHead(t *testing.T) {
 	t.Parallel()
 	p := newTestProxy(t)

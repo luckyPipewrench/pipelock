@@ -44,7 +44,6 @@ import (
 // bytes-to-scanner wiring only.
 
 const (
-	parityRepeatForHexKey         = 17 // AWS-key suffix length minus the "AKIA" prefix.
 	parityRepeatForAnthropicKey   = 25 // Anthropic key payload length after "sk-ant-".
 	parityRepeatForSplitSecretEnd = 25 // Suffix length for split-secret fixtures.
 

@@ -393,8 +393,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		_, _ = fmt.Fprintf(opts.Stderr, "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 	}
 	emitResolveInfoLogs(opts.Stderr, resolveInfo, "listener")
-	s.cfg = cfg
-	s.bundleResult = bundleResult
 
 	sc := scanner.New(cfg)
 	s.scanner = sc
@@ -572,6 +570,9 @@ func (s *Server) Start(ctx context.Context) error {
 	// approver → scanner → emitter → logger → sentry) is preserved.
 	defer s.cleanup()
 
+	var reloadWG sync.WaitGroup
+	defer reloadWG.Wait()
+
 	// Capture duration timer: cancel context after the specified capture
 	// duration so the proxy shuts down automatically.
 	if s.opts.CaptureOutput != "" && s.opts.CaptureDuration > 0 {
@@ -592,13 +593,17 @@ func (s *Server) Start(ctx context.Context) error {
 		reloader := config.NewReloader(s.opts.ConfigFile)
 		defer reloader.Close()
 
+		reloadWG.Add(1)
 		go func() {
+			defer reloadWG.Done()
 			if err := reloader.Start(ctx); err != nil {
 				s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
 			}
 		}()
 
+		reloadWG.Add(1)
 		go func() {
+			defer reloadWG.Done()
 			for newCfg := range reloader.Changes() {
 				_ = s.Reload(newCfg)
 			}
@@ -850,11 +855,12 @@ func (s *Server) Start(ctx context.Context) error {
 			if c == nil {
 				return mcp.MCPRedactionConfig{}
 			}
-			matcher, limits := s.proxy.CurrentRedactionConfigFor(c)
+			matcher, limits, required := s.proxy.CurrentRedactionConfigFor(c)
 			return mcp.MCPRedactionConfig{
-				Matcher: matcher,
-				Limits:  limits,
-				Profile: c.Redaction.DefaultProfile,
+				Matcher:  matcher,
+				Limits:   limits,
+				Profile:  c.Redaction.DefaultProfile,
+				Required: required,
 			}
 		}
 		mcpTaintCfgFn := func() *config.TaintConfig {
@@ -1047,13 +1053,12 @@ func (s *Server) Start(ctx context.Context) error {
 			// Register with proxy so its shutdown goroutine gracefully
 			// stops agent servers alongside the main server.
 			s.proxy.RegisterAgentServer(srv)
-			errCh := agentListenerErrs
 			go func(srv *http.Server, listener net.Listener) {
 				srvErr := srv.Serve(listener)
 				if errors.Is(srvErr, http.ErrServerClosed) {
 					srvErr = nil
 				}
-				errCh <- srvErr
+				agentListenerErrs <- srvErr
 			}(srv, ln)
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: agent %q listening on %s\n", name, addr)
 		}

@@ -115,6 +115,24 @@ func TestApplyMCPToolCallRedaction_ToolsCallWithInvalidParamsBlocks(t *testing.T
 	}
 }
 
+func TestApplyMCPToolCallRedaction_RequiredWithoutMatcherBlocks(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"hi"}}}`)
+
+	_, _, err := applyMCPToolCallRedactionWithConfig(line, MCPRedactionConfig{
+		Required: true,
+	})
+	if err == nil {
+		t.Fatal("expected block error")
+	}
+	var blockErr *redact.BlockError
+	if !errors.As(err, &blockErr) {
+		t.Fatalf("expected BlockError, got %T", err)
+	}
+	if blockErr.Reason != redact.ReasonInternalError {
+		t.Fatalf("reason = %q, want %q", blockErr.Reason, redact.ReasonInternalError)
+	}
+}
+
 func TestApplyMCPToolCallRedaction_NoArgumentsBypasses(t *testing.T) {
 	line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`)
 

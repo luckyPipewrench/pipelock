@@ -35,9 +35,10 @@ const (
 // MCPRedactionConfig snapshots the request-side redaction settings used for a
 // single MCP message or HTTP request.
 type MCPRedactionConfig struct {
-	Matcher *redact.Matcher
-	Limits  redact.Limits
-	Profile string
+	Matcher  *redact.Matcher
+	Limits   redact.Limits
+	Profile  string
+	Required bool
 }
 
 // MCPProxyOpts groups the shared dependencies for MCP proxy functions.

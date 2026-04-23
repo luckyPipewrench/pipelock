@@ -4245,6 +4245,17 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 			},
 		})
 	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-done:
+			if runErr != nil {
+				t.Errorf("RunHTTPListenerProxy: %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timeout waiting for listener proxy to stop")
+		}
+	})
 
 	baseURL := "http://" + addr
 	deadline := time.Now().Add(3 * time.Second)
@@ -4270,16 +4281,6 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(respBody), testDoWBudgetReason) {
 		t.Errorf("expected DoW block response, got: %s", string(respBody))
-	}
-
-	cancel()
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Errorf("RunHTTPListenerProxy: %v", runErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("timeout waiting for listener proxy to stop")
 	}
 }
 
@@ -4487,6 +4488,17 @@ func TestHTTPListener_PolicyCfgFn_HotReload(t *testing.T) {
 			},
 		})
 	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-done:
+			if runErr != nil {
+				t.Errorf("RunHTTPListenerProxy: %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timeout waiting for listener proxy to stop")
+		}
+	})
 
 	baseURL := "http://" + addr
 	deadline := time.Now().Add(3 * time.Second)
@@ -4551,14 +4563,19 @@ func TestHTTPListener_PolicyCfgFn_HotReload(t *testing.T) {
 		t.Fatalf("after reload: upstream calls=%d, want 1", got)
 	}
 
-	cancel()
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Errorf("RunHTTPListenerProxy: %v", runErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("timeout waiting for listener proxy to stop")
+	policyVal.Store(&policy.Config{
+		Action: config.ActionAllow,
+	})
+
+	status, body = post()
+	if status != http.StatusOK {
+		t.Fatalf("after downgrade: status=%d body=%s", status, body)
+	}
+	if !strings.Contains(body, `"result"`) {
+		t.Fatalf("after downgrade: expected forwarded result, got %s", body)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("after downgrade: upstream calls=%d, want 2", got)
 	}
 }
 

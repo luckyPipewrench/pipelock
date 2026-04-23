@@ -60,15 +60,16 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 
 	blockedCh := make(chan BlockedRequest, 16)
 
+	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
+	if toolCfg != nil && toolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
-			Action:                  opts.ToolCfg.Action,
-			DetectDrift:             opts.ToolCfg.DetectDrift,
-			BindingUnknownAction:    opts.ToolCfg.BindingUnknownAction,
-			BindingNoBaselineAction: opts.ToolCfg.BindingNoBaselineAction,
-			ExtraPoison:             opts.ToolCfg.ExtraPoison,
+			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
+			BindingUnknownAction:    toolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+			ExtraPoison:             toolCfg.ExtraPoison,
 		}
 	}
 
@@ -130,6 +131,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 	serverReader := transport.NewStdioReader(serverOut)
 	fwdOpts := inputOpts
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
+	fwdOpts.ToolCfgFn = nil
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 
 	waitErr := sandboxCmd.Wait()

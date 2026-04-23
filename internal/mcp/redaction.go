@@ -22,6 +22,12 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 
 func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([]byte, *redact.Report, error) {
 	if cfg.Matcher == nil {
+		if cfg.Required {
+			return nil, nil, &redact.BlockError{
+				Reason: redact.ReasonInternalError,
+				Detail: "redaction runtime unavailable during reload",
+			}
+		}
 		return line, nil, nil
 	}
 

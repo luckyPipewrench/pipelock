@@ -318,7 +318,9 @@ func ReloadPanicHandler(r any, sentryClient *plsentry.Client, logger *audit.Logg
 	if sentryClient != nil {
 		sentryClient.CaptureError(reloadErr)
 	}
-	logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, configFile), reloadErr)
+	if logger != nil {
+		logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, configFile), reloadErr)
+	}
 }
 
 // PreserveAgentListeners keeps the new config's agent listener state

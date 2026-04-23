@@ -89,6 +89,7 @@ func RunHTTPProxy(
 	fwdOpts := opts
 	fwdOpts.Rec = rec
 	fwdOpts.ToolCfg = fwdToolCfg
+	fwdOpts.ToolCfgFn = nil
 	fwdOpts.WarnContext = ctx
 
 	clientReader := transport.NewStdioReader(clientIn)

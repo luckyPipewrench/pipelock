@@ -60,12 +60,12 @@ func (p *Proxy) currentRedactionRuntimeFor(cfg *config.Config) *redactionRuntime
 // CurrentRedactionConfigFor returns the redaction matcher and limits that
 // correspond to cfg's current redaction policy. Callers outside package proxy
 // use this instead of mixing cfg.Redaction with independently-swapped atomics.
-func (p *Proxy) CurrentRedactionConfigFor(cfg *config.Config) (*redact.Matcher, redact.Limits) {
+func (p *Proxy) CurrentRedactionConfigFor(cfg *config.Config) (*redact.Matcher, redact.Limits, bool) {
 	rt := p.currentRedactionRuntimeFor(cfg)
 	if rt == nil {
-		return nil, redact.Limits{}
+		return nil, redact.Limits{}, false
 	}
-	return rt.matcher, rt.limits
+	return rt.matcher, rt.limits, rt.required
 }
 
 func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[redactionRuntime]) *redactionRuntime {

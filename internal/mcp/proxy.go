@@ -1079,6 +1079,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	serverReader := transport.NewStdioReader(serverOut)
 	fwdOpts := inputOpts
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
+	fwdOpts.ToolCfgFn = nil
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 
 	// Wait for subprocess to exit.

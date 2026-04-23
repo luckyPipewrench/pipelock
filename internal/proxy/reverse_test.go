@@ -19,6 +19,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -173,7 +174,26 @@ func TestReverseProxy_ServeHTTPSnapshotsUnderReloadLock(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "http://pipelock.local/test", nil)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+
+	reloadMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+		reloadMu.Unlock()
+		t.Fatal("ServeHTTP completed while reload write lock was held")
+	case <-time.After(25 * time.Millisecond):
+	}
+	reloadMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ServeHTTP did not complete after reload lock was released")
+	}
+
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}

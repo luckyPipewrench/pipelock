@@ -68,8 +68,11 @@ type InterceptContext struct {
 	Redaction       *redactionRuntime
 	Proxy           *Proxy
 	EnvelopeEmitter *envelope.Emitter
-	Recorder        session.Recorder
-	KillSwitch      *killswitch.Controller
+	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
+	// from tests that omitted the snapshot entirely.
+	EnvelopeEmitterSet bool
+	Recorder           session.Recorder
+	KillSwitch         *killswitch.Controller
 }
 
 // Validate checks that required fields are set. Returns an error if any
@@ -953,9 +956,9 @@ func newInterceptHandler(
 		// disabled but signing is enabled, InjectAndSign drains
 		// r.Body itself, bounded by mediation_envelope.max_body_bytes.
 		envEmitter := ic.EnvelopeEmitter
-		if envEmitter == nil && ic.Proxy != nil {
+		if !ic.EnvelopeEmitterSet && envEmitter == nil && ic.Proxy != nil {
 			// Direct unit tests build InterceptContext without the CONNECT
-			// admission snapshot. Production paths set EnvelopeEmitter.
+			// admission snapshot. Production paths set EnvelopeEmitterSet.
 			envEmitter = ic.Proxy.currentEnvelopeEmitter()
 		}
 		if envEmitter != nil {

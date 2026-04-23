@@ -692,6 +692,12 @@ func TestServer_Reload_ProxyFailureStaysFailSafe(t *testing.T) {
 	oldCfg := s.proxy.CurrentConfig()
 	oldScanner := s.proxy.ScannerPtr().Load()
 	oldHash := s.lastReloadHash
+	oldKillSwitchEnabled := oldCfg.KillSwitch.Enabled
+	oldKillSwitchMessage := oldCfg.KillSwitch.Message
+	oldKillSwitchActive := s.killswitch.IsActive()
+	oldEnvelopeEnabled := oldCfg.MediationEnvelope.Enabled
+	oldEnvelopeSign := oldCfg.MediationEnvelope.Sign
+	oldEnvelopeSigningKeyPath := oldCfg.MediationEnvelope.SigningKeyPath
 
 	newCfg := oldCfg.Clone()
 	newCfg.KillSwitch.Enabled = true
@@ -710,14 +716,23 @@ func TestServer_Reload_ProxyFailureStaysFailSafe(t *testing.T) {
 	if s.proxy.CurrentConfig() != oldCfg {
 		t.Errorf("live proxy config changed despite failed reload")
 	}
+	live := s.proxy.CurrentConfig()
+	if live.KillSwitch.Enabled != oldKillSwitchEnabled ||
+		live.KillSwitch.Message != oldKillSwitchMessage ||
+		live.MediationEnvelope.Enabled != oldEnvelopeEnabled ||
+		live.MediationEnvelope.Sign != oldEnvelopeSign ||
+		live.MediationEnvelope.SigningKeyPath != oldEnvelopeSigningKeyPath {
+		t.Errorf("live proxy config mutated despite failed reload: kill_switch=%+v mediation_envelope=%+v",
+			live.KillSwitch, live.MediationEnvelope)
+	}
 	if s.proxy.ScannerPtr().Load() != oldScanner {
 		t.Errorf("live proxy scanner changed despite failed reload")
 	}
 	if s.cfg != oldCfg {
 		t.Errorf("server cfg changed despite failed reload")
 	}
-	if s.killswitch.IsActive() {
-		t.Errorf("kill switch became active despite failed reload")
+	if s.killswitch.IsActive() != oldKillSwitchActive {
+		t.Errorf("kill switch active state changed despite failed reload")
 	}
 	if s.lastReloadHash != oldHash {
 		t.Errorf("reload dedup state advanced on failed reload")

@@ -788,9 +788,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // through the recorder mutex — same cost as recordDecision. Errors are logged
 // but not propagated.
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
-	p.reloadMu.RLock()
 	e := p.receiptEmitterPtr.Load()
-	p.reloadMu.RUnlock()
 	if e == nil {
 		return
 	}
@@ -1370,8 +1368,6 @@ func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.Resolv
 }
 
 func (p *Proxy) currentEnvelopeEmitter() *envelope.Emitter {
-	p.reloadMu.RLock()
-	defer p.reloadMu.RUnlock()
 	return p.envelopeEmitterPtr.Load()
 }
 

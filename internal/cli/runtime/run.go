@@ -159,9 +159,7 @@ Examples:
 				Stderr:           cmd.ErrOrStderr(),
 			}
 
-			if dashIdx := cmd.ArgsLenAtDash(); dashIdx >= 0 && dashIdx < len(args) {
-				opts.AgentArgs = args[dashIdx:]
-			}
+			opts.AgentArgs = agentArgsAfterDash(args, cmd.ArgsLenAtDash())
 
 			srv, err := NewServer(opts)
 			if err != nil {
@@ -195,6 +193,13 @@ Examples:
 	cmd.Flags().StringVar(&captureEscrowKey, "capture-escrow-public-key", "", "X25519 public key (hex) for payload sidecar encryption")
 
 	return cmd
+}
+
+func agentArgsAfterDash(args []string, dashIdx int) []string {
+	if dashIdx >= 0 && dashIdx < len(args) {
+		return args[dashIdx:]
+	}
+	return nil
 }
 
 // BuildEmitSinks creates emit sinks from the current config.

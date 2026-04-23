@@ -1055,22 +1055,12 @@ func TestRunCmd_RejectsPositionalArgs(t *testing.T) {
 }
 
 func TestRunCmd_AcceptsAgentArgsAfterDash(t *testing.T) {
-	cmd := RunCmd()
-	cmd.SetArgs([]string{"--", "some-agent", "--flag"})
-
-	var gotAgentArgs []string
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if dashIdx := cmd.ArgsLenAtDash(); dashIdx >= 0 && dashIdx < len(args) {
-			gotAgentArgs = args[dashIdx:]
-		}
-		return nil
-	}
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	gotAgentArgs := agentArgsAfterDash([]string{"some-agent", "--flag"}, 0)
 	if strings.Join(gotAgentArgs, " ") != "some-agent --flag" {
 		t.Fatalf("agent args = %v, want %v", gotAgentArgs, []string{"some-agent", "--flag"})
+	}
+	if got := agentArgsAfterDash(nil, 0); got != nil {
+		t.Fatalf("empty trailing args = %v, want nil", got)
 	}
 }
 

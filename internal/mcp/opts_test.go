@@ -172,22 +172,46 @@ func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	inputCfg := &InputScanConfig{Enabled: true}
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionBlock}
 	policyCfg := &policy.Config{Action: config.ActionBlock}
+	chainMatcher := chains.New(&cfg.ToolChainDetection)
 	adaptiveCfg := &config.AdaptiveEnforcement{Enabled: true}
+	taintCfg := &config.TaintConfig{Enabled: true}
+	cee := &CEEDeps{Config: &cfg.CrossRequestDetection}
+	redirectRT := &RedirectRuntime{FetchEndpoint: "http://127.0.0.1:8888/fetch"}
+	provenanceCfg := &config.MCPToolProvenance{Enabled: true}
+	a2aCfg := &config.A2AScanning{Enabled: true}
+	mediaEnabled := true
+	mediaPolicy := &config.MediaPolicy{Enabled: &mediaEnabled}
+	redactMatcher := redact.NewDefaultMatcher()
+	redactLimits := redact.DefaultLimits().ToLimits()
 	redactProfile := "strict"
 	opts := MCPProxyOpts{
 		Scanner:       sc,
 		InputCfg:      inputCfg,
 		ToolCfg:       toolCfg,
 		PolicyCfg:     policyCfg,
+		ChainMatcher:  chainMatcher,
 		AdaptiveCfg:   adaptiveCfg,
+		TaintCfg:      taintCfg,
+		CEE:           cee,
+		RedirectRT:    redirectRT,
+		ProvenanceCfg: provenanceCfg,
+		A2ACfg:        a2aCfg,
+		MediaPolicy:   mediaPolicy,
+		RedactMatcher: redactMatcher,
+		RedactLimits:  redactLimits,
 		RedactProfile: redactProfile,
 	}
 
 	if opts.scanner() != sc || opts.inputCfg() != inputCfg || opts.toolCfg() != toolCfg ||
-		opts.policyCfg() != policyCfg || opts.adaptiveCfg() != adaptiveCfg {
+		opts.policyCfg() != policyCfg || opts.chainMatcher() != chainMatcher ||
+		opts.adaptiveCfg() != adaptiveCfg || opts.taintCfg() != taintCfg ||
+		opts.cee() != cee || opts.redirectRT() != redirectRT ||
+		opts.provenanceCfg() != provenanceCfg || opts.a2aCfg() != a2aCfg ||
+		opts.mediaPolicy() != mediaPolicy {
 		t.Fatal("static resolver fallback returned unexpected value")
 	}
-	if got := opts.redactionConfig(); got.Profile != redactProfile {
-		t.Fatalf("redaction fallback profile = %q, want %q", got.Profile, redactProfile)
+	if got := opts.redactionConfig(); got.Matcher != redactMatcher || got.Limits != redactLimits || got.Profile != redactProfile {
+		t.Fatalf("redaction fallback = %+v, want matcher=%p limits=%+v profile=%q",
+			got, redactMatcher, redactLimits, redactProfile)
 	}
 }

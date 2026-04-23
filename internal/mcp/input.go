@@ -283,14 +283,16 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
 			recordAdaptiveSignal(session.SignalBlock)
 			if pendingActionID != "" && receiptEmitter != nil {
-				_ = receiptEmitter.Emit(receipt.EmitOpts{
-					ActionID:         pendingActionID,
-					Verdict:          config.ActionBlock,
-					RedactionProfile: redactionCfg.Profile,
-					Transport:        opts.Transport,
-					Target:           pendingToolCallName,
-					MCPMethod:        methodToolsCall,
-					ToolName:         pendingToolCallName,
+				_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
+					Receipt: receipt.EmitOpts{
+						ActionID:         pendingActionID,
+						Verdict:          config.ActionBlock,
+						RedactionProfile: redactionCfg.Profile,
+						Transport:        opts.Transport,
+						Target:           pendingToolCallName,
+						MCPMethod:        methodToolsCall,
+						ToolName:         pendingToolCallName,
+					},
 				})
 			}
 			blockedCh <- BlockedRequest{
@@ -516,28 +518,9 @@ func ForwardScannedInput(
 			Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
 		}
 		emitToolReceipt := func(receiptVerdict string) {
-			if actionID == "" || receiptEmitter == nil {
-				return
-			}
-			_ = receiptEmitter.Emit(receipt.EmitOpts{
-				ActionID:            actionID,
-				Verdict:             receiptVerdict,
-				RedactionProfile:    redactionCfg.Profile,
-				RedactionReport:     redactionReport,
-				Transport:           opts.Transport,
-				Target:              toolCallName,
-				MCPMethod:           verdict.Method,
-				ToolName:            toolCallName,
-				SessionTaintLevel:   taintDecision.Risk.Level.String(),
-				SessionContaminated: taintDecision.Risk.Contaminated,
-				RecentTaintSources:  taintDecision.Risk.Sources,
-				SessionTaskID:       taintDecision.Task.CurrentTaskID,
-				SessionTaskLabel:    taintDecision.Task.CurrentTaskLabel,
-				AuthorityKind:       taintDecision.Authority.String(),
-				TaintDecision:       taintDecision.Result.Decision.String(),
-				TaintDecisionReason: taintDecision.Result.Reason,
-				TaskOverrideApplied: taintDecision.TaskOverrideApplied,
-			})
+			// Delegate to the shared helper so stdio and HTTP/WS emit
+			// tool receipts through the same EmitMCPDecision entry.
+			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolCallName, receiptVerdict, taintDecision, redactionReport)
 		}
 		if verdict.Method == methodToolsCall {
 			taintDecision = evaluateMCPTaint(taintOpts, toolCallName, string(frame.Args))
@@ -631,7 +614,7 @@ func ForwardScannedInput(
 			tracker.Track(verdict.ID)
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
-				fwdLine = injectMCPEnvelope(line, envelopeEmitter, envelope.BuildOpts{
+				buildOpts := envelope.BuildOpts{
 					ActionID:       actionID,
 					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
 					Verdict:        config.ActionAllow,
@@ -639,6 +622,10 @@ func ForwardScannedInput(
 					TaskID:         taintDecision.Task.CurrentTaskID,
 					AuthorityKind:  taintDecision.Authority.String(),
 					RequiresReauth: taintDecision.RequiresReauth,
+				}
+				fwdLine, _ = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
+					Envelope:   &buildOpts,
+					InboundMsg: line,
 				})
 			}
 			if err := writer.WriteMessage(fwdLine); err != nil {
@@ -891,7 +878,7 @@ func ForwardScannedInput(
 			// Inject envelope for warn-mode tool calls before forwarding.
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
-				fwdLine = injectMCPEnvelope(line, envelopeEmitter, envelope.BuildOpts{
+				buildOpts := envelope.BuildOpts{
 					ActionID:       actionID,
 					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
 					Verdict:        config.ActionWarn,
@@ -899,6 +886,10 @@ func ForwardScannedInput(
 					TaskID:         taintDecision.Task.CurrentTaskID,
 					AuthorityKind:  taintDecision.Authority.String(),
 					RequiresReauth: taintDecision.RequiresReauth,
+				}
+				fwdLine, _ = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
+					Envelope:   &buildOpts,
+					InboundMsg: line,
 				})
 			}
 			// Forward anyway (warn mode).

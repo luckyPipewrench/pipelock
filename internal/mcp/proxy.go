@@ -266,14 +266,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				m.RecordBlocked("mcp", "media_policy", 0, "")
 			}
 			if receiptEmitter != nil {
-				if emitErr := receiptEmitter.Emit(receipt.EmitOpts{
-					ActionID:  receipt.NewActionID(),
-					Verdict:   config.ActionBlock,
-					Transport: opts.Transport,
-					Target:    target,
-					RequestID: requestID,
-					Layer:     "media_policy",
-					Pattern:   mediaResult.BlockReason,
+				if _, emitErr := EmitMCPDecision(receiptEmitter, nil, MCPDecision{
+					Receipt: receipt.EmitOpts{
+						ActionID:  receipt.NewActionID(),
+						Verdict:   config.ActionBlock,
+						Transport: opts.Transport,
+						Target:    target,
+						RequestID: requestID,
+						Layer:     "media_policy",
+						Pattern:   mediaResult.BlockReason,
+					},
 				}); emitErr != nil {
 					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
 				}
@@ -551,14 +553,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if len(names) > 0 {
 				pattern = names[0]
 			}
-			if emitErr := receiptEmitter.Emit(receipt.EmitOpts{
-				ActionID:  receipt.NewActionID(),
-				Verdict:   effectiveAction,
-				Transport: opts.Transport,
-				Target:    target,
-				RequestID: requestID,
-				Layer:     "mcp_response_scan",
-				Pattern:   pattern,
+			if _, emitErr := EmitMCPDecision(receiptEmitter, nil, MCPDecision{
+				Receipt: receipt.EmitOpts{
+					ActionID:  receipt.NewActionID(),
+					Verdict:   effectiveAction,
+					Transport: opts.Transport,
+					Target:    target,
+					RequestID: requestID,
+					Layer:     "mcp_response_scan",
+					Pattern:   pattern,
+				},
 			}); emitErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
 			}

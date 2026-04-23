@@ -160,16 +160,23 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	opts MCPProxyOpts,
 ) {
-	sc := opts.Scanner
-	policyCfg := opts.PolicyCfg
+	sc := opts.scanner()
+	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch
-	chainMatcher := opts.ChainMatcher
+	chainMatcher := opts.chainMatcher()
 	auditLogger := opts.AuditLogger
-	cee := opts.CEE
+	cee := opts.cee()
 	rec := opts.Rec
-	adaptiveCfg := opts.AdaptiveCfg
+	adaptiveCfg := opts.adaptiveCfg()
 	m := opts.Metrics
 	obs := opts.captureObserver()
+	redactionCfg := opts.redactionConfig()
+	receiptEmitter := opts.receiptEmitter()
+	envelopeEmitter := opts.envelopeEmitter()
+	redirectRT := opts.redirectRT()
+	taintOpts := opts
+	taintOpts.TaintCfg = opts.taintCfg()
+	taintOpts.TaintCfgFn = nil
 
 	defer close(blockedCh)
 
@@ -258,7 +265,7 @@ func ForwardScannedInput(
 			pendingActionID = receipt.NewActionID()
 		}
 		rpcID := extractRPCID(line)
-		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedaction(line, opts)
+		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedactionWithConfig(line, redactionCfg)
 		if redactErr != nil {
 			reason := redactErr.Error()
 			var blockErr *redact.BlockError
@@ -267,11 +274,11 @@ func ForwardScannedInput(
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
 			recordAdaptiveSignal(session.SignalBlock)
-			if pendingActionID != "" && opts.ReceiptEmitter != nil {
-				_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+			if pendingActionID != "" && receiptEmitter != nil {
+				_ = receiptEmitter.Emit(receipt.EmitOpts{
 					ActionID:         pendingActionID,
 					Verdict:          config.ActionBlock,
-					RedactionProfile: opts.RedactProfile,
+					RedactionProfile: redactionCfg.Profile,
 					Transport:        opts.Transport,
 					Target:           pendingToolCallName,
 					MCPMethod:        methodToolsCall,
@@ -496,13 +503,13 @@ func ForwardScannedInput(
 			Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
 		}
 		emitToolReceipt := func(receiptVerdict string) {
-			if actionID == "" || opts.ReceiptEmitter == nil {
+			if actionID == "" || receiptEmitter == nil {
 				return
 			}
-			_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+			_ = receiptEmitter.Emit(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             receiptVerdict,
-				RedactionProfile:    opts.RedactProfile,
+				RedactionProfile:    redactionCfg.Profile,
 				RedactionReport:     redactionReport,
 				Transport:           opts.Transport,
 				Target:              toolCallName,
@@ -520,7 +527,7 @@ func ForwardScannedInput(
 			})
 		}
 		if verdict.Method == methodToolsCall {
-			taintDecision = evaluateMCPTaint(opts, toolCallName, extractToolCallArgs(line))
+			taintDecision = evaluateMCPTaint(taintOpts, toolCallName, extractToolCallArgs(line))
 			if taintDecision.Result.Decision == session.PolicyAsk || taintDecision.Result.Decision == session.PolicyBlock {
 				if auditLogger != nil {
 					auditLogger.LogTaintDecision(
@@ -611,7 +618,7 @@ func ForwardScannedInput(
 			tracker.Track(verdict.ID)
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
-				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
+				fwdLine = injectMCPEnvelope(line, envelopeEmitter, envelope.BuildOpts{
 					ActionID:       actionID,
 					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
 					Verdict:        config.ActionAllow,
@@ -757,7 +764,7 @@ func ForwardScannedInput(
 			if len(policyVerdict.Rules) > 0 {
 				policyRuleName = policyVerdict.Rules[0]
 			}
-			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, opts.RedirectRT)
+			result := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
 			// Determine final outcome before audit logging so the event
 			// reflects the actual result delivered to the client.
 			finalResult := "blocked"
@@ -871,7 +878,7 @@ func ForwardScannedInput(
 			// Inject envelope for warn-mode tool calls before forwarding.
 			fwdLine := line
 			if verdict.Method == methodToolsCall {
-				fwdLine = injectMCPEnvelope(line, opts.EnvelopeEmitter, envelope.BuildOpts{
+				fwdLine = injectMCPEnvelope(line, envelopeEmitter, envelope.BuildOpts{
 					ActionID:       actionID,
 					Action:         string(receipt.ClassifyMCPTool(toolCallName, verdict.Method)),
 					Verdict:        config.ActionWarn,

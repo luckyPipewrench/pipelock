@@ -38,7 +38,8 @@ type taintDecision struct {
 }
 
 func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
-	if opts.TaintCfg == nil || !opts.TaintCfg.Enabled {
+	taintCfg := opts.taintCfg()
+	if taintCfg == nil || !taintCfg.Enabled {
 		return
 	}
 	rs, ok := opts.Rec.(session.RiskState)
@@ -46,7 +47,7 @@ func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
 		return
 	}
 	observation := session.ClassifyMCPResponseObservation(mcpTaintSourceKind, opts.TaintExternalSource, promptHit)
-	observation.MaxSources = opts.TaintCfg.RecentSources
+	observation.MaxSources = taintCfg.RecentSources
 	rs.ObserveRisk(observation)
 }
 
@@ -57,7 +58,8 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 		Authority:   session.AuthorityUserBroad,
 		Result:      session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
 	}
-	if opts.TaintCfg == nil || !opts.TaintCfg.Enabled {
+	taintCfg := opts.taintCfg()
+	if taintCfg == nil || !taintCfg.Enabled {
 		return decision
 	}
 	if rs, ok := opts.Rec.(session.RiskState); ok {
@@ -66,8 +68,8 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 	decision.ActionClass, decision.Sensitivity, decision.ActionRef = session.ClassifyMCPToolCall(
 		toolName,
 		argsJSON,
-		opts.TaintCfg.ProtectedPaths,
-		opts.TaintCfg.ElevatedPaths,
+		taintCfg.ProtectedPaths,
+		taintCfg.ElevatedPaths,
 	)
 	decision.ActionRef = mcpActionRef(toolName, decision.ActionRef)
 	if tp, ok := opts.Rec.(session.TaskContextProvider); ok {
@@ -81,13 +83,13 @@ func evaluateMCPTaint(opts MCPProxyOpts, toolName, argsJSON string) taintDecisio
 			return decision
 		}
 	}
-	decision.Result = session.PolicyMatrix{Profile: opts.TaintCfg.Policy}.Evaluate(
+	decision.Result = session.PolicyMatrix{Profile: taintCfg.Policy}.Evaluate(
 		decision.Risk.Level,
 		decision.ActionClass,
 		decision.Sensitivity,
 		decision.Authority,
 	)
-	if taintTrustOverrideApplies(opts.TaintCfg.TrustOverrides, decision.Risk, decision.ActionRef) {
+	if taintTrustOverrideApplies(taintCfg.TrustOverrides, decision.Risk, decision.ActionRef) {
 		decision.Result = session.PolicyDecisionResult{
 			Decision: session.PolicyAllow,
 			Reason:   "taint_trust_override",
@@ -230,16 +232,22 @@ func taintApprovalReason(decision taintDecision) string {
 	return fmt.Sprintf("%s after %s", decision.ActionClass.String(), decision.Result.Reason)
 }
 
-func emitMCPToolReceipt(opts MCPProxyOpts, actionID, mcpMethod, toolName, receiptVerdict string, decision taintDecision, report *redact.Report) {
-	if actionID == "" || opts.ReceiptEmitter == nil {
+func emitMCPToolReceipt(
+	receiptEmitter *receipt.Emitter,
+	transport, redactionProfile string,
+	actionID, mcpMethod, toolName, receiptVerdict string,
+	decision taintDecision,
+	report *redact.Report,
+) {
+	if actionID == "" || receiptEmitter == nil {
 		return
 	}
-	_ = opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+	_ = receiptEmitter.Emit(receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             receiptVerdict,
-		RedactionProfile:    opts.RedactProfile,
+		RedactionProfile:    redactionProfile,
 		RedactionReport:     report,
-		Transport:           opts.Transport,
+		Transport:           transport,
 		Target:              toolName,
 		MCPMethod:           mcpMethod,
 		ToolName:            toolName,

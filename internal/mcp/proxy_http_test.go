@@ -4245,6 +4245,17 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 			},
 		})
 	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-done:
+			if runErr != nil {
+				t.Errorf("RunHTTPListenerProxy: %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timeout waiting for listener proxy to stop")
+		}
+	})
 
 	baseURL := "http://" + addr
 	deadline := time.Now().Add(3 * time.Second)
@@ -4270,16 +4281,6 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(respBody), testDoWBudgetReason) {
 		t.Errorf("expected DoW block response, got: %s", string(respBody))
-	}
-
-	cancel()
-	select {
-	case runErr := <-done:
-		if runErr != nil {
-			t.Errorf("RunHTTPListenerProxy: %v", runErr)
-		}
-	case <-time.After(5 * time.Second):
-		t.Error("timeout waiting for listener proxy to stop")
 	}
 }
 
@@ -4455,6 +4456,126 @@ func TestHTTPListener_AdaptiveCfgFn_HotReload(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Error("timeout waiting for listener proxy to stop")
+	}
+}
+
+func TestHTTPListener_PolicyCfgFn_HotReload(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"clean"}]}}`))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	var policyVal atomic.Pointer[policy.Config]
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
+			Scanner: sc,
+			PolicyCfgFn: func() *policy.Config {
+				return policyVal.Load()
+			},
+		})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case runErr := <-done:
+			if runErr != nil {
+				t.Errorf("RunHTTPListenerProxy: %v", runErr)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("timeout waiting for listener proxy to stop")
+		}
+	})
+
+	baseURL := "http://" + addr
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
+		resp, connErr := http.DefaultClient.Do(hReq)
+		if connErr == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	post := func() (int, string) {
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dangerous_tool","arguments":{}}}`
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, httpErr := http.DefaultClient.Do(req)
+		if httpErr != nil {
+			t.Fatalf("POST: %v", httpErr)
+		}
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			t.Fatalf("read body: %v", readErr)
+		}
+		return resp.StatusCode, string(respBody)
+	}
+
+	status, body := post()
+	if status != http.StatusOK {
+		t.Fatalf("before reload: status=%d body=%s", status, body)
+	}
+	if !strings.Contains(body, `"result"`) {
+		t.Fatalf("before reload: expected forwarded result, got %s", body)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("before reload: upstream calls=%d, want 1", got)
+	}
+
+	policyVal.Store(&policy.Config{
+		Action: config.ActionBlock,
+		Rules: []*policy.CompiledRule{
+			{
+				Name:        "block-dangerous",
+				ToolPattern: regexp.MustCompile(`dangerous_tool`),
+				Action:      config.ActionBlock,
+			},
+		},
+	})
+
+	status, body = post()
+	if status != http.StatusOK {
+		t.Fatalf("after reload: status=%d body=%s", status, body)
+	}
+	if !strings.Contains(body, errPolicyBlocked) {
+		t.Fatalf("after reload: expected policy block body, got %s", body)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("after reload: upstream calls=%d, want 1", got)
+	}
+
+	policyVal.Store(&policy.Config{
+		Action: config.ActionAllow,
+	})
+
+	status, body = post()
+	if status != http.StatusOK {
+		t.Fatalf("after downgrade: status=%d body=%s", status, body)
+	}
+	if !strings.Contains(body, `"result"`) {
+		t.Fatalf("after downgrade: expected forwarded result, got %s", body)
+	}
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("after downgrade: upstream calls=%d, want 2", got)
 	}
 }
 

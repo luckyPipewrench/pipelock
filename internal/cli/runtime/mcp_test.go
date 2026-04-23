@@ -299,9 +299,13 @@ func TestMcpProxyCmd_FlightRecorderDisabled_NoReceipts(t *testing.T) {
 	evidenceDir := filepath.Join(t.TempDir(), "evidence")
 	configPath := writeMCPProxyConfig(t, evidenceDir, keyPath, false)
 
-	_, stderr, err := runMCPProxyCommand(t, configPath)
-	if err != nil {
+	stdout, stderr, err := runMCPProxyCommand(t, configPath)
+	if err != nil && !errors.Is(err, mcp.ErrSubprocessExit) {
 		t.Fatalf("run mcp proxy command: %v\nstderr:\n%s", err, stderr)
+	}
+
+	if !stdoutHasInjectionBlock(stdout) {
+		t.Fatalf("stdout missing MCP injection block response:\n%s", stdout)
 	}
 
 	if strings.Contains(stderr, "Receipts: enabled") {

@@ -79,10 +79,19 @@ type Handler struct {
 	metrics      *metrics.Metrics
 	version      string
 	killSwitchFn func() bool // returns true when kill switch is active
+	configFn     func() *config.Config
+	scannerFn    func() *scanner.Scanner
+	policyCfgFn  func() *policy.Config
 
 	// Per-token rate limiters.
 	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
+	limiters map[string]scanAPITokenLimiter
+}
+
+type scanAPITokenLimiter struct {
+	limiter *rate.Limiter
+	rpm     int
+	burst   int
 }
 
 // NewHandler creates a Scan API handler.
@@ -99,7 +108,7 @@ func NewHandler(
 		policyCfg: policyCfg,
 		metrics:   m,
 		version:   version,
-		limiters:  make(map[string]*rate.Limiter),
+		limiters:  make(map[string]scanAPITokenLimiter),
 	}
 }
 
@@ -108,10 +117,28 @@ func (h *Handler) SetKillSwitchFn(fn func() bool) {
 	h.killSwitchFn = fn
 }
 
+// SetRuntimeGetters wires live config/scanner/policy access for long-lived
+// listeners so hot reloads take effect without rebuilding the handler.
+func (h *Handler) SetRuntimeGetters(
+	configFn func() *config.Config,
+	scannerFn func() *scanner.Scanner,
+	policyCfgFn func() *policy.Config,
+) {
+	h.configFn = configFn
+	h.scannerFn = scannerFn
+	h.policyCfgFn = policyCfgFn
+}
+
 // ServeHTTP handles POST /api/v1/scan.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.metrics.IncrScanAPIInflight()
 	defer h.metrics.DecrScanAPIInflight()
+
+	cfg := h.currentConfig()
+	if cfg == nil {
+		h.writeError(w, http.StatusInternalServerError, "", "config_unavailable", "Scan API configuration unavailable", true)
+		return
+	}
 
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -121,13 +148,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Auth: extract and validate bearer token.
 	token := extractBearerToken(r)
-	if token == "" || !h.validToken(token) {
+	if token == "" || !h.validTokenFor(token, cfg) {
 		h.writeError(w, http.StatusUnauthorized, "", "unauthorized", "Missing or invalid bearer token", false)
 		return
 	}
 
 	// Rate limit: per-token token bucket.
-	if !h.allowRequest(token) {
+	if !h.allowRequestFor(token, cfg) {
 		w.Header().Set("Retry-After", "1")
 		h.writeError(w, http.StatusTooManyRequests, "", "rate_limited", "Rate limit exceeded for this token", true)
 		return
@@ -140,7 +167,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Body size limit.
-	maxBody := h.cfg.ScanAPI.MaxBodyBytes
+	maxBody := cfg.ScanAPI.MaxBodyBytes
 	if maxBody <= 0 {
 		maxBody = defaultMaxBody
 	}
@@ -179,22 +206,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if kind is enabled.
-	if !h.kindEnabled(req.Kind) {
+	if !h.kindEnabledFor(req.Kind, cfg) {
 		h.writeError(w, http.StatusBadRequest, req.Kind, "kind_disabled",
 			fmt.Sprintf("Kind %q is disabled on this server", req.Kind), false)
 		return
 	}
 
 	// Validate per-kind input fields.
-	if err := h.validateInput(req.Kind, &req.Input); err != nil {
+	if err := h.validateInputFor(req.Kind, &req.Input, cfg); err != nil {
 		h.writeError(w, http.StatusBadRequest, req.Kind, "invalid_input", err.Error(), false)
 		return
 	}
 
 	// Execute scan with timeout.
 	scanTimeout := defaultScanTimeout
-	if h.cfg.ScanAPI.Timeouts.Scan != "" {
-		if d, parseErr := time.ParseDuration(h.cfg.ScanAPI.Timeouts.Scan); parseErr == nil {
+	if cfg.ScanAPI.Timeouts.Scan != "" {
+		if d, parseErr := time.ParseDuration(cfg.ScanAPI.Timeouts.Scan); parseErr == nil {
 			scanTimeout = d
 		}
 	}
@@ -235,57 +262,78 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-func (h *Handler) validToken(token string) bool {
+func (h *Handler) validTokenFor(token string, cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
 	tokenBytes := []byte(token)
 	match := 0
-	for _, t := range h.cfg.ScanAPI.Auth.BearerTokens {
+	for _, t := range cfg.ScanAPI.Auth.BearerTokens {
 		match |= subtle.ConstantTimeCompare(tokenBytes, []byte(t))
 	}
 	return match == 1
 }
 
-func (h *Handler) allowRequest(token string) bool {
+func (h *Handler) allowRequestFor(token string, cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	rpm := cfg.ScanAPI.RateLimit.RequestsPerMinute
+	if rpm <= 0 {
+		rpm = defaultRPM
+	}
+	burst := cfg.ScanAPI.RateLimit.Burst
+	if burst <= 0 {
+		burst = defaultBurst
+	}
+
 	lim, ok := h.limiters[token]
-	if !ok {
-		rpm := h.cfg.ScanAPI.RateLimit.RequestsPerMinute
-		if rpm <= 0 {
-			rpm = defaultRPM
+	if !ok || lim.rpm != rpm || lim.burst != burst {
+		lim = scanAPITokenLimiter{
+			limiter: rate.NewLimiter(rate.Every(time.Minute/time.Duration(rpm)), burst),
+			rpm:     rpm,
+			burst:   burst,
 		}
-		burst := h.cfg.ScanAPI.RateLimit.Burst
-		if burst <= 0 {
-			burst = defaultBurst
-		}
-		lim = rate.NewLimiter(rate.Every(time.Minute/time.Duration(rpm)), burst)
 		h.limiters[token] = lim
 	}
-	return lim.Allow()
+	return lim.limiter.Allow()
 }
 
 func (h *Handler) kindEnabled(kind string) bool {
+	return h.kindEnabledFor(kind, h.currentConfig())
+}
+
+func (h *Handler) kindEnabledFor(kind string, cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
 	switch kind {
 	case KindURL:
-		return h.cfg.ScanAPI.Kinds.URL
+		return cfg.ScanAPI.Kinds.URL
 	case KindDLP:
-		return h.cfg.ScanAPI.Kinds.DLP
+		return cfg.ScanAPI.Kinds.DLP
 	case KindPromptInjection:
-		return h.cfg.ScanAPI.Kinds.PromptInjection
+		return cfg.ScanAPI.Kinds.PromptInjection
 	case KindToolCall:
-		return h.cfg.ScanAPI.Kinds.ToolCall
+		return cfg.ScanAPI.Kinds.ToolCall
 	default:
 		return false
 	}
 }
 
-func (h *Handler) validateInput(kind string, input *Input) error {
+func (h *Handler) validateInputFor(kind string, input *Input, cfg *config.Config) error {
+	if cfg == nil {
+		return fmt.Errorf("scan configuration unavailable")
+	}
 	switch kind {
 	case KindURL:
 		if input.URL == "" {
 			return fmt.Errorf("input.url is required for kind %q", KindURL)
 		}
-		if len(input.URL) > h.fieldLimit(h.cfg.ScanAPI.FieldLimits.URL, defaultURLLimit) {
+		if len(input.URL) > h.fieldLimit(cfg.ScanAPI.FieldLimits.URL, defaultURLLimit) {
 			return fmt.Errorf("input.url exceeds field limit")
 		}
 		// Full semantic validation: scheme must be http/https and host must be present.
@@ -298,21 +346,21 @@ func (h *Handler) validateInput(kind string, input *Input) error {
 		if input.Text == "" {
 			return fmt.Errorf("input.text is required for kind %q", KindDLP)
 		}
-		if len(input.Text) > h.fieldLimit(h.cfg.ScanAPI.FieldLimits.Text, defaultTextLimit) {
+		if len(input.Text) > h.fieldLimit(cfg.ScanAPI.FieldLimits.Text, defaultTextLimit) {
 			return fmt.Errorf("input.text exceeds field limit")
 		}
 	case KindPromptInjection:
 		if input.Content == "" {
 			return fmt.Errorf("input.content is required for kind %q", KindPromptInjection)
 		}
-		if len(input.Content) > h.fieldLimit(h.cfg.ScanAPI.FieldLimits.Content, defaultContentLimit) {
+		if len(input.Content) > h.fieldLimit(cfg.ScanAPI.FieldLimits.Content, defaultContentLimit) {
 			return fmt.Errorf("input.content exceeds field limit")
 		}
 	case KindToolCall:
 		if input.ToolName == "" {
 			return fmt.Errorf("input.tool_name is required for kind %q", KindToolCall)
 		}
-		if len(input.Arguments) > h.fieldLimit(h.cfg.ScanAPI.FieldLimits.Arguments, defaultArgumentsLimit) {
+		if len(input.Arguments) > h.fieldLimit(cfg.ScanAPI.FieldLimits.Arguments, defaultArgumentsLimit) {
 			return fmt.Errorf("input.arguments exceeds field limit")
 		}
 	}
@@ -358,4 +406,25 @@ func (h *Handler) writeError(w http.ResponseWriter, status int, kind, code, mess
 		},
 	}
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) currentConfig() *config.Config {
+	if h.configFn != nil {
+		return h.configFn()
+	}
+	return h.cfg
+}
+
+func (h *Handler) currentScanner() *scanner.Scanner {
+	if h.scannerFn != nil {
+		return h.scannerFn()
+	}
+	return h.scanner
+}
+
+func (h *Handler) currentPolicyCfg() *policy.Config {
+	if h.policyCfgFn != nil {
+		return h.policyCfgFn()
+	}
+	return h.policyCfg
 }

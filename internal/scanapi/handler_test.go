@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1267,5 +1268,162 @@ func TestHandler_ContextTimeout_ToolCallPolicyPreCheck(t *testing.T) {
 	}
 	if resp.Status != StatusError {
 		t.Errorf("expected status=error, got %q", resp.Status)
+	}
+}
+
+func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.ScanAPI.Auth.BearerTokens = []string{"old-token"}
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	m := metrics.New()
+	h := NewHandler(cfg, sc, nil, m, "test-version")
+
+	var cfgVal atomic.Pointer[config.Config]
+	cfgVal.Store(cfg)
+	var policyVal atomic.Pointer[policy.Config]
+
+	h.SetRuntimeGetters(
+		func() *config.Config { return cfgVal.Load() },
+		func() *scanner.Scanner { return sc },
+		func() *policy.Config { return policyVal.Load() },
+	)
+
+	body := `{"kind":"tool_call","input":{"tool_name":"dangerous_tool","arguments":{}}}`
+	doReq := func(token string) (int, Response) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+
+		var resp Response
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("unmarshal response: %v", err)
+		}
+		return w.Code, resp
+	}
+
+	code, resp := doReq("old-token")
+	if code != http.StatusOK {
+		t.Fatalf("before reload: status=%d body=%s", code, resp.Status)
+	}
+	if resp.Decision != DecisionAllow {
+		t.Fatalf("before reload: decision=%q, want allow", resp.Decision)
+	}
+
+	reloaded := cfg.Clone()
+	reloaded.ScanAPI.Auth.BearerTokens = []string{"new-token"}
+	cfgVal.Store(reloaded)
+	policyVal.Store(&policy.Config{
+		Action: config.ActionBlock,
+		Rules: []*policy.CompiledRule{
+			{
+				Name:        "block-dangerous",
+				ToolPattern: regexp.MustCompile(`dangerous_tool`),
+				Action:      config.ActionBlock,
+			},
+		},
+	})
+
+	code, _ = doReq("old-token")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("old token after reload: status=%d, want %d", code, http.StatusUnauthorized)
+	}
+
+	code, resp = doReq("new-token")
+	if code != http.StatusOK {
+		t.Fatalf("new token after reload: status=%d body=%s", code, resp.Status)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("new token after reload: decision=%q, want deny", resp.Decision)
+	}
+	if len(resp.Findings) == 0 || !strings.HasPrefix(resp.Findings[0].RuleID, "POLICY-") {
+		t.Fatalf("expected policy finding after reload, got %+v", resp.Findings)
+	}
+
+	unrelatedReload := reloaded.Clone()
+	unrelatedReload.Logging.IncludeAllowed = !unrelatedReload.Logging.IncludeAllowed
+	cfgVal.Store(unrelatedReload)
+
+	code, _ = doReq("old-token")
+	if code != http.StatusUnauthorized {
+		t.Fatalf("old token after unrelated reload: status=%d, want %d", code, http.StatusUnauthorized)
+	}
+	code, resp = doReq("new-token")
+	if code != http.StatusOK {
+		t.Fatalf("new token after unrelated reload: status=%d body=%s", code, resp.Status)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("new token after unrelated reload: decision=%q, want deny", resp.Decision)
+	}
+
+	policyVal.Store(nil)
+	code, resp = doReq("new-token")
+	if code != http.StatusOK {
+		t.Fatalf("new token after policy downgrade: status=%d body=%s", code, resp.Status)
+	}
+	if resp.Decision != DecisionAllow {
+		t.Fatalf("new token after policy downgrade: decision=%q, want allow", resp.Decision)
+	}
+
+	policyVal.Store(&policy.Config{
+		Action: config.ActionBlock,
+		Rules: []*policy.CompiledRule{
+			{
+				Name:        "block-dangerous",
+				ToolPattern: regexp.MustCompile(`dangerous_tool`),
+				Action:      config.ActionBlock,
+			},
+		},
+	})
+	code, resp = doReq("new-token")
+	if code != http.StatusOK {
+		t.Fatalf("new token after policy restore: status=%d body=%s", code, resp.Status)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Fatalf("new token after policy restore: decision=%q, want deny", resp.Decision)
+	}
+}
+
+func TestHandler_RuntimeGetterUnavailablePaths(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.ScanAPI.Auth.BearerTokens = []string{"token"}
+	cfg.ScanAPI.Kinds.URL = true
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test")
+	h.SetRuntimeGetters(func() *config.Config { return nil }, nil, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/scan", strings.NewReader(`{"kind":"url","input":{"url":"https://example.com"}}`))
+	req.Header.Set("Authorization", "Bearer token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+
+	if h.validTokenFor("token", nil) {
+		t.Fatal("nil config should reject bearer token")
+	}
+	if h.allowRequestFor("token", nil) {
+		t.Fatal("nil config should reject rate-limit admission")
+	}
+	if h.kindEnabledFor(KindURL, nil) {
+		t.Fatal("nil config should disable kind checks")
+	}
+	if err := h.validateInputFor(KindURL, &Input{}, nil); err == nil {
+		t.Fatal("nil config should fail input validation")
+	}
+
+	h.SetRuntimeGetters(func() *config.Config { return cfg }, func() *scanner.Scanner { return nil }, nil)
+	resp, status := h.executeScan(context.Background(), &Request{Kind: KindURL})
+	if status != http.StatusServiceUnavailable || resp.Status != StatusError {
+		t.Fatalf("executeScan status=%d resp=%+v, want unavailable error", status, resp)
 	}
 }

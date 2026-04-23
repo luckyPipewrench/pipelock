@@ -270,6 +270,47 @@ func TestCheckRedirect_PreservesRequiresReauth(t *testing.T) {
 	}
 }
 
+func TestCheckRedirect_ExplicitNilEmitterSnapshotDoesNotFallback(t *testing.T) {
+	t.Parallel()
+
+	p := newSigningProxyForTest(t)
+	em := p.envelopeEmitterPtr.Load()
+	if em == nil {
+		t.Fatal("expected startup signing emitter")
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://redirected.example/final", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	ctx := context.WithValue(req.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{})
+	req = req.WithContext(ctx)
+
+	prev := em.Build(envelope.BuildOpts{
+		ActionID: "01961f3a-7b2c-7000-8000-000000000021",
+		Action:   "read",
+		Verdict:  config.ActionAllow,
+	})
+	if err := envelope.InjectHTTP(req.Header, prev); err != nil {
+		t.Fatalf("inject previous envelope: %v", err)
+	}
+
+	if err := p.refreshEnvelopeForRedirect(req, nil, p.cfgPtr.Load()); err != nil {
+		t.Fatalf("refreshEnvelopeForRedirect: %v", err)
+	}
+
+	refreshed, err := envelope.Parse(req.Header.Get(envelope.HeaderName))
+	if err != nil {
+		t.Fatalf("parse envelope: %v", err)
+	}
+	if refreshed.Hop != 0 {
+		t.Fatalf("Hop = %d, want unchanged 0", refreshed.Hop)
+	}
+	if got := req.Header.Get("Signature-Input"); got != "" {
+		t.Fatalf("Signature-Input = %q, want empty", got)
+	}
+}
+
 // TestCheckRedirect_ChainRefreshesHopMonotonically drives a 3-hop
 // redirect chain through the fetch proxy and verifies that each
 // refresh increments hop, each leg carries a fresh @target-uri, and

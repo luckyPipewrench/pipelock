@@ -114,14 +114,20 @@ func isRequest(msg []byte) bool {
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any injection was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
-	sc := opts.Scanner
+	sc := opts.scanner()
 	approver := opts.Approver
-	toolCfg := opts.ToolCfg
+	toolCfg := opts.toolCfg()
 	ks := opts.KillSwitch
 	rec := opts.Rec
-	adaptiveCfg := opts.AdaptiveCfg
+	adaptiveCfg := opts.adaptiveCfg()
 	m := opts.Metrics
 	obs := opts.captureObserver()
+	mediaPolicy := opts.mediaPolicy()
+	receiptEmitter := opts.receiptEmitter()
+	provenanceCfg := opts.provenanceCfg()
+	taintOpts := opts
+	taintOpts.TaintCfg = opts.taintCfg()
+	taintOpts.TaintCfgFn = nil
 
 	// blockAll tracks whether the session is at a critical escalation level
 	// with block_all=true. Checked once up front and refreshed after each
@@ -228,7 +234,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
-		mediaResult := applyMCPResponseMediaPolicy(line, opts.MediaPolicy, opts.Transport)
+		mediaResult := applyMCPResponseMediaPolicy(line, mediaPolicy, opts.Transport)
 		if len(mediaResult.Exposures) > 0 && opts.AuditLogger != nil {
 			rpcID := extractRPCID(line)
 			target := mcpServerResponse
@@ -255,8 +261,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if m != nil {
 				m.RecordBlocked("mcp", "media_policy", 0, "")
 			}
-			if opts.ReceiptEmitter != nil {
-				if emitErr := opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+			if receiptEmitter != nil {
+				if emitErr := receiptEmitter.Emit(receipt.EmitOpts{
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Transport: opts.Transport,
@@ -299,8 +305,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			isToolsList = toolResult.IsToolsList
 			// Provenance: verify tool signatures BEFORE updating session binding
 			// baseline. A blocked tools/list must not seed known tools.
-			if toolResult.IsToolsList && opts.ProvenanceCfg != nil && opts.ProvenanceCfg.Enabled {
-				pv := VerifyToolsListProvenance(line, opts.ProvenanceCfg)
+			if toolResult.IsToolsList && provenanceCfg != nil && provenanceCfg.Enabled {
+				pv := VerifyToolsListProvenance(line, provenanceCfg)
 				if pv.Block {
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
 					if opts.AuditLogger != nil {
@@ -416,7 +422,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
-			observeMCPResponseTaint(opts, toolPoisonDetected)
+			observeMCPResponseTaint(taintOpts, toolPoisonDetected)
 			continue
 		}
 
@@ -495,7 +501,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if err := writer.WriteMessage(line); err != nil {
 						return foundInjection, fmt.Errorf("writing line: %w", err)
 					}
-					observeMCPResponseTaint(opts, true)
+					observeMCPResponseTaint(taintOpts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
 					actualAction, err := stripOrBlock(line, sc, writer, logW, verdict.ID)
@@ -504,7 +510,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					effectiveAction = actualAction
 					if actualAction == config.ActionStrip {
-						observeMCPResponseTaint(opts, true)
+						observeMCPResponseTaint(taintOpts, true)
 					}
 				default: // DecisionBlock
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator blocked\n", lineNum)
@@ -522,16 +528,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			effectiveAction = actualAction
 			if actualAction == config.ActionStrip {
-				observeMCPResponseTaint(opts, true)
+				observeMCPResponseTaint(taintOpts, true)
 			}
 		default: // warn
 			if err := writer.WriteMessage(line); err != nil {
 				return foundInjection, fmt.Errorf("writing line: %w", err)
 			}
-			observeMCPResponseTaint(opts, true)
+			observeMCPResponseTaint(taintOpts, true)
 		}
 
-		if opts.ReceiptEmitter != nil {
+		if receiptEmitter != nil {
 			requestID := canonicalID(verdict.ID)
 			target := "server_response"
 			if requestID != "" {
@@ -541,7 +547,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if len(names) > 0 {
 				pattern = names[0]
 			}
-			if emitErr := opts.ReceiptEmitter.Emit(receipt.EmitOpts{
+			if emitErr := receiptEmitter.Emit(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
 				Verdict:   effectiveAction,
 				Transport: opts.Transport,
@@ -976,15 +982,16 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// The baseline is shared between ForwardScanned (response-side, captures
 	// tools/list) and ForwardScannedInput (request-side, validates tools/call).
 	// Must be created before goroutines that reference it.
+	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
+	if toolCfg != nil && toolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
-			Action:                  opts.ToolCfg.Action,
-			DetectDrift:             opts.ToolCfg.DetectDrift,
-			BindingUnknownAction:    opts.ToolCfg.BindingUnknownAction,
-			BindingNoBaselineAction: opts.ToolCfg.BindingNoBaselineAction,
-			ExtraPoison:             opts.ToolCfg.ExtraPoison,
+			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
+			BindingUnknownAction:    toolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+			ExtraPoison:             toolCfg.ExtraPoison,
 		}
 	}
 
@@ -1016,12 +1023,12 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	go func() {
 		defer wg.Done()
 		defer serverIn.Close() //nolint:errcheck // best-effort close on stdin forward
-		inputCfg := opts.InputCfg
+		inputCfg := opts.inputCfg()
 		if inputCfg != nil && inputCfg.Enabled {
 			clientReader := transport.NewStdioReader(clientIn)
 			serverWriter := transport.NewStdioWriter(serverIn)
 			ForwardScannedInput(clientReader, serverWriter, safeLogW, inputCfg.Action, inputCfg.OnParseError, blockedCh, bindingCfg, tracker, inputOpts)
-		} else if opts.PolicyCfg != nil || bindingCfg != nil || opts.ChainMatcher != nil {
+		} else if opts.policyCfg() != nil || bindingCfg != nil || opts.chainMatcher() != nil {
 			// Policy checking, session binding, or chain detection enabled but content scanning disabled.
 			// Route through ForwardScannedInput with pass-through content scanning.
 			// Use onParseError="block" (fail-closed) so malformed JSON can't bypass policy.
@@ -1036,7 +1043,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 			serverWriter := transport.NewStdioWriter(serverIn)
 			noScanOpts := inputOpts
 			noScanOpts.PolicyCfg = nil
+			noScanOpts.PolicyCfgFn = nil
 			noScanOpts.ChainMatcher = nil
+			noScanOpts.ChainMatcherFn = nil
 			ForwardScannedInput(clientReader, serverWriter, safeLogW, config.ActionWarn, config.ActionBlock, blockedCh, nil, tracker, noScanOpts)
 		}
 	}()
@@ -1070,6 +1079,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	serverReader := transport.NewStdioReader(serverOut)
 	fwdOpts := inputOpts
 	fwdOpts.ToolCfg = fwdToolCfg // session-specific baseline
+	fwdOpts.ToolCfgFn = nil
 	_, scanErr := ForwardScanned(serverReader, safeClientOut, safeLogW, tracker, fwdOpts)
 
 	// Wait for subprocess to exit.

@@ -76,3 +76,53 @@ func TestCurrentRedactionRuntimeForConfig_MismatchReturnsFailClosedSentinel(t *t
 		t.Fatalf("configKey = %q, want %q", got.configKey, redactionConfigKey(cfg))
 	}
 }
+
+func TestCurrentRedactionConfigFor_PropagatesRequiredSentinel(t *testing.T) {
+	cfg := config.Defaults()
+	applyRedactionTestProfile(cfg)
+
+	p := &Proxy{}
+	p.redactionRuntimePtr.Store(&redactionRuntime{
+		matcher:   &redact.Matcher{},
+		configKey: "old-policy",
+		required:  true,
+	})
+
+	matcher, limits, required := p.CurrentRedactionConfigFor(cfg)
+	if matcher != nil {
+		t.Fatal("mismatch sentinel should not expose a matcher")
+	}
+	if !required {
+		t.Fatal("mismatch sentinel must preserve required=true")
+	}
+	if limits != cfg.Redaction.Limits.ToLimits() {
+		t.Fatalf("limits = %+v, want %+v", limits, cfg.Redaction.Limits.ToLimits())
+	}
+}
+
+func TestCurrentRedactionConfigFor_DisabledReturnsEmpty(t *testing.T) {
+	p := &Proxy{}
+	matcher, limits, required := p.CurrentRedactionConfigFor(config.Defaults())
+	if matcher != nil {
+		t.Fatal("disabled redaction should not expose a matcher")
+	}
+	if limits != (redact.Limits{}) {
+		t.Fatalf("limits = %+v, want empty", limits)
+	}
+	if required {
+		t.Fatal("disabled redaction should not be required")
+	}
+}
+
+func TestProxyRuntimeAccessors(t *testing.T) {
+	p := &Proxy{}
+	if p.ReloadLock() == nil {
+		t.Fatal("ReloadLock returned nil")
+	}
+	if p.ReceiptEmitterPtr() != &p.receiptEmitterPtr {
+		t.Fatal("ReceiptEmitterPtr did not return proxy receipt emitter pointer")
+	}
+	if p.RedactMatcherPtr() != &p.redactMatcherPtr {
+		t.Fatal("RedactMatcherPtr did not return proxy redaction matcher pointer")
+	}
+}

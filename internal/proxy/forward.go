@@ -78,7 +78,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
 	// and resolveAgent() could read different registries.
-	resolved, id := p.resolveAgentFromRequest(r)
+	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name
@@ -459,26 +459,28 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			interceptRec = sm.GetOrCreate(interceptSessionKey)
 		}
 		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
-			TargetHost:     host,
-			TargetPort:     port,
-			Config:         cfg,
-			Scanner:        sc,
-			CertCache:      certCache,
-			Logger:         p.logger,
-			Metrics:        p.metrics,
-			ClientIP:       clientIP,
-			RequestID:      requestID,
-			Agent:          agent,
-			ActorAuth:      id.Auth,
-			UpstreamRT:     p.tlsTransport,
-			SafeDial:       p.ssrfSafeDialContext,
-			EntropyTracker: p.entropyTrackerPtr.Load(),
-			FragmentBuffer: p.fragmentBufferPtr.Load(),
-			SessionMgr:     p.sessionMgrPtr.Load(),
-			Redaction:      p.currentRedactionRuntimeFor(cfg),
-			Proxy:          p,
-			Recorder:       interceptRec,
-			KillSwitch:     p.ks,
+			TargetHost:         host,
+			TargetPort:         port,
+			Config:             cfg,
+			Scanner:            sc,
+			CertCache:          certCache,
+			Logger:             p.logger,
+			Metrics:            p.metrics,
+			ClientIP:           clientIP,
+			RequestID:          requestID,
+			Agent:              agent,
+			ActorAuth:          id.Auth,
+			UpstreamRT:         p.tlsTransport,
+			SafeDial:           p.ssrfSafeDialContext,
+			EntropyTracker:     p.entropyTrackerPtr.Load(),
+			FragmentBuffer:     p.fragmentBufferPtr.Load(),
+			SessionMgr:         p.sessionMgrPtr.Load(),
+			Redaction:          p.currentRedactionRuntimeFor(cfg),
+			Proxy:              p,
+			EnvelopeEmitter:    envEmitter,
+			EnvelopeEmitterSet: true,
+			Recorder:           interceptRec,
+			KillSwitch:         p.ks,
 		}); err != nil {
 			p.logger.LogError(targetCtx, err)
 		}
@@ -550,7 +552,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
 	// and resolveAgent() could read different registries.
-	resolved, id := p.resolveAgentFromRequest(r)
+	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name
@@ -1143,6 +1145,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
+	outReq = outReq.WithContext(context.WithValue(outReq.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{emitter: envEmitter}))
 	// Strip the internal identity header AND the ?agent= query param before
 	// the request leaves pipelock. Either vector could otherwise bleed an
 	// attacker-supplied identity hint to the destination service.
@@ -1156,8 +1159,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// is enabled, InjectAndSign drains outReq.Body itself, bounded by
 	// mediation_envelope.max_body_bytes, and restores it with a fresh
 	// reader + GetBody for redirect replay.
-	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
-		outReq = outReq.WithContext(context.WithValue(outReq.Context(), ctxKeyEnvelopeEmitter, envEmitter))
+	if envEmitter != nil {
 		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
 		if envErr := envEmitter.InjectAndSign(outReq, forwardBodyBytes, envelope.BuildOpts{
 			ActionID:       actionID,

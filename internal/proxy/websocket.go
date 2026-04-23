@@ -120,7 +120,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
 	// and resolveAgent() could read different registries.
-	resolved, id := p.resolveAgentFromRequest(r)
+	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name
@@ -455,7 +455,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// input. A deliberately unreachable branch is cheaper than a
 	// silent unsigned envelope on a future regression.
 	actionID := receipt.NewActionID()
-	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+	if envEmitter != nil {
 		parsedTarget, parseErr := url.Parse(targetURL)
 		if parseErr != nil {
 			blockedErr := newEnvelopeBlockedRequest(parseErr)

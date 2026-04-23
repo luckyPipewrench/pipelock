@@ -60,6 +60,10 @@ func TestReloadPanicHandler_LogsError(t *testing.T) {
 	}
 }
 
+func TestReloadPanicHandler_NilLogger(t *testing.T) {
+	ReloadPanicHandler("test panic value", nil, nil, "/tmp/test.yaml")
+}
+
 func TestReloadPanicHandler_NilRecovery(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")
@@ -1013,6 +1017,52 @@ func TestPreserveAgentListeners(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Flag validation tests for runCmd (reverse proxy flags)
 // ---------------------------------------------------------------------------
+
+func TestRunCmd_RejectsPositionalArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "without dash",
+			args: []string{"run", "agent-cmd"},
+			want: "unexpected arguments",
+		},
+		{
+			name: "before dash",
+			args: []string{"run", "agent-cmd", "--", "--flag"},
+			want: "unexpected arguments before --",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := testRootCmd()
+			cmd.SetArgs(tt.args)
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected positional argument validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestRunCmd_AcceptsAgentArgsAfterDash(t *testing.T) {
+	gotAgentArgs := agentArgsAfterDash([]string{"some-agent", "--flag"}, 0)
+	if strings.Join(gotAgentArgs, " ") != "some-agent --flag" {
+		t.Fatalf("agent args = %v, want %v", gotAgentArgs, []string{"some-agent", "--flag"})
+	}
+	if got := agentArgsAfterDash(nil, 0); got != nil {
+		t.Fatalf("empty trailing args = %v, want nil", got)
+	}
+}
 
 func TestRunCmd_ReverseProxyWithoutUpstream(t *testing.T) {
 	cmd := testRootCmd()

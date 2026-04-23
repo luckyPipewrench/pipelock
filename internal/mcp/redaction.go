@@ -17,7 +17,17 @@ import (
 // malformed JSON-RPC envelopes or arguments that cannot be safely rewritten
 // return a *redact.BlockError.
 func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.Report, error) {
-	if opts.RedactMatcher == nil {
+	return applyMCPToolCallRedactionWithConfig(line, opts.redactionConfig())
+}
+
+func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([]byte, *redact.Report, error) {
+	if cfg.Matcher == nil {
+		if cfg.Required {
+			return nil, nil, &redact.BlockError{
+				Reason: redact.ReasonInternalError,
+				Detail: "redaction runtime unavailable during reload",
+			}
+		}
 		return line, nil, nil
 	}
 
@@ -74,7 +84,7 @@ func applyMCPToolCallRedaction(line []byte, opts MCPProxyOpts) ([]byte, *redact.
 		return line, nil, nil
 	}
 
-	rewrittenArgs, report, err := redact.RewriteJSON(argsRaw, opts.RedactMatcher, redact.NewRedactor(), opts.RedactLimits)
+	rewrittenArgs, report, err := redact.RewriteJSON(argsRaw, cfg.Matcher, redact.NewRedactor(), cfg.Limits)
 	if err != nil {
 		return nil, nil, err
 	}

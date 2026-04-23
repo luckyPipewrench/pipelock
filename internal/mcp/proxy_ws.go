@@ -70,15 +70,16 @@ func RunWSProxy(
 	// Tool scanning baseline for this session. ToolCfg from the caller
 	// provides the config; each invocation gets its own Baseline so
 	// concurrent WS sessions can't contaminate each other's drift state.
+	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
+	if toolCfg != nil && toolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:                tools.NewToolBaseline(),
-			Action:                  opts.ToolCfg.Action,
-			DetectDrift:             opts.ToolCfg.DetectDrift,
-			BindingUnknownAction:    opts.ToolCfg.BindingUnknownAction,
-			BindingNoBaselineAction: opts.ToolCfg.BindingNoBaselineAction,
-			ExtraPoison:             opts.ToolCfg.ExtraPoison,
+			Action:                  toolCfg.Action,
+			DetectDrift:             toolCfg.DetectDrift,
+			BindingUnknownAction:    toolCfg.BindingUnknownAction,
+			BindingNoBaselineAction: toolCfg.BindingNoBaselineAction,
+			ExtraPoison:             toolCfg.ExtraPoison,
 		}
 	}
 
@@ -91,6 +92,7 @@ func RunWSProxy(
 	wsOpts := opts
 	wsOpts.Rec = rec
 	wsOpts.ToolCfg = fwdToolCfg
+	wsOpts.ToolCfgFn = nil
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
 	wsOpts.WarnContext = innerCtx

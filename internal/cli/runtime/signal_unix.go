@@ -6,18 +6,18 @@
 package runtime
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 )
 
 // RegisterKillSwitchSignal sets up SIGUSR1 to toggle the kill switch.
 // Returns a cleanup function that must be deferred.
-func RegisterKillSwitchSignal(ks *killswitch.Controller, cmd *cobra.Command) func() {
+func RegisterKillSwitchSignal(ks *killswitch.Controller, stderr io.Writer) func() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGUSR1)
 
@@ -28,9 +28,9 @@ func RegisterKillSwitchSignal(ks *killswitch.Controller, cmd *cobra.Command) fun
 			}
 			active := ks.ToggleSignal()
 			if active {
-				cmd.PrintErrln("pipelock: kill switch ACTIVATED via SIGUSR1")
+				_, _ = fmt.Fprintln(stderr, "pipelock: kill switch ACTIVATED via SIGUSR1")
 			} else {
-				cmd.PrintErrln("pipelock: kill switch DEACTIVATED via SIGUSR1")
+				_, _ = fmt.Fprintln(stderr, "pipelock: kill switch DEACTIVATED via SIGUSR1")
 			}
 		}
 	}()

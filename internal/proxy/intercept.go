@@ -62,13 +62,17 @@ type InterceptContext struct {
 	UpstreamRT http.RoundTripper
 	SafeDial   dialFunc
 
-	EntropyTracker *scanner.EntropyTracker
-	FragmentBuffer *scanner.FragmentBuffer
-	SessionMgr     *SessionManager
-	Redaction      *redactionRuntime
-	Proxy          *Proxy
-	Recorder       session.Recorder
-	KillSwitch     *killswitch.Controller
+	EntropyTracker  *scanner.EntropyTracker
+	FragmentBuffer  *scanner.FragmentBuffer
+	SessionMgr      *SessionManager
+	Redaction       *redactionRuntime
+	Proxy           *Proxy
+	EnvelopeEmitter *envelope.Emitter
+	// EnvelopeEmitterSet distinguishes an explicit nil admission snapshot
+	// from tests that omitted the snapshot entirely.
+	EnvelopeEmitterSet bool
+	Recorder           session.Recorder
+	KillSwitch         *killswitch.Controller
 }
 
 // Validate checks that required fields are set. Returns an error if any
@@ -131,7 +135,9 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) {
 	if ic.Proxy == nil {
 		return
 	}
+	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
+	ic.Proxy.reloadMu.RUnlock()
 	if e == nil {
 		return
 	}
@@ -949,35 +955,39 @@ func newInterceptHandler(
 		// when body scanning is enabled; when body scanning is
 		// disabled but signing is enabled, InjectAndSign drains
 		// r.Body itself, bounded by mediation_envelope.max_body_bytes.
-		if ic.Proxy != nil {
-			if envEmitter := ic.Proxy.envelopeEmitterPtr.Load(); envEmitter != nil {
-				policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
-				if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
-					ActionID:   actionID,
-					Action:     string(receipt.ClassifyHTTP(r.Method)),
-					Verdict:    config.ActionAllow,
-					SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
-					Actor:      ic.Agent,
-					ActorAuth:  ic.ActorAuth,
-					PolicyHash: policyHash,
-				}); envErr != nil {
-					blockedErr := newEnvelopeBlockedRequest(envErr)
-					ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-					ic.Metrics.RecordTLSRequestBlocked(blockedErr.layer)
-					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionBlock,
-						Layer:     blockedErr.layer,
-						Pattern:   blockedErr.reason,
-						Transport: "intercept",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: ic.RequestID,
-						Agent:     ic.Agent,
-					}))
-					http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
-					return
-				}
+		envEmitter := ic.EnvelopeEmitter
+		if !ic.EnvelopeEmitterSet && envEmitter == nil && ic.Proxy != nil {
+			// Direct unit tests build InterceptContext without the CONNECT
+			// admission snapshot. Production paths set EnvelopeEmitterSet.
+			envEmitter = ic.Proxy.currentEnvelopeEmitter()
+		}
+		if envEmitter != nil {
+			policyHash := envelope.PolicyHashFromHex(ic.Config.CanonicalPolicyHash())
+			if envErr := envEmitter.InjectAndSign(r, interceptBodyBytes, envelope.BuildOpts{
+				ActionID:   actionID,
+				Action:     string(receipt.ClassifyHTTP(r.Method)),
+				Verdict:    config.ActionAllow,
+				SideEffect: string(receipt.SideEffectFromMethod(r.Method)),
+				Actor:      ic.Agent,
+				ActorAuth:  ic.ActorAuth,
+				PolicyHash: policyHash,
+			}); envErr != nil {
+				blockedErr := newEnvelopeBlockedRequest(envErr)
+				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
+				ic.Metrics.RecordTLSRequestBlocked(blockedErr.layer)
+				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     blockedErr.layer,
+					Pattern:   blockedErr.reason,
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+				return
 			}
 		}
 

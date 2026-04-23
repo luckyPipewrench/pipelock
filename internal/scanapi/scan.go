@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -22,27 +23,34 @@ const jsonNull = "null"
 // Returns both the response body and the HTTP status code.
 // 200 = completed (allow or deny), 503 = retryable failure, 500 = internal error.
 func (h *Handler) executeScan(ctx context.Context, req *Request) (Response, int) {
+	cfg := h.currentConfig()
+	sc := h.currentScanner()
+	policyCfg := h.currentPolicyCfg()
+	if cfg == nil || sc == nil {
+		return errorResponse(req.Kind, "scan_unavailable", "Scan engine unavailable", true), http.StatusServiceUnavailable
+	}
+
 	switch req.Kind {
 	case KindURL:
-		return h.scanURL(ctx, req)
+		return h.scanURL(ctx, sc, req)
 	case KindDLP:
-		return h.scanDLP(ctx, req)
+		return h.scanDLP(ctx, sc, req)
 	case KindPromptInjection:
-		return h.scanPromptInjection(ctx, req)
+		return h.scanPromptInjection(ctx, sc, req)
 	case KindToolCall:
-		return h.scanToolCall(ctx, req)
+		return h.scanToolCall(ctx, cfg, sc, policyCfg, req)
 	default:
 		// Should not reach here (validated in handler), but fail-closed.
 		return errorResponse(req.Kind, "invalid_kind", "Unknown kind", false), http.StatusBadRequest
 	}
 }
 
-func (h *Handler) scanURL(ctx context.Context, req *Request) (Response, int) {
+func (h *Handler) scanURL(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
 
-	result := h.scanner.Scan(ctx, req.Input.URL)
+	result := sc.Scan(ctx, req.Input.URL)
 
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
@@ -62,12 +70,12 @@ func (h *Handler) scanURL(ctx context.Context, req *Request) (Response, int) {
 	return resp, http.StatusOK
 }
 
-func (h *Handler) scanDLP(ctx context.Context, req *Request) (Response, int) {
+func (h *Handler) scanDLP(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
 
-	result := h.scanner.ScanTextForDLP(ctx, req.Input.Text)
+	result := sc.ScanTextForDLP(ctx, req.Input.Text)
 
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
@@ -87,12 +95,12 @@ func (h *Handler) scanDLP(ctx context.Context, req *Request) (Response, int) {
 	return resp, http.StatusOK
 }
 
-func (h *Handler) scanPromptInjection(ctx context.Context, req *Request) (Response, int) {
+func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, req *Request) (Response, int) {
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
 
-	result := h.scanner.ScanResponse(ctx, req.Input.Content)
+	result := sc.ScanResponse(ctx, req.Input.Content)
 
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
@@ -112,7 +120,13 @@ func (h *Handler) scanPromptInjection(ctx context.Context, req *Request) (Respon
 	return resp, http.StatusOK
 }
 
-func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int) {
+func (h *Handler) scanToolCall(
+	ctx context.Context,
+	cfg *config.Config,
+	sc *scanner.Scanner,
+	policyCfg *policy.Config,
+	req *Request,
+) (Response, int) {
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
@@ -134,8 +148,8 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 	scanText := strings.Join(argStrings, " ")
 
 	// Stage 2: DLP + injection sub-scans (independent of tool policy).
-	if scanText != "" && h.cfg.MCPInputScanning.Enabled {
-		dlpResult := h.scanner.ScanTextForDLP(ctx, scanText)
+	if scanText != "" && cfg.MCPInputScanning.Enabled {
+		dlpResult := sc.ScanTextForDLP(ctx, scanText)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
@@ -144,7 +158,7 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 			resp.Findings = append(resp.Findings, dlpFindings(dlpResult, req.Options)...)
 		}
 
-		injResult := h.scanner.ScanResponse(ctx, scanText)
+		injResult := sc.ScanResponse(ctx, scanText)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
@@ -155,7 +169,7 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 	}
 
 	// Stage 3: Policy check.
-	if h.policyCfg != nil {
+	if policyCfg != nil {
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
@@ -163,7 +177,7 @@ func (h *Handler) scanToolCall(ctx context.Context, req *Request) (Response, int
 		if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
 			rawArgs = json.RawMessage(req.Input.Arguments)
 		}
-		verdict := h.policyCfg.CheckToolCallWithArgs(req.Input.ToolName, argStrings, rawArgs)
+		verdict := policyCfg.CheckToolCallWithArgs(req.Input.ToolName, argStrings, rawArgs)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}

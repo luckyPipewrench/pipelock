@@ -20,7 +20,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-const serverTestUpstreamURL = "http://127.0.0.1:1"
+const (
+	serverTestUpstreamURL     = "http://127.0.0.1:1"
+	serverTestEphemeralListen = "127.0.0.1:0"
+)
 
 // newServerTestFreePort returns a free 127.0.0.1 TCP port by binding and
 // releasing it, same pattern used in run_test.go:freePort.
@@ -463,26 +466,26 @@ func TestServer_RefreshRuntimeStateClearsBundleDerivedState(t *testing.T) {
 
 func TestServer_StartAuxiliaryListeners(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
-		o.Listen = newServerTestFreePort(t)
+		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
-		o.MCPListen = newServerTestFreePort(t)
+		o.MCPListen = serverTestEphemeralListen
 		o.MCPUpstream = serverTestUpstreamURL
 		o.ReverseProxy = true
 		o.ReverseUpstream = serverTestUpstreamURL
-		o.ReverseListen = newServerTestFreePort(t)
+		o.ReverseListen = serverTestEphemeralListen
 		o.CaptureOutput = t.TempDir()
 		o.CaptureDuration = 150 * time.Millisecond
 		o.AgentArgs = []string{"agent", "--flag"}
 	})
-	s.cfg.MetricsListen = newServerTestFreePort(t)
-	s.cfg.ScanAPI.Listen = newServerTestFreePort(t)
+	s.cfg.MetricsListen = serverTestEphemeralListen
+	s.cfg.ScanAPI.Listen = serverTestEphemeralListen
 	s.cfg.ScanAPI.ConnectionLimit = 1
 	s.cfg.ScanAPI.Timeouts = config.ScanAPITimeouts{
 		Read:  "50ms",
 		Write: "50ms",
 	}
 	s.cfg.KillSwitch.APIToken = "test-token"
-	s.cfg.KillSwitch.APIListen = newServerTestFreePort(t)
+	s.cfg.KillSwitch.APIListen = serverTestEphemeralListen
 	s.apiOnSeparatePort = true
 	s.cfg.WebSocketProxy.Enabled = true
 

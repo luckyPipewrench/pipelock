@@ -6,14 +6,14 @@
 package runtime
 
 import (
-	"github.com/spf13/cobra"
+	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 )
 
 // RegisterKillSwitchSignal is a no-op on Windows where SIGUSR1 does not exist.
 // The kill switch can still be toggled via the API endpoint or sentinel file.
-func RegisterKillSwitchSignal(_ *killswitch.Controller, _ *cobra.Command) func() {
+func RegisterKillSwitchSignal(_ *killswitch.Controller, _ io.Writer) func() {
 	return func() {}
 }
 

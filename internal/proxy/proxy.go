@@ -976,6 +976,12 @@ func (p *Proxy) EnvelopeEmitterPtr() *atomic.Pointer[envelope.Emitter] {
 	return &p.envelopeEmitterPtr
 }
 
+// ReceiptEmitterPtr returns the atomic pointer to the receipt emitter.
+// Long-lived runtimes use this to pick up hot-reload receipt config changes.
+func (p *Proxy) ReceiptEmitterPtr() *atomic.Pointer[receipt.Emitter] {
+	return &p.receiptEmitterPtr
+}
+
 // RedactMatcherPtr returns the atomic pointer to the compiled redaction
 // matcher. Long-lived helpers outside package proxy (notably MCP startup
 // wiring) use this when they only need the matcher itself. Request paths use
@@ -988,12 +994,14 @@ func (p *Proxy) RedactMatcherPtr() *atomic.Pointer[redact.Matcher] {
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
 // Session manager lifecycle is toggled when session_profiling.enabled changes.
+// The returned bool reports whether the staged runtime was fully published;
+// false means the previous runtime stayed live.
 //
 // Note: HTTP client timeouts, transport settings, and server listen address
 // are set at construction in New()/Start() and are NOT updated by Reload.
 // Only config values read per-request (mode, enforce, user-agent, blocklists,
 // DLP patterns, response scanning, etc.) take effect immediately.
-func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
+func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	p.reloadMu.Lock()
 	defer p.reloadMu.Unlock()
 
@@ -1004,7 +1012,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	if edErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"), fmt.Errorf("edition rebuild failed, keeping old config: %w", edErr))
 		sc.Close() // caller-allocated scanner must be closed since we're not using it
-		return
+		return false
 	}
 
 	// Envelope and receipt emitters are staged BEFORE either is
@@ -1028,7 +1036,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		if newEd != nil {
 			newEd.Close()
 		}
-		return
+		return false
 	}
 	receiptStage, rcptErr := p.buildReceiptEmitter(cfg)
 	if rcptErr != nil {
@@ -1038,7 +1046,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		if newEd != nil {
 			newEd.Close()
 		}
-		return
+		return false
 	}
 	// Stage the full redaction runtime BEFORE publication so a failed
 	// matcher build aborts the whole reload instead of mixing matcher,
@@ -1051,7 +1059,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 		if newEd != nil {
 			newEd.Close()
 		}
-		return
+		return false
 	}
 
 	// Publish both emitters now that staging has fully succeeded. The
@@ -1159,6 +1167,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) {
 	// Receipt emitter hash is updated by reloadReceiptEmitter above.
 	// No separate UpdateConfigHash needed — emitter is always (re)created
 	// with the current cfg.Hash() when a signing key is configured.
+	return true
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.

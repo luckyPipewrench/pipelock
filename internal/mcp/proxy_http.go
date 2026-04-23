@@ -71,13 +71,14 @@ func RunHTTPProxy(
 	// Tool scanning baseline for this session. Clone the caller's ToolCfg
 	// with a fresh per-session baseline so drift detection is scoped to
 	// this invocation.
+	toolCfg := opts.toolCfg()
 	var fwdToolCfg *tools.ToolScanConfig
-	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
+	if toolCfg != nil && toolCfg.Action != "" {
 		fwdToolCfg = &tools.ToolScanConfig{
 			Baseline:    tools.NewToolBaseline(),
-			Action:      opts.ToolCfg.Action,
-			DetectDrift: opts.ToolCfg.DetectDrift,
-			ExtraPoison: opts.ToolCfg.ExtraPoison,
+			Action:      toolCfg.Action,
+			DetectDrift: toolCfg.DetectDrift,
+			ExtraPoison: toolCfg.ExtraPoison,
 		}
 	}
 
@@ -215,16 +216,24 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
 func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) httpInputDecision {
-	sc := opts.Scanner
-	inputCfg := opts.InputCfg
-	policyCfg := opts.PolicyCfg
-	chainMatcher := opts.ChainMatcher
+	sc := opts.scanner()
+	inputCfg := opts.inputCfg()
+	policyCfg := opts.policyCfg()
+	chainMatcher := opts.chainMatcher()
 	auditLogger := opts.AuditLogger
-	cee := opts.CEE
+	cee := opts.cee()
 	rec := opts.Rec
-	adaptiveCfg := opts.AdaptiveCfg
+	adaptiveCfg := opts.adaptiveCfg()
 	m := opts.Metrics
 	obs := opts.captureObserver()
+	redactionCfg := opts.redactionConfig()
+	receiptEmitter := opts.receiptEmitter()
+	envelopeEmitter := opts.envelopeEmitter()
+	a2aCfg := opts.a2aCfg()
+	redirectRT := opts.redirectRT()
+	taintOpts := opts
+	taintOpts.TaintCfg = opts.taintCfg()
+	taintOpts.TaintCfgFn = nil
 	result := httpInputDecision{ForwardMessage: msg}
 	mcpMethod := ""
 	toolName := ""
@@ -236,7 +245,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 	receiptVerdict := ""
 	defer func() {
-		emitMCPToolReceipt(opts, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
+		emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
 	}()
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
@@ -283,7 +292,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		mcpMethod = methodToolsCall
 		actionID = receipt.NewActionID()
 	}
-	rewrittenMsg, report, redactErr := applyMCPToolCallRedaction(msg, opts)
+	rewrittenMsg, report, redactErr := applyMCPToolCallRedactionWithConfig(msg, redactionCfg)
 	if redactErr != nil {
 		var blockErr *redact.BlockError
 		reason := redactErr.Error()
@@ -329,7 +338,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		verdict = InputVerdict{Clean: true}
 		// When input scanning is disabled, extract enough metadata from the
 		// raw message so policy, taint gating, chain detection, and DoW still work.
-		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || opts.TaintCfg != nil || opts.ReceiptEmitter != nil || opts.EnvelopeEmitter != nil {
+		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || taintOpts.TaintCfg != nil || receiptEmitter != nil || envelopeEmitter != nil {
 			verdict.ID = extractRPCID(msg)
 			// Extract method for chain detection even when content scanning is off.
 			var env struct {
@@ -353,7 +362,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Runs after content scanning so both pipelines contribute findings.
 	// When the method is unknown (input scanning disabled, no policy/chain),
 	// extract it for A2A detection.
-	if opts.A2ACfg != nil && opts.A2ACfg.Enabled {
+	if a2aCfg != nil && a2aCfg.Enabled {
 		method := verdict.Method
 		if method == "" {
 			var env struct {
@@ -371,11 +380,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 		if IsA2AMethod(method) {
-			a2aResult := ScanA2ARequestBody(inputScanCtx, msg, sc, opts.A2ACfg)
+			a2aResult := ScanA2ARequestBody(inputScanCtx, msg, sc, a2aCfg)
 			if !a2aResult.Clean {
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
-					a2aAction = opts.A2ACfg.Action
+					a2aAction = a2aCfg.Action
 				}
 				if a2aAction == config.ActionBlock {
 					_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", a2aResult.Reason)
@@ -481,7 +490,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	if verdict.Method == methodToolsCall {
-		taintEval = evaluateMCPTaint(opts, toolName, extractToolCallArgs(msg))
+		taintEval = evaluateMCPTaint(taintOpts, toolName, extractToolCallArgs(msg))
 		if taintEval.Result.Decision == session.PolicyAsk || taintEval.Result.Decision == session.PolicyBlock {
 			if auditLogger != nil {
 				auditLogger.LogTaintDecision(
@@ -570,7 +579,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if verdict.Method == methodToolsCall {
-			result.ForwardMessage = decorateMCPToolMessage(msg, opts.EnvelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
+			result.ForwardMessage = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
 			receiptVerdict = config.ActionAllow
 		}
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
@@ -693,7 +702,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if len(policyVerdict.Rules) > 0 {
 			policyRuleName = policyVerdict.Rules[0]
 		}
-		redirectResult := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, opts.RedirectRT)
+		redirectResult := executeRedirect(profile, policyVerdict.RedirectProfile, verdict.ID, toolArgs, policyRuleName, redirectRT)
 		// Determine final outcome before audit logging so the event
 		// reflects the actual result delivered to the client.
 		var br *BlockedRequest
@@ -815,7 +824,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			})
 		}
 		if verdict.Method == methodToolsCall {
-			result.ForwardMessage = decorateMCPToolMessage(msg, opts.EnvelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
+			result.ForwardMessage = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
 			receiptVerdict = config.ActionWarn
 		}
 		return result // forward
@@ -999,37 +1008,71 @@ func RunHTTPListenerProxy(
 ) error {
 	safeLogW := &syncWriter{w: logW}
 
-	// Shared tool baseline across all requests for drift detection.
-	var fwdToolCfg *tools.ToolScanConfig
-	if opts.ToolCfg != nil && opts.ToolCfg.Action != "" {
-		fwdToolCfg = &tools.ToolScanConfig{
-			Baseline:    tools.NewToolBaseline(),
-			Action:      opts.ToolCfg.Action,
-			DetectDrift: opts.ToolCfg.DetectDrift,
-			ExtraPoison: opts.ToolCfg.ExtraPoison,
+	// Shared tool baseline across all requests for drift detection and
+	// session binding. It intentionally survives hot reloads for the
+	// lifetime of this listener; reload updates policy knobs, not the
+	// listener's observed tool inventory.
+	toolBaseline := tools.NewToolBaseline()
+	toolCfgFn := func() *tools.ToolScanConfig {
+		cfg := opts.toolCfg()
+		if cfg == nil || cfg.Action == "" {
+			return nil
+		}
+		return &tools.ToolScanConfig{
+			Baseline:                toolBaseline,
+			Action:                  cfg.Action,
+			DetectDrift:             cfg.DetectDrift,
+			BindingUnknownAction:    cfg.BindingUnknownAction,
+			BindingNoBaselineAction: cfg.BindingNoBaselineAction,
+			ExtraPoison:             cfg.ExtraPoison,
 		}
 	}
 
 	// Base opts shared across requests. Per-request fields (Rec) are
-	// overridden on a copy inside each request handler.
+	// overridden on a copy inside each request handler. The static
+	// Redact{Matcher,Limits,Profile} fields are fallbacks for direct
+	// callers that bypass RedactionCfgFn; resolve the current snapshot
+	// once here so we do not re-run opts.redactionConfig() three times.
+	baseRedactionCfg := opts.redactionConfig()
 	baseOpts := MCPProxyOpts{
-		Scanner: opts.Scanner, Approver: opts.Approver, ToolCfg: fwdToolCfg,
-		InputCfg: opts.InputCfg, PolicyCfg: opts.PolicyCfg,
-		KillSwitch: opts.KillSwitch, ChainMatcher: opts.ChainMatcher,
-		AuditLogger: opts.AuditLogger, CEE: opts.CEE, Metrics: opts.Metrics,
-		RedirectRT: opts.RedirectRT, Transport: "mcp_http_listener",
-		ReceiptEmitter:      opts.ReceiptEmitter,
+		Scanner:             opts.scanner(),
+		ScannerFn:           opts.ScannerFn,
+		Approver:            opts.Approver,
+		InputCfg:            opts.inputCfg(),
+		InputCfgFn:          opts.InputCfgFn,
+		ToolCfg:             toolCfgFn(),
+		ToolCfgFn:           toolCfgFn,
+		PolicyCfg:           opts.policyCfg(),
+		PolicyCfgFn:         opts.PolicyCfgFn,
+		KillSwitch:          opts.KillSwitch,
+		ChainMatcher:        opts.chainMatcher(),
+		ChainMatcherFn:      opts.ChainMatcherFn,
+		AuditLogger:         opts.AuditLogger,
+		CEE:                 opts.cee(),
+		CEEFn:               opts.CEEFn,
+		Metrics:             opts.Metrics,
+		RedirectRT:          opts.redirectRT(),
+		RedirectRTFn:        opts.RedirectRTFn,
+		Transport:           "mcp_http_listener",
+		ReceiptEmitter:      opts.receiptEmitter(),
+		ReceiptEmitterFn:    opts.ReceiptEmitterFn,
 		CaptureObs:          opts.captureObserver(),
-		ProvenanceCfg:       opts.ProvenanceCfg,
-		RedactMatcher:       opts.RedactMatcher,
-		RedactLimits:        opts.RedactLimits,
-		RedactProfile:       opts.RedactProfile,
+		ProvenanceCfg:       opts.provenanceCfg(),
+		ProvenanceCfgFn:     opts.ProvenanceCfgFn,
+		RedactMatcher:       baseRedactionCfg.Matcher,
+		RedactLimits:        baseRedactionCfg.Limits,
+		RedactProfile:       baseRedactionCfg.Profile,
+		RedactionCfgFn:      opts.RedactionCfgFn,
 		DoWCheck:            opts.DoWCheck,
-		A2ACfg:              opts.A2ACfg,
-		MediaPolicy:         opts.MediaPolicy,
-		TaintCfg:            opts.TaintCfg,
+		A2ACfg:              opts.a2aCfg(),
+		A2ACfgFn:            opts.A2ACfgFn,
+		MediaPolicy:         opts.mediaPolicy(),
+		MediaPolicyFn:       opts.MediaPolicyFn,
+		TaintCfg:            opts.taintCfg(),
+		TaintCfgFn:          opts.TaintCfgFn,
 		TaintExternalSource: true,
-		EnvelopeEmitter:     opts.EnvelopeEmitter,
+		EnvelopeEmitter:     opts.envelopeEmitter(),
+		EnvelopeEmitterFn:   opts.EnvelopeEmitterFn,
 	}
 
 	// Shared HTTP client for upstream requests. Redirect-following is disabled
@@ -1068,12 +1111,9 @@ func RunHTTPListenerProxy(
 
 		// Resolve adaptive config per-request so hot-reloads take effect
 		// without restarting the long-lived listener.
-		var adaptiveCfg *config.AdaptiveEnforcement
-		if opts.AdaptiveCfgFn != nil {
-			adaptiveCfg = opts.AdaptiveCfgFn()
-		} else {
-			adaptiveCfg = opts.AdaptiveCfg
-		}
+		adaptiveCfg := opts.adaptiveCfg()
+		reqScanner := baseOpts.scanner()
+		reqA2ACfg := baseOpts.a2aCfg()
 
 		// Cap request body to prevent memory exhaustion.
 		r.Body = http.MaxBytesReader(w, r.Body, int64(transport.MaxLineSize))
@@ -1193,7 +1233,7 @@ func RunHTTPListenerProxy(
 		// doesn't see HTTP headers, so an agent could leak credentials
 		// via the Authorization header without triggering DLP.
 		if auth := r.Header.Get("Authorization"); auth != "" {
-			dlpResult := opts.Scanner.ScanTextForDLP(r.Context(), auth)
+			dlpResult := reqScanner.ScanTextForDLP(r.Context(), auth)
 			if !dlpResult.Clean {
 				pattern := patternUnknown
 				if len(dlpResult.Matches) > 0 {
@@ -1224,8 +1264,8 @@ func RunHTTPListenerProxy(
 		// A2A-Extensions header scanning: each comma-separated URI is
 		// SSRF-scanned. A2A-Version is informational and passes through
 		// without scanning.
-		if baseOpts.A2ACfg != nil && baseOpts.A2ACfg.Enabled {
-			headerResult := ScanA2AHeaders(r.Context(), r.Header, opts.Scanner, baseOpts.A2ACfg)
+		if reqA2ACfg != nil && reqA2ACfg.Enabled {
+			headerResult := ScanA2AHeaders(r.Context(), r.Header, reqScanner, reqA2ACfg)
 			if !headerResult.Clean {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: a2a header blocked: %s\n", headerResult.Reason)
 				if adaptiveCfg != nil && adaptiveCfg.Enabled {
@@ -1258,6 +1298,7 @@ func RunHTTPListenerProxy(
 		scanOpts := baseOpts
 		scanOpts.Rec = reqRec
 		scanOpts.AdaptiveCfg = adaptiveCfg
+		scanOpts.AdaptiveCfgFn = nil
 		scanOpts.WarnContext = r.Context()
 		decision := scanHTTPInputDecision(body, safeLogW, chainSessionKey, auditSessionKey, scanOpts)
 		if blocked := decision.Blocked; blocked != nil {
@@ -1337,6 +1378,7 @@ func RunHTTPListenerProxy(
 		reqOpts := baseOpts
 		reqOpts.Rec = reqRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
+		reqOpts.AdaptiveCfgFn = nil
 		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
 		if scanErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)

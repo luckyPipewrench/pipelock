@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/spf13/cobra"
-
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 )
@@ -22,10 +20,8 @@ func TestRegisterKillSwitchSignal(t *testing.T) {
 	cfg := config.Defaults()
 	ks := killswitch.New(cfg)
 	buf := &syncBuffer{}
-	cmd := &cobra.Command{}
-	cmd.SetErr(buf)
 
-	cleanup := RegisterKillSwitchSignal(ks, cmd)
+	cleanup := RegisterKillSwitchSignal(ks, buf)
 	defer cleanup()
 
 	// Send SIGUSR1 to toggle kill switch ON.

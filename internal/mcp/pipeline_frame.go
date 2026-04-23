@@ -10,11 +10,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
-// MCPFrame is a single-pass structural parse of a JSON-RPC 2.0 message
+// MCPFrame is a structural parse of a JSON-RPC 2.0 message
 // received on an MCP transport. Callers that previously invoked
 // extractRPCID, extractToolCallName, and extractToolCallArgs separately
-// (each re-running json.Unmarshal on the same bytes) can parse once and
-// read every field from the Frame.
+// can read every field from the Frame instead.
 //
 // The zero value is a valid "nothing-parsed-yet" frame. Downstream
 // callers must check ParseErr before trusting Method or ToolCallName:
@@ -34,9 +33,7 @@ type MCPFrame struct {
 
 	// ID is the JSON-RPC "id" field, verbatim from the wire.
 	//
-	//  - nil when the "id" key is absent (a notification).
-	//  - json.RawMessage("null") for explicit-null IDs (also treated
-	//    as notification per isRPCNotification).
+	//  - nil when the "id" key is absent or explicitly null.
 	//  - the raw numeric or string form otherwise (do not coerce; the
 	//    wire format must flow through untouched for response
 	//    correlation).
@@ -73,8 +70,8 @@ type MCPFrame struct {
 
 // IsRequest reports whether the frame carries a JSON-RPC request ID
 // (numeric or string). Notifications (missing or null ID) return false.
-// Responses (no Method) also return false — callers should check Method
-// separately when they need to distinguish request from response.
+// Responses with an ID also return true, so callers that need to
+// distinguish requests from responses must check Method separately.
 func (f MCPFrame) IsRequest() bool {
 	return !isRPCNotification(f.ID)
 }
@@ -86,9 +83,10 @@ func (f MCPFrame) IsToolsCall() bool {
 	return f.Method == methodToolsCall
 }
 
-// ParseMCPFrame decodes msg in a single pass. The returned Frame is
-// always usable: even on parse failure the caller gets back a populated
-// Raw and a set ParseErr so fail-closed handling can run.
+// ParseMCPFrame decodes msg into the fields needed by the MCP pipeline.
+// The returned Frame is always usable: even on parse failure the caller
+// gets back a populated Raw and a set ParseErr so fail-closed handling
+// can run.
 //
 // This function is intentionally tolerant: it does not enforce the
 // jsonrpc 2.0 marker or any other validation. Those are policy
@@ -104,39 +102,52 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 		return frame
 	}
 
-	// Single struct captures every field any MCP call path needs.
-	// Keeping this layout stable matters: adding optional fields here
-	// is safe, removing or renaming them breaks every caller.
+	// First pass: extract the ID only. This succeeds for any valid
+	// JSON object even if method or params are the wrong type. Keeping
+	// ID extraction resilient matters because the HTTP listener returns
+	// an invalid-request response that must include the client's id
+	// verbatim, even when the structural validator rejects the rest of
+	// the message (e.g., non-string method).
+	var idOnly struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(msg, &idOnly); err != nil {
+		frame.ParseErr = err
+		return frame
+	}
+	// Normalise the ID to match the legacy extractRPCID semantics: an
+	// explicit "null" literal or an empty RawMessage becomes nil.
+	if len(idOnly.ID) > 0 && string(idOnly.ID) != jsonrpc.Null {
+		frame.ID = idOnly.ID
+	}
+
+	// Second pass: extract method and raw params. May fail when method is a
+	// non-string; in that case the frame keeps the ID from the first pass
+	// and surfaces ParseErr so downstream validators still fail closed.
 	var decoded struct {
 		Method string          `json:"method"`
-		ID     json.RawMessage `json:"id"`
-		Params struct {
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		} `json:"params"`
+		Params json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(msg, &decoded); err != nil {
 		frame.ParseErr = err
 		return frame
 	}
-
-	// Normalise the ID to match the legacy extractRPCID semantics: an
-	// explicit "null" literal or an empty RawMessage becomes nil. This
-	// keeps downstream notification checks and direct ID comparisons
-	// behaving identically during the migration off the legacy
-	// extractors.
-	if len(decoded.ID) > 0 && string(decoded.ID) != jsonrpc.Null {
-		frame.ID = decoded.ID
-	}
 	frame.Method = decoded.Method
 	if decoded.Method == methodToolsCall {
-		frame.ToolCallName = decoded.Params.Name
+		var params struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal(decoded.Params, &params); err != nil {
+			return frame
+		}
+		frame.ToolCallName = params.Name
 		// Only retain a non-null, non-empty Arguments slice. A
 		// json.RawMessage of "null" is non-nil in Go but semantically
 		// absent; normalising to nil here lets callers rely on a plain
 		// len() == 0 check without the jsonrpc.Null-literal dance.
-		if len(decoded.Params.Arguments) > 0 && string(decoded.Params.Arguments) != jsonrpc.Null {
-			frame.Args = decoded.Params.Arguments
+		if len(params.Arguments) > 0 && string(params.Arguments) != jsonrpc.Null {
+			frame.Args = params.Arguments
 		}
 	}
 	return frame

@@ -213,6 +213,14 @@ func ForwardScannedInput(
 		// or upstream from passing through to the MCP server.
 		line = stripInboundMCPMeta(line)
 
+		// Parse the inbound frame once per message. Every gate below
+		// reads ID / Method / tool fields from this frame instead of
+		// re-parsing the bytes. Redaction may rewrite the argument
+		// values later in the loop; the frame is re-parsed after the
+		// redaction step so downstream gates (DoW, taint) see the
+		// redacted args while ID / Method / ToolCallName stay stable.
+		frame := ParseMCPFrame(line)
+
 		// Kill switch: deny all messages when active.
 		if ks != nil {
 			if d := ks.IsActiveMCP(line); d.Active {
@@ -222,7 +230,7 @@ func ForwardScannedInput(
 						lineNum, d.Source)
 				} else {
 					// Request with ID — send JSON-RPC error response.
-					rpcID := extractRPCID(line)
+					rpcID := frame.ID
 					blockedCh <- BlockedRequest{
 						ID:             rpcID,
 						IsNotification: false,
@@ -252,19 +260,19 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (not supported by MCP)\n", lineNum)
 			recordAdaptiveSignal(session.SignalBlock)
 			blockedCh <- BlockedRequest{
-				ID:           extractRPCID(line),
+				ID:           frame.ID,
 				ErrorCode:    -32600,
 				ErrorMessage: "pipelock: batch requests are not supported by MCP",
 			}
 			continue
 		}
 
-		pendingToolCallName := extractToolCallName(line)
+		pendingToolCallName := frame.ToolCallName
 		pendingActionID := ""
 		if pendingToolCallName != "" {
 			pendingActionID = receipt.NewActionID()
 		}
-		rpcID := extractRPCID(line)
+		rpcID := frame.ID
 		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedactionWithConfig(line, redactionCfg)
 		if redactErr != nil {
 			reason := redactErr.Error()
@@ -295,6 +303,11 @@ func ForwardScannedInput(
 			continue
 		}
 		line = rewrittenLine
+		// Redaction may have rewritten argument values; re-parse so
+		// downstream gates (DoW, taint) see the redacted args. ID,
+		// Method, and ToolCallName are invariant under redaction but
+		// re-parsing keeps the frame the single source of truth.
+		frame = ParseMCPFrame(line)
 
 		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
 		warnCtx.Transport = transportMCPStdio
@@ -323,12 +336,12 @@ func ForwardScannedInput(
 		// Extract tool name once for binding, chain detection, and DoW tracking.
 		var toolCallName string
 		if verdict.Method == methodToolsCall {
-			toolCallName = extractToolCallName(line)
+			toolCallName = frame.ToolCallName
 		}
 
 		// Denial-of-wallet: check tool call budget before forwarding.
 		if opts.DoWCheck != nil && verdict.Method == methodToolsCall && toolCallName != "" {
-			argsJSON := extractToolCallArgs(line)
+			argsJSON := string(frame.Args)
 			allowed, dowAction, dowReason, dowBudgetType := opts.DoWCheck(toolCallName, argsJSON)
 			if !allowed {
 				logMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q DoW %s: %s (%s)",
@@ -527,7 +540,7 @@ func ForwardScannedInput(
 			})
 		}
 		if verdict.Method == methodToolsCall {
-			taintDecision = evaluateMCPTaint(taintOpts, toolCallName, extractToolCallArgs(line))
+			taintDecision = evaluateMCPTaint(taintOpts, toolCallName, string(frame.Args))
 			if taintDecision.Result.Decision == session.PolicyAsk || taintDecision.Result.Decision == session.PolicyBlock {
 				if auditLogger != nil {
 					auditLogger.LogTaintDecision(

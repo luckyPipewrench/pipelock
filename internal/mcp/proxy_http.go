@@ -107,6 +107,11 @@ func RunHTTPProxy(
 			return fmt.Errorf("reading stdin: %w", err)
 		}
 
+		// Parse the inbound frame once per message. Kill switch, request
+		// tracking, and upstream-error responses all read frame.ID
+		// instead of re-parsing.
+		frame := ParseMCPFrame(msg)
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -120,7 +125,7 @@ func RunHTTPProxy(
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
 				}
-				rpcID := extractRPCID(msg)
+				rpcID := frame.ID
 				resp := killswitch.ErrorResponse(rpcID, d.Message)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
@@ -151,7 +156,7 @@ func RunHTTPProxy(
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
 		if isRequest(msg) {
-			tracker.Track(extractRPCID(msg))
+			tracker.Track(frame.ID)
 		}
 
 		// POST to upstream.
@@ -161,7 +166,7 @@ func RunHTTPProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			// Send sanitized error to client — don't include upstream body content
 			// which could contain prompt injection payloads.
-			rpcID := extractRPCID(msg)
+			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
@@ -249,6 +254,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
 	}()
 
+	// Parse the inbound frame once. Every gate below reads ID / Method /
+	// tool fields from this frame instead of re-parsing. Redaction may
+	// rewrite argument values; the frame is re-parsed after redaction so
+	// downstream gates (DoW, taint) see the redacted args while
+	// ID / Method / ToolCallName stay stable.
+	frame := ParseMCPFrame(msg)
+
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
 	recordAdaptiveSignal := func(sig session.SignalType) {
@@ -281,14 +293,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
-			ID:           extractRPCID(msg),
+			ID:           frame.ID,
 			ErrorCode:    -32600,
 			ErrorMessage: "pipelock: batch requests are not supported by MCP",
 		}
 		return result
 	}
 
-	if pendingToolName := extractToolCallName(msg); pendingToolName != "" {
+	if pendingToolName := frame.ToolCallName; pendingToolName != "" {
 		toolName = pendingToolName
 		mcpMethod = methodToolsCall
 		actionID = receipt.NewActionID()
@@ -304,8 +316,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
-			ID:             extractRPCID(msg),
-			IsNotification: isRPCNotification(extractRPCID(msg)),
+			ID:             frame.ID,
+			IsNotification: isRPCNotification(frame.ID),
 			LogMessage:     "blocked (redaction)",
 			ErrorCode:      -32001,
 			ErrorMessage:   "pipelock: request blocked by MCP redaction",
@@ -315,6 +327,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	msg = rewrittenMsg
 	result.ForwardMessage = rewrittenMsg
 	redactionReport = report
+	// Redaction may have rewritten argument values; re-parse so
+	// downstream gates (DoW, taint) see the redacted args.
+	frame = ParseMCPFrame(msg)
 
 	// Determine input scanning parameters.
 	action := config.ActionWarn
@@ -337,17 +352,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		verdict = ScanRequest(inputScanCtx, msg, sc, action, onParseError)
 	} else {
 		verdict = InputVerdict{Clean: true}
-		// When input scanning is disabled, extract enough metadata from the
-		// raw message so policy, taint gating, chain detection, and DoW still work.
+		// When input scanning is disabled, backfill enough metadata from
+		// the parsed frame so policy, taint gating, chain detection, and
+		// DoW still work.
 		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || taintOpts.TaintCfg != nil || receiptEmitter != nil || envelopeEmitter != nil {
-			verdict.ID = extractRPCID(msg)
-			// Extract method for chain detection even when content scanning is off.
-			var env struct {
-				Method string `json:"method"`
-			}
-			if json.Unmarshal(msg, &env) == nil {
-				verdict.Method = env.Method
-			}
+			verdict.ID = frame.ID
+			verdict.Method = frame.Method
 		}
 	}
 
@@ -356,28 +366,22 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if actionID == "" {
 			actionID = receipt.NewActionID()
 		}
-		toolName = extractToolCallName(msg)
+		toolName = frame.ToolCallName
 	}
 
 	// A2A request body scanning: field-aware analysis for A2A protocol methods.
 	// Runs after content scanning so both pipelines contribute findings.
 	// When the method is unknown (input scanning disabled, no policy/chain),
-	// extract it for A2A detection.
+	// backfill it from the parsed frame for A2A detection.
 	if a2aCfg != nil && a2aCfg.Enabled {
 		method := verdict.Method
 		if method == "" {
-			var env struct {
-				Method string          `json:"method"`
-				ID     json.RawMessage `json:"id"`
-			}
-			if json.Unmarshal(msg, &env) == nil {
-				method = env.Method
-				// Backfill verdict.ID so IsNotification works correctly
-				// when input scanning is disabled and no policy/chain config
-				// triggered the earlier extraction.
-				if verdict.ID == nil && len(env.ID) > 0 && string(env.ID) != jsonrpc.Null {
-					verdict.ID = env.ID
-				}
+			method = frame.Method
+			// Backfill verdict.ID so IsNotification works correctly
+			// when input scanning is disabled and no policy/chain config
+			// triggered the earlier backfill.
+			if verdict.ID == nil {
+				verdict.ID = frame.ID
 			}
 		}
 		if IsA2AMethod(method) {
@@ -413,9 +417,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	// Denial-of-wallet: check tool call budget before forwarding.
 	if opts.DoWCheck != nil && verdict.Method == methodToolsCall {
-		toolName := extractToolCallName(msg)
+		toolName := frame.ToolCallName
 		if toolName != "" {
-			argsJSON := extractToolCallArgs(msg)
+			argsJSON := string(frame.Args)
 			allowed, dowAction, dowReason, dowBudgetType := opts.DoWCheck(toolName, argsJSON)
 			if !allowed {
 				_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
@@ -451,7 +455,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	chainAction := ""
 	chainReason := ""
 	if chainMatcher != nil && verdict.Method == methodToolsCall {
-		toolName := extractToolCallName(msg)
+		toolName := frame.ToolCallName
 		if toolName != "" {
 			cv := chainMatcher.Record(sessionKey, toolName, string(msg))
 			if cv.Matched {
@@ -491,7 +495,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	if verdict.Method == methodToolsCall {
-		taintEval = evaluateMCPTaint(taintOpts, toolName, extractToolCallArgs(msg))
+		taintEval = evaluateMCPTaint(taintOpts, toolName, string(frame.Args))
 		if taintEval.Result.Decision == session.PolicyAsk || taintEval.Result.Decision == session.PolicyBlock {
 			if auditLogger != nil {
 				auditLogger.LogTaintDecision(
@@ -1149,6 +1153,11 @@ func RunHTTPListenerProxy(
 			return
 		}
 
+		// Parse the inbound frame once per request. Every rpcID lookup
+		// and upstream-error response below reads frame.ID instead of
+		// re-parsing the body bytes.
+		frame := ParseMCPFrame(body)
+
 		// Validate JSON-RPC 2.0 structure for single requests: version
 		// must be "2.0", method must be present and a string. Batch
 		// requests (JSON arrays) are validated per-element by scanHTTPInput.
@@ -1157,7 +1166,7 @@ func RunHTTPListenerProxy(
 			if reason := validateRPCStructure(body); reason != "" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				invalidReq, _ := json.Marshal(rpcError{
 					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
@@ -1177,7 +1186,7 @@ func RunHTTPListenerProxy(
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					return
 				}
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				_, _ = w.Write(killswitch.ErrorResponse(rpcID, d.Message))
 				return
 			}
@@ -1251,7 +1260,7 @@ func RunHTTPListenerProxy(
 					})
 				}
 				w.Header().Set("Content-Type", "application/json")
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				resp, _ := json.Marshal(rpcError{
 					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
@@ -1284,7 +1293,7 @@ func RunHTTPListenerProxy(
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				resp, _ := json.Marshal(rpcError{
 					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
@@ -1321,7 +1330,7 @@ func RunHTTPListenerProxy(
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write(upstreamErrorResponse(extractRPCID(body), fmt.Errorf("upstream HTTP request failed")))
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
 		upReq.Header.Set("Content-Type", "application/json")
@@ -1349,7 +1358,7 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write(upstreamErrorResponse(extractRPCID(body), fmt.Errorf("upstream HTTP request failed")))
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
 		defer upResp.Body.Close() //nolint:errcheck // best-effort cleanup
@@ -1366,7 +1375,7 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write(upstreamErrorResponse(extractRPCID(body), fmt.Errorf("upstream HTTP request failed")))
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
 

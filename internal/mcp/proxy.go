@@ -154,12 +154,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		lineNum++
 
+		// Parse the inbound frame once per message; every gate below reads
+		// ID / Method / tool fields from this frame instead of re-parsing.
+		frame := ParseMCPFrame(line)
+
 		// Kill switch: deny all responses when activated mid-stream.
 		// Checked per message so activation after session start takes effect
 		// immediately on already-open MCP sessions.
 		if ks != nil {
 			if d := ks.IsActiveMCP(line); d.Active {
-				rpcID := extractRPCID(line)
+				rpcID := frame.ID
 				if rpcID == nil {
 					// Notification: drop silently (no response possible).
 					_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch dropped notification (source=%s)\n",
@@ -192,7 +196,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 		if blockAll {
-			rpcID := extractRPCID(line)
+			rpcID := frame.ID
 			// Notifications (no ID) must not receive a response per JSON-RPC spec.
 			// Drop them silently instead of writing an error.
 			if rpcID == nil {
@@ -222,7 +226,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// (concurrent goroutines). The window is not exploitable: before any
 		// client request, no valid request ID exists to hijack.
 		if tracker != nil && tracker.Seeded() && isResponse(line) {
-			rpcID := extractRPCID(line)
+			rpcID := frame.ID
 			if rpcID != nil && !tracker.Validate(rpcID) {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: unsolicited response ID %s\n",
 					lineNum, string(rpcID))
@@ -236,7 +240,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		mediaResult := applyMCPResponseMediaPolicy(line, mediaPolicy, opts.Transport)
 		if len(mediaResult.Exposures) > 0 && opts.AuditLogger != nil {
-			rpcID := extractRPCID(line)
+			rpcID := frame.ID
 			target := mcpServerResponse
 			if requestID := canonicalID(rpcID); requestID != "" {
 				target = "response:" + requestID
@@ -247,7 +251,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 		if mediaResult.Blocked {
-			rpcID := extractRPCID(line)
+			rpcID := frame.ID
 			requestID := canonicalID(rpcID)
 			target := mcpServerResponse
 			if requestID != "" {

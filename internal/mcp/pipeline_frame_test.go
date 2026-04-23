@@ -126,6 +126,60 @@ func TestParseMCPFrame_ToolsCallNullArgs(t *testing.T) {
 	}
 }
 
+func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  string
+	}{
+		{
+			name: "params array",
+			msg:  `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":["not","object"]}`,
+		},
+		{
+			name: "params string",
+			msg:  `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":"not-object"}`,
+		},
+		{
+			name: "non-string tool name",
+			msg:  `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":42,"arguments":{"q":"x"}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := ParseMCPFrame([]byte(tt.msg))
+			if frame.ParseErr != nil {
+				t.Fatalf("ParseErr = %v, want nil", frame.ParseErr)
+			}
+			if frame.ID == nil {
+				t.Fatal("ID = nil, want preserved request ID")
+			}
+			if frame.Method != methodToolsCall {
+				t.Fatalf("Method = %q, want %q", frame.Method, methodToolsCall)
+			}
+			if frame.ToolCallName != "" {
+				t.Errorf("ToolCallName = %q, want empty for malformed params", frame.ToolCallName)
+			}
+			if frame.Args != nil {
+				t.Errorf("Args = %q, want nil for malformed params", string(frame.Args))
+			}
+		})
+	}
+}
+
+func TestParseMCPFrame_InvalidMethodPreservesID(t *testing.T) {
+	msg := `{"jsonrpc":"2.0","id":"client-id","method":42}`
+	frame := ParseMCPFrame([]byte(msg))
+	if frame.ParseErr == nil {
+		t.Fatal("ParseErr = nil, want error for non-string method")
+	}
+	if string(frame.ID) != `"client-id"` {
+		t.Fatalf("ID = %q, want client ID preserved after second-pass failure", string(frame.ID))
+	}
+	if frame.Method != "" {
+		t.Fatalf("Method = %q, want empty after invalid method", frame.Method)
+	}
+}
+
 func TestParseMCPFrame_NonToolsCallLeavesToolFieldsEmpty(t *testing.T) {
 	// tools/list and friends: ToolCallName and Args must stay zero so
 	// callers can use empty-ness as the "not a tools/call" gate.

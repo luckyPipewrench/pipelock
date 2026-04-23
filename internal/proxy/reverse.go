@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -660,6 +661,49 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"compressed_response"}, nil)
 		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
+		return nil
+	}
+
+	// SSE streaming: hijack the response body so per-event scanning runs
+	// inline. Without this the buffered path below caps SSE at the proxy
+	// max-body limit and breaks per-event flushing, killing token-by-token
+	// UX for any LLM SSE response (OpenAI, Anthropic, Kilo Gateway).
+	// httputil.ReverseProxy auto-flushes text/event-stream per write, so
+	// the pipe writer's per-event Write reaches the client immediately.
+	if IsSSEContentType(resp.Header.Get("Content-Type")) {
+		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+		sseLayer := LayerSSEStream
+		sseOpts := SSEDispatchOptions{
+			IsA2A:      false,
+			A2A:        &cfg.A2AScanning,
+			GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+			Generic: mcp.GenericSSEScanOptions{
+				Target:             resp.Request.URL.String(),
+				Suppress:           cfg.Suppress,
+				ResponseScanExempt: revRespExempt,
+				OnFinding: func(err error) {
+					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
+				},
+			},
+		}
+		onComplete := func(err error) {
+			if err == nil {
+				return
+			}
+			// Reverse proxy currently emits log + metric for response
+			// findings; receipts on this transport flow through the
+			// envelope/admission path elsewhere. Mirror that here so the
+			// SSE branch does not introduce a new emission shape.
+			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, sseLayer)
+		}
+		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
+		// SSE is open-ended; the upstream Content-Length (if any) becomes
+		// meaningless once we strip events through the pipe. -1 instructs
+		// httputil.ReverseProxy to chunk the response.
+		resp.ContentLength = -1
+		resp.Header.Del("Content-Length")
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 		return nil
 	}
 

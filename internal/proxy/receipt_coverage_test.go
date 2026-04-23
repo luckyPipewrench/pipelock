@@ -1892,7 +1892,7 @@ func TestReceiptCoverage_ForwardA2ACompressedStream_EmitsReceipt(t *testing.T) {
 	receipts := rph.findReceipts(t)
 	var found bool
 	for _, r := range receipts {
-		if r.ActionRecord.Layer == "a2a_stream" && r.ActionRecord.Verdict == config.ActionBlock {
+		if r.ActionRecord.Layer == LayerA2AStream && r.ActionRecord.Verdict == config.ActionBlock {
 			found = true
 			if verr := receipt.Verify(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)
@@ -1964,7 +1964,7 @@ func TestReceiptCoverage_ForwardA2AStreamFinding_EmitsReceipt(t *testing.T) {
 	receipts := rph.findReceipts(t)
 	var found bool
 	for _, r := range receipts {
-		if r.ActionRecord.Layer == "a2a_stream" && r.ActionRecord.Verdict == config.ActionBlock {
+		if r.ActionRecord.Layer == LayerA2AStream && r.ActionRecord.Verdict == config.ActionBlock {
 			found = true
 			if verr := receipt.Verify(r); verr != nil {
 				t.Fatalf("Verify failed: %v", verr)

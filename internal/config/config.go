@@ -495,6 +495,18 @@ type ResponseScanning struct {
 	IncludeDefaults   *bool                 `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns          []ResponseScanPattern `yaml:"patterns"`
 	ExemptDomains     []string              `yaml:"exempt_domains"` // responses from these hosts skip injection scanning (DLP still applies)
+	SSEStreaming      GenericSSEScanning    `yaml:"sse_streaming"`  // generic text/event-stream inline scanning (LLM SSE)
+}
+
+// GenericSSEScanning configures inline body scanning of non-A2A
+// text/event-stream responses (OpenAI chat completions, Anthropic
+// messages, Kilo Gateway, generic LLM SSE). When disabled the proxy
+// still streams events with per-read flushing so streaming UX is never
+// silently downgraded to a buffered path.
+type GenericSSEScanning struct {
+	Enabled       bool   `yaml:"enabled"`
+	Action        string `yaml:"action"`          // warn, block (mirrors a2a_scanning.action)
+	MaxEventBytes int    `yaml:"max_event_bytes"` // per-event ceiling, default 65536
 }
 
 // ResponseScanPattern is a named regex pattern for detecting prompt injection in responses.
@@ -1654,6 +1666,17 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	setBoolDefault(a2a, "session_smuggling_detection", &cfg.A2AScanning.SessionSmugglingDetection)
 	setBoolDefault(a2a, "scan_raw_parts", &cfg.A2AScanning.ScanRawParts)
 
+	// Generic SSE streaming: enabled defaults to true so LLM SSE traffic is
+	// scanned out of the box. Operators must explicitly set enabled: false to
+	// opt out, in which case the disabled-mode path still streams with
+	// flushing rather than silently buffering.
+	rs, _ := raw["response_scanning"].(map[string]interface{})
+	var sse map[string]interface{}
+	if rs != nil {
+		sse, _ = rs["sse_streaming"].(map[string]interface{})
+	}
+	setBoolDefault(sse, "enabled", &cfg.ResponseScanning.SSEStreaming.Enabled)
+
 	// Flight recorder: redact and sign default to true (fail-closed for forensics).
 	fr, _ := raw["flight_recorder"].(map[string]interface{})
 	setBoolDefault(fr, "redact", &cfg.FlightRecorder.Redact)
@@ -2473,6 +2496,22 @@ func (c *Config) validateResponseScanning() error {
 	}
 	if !c.ResponseScanning.Enabled && len(c.ResponseScanning.ExemptDomains) > 0 {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: response_scanning.exempt_domains configured but response_scanning is disabled — these will take effect when enabled\n")
+	}
+
+	// Generic SSE streaming sub-section. Validated regardless of the
+	// parent response_scanning.enabled flag so dormant bad config can't
+	// activate silently on reload.
+	sse := c.ResponseScanning.SSEStreaming
+	if sse.Enabled {
+		switch sse.Action {
+		case "", ActionBlock, ActionWarn:
+			// valid (empty falls back to block downstream)
+		default:
+			return fmt.Errorf("invalid response_scanning.sse_streaming action %q: must be block or warn", sse.Action)
+		}
+		if sse.MaxEventBytes < 0 {
+			return fmt.Errorf("response_scanning.sse_streaming.max_event_bytes must be >= 0 (0 means use default), got %d", sse.MaxEventBytes)
+		}
 	}
 	return nil
 }
@@ -4983,6 +5022,11 @@ func Defaults() *Config {
 		ResponseScanning: ResponseScanning{
 			Enabled: true,
 			Action:  "warn",
+			SSEStreaming: GenericSSEScanning{
+				Enabled:       true,
+				Action:        ActionBlock,
+				MaxEventBytes: 64 * 1024,
+			},
 			Patterns: []ResponseScanPattern{
 				{Name: "Prompt Injection", Regex: `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`},
 				{Name: "System Override", Regex: `(?im)^\s*system\s*:`},
@@ -5115,6 +5159,8 @@ func Defaults() *Config {
 			ScanRawParts:              true,
 			MaxRawSize:                1 << 20, // 1MB encoded
 		},
+		// GenericSSEScanning lives on ResponseScanning above; the defaults
+		// for it are wired into that struct's literal.
 		MCPBinaryIntegrity: MCPBinaryIntegrity{
 			Action: ActionWarn, // default action when hash verification fails
 		},

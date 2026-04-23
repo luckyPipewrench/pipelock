@@ -5,6 +5,17 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### New Features
+
+#### Streaming response scanning
+- **Generic SSE (`text/event-stream`) inline scanning.** Pipelock now scans every Server-Sent Events response, not just A2A. OpenAI chat completions, Anthropic messages, Kilo Gateway streams, and any other LLM SSE traffic flow through the new `ScanGenericSSEStream` scanner: each event's `data:` payload is fed through DLP and prompt-injection detection, clean events flush to the client immediately, and block-mode detection terminates the stream with a block receipt and a `sse_stream` layer label. Warn mode logs findings and continues forwarding. Wired into the forward proxy, TLS-intercept proxy, and reverse proxy paths through a single shared dispatcher (`internal/proxy/sse.go`). Reverse proxy SSE responses are no longer capped by the buffered-body limit. New config block `response_scanning.sse_streaming` with `enabled` (default `true`), `action` (`block` / `warn`, default `block`), and `max_event_bytes` (default `65536`) knobs. Existing `response_scanning.exempt_domains` and global `suppress` rules apply before SSE action selection. When `enabled: false`, SSE responses still stream with per-read flushing instead of silently downgrading to a buffered path. Compressed SSE (gzip, br, zstd) is fail-closed-blocked on every transport, matching A2A behavior. The A2A scanner path is unchanged; the new dispatcher routes A2A traffic to it as before.
+
+### Documented limitations
+- Generic SSE scanning inspects each event's `data:` payload independently. Cross-event payload splitting (a secret broken across two sequential events) is NOT detected in v1; A2A's rolling-tail scanner still catches that case for A2A traffic. Tracked as a follow-up.
+- Non-`data:` SSE fields (`event:`, `id:`, `retry:`) are not scanned.
+
 ## [2.2.0] - 2026-04-17
 
 ### ⚠️ Breaking Changes

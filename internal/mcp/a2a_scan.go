@@ -617,7 +617,10 @@ func writeSSEEvent(w io.Writer, data []byte, eventID, eventType, retry string) {
 	if retry != "" {
 		_, _ = fmt.Fprintf(w, "retry: %s\n", retry)
 	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	for _, line := range strings.Split(string(data), "\n") {
+		_, _ = fmt.Fprintf(w, "data: %s\n", line)
+	}
+	_, _ = io.WriteString(w, "\n")
 }
 
 // IsConfigMismatch reports whether every finding in this A2A scan result is a

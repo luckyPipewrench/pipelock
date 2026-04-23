@@ -595,6 +595,36 @@ response_scanning:
 
 **Exempt domains:** LLM provider APIs (OpenAI, Anthropic, etc.) return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs — only the response injection scan is skipped. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning (tool results use a separate trust model).
 
+### Generic SSE streaming (`response_scanning.sse_streaming`)
+
+Inline body scanning of `text/event-stream` responses for non-A2A LLM traffic (OpenAI chat completions, Anthropic messages, Kilo Gateway, generic LLM SSE). Without this, streaming responses fall back to the buffered scan path, which caps the body at the proxy's max-body limit and breaks per-event flushing — the agent waits for the whole response before seeing any tokens.
+
+```yaml
+response_scanning:
+  sse_streaming:
+    enabled: true                 # generic SSE inline scanning (default true)
+    action: block                 # block or warn
+    max_event_bytes: 65536        # per-event ceiling (default 64 KB)
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Run per-event DLP + injection scanning on non-A2A SSE responses. When `false`, SSE responses still stream with per-read flushing — they are NOT silently downgraded to the buffered path. |
+| `action` | `block` | `block` terminates the stream on detection. `warn` logs an anomaly and continues forwarding events. |
+| `max_event_bytes` | `65536` | Per-event size ceiling. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. |
+
+**Behavior:**
+- Each event's `data:` payload is fed through the same DLP + injection patterns used for buffered response scanning.
+- Clean events flush to the client immediately. In block mode, the first detected event terminates the stream; later events are not forwarded. In warn mode, findings are logged and forwarding continues.
+- `response_scanning.exempt_domains` still pins prompt-injection findings to visibility-only for trusted hosts. DLP findings are not exempted.
+- Global `suppress` rules apply before SSE action selection.
+- Compressed SSE (`gzip`, `br`, `zstd`) is fail-closed-blocked on every transport. The streaming scanner is never given compressed bytes.
+- Receipts use the `sse_stream` layer label (A2A keeps its existing `a2a_stream` label so dashboards stay continuous).
+
+**Limitations (v1):**
+- Cross-event payload splitting (a secret broken across two sequential events) is NOT detected. A2A traffic still gets cross-event scanning via the A2A scanner's rolling tail; generic SSE does not in v1.
+- Non-`data:` SSE fields (`event:`, `id:`, `retry:`) are not scanned. They are forwarded to the client per the SSE spec.
+
 ## MCP Input Scanning
 
 Scans JSON-RPC requests from agent to MCP server for DLP leaks and injection in tool arguments.

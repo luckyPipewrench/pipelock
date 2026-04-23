@@ -1020,31 +1020,68 @@ func newInterceptHandler(
 			return
 		}
 
-		// A2A SSE streaming: scan events inline with per-event field-aware
-		// scanning and rolling-tail cross-event injection detection. Clean
-		// events are flushed immediately; detection terminates the stream.
+		// SSE streaming: scan events inline using A2A field-aware scanning
+		// (when the request is A2A) or generic per-event DLP + injection
+		// scanning for any other text/event-stream response (OpenAI,
+		// Anthropic, Kilo Gateway, generic LLM SSE). Clean events flush
+		// immediately; detection terminates in block mode and logs in
+		// warn/exempt mode. Must run before the buffered scan path so
+		// streaming LLM responses are not silently downgraded to a buffered
+		// path.
+		//
 		// Defense-in-depth: explicitly reject compressed SSE streams even
 		// though the general compression guard above catches them. This
-		// ensures A2A SSE scanning never processes compressed data if the
-		// code is restructured.
-		if isA2A && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-			if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-				ic.Logger.LogBlocked(actx, scannerLabelA2A, "compressed A2A stream cannot be scanned")
-				ic.Metrics.RecordTLSResponseBlocked(scannerLabelA2A)
+		// guarantees the streaming scanner never sees compressed data even
+		// if the code is restructured.
+		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
+		if IsSSEContentType(resp.Header.Get("Content-Type")) {
+			if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
+				ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
+				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
+			}
+			sseOpts := SSEDispatchOptions{
+				IsA2A:      isA2A,
+				A2A:        &ic.Config.A2AScanning,
+				GenericSSE: &ic.Config.ResponseScanning.SSEStreaming,
+				Generic: mcp.GenericSSEScanOptions{
+					Target:             targetURL,
+					Suppress:           ic.Config.Suppress,
+					ResponseScanExempt: interceptRespExempt,
+					OnFinding: func(err error) {
+						ic.Logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
+					},
+				},
+			}
+			// Intercept retains the historical scannerLabelA2A label
+			// ("a2a_scan") for A2A SSE so existing dashboards and alerts
+			// continue to fire on the same key. Generic SSE uses the new
+			// "sse_stream" label so it can be tracked independently.
+			sseLayer := scannerLabelA2A
+			sseAction := ic.Config.A2AScanning.Action
+			if !isA2A {
+				sseLayer = LayerSSEStream
+				sseAction = ic.Config.ResponseScanning.SSEStreaming.Action
+			}
+
+			if IsSSECompressed(resp.Header) {
+				msg := "compressed " + sseLayer + " response cannot be scanned"
+				ic.Logger.LogBlocked(actx, sseLayer, msg)
+				ic.Metrics.RecordTLSResponseBlocked(sseLayer)
 				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
-					Layer:     scannerLabelA2A,
-					Pattern:   "compressed A2A stream cannot be scanned",
+					Layer:     sseLayer,
+					Pattern:   msg,
 					Transport: "intercept",
 					Method:    r.Method,
 					Target:    targetURL,
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				}))
-				http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
+				http.Error(w, "blocked: "+msg, http.StatusForbidden)
 				return
 			}
+
 			// Copy response headers to client before streaming.
 			for k, vv := range resp.Header {
 				for _, v := range vv {
@@ -1055,20 +1092,22 @@ func newInterceptHandler(
 			w.WriteHeader(resp.StatusCode)
 
 			flusher, _ := w.(http.Flusher)
-			streamErr := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, ic.Scanner, &ic.Config.A2AScanning)
+			streamErr := DispatchSSEScan(r.Context(), resp.Body, w, flusher, ic.Scanner, sseOpts)
 			if streamErr != nil {
 				// Distinguish scanning findings from internal/IO errors. In
-				// warn mode, findings are logged as anomalies but don't
-				// terminate the stream (events have already been forwarded).
-				if errors.Is(streamErr, mcp.ErrA2AStreamFinding) && ic.Config.A2AScanning.Action == config.ActionWarn {
-					ic.Logger.LogAnomaly(actx, scannerLabelA2A, streamErr.Error(), 0)
+				// warn mode, A2A findings are logged as anomalies but don't
+				// terminate the stream. Generic SSE warn-mode findings are
+				// handled inline by GenericSSEScanOptions.OnFinding and
+				// return nil.
+				if IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn {
+					ic.Logger.LogAnomaly(actx, sseLayer, streamErr.Error(), 0)
 				} else {
-					ic.Logger.LogBlocked(actx, scannerLabelA2A, streamErr.Error())
-					ic.Metrics.RecordTLSResponseBlocked(scannerLabelA2A)
+					ic.Logger.LogBlocked(actx, sseLayer, streamErr.Error())
+					ic.Metrics.RecordTLSResponseBlocked(sseLayer)
 					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
-						Layer:     scannerLabelA2A,
+						Layer:     sseLayer,
 						Pattern:   streamErr.Error(),
 						Transport: "intercept",
 						Method:    r.Method,
@@ -1078,8 +1117,8 @@ func newInterceptHandler(
 					}))
 				}
 			}
-			// Emit receipt for completed A2A SSE stream (clean or warn-only).
-			if streamErr == nil || (errors.Is(streamErr, mcp.ErrA2AStreamFinding) && ic.Config.A2AScanning.Action == config.ActionWarn) {
+			// Emit receipt for completed SSE stream (clean or warn-only).
+			if streamErr == nil || (IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn) {
 				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionAllow,
@@ -1259,7 +1298,6 @@ func newInterceptHandler(
 
 		// Response injection scanning.
 		// Skip for response-exempt domains (e.g. trusted LLM providers).
-		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
 		if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)

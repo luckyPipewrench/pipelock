@@ -5,16 +5,59 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.3.0] - 2026-04-24
+
+### Highlights
+
+Two headline features. **Class-preserving redaction v1** lands as a first-party feature: irreversible, typed-placeholder request-side redaction wired into the fetch / forward / TLS-intercepted / reverse HTTP paths, outbound WebSocket client messages, and MCP `tools/call` `params.arguments` across every MCP transport. **Generic SSE streaming**: the existing A2A-gated streaming path is generalized so every `text/event-stream` response (OpenAI chat completions, Anthropic messages, Kilo Gateway, any LLM SSE) streams inline with per-event DLP and injection scanning, preserving token-by-token UX while keeping body scanning on. Plus a substantial tech-debt pass: runtime server lifecycle extraction, runtime policy resolution consolidation, canonical-hash golden-fixture test, `internal/config` mechanical split, and MCP transport pipeline stage extraction (helpers + HTTP + stdio migrations closing the MCP refactor arc). Remaining tech-debt items (metrics reshape, reverse-proxy scanner close-on-reload, `toolBaseline` drift rebuild, reverse-proxy receipt parity) are queued for v2.4 alongside learn-and-lock design.
 
 ### New Features
 
-#### Streaming response scanning
-- **Generic SSE (`text/event-stream`) inline scanning.** Pipelock now scans every Server-Sent Events response, not just A2A. OpenAI chat completions, Anthropic messages, Kilo Gateway streams, and any other LLM SSE traffic flow through the new `ScanGenericSSEStream` scanner: each event's `data:` payload is fed through DLP and prompt-injection detection, clean events flush to the client immediately, and block-mode detection terminates the stream with a block receipt and a `sse_stream` layer label. Warn mode logs findings and continues forwarding. Wired into the forward proxy, TLS-intercept proxy, and reverse proxy paths through a single shared dispatcher (`internal/proxy/sse.go`). Reverse proxy SSE responses are no longer capped by the buffered-body limit. New config block `response_scanning.sse_streaming` with `enabled` (default `true`), `action` (`block` / `warn`, default `block`), and `max_event_bytes` (default `65536`) knobs. Existing `response_scanning.exempt_domains` and global `suppress` rules apply before SSE action selection. When `enabled: false`, SSE responses still stream with per-read flushing instead of silently downgrading to a buffered path. Compressed SSE (gzip, br, zstd) is fail-closed-blocked on every transport, matching A2A behavior. The A2A scanner path is unchanged; the new dispatcher routes A2A traffic to it as before.
+- **Class-preserving redaction (v1).** New `internal/redact/` library. Matched values are replaced in place with typed placeholders such as `<pl:aws-access-key:1>`, one placeholder per `(class, occurrence)`, so downstream tools can reason about field shape without seeing the secret. Irreversible; no vault. Fail-closed on parse errors. Configured via the new `redaction` config section with per-profile class enablement, optional dictionaries, and limits (`max_body_bytes`, `max_redactions_per_request`, `max_depth`). (#413)
+- **Redaction wired into every request-side HTTP transport.** Fetch, forward, reverse, and TLS-intercepted CONNECT paths apply the redaction pipeline to outbound JSON request bodies when enabled. Outbound WebSocket client messages sent through `/ws` go through the same matcher. JSON rewrite uses `json.Decoder.UseNumber()` to preserve numeric fidelity, HTML escaping is disabled on the re-serialized JSON so LLM-bound bodies stay byte-readable, and both keys and values in `map[string]interface{}` are walked to prevent key-smuggling evasion. (#416)
+- **Redaction on MCP `tools/call` arguments.** `params.arguments` is redacted before forwarding on every MCP transport: stdio subprocess, Streamable HTTP upstream, the HTTP listener, and MCP-over-WebSocket. Tool responses are NOT redacted in this release (request-side only); transport parity across the four MCP surfaces is proven by regression tests. (#420)
+- **Generic SSE streaming with inline scanning.** `text/event-stream` responses no longer buffer. Forward proxy, TLS interception, and reverse proxy (previously buffered entirely with a 1 MB cap) all stream events through with per-event DLP and injection scanning. Clean events flush immediately; detection terminates the stream with a `sse_stream` layer label. Warn mode logs findings and continues forwarding. New `response_scanning.sse_streaming` config section: `enabled` (default `true`), `action` (`block` / `warn`, default `block`), `max_event_bytes` (default `65536`). Existing `response_scanning.exempt_domains` and global `suppress` rules apply before SSE action selection. When `enabled: false`, SSE responses still stream with per-read flushing. Compressed SSE streams are rejected fail-closed. Existing A2A-specific scanning is preserved untouched. (#429)
+- **Downstream receipt detection integration guide.** New docs section explaining how SIEMs, audit platforms, and CI workflows verify and chain pipelock action receipts. (#418)
 
 ### Documented limitations
+
 - Generic SSE scanning inspects each event's `data:` payload independently. Cross-event payload splitting (a secret broken across two sequential events) is NOT detected in v1; A2A's rolling-tail scanner still catches that case for A2A traffic. Tracked as a follow-up.
 - Non-`data:` SSE fields (`event:`, `id:`, `retry:`) are not scanned.
+
+### Internal Refactors (tech-debt sprint)
+
+These refactors do not change external behavior but materially improve code health, testability, and coverage ceilings. Shipped as a sprint to clear the TD board before v2.4 / learn-and-lock work opens.
+
+- **TD-1: Frozen config + `ResolveRuntime` clone path.** Runtime policy resolution consolidated into `Config.ResolveRuntime`, eliminating duplicate resolution paths across the CLI and MCP entry points. Loaded config is frozen; runtime policy views are produced by cloning and resolving per-request. (#422)
+- **TD-3: Non-blocking CI debt tracker.** New `hardening-report` job surfaces gocyclo / gocognit / maintidx / dupl metrics per PR without blocking merges, giving contributors visibility into regression trends. (#422)
+- **TD-5: Runtime server lifecycle extraction.** `pipelock run` no longer owns the lifecycle; it delegates to a new `Server` type with `NewServer`, `Start`, `Shutdown`, `Reload`, and `cleanup` methods. Unlocks `internal/cli/runtime/` coverage ceiling. Six spec tests landed. `RegisterKillSwitchSignal` decoupled from Cobra. A Codex polish pass closed two hot-reload gaps: scan API per-request config/scanner/policy resolution, and MCP listener function-pointer-driven per-message snapshotting. (#424)
+- **TD-2a: Canonical-hash golden fixtures (pre-req for TD-2b).** New `canonical_golden_test.go` pins the current `CanonicalPolicyHash` output against a fixed-input config so the mechanical split could not silently invalidate every receipt signed against the current schema. (#425)
+- **TD-2b: `internal/config` mechanical split.** The 5,170-LOC `internal/config/config.go` is split into `schema.go`, `defaults.go`, `normalize.go`, `validate.go`, `reloadwarn.go`, `load.go`, and `schema_receiver_methods.go`. Validators now return `[]Warning` instead of writing to stderr. Callers (CLI + verify_install diagnostics) print the returned warnings. No semantic change; the TD-2a canonical-hash golden fixtures prove byte-equivalent policy output. (#431)
+- **TD-4 groundwork: transport-parity fixtures + stage helpers.** Eight-test transport-parity harness covering stdio, HTTP, and WebSocket MCP transports locks down the per-transport behavior before extraction. New `MCPFrame` and `MCPDecision` helpers are factored out so pipeline stages (parse / policy / decision / relay) become independently testable. (#426, #427)
+- **TD-4 migration: MCP-inbound decision path uses stage helpers (HTTP + stdio).** 34 scattered `extractRPCID` / `extractToolCallName` / `extractToolCallArgs` calls replaced by one `ParseMCPFrame` per message. Six direct receipt/envelope emission sites collapse to one `EmitMCPDecision` helper. New `pipeline_gates.go` holds `EvaluateMCPInputGatesHTTP` and `EvaluateMCPInputGatesStdio` so the gate-evaluation order is identical across transports (policy/taint/redaction/session-binding ordering preserved per the parity fixtures). `ForwardScannedInput` migrated; the MCP refactor arc is closed. Forward / intercept / websocket pipeline migrations deferred to v2.4 per Codex guidance ("don't turn this into abstraction theater"). (#428, #432)
+
+### Fixed
+
+- **Dangerous Capability regex false-positive on runtime-family nouns.** Replaced `(execut|run|launch|spawn)\w*` with explicit verb-form enumeration so `runtime`, `runner`, `launcher`, and `spawner` nouns no longer trigger the tool-poisoning pattern. Seven regression cases added. (#423)
+- **Browser Shield binary media short-circuit.** The `shield.DetectPipeline` classifier now runs before the `max_shield_bytes` ceiling, so image / audio / video / PDF / arbitrary binary responses short-circuit out of shield processing. Fail-closed preserved for HTML / JS / SVG. (#421)
+- **Sentry noise reduction.** `context.Canceled` errors no longer reach `CaptureError`, dropping a class of benign Sentry reports generated during normal shutdown and timeout paths. (#412)
+- **DLP coverage downgrade warning on reload.** `removedOrWeakenedDLPPatterns()` now diffs by `(name, regex)` identity instead of count alone. A reload that replaces a strong regex with a weaker one under the same pattern name was previously silent (count stayed constant). It now surfaces as a reload warning, preserving the "hot reload must preserve security state" invariant. (#433)
+- **SSRF DNS failures stay adaptive-neutral.** DNS resolver failures during SSRF checks were classified like threat blocks, so repeated lookup errors could accumulate adaptive `SignalBlock` points and push sessions into airlock. New `ClassInfrastructureError` + `IsAdaptiveNeutral()` helper unifies protective enforcement and infrastructure errors. Fail-closed semantics preserved: requests still block when DNS cannot be verified, but resolver failures no longer count as threat evidence. Honored on the scanner, adaptive enforcement, TLS intercept, forward, WebSocket, and MCP HTTP A2A paths. Also folds in a CodeRabbit follow-up from #429: `TestScanGenericSSEStream_LargeMaxEventBytes` covers `max_event_bytes` values above `bufio.Scanner`'s 64 KB default in both block and warn modes. (#434)
+
+### Security Hardening
+
+- Redaction library runs fail-closed on parse errors. A malformed JSON body is blocked rather than forwarded.
+- Generic SSE streaming rejects compressed streams fail-closed. Body scanning cannot be bypassed by requesting `Content-Encoding: gzip` on an SSE response.
+- Redaction walks map keys as well as values, so secrets stuffed into JSON keys are caught.
+- Reload-time DLP coverage downgrades (same-length pattern replacements) now surface as warnings instead of being silently accepted.
+
+### Other
+
+- Detection integration guide at `docs/detection-integration/`. (#418)
+- Tool-response-injection demo points at the published `pipelock-verify` PyPI package instead of a vendored copy. (#411)
+- CI composite-action download retry budget hardened. (#410)
+- Dependabot bumps for the `ci-actions` group (3 updates) and `go-deps` group (3 updates). (#414, #415)
+- Helm chart `appVersion` bumped to `2.3.0`.
 
 ## [2.2.0] - 2026-04-17
 

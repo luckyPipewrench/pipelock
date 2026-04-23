@@ -53,7 +53,7 @@ runtime-policy-audit:
 	./scripts/runtime-policy-audit.sh
 
 debt-check:
-	golangci-lint run --disable-all --enable dupl --enable gocyclo --enable gocognit --enable maintidx ./...
+	golangci-lint run --enable-only dupl,gocyclo,gocognit,maintidx ./...
 
 release-check: test lint test-runtime-critical release-audit runtime-policy-audit
 

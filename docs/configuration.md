@@ -625,6 +625,8 @@ response_scanning:
 - Cross-event payload splitting (a secret broken across two sequential events) is NOT detected. A2A traffic still gets cross-event scanning via the A2A scanner's rolling tail; generic SSE does not in v1.
 - Non-`data:` SSE fields (`event:`, `id:`, `retry:`) are not scanned. They are forwarded to the client per the SSE spec.
 
+See [`docs/guides/sse-streaming.md`](guides/sse-streaming.md) for the full guide with transport coverage, fail-closed behavior, and adversarial test matrix.
+
 ## MCP Input Scanning
 
 Scans JSON-RPC requests from agent to MCP server for DLP leaks and injection in tool arguments.

@@ -6,14 +6,16 @@
 // Live-provider SSE smoke tests. Build-tagged out of the default test
 // suite so CI does not require external API keys or network egress.
 //
-// Run manually after setting the relevant credential environment
-// variable:
+// Run manually after exporting the relevant provider credential into the
+// shell environment (the variable names live in the per-provider config
+// values further down this file). With the credential available:
 //
-//	ANTHROPIC_API_KEY=sk-ant-... \
-//	  go test -tags=live -run TestSSELiveAnthropicSmoke -v ./internal/proxy/
+//	go test -tags=live -run TestSSELiveAnthropicSmoke -v ./internal/proxy/
+//	go test -tags=live -run TestSSELiveOpenAISmoke    -v ./internal/proxy/
 //
-//	OPENAI_API_KEY=sk-... \
-//	  go test -tags=live -run TestSSELiveOpenAISmoke -v ./internal/proxy/
+// The shell-assignment form is intentionally NOT shown in this file so
+// pipelock's own DLP scanner does not treat the example as a real
+// secret leak in the diff.
 //
 // The smoke verifies three properties that a fully-mocked test cannot:
 //

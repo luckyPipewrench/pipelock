@@ -109,7 +109,7 @@ func RunCmd() *cobra.Command {
 	var captureEscrowKey string
 
 	cmd := &cobra.Command{
-		Use:   "run [flags]",
+		Use:   "run [flags] [-- AGENT_ARGS...]",
 		Short: "Start the Pipelock proxy",
 		Long: `Start the proxy server that scans and controls agent HTTP traffic.
 
@@ -129,6 +129,17 @@ Examples:
   pipelock run --config pipelock.yaml                # with config file (hot-reload)
   pipelock run --mode strict --listen 0.0.0.0:9999   # override mode and listen address
   pipelock run --mcp-listen 0.0.0.0:8889 --mcp-upstream http://mcp-server:3000/mcp`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			dashIdx := cmd.ArgsLenAtDash()
+			switch {
+			case dashIdx < 0 && len(args) > 0:
+				return fmt.Errorf("unexpected arguments %q; pass agent args after --", args)
+			case dashIdx > 0:
+				return fmt.Errorf("unexpected arguments before --: %q", args[:dashIdx])
+			default:
+				return nil
+			}
+		},
 		RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive // args used via ArgsLenAtDash
 			opts := ServerOpts{
 				ConfigFile:       configFile,

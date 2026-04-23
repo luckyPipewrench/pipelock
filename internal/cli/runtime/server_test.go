@@ -11,7 +11,11 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
+
+const serverTestUpstreamURL = "http://127.0.0.1:1"
 
 // newServerTestFreePort returns a free 127.0.0.1 TCP port by binding and
 // releasing it, same pattern used in run_test.go:freePort.
@@ -47,6 +51,21 @@ func newTestServer(t *testing.T, mutate func(*ServerOpts)) (*Server, *syncBuffer
 	}
 	t.Cleanup(func() { s.cleanup() })
 	return s, buf
+}
+
+func waitForServerCancel(t *testing.T, s *Server) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.cancelMu.Lock()
+		ready := s.internalCancel != nil
+		s.cancelMu.Unlock()
+		if ready {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("server did not publish internal cancel")
 }
 
 // TestNewServer_AppliesCLIOverrides verifies that ModeChanged / ListenChanged
@@ -88,7 +107,7 @@ func TestNewServer_AppliesCLIOverrides(t *testing.T) {
 func TestNewServer_ResolveRuntimeRuns(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.MCPListen = newServerTestFreePort(t)
-		o.MCPUpstream = "http://127.0.0.1:1"
+		o.MCPUpstream = serverTestUpstreamURL
 	})
 	if s.runtimeMode != config.RuntimeForwardWithMCPListener {
 		t.Errorf("runtimeMode: want RuntimeForwardWithMCPListener, got %v", s.runtimeMode)
@@ -128,11 +147,7 @@ func TestServer_StartShutdown(t *testing.T) {
 		errCh <- s.Start(ctx)
 	}()
 
-	// Give Start a moment to register its internal context so Shutdown
-	// has something to cancel. proxy.Start binds the fetch listener in
-	// its own goroutine; we do not depend on it being ready, just on
-	// Shutdown unblocking our caller.
-	time.Sleep(100 * time.Millisecond)
+	waitForServerCancel(t, s)
 
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -145,6 +160,120 @@ func TestServer_StartShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}
+
+func TestServer_StateHelpers(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+
+	if got := s.currentConfig(); got != s.cfg {
+		t.Fatalf("currentConfig() = %p, want %p", got, s.cfg)
+	}
+	hash := s.cfg.Hash()
+	if s.shouldSkipReload(hash) {
+		t.Fatal("shouldSkipReload returned true before any successful reload")
+	}
+	s.recordReloadSuccess(hash)
+	if !s.shouldSkipReload(hash) {
+		t.Fatal("shouldSkipReload returned false immediately after recordReloadSuccess")
+	}
+}
+
+func TestRuntimeMCPBuilders(t *testing.T) {
+	if buildMCPInputCfg(nil) != nil {
+		t.Fatal("nil config should not build MCP input config")
+	}
+	cfg := config.Defaults()
+	cfg.MCPInputScanning.Enabled = true
+	cfg.MCPInputScanning.Action = config.ActionBlock
+	cfg.MCPToolScanning.Enabled = true
+	cfg.MCPToolScanning.Action = config.ActionWarn
+	cfg.MCPToolScanning.DetectDrift = true
+	cfg.ToolChainDetection.Enabled = true
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 128
+	cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 1
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 1024
+	cfg.CrossRequestDetection.FragmentReassembly.WindowMinutes = 1
+
+	inputCfg := buildMCPInputCfg(cfg)
+	if inputCfg == nil || inputCfg.Action != config.ActionBlock {
+		t.Fatalf("input cfg = %+v, want block action", inputCfg)
+	}
+	baseline := mcptools.NewToolBaseline()
+	extra := []*mcptools.ExtraPoisonPattern{{Name: "unsafe"}}
+	toolCfg := buildMCPToolCfg(cfg, extra, baseline)
+	if toolCfg == nil || toolCfg.Action != config.ActionWarn || !toolCfg.DetectDrift || toolCfg.Baseline != baseline {
+		t.Fatalf("tool cfg = %+v", toolCfg)
+	}
+	if chain := buildMCPChainMatcher(cfg, metrics.New()); chain == nil {
+		t.Fatal("expected chain matcher when tool chain detection is enabled")
+	}
+	cee := buildMCPCEE(cfg, metrics.New())
+	if cee == nil || cee.Tracker == nil || cee.Buffer == nil {
+		t.Fatalf("CEE deps = %+v, want tracker and buffer", cee)
+	}
+}
+
+func TestServer_StartAuxiliaryListeners(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = newServerTestFreePort(t)
+		o.ListenChanged = true
+		o.MCPListen = newServerTestFreePort(t)
+		o.MCPUpstream = serverTestUpstreamURL
+		o.ReverseProxy = true
+		o.ReverseUpstream = serverTestUpstreamURL
+		o.ReverseListen = newServerTestFreePort(t)
+		o.CaptureOutput = t.TempDir()
+		o.CaptureDuration = 150 * time.Millisecond
+		o.AgentArgs = []string{"agent", "--flag"}
+	})
+	s.cfg.MetricsListen = newServerTestFreePort(t)
+	s.cfg.ScanAPI.Listen = newServerTestFreePort(t)
+	s.cfg.ScanAPI.ConnectionLimit = 1
+	s.cfg.ScanAPI.Timeouts = config.ScanAPITimeouts{
+		Read:  "50ms",
+		Write: "50ms",
+	}
+	s.cfg.KillSwitch.APIToken = "test-token"
+	s.cfg.KillSwitch.APIListen = newServerTestFreePort(t)
+	s.apiOnSeparatePort = true
+	s.cfg.WebSocketProxy.Enabled = true
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.Start(context.Background())
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return after capture duration")
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"Stats:",
+		"API:",
+		"MCP:",
+		"RevPx:",
+		"WS:",
+		"Capture:",
+		"Agent:",
+		"metrics listening",
+		"scan API listening",
+		"reverse proxy listening",
+		"capture duration reached",
+		"Pipelock stopped.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("startup output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -211,6 +340,102 @@ func TestServer_Reload_StrictAllowsApiTokenRotation(t *testing.T) {
 	}
 }
 
+func TestServer_Reload_RejectsRestartRequiredProxyModes(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(*config.Config)
+		want   string
+	}{
+		{
+			name: "forward proxy",
+			mutate: func(c *config.Config) {
+				c.ForwardProxy.Enabled = true
+			},
+			want: "forward proxy cannot be enabled via reload",
+		},
+		{
+			name: "websocket proxy",
+			mutate: func(c *config.Config) {
+				c.WebSocketProxy.Enabled = true
+			},
+			want: "WebSocket proxy cannot be enabled via reload",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			newCfg := s.proxy.CurrentConfig().Clone()
+			tt.mutate(newCfg)
+			err := s.Reload(newCfg)
+			if err == nil {
+				t.Fatal("expected reload rejection")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
+func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ReverseProxy = true
+		o.ReverseUpstream = serverTestUpstreamURL
+		o.ReverseListen = "127.0.0.1:18080"
+	})
+
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.KillSwitch.APIListen = "127.0.0.1:18081"
+	oldCfg.MetricsListen = "127.0.0.1:18082"
+	oldCfg.ScanAPI.Listen = "127.0.0.1:18083"
+	oldCfg.ScanAPI.ConnectionLimit = 2
+	oldCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "1s", Write: "1s"}
+	oldCfg.FlightRecorder.SigningKeyPath = "/tmp/old-signing-key"
+
+	newCfg := oldCfg.Clone()
+	newCfg.KillSwitch.APIListen = "127.0.0.1:28081"
+	newCfg.MetricsListen = "127.0.0.1:28082"
+	newCfg.ScanAPI.Listen = "127.0.0.1:28083"
+	newCfg.ScanAPI.ConnectionLimit = 4
+	newCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "2s", Write: "2s"}
+	newCfg.FlightRecorder.SigningKeyPath = "/tmp/new-signing-key"
+	newCfg.ReverseProxy.Listen = "127.0.0.1:28084"
+	newCfg.ReverseProxy.Upstream = "http://127.0.0.1:2"
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if live.KillSwitch.APIListen != oldCfg.KillSwitch.APIListen {
+		t.Fatalf("kill switch API listen = %q, want %q", live.KillSwitch.APIListen, oldCfg.KillSwitch.APIListen)
+	}
+	if live.MetricsListen != oldCfg.MetricsListen {
+		t.Fatalf("metrics listen = %q, want %q", live.MetricsListen, oldCfg.MetricsListen)
+	}
+	if live.ScanAPI.Listen != oldCfg.ScanAPI.Listen ||
+		live.ScanAPI.ConnectionLimit != oldCfg.ScanAPI.ConnectionLimit ||
+		live.ScanAPI.Timeouts != oldCfg.ScanAPI.Timeouts {
+		t.Fatalf("scan API listener settings not preserved: %+v", live.ScanAPI)
+	}
+	if live.FlightRecorder.SigningKeyPath != oldCfg.FlightRecorder.SigningKeyPath {
+		t.Fatalf("signing key path = %q, want %q", live.FlightRecorder.SigningKeyPath, oldCfg.FlightRecorder.SigningKeyPath)
+	}
+	if live.ReverseProxy != oldCfg.ReverseProxy {
+		t.Fatalf("reverse proxy settings not preserved: %+v", live.ReverseProxy)
+	}
+	for _, want := range []string{
+		"kill_switch.api_listen changed",
+		"metrics_listen changed",
+		"scan_api listener settings changed",
+		"flight_recorder.signing_key_path changed",
+		"reverse_proxy settings changed",
+	} {
+		if !buf.contains(want) {
+			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
+		}
+	}
+}
+
 // TestServer_Reload_ProxyFailureStaysFailSafe verifies that when proxy.Reload
 // aborts its internal swap, Server.Reload does not continue applying partial
 // side effects such as kill switch state changes or success dedup markers.
@@ -263,7 +488,7 @@ func TestServer_MCPListener_ResponseScanningFallback(t *testing.T) {
 	// MCP proxy mode's responsibility).
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.MCPListen = newServerTestFreePort(t)
-		o.MCPUpstream = "http://127.0.0.1:1"
+		o.MCPUpstream = serverTestUpstreamURL
 	})
 
 	// Listener mode does WrapMCP, so input scanning auto-enables with

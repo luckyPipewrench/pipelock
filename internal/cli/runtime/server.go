@@ -204,6 +204,25 @@ func (s *Server) liveEnvelopeEmitter() *envelope.Emitter {
 	return s.envelopeEmitter
 }
 
+func (s *Server) currentConfig() *config.Config {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return s.cfg
+}
+
+func (s *Server) shouldSkipReload(hash string) bool {
+	s.stateMu.RLock()
+	defer s.stateMu.RUnlock()
+	return hash == s.lastReloadHash && time.Since(s.lastReloadAt) < 2*time.Second
+}
+
+func (s *Server) recordReloadSuccess(hash string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.lastReloadHash = hash
+	s.lastReloadAt = time.Now()
+}
+
 func (s *Server) currentToolPolicyCfg() *policy.Config {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
@@ -605,7 +624,9 @@ func (s *Server) Start(ctx context.Context) error {
 		go func() {
 			defer reloadWG.Done()
 			for newCfg := range reloader.Changes() {
-				_ = s.Reload(newCfg)
+				if err := s.Reload(newCfg); err != nil {
+					s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
+				}
 			}
 		}()
 	}
@@ -614,7 +635,7 @@ func (s *Server) Start(ctx context.Context) error {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: running outside a container - consider using Docker/Podman for network isolation")
 	}
 
-	cfg := s.cfg
+	cfg := s.currentConfig()
 	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock v%s starting\n", cliutil.Version)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Mode:   %s\n", cfg.Mode)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
@@ -927,44 +948,27 @@ func (s *Server) Start(ctx context.Context) error {
 			if s.captureWriter != nil {
 				mcpCaptureObs = s.captureWriter
 			}
-			initialRedactionCfg := mcpRedactionCfgFn()
 			mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, s.opts.MCPUpstream, s.opts.Stderr, mcp.MCPProxyOpts{
-				Scanner:             mcpScannerFn(),
 				ScannerFn:           mcpScannerFn,
 				Approver:            mcpApprover,
-				InputCfg:            buildMCPInputCfg(cfg),
 				InputCfgFn:          mcpInputCfgFn,
-				ToolCfg:             buildMCPToolCfg(cfg, s.currentMCPToolExtraPoison(), mcpToolBaseline),
 				ToolCfgFn:           mcpToolCfgFn,
-				PolicyCfg:           s.currentToolPolicyCfg(),
 				PolicyCfgFn:         s.currentToolPolicyCfg,
 				KillSwitch:          s.killswitch,
-				ChainMatcher:        s.currentMCPChainMatcher(),
 				ChainMatcherFn:      s.currentMCPChainMatcher,
 				AuditLogger:         s.logger,
-				CEE:                 s.currentMCPCEE(),
 				CEEFn:               s.currentMCPCEE,
 				Store:               mcpStore,
 				AdaptiveCfgFn:       mcpAdaptiveFn,
 				Metrics:             s.metrics,
-				RedirectRT:          buildRedirectRT(cfg),
 				RedirectRTFn:        mcpRedirectRTFn,
 				CaptureObs:          mcpCaptureObs,
-				ProvenanceCfg:       &cfg.MCPToolProvenance,
 				ProvenanceCfgFn:     mcpProvenanceCfgFn,
-				ReceiptEmitter:      s.liveReceiptEmitter(),
 				ReceiptEmitterFn:    s.liveReceiptEmitter,
-				EnvelopeEmitter:     s.liveEnvelopeEmitter(),
 				EnvelopeEmitterFn:   s.liveEnvelopeEmitter,
-				RedactMatcher:       initialRedactionCfg.Matcher,
-				RedactLimits:        initialRedactionCfg.Limits,
-				RedactProfile:       initialRedactionCfg.Profile,
 				RedactionCfgFn:      mcpRedactionCfgFn,
-				TaintCfg:            &cfg.Taint,
 				TaintCfgFn:          mcpTaintCfgFn,
-				A2ACfg:              &cfg.A2AScanning,
 				A2ACfgFn:            mcpA2ACfgFn,
-				MediaPolicy:         &cfg.MediaPolicy,
 				MediaPolicyFn:       mcpMediaPolicyFn,
 				ToolFreezer:         s.proxy.FrozenTools(),
 				FrozenToolStableKey: s.opts.MCPUpstream,
@@ -988,6 +992,7 @@ func (s *Server) Start(ctx context.Context) error {
 			s.logger, s.metrics, s.killswitch, rpCaptureObs, s.proxy.ShieldEngine(),
 		)
 		rpHandler.SetEnvelopeEmitter(s.proxy.EnvelopeEmitterPtr())
+		rpHandler.SetReloadLock(s.proxy.ReloadLock())
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())
 
 		rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
@@ -1230,7 +1235,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// time-windowed dedup keyed on the LAST EMITTED reload event:
 		// the first of a stacked pair still logs, any event with the
 		// same hash inside 2s skips silently.
-		if newCfg.Hash() == s.lastReloadHash && time.Since(s.lastReloadAt) < 2*time.Second {
+		if s.shouldSkipReload(newCfg.Hash()) {
 			return nil
 		}
 
@@ -1355,9 +1360,9 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	if newCfg.ResponseScanning.Action == config.ActionAsk && !s.hasApprover {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to ask mode but HITL approver was not initialized at startup; detections will be blocked")
 	}
-	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), newCfg.Hash())
-	s.lastReloadHash = newCfg.Hash()
-	s.lastReloadAt = time.Now()
+	reloadHash := newCfg.Hash()
+	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
+	s.recordReloadSuccess(reloadHash)
 	return nil
 }
 

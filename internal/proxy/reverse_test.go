@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -142,6 +143,39 @@ func TestReverseProxy_CleanPassthrough(t *testing.T) {
 	}
 	if result["status"] != "ok" {
 		t.Fatalf("expected status ok, got %q", result["status"])
+	}
+}
+
+func TestReverseProxy_ServeHTTPSnapshotsUnderReloadLock(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.KillSwitch.Enabled = true
+	upstreamURL, err := url.Parse("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, err := audit.New("json", "stdout", "", false, false)
+	if err != nil {
+		t.Fatalf("audit logger: %v", err)
+	}
+	t.Cleanup(logger.Close)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
+	var reloadMu sync.RWMutex
+	handler.SetReloadLock(&reloadMu)
+
+	req := httptest.NewRequest(http.MethodGet, "http://pipelock.local/test", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
 

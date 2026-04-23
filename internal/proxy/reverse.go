@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -66,6 +67,7 @@ type ReverseProxyHandler struct {
 	captureObs          capture.CaptureObserver
 	shieldEngine        *shield.Engine
 	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
+	reloadMu            *sync.RWMutex
 }
 
 // NewReverseProxy creates a reverse proxy handler that scans request and
@@ -133,6 +135,12 @@ func (rp *ReverseProxyHandler) SetEnvelopeEmitter(ptr *atomic.Pointer[envelope.E
 	rp.envelopeEmitterPtr = ptr
 }
 
+// SetReloadLock lets ServeHTTP snapshot cfg/scanner/emitter state coherently
+// with Proxy.Reload publication.
+func (rp *ReverseProxyHandler) SetReloadLock(mu *sync.RWMutex) {
+	rp.reloadMu = mu
+}
+
 // SetRedactionRuntimePtr attaches the atomic pointer to the request-body
 // redaction runtime snapshot. The pointer dereferences to nil when redaction
 // is disabled, so scanRequestBody will skip the redaction step gracefully.
@@ -147,8 +155,24 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Strip inbound mediation envelope headers to prevent forgery.
 	envelope.StripInbound(r.Header)
 
-	cfg := rp.cfgPtr.Load()
-	sc := rp.scPtr.Load()
+	var cfg *config.Config
+	var sc *scanner.Scanner
+	var admissionEmitter *envelope.Emitter
+	if rp.reloadMu != nil {
+		rp.reloadMu.RLock()
+		cfg = rp.cfgPtr.Load()
+		sc = rp.scPtr.Load()
+		if rp.envelopeEmitterPtr != nil {
+			admissionEmitter = rp.envelopeEmitterPtr.Load()
+		}
+		rp.reloadMu.RUnlock()
+	} else {
+		cfg = rp.cfgPtr.Load()
+		sc = rp.scPtr.Load()
+		if rp.envelopeEmitterPtr != nil {
+			admissionEmitter = rp.envelopeEmitterPtr.Load()
+		}
+	}
 	clientIP, requestID := requestMeta(r)
 	agent, _ := r.Context().Value(ctxKeyAgent).(string)
 	ctx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -265,10 +289,6 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Snapshot the emitter at admission time so RoundTrip uses the
 	// same signing decision that ServeHTTP made. Without this, a reload
 	// between here and RoundTrip could flip signing on/off mid-request.
-	var admissionEmitter *envelope.Emitter
-	if rp.envelopeEmitterPtr != nil {
-		admissionEmitter = rp.envelopeEmitterPtr.Load()
-	}
 	if admissionEmitter != nil {
 		actorIdentity := edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity)
 		actor := actorIdentity.Name

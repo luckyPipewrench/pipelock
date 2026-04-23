@@ -285,7 +285,7 @@ type Proxy struct {
 	server              *http.Server
 	agentServers        []*http.Server // per-agent listeners (managed by CLI)
 	startTime           time.Time
-	reloadMu            sync.Mutex // serializes Reload calls
+	reloadMu            sync.RWMutex // serializes Reload and coherent request-time runtime snapshots
 	approver            *hitl.Approver
 	a2aCardBaseline     *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs          capture.CaptureObserver
@@ -579,7 +579,7 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	// set the context key (e.g. tests calling this helper directly).
 	em, _ := req.Context().Value(ctxKeyEnvelopeEmitter).(*envelope.Emitter)
 	if em == nil {
-		em = p.envelopeEmitterPtr.Load()
+		em = p.currentEnvelopeEmitter()
 	}
 	if em == nil {
 		return nil
@@ -777,7 +777,9 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // through the recorder mutex — same cost as recordDecision. Errors are logged
 // but not propagated.
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
+	p.reloadMu.RLock()
 	e := p.receiptEmitterPtr.Load()
+	p.reloadMu.RUnlock()
 	if e == nil {
 		return
 	}
@@ -928,6 +930,12 @@ func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, 
 // CurrentConfig returns the currently active config. Used for reload comparison.
 func (p *Proxy) CurrentConfig() *config.Config {
 	return p.cfgPtr.Load()
+}
+
+// ReloadLock exposes the proxy reload lock for long-lived handlers that need
+// coherent config/scanner/emitter snapshots with Reload publication.
+func (p *Proxy) ReloadLock() *sync.RWMutex {
+	return &p.reloadMu
 }
 
 // ConfigPtr returns the atomic config pointer. Used by the reverse proxy
@@ -1337,6 +1345,23 @@ func (p *Proxy) knownProfiles() map[string]bool {
 // The Edition handles context override, CIDR, header/query, and fallback.
 func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity) {
 	return p.editionPtr.Load().ResolveAgent(r.Context(), r)
+}
+
+// resolveAgentRuntimeFromRequest snapshots the request's resolved agent state
+// and envelope emitter under the reload lock. The request then keeps that
+// emitter for its forwarding and redirect path so a reload cannot pair the
+// old config with a newly disabled or rotated emitter.
+func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity, *envelope.Emitter) {
+	p.reloadMu.RLock()
+	defer p.reloadMu.RUnlock()
+	resolved, id := p.resolveAgentFromRequest(r)
+	return resolved, id, p.envelopeEmitterPtr.Load()
+}
+
+func (p *Proxy) currentEnvelopeEmitter() *envelope.Emitter {
+	p.reloadMu.RLock()
+	defer p.reloadMu.RUnlock()
+	return p.envelopeEmitterPtr.Load()
 }
 
 // Edition returns the current active Edition.
@@ -1958,7 +1983,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
 	// and resolveAgent() could read different registries.
-	resolved, id := p.resolveAgentFromRequest(r)
+	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	sc := resolved.Scanner
 	agent := id.Name
@@ -2528,7 +2553,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// internally — there is no request body to sign over, so
 	// InjectAndSign is called with body=nil and the signer drops
 	// content-digest from the declared component list.
-	if envEmitter := p.envelopeEmitterPtr.Load(); envEmitter != nil {
+	if envEmitter != nil {
 		// Snapshot the emitter on the request context so
 		// refreshEnvelopeForRedirect uses the same signing state
 		// for the entire redirect chain, even if a reload fires.

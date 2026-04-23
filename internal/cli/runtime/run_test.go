@@ -1014,6 +1014,42 @@ func TestPreserveAgentListeners(t *testing.T) {
 // Flag validation tests for runCmd (reverse proxy flags)
 // ---------------------------------------------------------------------------
 
+func TestRunCmd_RejectsPositionalArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "without dash",
+			args: []string{"run", "agent-cmd"},
+			want: "unexpected arguments",
+		},
+		{
+			name: "before dash",
+			args: []string{"run", "agent-cmd", "--", "--flag"},
+			want: "unexpected arguments before --",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := testRootCmd()
+			cmd.SetArgs(tt.args)
+			cmd.SetOut(&strings.Builder{})
+			cmd.SetErr(&strings.Builder{})
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("expected positional argument validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
+			}
+		})
+	}
+}
+
 func TestRunCmd_ReverseProxyWithoutUpstream(t *testing.T) {
 	cmd := testRootCmd()
 	cmd.SetArgs([]string{"run", "--reverse-proxy"})

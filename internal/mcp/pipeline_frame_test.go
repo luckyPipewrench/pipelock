@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -167,16 +168,47 @@ func TestParseMCPFrame_ToolsCallMalformedParamsKeepsMethodAndID(t *testing.T) {
 }
 
 func TestParseMCPFrame_InvalidMethodPreservesID(t *testing.T) {
-	msg := `{"jsonrpc":"2.0","id":"client-id","method":42}`
-	frame := ParseMCPFrame([]byte(msg))
-	if frame.ParseErr == nil {
-		t.Fatal("ParseErr = nil, want error for non-string method")
+	tests := []struct {
+		name       string
+		msg        string
+		wantErrIs  error
+		matchExact bool
+	}{
+		{
+			name: "numeric method",
+			msg:  `{"jsonrpc":"2.0","id":"client-id","method":42}`,
+		},
+		{
+			name:       "null method",
+			msg:        `{"jsonrpc":"2.0","id":"client-id","method":null}`,
+			wantErrIs:  ErrInvalidMethodType,
+			matchExact: true,
+		},
+		{
+			name: "boolean method",
+			msg:  `{"jsonrpc":"2.0","id":"client-id","method":true}`,
+		},
+		{
+			name: "array method",
+			msg:  `{"jsonrpc":"2.0","id":"client-id","method":["a","b"]}`,
+		},
 	}
-	if string(frame.ID) != `"client-id"` {
-		t.Fatalf("ID = %q, want client ID preserved after second-pass failure", string(frame.ID))
-	}
-	if frame.Method != "" {
-		t.Fatalf("Method = %q, want empty after invalid method", frame.Method)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := ParseMCPFrame([]byte(tt.msg))
+			if frame.ParseErr == nil {
+				t.Fatal("ParseErr = nil, want error for non-string method")
+			}
+			if tt.matchExact && !errors.Is(frame.ParseErr, tt.wantErrIs) {
+				t.Fatalf("ParseErr = %v, want errors.Is(%v)", frame.ParseErr, tt.wantErrIs)
+			}
+			if string(frame.ID) != `"client-id"` {
+				t.Fatalf("ID = %q, want client ID preserved after second-pass failure", string(frame.ID))
+			}
+			if frame.Method != "" {
+				t.Fatalf("Method = %q, want empty after invalid method", frame.Method)
+			}
+		})
 	}
 }
 

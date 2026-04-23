@@ -6,9 +6,19 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
+
+// ErrInvalidMethodType is surfaced via MCPFrame.ParseErr when a
+// JSON-RPC message has a non-string "method" field (including the
+// explicit JSON null literal). The HTTP listener's validateRPCStructure
+// already rejects these before they reach the frame parser on that
+// transport; the explicit error here fails closed on the stdio and
+// HTTP upstream paths where no pre-validator runs.
+var ErrInvalidMethodType = errors.New("mcp: method must be a string")
 
 // MCPFrame is a structural parse of a JSON-RPC 2.0 message
 // received on an MCP transport. Callers that previously invoked
@@ -124,16 +134,29 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	// Second pass: extract method and raw params. May fail when method is a
 	// non-string; in that case the frame keeps the ID from the first pass
 	// and surfaces ParseErr so downstream validators still fail closed.
+	// Method is read as json.RawMessage so we can distinguish three cases
+	// the Go json package would otherwise conflate: absent (zero len),
+	// explicit null literal (surfaces ErrInvalidMethodType per the
+	// fail-closed default), and a real string.
 	var decoded struct {
-		Method string          `json:"method"`
+		Method json.RawMessage `json:"method"`
 		Params json.RawMessage `json:"params"`
 	}
 	if err := json.Unmarshal(msg, &decoded); err != nil {
 		frame.ParseErr = err
 		return frame
 	}
-	frame.Method = decoded.Method
-	if decoded.Method == methodToolsCall {
+	if len(decoded.Method) > 0 {
+		if string(decoded.Method) == jsonrpc.Null {
+			frame.ParseErr = ErrInvalidMethodType
+			return frame
+		}
+		if err := json.Unmarshal(decoded.Method, &frame.Method); err != nil {
+			frame.ParseErr = fmt.Errorf("%w: %w", ErrInvalidMethodType, err)
+			return frame
+		}
+	}
+	if frame.Method == methodToolsCall {
 		var params struct {
 			Name      string          `json:"name"`
 			Arguments json.RawMessage `json:"arguments"`

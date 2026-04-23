@@ -71,11 +71,14 @@ const (
 	// boundary so the signer can compute content-digest without a
 	// second drain pass.
 	ctxKeyReverseEnvelopeBody
-	// ctxKeyReverseEnvelopeCfg carries the per-request *Config used
-	// by the reverse proxy dispatch so the RoundTripper sees the same
-	// config snapshot ServeHTTP loaded rather than re-loading the
-	// atomic pointer (which could race with a reload in flight).
+	// ctxKeyReverseEnvelopeCfg carries the per-request *Config used by
+	// reverse proxy dispatch and response scanning so both use the same
+	// snapshot ServeHTTP loaded rather than re-loading the atomic pointer
+	// mid-request.
 	ctxKeyReverseEnvelopeCfg
+	// ctxKeyReverseScanner carries the same per-request scanner snapshot
+	// for reverse-proxy response scanning.
+	ctxKeyReverseScanner
 	// ctxKeyReverseEnvelopeEmitter snapshots the *envelope.Emitter at
 	// admission time so RoundTrip uses the same signing state that
 	// ServeHTTP used to decide "signing is on." Without this, a
@@ -83,12 +86,11 @@ const (
 	// mid-request — a TOCTOU race flagged by CodeRabbit on PR #403.
 	ctxKeyReverseEnvelopeEmitter
 
-	// ctxKeyEnvelopeEmitter snapshots the *envelope.Emitter at the
-	// point the fetch/forward handler first signs the outbound request.
-	// refreshEnvelopeForRedirect reads this instead of the global
-	// atomic so a reload mid-redirect-chain cannot flip signing
-	// state for an in-flight request. Same TOCTOU fix as
-	// ctxKeyReverseEnvelopeEmitter but for the client-side path.
+	// ctxKeyEnvelopeEmitter snapshots the fetch/forward envelope emitter
+	// decision, including an explicit nil when signing was off at
+	// admission. refreshEnvelopeForRedirect reads this instead of the
+	// global atomic so a reload mid-redirect-chain cannot flip signing
+	// state for an in-flight request.
 	ctxKeyEnvelopeEmitter
 
 	// ctxKeyRedirectTransport is the transport label ("fetch" or
@@ -99,6 +101,10 @@ const (
 	// hardcoded default. See Info 2 on the envelope-signing review.
 	ctxKeyRedirectTransport
 )
+
+type envelopeEmitterSnapshot struct {
+	emitter *envelope.Emitter
+}
 
 const (
 	schemeHTTP  = "http"
@@ -573,12 +579,17 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 // redirect. sign:true is a hard integrity contract: a redirected hop
 // must not continue with a stale or missing pipelock signature.
 func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Request, cfg *config.Config) error {
-	// Prefer the request-scoped snapshot so a reload mid-chain
-	// cannot flip signing state for this request. Fall back to the
-	// global atomic for backwards-compat with callers that don't
-	// set the context key (e.g. tests calling this helper directly).
-	em, _ := req.Context().Value(ctxKeyEnvelopeEmitter).(*envelope.Emitter)
-	if em == nil {
+	// Prefer the request-scoped snapshot so a reload mid-chain cannot flip
+	// signing state for this request. A present snapshot with a nil emitter
+	// means signing was off at admission and must remain off for redirects.
+	snap, ok := req.Context().Value(ctxKeyEnvelopeEmitter).(envelopeEmitterSnapshot)
+	var em *envelope.Emitter
+	if ok {
+		em = snap.emitter
+	} else {
+		// Fall back to the global atomic only for backwards-compat with
+		// callers that don't set the context key (e.g. tests calling this
+		// helper directly).
 		em = p.currentEnvelopeEmitter()
 	}
 	if em == nil {
@@ -1125,8 +1136,8 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		old.Close()
 	}
 
-	if oldSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); oldSnap != nil {
-		oldSnap.Close()
+	if prevEdSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); prevEdSnap != nil {
+		prevEdSnap.Close()
 	}
 
 	// Toggle session manager lifecycle on config change.
@@ -1172,7 +1183,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	p.updateCEEStats()
 
-	// Receipt emitter hash is updated by reloadReceiptEmitter above.
+	// Receipt emitter hash is updated by the receipt emitter build above.
 	// No separate UpdateConfigHash needed — emitter is always (re)created
 	// with the current cfg.Hash() when a signing key is configured.
 	return true
@@ -2543,6 +2554,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	req = req.WithContext(context.WithValue(req.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{emitter: envEmitter}))
 
 	req.Header.Set("User-Agent", cfg.FetchProxy.UserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain,*/*;q=0.8")
@@ -2554,10 +2566,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// InjectAndSign is called with body=nil and the signer drops
 	// content-digest from the declared component list.
 	if envEmitter != nil {
-		// Snapshot the emitter on the request context so
-		// refreshEnvelopeForRedirect uses the same signing state
-		// for the entire redirect chain, even if a reload fires.
-		req = req.WithContext(context.WithValue(req.Context(), ctxKeyEnvelopeEmitter, envEmitter))
 		policyHash := envelope.PolicyHashFromHex(cfg.CanonicalPolicyHash())
 		if envErr := envEmitter.InjectAndSign(req, nil, envelope.BuildOpts{
 			ActionID:      actionID,

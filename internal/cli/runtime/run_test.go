@@ -60,6 +60,10 @@ func TestReloadPanicHandler_LogsError(t *testing.T) {
 	}
 }
 
+func TestReloadPanicHandler_NilLogger(t *testing.T) {
+	ReloadPanicHandler("test panic value", nil, nil, "/tmp/test.yaml")
+}
+
 func TestReloadPanicHandler_NilRecovery(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "audit.log")
@@ -1047,6 +1051,26 @@ func TestRunCmd_RejectsPositionalArgs(t *testing.T) {
 				t.Fatalf("error = %q, want substring %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+func TestRunCmd_AcceptsAgentArgsAfterDash(t *testing.T) {
+	cmd := RunCmd()
+	cmd.SetArgs([]string{"--", "some-agent", "--flag"})
+
+	var gotAgentArgs []string
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if dashIdx := cmd.ArgsLenAtDash(); dashIdx >= 0 && dashIdx < len(args) {
+			gotAgentArgs = args[dashIdx:]
+		}
+		return nil
+	}
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if strings.Join(gotAgentArgs, " ") != "some-agent --flag" {
+		t.Fatalf("agent args = %v, want %v", gotAgentArgs, []string{"some-agent", "--flag"})
 	}
 }
 

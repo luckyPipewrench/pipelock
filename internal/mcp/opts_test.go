@@ -69,8 +69,13 @@ func withRedaction(m *redact.Matcher, profile string) testOptsFunc {
 
 func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.Internal = nil
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
+	staleCfg := config.Defaults()
+	staleCfg.Internal = nil
+	staleSc := scanner.New(staleCfg)
+	t.Cleanup(staleSc.Close)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: config.ActionBlock}
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn}
@@ -85,8 +90,23 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	mediaEnabled := true
 	mediaPolicy := &config.MediaPolicy{Enabled: &mediaEnabled}
 	redactionCfg := MCPRedactionConfig{Required: true, Profile: "strict"}
+	staleMediaEnabled := false
 
 	opts := MCPProxyOpts{
+		Scanner:       staleSc,
+		InputCfg:      &InputScanConfig{Enabled: false},
+		ToolCfg:       &tools.ToolScanConfig{Action: config.ActionBlock},
+		PolicyCfg:     &policy.Config{Action: config.ActionWarn},
+		ChainMatcher:  chains.New(&staleCfg.ToolChainDetection),
+		AdaptiveCfg:   &config.AdaptiveEnforcement{Enabled: false},
+		TaintCfg:      &config.TaintConfig{Enabled: false},
+		CEE:           &CEEDeps{Config: &staleCfg.CrossRequestDetection},
+		RedirectRT:    &RedirectRuntime{FetchEndpoint: "http://127.0.0.1:9999/fetch"},
+		ProvenanceCfg: &config.MCPToolProvenance{Enabled: false},
+		A2ACfg:        &config.A2AScanning{Enabled: false},
+		MediaPolicy:   &config.MediaPolicy{Enabled: &staleMediaEnabled},
+		RedactProfile: "stale",
+
 		ScannerFn:       func() *scanner.Scanner { return sc },
 		InputCfgFn:      func() *InputScanConfig { return inputCfg },
 		ToolCfgFn:       func() *tools.ToolScanConfig { return toolCfg },
@@ -145,6 +165,7 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 
 func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.Internal = nil
 	sc := scanner.New(cfg)
 	t.Cleanup(sc.Close)
 

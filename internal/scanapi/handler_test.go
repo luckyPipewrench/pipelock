@@ -1278,6 +1278,7 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 	cfg.ScanAPI.Auth.BearerTokens = []string{"old-token"}
 
 	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
 	m := metrics.New()
 	h := NewHandler(cfg, sc, nil, m, "test-version")
 
@@ -1390,6 +1391,7 @@ func TestHandler_RuntimeGettersHotReloadAuthAndPolicy(t *testing.T) {
 
 func TestHandler_RuntimeGetterUnavailablePaths(t *testing.T) {
 	cfg := config.Defaults()
+	cfg.Internal = nil
 	cfg.ScanAPI.Auth.BearerTokens = []string{"token"}
 	cfg.ScanAPI.Kinds.URL = true
 	sc := scanner.New(cfg)

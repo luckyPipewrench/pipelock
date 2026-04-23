@@ -132,7 +132,9 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) {
 	if ic.Proxy == nil {
 		return
 	}
+	ic.Proxy.reloadMu.RLock()
 	e := ic.Proxy.receiptEmitterPtr.Load()
+	ic.Proxy.reloadMu.RUnlock()
 	if e == nil {
 		return
 	}

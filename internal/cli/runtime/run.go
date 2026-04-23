@@ -140,7 +140,7 @@ Examples:
 				return nil
 			}
 		},
-		RunE: func(cmd *cobra.Command, args []string) error { //nolint:revive // args used via ArgsLenAtDash
+		RunE: func(cmd *cobra.Command, args []string) error {
 			opts := ServerOpts{
 				ConfigFile:       configFile,
 				Mode:             mode,

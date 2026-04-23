@@ -149,30 +149,37 @@ func (rp *ReverseProxyHandler) SetRedactionRuntimePtr(ptr *atomic.Pointer[redact
 	rp.redactionRuntimePtr = ptr
 }
 
+type reverseRuntimeSnapshot struct {
+	cfg              *config.Config
+	sc               *scanner.Scanner
+	admissionEmitter *envelope.Emitter
+}
+
+func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
+	if rp.reloadMu != nil {
+		rp.reloadMu.RLock()
+		defer rp.reloadMu.RUnlock()
+	}
+	snap := reverseRuntimeSnapshot{
+		cfg: rp.cfgPtr.Load(),
+		sc:  rp.scPtr.Load(),
+	}
+	if rp.envelopeEmitterPtr != nil {
+		snap.admissionEmitter = rp.envelopeEmitterPtr.Load()
+	}
+	return snap
+}
+
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Strip inbound mediation envelope headers to prevent forgery.
 	envelope.StripInbound(r.Header)
 
-	var cfg *config.Config
-	var sc *scanner.Scanner
-	var admissionEmitter *envelope.Emitter
-	if rp.reloadMu != nil {
-		rp.reloadMu.RLock()
-		cfg = rp.cfgPtr.Load()
-		sc = rp.scPtr.Load()
-		if rp.envelopeEmitterPtr != nil {
-			admissionEmitter = rp.envelopeEmitterPtr.Load()
-		}
-		rp.reloadMu.RUnlock()
-	} else {
-		cfg = rp.cfgPtr.Load()
-		sc = rp.scPtr.Load()
-		if rp.envelopeEmitterPtr != nil {
-			admissionEmitter = rp.envelopeEmitterPtr.Load()
-		}
-	}
+	snap := rp.snapshotRuntime()
+	cfg := snap.cfg
+	sc := snap.sc
+	admissionEmitter := snap.admissionEmitter
 	clientIP, requestID := requestMeta(r)
 	agent, _ := r.Context().Value(ctxKeyAgent).(string)
 	ctx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
@@ -181,6 +188,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	})
 	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
+	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
+	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
 	r = r.WithContext(ctx)
 
 	// Kill switch: deny all traffic when active.
@@ -306,7 +315,6 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyReverseEnvelopeOpts, opts)
 		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeBody, reverseBodyBytes)
-		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 		ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeEmitter, admissionEmitter)
 		r = r.WithContext(ctx)
 	}
@@ -482,8 +490,17 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 // modifyResponse scans the upstream response body for prompt injection.
 // Called by httputil.ReverseProxy after receiving the upstream response.
 func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
-	cfg := rp.cfgPtr.Load()
-	sc := rp.scPtr.Load()
+	cfg, _ := resp.Request.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config)
+	sc, _ := resp.Request.Context().Value(ctxKeyReverseScanner).(*scanner.Scanner)
+	if cfg == nil || sc == nil {
+		snap := rp.snapshotRuntime()
+		if cfg == nil {
+			cfg = snap.cfg
+		}
+		if sc == nil {
+			sc = snap.sc
+		}
+	}
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)
 

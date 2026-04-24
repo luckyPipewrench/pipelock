@@ -536,6 +536,26 @@ func TestCheckConfigValid_Fail(t *testing.T) {
 	}
 }
 
+func TestCheckConfigValid_SurfaceWarnings(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.ResponseScanning.Enabled = false
+	env.Cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+
+	r := checkConfigValid(env)
+	if r.Status != verifyStatusPass {
+		t.Fatalf("expected pass for warning-only config, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "Config validated with warnings") {
+		t.Fatalf("expected warning detail, got: %s", r.Detail)
+	}
+	if !strings.Contains(r.Detail, "response_scanning.exempt_domains") {
+		t.Fatalf("expected warning field in detail, got: %s", r.Detail)
+	}
+	if r.Evidence["warning_1"] == "" {
+		t.Fatalf("expected warning evidence, got: %+v", r.Evidence)
+	}
+}
+
 func TestCheckProxyHealth_Error(t *testing.T) {
 	env := testScanEnv(t)
 	env.ProxyURL = "http://127.0.0.1:1" // nothing listening

@@ -162,7 +162,7 @@ func TestDefaults_GenericSSEScanning(t *testing.T) {
 func TestValidateResponseScanning_SSEStreamingActionWarn(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.SSEStreaming.Action = ActionWarn
-	if err := cfg.validateResponseScanning(); err != nil {
+	if err := cfg.validateResponseScanning(&[]Warning{}); err != nil {
 		t.Errorf("warn must validate, got %v", err)
 	}
 }
@@ -170,7 +170,7 @@ func TestValidateResponseScanning_SSEStreamingActionWarn(t *testing.T) {
 func TestValidateResponseScanning_SSEStreamingActionBlock(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.SSEStreaming.Action = ActionBlock
-	if err := cfg.validateResponseScanning(); err != nil {
+	if err := cfg.validateResponseScanning(&[]Warning{}); err != nil {
 		t.Errorf("block must validate, got %v", err)
 	}
 }
@@ -180,7 +180,7 @@ func TestValidateResponseScanning_SSEStreamingActionEmpty(t *testing.T) {
 	// default. Validation must not reject it.
 	cfg := Defaults()
 	cfg.ResponseScanning.SSEStreaming.Action = ""
-	if err := cfg.validateResponseScanning(); err != nil {
+	if err := cfg.validateResponseScanning(&[]Warning{}); err != nil {
 		t.Errorf("empty action must validate (downstream default), got %v", err)
 	}
 }
@@ -188,7 +188,7 @@ func TestValidateResponseScanning_SSEStreamingActionEmpty(t *testing.T) {
 func TestValidateResponseScanning_SSEStreamingActionInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.SSEStreaming.Action = ActionStrip
-	err := cfg.validateResponseScanning()
+	err := cfg.validateResponseScanning(&[]Warning{})
 	if err == nil {
 		t.Fatalf("expected validation error for strip")
 	}
@@ -200,7 +200,7 @@ func TestValidateResponseScanning_SSEStreamingActionInvalid(t *testing.T) {
 func TestValidateResponseScanning_SSEStreamingNegativeMax(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.SSEStreaming.MaxEventBytes = -1
-	if err := cfg.validateResponseScanning(); err == nil {
+	if err := cfg.validateResponseScanning(&[]Warning{}); err == nil {
 		t.Errorf("negative max_event_bytes must fail validation")
 	}
 }
@@ -211,7 +211,7 @@ func TestValidateResponseScanning_SSEStreamingDisabledIgnoresInvalid(t *testing.
 	cfg := Defaults()
 	cfg.ResponseScanning.SSEStreaming.Enabled = false
 	cfg.ResponseScanning.SSEStreaming.Action = ActionStrip // would be rejected if Enabled=true
-	if err := cfg.validateResponseScanning(); err != nil {
+	if err := cfg.validateResponseScanning(&[]Warning{}); err != nil {
 		t.Errorf("disabled sse_streaming must not validate sub-fields, got %v", err)
 	}
 }

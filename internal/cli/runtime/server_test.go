@@ -116,6 +116,16 @@ func TestNewServer_AppliesCLIOverrides(t *testing.T) {
 	}
 }
 
+func TestNewServer_SurfacesValidateWarnings(t *testing.T) {
+	_, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = "0.0.0.0:0"
+		o.ListenChanged = true
+	})
+	if !buf.contains("WARNING: fetch_proxy.listen") {
+		t.Fatalf("stderr missing fetch_proxy.listen warning:\n%s", buf.String())
+	}
+}
+
 func TestNewServer_ValidatesListenerFlagPairs(t *testing.T) {
 	for _, tt := range []struct {
 		name string
@@ -551,6 +561,30 @@ func TestServer_Reload_StrictRejectsDowngrade(t *testing.T) {
 	live := s.proxy.CurrentConfig()
 	if live.Mode != config.ModeStrict {
 		t.Errorf("live config mode after rejected reload: want %q, got %q", config.ModeStrict, live.Mode)
+	}
+}
+
+func TestServer_Reload_DedupSkipsValidateWarnings(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	buf.reset()
+
+	newCfg := s.proxy.CurrentConfig().Clone()
+	newCfg.ResponseScanning.Enabled = false
+	newCfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("first Reload: %v", err)
+	}
+	if !buf.contains("WARNING: response_scanning.exempt_domains") {
+		t.Fatalf("first reload stderr missing validation warning:\n%s", buf.String())
+	}
+
+	buf.reset()
+	if err := s.Reload(newCfg.Clone()); err != nil {
+		t.Fatalf("deduped Reload: %v", err)
+	}
+	if buf.contains("response_scanning.exempt_domains") {
+		t.Fatalf("deduped reload printed validation warning:\n%s", buf.String())
 	}
 }
 

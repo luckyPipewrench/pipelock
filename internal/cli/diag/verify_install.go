@@ -307,10 +307,28 @@ func BuildVerifyChecks() []VerifyCheck {
 // ---------------------------------------------------------------------------
 
 func checkConfigValid(env *VerifyEnv) VerifyResult {
-	if err := env.Cfg.Validate(); err != nil {
+	warnings, err := env.Cfg.ValidateWithWarnings()
+	if err != nil {
 		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("validation error: %v", err)}
 	}
-	return VerifyResult{Status: verifyStatusPass, Detail: "Config loaded and validated"}
+	if len(warnings) == 0 {
+		return VerifyResult{Status: verifyStatusPass, Detail: "Config loaded and validated"}
+	}
+	// Surface advisory warnings in the check detail. The report format is
+	// line-based text so this keeps the warning visible to operators running
+	// pipelock diag verify-install without changing the pass/fail status.
+	evidence := make(map[string]string, len(warnings))
+	lines := make([]string, 0, len(warnings))
+	for i, wn := range warnings {
+		key := fmt.Sprintf("warning_%d", i+1)
+		evidence[key] = fmt.Sprintf("%s: %s", wn.Field, wn.Message)
+		lines = append(lines, fmt.Sprintf("%s: %s", wn.Field, wn.Message))
+	}
+	return VerifyResult{
+		Status:   verifyStatusPass,
+		Detail:   "Config validated with warnings: " + strings.Join(lines, "; "),
+		Evidence: evidence,
+	}
 }
 
 func checkProxyHealth(env *VerifyEnv) VerifyResult {

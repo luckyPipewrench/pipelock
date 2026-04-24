@@ -385,9 +385,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	switch eval.BlockingGate {
 	case "a2a_body":
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", eval.A2AResult.Reason)
-		if eval.A2AResult.IsConfigMismatch() {
+		switch {
+		case eval.A2AResult.IsAdaptiveNeutral():
+			// Score-neutral: infrastructure errors (e.g. DNS resolver timeout
+			// on an embedded A2A URL field) block the request (fail-closed)
+			// but must not feed adaptive enforcement. Resolver wobble is not
+			// evidence of agent misbehavior.
+		case eval.A2AResult.IsConfigMismatch():
 			recordAdaptiveSignal(session.SignalNearMiss)
-		} else {
+		default:
 			recordAdaptiveSignal(session.SignalBlock)
 		}
 		receiptVerdict = config.ActionBlock
@@ -1229,9 +1235,14 @@ func RunHTTPListenerProxy(
 						ConsoleWriter: safeLogW,
 						Session:       auditSessionKey,
 					}
-					if headerResult.IsConfigMismatch() {
+					switch {
+					case headerResult.IsAdaptiveNeutral():
+						// Score-neutral: infrastructure errors in A2A headers
+						// (e.g., DNS timeout resolving an Extensions URL) are
+						// not evidence of agent misbehavior.
+					case headerResult.IsConfigMismatch():
 						decide.RecordSignal(reqRec, session.SignalNearMiss, ep)
-					} else {
+					default:
 						decide.RecordSignal(reqRec, session.SignalBlock, ep)
 					}
 				}

@@ -604,14 +604,14 @@ response_scanning:
   sse_streaming:
     enabled: true                 # generic SSE inline scanning (default true)
     action: block                 # block or warn
-    max_event_bytes: 65536        # per-event ceiling (default 64 KB)
+    max_event_bytes: 65536        # per-event data-payload ceiling (default 64 KB; excludes metadata)
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `true` | Run per-event DLP + injection scanning on non-A2A SSE responses. When `false`, SSE responses still stream with per-read flushing — they are NOT silently downgraded to the buffered path. |
 | `action` | `block` | `block` terminates the stream on detection. `warn` logs an anomaly and continues forwarding events. |
-| `max_event_bytes` | `65536` | Per-event size ceiling. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. |
+| `max_event_bytes` | `65536` | Per-event data-payload ceiling. Measures only the bytes inside the SSE `data:` field(s) — `event:`, `id:`, and `retry:` metadata are not counted. Events exceeding this are treated as findings and fail closed. Set higher only for providers with genuinely large single events. |
 
 **Behavior:**
 - Each event's `data:` payload is fed through the same DLP + injection patterns used for buffered response scanning.

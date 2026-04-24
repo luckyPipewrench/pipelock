@@ -25,9 +25,13 @@ import (
 var ErrSSEStreamFinding = errors.New("sse stream finding")
 
 // ErrSSEEventTooLarge is wrapped inside ErrSSEStreamFinding when a single
-// event's joined data: payload exceeds cfg.MaxEventBytes. Treated as a
-// finding so oversize events fail closed without distinguishing from
-// content-based detections.
+// event's joined data: payload exceeds cfg.MaxEventBytes. The check
+// measures the data-payload bytes returned by transport.SSEReader, NOT
+// the full wire size of the re-emitted event (event:/id:/retry: metadata
+// is added by writeSSEEvent on top). Operators sizing the ceiling
+// against expected payload — token deltas, JSON chunks — get the
+// behavior they want; sizing it against total wire bytes will see
+// metadata overhead on top.
 var ErrSSEEventTooLarge = errors.New("sse event exceeds max_event_bytes")
 
 // ErrSSEInvalidUTF8 is wrapped inside ErrSSEStreamFinding when an event's
@@ -41,7 +45,9 @@ var ErrSSEInvalidUTF8 = errors.New("sse event contains invalid UTF-8")
 
 // DefaultGenericSSEMaxEventBytes caps per-event scanning to 64 KB. LLM
 // streaming events are typically a few hundred bytes; 64 KB carries
-// about 16k tokens, far above any realistic single-event payload.
+// about 16k tokens, far above any realistic single-event payload. The
+// limit measures the data-payload only (see ErrSSEEventTooLarge); the
+// metadata fields (event:, id:, retry:) are negligible in practice.
 const DefaultGenericSSEMaxEventBytes = 64 * 1024
 
 // passthroughChunkSize is the buffer size used when scanning is disabled

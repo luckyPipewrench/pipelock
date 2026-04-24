@@ -385,9 +385,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	switch eval.BlockingGate {
 	case blockingGateA2ABody:
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", eval.A2AResult.Reason)
-		if eval.A2AResult.IsConfigMismatch() {
+		switch {
+		case eval.A2AResult.IsAdaptiveNeutral():
+			// Score-neutral: infrastructure errors (e.g. DNS resolver timeout
+			// on an embedded A2A URL field) block the request (fail-closed)
+			// but must not feed adaptive enforcement. Resolver wobble is not
+			// evidence of agent misbehavior.
+		case eval.A2AResult.IsConfigMismatch():
 			recordAdaptiveSignal(session.SignalNearMiss)
-		} else {
+		default:
 			recordAdaptiveSignal(session.SignalBlock)
 		}
 		receiptVerdict = config.ActionBlock
@@ -451,15 +457,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	// Non-blocking warn-level side effects from gates that did not
-	// short-circuit. A2A warn logs and records a near-miss; DoW warn
-	// logs, records an anomaly, and records a near-miss. These
-	// happen after the switch so block dispatches skip them.
+	// short-circuit. A2A warn logs and records a near-miss unless the
+	// finding is adaptive-neutral; DoW warn logs, records an anomaly,
+	// and records a near-miss. These happen after the switch so block
+	// dispatches skip them.
 	if eval.TaintApproved {
 		logTaintDecision()
 	}
 	if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", eval.A2AResult.Reason)
-		recordAdaptiveSignal(session.SignalNearMiss)
+		if !eval.A2AResult.IsAdaptiveNeutral() {
+			recordAdaptiveSignal(session.SignalNearMiss)
+		}
 	}
 	if eval.DoWAction != "" && !eval.DoWAllowed && eval.DoWAction != config.ActionBlock {
 		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
@@ -1229,9 +1238,14 @@ func RunHTTPListenerProxy(
 						ConsoleWriter: safeLogW,
 						Session:       auditSessionKey,
 					}
-					if headerResult.IsConfigMismatch() {
+					switch {
+					case headerResult.IsAdaptiveNeutral():
+						// Score-neutral: infrastructure errors in A2A headers
+						// (e.g., DNS timeout resolving an Extensions URL) are
+						// not evidence of agent misbehavior.
+					case headerResult.IsConfigMismatch():
 						decide.RecordSignal(reqRec, session.SignalNearMiss, ep)
-					} else {
+					default:
 						decide.RecordSignal(reqRec, session.SignalBlock, ep)
 					}
 				}

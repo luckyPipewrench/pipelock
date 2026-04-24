@@ -38,6 +38,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -4637,6 +4638,61 @@ func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "a2a input") {
 		t.Errorf("expected a2a input warning log, got: %s", logBuf.String())
+	}
+}
+
+func TestScanHTTPInput_A2AWarnAction_InfrastructureErrorNoSignal(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8"}
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionWarn,
+	}
+	rec := &mockRecorder{}
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"url":"https://nonexistent.invalid/resource"}]}}}`)
+
+	var logBuf bytes.Buffer
+	decision := scanHTTPInputDecision(msg, &logBuf, "test-session", "audit-key", MCPProxyOpts{
+		Scanner:     sc,
+		A2ACfg:      a2aCfg,
+		Rec:         rec,
+		AdaptiveCfg: adaptiveCfgEnabled(),
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("warn mode should not block infrastructure-only A2A finding: %#v", decision.Blocked)
+	}
+	if len(rec.signals) != 0 {
+		t.Fatalf("infrastructure-only A2A warn result must be adaptive-neutral; got signals=%v", rec.signals)
+	}
+	if !strings.Contains(logBuf.String(), "a2a input") {
+		t.Errorf("expected a2a input warning log, got: %s", logBuf.String())
+	}
+}
+
+func TestScanHTTPInput_A2AWarnAction_ThreatStillNearMiss(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	a2aCfg := &config.A2AScanning{
+		Enabled: true,
+		Action:  config.ActionWarn,
+	}
+	rec := &mockRecorder{}
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"url":"ftp://attacker.example/resource"}]}}}`)
+
+	var logBuf bytes.Buffer
+	decision := scanHTTPInputDecision(msg, &logBuf, "test-session", "audit-key", MCPProxyOpts{
+		Scanner:     sc,
+		A2ACfg:      a2aCfg,
+		Rec:         rec,
+		AdaptiveCfg: adaptiveCfgEnabled(),
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("warn mode should not block threat A2A finding: %#v", decision.Blocked)
+	}
+	if len(rec.signals) != 1 || rec.signals[0] != session.SignalNearMiss {
+		t.Fatalf("threat A2A warn result must record SignalNearMiss; got signals=%v", rec.signals)
 	}
 }
 

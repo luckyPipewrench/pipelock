@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
@@ -50,6 +51,19 @@ const (
 )
 
 func intPtrHTTP(v int) *int { return &v }
+
+type recordingEmitSinkHTTP struct {
+	events []emit.Event
+}
+
+func (s *recordingEmitSinkHTTP) Emit(_ context.Context, ev emit.Event) error {
+	s.events = append(s.events, ev)
+	return nil
+}
+
+func (s *recordingEmitSinkHTTP) Close() error {
+	return nil
+}
 
 func testHTTPRedactionMatcher() *redact.Matcher {
 	return redact.NewDefaultMatcher()
@@ -4739,6 +4753,62 @@ func TestScanHTTPInputDecision_ReceiptBackfillWhenInputScanningDisabledAndBlocke
 	}
 	if record.Target != "expensive_tool" {
 		t.Fatalf("receipt target = %q, want %q", record.Target, "expensive_tool")
+	}
+}
+
+func TestScanHTTPInputDecision_InvalidMethodTypeBlocks(t *testing.T) {
+	sc := testScannerForHTTP(t)
+
+	tests := []struct {
+		name     string
+		msg      []byte
+		inputCfg *InputScanConfig
+	}{
+		{
+			name: "input scanning enabled",
+			msg:  []byte(`{"jsonrpc":"2.0","id":5,"method":null}`),
+			inputCfg: &InputScanConfig{
+				Enabled:      true,
+				Action:       config.ActionWarn,
+				OnParseError: config.ActionBlock,
+			},
+		},
+		{
+			name: "input scanning disabled",
+			msg:  []byte(`{"jsonrpc":"2.0","id":6,"method":42}`),
+		},
+		{
+			name: "boolean method",
+			msg:  []byte(`{"jsonrpc":"2.0","id":7,"method":true}`),
+			inputCfg: &InputScanConfig{
+				Enabled:      true,
+				Action:       config.ActionWarn,
+				OnParseError: config.ActionBlock,
+			},
+		},
+		{
+			name: "array method",
+			msg:  []byte(`{"jsonrpc":"2.0","id":8,"method":["tools/call"]}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			decision := scanHTTPInputDecision(tt.msg, io.Discard, "sess", "sess", MCPProxyOpts{
+				Scanner:  sc,
+				InputCfg: tt.inputCfg,
+			})
+			if decision.Blocked == nil {
+				t.Fatal("expected invalid method type to block")
+			}
+			if decision.Blocked.LogMessage != "blocked (parse error)" {
+				t.Fatalf("LogMessage = %q, want %q", decision.Blocked.LogMessage, "blocked (parse error)")
+			}
+			frame := ParseMCPFrame(tt.msg)
+			if string(decision.Blocked.ID) != string(frame.ID) {
+				t.Fatalf("blocked ID = %s, want %s", decision.Blocked.ID, frame.ID)
+			}
+		})
 	}
 }
 

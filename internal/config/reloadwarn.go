@@ -31,11 +31,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// DLP patterns removed
-	if len(updated.DLP.Patterns) < len(old.DLP.Patterns) {
+	// DLP patterns removed or weakened. Plain len() comparison misses
+	// same-length downgrades (e.g. swapping (?i)secret_key for (?i)key
+	// under the same pattern name). Pattern count stays constant but
+	// coverage drops silently, violating the "hot reload must preserve
+	// security state" invariant. Diff by (name, regex) identity so
+	// name-preserving regex swaps are surfaced too.
+	if removed := removedOrWeakenedDLPPatterns(old.DLP.Patterns, updated.DLP.Patterns); len(removed) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "dlp.patterns",
-			Message: fmt.Sprintf("DLP patterns reduced from %d to %d", len(old.DLP.Patterns), len(updated.DLP.Patterns)),
+			Message: "DLP patterns removed or regex-swapped on reload: " + strings.Join(removed, ", "),
 		})
 	}
 
@@ -908,4 +913,31 @@ func checkEscalationWeakening(old, updated *EscalationLevels, warnings *[]Reload
 			})
 		}
 	}
+}
+
+// removedOrWeakenedDLPPatterns returns human-readable labels for any DLP
+// pattern that disappeared entirely or whose regex changed while keeping
+// the same name. Same-name regex swaps are the load-bearing case: an
+// attacker or misconfigured reload can keep pattern count identical while
+// silently downgrading coverage (e.g. (?i)secret_key -> (?i)key under the
+// same "AWS Secret" name). Legitimate strengthening under the same name
+// also triggers a warning; operators can resolve by reviewing the diff,
+// which is the point. Renames appear as both a removal (old name) and an
+// implicit add (new name), which the reload surface does not warn about.
+func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
+	updatedByName := make(map[string]string, len(updated))
+	for _, p := range updated {
+		updatedByName[p.Name] = p.Regex
+	}
+	var changed []string
+	for _, p := range old {
+		newRegex, ok := updatedByName[p.Name]
+		switch {
+		case !ok:
+			changed = append(changed, p.Name)
+		case newRegex != p.Regex:
+			changed = append(changed, p.Name+" (regex changed)")
+		}
+	}
+	return changed
 }

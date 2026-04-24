@@ -44,6 +44,7 @@ const (
 	fieldSandbox         = "sandbox"
 	fieldFileSentry      = "file_sentry"
 	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
+	fieldDLPPatterns     = "dlp.patterns"
 	testExemptDomain     = "api.openai.com"
 	testStagedPattern    = "staged-pattern"
 
@@ -2939,7 +2940,7 @@ func TestValidateReload_DLPPatternsReduced(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "dlp.patterns" {
+		if w.Field == fieldDLPPatterns {
 			found = true
 			break
 		}
@@ -2956,9 +2957,91 @@ func TestValidateReload_DLPPatternsIncreased_NoWarning(t *testing.T) {
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.patterns" {
+		if w.Field == fieldDLPPatterns {
 			t.Errorf("increasing patterns should not warn, got: %s", w.Message)
 		}
+	}
+}
+
+// TestValidateReload_DLPPatternsSameLengthRegexSwap_Warns pins the
+// load-bearing case: an operator (or adversarial config write) replaces
+// a strong regex with a weaker one under the same pattern name. Pattern
+// count stays constant, the old len() check missed this entirely, and
+// coverage silently dropped. The identity-diff helper now surfaces it.
+func TestValidateReload_DLPPatternsSameLengthRegexSwap_Warns(t *testing.T) {
+	old := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "AWS Secret", Regex: `(?i)aws(.{0,20})?secret(.{0,20})?key`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+	updated := &Config{DLP: DLP{Patterns: []DLPPattern{
+		// Same count, same name, dramatically weaker regex.
+		{Name: "AWS Secret", Regex: `(?i)key`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			found = true
+			if !strings.Contains(w.Message, "AWS Secret") {
+				t.Errorf("warning should name the swapped pattern, got: %s", w.Message)
+			}
+			if !strings.Contains(w.Message, "regex changed") {
+				t.Errorf("warning should label the change as a regex swap, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when a same-name pattern's regex changes on reload")
+	}
+}
+
+// TestValidateReload_DLPPatternsIdentical_NoWarning verifies the helper
+// stays quiet when old and updated pattern lists are byte-identical.
+// This is the common case on SIGHUP reload that didn't touch DLP.
+func TestValidateReload_DLPPatternsIdentical_NoWarning(t *testing.T) {
+	patterns := []DLPPattern{
+		{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}
+	old := &Config{DLP: DLP{Patterns: patterns}}
+	updated := &Config{DLP: DLP{Patterns: patterns}}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			t.Errorf("identical DLP patterns should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+// TestValidateReload_DLPPatternRenamed_WarnsAsRemoval verifies that
+// renaming a pattern surfaces as a removal (the old name disappeared).
+// The implicit add under the new name is a separate signal we do not
+// warn on; operators can resolve by reviewing the diff.
+func TestValidateReload_DLPPatternRenamed_WarnsAsRemoval(t *testing.T) {
+	old := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "OldName", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+	updated := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "NewName", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			found = true
+			if !strings.Contains(w.Message, "OldName") {
+				t.Errorf("warning should name the removed pattern, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when a DLP pattern name disappears on reload")
 	}
 }
 

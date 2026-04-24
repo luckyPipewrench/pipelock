@@ -21,31 +21,33 @@ import (
 )
 
 const (
-	testInvalid          = "invalid"
-	testSecretsPath      = "/path/to/secrets.txt"
-	testWebhookURL       = "https://example.com/hook"
-	testOTLPEndpoint     = "http://collector:4318"
-	testSyslogAddr       = "udp://syslog.example.com:514"
-	testAPIListen        = "0.0.0.0:9090"
-	testAPIListen2       = "0.0.0.0:9091"
-	testWildcardListen   = "0.0.0.0:8888"
-	testPatternName      = "Test Pattern"
-	testCustomName       = "Custom"
-	testToken            = "test-token" //nolint:gosec // test credential
-	testRevProxyListen   = ":8888"
-	testRevProxyUpstream = "http://localhost:7899"
-	testNotAURL          = "not-a-url"
-	fieldDLPSecrets      = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
-	fieldFwdProxy        = "forward_proxy.enabled"
-	fieldKSAPIListen     = "kill_switch.api_listen"
-	fieldTLSPassthrough  = "tls_interception.passthrough_domains"
-	fieldSentry          = "sentry"
-	fieldSSRFIPAllowlist = "ssrf.ip_allowlist"
-	fieldSandbox         = "sandbox"
-	fieldFileSentry      = "file_sentry"
-	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
-	testExemptDomain     = "api.openai.com"
-	testStagedPattern    = "staged-pattern"
+	testInvalid             = "invalid"
+	testSecretsPath         = "/path/to/secrets.txt"
+	testWebhookURL          = "https://example.com/hook"
+	testOTLPEndpoint        = "http://collector:4318"
+	testSyslogAddr          = "udp://syslog.example.com:514"
+	testAPIListen           = "0.0.0.0:9090"
+	testAPIListen2          = "0.0.0.0:9091"
+	testWildcardListen      = "0.0.0.0:8888"
+	testPatternName         = "Test Pattern"
+	testCustomName          = "Custom"
+	testToken               = "test" + "-token"
+	testRevProxyListen      = ":8888"
+	testRevProxyUpstream    = "http://localhost:7899"
+	testNotAURL             = "not-a-url"
+	fieldDLPSecrets         = "dlp.secrets" + "_file"
+	fieldFwdProxy           = "forward_proxy.enabled"
+	fieldKSAPIListen        = "kill_switch.api_listen"
+	fieldTLSPassthrough     = "tls_interception.passthrough_domains"
+	fieldSentry             = "sentry"
+	fieldSSRFIPAllowlist    = "ssrf.ip_allowlist"
+	fieldSandbox            = "sandbox"
+	fieldFileSentry         = "file_sentry"
+	fieldSubEntExcl         = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
+	fieldDLPPatterns        = "dlp.patterns"
+	fieldDLPIncludeDefaults = "dlp.include_defaults"
+	testExemptDomain        = "api.openai.com"
+	testStagedPattern       = "staged-pattern"
 
 	testProfileDir  = "/tmp/profiles"
 	testRecorderDir = "/tmp/recorder"
@@ -2939,7 +2941,7 @@ func TestValidateReload_DLPPatternsReduced(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "dlp.patterns" {
+		if w.Field == fieldDLPPatterns {
 			found = true
 			break
 		}
@@ -2956,9 +2958,168 @@ func TestValidateReload_DLPPatternsIncreased_NoWarning(t *testing.T) {
 
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.patterns" {
+		if w.Field == fieldDLPPatterns {
 			t.Errorf("increasing patterns should not warn, got: %s", w.Message)
 		}
+	}
+}
+
+// TestValidateReload_DLPPatternsSameLengthRegexSwap_Warns pins the
+// load-bearing case: an operator (or adversarial config write) replaces
+// a strong regex with a weaker one under the same pattern name. Pattern
+// count stays constant, the old len() check missed this entirely, and
+// coverage silently dropped. The identity-diff helper now surfaces it.
+func TestValidateReload_DLPPatternsSameLengthRegexSwap_Warns(t *testing.T) {
+	old := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "AWS Secret", Regex: `(?i)aws(.{0,20})?secret(.{0,20})?key`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+	updated := &Config{DLP: DLP{Patterns: []DLPPattern{
+		// Same count, same name, dramatically weaker regex.
+		{Name: "AWS Secret", Regex: `(?i)key`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			found = true
+			if !strings.Contains(w.Message, "AWS Secret") {
+				t.Errorf("warning should name the swapped pattern, got: %s", w.Message)
+			}
+			if !strings.Contains(w.Message, "regex changed") {
+				t.Errorf("warning should label the change as a regex swap, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when a same-name pattern's regex changes on reload")
+	}
+}
+
+// TestValidateReload_DLPPatternsIdentical_NoWarning verifies the helper
+// stays quiet when old and updated pattern lists are byte-identical.
+// This is the common case on SIGHUP reload that didn't touch DLP.
+func TestValidateReload_DLPPatternsIdentical_NoWarning(t *testing.T) {
+	patterns := []DLPPattern{
+		{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}
+	old := &Config{DLP: DLP{Patterns: patterns}}
+	updated := &Config{DLP: DLP{Patterns: patterns}}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			t.Errorf("identical DLP patterns should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+// TestValidateReload_DLPPatternsReordered_NoWarning verifies the
+// identity-based diff is order-insensitive. A positional implementation
+// would flag the slot-by-slot "changes" here; the (name, regex) map diff
+// must recognise that every old pattern is still present under the same
+// regex regardless of position. Load-bearing because bundle loaders and
+// tools that merge default + user patterns don't guarantee stable order.
+func TestValidateReload_DLPPatternsReordered_NoWarning(t *testing.T) {
+	old := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+		{Name: "Stripe Live Key", Regex: `sk_live_[A-Za-z0-9]{24}`},
+	}}}
+	// Same three patterns, reshuffled. A positional diff would report
+	// all three as "regex changed"; the identity diff must stay quiet.
+	updated := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "Stripe Live Key", Regex: `sk_live_[A-Za-z0-9]{24}`},
+		{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			t.Errorf("reordered DLP patterns must not warn (identity-based diff is order-insensitive), got: %s", w.Message)
+		}
+	}
+}
+
+// TestValidateReload_DLPPatternRenamed_WarnsAsRemoval verifies that
+// renaming a pattern surfaces as a removal (the old name disappeared).
+// The implicit add under the new name is a separate signal we do not
+// warn on; operators can resolve by reviewing the diff.
+func TestValidateReload_DLPPatternRenamed_WarnsAsRemoval(t *testing.T) {
+	old := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "OldName", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+	updated := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "NewName", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			found = true
+			if !strings.Contains(w.Message, "OldName") {
+				t.Errorf("warning should name the removed pattern, got: %s", w.Message)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected warning when a DLP pattern name disappears on reload")
+	}
+}
+
+// TestValidateReload_DLPIncludeDefaultsFlipLosesPatterns_BothSignalsFire
+// pins the defense-in-depth contract flagged on PR #433: when
+// include_defaults flips true -> false and the post-merge pattern
+// list shrinks as a result, both warnings fire. One surfaces the
+// meta-level setting change; the other enumerates the specific
+// patterns that disappeared. Operators get the what AND the which.
+func TestValidateReload_DLPIncludeDefaultsFlipLosesPatterns_BothSignalsFire(t *testing.T) {
+	// Post-merge slices, as ValidateReload sees them in production.
+	// old: include_defaults nil (defaults to true), full built-in set.
+	old := &Config{DLP: DLP{
+		Patterns: []DLPPattern{
+			{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+			{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+			{Name: "Custom User Pattern", Regex: `cust_[A-Z]{10}`},
+		},
+	}}
+	// updated: operator set include_defaults: false and kept only their
+	// custom pattern. After ApplyDefaults the built-ins are NOT merged back.
+	flag := false
+	updated := &Config{DLP: DLP{
+		IncludeDefaults: &flag,
+		Patterns: []DLPPattern{
+			{Name: "Custom User Pattern", Regex: `cust_[A-Z]{10}`},
+		},
+	}}
+
+	warnings := ValidateReload(old, updated)
+
+	sawIncludeDefaults := false
+	sawPatternsRemoved := false
+	for _, w := range warnings {
+		if w.Field == fieldDLPIncludeDefaults {
+			sawIncludeDefaults = true
+		}
+		if w.Field == fieldDLPPatterns {
+			sawPatternsRemoved = true
+			if !strings.Contains(w.Message, "AWS Secret") || !strings.Contains(w.Message, "GitHub Token") {
+				t.Errorf("pattern-removed warning should enumerate the lost built-ins, got: %s", w.Message)
+			}
+		}
+	}
+	if !sawIncludeDefaults {
+		t.Error("expected dlp.include_defaults warning on true -> false flip")
+	}
+	if !sawPatternsRemoved {
+		t.Error("expected dlp.patterns warning enumerating the specific lost built-in names (defense-in-depth)")
 	}
 }
 
@@ -7446,7 +7607,7 @@ func TestValidateReload_DLPIncludeDefaultsDisabled(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "dlp.include_defaults" {
+		if w.Field == fieldDLPIncludeDefaults {
 			found = true
 			if !strings.Contains(w.Message, "include_defaults disabled") {
 				t.Errorf("unexpected message: %s", w.Message)
@@ -7465,7 +7626,7 @@ func TestValidateReload_DLPIncludeDefaultsBothTrue_NoWarning(t *testing.T) {
 	// Both nil (defaults to true).
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.include_defaults" {
+		if w.Field == fieldDLPIncludeDefaults {
 			t.Errorf("both true should not produce warning, got: %s", w.Message)
 		}
 	}

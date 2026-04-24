@@ -103,6 +103,44 @@ func TestScanURL_DNSFailure_ClassifiedAsInfrastructureError(t *testing.T) {
 	}
 }
 
+// TestScanURL_CancelledContext_RoutesThroughScannerContext pins the
+// CodeRabbit follow-up on this PR: dnsCtx inherits the caller ctx, so
+// a client abort or request deadline surfacing as context.Canceled /
+// DeadlineExceeded from LookupHost must NOT be reclassified as
+// ClassInfrastructureError (which would make it adaptive-neutral).
+// CLAUDE.md is explicit: "context cancellation: all default to block"
+// and the ScannerContext path is how every other cancellation reaches
+// the fail-closed ceiling. An infrastructure classification here would
+// let a cancelled adversarial probe skip session escalation.
+func TestScanURL_CancelledContext_RoutesThroughScannerContext(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
+
+	s := New(cfg)
+	defer s.Close()
+
+	// Cancel the context before the Scan runs so the DNS layer sees
+	// LookupHost return a ctx error, not a resolver NXDOMAIN.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := s.Scan(ctx, "https://nonexistent.invalid/")
+
+	if result.Allowed {
+		t.Fatal("cancelled context must be blocked (fail-closed)")
+	}
+	if result.Scanner != ScannerContext {
+		t.Errorf("cancelled ctx must route through ScannerContext, got scanner=%q reason=%q class=%d",
+			result.Scanner, result.Reason, result.Class)
+	}
+	if result.IsInfrastructureError() {
+		t.Error("cancelled ctx must NOT be classified as ClassInfrastructureError (would skip adaptive signal)")
+	}
+	if result.IsAdaptiveNeutral() {
+		t.Error("cancelled ctx must count as a fail-closed block for adaptive enforcement, not neutral")
+	}
+}
+
 // TestScanURL_RealSSRF_StillThreat is the load-bearing regression guard:
 // a real SSRF attempt (hostname resolving to an internal CIDR) must still
 // be classified as ClassThreat so adaptive enforcement keeps scoring it as

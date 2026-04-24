@@ -820,12 +820,29 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	defer dnsCancel()
 	ips, err := net.DefaultResolver.LookupHost(dnsCtx, hostname)
 	if err != nil {
-		// Classify as infrastructure error, not a threat. Fail-closed is
-		// preserved (Allowed=false, request still blocked), but adaptive
-		// enforcement must not treat resolver wobble as evidence of an
-		// adversary. Without this classification, a burst of DNS timeouts
-		// accumulates SignalBlock points until the session is pushed into
-		// airlock lockdown.
+		// Caller cancellation or deadline must route through the normal
+		// fail-closed ScannerContext path. dnsCtx inherits ctx, so a
+		// client abort or request deadline surfaces here as
+		// context.Canceled / DeadlineExceeded. Classifying those as
+		// infrastructure errors would make cancelled SSRF probes
+		// adaptive-neutral, contradicting the CLAUDE.md rule that
+		// context cancellation always defaults to block.
+		if ctx.Err() != nil {
+			return Result{
+				Allowed: false,
+				Reason:  "request context cancelled",
+				Scanner: ScannerContext,
+				Score:   1.0,
+				Hint:    scannerHints[ScannerContext],
+			}
+		}
+		// Genuine resolver failure. Classify as infrastructure error,
+		// not a threat. Fail-closed is preserved (Allowed=false, request
+		// still blocked), but adaptive enforcement must not treat
+		// resolver wobble as evidence of an adversary. Without this
+		// classification, a burst of DNS timeouts accumulates
+		// SignalBlock points until the session is pushed into airlock
+		// lockdown.
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("SSRF check failed: DNS resolution error for %s: %v", hostname, err),

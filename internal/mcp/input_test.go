@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -388,6 +389,63 @@ func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
 	}
 	if blocked.ErrorMessage != "pipelock: request blocked by MCP redaction" {
 		t.Fatalf("error message = %q", blocked.ErrorMessage)
+	}
+}
+
+// TestForwardScannedInput_FrozenToolBlockEmitsReceipt pins the audit
+// parity fix on the stdio block paths. Previously only the taint
+// branch called emitToolReceipt; DoW, FrozenTool, Chain, and
+// ParseError skipped it, leaving signed-receipt chain gaps on four
+// tools/call block verdicts. Exercising the FrozenTool path here is
+// representative: all four use the same emitToolReceipt closure.
+func TestForwardScannedInput_FrozenToolBlockEmitsReceipt(t *testing.T) {
+	sc := testInputScanner(t)
+	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":"ls"}}}`
+
+	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+
+	var serverBuf, logBuf bytes.Buffer
+	blockedCh := make(chan BlockedRequest, 1)
+	opts := MCPProxyOpts{
+		Scanner:             sc,
+		Transport:           "mcp_stdio",
+		ReceiptEmitter:      emitter,
+		ToolFreezer:         &stubToolFreezer{frozen: true, allowed: map[string]bool{"read_file": true}},
+		FrozenToolStableKey: testFrozenSessionKey,
+	}
+
+	ForwardScannedInput(
+		transport.NewStdioReader(strings.NewReader(msg)),
+		transport.NewStdioWriter(&serverBuf),
+		&logBuf,
+		config.ActionWarn,
+		config.ActionBlock,
+		blockedCh,
+		nil,
+		nil,
+		opts,
+	)
+
+	blocked, ok := <-blockedCh
+	if !ok {
+		t.Fatal("expected blocked request on frozen-tool path")
+	}
+	if !strings.Contains(blocked.LogMessage, "frozen tool inventory") {
+		t.Errorf("block log message = %q, want frozen-tool reason", blocked.LogMessage)
+	}
+
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close: %v", err)
+	}
+
+	blockReceipts := receiptsByVerdict(readActionReceipts(t, dir), config.ActionBlock)
+	if len(blockReceipts) == 0 {
+		t.Fatal("expected block receipt for frozen-tool block; emitToolReceipt was skipped on this gate before the parity fix")
+	}
+	for _, r := range blockReceipts {
+		if err := receipt.VerifyWithKey(r, pubHex); err != nil {
+			t.Fatalf("VerifyWithKey: %v", err)
+		}
 	}
 }
 

@@ -690,6 +690,18 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			if err == nil {
 				return
 			}
+			// Only an actual scan finding (DLP / injection / oversize /
+			// invalid-UTF-8) counts as an sse_stream block in audit. The
+			// fixes that landed earlier in this PR — writeSSEEvent now
+			// returns errors and the ctx-cancel watcher closes the
+			// upstream body — surface client disconnects and broken-pipe
+			// errors here too. Misclassifying those as sse_stream blocks
+			// would inflate the block metric and write misleading audit
+			// lines for what are normal stream-end conditions.
+			if !IsSSEStreamFinding(err) {
+				rp.logger.LogError(actx, err)
+				return
+			}
 			// Reverse-proxy response-side findings (this branch + the
 			// existing buffered scan path below) emit log + metric only;
 			// no signed receipt. forward.go and intercept.go DO emit

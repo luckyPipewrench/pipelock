@@ -62,7 +62,7 @@ response_scanning:
 |-------|---------|-------------|
 | `enabled` | `true` | Enable generic SSE streaming scan. When disabled, `text/event-stream` responses stream through with flushing but are not body-scanned (CONNECT-level visibility preserved). |
 | `action` | `block` | `block` terminates the stream on a finding and emits a block receipt. `warn` logs the anomaly and forwards the event. |
-| `max_event_bytes` | `65536` | Per-event byte ceiling. Exceeding this is treated as a finding. LLM tokens are small; 64 KiB is well above any legitimate single event. |
+| `max_event_bytes` | `65536` | Per-event byte ceiling. Exceeding this is treated as a finding. LLM token events are typically small; 64 KiB is a conservative default for most streaming providers. Raise it if a provider emits larger single events (batched deltas, full response chunks). |
 
 ## Transport coverage
 

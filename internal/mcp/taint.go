@@ -232,6 +232,11 @@ func taintApprovalReason(decision taintDecision) string {
 	return fmt.Sprintf("%s after %s", decision.ActionClass.String(), decision.Result.Reason)
 }
 
+// emitMCPToolReceipt emits the post-decision tool receipt for an MCP
+// tools/call message. The receipt payload bundles redaction context,
+// transport, and the full taint snapshot. Routed through
+// EmitMCPDecision so every tool receipt in the MCP inbound pipeline
+// goes through a single emission entry point.
 func emitMCPToolReceipt(
 	receiptEmitter *receipt.Emitter,
 	transport, redactionProfile string,
@@ -242,32 +247,38 @@ func emitMCPToolReceipt(
 	if actionID == "" || receiptEmitter == nil {
 		return
 	}
-	_ = receiptEmitter.Emit(receipt.EmitOpts{
-		ActionID:            actionID,
-		Verdict:             receiptVerdict,
-		RedactionProfile:    redactionProfile,
-		RedactionReport:     report,
-		Transport:           transport,
-		Target:              toolName,
-		MCPMethod:           mcpMethod,
-		ToolName:            toolName,
-		SessionTaintLevel:   decision.Risk.Level.String(),
-		SessionContaminated: decision.Risk.Contaminated,
-		RecentTaintSources:  decision.Risk.Sources,
-		SessionTaskID:       decision.Task.CurrentTaskID,
-		SessionTaskLabel:    decision.Task.CurrentTaskLabel,
-		AuthorityKind:       decision.Authority.String(),
-		TaintDecision:       decision.Result.Decision.String(),
-		TaintDecisionReason: decision.Result.Reason,
-		TaskOverrideApplied: decision.TaskOverrideApplied,
+	_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
+		Receipt: receipt.EmitOpts{
+			ActionID:            actionID,
+			Verdict:             receiptVerdict,
+			RedactionProfile:    redactionProfile,
+			RedactionReport:     report,
+			Transport:           transport,
+			Target:              toolName,
+			MCPMethod:           mcpMethod,
+			ToolName:            toolName,
+			SessionTaintLevel:   decision.Risk.Level.String(),
+			SessionContaminated: decision.Risk.Contaminated,
+			RecentTaintSources:  decision.Risk.Sources,
+			SessionTaskID:       decision.Task.CurrentTaskID,
+			SessionTaskLabel:    decision.Task.CurrentTaskLabel,
+			AuthorityKind:       decision.Authority.String(),
+			TaintDecision:       decision.Result.Decision.String(),
+			TaintDecisionReason: decision.Result.Reason,
+			TaskOverrideApplied: decision.TaskOverrideApplied,
+		},
 	})
 }
 
+// decorateMCPToolMessage injects the mediation envelope for a clean or
+// warn-mode tools/call that is about to be forwarded upstream. Routed
+// through EmitMCPDecision so envelope injection shares the same
+// emission entry point as receipt emission.
 func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcpMethod, toolName, receiptVerdict string, decision taintDecision) []byte {
 	if actionID == "" {
 		return msg
 	}
-	return injectMCPEnvelope(msg, emitter, envelope.BuildOpts{
+	buildOpts := envelope.BuildOpts{
 		ActionID:       actionID,
 		Action:         string(receipt.ClassifyMCPTool(toolName, mcpMethod)),
 		Verdict:        receiptVerdict,
@@ -275,5 +286,10 @@ func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcp
 		TaskID:         decision.Task.CurrentTaskID,
 		AuthorityKind:  decision.Authority.String(),
 		RequiresReauth: decision.RequiresReauth,
+	}
+	out, _ := EmitMCPDecision(nil, emitter, MCPDecision{
+		Envelope:   &buildOpts,
+		InboundMsg: msg,
 	})
+	return out
 }

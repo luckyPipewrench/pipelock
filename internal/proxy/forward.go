@@ -1279,7 +1279,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				Suppress:           cfg.Suppress,
 				ResponseScanExempt: fwdRespExempt,
 				OnFinding: func(err error) {
+					// Track BOTH responsePromptHit (for receipt context)
+					// AND hasFinding (for adaptive-decay protection). The
+					// success branch below decays the adaptive score when
+					// hasFinding is false; warn-mode generic SSE findings
+					// are forwarded inline by GenericSSEScanOptions and
+					// the dispatcher returns nil, so without setting
+					// hasFinding here a flood of warn-only findings would
+					// dilute the session escalation signal.
 					responsePromptHit = true
+					hasFinding = true
 					p.logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 				},
 			},
@@ -1324,6 +1333,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := DispatchSSEScan(r.Context(), resp.Body, w, flusher, sc, sseOpts); err != nil {
 			if IsSSEStreamFinding(err) {
 				responsePromptHit = true
+				// Same adaptive-decay protection as the OnFinding path
+				// above. A2A warn-mode findings reach this branch (the
+				// A2A scanner returns ErrA2AStreamFinding on detection),
+				// and without hasFinding the success-path decay would
+				// otherwise treat a real finding as a clean response.
+				hasFinding = true
 			}
 			// Distinguish scanning findings from internal/IO errors. In warn
 			// mode, A2A findings are logged without an additional receipt.

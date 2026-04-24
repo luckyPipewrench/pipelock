@@ -126,7 +126,26 @@ func HijackResponseForSSE(
 	pr, pw := io.Pipe()
 	upstream := resp.Body
 
+	// Ctx-cancel watcher: DispatchSSEScan only checks ctx.Done() between
+	// SSE events. If the upstream is slow or hung, the scanner sits inside
+	// transport.SSEReader.ReadMessage() (which calls body.Read) until
+	// upstream sends bytes or closes. Without this watcher, ctx
+	// cancellation does not propagate through the blocked read and the
+	// goroutine + connection leak. Closing the upstream body forces the
+	// read to error out promptly so the scanner returns and onComplete
+	// fires. The done channel keeps the watcher from outliving the
+	// streaming goroutine when the stream finishes naturally.
+	done := make(chan struct{})
 	go func() {
+		select {
+		case <-ctx.Done():
+			_ = upstream.Close()
+		case <-done:
+		}
+	}()
+
+	go func() {
+		defer close(done)
 		// nil flusher: httputil.ReverseProxy detects text/event-stream and
 		// flushes per write to the client, so the per-event flush behavior
 		// happens downstream of this pipe write.

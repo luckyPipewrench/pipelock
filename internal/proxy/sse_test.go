@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -178,6 +179,71 @@ func TestHijackResponseForSSE_ScansAndClosesUpstream(t *testing.T) {
 	if !upstream.closed.Load() {
 		t.Error("upstream body must be closed after streaming completes")
 	}
+}
+
+// blockingReadCloser blocks Read until either the test releases it or
+// Close is called. Used to prove the ctx-cancel watcher in
+// HijackResponseForSSE actually unblocks an upstream that has gone
+// quiet — DispatchSSEScan's per-message ctx check otherwise sits inside
+// the blocked body.Read indefinitely.
+type blockingReadCloser struct {
+	release chan struct{}
+	closed  atomic.Bool
+}
+
+func (b *blockingReadCloser) Read(_ []byte) (int, error) {
+	<-b.release
+	if b.closed.Load() {
+		return 0, io.ErrClosedPipe
+	}
+	return 0, io.EOF
+}
+
+func (b *blockingReadCloser) Close() error {
+	if b.closed.CompareAndSwap(false, true) {
+		close(b.release)
+	}
+	return nil
+}
+
+func TestHijackResponseForSSE_CtxCancelClosesUpstream(t *testing.T) {
+	upstream := &blockingReadCloser{release: make(chan struct{})}
+	resp := &http.Response{
+		Header: http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:   upstream,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	completeCh := make(chan error, 1)
+	body := HijackResponseForSSE(
+		ctx,
+		resp,
+		ssetestScanner(t),
+		SSEDispatchOptions{
+			GenericSSE: &config.GenericSSEScanning{Enabled: true, Action: config.ActionBlock, MaxEventBytes: 1024},
+		},
+		func(err error) { completeCh <- err },
+	)
+
+	// Cancel before any bytes flow. The watcher must close the upstream
+	// body so DispatchSSEScan returns instead of hanging on body.Read.
+	cancel()
+
+	select {
+	case <-completeCh:
+		// Good: the goroutine exited within the deadline. The pipe writer
+		// got closed too, so any read should now return.
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ctx cancel did not unblock the scan goroutine within 2s")
+	}
+
+	if !upstream.closed.Load() {
+		t.Errorf("upstream body must be closed after ctx cancel")
+	}
+
+	// Drain the pipe reader so the test does not leak goroutines.
+	_, _ = io.ReadAll(body)
 }
 
 func TestHijackResponseForSSE_PropagatesFinding(t *testing.T) {

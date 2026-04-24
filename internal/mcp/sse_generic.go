@@ -195,7 +195,14 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
-		writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry())
+		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
+			// Downstream consumer went away (e.g. the io.Pipe in the
+			// reverse-proxy hijack was closed by the client). Returning
+			// here breaks the loop and lets the goroutine close the
+			// upstream body via its own deferred cleanup, instead of
+			// reading more events into a sink that no longer exists.
+			return fmt.Errorf("sse stream write: %w", werr)
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}

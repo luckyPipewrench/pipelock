@@ -105,8 +105,11 @@ func runLiveSmoke(t *testing.T, p liveProviderConfig) {
 	}
 
 	cfg := config.Defaults()
+	// cfg.Internal=nil disables SSRF blocking entirely; no allowlist needed.
+	// The previous catch-all 0.0.0.0/0 / ::/0 allowlist was redundant and
+	// would fail future config validation that rejects "everything-allowed"
+	// shapes.
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"0.0.0.0/0", "::/0"}
 	cfg.APIAllowlist = nil
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn

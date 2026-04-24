@@ -328,6 +328,54 @@ func TestScanGenericSSEStream_EventExceedsMaxEventBytes(t *testing.T) {
 	}
 }
 
+// closingWriter accepts the first N bytes then errors on every subsequent
+// write so we can prove the scanner loop breaks promptly when the
+// downstream consumer closes.
+type closingWriter struct {
+	allow int
+	wrote int
+	err   error
+}
+
+func (c *closingWriter) Write(p []byte) (int, error) {
+	if c.wrote >= c.allow {
+		return 0, c.err
+	}
+	n := len(p)
+	if c.wrote+n > c.allow {
+		n = c.allow - c.wrote
+	}
+	c.wrote += n
+	if c.wrote >= c.allow {
+		return n, c.err
+	}
+	return n, nil
+}
+
+func TestScanGenericSSEStream_DownstreamCloseBreaksLoop(t *testing.T) {
+	// The scanner used to swallow write errors via `_, _ = fmt.Fprintf(...)`,
+	// so when the downstream io.Pipe closed the loop kept reading from
+	// upstream forever. Verify that a write error now propagates and the
+	// scanner returns instead of leaking the upstream goroutine.
+	body := strings.Repeat("data: token\n\n", 10)
+	w := &closingWriter{allow: 16, err: io.ErrClosedPipe}
+
+	err := ScanGenericSSEStream(
+		context.Background(),
+		strings.NewReader(body),
+		w,
+		nil,
+		testA2AScanner(t),
+		enabledSSECfg(),
+	)
+	if err == nil {
+		t.Fatalf("expected write error to propagate, got nil")
+	}
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Errorf("expected wrapped io.ErrClosedPipe, got %v", err)
+	}
+}
+
 func TestScanGenericSSEStream_OversizeWarnDropsEventAndContinues(t *testing.T) {
 	// Warn-mode parity check (CodeRabbit thread on PR #429): the
 	// oversize-event branch must NOT terminate the stream in warn mode.

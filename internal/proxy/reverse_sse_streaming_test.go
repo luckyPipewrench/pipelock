@@ -89,22 +89,37 @@ func TestReverseProxy_SSE_HappyPathStreams(t *testing.T) {
 }
 
 // TestReverseProxy_SSE_LongStreamNotCappedAt1MB regression-guards the original
-// motivating bug: the buffered scan path caps responses at the proxy max-body
-// limit, breaking long LLM responses. Push more bytes than that limit and
-// confirm every event arrives.
+// motivating bug: the buffered scan path caps responses at the proxy
+// max-body limit, breaking long LLM responses. Push more bytes than that
+// limit and confirm every event arrives.
+//
+// SSE scanning is deliberately disabled here: the regression being guarded
+// is the streaming path (io.Pipe hijack vs the buffered io.ReadAll cap),
+// not the per-event scanner. With sse_streaming.enabled = false the SSE
+// branch still hijacks the response body via io.Pipe and runs the
+// flushing-passthrough loop, which is exactly the code that proves the
+// buffered cap is gone. Running every event through the full default DLP +
+// injection pattern set against > 1 MB of payload makes the test CPU-bound
+// under -race and pushes the suite past CI's 10-minute job timeout; that
+// scanning behavior is already covered end-to-end by SSE-1 / SSE-2 / SSE-3
+// in the pen test suite.
 func TestReverseProxy_SSE_LongStreamNotCappedAt1MB(t *testing.T) {
 	cfg := reverseTestConfig()
+	cfg.ResponseScanning.SSEStreaming.Enabled = false
+	cfg.ApplyDefaults()
 
 	// Push enough cumulative bytes that the buffered-path cap would have
-	// truncated or blocked. Larger per-event size keeps the scan count
-	// modest under -race so the test stays under a few seconds while still
-	// proving cumulative bytes exceed reverseProxyMaxBodyBytes.
-	const eventSize = 4096
+	// truncated or blocked. Per-event size sits well under the SSE
+	// scanner's MaxEventBytes ceiling so the regression case is the
+	// CUMULATIVE byte count, not a single-event check. Larger per-event
+	// size keeps the scan count low under -race so the test stays under
+	// a couple of seconds even on slow CI runners.
+	const eventSize = 32 * 1024
 	totalEvents := ((reverseProxyMaxBodyBytes * 110) / 100) / eventSize
-	if totalEvents < 32 {
+	if totalEvents < 16 {
 		// Defensive lower bound so the test asserts something meaningful
 		// even if reverseProxyMaxBodyBytes is ever shrunk.
-		totalEvents = 32
+		totalEvents = 16
 	}
 
 	upstream := func(w http.ResponseWriter, _ *http.Request) {

@@ -328,6 +328,51 @@ func TestScanGenericSSEStream_EventExceedsMaxEventBytes(t *testing.T) {
 	}
 }
 
+func TestScanGenericSSEStream_OversizeWarnDropsEventAndContinues(t *testing.T) {
+	// Warn-mode parity check (CodeRabbit thread on PR #429): the
+	// oversize-event branch must NOT terminate the stream in warn mode.
+	// It calls OnFinding, drops the unscanned oversize event so its bytes
+	// never reach the client, and keeps streaming subsequent events.
+	cfg := enabledSSECfg()
+	cfg.Action = config.ActionWarn
+	cfg.MaxEventBytes = 64
+	huge := strings.Repeat("x", 200)
+	body := "data: " + huge + "\n\ndata: small-after-oversize\n\n"
+
+	var findings int
+	var seenErr error
+	var out bytes.Buffer
+	err := ScanGenericSSEStreamWithOptions(
+		context.Background(),
+		strings.NewReader(body),
+		&out,
+		nil,
+		testA2AScanner(t),
+		cfg,
+		GenericSSEScanOptions{
+			OnFinding: func(e error) {
+				findings++
+				seenErr = e
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("warn mode must not terminate stream on oversize event, got %v", err)
+	}
+	if findings != 1 {
+		t.Fatalf("OnFinding callbacks = %d, want 1", findings)
+	}
+	if !errors.Is(seenErr, ErrSSEEventTooLarge) {
+		t.Errorf("OnFinding error = %v, want wrapped ErrSSEEventTooLarge", seenErr)
+	}
+	if strings.Contains(out.String(), strings.Repeat("x", 100)) {
+		t.Errorf("oversize event leaked unscanned bytes to client: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "small-after-oversize") {
+		t.Errorf("subsequent event must still be forwarded after warn-mode drop, got %q", out.String())
+	}
+}
+
 func TestScanGenericSSEStream_MaxEventBytesZeroUsesDefault(t *testing.T) {
 	cfg := enabledSSECfg()
 	cfg.MaxEventBytes = 0 // sentinel: should fall back to DefaultGenericSSEMaxEventBytes

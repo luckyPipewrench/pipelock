@@ -130,8 +130,19 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		if len(event) > maxEventBytes {
-			return fmt.Errorf("%w: %w (size=%d, limit=%d)",
+			findingErr := fmt.Errorf("%w: %w (size=%d, limit=%d)",
 				ErrSSEStreamFinding, ErrSSEEventTooLarge, len(event), maxEventBytes)
+			if cfg.Action == config.ActionWarn {
+				// Warn-mode parity with injection + DLP: surface the finding
+				// to the caller via OnFinding, drop this oversize event so
+				// unscanned bytes never reach the client, and keep streaming
+				// subsequent events. Block mode terminates the stream.
+				if opts.OnFinding != nil {
+					opts.OnFinding(findingErr)
+				}
+				continue
+			}
+			return findingErr
 		}
 
 		if len(event) > 0 {

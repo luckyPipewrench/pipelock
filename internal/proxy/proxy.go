@@ -470,6 +470,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		ResponseHeaderTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
+		// Force identity encoding so compressed-response guards in
+		// forward.go and the compressed-SSE guards in sse.go see the
+		// original upstream Content-Encoding header. Without this, Go's
+		// default transport auto-sends Accept-Encoding: gzip and
+		// transparently decompresses the response, stripping the header
+		// before pipelock's scanner sees it. That let gzip'd SSE
+		// streams slip past fail-closed while br/zstd correctly blocked
+		// (Rook finding #3). Matches the pattern at
+		// newTLSInterceptTransport and intercept.go.
+		DisableCompression: true,
 	}
 
 	p.client = &http.Client{

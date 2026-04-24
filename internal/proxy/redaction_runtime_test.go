@@ -51,52 +51,79 @@ func TestCurrentRedactionRuntimeForConfig_MatchingRuntime(t *testing.T) {
 	}
 }
 
-func TestCurrentRedactionRuntimeForConfig_MismatchReturnsFailClosedSentinel(t *testing.T) {
+func TestCurrentRedactionRuntimeForConfig_MismatchUsesStoredRuntime(t *testing.T) {
+	// Regression for CC-4: during the hot-reload window the atomic may hold
+	// a runtime whose configKey was computed from a config that the caller
+	// has not yet observed. The previous behavior was to fail-closed with a
+	// nil-matcher sentinel, which meant requests landing in a
+	// sub-millisecond window during reload were blocked with
+	// "redaction runtime unavailable". The corrected behavior is to trust
+	// the atomically-stored runtime (the reload path only publishes a
+	// non-nil runtime when the matcher is populated and the policy is
+	// enabled), which keeps redaction running through the reload window
+	// instead of flipping to fail-closed.
+	cfg := config.Defaults()
+	applyRedactionTestProfile(cfg)
+
+	stored := &redactionRuntime{
+		matcher:   &redact.Matcher{},
+		configKey: "old-policy",
+		required:  true,
+	}
+	var ptr atomic.Pointer[redactionRuntime]
+	ptr.Store(stored)
+
+	got := currentRedactionRuntimeForConfig(cfg, &ptr)
+	if got != stored {
+		t.Fatalf("expected stored runtime to win during reload window, got %p (want %p)", got, stored)
+	}
+}
+
+func TestCurrentRedactionConfigFor_ReloadWindowStillPropagatesMatcher(t *testing.T) {
+	// Paired with TestCurrentRedactionRuntimeForConfig_MismatchUsesStoredRuntime:
+	// when the atomic holds a populated runtime the public accessor must
+	// expose its matcher even if the caller's cfg has not yet been swapped
+	// in. Previously this path returned (nil, limits, true) as a
+	// fail-closed sentinel, which was spurious during hot reload.
+	cfg := config.Defaults()
+	applyRedactionTestProfile(cfg)
+
+	matcherInstance := &redact.Matcher{}
+	p := &Proxy{}
+	p.redactionRuntimePtr.Store(&redactionRuntime{
+		matcher:   matcherInstance,
+		configKey: "old-policy",
+		required:  true,
+	})
+
+	matcher, _, required := p.CurrentRedactionConfigFor(cfg)
+	if matcher != matcherInstance {
+		t.Fatalf("expected stored matcher (%p), got %p", matcherInstance, matcher)
+	}
+	if !required {
+		t.Fatal("stored runtime had required=true; must be preserved")
+	}
+}
+
+// TestCurrentRedactionRuntimeForConfig_NoStoredRuntime_FailsClosed covers
+// the remaining fail-closed case: cfg says redaction is required but no
+// runtime has been published (startup ordering error or equivalent). The
+// factory must emit the nil-matcher sentinel so callers block rather than
+// silently skipping the redaction step.
+func TestCurrentRedactionRuntimeForConfig_NoStoredRuntime_FailsClosed(t *testing.T) {
 	cfg := config.Defaults()
 	applyRedactionTestProfile(cfg)
 
 	var ptr atomic.Pointer[redactionRuntime]
-	ptr.Store(&redactionRuntime{
-		matcher:   &redact.Matcher{},
-		configKey: "old-policy",
-		required:  true,
-	})
-
 	got := currentRedactionRuntimeForConfig(cfg, &ptr)
 	if got == nil {
-		t.Fatal("expected fail-closed sentinel")
+		t.Fatal("expected fail-closed sentinel when no runtime is published")
 	}
 	if got.matcher != nil {
-		t.Fatal("mismatch sentinel should not expose a matcher")
+		t.Fatal("sentinel must not expose a matcher")
 	}
 	if !got.required {
-		t.Fatal("mismatch sentinel should require redaction")
-	}
-	if got.configKey != redactionConfigKey(cfg) {
-		t.Fatalf("configKey = %q, want %q", got.configKey, redactionConfigKey(cfg))
-	}
-}
-
-func TestCurrentRedactionConfigFor_PropagatesRequiredSentinel(t *testing.T) {
-	cfg := config.Defaults()
-	applyRedactionTestProfile(cfg)
-
-	p := &Proxy{}
-	p.redactionRuntimePtr.Store(&redactionRuntime{
-		matcher:   &redact.Matcher{},
-		configKey: "old-policy",
-		required:  true,
-	})
-
-	matcher, limits, required := p.CurrentRedactionConfigFor(cfg)
-	if matcher != nil {
-		t.Fatal("mismatch sentinel should not expose a matcher")
-	}
-	if !required {
-		t.Fatal("mismatch sentinel must preserve required=true")
-	}
-	if limits != cfg.Redaction.Limits.ToLimits() {
-		t.Fatalf("limits = %+v, want %+v", limits, cfg.Redaction.Limits.ToLimits())
+		t.Fatal("sentinel must require redaction so callers block")
 	}
 }
 

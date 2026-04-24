@@ -61,6 +61,14 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 		return nil, nil, newBlock(ReasonBodyUnparseable, 0, "")
 	}
 
+	// Fail closed on duplicate object keys BEFORE decoding into
+	// map[string]interface{} (which would silently collapse duplicates
+	// and let a secret ride through redaction behind a benign sibling
+	// on first-wins upstream parsers).
+	if err := checkNoDuplicateKeys(body); err != nil {
+		return nil, nil, err
+	}
+
 	var root interface{}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	// UseNumber to preserve numeric fidelity on re-encode.

@@ -558,6 +558,21 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			return fmt.Errorf("%w: %s", ErrA2AStreamFinding, eventResult.Reason)
 		}
 
+		// Scan the canonical full-event text (event:/id:/retry: plus the
+		// data: payload). scanA2ABody only inspects the JSON data payload,
+		// so metadata-field injection (prompt-injection in id:, DLP in
+		// event:) would otherwise slip through — same class of bypass as
+		// Rook finding #2 on the generic SSE path.
+		canonical := canonicalSSEEventText(event, reader)
+		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
+			return fmt.Errorf("%w: injection in sse metadata: %s",
+				ErrA2AStreamFinding, sseInjectionNames(injResult.Matches))
+		}
+		if dlpResult := sc.ScanTextForDLP(ctx, canonical); !dlpResult.Clean {
+			return fmt.Errorf("%w: dlp in sse metadata: %s",
+				ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
+		}
+
 		// Rolling tail: concatenate tail + current text, scan for
 		// cross-event injection.
 		currentText := extractTextFromEvent(event)

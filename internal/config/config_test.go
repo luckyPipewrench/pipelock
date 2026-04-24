@@ -21,32 +21,33 @@ import (
 )
 
 const (
-	testInvalid          = "invalid"
-	testSecretsPath      = "/path/to/secrets.txt"
-	testWebhookURL       = "https://example.com/hook"
-	testOTLPEndpoint     = "http://collector:4318"
-	testSyslogAddr       = "udp://syslog.example.com:514"
-	testAPIListen        = "0.0.0.0:9090"
-	testAPIListen2       = "0.0.0.0:9091"
-	testWildcardListen   = "0.0.0.0:8888"
-	testPatternName      = "Test Pattern"
-	testCustomName       = "Custom"
-	testToken            = "test-token" //nolint:gosec // test credential
-	testRevProxyListen   = ":8888"
-	testRevProxyUpstream = "http://localhost:7899"
-	testNotAURL          = "not-a-url"
-	fieldDLPSecrets      = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
-	fieldFwdProxy        = "forward_proxy.enabled"
-	fieldKSAPIListen     = "kill_switch.api_listen"
-	fieldTLSPassthrough  = "tls_interception.passthrough_domains"
-	fieldSentry          = "sentry"
-	fieldSSRFIPAllowlist = "ssrf.ip_allowlist"
-	fieldSandbox         = "sandbox"
-	fieldFileSentry      = "file_sentry"
-	fieldSubEntExcl      = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
-	fieldDLPPatterns     = "dlp.patterns"
-	testExemptDomain     = "api.openai.com"
-	testStagedPattern    = "staged-pattern"
+	testInvalid             = "invalid"
+	testSecretsPath         = "/path/to/secrets.txt"
+	testWebhookURL          = "https://example.com/hook"
+	testOTLPEndpoint        = "http://collector:4318"
+	testSyslogAddr          = "udp://syslog.example.com:514"
+	testAPIListen           = "0.0.0.0:9090"
+	testAPIListen2          = "0.0.0.0:9091"
+	testWildcardListen      = "0.0.0.0:8888"
+	testPatternName         = "Test Pattern"
+	testCustomName          = "Custom"
+	testToken               = "test-token" //nolint:gosec // test credential
+	testRevProxyListen      = ":8888"
+	testRevProxyUpstream    = "http://localhost:7899"
+	testNotAURL             = "not-a-url"
+	fieldDLPSecrets         = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
+	fieldFwdProxy           = "forward_proxy.enabled"
+	fieldKSAPIListen        = "kill_switch.api_listen"
+	fieldTLSPassthrough     = "tls_interception.passthrough_domains"
+	fieldSentry             = "sentry"
+	fieldSSRFIPAllowlist    = "ssrf.ip_allowlist"
+	fieldSandbox            = "sandbox"
+	fieldFileSentry         = "file_sentry"
+	fieldSubEntExcl         = "fetch_proxy.monitoring.subdomain_entropy_exclusions"
+	fieldDLPPatterns        = "dlp.patterns"
+	fieldDLPIncludeDefaults = "dlp.include_defaults"
+	testExemptDomain        = "api.openai.com"
+	testStagedPattern       = "staged-pattern"
 
 	testProfileDir  = "/tmp/profiles"
 	testRecorderDir = "/tmp/recorder"
@@ -3042,6 +3043,55 @@ func TestValidateReload_DLPPatternRenamed_WarnsAsRemoval(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected warning when a DLP pattern name disappears on reload")
+	}
+}
+
+// TestValidateReload_DLPIncludeDefaultsFlipLosesPatterns_BothSignalsFire
+// pins the defense-in-depth contract flagged on PR #433: when
+// include_defaults flips true -> false and the post-merge pattern
+// list shrinks as a result, both warnings fire. One surfaces the
+// meta-level setting change; the other enumerates the specific
+// patterns that disappeared. Operators get the what AND the which.
+func TestValidateReload_DLPIncludeDefaultsFlipLosesPatterns_BothSignalsFire(t *testing.T) {
+	// Post-merge slices, as ValidateReload sees them in production.
+	// old: include_defaults nil (defaults to true), full built-in set.
+	old := &Config{DLP: DLP{
+		Patterns: []DLPPattern{
+			{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+			{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+			{Name: "Custom User Pattern", Regex: `cust_[A-Z]{10}`},
+		},
+	}}
+	// updated: operator set include_defaults: false and kept only their
+	// custom pattern. After ApplyDefaults the built-ins are NOT merged back.
+	flag := false
+	updated := &Config{DLP: DLP{
+		IncludeDefaults: &flag,
+		Patterns: []DLPPattern{
+			{Name: "Custom User Pattern", Regex: `cust_[A-Z]{10}`},
+		},
+	}}
+
+	warnings := ValidateReload(old, updated)
+
+	sawIncludeDefaults := false
+	sawPatternsRemoved := false
+	for _, w := range warnings {
+		if w.Field == fieldDLPIncludeDefaults {
+			sawIncludeDefaults = true
+		}
+		if w.Field == fieldDLPPatterns {
+			sawPatternsRemoved = true
+			if !strings.Contains(w.Message, "AWS Secret") || !strings.Contains(w.Message, "GitHub Token") {
+				t.Errorf("pattern-removed warning should enumerate the lost built-ins, got: %s", w.Message)
+			}
+		}
+	}
+	if !sawIncludeDefaults {
+		t.Error("expected dlp.include_defaults warning on true -> false flip")
+	}
+	if !sawPatternsRemoved {
+		t.Error("expected dlp.patterns warning enumerating the specific lost built-in names (defense-in-depth)")
 	}
 }
 
@@ -7529,7 +7579,7 @@ func TestValidateReload_DLPIncludeDefaultsDisabled(t *testing.T) {
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
-		if w.Field == "dlp.include_defaults" {
+		if w.Field == fieldDLPIncludeDefaults {
 			found = true
 			if !strings.Contains(w.Message, "include_defaults disabled") {
 				t.Errorf("unexpected message: %s", w.Message)
@@ -7548,7 +7598,7 @@ func TestValidateReload_DLPIncludeDefaultsBothTrue_NoWarning(t *testing.T) {
 	// Both nil (defaults to true).
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
-		if w.Field == "dlp.include_defaults" {
+		if w.Field == fieldDLPIncludeDefaults {
 			t.Errorf("both true should not produce warning, got: %s", w.Message)
 		}
 	}

@@ -14,7 +14,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -107,6 +106,11 @@ func RunHTTPProxy(
 			return fmt.Errorf("reading stdin: %w", err)
 		}
 
+		// Parse the inbound frame once per message. Kill switch, request
+		// tracking, and upstream-error responses all read frame.ID
+		// instead of re-parsing.
+		frame := ParseMCPFrame(msg)
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -120,7 +124,7 @@ func RunHTTPProxy(
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
 				}
-				rpcID := extractRPCID(msg)
+				rpcID := frame.ID
 				resp := killswitch.ErrorResponse(rpcID, d.Message)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send kill switch response: %v\n", wErr)
@@ -151,7 +155,7 @@ func RunHTTPProxy(
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
 		if isRequest(msg) {
-			tracker.Track(extractRPCID(msg))
+			tracker.Track(frame.ID)
 		}
 
 		// POST to upstream.
@@ -161,7 +165,7 @@ func RunHTTPProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			// Send sanitized error to client — don't include upstream body content
 			// which could contain prompt injection payloads.
-			rpcID := extractRPCID(msg)
+			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send error response: %v\n", wErr)
@@ -220,7 +224,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	sc := opts.scanner()
 	inputCfg := opts.inputCfg()
 	policyCfg := opts.policyCfg()
-	chainMatcher := opts.chainMatcher()
 	auditLogger := opts.AuditLogger
 	cee := opts.cee()
 	rec := opts.Rec
@@ -230,11 +233,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	redactionCfg := opts.redactionConfig()
 	receiptEmitter := opts.receiptEmitter()
 	envelopeEmitter := opts.envelopeEmitter()
-	a2aCfg := opts.a2aCfg()
 	redirectRT := opts.redirectRT()
-	taintOpts := opts
-	taintOpts.TaintCfg = opts.taintCfg()
-	taintOpts.TaintCfgFn = nil
 	result := httpInputDecision{ForwardMessage: msg}
 	mcpMethod := ""
 	toolName := ""
@@ -248,6 +247,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	defer func() {
 		emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
 	}()
+
+	// Parse the inbound frame once. Every gate below reads ID / Method /
+	// tool fields from this frame instead of re-parsing. Redaction may
+	// rewrite argument values; the frame is re-parsed after redaction so
+	// downstream gates (DoW, taint) see the redacted args while
+	// ID / Method / ToolCallName stay stable.
+	frame := ParseMCPFrame(msg)
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
@@ -281,14 +287,14 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
-			ID:           extractRPCID(msg),
+			ID:           frame.ID,
 			ErrorCode:    -32600,
 			ErrorMessage: "pipelock: batch requests are not supported by MCP",
 		}
 		return result
 	}
 
-	if pendingToolName := extractToolCallName(msg); pendingToolName != "" {
+	if pendingToolName := frame.ToolCallName; pendingToolName != "" {
 		toolName = pendingToolName
 		mcpMethod = methodToolsCall
 		actionID = receipt.NewActionID()
@@ -304,8 +310,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
-			ID:             extractRPCID(msg),
-			IsNotification: isRPCNotification(extractRPCID(msg)),
+			ID:             frame.ID,
+			IsNotification: isRPCNotification(frame.ID),
 			LogMessage:     "blocked (redaction)",
 			ErrorCode:      -32001,
 			ErrorMessage:   "pipelock: request blocked by MCP redaction",
@@ -315,6 +321,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	msg = rewrittenMsg
 	result.ForwardMessage = rewrittenMsg
 	redactionReport = report
+	// Redaction may have rewritten argument values; re-parse so
+	// downstream gates (DoW, taint) see the redacted args.
+	frame = ParseMCPFrame(msg)
 
 	// Determine input scanning parameters.
 	action := config.ActionWarn
@@ -323,163 +332,103 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		action = inputCfg.Action
 		onParseError = inputCfg.OnParseError
 	}
-
-	// Content scan.
-	var verdict InputVerdict
 	scanEnabled := inputCfg != nil && inputCfg.Enabled
+
+	// Build the scan context once so the helper sees the same
+	// DLPWarnContext the inline content scan would have seen.
 	inputScanCtx := opts.warnContext()
 	wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
 	if wc.Transport == "" {
 		wc.Transport = transportMCPHTTP
 		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
 	}
-	if scanEnabled {
-		verdict = ScanRequest(inputScanCtx, msg, sc, action, onParseError)
-	} else {
-		verdict = InputVerdict{Clean: true}
-		// When input scanning is disabled, extract enough metadata from the
-		// raw message so policy, taint gating, chain detection, and DoW still work.
-		if policyCfg != nil || chainMatcher != nil || opts.DoWCheck != nil || taintOpts.TaintCfg != nil || receiptEmitter != nil || envelopeEmitter != nil {
-			verdict.ID = extractRPCID(msg)
-			// Extract method for chain detection even when content scanning is off.
-			var env struct {
-				Method string `json:"method"`
-			}
-			if json.Unmarshal(msg, &env) == nil {
-				verdict.Method = env.Method
-			}
-		}
-	}
+
+	// Evaluate every configured gate in one pass. The helper returns
+	// a composite verdict and the first gate that short-circuited,
+	// preserving per-gate block semantics and ordering.
+	eval := EvaluateMCPInputGates(inputScanCtx, frame, msg, sessionKey, opts, action, onParseError, scanEnabled)
+	verdict := eval.ContentVerdict
+	policyVerdict := eval.PolicyVerdict
 
 	mcpMethod = verdict.Method
 	if verdict.Method == methodToolsCall {
 		if actionID == "" {
 			actionID = receipt.NewActionID()
 		}
-		toolName = extractToolCallName(msg)
+		toolName = frame.ToolCallName
 	}
-
-	// A2A request body scanning: field-aware analysis for A2A protocol methods.
-	// Runs after content scanning so both pipelines contribute findings.
-	// When the method is unknown (input scanning disabled, no policy/chain),
-	// extract it for A2A detection.
-	if a2aCfg != nil && a2aCfg.Enabled {
-		method := verdict.Method
-		if method == "" {
-			var env struct {
-				Method string          `json:"method"`
-				ID     json.RawMessage `json:"id"`
-			}
-			if json.Unmarshal(msg, &env) == nil {
-				method = env.Method
-				// Backfill verdict.ID so IsNotification works correctly
-				// when input scanning is disabled and no policy/chain config
-				// triggered the earlier extraction.
-				if verdict.ID == nil && len(env.ID) > 0 && string(env.ID) != jsonrpc.Null {
-					verdict.ID = env.ID
-				}
-			}
+	logTaintDecision := func() {
+		if auditLogger == nil {
+			return
 		}
-		if IsA2AMethod(method) {
-			a2aResult := ScanA2ARequestBody(inputScanCtx, msg, sc, a2aCfg)
-			if !a2aResult.Clean {
-				a2aAction := a2aResult.Action
-				if a2aAction == "" {
-					a2aAction = a2aCfg.Action
-				}
-				if a2aAction == config.ActionBlock {
-					_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", a2aResult.Reason)
-					if a2aResult.IsConfigMismatch() {
-						recordAdaptiveSignal(session.SignalNearMiss)
-					} else {
-						recordAdaptiveSignal(session.SignalBlock)
-					}
-					receiptVerdict = config.ActionBlock
-					result.Blocked = &BlockedRequest{
-						ID:             verdict.ID,
-						IsNotification: isRPCNotification(verdict.ID),
-						LogMessage:     "blocked (a2a input scanning)",
-						ErrorCode:      -32001,
-						ErrorMessage:   "pipelock: request blocked by A2A input scanning",
-					}
-					return result
-				}
-				// warn mode: log and continue.
-				_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", a2aResult.Reason)
-				recordAdaptiveSignal(session.SignalNearMiss)
-			}
+		decision := eval.TaintDecision
+		if eval.TaintAuditDecisionSet {
+			decision = eval.TaintAuditDecision
 		}
+		auditLogger.LogTaintDecision(
+			mustMCPAuditContext(auditLogger, "MCP", toolName),
+			decision.Risk.Level.String(),
+			decision.ActionClass.String(),
+			decision.Sensitivity.String(),
+			decision.Authority.String(),
+			decision.Result.Decision.String(),
+			decision.Result.Reason,
+			decision.Risk.LastExternalURL,
+			decision.Risk.LastExternalKind,
+		)
 	}
 
-	// Denial-of-wallet: check tool call budget before forwarding.
-	if opts.DoWCheck != nil && verdict.Method == methodToolsCall {
-		toolName := extractToolCallName(msg)
-		if toolName != "" {
-			argsJSON := extractToolCallArgs(msg)
-			allowed, dowAction, dowReason, dowBudgetType := opts.DoWCheck(toolName, argsJSON)
-			if !allowed {
-				_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
-					toolName, dowAction, dowReason, dowBudgetType)
-				if dowAction == config.ActionBlock {
-					if auditLogger != nil {
-						auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", dowReason)
-					}
-					if m != nil {
-						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
-					}
-					recordAdaptiveSignal(session.SignalBlock)
-					receiptVerdict = config.ActionBlock
-					result.Blocked = &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + dowReason}
-					return result
-				}
-				// dow_action: warn — log and record near-miss, but allow the request.
-				if auditLogger != nil {
-					auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", dowReason, 0)
-				}
-				recordAdaptiveSignal(session.SignalNearMiss)
-			}
+	// Dispatch block-level gate verdicts. Per-gate log / audit /
+	// metrics / adaptive-signal side effects live here so the
+	// transport-specific response shape (JSON-RPC error codes,
+	// LogMessage strings) stays in the transport layer.
+	switch eval.BlockingGate {
+	case "a2a_body":
+		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", eval.A2AResult.Reason)
+		if eval.A2AResult.IsConfigMismatch() {
+			recordAdaptiveSignal(session.SignalNearMiss)
+		} else {
+			recordAdaptiveSignal(session.SignalBlock)
 		}
-	}
-
-	// Policy check.
-	policyVerdict := policy.Verdict{}
-	if policyCfg != nil {
-		policyVerdict = policyCfg.CheckRequest(msg)
-	}
-
-	// Chain detection: check if this tool call matches an attack pattern.
-	chainAction := ""
-	chainReason := ""
-	if chainMatcher != nil && verdict.Method == methodToolsCall {
-		toolName := extractToolCallName(msg)
-		if toolName != "" {
-			cv := chainMatcher.Record(sessionKey, toolName, string(msg))
-			if cv.Matched {
-				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
-					cv.PatternName, cv.Severity, cv.Action)
-				if auditLogger != nil {
-					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolName, auditSessionKey)
-				}
-				if cv.Action == config.ActionBlock {
-					recordAdaptiveSignal(session.SignalBlock)
-					receiptVerdict = config.ActionBlock
-					result.Blocked = &BlockedRequest{
-						ID:             verdict.ID,
-						IsNotification: isRPCNotification(verdict.ID),
-						LogMessage:     fmt.Sprintf("chain pattern %q blocked", cv.PatternName),
-						ErrorCode:      -32004,
-						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
-					}
-					return result
-				}
-				chainAction = cv.Action
-				chainReason = "chain:" + cv.PatternName
-			}
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
+			ID:             verdict.ID,
+			IsNotification: isRPCNotification(verdict.ID),
+			LogMessage:     "blocked (a2a input scanning)",
+			ErrorCode:      -32001,
+			ErrorMessage:   "pipelock: request blocked by A2A input scanning",
 		}
-	}
-
-	// Parse error — always block.
-	if verdict.Error != "" {
+		return result
+	case "dow":
+		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
+			toolName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
+		if auditLogger != nil {
+			auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", eval.DoWReason)
+		}
+		if m != nil {
+			m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
+		}
+		recordAdaptiveSignal(session.SignalBlock)
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + eval.DoWReason}
+		return result
+	case "chain":
+		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
+		if auditLogger != nil {
+			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolName, auditSessionKey)
+		}
+		recordAdaptiveSignal(session.SignalBlock)
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
+			ID:             verdict.ID,
+			IsNotification: isRPCNotification(verdict.ID),
+			LogMessage:     fmt.Sprintf("chain pattern %q blocked", eval.ChainPatternName),
+			ErrorCode:      -32004,
+			ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", eval.ChainPatternName),
+		}
+		return result
+	case "parse_error":
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
@@ -488,53 +437,51 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			LogMessage:     "blocked (parse error)",
 		}
 		return result
+	case "taint_block", "taint_ask_denied":
+		logTaintDecision()
+		receiptVerdict = config.ActionBlock
+		result.Blocked = &BlockedRequest{
+			ID:             verdict.ID,
+			IsNotification: isRPCNotification(verdict.ID),
+			LogMessage:     "blocked by taint policy",
+			ErrorCode:      -32002,
+			ErrorMessage:   "pipelock: " + eval.TaintDecision.Result.Reason,
+		}
+		return result
 	}
 
-	if verdict.Method == methodToolsCall {
-		taintEval = evaluateMCPTaint(taintOpts, toolName, extractToolCallArgs(msg))
-		if taintEval.Result.Decision == session.PolicyAsk || taintEval.Result.Decision == session.PolicyBlock {
-			if auditLogger != nil {
-				auditLogger.LogTaintDecision(
-					mustMCPAuditContext(auditLogger, "MCP", toolName),
-					taintEval.Risk.Level.String(),
-					taintEval.ActionClass.String(),
-					taintEval.Sensitivity.String(),
-					taintEval.Authority.String(),
-					taintEval.Result.Decision.String(),
-					taintEval.Result.Reason,
-					taintEval.Risk.LastExternalURL,
-					taintEval.Risk.LastExternalKind,
-				)
-			}
-			switch taintEval.Result.Decision {
-			case session.PolicyBlock:
-				receiptVerdict = config.ActionBlock
-				result.Blocked = &BlockedRequest{
-					ID:             verdict.ID,
-					IsNotification: isRPCNotification(verdict.ID),
-					LogMessage:     "blocked by taint policy",
-					ErrorCode:      -32002,
-					ErrorMessage:   "pipelock: " + taintEval.Result.Reason,
-				}
-				return result
-			case session.PolicyAsk:
-				preview := strings.TrimSpace(fmt.Sprintf("%s %s", toolName, taintEval.ActionRef))
-				approved, hasApprover := taintDecisionRequiresApproval(opts, toolName, taintApprovalReason(taintEval), preview)
-				if !hasApprover || !approved {
-					receiptVerdict = config.ActionBlock
-					result.Blocked = &BlockedRequest{
-						ID:             verdict.ID,
-						IsNotification: isRPCNotification(verdict.ID),
-						LogMessage:     "blocked by taint policy",
-						ErrorCode:      -32002,
-						ErrorMessage:   "pipelock: " + taintEval.Result.Reason,
-					}
-					return result
-				}
-				approveTaintDecision(&taintEval)
-			}
+	// Non-blocking warn-level side effects from gates that did not
+	// short-circuit. A2A warn logs and records a near-miss; DoW warn
+	// logs, records an anomaly, and records a near-miss. These
+	// happen after the switch so block dispatches skip them.
+	if eval.TaintApproved {
+		logTaintDecision()
+	}
+	if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
+		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", eval.A2AResult.Reason)
+		recordAdaptiveSignal(session.SignalNearMiss)
+	}
+	if eval.DoWAction != "" && !eval.DoWAllowed && eval.DoWAction != config.ActionBlock {
+		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
+			toolName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
+		if auditLogger != nil {
+			auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolName), "denial_of_wallet", eval.DoWReason, 0)
+		}
+		recordAdaptiveSignal(session.SignalNearMiss)
+	}
+	// Chain warn has already been recorded as ChainAction on eval;
+	// log it here so the action-merge section below can fold it in.
+	if eval.ChainMatched && eval.ChainAction != config.ActionBlock {
+		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
+		if auditLogger != nil {
+			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolName, auditSessionKey)
 		}
 	}
+
+	taintEval = eval.TaintDecision
+	chainAction := eval.ChainAction
+	chainReason := eval.ChainReason
 
 	// All clean — proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
@@ -1149,6 +1096,11 @@ func RunHTTPListenerProxy(
 			return
 		}
 
+		// Parse the inbound frame once per request. Every rpcID lookup
+		// and upstream-error response below reads frame.ID instead of
+		// re-parsing the body bytes.
+		frame := ParseMCPFrame(body)
+
 		// Validate JSON-RPC 2.0 structure for single requests: version
 		// must be "2.0", method must be present and a string. Batch
 		// requests (JSON arrays) are validated per-element by scanHTTPInput.
@@ -1157,7 +1109,7 @@ func RunHTTPListenerProxy(
 			if reason := validateRPCStructure(body); reason != "" {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadRequest)
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				invalidReq, _ := json.Marshal(rpcError{
 					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
@@ -1177,7 +1129,7 @@ func RunHTTPListenerProxy(
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					return
 				}
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				_, _ = w.Write(killswitch.ErrorResponse(rpcID, d.Message))
 				return
 			}
@@ -1251,7 +1203,7 @@ func RunHTTPListenerProxy(
 					})
 				}
 				w.Header().Set("Content-Type", "application/json")
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				resp, _ := json.Marshal(rpcError{
 					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
@@ -1284,7 +1236,7 @@ func RunHTTPListenerProxy(
 					}
 				}
 				w.Header().Set("Content-Type", "application/json")
-				rpcID := extractRPCID(body)
+				rpcID := frame.ID
 				resp, _ := json.Marshal(rpcError{
 					JSONRPC: jsonrpc.Version,
 					ID:      rpcID,
@@ -1321,7 +1273,7 @@ func RunHTTPListenerProxy(
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write(upstreamErrorResponse(extractRPCID(body), fmt.Errorf("upstream HTTP request failed")))
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
 		upReq.Header.Set("Content-Type", "application/json")
@@ -1349,7 +1301,7 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write(upstreamErrorResponse(extractRPCID(body), fmt.Errorf("upstream HTTP request failed")))
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
 		defer upResp.Body.Close() //nolint:errcheck // best-effort cleanup
@@ -1366,7 +1318,7 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadGateway)
-			_, _ = w.Write(upstreamErrorResponse(extractRPCID(body), fmt.Errorf("upstream HTTP request failed")))
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
 

@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -304,6 +306,51 @@ func TestScanHTTPInputDecision_ApprovedToolCarriesEnvelope(t *testing.T) {
 	if meta["reauth"] != true {
 		t.Fatalf("reauth = %v, want true", meta["reauth"])
 	}
+}
+
+func TestScanHTTPInputDecision_ApprovedTaintAskEmitsAudit(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	rec.ObserveRisk(session.RiskObservation{
+		Source: session.TaintSourceRef{
+			URL:   "https://evil.example/issue/123",
+			Kind:  "http_response",
+			Level: session.TaintExternalUntrusted,
+		},
+	})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"/repo/auth/middleware.go","content":"x"}}}`)
+
+	sink := &recordingEmitSinkHTTP{}
+	logger := audit.NewNop()
+	emitter := emit.NewEmitter("test", sink)
+	logger.SetEmitter(emitter)
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	decision := scanHTTPInputDecision(msg, &bytes.Buffer{}, "sess", "sess", MCPProxyOpts{
+		Scanner:     sc,
+		Approver:    testApproverForMCP(t, "y\n"),
+		Rec:         rec,
+		TaintCfg:    &cfg.Taint,
+		AuditLogger: logger,
+	})
+	if decision.Blocked != nil {
+		t.Fatalf("expected approved request to pass, got block: %+v", decision.Blocked)
+	}
+
+	for _, ev := range sink.events {
+		if ev.Type != string(audit.EventTaintDecision) {
+			continue
+		}
+		if ev.Fields["decision"] != session.PolicyAsk.String() {
+			t.Fatalf("decision = %v, want %q", ev.Fields["decision"], session.PolicyAsk.String())
+		}
+		if ev.Fields["authority_kind"] != session.AuthorityUserBroad.String() {
+			t.Fatalf("authority_kind = %v, want %q", ev.Fields["authority_kind"], session.AuthorityUserBroad.String())
+		}
+		return
+	}
+	t.Fatal("expected approved taint ask to emit taint_decision audit event")
 }
 
 func TestEvaluateMCPTaint_TrustOverrideHonorsScope(t *testing.T) {

@@ -126,6 +126,10 @@ func RunWSProxy(
 			break
 		}
 
+		// Parse the inbound frame once per message; every gate below reads
+		// ID / Method / tool fields from this frame instead of re-parsing.
+		frame := ParseMCPFrame(msg)
+
 		select {
 		case <-innerCtx.Done():
 			// Upstream closed or external cancellation.
@@ -151,8 +155,7 @@ func RunWSProxy(
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
 				}
-				rpcID := extractRPCID(msg)
-				resp := killswitch.ErrorResponse(rpcID, d.Message)
+				resp := killswitch.ErrorResponse(frame.ID, d.Message)
 				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 				}
@@ -182,7 +185,7 @@ func RunWSProxy(
 		// Only track requests (have "method"), not client responses to
 		// server-initiated calls, to prevent tracker pollution.
 		if isRequest(msg) {
-			tracker.Track(extractRPCID(msg))
+			tracker.Track(frame.ID)
 		}
 
 		// Forward to upstream.

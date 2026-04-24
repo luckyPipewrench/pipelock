@@ -20,7 +20,6 @@ jobs:
        github.event.comment.author_association == 'COLLABORATOR') &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
-       github.event.comment.body == '/review fast' ||
        github.event.comment.body == '/review deep' ||
        github.event.comment.body == '/review tests' ||
        github.event.comment.body == '/review docs' ||
@@ -58,7 +57,7 @@ jobs:
             "/review tests") echo "mode=tests" >> "$GITHUB_OUTPUT" ;;
             "/review docs")  echo "mode=docs" >> "$GITHUB_OUTPUT" ;;
             "/review stats") echo "mode=stats" >> "$GITHUB_OUTPUT" ;;
-            *)               echo "mode=fast" >> "$GITHUB_OUTPUT" ;;
+            *)               echo "mode=default" >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Run PR review

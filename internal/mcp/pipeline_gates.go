@@ -142,26 +142,25 @@ type MCPInputEvaluation struct {
 // nil-safe: the helper skips gates whose config is nil or whose
 // preconditions are not met (e.g., DoW is tools/call-only).
 //
-// Gate execution order (semantic, not cosmetic):
+// Gate execution order (semantic, not cosmetic). Sequence is fixed by
+// the code below; see per-gate comments for placement rationale:
 //
-//  1. Content scan via ScanRequest. Always runs. Establishes
+//   - content scan via ScanRequest. Always runs. Establishes
 //     ContentVerdict.ID / Method used by later short-circuit paths.
-//  2. A2A body scan when a2aCfg is enabled and the method matches
+//   - A2A body scan when a2aCfg is enabled and the method matches
 //     IsA2AMethod. A block verdict short-circuits the remaining
 //     tools/call-scoped gates.
-//  3. Denial-of-wallet check for tools/call with a non-empty tool
-//     name.
-//  4. Policy check against the full message bytes.
-//  5. Chain detection for tools/call. Mutates chain-matcher session
+//   - denial-of-wallet check for tools/call with a non-empty tool name.
+//   - policy check against the full message bytes.
+//   - chain detection for tools/call. Mutates chain-matcher session
 //     state; running after DoW preserves the contract that DoW-block
 //     messages do not leave a chain trace.
-//  6. Parse-error short-circuit from ContentVerdict.Error. Runs
-//     after the stateful gates above so every configured gate
-//     contributes its audit signals before the block verdict is
-//     emitted.
-//  7. Taint evaluation for tools/call. Reads session state the
-//     earlier gates may have updated. PolicyAsk triggers the inline
-//     approver dialog (HITL); approved sets TaintApproved.
+//   - parse-error short-circuit from ContentVerdict.Error. Runs after
+//     the stateful gates above so every configured gate contributes
+//     its audit signals before the block verdict is emitted.
+//   - taint evaluation for tools/call. Reads session state the earlier
+//     gates may have updated. PolicyAsk triggers the inline approver
+//     dialog (HITL); approved sets TaintApproved.
 //
 // Adaptive signal recording, audit logging, and receipt emission
 // stay in the caller because those side effects happen at the
@@ -187,7 +186,7 @@ func EvaluateMCPInputGates(
 	chainMatcher := opts.chainMatcher()
 	a2aCfg := opts.a2aCfg()
 
-	// Gate 1: content scan.
+	// content scan.
 	if scanEnabled {
 		eval.ContentVerdict = ScanRequest(ctx, msg, sc, scanAction, onParseError)
 	} else {
@@ -206,7 +205,7 @@ func EvaluateMCPInputGates(
 		eval.ContentVerdict.Error = frame.ParseErr.Error()
 	}
 
-	// Gate 2: A2A body scan. Runs before the tools/call-scoped
+	// A2A body scan. Runs before the tools/call-scoped
 	// gates so an A2A body block short-circuits them.
 	if a2aCfg != nil && a2aCfg.Enabled {
 		method := eval.ContentVerdict.Method
@@ -232,7 +231,7 @@ func EvaluateMCPInputGates(
 		}
 	}
 
-	// Gate 3: DoW. Only for tools/call with a tool name.
+	// DoW. Only for tools/call with a tool name.
 	if opts.DoWCheck != nil && frame.IsToolsCall() && frame.ToolCallName != "" {
 		allowed, action, reason, budgetType := opts.DoWCheck(frame.ToolCallName, string(frame.Args))
 		eval.DoWAllowed = allowed
@@ -245,12 +244,12 @@ func EvaluateMCPInputGates(
 		}
 	}
 
-	// Gate 4: policy.
+	// policy.
 	if policyCfg != nil {
 		eval.PolicyVerdict = policyCfg.CheckRequest(msg)
 	}
 
-	// Gate 5: chain. Mutates chain-matcher session state; ordering
+	// chain. Mutates chain-matcher session state; ordering
 	// after DoW preserves the pre-refactor contract that DoW-block
 	// messages do not leave a chain trace.
 	if chainMatcher != nil && frame.IsToolsCall() && frame.ToolCallName != "" {
@@ -268,7 +267,7 @@ func EvaluateMCPInputGates(
 		}
 	}
 
-	// Gate 6: parse-error short-circuit. Runs after the stateful
+	// parse-error short-circuit. Runs after the stateful
 	// gates so every configured gate contributes its audit signals
 	// before the block verdict is emitted. Matches the pre-refactor
 	// ordering in scanHTTPInputDecision and ForwardScannedInput.
@@ -277,7 +276,7 @@ func EvaluateMCPInputGates(
 		return eval
 	}
 
-	// Gate 7: taint. Only for tools/call. PolicyAsk triggers the
+	// taint. Only for tools/call. PolicyAsk triggers the
 	// inline approver dialog so HITL runs in the request-processing
 	// goroutine, matching the pre-refactor call site.
 	if frame.IsToolsCall() {
@@ -310,57 +309,58 @@ func EvaluateMCPInputGates(
 
 // EvaluateMCPInputGatesStdio is the stdio counterpart to
 // EvaluateMCPInputGates. The stdio path preserves gate ordering that
-// diverges from the HTTP helper in three ways, all intentional and
-// captured here so a single shared helper does not have to flip
-// behavior on a transport switch:
+// diverges from the HTTP helper in three intentional ways, captured
+// here so a single shared helper does not have to flip behavior on a
+// transport switch:
 //
-//  1. Policy runs before DoW. HTTP runs policy after DoW; stdio's
+//   - policy runs before DoW. HTTP runs policy after DoW; stdio's
 //     pre-refactor order placed the policy check ahead of the
 //     tools/call-scoped gates, so the policy verdict is materialized
 //     before any tools/call-scoped gate can short-circuit.
-//  2. Session binding is two-phase, wrapping DoW. The batch
-//     pre-check fires before DoW; the tool-name check fires after.
-//     Batches are rejected earlier in the caller, so the pre-check
-//     is defense-in-depth -- the helper still populates it so the
+//   - session binding is two-phase, wrapping DoW. The batch pre-check
+//     fires before DoW; the tool-name check fires after. Batches are
+//     rejected earlier in the caller, so the pre-check is
+//     defense-in-depth -- the helper still populates it so the
 //     caller's capture-observe side effect runs identically.
-//  3. A frozen-tool gate sits between DoW and chain detection.
-//     HTTP has no frozen-tool gate; it lives only on the stdio
-//     transport to enforce airlock-hard-tier tool snapshots.
+//   - a frozen-tool gate sits between DoW and chain detection. HTTP
+//     has no frozen-tool gate; it lives only on the stdio transport
+//     to enforce airlock-hard-tier tool snapshots.
 //
-// Unlike HTTP, stdio does not have an A2A body gate; A2A methods
-// flow through a separate path. The helper omits the a2a_body
-// gate entirely.
+// Unlike HTTP, stdio does not have an A2A body gate; A2A methods flow
+// through a separate path. The helper omits the a2a_body gate
+// entirely.
 //
-// Gate execution order (semantic, not cosmetic):
+// Gate execution order (semantic, not cosmetic). Sequence is fixed
+// by the code below; see per-gate comments for placement rationale:
 //
-//  1. Content scan via ScanRequest. Always runs. Establishes
+//   - content scan via ScanRequest. Always runs. Establishes
 //     ContentVerdict.ID / Method used by later short-circuit paths.
-//  2. Policy check. Populates PolicyVerdict without short-circuit;
+//   - policy check. Populates PolicyVerdict without short-circuit;
 //     the caller folds matched policy into the effective action.
-//  3. Session binding batch pre-check. Populates BindingAction /
+//   - session binding batch pre-check. Populates BindingAction /
 //     BindingReason when a batch request is seen with binding
 //     active. No short-circuit -- batches are rejected earlier in
 //     the caller path.
-//  4. Tool name extraction from the frame for the tools/call gates.
-//  5. Denial-of-wallet check for tools/call with a non-empty tool
+//   - tool name extraction from the frame for the tools/call gates.
+//   - denial-of-wallet check for tools/call with a non-empty tool
 //     name. Blocks short-circuit; warns populate DoWAction.
-//  6. Session binding tool check for tools/call. Overrides the
-//     batch pre-check when it fires (missing tool name, no
-//     baseline, unknown tool). No short-circuit -- the caller
-//     folds BindingAction into the effective action merge.
-//  7. Frozen tool enforcement. Short-circuits on a block verdict
-//     when the session has a frozen snapshot and the tool is
-//     either unparseable or not in the snapshot.
-//  8. Chain detection for tools/call. Mutates chain-matcher
-//     session state; the 1:1 stdio architecture uses the literal
-//     "default" session key. Matched patterns populate chain
-//     fields; Block-action matches short-circuit.
-//  9. Parse-error short-circuit from ContentVerdict.Error. Runs
-//     after the stateful gates so audit signals are recorded
-//     before the block verdict is emitted.
-//  10. Taint evaluation for tools/call. Reads session state the
-//     earlier gates may have updated. PolicyAsk triggers the
-//     inline approver dialog; approved sets TaintApproved.
+//   - session binding tool check for tools/call. Overrides the
+//     batch pre-check when it fires (missing tool name, no baseline,
+//     unknown tool). No short-circuit -- the caller folds
+//     BindingAction into the effective action merge.
+//   - frozen tool enforcement. Short-circuits on a block verdict
+//     when the session has a frozen snapshot and the tool is either
+//     unparseable or not in the snapshot.
+//   - chain detection for tools/call. Mutates chain-matcher session
+//     state; the 1:1 stdio architecture uses the literal "default"
+//     session key. Matched patterns populate chain fields;
+//     Block-action matches short-circuit.
+//   - parse-error short-circuit from ContentVerdict.Error. Runs
+//     after the stateful gates so audit signals are recorded before
+//     the block verdict is emitted.
+//   - taint evaluation for tools/call. Reads session state the
+//     earlier gates may have updated. PolicyAsk triggers the inline
+//     approver dialog; approved sets TaintApproved.
 //
 // The helper populates MCPInputEvaluation without writing to
 // logW, emitting audit logs, recording metrics, or firing
@@ -387,7 +387,7 @@ func EvaluateMCPInputGatesStdio(
 	policyCfg := opts.policyCfg()
 	chainMatcher := opts.chainMatcher()
 
-	// Gate 1: content scan. Always runs on stdio (inputCfg is not
+	// content scan. Always runs on stdio (inputCfg is not
 	// consulted at this layer -- the caller gates enablement via
 	// the scanAction / onParseError it passes in).
 	eval.ContentVerdict = ScanRequest(ctx, msg, sc, scanAction, onParseError)
@@ -398,13 +398,13 @@ func EvaluateMCPInputGatesStdio(
 		eval.ContentVerdict.Error = frame.ParseErr.Error()
 	}
 
-	// Gate 2: policy. No short-circuit; policy participates in the
+	// policy. No short-circuit; policy participates in the
 	// effective-action merge alongside content scan and binding.
 	if policyCfg != nil {
 		eval.PolicyVerdict = policyCfg.CheckRequest(msg)
 	}
 
-	// Gate 3: session binding batch pre-check. Unreachable in
+	// session binding batch pre-check. Unreachable in
 	// practice because the caller rejects batches before calling
 	// the helper, but kept as a defense-in-depth signal so the
 	// capture observe fires when the early reject is ever removed.
@@ -413,13 +413,13 @@ func EvaluateMCPInputGatesStdio(
 		eval.BindingReason = bindingReasonBatchRequest
 	}
 
-	// Gate 4: tool name extraction.
+	// tool name extraction.
 	toolCallName := ""
 	if eval.ContentVerdict.Method == methodToolsCall {
 		toolCallName = frame.ToolCallName
 	}
 
-	// Gate 5: DoW. Only for tools/call with a tool name.
+	// DoW. Only for tools/call with a tool name.
 	if opts.DoWCheck != nil && eval.ContentVerdict.Method == methodToolsCall && toolCallName != "" {
 		allowed, action, reason, budgetType := opts.DoWCheck(toolCallName, string(frame.Args))
 		eval.DoWAllowed = allowed
@@ -432,7 +432,7 @@ func EvaluateMCPInputGatesStdio(
 		}
 	}
 
-	// Gate 6: session binding tool check. Overrides the batch
+	// session binding tool check. Overrides the batch
 	// pre-check when it fires. No short-circuit.
 	if bindingCfg != nil && bindingCfg.Baseline != nil && eval.ContentVerdict.Method == methodToolsCall {
 		switch {
@@ -448,7 +448,7 @@ func EvaluateMCPInputGatesStdio(
 		}
 	}
 
-	// Gate 7: frozen tool. Scoped to tools/call messages; methods like
+	// frozen tool. Scoped to tools/call messages; methods like
 	// tools/list, initialize, and notifications/* carry no tool name and
 	// must flow through a frozen session so MCP protocol state
 	// (handshake, discovery, recovery) keeps working. Within tools/call
@@ -464,7 +464,7 @@ func EvaluateMCPInputGatesStdio(
 		}
 	}
 
-	// Gate 8: chain detection. Stdio is 1:1 session-per-process;
+	// chain detection. Stdio is 1:1 session-per-process;
 	// the literal "default" session key is correct.
 	if chainMatcher != nil && toolCallName != "" {
 		cv := chainMatcher.Record("default", toolCallName, string(msg))
@@ -481,13 +481,13 @@ func EvaluateMCPInputGatesStdio(
 		}
 	}
 
-	// Gate 9: parse-error short-circuit.
+	// parse-error short-circuit.
 	if eval.ContentVerdict.Error != "" {
 		eval.BlockingGate = blockingGateParseError
 		return eval
 	}
 
-	// Gate 10: taint. Only for tools/call. PolicyAsk triggers the
+	// taint. Only for tools/call. PolicyAsk triggers the
 	// inline approver dialog so HITL runs in the request-processing
 	// goroutine, matching the pre-refactor call site.
 	if eval.ContentVerdict.Method == methodToolsCall {

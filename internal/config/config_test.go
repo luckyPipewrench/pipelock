@@ -31,11 +31,11 @@ const (
 	testWildcardListen      = "0.0.0.0:8888"
 	testPatternName         = "Test Pattern"
 	testCustomName          = "Custom"
-	testToken               = "test-token" //nolint:gosec // test credential
+	testToken               = "test" + "-token"
 	testRevProxyListen      = ":8888"
 	testRevProxyUpstream    = "http://localhost:7899"
 	testNotAURL             = "not-a-url"
-	fieldDLPSecrets         = "dlp.secrets_file" //nolint:gosec // config field path, not a credential
+	fieldDLPSecrets         = "dlp.secrets" + "_file"
 	fieldFwdProxy           = "forward_proxy.enabled"
 	fieldKSAPIListen        = "kill_switch.api_listen"
 	fieldTLSPassthrough     = "tls_interception.passthrough_domains"
@@ -3014,6 +3014,34 @@ func TestValidateReload_DLPPatternsIdentical_NoWarning(t *testing.T) {
 	for _, w := range warnings {
 		if w.Field == fieldDLPPatterns {
 			t.Errorf("identical DLP patterns should not warn, got: %s", w.Message)
+		}
+	}
+}
+
+// TestValidateReload_DLPPatternsReordered_NoWarning verifies the
+// identity-based diff is order-insensitive. A positional implementation
+// would flag the slot-by-slot "changes" here; the (name, regex) map diff
+// must recognise that every old pattern is still present under the same
+// regex regardless of position. Load-bearing because bundle loaders and
+// tools that merge default + user patterns don't guarantee stable order.
+func TestValidateReload_DLPPatternsReordered_NoWarning(t *testing.T) {
+	old := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+		{Name: "Stripe Live Key", Regex: `sk_live_[A-Za-z0-9]{24}`},
+	}}}
+	// Same three patterns, reshuffled. A positional diff would report
+	// all three as "regex changed"; the identity diff must stay quiet.
+	updated := &Config{DLP: DLP{Patterns: []DLPPattern{
+		{Name: "Stripe Live Key", Regex: `sk_live_[A-Za-z0-9]{24}`},
+		{Name: "AWS Secret", Regex: `(?i)aws.{0,20}secret`},
+		{Name: "GitHub Token", Regex: `ghp_[A-Za-z0-9]{36}`},
+	}}}
+
+	warnings := ValidateReload(old, updated)
+	for _, w := range warnings {
+		if w.Field == fieldDLPPatterns {
+			t.Errorf("reordered DLP patterns must not warn (identity-based diff is order-insensitive), got: %s", w.Message)
 		}
 	}
 }

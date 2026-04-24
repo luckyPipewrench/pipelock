@@ -346,7 +346,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 
 	cfg.ApplyDefaults()
-	if err := cfg.Validate(); err != nil {
+	warnings, err := cfg.ValidateWithWarnings()
+	for _, wn := range warnings {
+		_, _ = fmt.Fprintf(opts.Stderr, "WARNING: %s: %s\n", wn.Field, wn.Message)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
@@ -1287,6 +1291,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// not parsed from YAML. Always preserve the old value until
 		// restart.
 		newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
+	}
+
+	// Surface advisory warnings on reload the same way NewServer does at
+	// startup. The Reloader discards warnings from Load()'s internal
+	// Validate() call, so re-run the idempotent validator after deduping
+	// stacked reload events and after preserving restart-only fields.
+	if reloadWarns, _ := newCfg.ValidateWithWarnings(); len(reloadWarns) > 0 {
+		for _, wn := range reloadWarns {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: %s: %s\n", wn.Field, wn.Message)
+		}
 	}
 
 	// Resolve runtime policy on a clone of the newly loaded config so

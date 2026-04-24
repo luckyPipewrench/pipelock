@@ -194,7 +194,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// so a warn-only header or CEE finding on the same CONNECT request does not
 	// get offset by a clean decay from the URL stage.
 	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result, cfg, p.logger, true)
-	hasFinding := (!result.Allowed && !result.IsProtective()) || connectHeaderHadFinding
+	// hasFinding excludes IsAdaptiveNeutral (protective enforcement + infrastructure
+	// errors) so resolver wobble doesn't taint downstream "finding" behavior like
+	// clean-decay suppression or CEE signal recording. Fail-closed enforcement
+	// still fires below via !result.Allowed.
+	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || connectHeaderHadFinding
 
 	if !result.Allowed {
 		status := http.StatusForbidden
@@ -661,7 +665,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hasFinding := !result.Allowed && !result.IsProtective()
+	hasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
 
 	if !result.Allowed {
 		status := http.StatusForbidden

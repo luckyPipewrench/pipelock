@@ -660,6 +660,52 @@ func (r A2AScanResult) IsConfigMismatch() bool {
 	return true
 }
 
+// IsInfrastructureError reports whether every finding in this A2A scan result
+// is an infrastructure error (e.g., DNS resolver timeout on an embedded URL).
+// Returns false when clean, when non-URL findings exist, or when any URL
+// finding is a real threat or config mismatch. When true, callers should treat
+// the block as score-neutral for adaptive enforcement — resolver wobble from
+// embedded URL fields is not evidence of agent misbehavior.
+func (r A2AScanResult) IsInfrastructureError() bool {
+	if r.Clean {
+		return false
+	}
+	if len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 {
+		return false
+	}
+	if len(r.URLFindings) == 0 {
+		return false
+	}
+	for _, f := range r.URLFindings {
+		if !f.IsInfrastructureError() {
+			return false
+		}
+	}
+	return true
+}
+
+// IsAdaptiveNeutral reports whether this A2A result should be score-neutral
+// for adaptive enforcement. Mirrors scanner.Result.IsAdaptiveNeutral(): covers
+// protective enforcement plus infrastructure errors, but NOT config mismatch
+// (which remains a bounded NearMiss signal).
+func (r A2AScanResult) IsAdaptiveNeutral() bool {
+	if r.Clean {
+		return false
+	}
+	if len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 {
+		return false
+	}
+	if len(r.URLFindings) == 0 {
+		return false
+	}
+	for _, f := range r.URLFindings {
+		if !f.IsAdaptiveNeutral() {
+			return false
+		}
+	}
+	return true
+}
+
 // --- Helpers ---
 
 // buildA2AReason constructs a human-readable reason string from scan findings.

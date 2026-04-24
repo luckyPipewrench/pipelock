@@ -461,6 +461,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32600,
 				ErrorMessage:   "pipelock: " + eval.DoWReason,
 			}
+			emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateFrozenTool:
 			frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, eval.FrozenToolName)
@@ -479,6 +480,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32600,
 				ErrorMessage:   "pipelock: tool not in frozen inventory",
 			}
+			emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateChain:
 			recordAdaptiveSignal(session.SignalBlock)
@@ -489,6 +491,7 @@ func ForwardScannedInput(
 				ErrorCode:      -32004,
 				ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", eval.ChainPatternName),
 			}
+			emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateParseError:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
@@ -497,6 +500,7 @@ func ForwardScannedInput(
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
 			}
+			emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateTaintBlock, blockingGateTaintAskDenied:
 			logTaintDecision()

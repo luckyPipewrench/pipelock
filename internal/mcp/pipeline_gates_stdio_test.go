@@ -12,6 +12,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+const testFrozenSessionKey = "test-session"
+
 // stubToolFreezer is a session.ToolFreezer test double. Allowed names
 // are treated as permitted; anything else fails the IsToolAllowed
 // check. When frozen is false IsFrozen returns false so the gate is
@@ -74,7 +76,7 @@ func TestEvaluateMCPInputGatesStdio_FrozenToolBlocksUnknownTool(t *testing.T) {
 	sc := testInputScanner(t)
 	opts := testOpts(sc)
 	opts.ToolFreezer = &stubToolFreezer{frozen: true, allowed: map[string]bool{"read_file": true}}
-	opts.FrozenToolStableKey = "test-session"
+	opts.FrozenToolStableKey = testFrozenSessionKey
 
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":"ls"}}}`)
 	frame := ParseMCPFrame(msg)
@@ -98,13 +100,62 @@ func TestEvaluateMCPInputGatesStdio_FrozenToolBlocksUnknownTool(t *testing.T) {
 	}
 }
 
+// TestEvaluateMCPInputGatesStdio_FrozenSessionAllowsNonToolCallMethods
+// pins the Gate 7 scoping fix: when a session is frozen, MCP protocol
+// messages that carry no tool name (tools/list, initialize,
+// notifications/*) must continue to flow. Without the method filter
+// they would hit the fail-closed branch (toolCallName == "") and
+// block, breaking handshake, discovery, and session recovery.
+func TestEvaluateMCPInputGatesStdio_FrozenSessionAllowsNonToolCallMethods(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		msg  []byte
+	}{
+		{"tools/list", []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)},
+		{"initialize", []byte(`{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}`)},
+		{"notification", []byte(`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}`)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			sc := testInputScanner(t)
+			opts := testOpts(sc)
+			// Freeze the session to only one tool. Non-tools/call
+			// methods carry no tool name; they must NOT be blocked.
+			opts.ToolFreezer = &stubToolFreezer{frozen: true, allowed: map[string]bool{"read_file": true}}
+			opts.FrozenToolStableKey = testFrozenSessionKey
+
+			frame := ParseMCPFrame(tc.msg)
+			eval := EvaluateMCPInputGatesStdio(
+				context.Background(),
+				frame,
+				tc.msg,
+				tc.msg,
+				nil,
+				opts,
+				config.ActionWarn,
+				config.ActionBlock,
+			)
+
+			if eval.BlockingGate == blockingGateFrozenTool {
+				t.Errorf("frozen session must not block non-tools/call method %q; "+
+					"Gate 7 should scope to methodToolsCall (breaks MCP handshake/discovery/recovery otherwise)", tc.name)
+			}
+		})
+	}
+}
+
 func TestEvaluateMCPInputGatesStdio_FrozenToolAllowsKnownTool(t *testing.T) {
 	t.Parallel()
 
 	sc := testInputScanner(t)
 	opts := testOpts(sc)
 	opts.ToolFreezer = &stubToolFreezer{frozen: true, allowed: map[string]bool{"read_file": true}}
-	opts.FrozenToolStableKey = "test-session"
+	opts.FrozenToolStableKey = testFrozenSessionKey
 
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/x"}}}`)
 	frame := ParseMCPFrame(msg)

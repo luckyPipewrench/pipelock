@@ -448,9 +448,14 @@ func EvaluateMCPInputGatesStdio(
 		}
 	}
 
-	// Gate 7: frozen tool. Fail-closed: block when the tool name
-	// is empty (unparseable) or not in the frozen set.
+	// Gate 7: frozen tool. Scoped to tools/call messages; methods like
+	// tools/list, initialize, and notifications/* carry no tool name and
+	// must flow through a frozen session so MCP protocol state
+	// (handshake, discovery, recovery) keeps working. Within tools/call
+	// the gate is fail-closed: block when the tool name is empty or not
+	// in the frozen set. Mirrors the method-scoping on gates 5 and 6.
 	if opts.ToolFreezer != nil && opts.FrozenToolStableKey != "" &&
+		eval.ContentVerdict.Method == methodToolsCall &&
 		opts.ToolFreezer.IsFrozen(opts.FrozenToolStableKey) {
 		if toolCallName == "" || !opts.ToolFreezer.IsToolAllowed(opts.FrozenToolStableKey, toolCallName) {
 			eval.FrozenToolName = toolCallName

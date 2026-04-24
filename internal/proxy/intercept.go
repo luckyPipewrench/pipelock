@@ -456,18 +456,35 @@ func newInterceptHandler(
 			})
 		}
 
+		// NOTE: outer guard keeps !IsProtective() (not IsAdaptiveNeutral) so
+		// that infrastructure errors still enter this branch and return 403
+		// (fail-closed). The neutral-handling is done inline below — hasFinding
+		// stays false and the signal switch skips SignalBlock.
 		if !urlResult.Allowed && !urlResult.IsProtective() {
-			hasFinding = true
+			// Infrastructure errors (e.g. DNS resolver timeout) must not
+			// taint the finding flag — they are score-neutral and are not
+			// evidence of agent misbehavior. Fail-closed block still fires
+			// below; this only guards downstream "finding" logic such as
+			// clean-decay suppression.
+			if !urlResult.IsInfrastructureError() {
+				hasFinding = true
+			}
 			status := http.StatusForbidden
 			if urlResult.Scanner == scanner.ScannerRateLimit {
 				status = http.StatusTooManyRequests
 			}
 			if ic.Config.EnforceEnabled() {
-				// Config-mismatch: bounded signal (NearMiss) instead of full
-				// block signal. Prevents death spiral while keeping visibility.
-				if urlResult.IsConfigMismatch() {
+				// Score neutrality tiers:
+				//   - Infrastructure error: no signal (resolver wobble).
+				//   - Config mismatch: bounded NearMiss (prevents death spiral
+				//     while keeping misconfig probes visible to scoring).
+				//   - Everything else: full SignalBlock.
+				switch {
+				case urlResult.IsInfrastructureError():
+					// Score-neutral: fail-closed block is still enforced below.
+				case urlResult.IsConfigMismatch():
 					interceptRecordSignal(ic, session.SignalNearMiss)
-				} else {
+				default:
 					interceptRecordSignal(ic, session.SignalBlock)
 				}
 				ic.Logger.LogBlocked(actx, urlResult.Scanner, urlResult.Reason)
@@ -501,9 +518,12 @@ func newInterceptHandler(
 				if ic.Proxy != nil {
 					ic.Proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
 				}
-				if urlResult.IsConfigMismatch() {
+				switch {
+				case urlResult.IsInfrastructureError():
+					// Score-neutral: see scan path above for rationale.
+				case urlResult.IsConfigMismatch():
 					interceptRecordSignal(ic, session.SignalNearMiss)
-				} else {
+				default:
 					interceptRecordSignal(ic, session.SignalBlock)
 				}
 				ic.Logger.LogBlocked(actx, urlResult.Scanner, urlResult.Reason+" (escalated)")
@@ -522,8 +542,13 @@ func newInterceptHandler(
 				http.Error(w, "blocked: "+urlResult.Reason+" (escalated)", status)
 				return
 			}
-			// Audit mode near-miss: URL was flagged but allowed.
-			interceptRecordSignal(ic, session.SignalNearMiss)
+			// Audit mode near-miss: URL was flagged but allowed. Infrastructure
+			// errors are score-neutral even here — resolver failures are not
+			// evidence of misbehavior and must not feed adaptive scoring via
+			// the audit path either.
+			if !urlResult.IsInfrastructureError() {
+				interceptRecordSignal(ic, session.SignalNearMiss)
+			}
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
 
@@ -537,16 +562,26 @@ func newInterceptHandler(
 		if isA2A {
 			a2aHdrResult := mcp.ScanA2AHeaders(r.Context(), r.Header, ic.Scanner, &ic.Config.A2AScanning)
 			if !a2aHdrResult.Clean {
-				hasFinding = true
+				// Infrastructure errors (DNS resolver failures on A2A-Extensions
+				// URIs) block the request but must not taint the finding flag —
+				// resolver wobble is not evidence of misbehavior, same rationale
+				// as the URL-scan path above.
+				if !a2aHdrResult.IsInfrastructureError() {
+					hasFinding = true
+				}
 				action := a2aHdrResult.Action
 				if action == "" {
 					action = ic.Config.A2AScanning.Action
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
-					if a2aHdrResult.IsConfigMismatch() {
+					switch {
+					case a2aHdrResult.IsAdaptiveNeutral():
+						// Infrastructure errors (DNS timeout on embedded URLs)
+						// are score-neutral even when they cause a block.
+					case a2aHdrResult.IsConfigMismatch():
 						interceptRecordSignal(ic, session.SignalNearMiss)
-					} else {
+					default:
 						interceptRecordSignal(ic, session.SignalBlock)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabelA2A, a2aHdrResult.Reason)
@@ -730,7 +765,11 @@ func newInterceptHandler(
 			if isA2A && bodyBytes != nil {
 				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning)
 				if !a2aBodyResult.Clean {
-					hasFinding = true
+					// Consistency with URL-scan path: infrastructure errors are
+					// score-neutral and must not set the finding flag.
+					if !a2aBodyResult.IsInfrastructureError() {
+						hasFinding = true
+					}
 					action := a2aBodyResult.Action
 					if action == "" {
 						action = ic.Config.A2AScanning.Action
@@ -741,9 +780,12 @@ func newInterceptHandler(
 					}
 					// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 					if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
-						if a2aBodyResult.IsConfigMismatch() {
+						switch {
+						case a2aBodyResult.IsAdaptiveNeutral():
+							// Score-neutral: see header-scan path above.
+						case a2aBodyResult.IsConfigMismatch():
 							interceptRecordSignal(ic, session.SignalNearMiss)
-						} else {
+						default:
 							interceptRecordSignal(ic, session.SignalBlock)
 						}
 						ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)
@@ -1268,7 +1310,11 @@ func newInterceptHandler(
 				a2aRespResult = mcp.ScanA2AResponseBody(r.Context(), respBody, ic.Scanner, &ic.Config.A2AScanning)
 			}
 			if !a2aRespResult.Clean {
-				hasFinding = true
+				// Consistency with URL-scan path: infrastructure errors are
+				// score-neutral and must not set the finding flag.
+				if !a2aRespResult.IsInfrastructureError() {
+					hasFinding = true
+				}
 				action := a2aRespResult.Action
 				if action == "" {
 					action = ic.Config.A2AScanning.Action
@@ -1279,9 +1325,12 @@ func newInterceptHandler(
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
-					if a2aRespResult.IsConfigMismatch() {
+					switch {
+					case a2aRespResult.IsAdaptiveNeutral():
+						// Score-neutral: see header-scan path above.
+					case a2aRespResult.IsConfigMismatch():
 						interceptRecordSignal(ic, session.SignalNearMiss)
-					} else {
+					default:
 						interceptRecordSignal(ic, session.SignalBlock)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabelA2A, reason)

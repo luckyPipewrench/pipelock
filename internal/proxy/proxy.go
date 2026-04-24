@@ -1481,9 +1481,13 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			ClientIP:  clientIP,
 			RequestID: requestID,
 		}
-		if result.IsProtective() {
+		if result.IsAdaptiveNeutral() {
 			// Score-neutral: no escalation signal, no clean decay.
-			// A rate-limited request proves nothing about threat posture.
+			// Covers protective enforcement (rate limiting, data budget)
+			// AND infrastructure errors (DNS resolver timeouts / unreachable
+			// resolver). Neither proves anything about threat posture, and
+			// treating resolver instability as a threat cascade can push
+			// otherwise benign sessions into airlock lockdown.
 		} else if result.IsConfigMismatch() {
 			// Bounded signal: config-mismatch blocks (SSRF on an
 			// allowlisted domain) are not real attacks, but repeated
@@ -2108,8 +2112,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// hasFinding tracks whether any scanning stage (header DLP, CEE, response)
 	// detected something for this request. RecordClean is only applied at the
 	// end when no finding was detected. A near-miss (scored but allowed) counts
-	// as a finding to prevent inadvertent score decay.
-	hasFinding := (!result.Allowed && !result.IsProtective()) || (result.Score > 0 && result.Allowed)
+	// as a finding to prevent inadvertent score decay. IsAdaptiveNeutral excludes
+	// both protective enforcement (rate limiting) AND infrastructure errors (DNS
+	// resolver timeouts) from the finding classification — neither is evidence
+	// of threat.
+	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {

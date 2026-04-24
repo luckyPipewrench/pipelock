@@ -69,6 +69,14 @@ const (
 	// (e.g., domain in api_allowlist but not trusted_domains). Not a
 	// real attack — should not feed adaptive escalation.
 	ClassConfigMismatch
+	// ClassInfrastructureError means the block is due to an infrastructure
+	// failure (e.g., DNS resolver timeout, resolver unreachable) rather
+	// than adversarial behavior. Fail-closed semantics are preserved
+	// (the request is still blocked), but the block must not feed
+	// adaptive enforcement: resolver instability is not threat evidence.
+	// A burst of DNS failures would otherwise cascade into airlock lockdown
+	// via SignalBlock accumulation.
+	ClassInfrastructureError
 )
 
 // WarnMatch describes a DLP pattern match from a warn-mode pattern.
@@ -99,6 +107,24 @@ func (r Result) IsProtective() bool {
 // gap rather than a real threat (e.g., SSRF blocking an allowlisted domain).
 func (r Result) IsConfigMismatch() bool {
 	return r.Class == ClassConfigMismatch
+}
+
+// IsInfrastructureError reports whether this result represents an
+// infrastructure failure (e.g., DNS resolver timeout, resolver unreachable)
+// rather than a threat. Blocks with this class preserve fail-closed semantics
+// but must not feed adaptive enforcement scoring.
+func (r Result) IsInfrastructureError() bool {
+	return r.Class == ClassInfrastructureError
+}
+
+// IsAdaptiveNeutral reports whether this result should be score-neutral for
+// adaptive enforcement: both protective enforcement (rate limiting, data
+// budget) and infrastructure failures (DNS resolver errors) block requests
+// without indicating adversarial behavior. Config mismatch is NOT covered
+// here — it produces a bounded SignalNearMiss by design so repeated probing
+// of misconfigured allowlists remains visible to scoring.
+func (r Result) IsAdaptiveNeutral() bool {
+	return r.IsProtective() || r.IsInfrastructureError()
 }
 
 // dlpWarnCtxKey and DLPWarnContext are defined in warnctx.go.
@@ -794,11 +820,35 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	defer dnsCancel()
 	ips, err := net.DefaultResolver.LookupHost(dnsCtx, hostname)
 	if err != nil {
+		// Caller cancellation or deadline must route through the normal
+		// fail-closed ScannerContext path. dnsCtx inherits ctx, so a
+		// client abort or request deadline surfaces here as
+		// context.Canceled / DeadlineExceeded. Classifying those as
+		// infrastructure errors would make cancelled SSRF probes
+		// adaptive-neutral, contradicting the CLAUDE.md rule that
+		// context cancellation always defaults to block.
+		if ctx.Err() != nil {
+			return Result{
+				Allowed: false,
+				Reason:  "request context cancelled",
+				Scanner: ScannerContext,
+				Score:   1.0,
+				Hint:    scannerHints[ScannerContext],
+			}
+		}
+		// Genuine resolver failure. Classify as infrastructure error,
+		// not a threat. Fail-closed is preserved (Allowed=false, request
+		// still blocked), but adaptive enforcement must not treat
+		// resolver wobble as evidence of an adversary. Without this
+		// classification, a burst of DNS timeouts accumulates
+		// SignalBlock points until the session is pushed into airlock
+		// lockdown.
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("SSRF check failed: DNS resolution error for %s: %v", hostname, err),
 			Scanner: ScannerSSRF,
 			Score:   1.0,
+			Class:   ClassInfrastructureError,
 		}
 	}
 

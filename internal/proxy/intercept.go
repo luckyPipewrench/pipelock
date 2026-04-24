@@ -1034,7 +1034,16 @@ func newInterceptHandler(
 		// guarantees the streaming scanner never sees compressed data even
 		// if the code is restructured.
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
-		if IsSSEContentType(resp.Header.Get("Content-Type")) {
+		// Enforcement gate: an operator who disabled the parent scanner
+		// (A2A or generic response scanning) must NOT see new behavior
+		// from this branch — including the compressed-SSE fail-closed
+		// block. When disabled, fall through to the existing buffered
+		// path so SSE behavior matches the pre-PR semantics.
+		sseScanningEnabled := ic.Config.ResponseScanning.Enabled
+		if isA2A {
+			sseScanningEnabled = ic.Config.A2AScanning.Enabled
+		}
+		if IsSSEContentType(resp.Header.Get("Content-Type")) && sseScanningEnabled {
 			if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
 				ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)

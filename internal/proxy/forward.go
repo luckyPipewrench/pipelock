@@ -1269,7 +1269,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// the stream in block mode and logs in warn/exempt mode. Must run before
 	// the buffered response scan path so streaming LLM responses are not
 	// silently downgraded to a buffered 1MB cap.
-	if IsSSEContentType(resp.Header.Get("Content-Type")) {
+	//
+	// Enforcement gate: an operator who disabled the parent scanner (A2A or
+	// generic response scanning) must NOT see new behavior introduced by
+	// this branch — including the compressed-SSE fail-closed block. When
+	// disabled, fall through to the existing buffered/relay path so SSE
+	// behavior matches the pre-PR semantics for opted-out configs.
+	sseScanningEnabled := cfg.ResponseScanning.Enabled
+	if isA2A {
+		sseScanningEnabled = cfg.A2AScanning.Enabled
+	}
+	if IsSSEContentType(resp.Header.Get("Content-Type")) && sseScanningEnabled {
 		sseOpts := SSEDispatchOptions{
 			IsA2A:      isA2A,
 			A2A:        &cfg.A2AScanning,

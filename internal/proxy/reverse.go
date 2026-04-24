@@ -690,10 +690,16 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			if err == nil {
 				return
 			}
-			// Reverse proxy currently emits log + metric for response
-			// findings; receipts on this transport flow through the
-			// envelope/admission path elsewhere. Mirror that here so the
-			// SSE branch does not introduce a new emission shape.
+			// Reverse-proxy response-side findings (this branch + the
+			// existing buffered scan path below) emit log + metric only;
+			// no signed receipt. forward.go and intercept.go DO emit
+			// receipts via p.emitReceipt / interceptEmitReceipt and that
+			// asymmetry is a known reverse-proxy gap, not new to this
+			// branch. Tracked as a tech-debt followup for receipt parity
+			// across all reverse-proxy finding paths (compressed block at
+			// L657, oversize block, and this SSE block). Until that ships,
+			// SSE block decisions are auditable via the structured log
+			// line below plus the reverse_proxy_scan_blocked metric.
 			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, sseLayer)
 		}

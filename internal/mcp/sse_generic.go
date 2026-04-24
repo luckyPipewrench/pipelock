@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -28,6 +29,15 @@ var ErrSSEStreamFinding = errors.New("sse stream finding")
 // finding so oversize events fail closed without distinguishing from
 // content-based detections.
 var ErrSSEEventTooLarge = errors.New("sse event exceeds max_event_bytes")
+
+// ErrSSEInvalidUTF8 is wrapped inside ErrSSEStreamFinding when an event's
+// data: payload contains bytes that are not valid UTF-8. The SSE wire
+// format is defined as UTF-8 by WHATWG, and Go's `string(b)` conversion
+// silently replaces invalid sequences with U+FFFD, which would create a
+// parser-differential between what the scanner regexes inspect and what
+// the client actually receives. Failing closed on invalid UTF-8 closes
+// that evasion vector.
+var ErrSSEInvalidUTF8 = errors.New("sse event contains invalid UTF-8")
 
 // DefaultGenericSSEMaxEventBytes caps per-event scanning to 64 KB. LLM
 // streaming events are typically a few hundred bytes; 64 KB carries
@@ -146,6 +156,28 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		if len(event) > 0 {
+			// SSE is UTF-8 per WHATWG. Invalid UTF-8 in the data: payload
+			// would be silently mapped to U+FFFD by Go's string(...) view
+			// while the original bytes still get re-emitted to the client,
+			// creating a parser-differential where the scanner regexes
+			// inspect different bytes than the client receives. Fail
+			// closed in scan-enabled mode (matching the oversize-event
+			// pattern: warn-mode drops the event and continues, block
+			// mode terminates the stream). Passthrough mode (cfg disabled
+			// or nil) does not enter this branch and forwards bytes
+			// verbatim, which is the correct behavior for opt-out.
+			if !utf8.Valid(event) {
+				findingErr := fmt.Errorf("%w: %w (size=%d)",
+					ErrSSEStreamFinding, ErrSSEInvalidUTF8, len(event))
+				if cfg.Action == config.ActionWarn {
+					if opts.OnFinding != nil {
+						opts.OnFinding(findingErr)
+					}
+					continue
+				}
+				return findingErr
+			}
+
 			text := string(event)
 
 			injectResult := sc.ScanResponse(ctx, text)

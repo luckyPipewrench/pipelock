@@ -28,6 +28,7 @@ const (
 	testSyslogAddr       = "udp://syslog.example.com:514"
 	testAPIListen        = "0.0.0.0:9090"
 	testAPIListen2       = "0.0.0.0:9091"
+	testWildcardListen   = "0.0.0.0:8888"
 	testPatternName      = "Test Pattern"
 	testCustomName       = "Custom"
 	testToken            = "test-token" //nolint:gosec // test credential
@@ -61,6 +62,15 @@ const (
 // testLoopbackAllowlist exempts loopback from core SSRF literal blocking in
 // tests that disable SSRF via cfg.Internal = nil but use localhost servers.
 var testLoopbackAllowlist = []string{"127.0.0.0/8", "::1/128"}
+
+func hasConfigWarning(warnings []Warning, field string) bool {
+	for _, wn := range warnings {
+		if wn.Field == field {
+			return true
+		}
+	}
+	return false
+}
 
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
@@ -448,9 +458,10 @@ func TestValidate_ExemptDomainsNormalizedWhenDisabled(t *testing.T) {
 
 func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 	tests := []struct {
-		name    string
-		setup   func(cfg *Config)
-		wantMsg string
+		name      string
+		setup     func(cfg *Config)
+		wantField string
+		wantMsg   string
 	}{
 		{
 			name: "response_scanning",
@@ -458,7 +469,8 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 				cfg.ResponseScanning.Enabled = false
 				cfg.ResponseScanning.ExemptDomains = []string{testExemptDomain}
 			},
-			wantMsg: warnResponseExemptDisabled,
+			wantField: "response_scanning.exempt_domains",
+			wantMsg:   warnResponseExemptDisabled,
 		},
 		{
 			name: "adaptive_enforcement",
@@ -466,7 +478,8 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 				cfg.AdaptiveEnforcement.Enabled = false
 				cfg.AdaptiveEnforcement.ExemptDomains = []string{testExemptDomain}
 			},
-			wantMsg: warnAdaptiveExemptDisabled,
+			wantField: "adaptive_enforcement.exempt_domains",
+			wantMsg:   warnAdaptiveExemptDisabled,
 		},
 		{
 			name: "cross_request_detection",
@@ -474,12 +487,15 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 				cfg.CrossRequestDetection.Enabled = false
 				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{testExemptDomain}
 			},
-			wantMsg: warnCrossReqExemptDisabled,
+			wantField: "cross_request_detection.entropy_budget.exempt_domains",
+			wantMsg:   warnCrossReqExemptDisabled,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Capture stderr output.
+			// Stderr must stay untouched now that warnings return through a
+			// structured channel. Capture it so an accidental Fprintln
+			// regression fails loudly.
 			old := os.Stderr
 			r, w, err := os.Pipe()
 			if err != nil {
@@ -489,12 +505,7 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 
 			cfg := Defaults()
 			tt.setup(cfg)
-			if err := cfg.Validate(); err != nil {
-				os.Stderr = old
-				_ = w.Close()
-				_ = r.Close()
-				t.Fatalf("unexpected error: %v", err)
-			}
+			warnings, err := cfg.ValidateWithWarnings()
 
 			_ = w.Close()
 			os.Stderr = old
@@ -502,15 +513,34 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 			_, _ = io.Copy(&buf, r)
 			_ = r.Close()
 
-			if !strings.Contains(buf.String(), tt.wantMsg) {
-				t.Errorf("expected stderr warning containing %q, got %q", tt.wantMsg, buf.String())
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("ValidateWithWarnings must not write to stderr, got %q", buf.String())
+			}
+			found := false
+			for _, wn := range warnings {
+				if wn.Field == tt.wantField && strings.Contains(wn.Message+" "+wn.Field, tt.wantMsg) {
+					found = true
+					break
+				}
+				// Fallback: legacy tests match on concatenated form, but keep field scoped.
+				if wn.Field == tt.wantField && strings.Contains(wn.Field+" "+wn.Message, tt.wantMsg) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected warning for %q matching %q, got %+v", tt.wantField, tt.wantMsg, warnings)
 			}
 		})
 	}
 }
 
 func TestValidate_ExemptDomainsNoWarningWhenEnabled(t *testing.T) {
-	// No warning when section is enabled and exempt_domains is set.
+	// No warning when section is enabled and exempt_domains is set. Also
+	// verifies stderr stays clean under the structured-warnings model.
 	old := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -521,12 +551,7 @@ func TestValidate_ExemptDomainsNoWarningWhenEnabled(t *testing.T) {
 	cfg := Defaults()
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.ExemptDomains = []string{testExemptDomain}
-	if err := cfg.Validate(); err != nil {
-		os.Stderr = old
-		_ = w.Close()
-		_ = r.Close()
-		t.Fatalf("unexpected error: %v", err)
-	}
+	warnings, err := cfg.ValidateWithWarnings()
 
 	_ = w.Close()
 	os.Stderr = old
@@ -534,8 +559,136 @@ func TestValidate_ExemptDomainsNoWarningWhenEnabled(t *testing.T) {
 	_, _ = io.Copy(&buf, r)
 	_ = r.Close()
 
-	if strings.Contains(buf.String(), warnResponseExemptDisabled) {
-		t.Errorf("should not warn when section is enabled, got %q", buf.String())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("stderr should be untouched, got %q", buf.String())
+	}
+	for _, wn := range warnings {
+		if wn.Field == "response_scanning.exempt_domains" {
+			t.Errorf("should not warn when section is enabled, got %+v", wn)
+		}
+	}
+}
+
+// TestValidate_ReturnsWarningsInsteadOfPrinting locks in the config contract
+// that ValidateWithWarnings must not write to os.Stderr for any of the six
+// historical warn sites. Reading zero bytes from the stderr pipe proves the
+// stderr-emission migration removed every Fprintln path.
+func TestValidate_ReturnsWarningsInsteadOfPrinting(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(*Config)
+		wantField string
+	}{
+		{
+			name: "response scanning exempt domains disabled",
+			setup: func(cfg *Config) {
+				cfg.ResponseScanning.Enabled = false
+				cfg.ResponseScanning.ExemptDomains = []string{testExemptDomain}
+			},
+			wantField: "response_scanning.exempt_domains",
+		},
+		{
+			name: "websocket memory budget",
+			setup: func(cfg *Config) {
+				cfg.WebSocketProxy.Enabled = true
+				cfg.WebSocketProxy.MaxConcurrentConnections = 1024
+				cfg.WebSocketProxy.MaxMessageBytes = 1048576
+			},
+			wantField: "websocket_proxy",
+		},
+		{
+			name: "adaptive enforcement exempt domains disabled",
+			setup: func(cfg *Config) {
+				cfg.AdaptiveEnforcement.Enabled = false
+				cfg.AdaptiveEnforcement.ExemptDomains = []string{testExemptDomain}
+			},
+			wantField: "adaptive_enforcement.exempt_domains",
+		},
+		{
+			name: "cross request exempt domains disabled",
+			setup: func(cfg *Config) {
+				cfg.CrossRequestDetection.Enabled = false
+				cfg.CrossRequestDetection.EntropyBudget.ExemptDomains = []string{testExemptDomain}
+			},
+			wantField: "cross_request_detection.entropy_budget.exempt_domains",
+		},
+		{
+			name: "non-loopback listen",
+			setup: func(cfg *Config) {
+				cfg.FetchProxy.Listen = "192.0.2.10:8888"
+			},
+			wantField: "fetch_proxy.listen",
+		},
+		{
+			name: "all interfaces listen",
+			setup: func(cfg *Config) {
+				cfg.FetchProxy.Listen = testWildcardListen
+			},
+			wantField: "fetch_proxy.listen",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldErr := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			os.Stderr = w
+
+			cfg := Defaults()
+			tt.setup(cfg)
+			warnings, vErr := cfg.ValidateWithWarnings()
+
+			_ = w.Close()
+			os.Stderr = oldErr
+			var buf bytes.Buffer
+			_, _ = io.Copy(&buf, r)
+			_ = r.Close()
+
+			if vErr != nil {
+				t.Fatalf("unexpected validation error: %v", vErr)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("ValidateWithWarnings must not write to stderr, got %q", buf.String())
+			}
+			if !hasConfigWarning(warnings, tt.wantField) {
+				t.Fatalf("expected warning field %q, got %+v", tt.wantField, warnings)
+			}
+		})
+	}
+}
+
+// TestValidate_BackwardCompat proves the Validate() -> error wrapper still
+// works for callers that do not care about advisory warnings. The same
+// config that triggers a warning must not be elevated to an error.
+func TestValidate_BackwardCompat(t *testing.T) {
+	oldErr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	cfg := Defaults()
+	cfg.ResponseScanning.Enabled = false
+	cfg.ResponseScanning.ExemptDomains = []string{testExemptDomain}
+	vErr := cfg.Validate()
+
+	_ = w.Close()
+	os.Stderr = oldErr
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+
+	if vErr != nil {
+		t.Errorf("Validate() should ignore warnings, got err: %v", vErr)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("Validate() must not write to stderr either, got %q", buf.String())
 	}
 }
 
@@ -3417,10 +3570,13 @@ func TestDefaults_SlackTokenRegex(t *testing.T) {
 
 func TestValidate_NonLoopbackListenWarning(t *testing.T) {
 	cfg := Defaults()
-	cfg.FetchProxy.Listen = "0.0.0.0:8888"
-	// Should still validate (warning, not error), but the warning goes to stderr
-	if err := cfg.Validate(); err != nil {
+	cfg.FetchProxy.Listen = testWildcardListen
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
 		t.Errorf("non-loopback listen should validate: %v", err)
+	}
+	if !hasConfigWarning(warnings, "fetch_proxy.listen") {
+		t.Fatalf("expected fetch_proxy.listen warning, got %+v", warnings)
 	}
 }
 
@@ -4996,16 +5152,18 @@ func TestValidateReload_MCPSessionBindingDisabled(t *testing.T) {
 }
 
 func TestValidate_WebSocketProxyMemoryBudgetWarning(t *testing.T) {
-	// Exercise the memory budget warning path (config.go lines 609-612).
 	cfg := Defaults()
 	cfg.WebSocketProxy.Enabled = true
 	cfg.ApplyDefaults()
 	// Set values that produce > 1GB memory budget.
 	cfg.WebSocketProxy.MaxConcurrentConnections = 1024
 	cfg.WebSocketProxy.MaxMessageBytes = 1048576 // 1MB * 1024 * 2 = 2GB
-	// Should still validate (warning only, not an error).
-	if err := cfg.Validate(); err != nil {
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
 		t.Fatalf("high memory budget should warn, not error: %v", err)
+	}
+	if !hasConfigWarning(warnings, "websocket_proxy") {
+		t.Fatalf("expected websocket_proxy warning, got %+v", warnings)
 	}
 }
 
@@ -6235,7 +6393,7 @@ func TestValidate_KillSwitchAPIListen_Valid(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.APIListen = testAPIListen
-	cfg.KillSwitch.APIToken = testToken //nolint:gosec // test value
+	cfg.KillSwitch.APIToken = testToken
 
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("valid api_listen should pass validation: %v", err)
@@ -6269,7 +6427,7 @@ func TestValidate_KillSwitchAPIListen_CollisionWithProxy(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.APIListen = cfg.FetchProxy.Listen // same port
-	cfg.KillSwitch.APIToken = testToken              //nolint:gosec // test value
+	cfg.KillSwitch.APIToken = testToken
 
 	err := cfg.Validate()
 	if err == nil {
@@ -6284,8 +6442,8 @@ func TestValidate_KillSwitchAPIListen_CollisionDifferentBind(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.FetchProxy.Listen = "127.0.0.1:8888"
-	cfg.KillSwitch.APIListen = "0.0.0.0:8888" // same port, different bind address
-	cfg.KillSwitch.APIToken = testToken       //nolint:gosec // test value
+	cfg.KillSwitch.APIListen = testWildcardListen // same port, different bind address
+	cfg.KillSwitch.APIToken = testToken
 
 	err := cfg.Validate()
 	if err == nil {
@@ -6630,8 +6788,8 @@ func TestValidate_MetricsListen_CollidesAPI(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.APIListen = testAPIListen2
-	cfg.KillSwitch.APIToken = testToken //nolint:gosec // test
-	cfg.MetricsListen = testAPIListen2  // same port as API
+	cfg.KillSwitch.APIToken = testToken
+	cfg.MetricsListen = testAPIListen2 // same port as API
 
 	err := cfg.Validate()
 	if err == nil {

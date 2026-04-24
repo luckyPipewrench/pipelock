@@ -26,6 +26,13 @@ linters:
       - path: internal/proxy/proxy\.go
         linters: [gosec]
         text: "G704"
+      # Config schema holds YAML-bound container fields for user-supplied
+      # tokens (APIToken, AuthToken, BearerTokens). These are NOT hardcoded
+      # credentials — gosec G117's "field name matches secret pattern"
+      # check is a false positive for config containers.
+      - path: internal/config/schema\.go
+        linters: [gosec]
+        text: "G117"
   settings:
     gosec:
       excludes:

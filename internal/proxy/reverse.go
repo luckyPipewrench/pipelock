@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -660,6 +661,67 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"compressed_response"}, nil)
 		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
+		return nil
+	}
+
+	// SSE streaming: hijack the response body so per-event scanning runs
+	// inline. Without this the buffered path below caps SSE at the proxy
+	// max-body limit and breaks per-event flushing, killing token-by-token
+	// UX for any LLM SSE response (OpenAI, Anthropic, Kilo Gateway).
+	// httputil.ReverseProxy auto-flushes text/event-stream per write, so
+	// the pipe writer's per-event Write reaches the client immediately.
+	if IsSSEContentType(resp.Header.Get("Content-Type")) {
+		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+		sseLayer := LayerSSEStream
+		sseOpts := SSEDispatchOptions{
+			IsA2A:      false,
+			A2A:        &cfg.A2AScanning,
+			GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+			Generic: mcp.GenericSSEScanOptions{
+				Target:             resp.Request.URL.String(),
+				Suppress:           cfg.Suppress,
+				ResponseScanExempt: revRespExempt,
+				OnFinding: func(err error) {
+					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
+				},
+			},
+		}
+		onComplete := func(err error) {
+			if err == nil {
+				return
+			}
+			// Only an actual scan finding (DLP / injection / oversize /
+			// invalid-UTF-8) counts as an sse_stream block in audit. The
+			// fixes that landed earlier in this PR — writeSSEEvent now
+			// returns errors and the ctx-cancel watcher closes the
+			// upstream body — surface client disconnects and broken-pipe
+			// errors here too. Misclassifying those as sse_stream blocks
+			// would inflate the block metric and write misleading audit
+			// lines for what are normal stream-end conditions.
+			if !IsSSEStreamFinding(err) {
+				rp.logger.LogError(actx, err)
+				return
+			}
+			// Reverse-proxy response-side findings (this branch + the
+			// existing buffered scan path below) emit log + metric only;
+			// no signed receipt. forward.go and intercept.go DO emit
+			// receipts via p.emitReceipt / interceptEmitReceipt and that
+			// asymmetry is a known reverse-proxy gap, not new to this
+			// branch. Tracked as a tech-debt followup for receipt parity
+			// across all reverse-proxy finding paths (compressed block at
+			// L657, oversize block, and this SSE block). Until that ships,
+			// SSE block decisions are auditable via the structured log
+			// line below plus the reverse_proxy_scan_blocked metric.
+			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, sseLayer)
+		}
+		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
+		// SSE is open-ended; the upstream Content-Length (if any) becomes
+		// meaningless once we strip events through the pipe. -1 instructs
+		// httputil.ReverseProxy to chunk the response.
+		resp.ContentLength = -1
+		resp.Header.Del("Content-Length")
+		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, strconv.Itoa(resp.StatusCode))
 		return nil
 	}
 

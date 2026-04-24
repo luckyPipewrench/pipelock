@@ -33,13 +33,20 @@ const (
 	// constructed Defaults() config, post-ApplyDefaults + Validate.
 	// This is the "out of the box" hash a user gets from `pipelock
 	// run` with no --config flag.
-	goldenHashDefaults = "2c41040d1ecad4c08c6b850f62ff1050945da1f580d6b59e2b6d840173b35225"
+	// Bumped for the generic SSE streaming feature: Defaults() now
+	// includes ResponseScanning.SSEStreaming with its enabled/action/
+	// max_event_bytes defaults. New policy knob → ph must shift.
+	goldenHashDefaults = "bbc0e8d8ee618bedfd61b19f74af01b3786b12c181fd7abb1b1d262a0f060477"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
 	// representative policy-semantic fixture with emphasis on the
 	// sections most likely to drift during TD-2b.
-	goldenHashRichConfig = "918aff0e33126bbf6db3f669b52d69933f5511a219912f1f8001c6499ee79266"
+	// Bumped for the generic SSE streaming feature: ResponseScanning now
+	// carries an SSEStreaming sub-struct that policySemanticView hashes
+	// through its shallow copy. Adding a new policy knob must bump ph
+	// so verifiers detect the semantics change.
+	goldenHashRichConfig = "5a7f7b603b2fcba853d333c8c7583b37fbca548260e8d963cbb20438e1d54544"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

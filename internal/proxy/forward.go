@@ -6,7 +6,6 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -1256,19 +1255,70 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		maxBytes = budgetRemaining
 	}
 
-	// A2A SSE streaming: if the response is an A2A event stream, scan each
-	// event via field-aware walker with rolling-tail cross-event injection
-	// detection. Must run before the buffered response scan path.
-	if isA2A && strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+	fwdRespHost := resp.Request.URL.Hostname()
+	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
+	if sc.ResponseScanningEnabled() && fwdRespExempt {
+		p.logger.LogResponseScanExempt(actx, fwdRespHost)
+		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
+	}
+
+	// SSE streaming: scan events inline using A2A field-aware scanning (when
+	// the request is A2A) or generic per-event DLP + injection scanning for
+	// any other text/event-stream response (OpenAI, Anthropic, Kilo Gateway,
+	// generic LLM SSE). Clean events flush immediately; detection terminates
+	// the stream in block mode and logs in warn/exempt mode. Must run before
+	// the buffered response scan path so streaming LLM responses are not
+	// silently downgraded to a buffered 1MB cap.
+	//
+	// Enforcement gate: an operator who disabled the parent scanner (A2A or
+	// generic response scanning) must NOT see new behavior introduced by
+	// this branch — including the compressed-SSE fail-closed block. When
+	// disabled, fall through to the existing buffered/relay path so SSE
+	// behavior matches the pre-PR semantics for opted-out configs.
+	sseScanningEnabled := cfg.ResponseScanning.Enabled
+	if isA2A {
+		sseScanningEnabled = cfg.A2AScanning.Enabled
+	}
+	if IsSSEContentType(resp.Header.Get("Content-Type")) && sseScanningEnabled {
+		sseOpts := SSEDispatchOptions{
+			IsA2A:      isA2A,
+			A2A:        &cfg.A2AScanning,
+			GenericSSE: &cfg.ResponseScanning.SSEStreaming,
+			Generic: mcp.GenericSSEScanOptions{
+				Target:             targetURL,
+				Suppress:           cfg.Suppress,
+				ResponseScanExempt: fwdRespExempt,
+				OnFinding: func(err error) {
+					// Track BOTH responsePromptHit (for receipt context)
+					// AND hasFinding (for adaptive-decay protection). The
+					// success branch below decays the adaptive score when
+					// hasFinding is false; warn-mode generic SSE findings
+					// are forwarded inline by GenericSSEScanOptions and
+					// the dispatcher returns nil, so without setting
+					// hasFinding here a flood of warn-only findings would
+					// dilute the session escalation signal.
+					responsePromptHit = true
+					hasFinding = true
+					p.logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
+				},
+			},
+		}
+		sseLayer := SSEStreamLayer(sseOpts)
+		sseAction := cfg.ResponseScanning.SSEStreaming.Action
+		if isA2A {
+			sseAction = cfg.A2AScanning.Action
+		}
+
 		// Fail-closed: compressed SSE streams cannot be scanned.
-		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
-			p.logger.LogBlocked(actx, "a2a_stream", "compressed A2A stream cannot be scanned")
-			p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+		if IsSSECompressed(resp.Header) {
+			msg := "compressed " + sseLayer + " response cannot be scanned"
+			p.logger.LogBlocked(actx, sseLayer, msg)
+			p.metrics.RecordBlocked(r.URL.Hostname(), sseLayer, time.Since(start), agentLabel)
 			p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
-				Layer:               "a2a_stream",
-				Pattern:             "compressed A2A stream cannot be scanned",
+				Layer:               sseLayer,
+				Pattern:             msg,
 				Transport:           "forward",
 				Method:              r.Method,
 				Target:              targetURL,
@@ -1284,30 +1334,35 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaintDecisionReason: forwardTaint.Result.Reason,
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			}))
-			http.Error(w, "blocked: compressed A2A stream cannot be scanned", http.StatusForbidden)
+			http.Error(w, "blocked: "+msg, http.StatusForbidden)
 			return
 		}
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		flusher, _ := w.(http.Flusher)
-		if err := mcp.ScanA2AStream(r.Context(), resp.Body, w, flusher, sc, &cfg.A2AScanning); err != nil {
-			if errors.Is(err, mcp.ErrA2AStreamFinding) {
+		if err := DispatchSSEScan(r.Context(), resp.Body, w, flusher, sc, sseOpts); err != nil {
+			if IsSSEStreamFinding(err) {
 				responsePromptHit = true
+				// Same adaptive-decay protection as the OnFinding path
+				// above. A2A warn-mode findings reach this branch (the
+				// A2A scanner returns ErrA2AStreamFinding on detection),
+				// and without hasFinding the success-path decay would
+				// otherwise treat a real finding as a clean response.
+				hasFinding = true
 			}
 			// Distinguish scanning findings from internal/IO errors. In warn
-			// mode, findings are logged but the stream has already been
-			// forwarded (events are written before scanning the next one),
-			// so we only record the anomaly. Block mode and internal errors
-			// terminate the stream.
-			if errors.Is(err, mcp.ErrA2AStreamFinding) && cfg.A2AScanning.Action == config.ActionWarn {
-				p.logger.LogAnomaly(actx, "a2a_stream", err.Error(), 0)
+			// mode, A2A findings are logged without an additional receipt.
+			// Generic SSE warn-mode findings are handled inline by
+			// GenericSSEScanOptions.OnFinding and return nil.
+			if IsSSEStreamFinding(err) && sseAction == config.ActionWarn {
+				p.logger.LogAnomaly(actx, sseLayer, err.Error(), 0)
 			} else {
-				p.logger.LogBlocked(actx, "a2a_stream", err.Error())
-				p.metrics.RecordBlocked(r.URL.Hostname(), "a2a_stream", time.Since(start), agentLabel)
+				p.logger.LogBlocked(actx, sseLayer, err.Error())
+				p.metrics.RecordBlocked(r.URL.Hostname(), sseLayer, time.Since(start), agentLabel)
 				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
-					Layer:               "a2a_stream",
+					Layer:               sseLayer,
 					Pattern:             err.Error(),
 					Transport:           "forward",
 					Method:              r.Method,
@@ -1359,12 +1414,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.
 	// Skip for response-exempt domains. Use the final response origin after
 	// redirects — an exempt host that 302s to a non-exempt host must be scanned.
-	fwdRespHost := resp.Request.URL.Hostname()
-	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
-	if sc.ResponseScanningEnabled() && fwdRespExempt {
-		p.logger.LogResponseScanExempt(actx, fwdRespHost)
-		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
-	}
 	// Buffer the response when ANY of response scanning, browser shield, or
 	// media policy is enabled. Media policy cannot be gated behind the
 	// scanning flag — an operator who disables response scanning for

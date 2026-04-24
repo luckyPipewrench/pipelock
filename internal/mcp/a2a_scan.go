@@ -584,7 +584,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Forward clean event. Preserve id, event, and retry fields from the
 		// SSE reader so downstream consumers can correlate events, handle
 		// typed dispatching, and respect reconnection timing.
-		writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry())
+		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
+			return fmt.Errorf("a2a stream write: %w", werr)
+		}
 		if flusher != nil {
 			flusher.Flush()
 		}
@@ -606,18 +608,34 @@ func extractTextFromEvent(event []byte) string {
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the
 // id, event type, and retry fields for downstream correlation, typed
-// dispatching, and reconnection support.
-func writeSSEEvent(w io.Writer, data []byte, eventID, eventType, retry string) {
+// dispatching, and reconnection support. Returns the first write error
+// so callers can break their event loops promptly when the downstream
+// consumer goes away (e.g. an io.Pipe closed by the client).
+func writeSSEEvent(w io.Writer, data []byte, eventID, eventType, retry string) error {
 	if eventType != "" {
-		_, _ = fmt.Fprintf(w, "event: %s\n", eventType)
+		if _, err := fmt.Fprintf(w, "event: %s\n", eventType); err != nil {
+			return err
+		}
 	}
 	if eventID != "" {
-		_, _ = fmt.Fprintf(w, "id: %s\n", eventID)
+		if _, err := fmt.Fprintf(w, "id: %s\n", eventID); err != nil {
+			return err
+		}
 	}
 	if retry != "" {
-		_, _ = fmt.Fprintf(w, "retry: %s\n", retry)
+		if _, err := fmt.Fprintf(w, "retry: %s\n", retry); err != nil {
+			return err
+		}
 	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+	for _, line := range strings.Split(string(data), "\n") {
+		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(w, "\n"); err != nil {
+		return err
+	}
+	return nil
 }
 
 // IsConfigMismatch reports whether every finding in this A2A scan result is a

@@ -163,7 +163,6 @@ func ForwardScannedInput(
 	sc := opts.scanner()
 	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch
-	chainMatcher := opts.chainMatcher()
 	auditLogger := opts.AuditLogger
 	cee := opts.cee()
 	rec := opts.Rec
@@ -174,9 +173,6 @@ func ForwardScannedInput(
 	receiptEmitter := opts.receiptEmitter()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
-	taintOpts := opts
-	taintOpts.TaintCfg = opts.taintCfg()
-	taintOpts.TaintCfgFn = nil
 
 	defer close(blockedCh)
 
@@ -314,86 +310,42 @@ func ForwardScannedInput(
 		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
 		warnCtx.Transport = transportMCPStdio
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
-		verdict := ScanRequest(stdioInputCtx, line, sc, action, onParseError)
 
-		// Tool call policy check — independent of content scanning.
-		policyVerdict := policy.Verdict{}
-		if policyCfg != nil {
-			policyVerdict = policyCfg.CheckRequest(line)
-		}
+		// Evaluate every configured gate in one pass. The helper returns
+		// a composite verdict and the first gate that short-circuited,
+		// preserving per-gate block semantics and stdio's gate ordering
+		// (policy before DoW, two-phase binding around DoW, frozen tool
+		// between DoW and chain, taint last).
+		eval := EvaluateMCPInputGatesStdio(stdioInputCtx, frame, line, trimmedLine, bindingCfg, opts, action, onParseError)
+		verdict := eval.ContentVerdict
+		policyVerdict := eval.PolicyVerdict
+		taintDecision := eval.TaintDecision
+		bindingAction := eval.BindingAction
+		bindingReason := eval.BindingReason
+		chainAction := eval.ChainAction
+		chainReason := eval.ChainReason
 
-		// Session binding: validate tools/call against baseline.
-		bindingAction := ""
-		bindingReason := ""
-
-		// Defense-in-depth: session binding also rejects batches. The
-		// unconditional batch reject above makes this unreachable, but
-		// it stays as a safety net if the early check is ever removed.
-		if bindingCfg != nil && bindingCfg.Baseline != nil && len(trimmedLine) > 0 && trimmedLine[0] == '[' {
-			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: batch request with session binding active\n", lineNum)
-			bindingAction = bindingCfg.UnknownToolAction
-			bindingReason = "session_binding:batch_request"
-		}
-
-		// Extract tool name once for binding, chain detection, and DoW tracking.
 		var toolCallName string
 		if verdict.Method == methodToolsCall {
 			toolCallName = frame.ToolCallName
 		}
 
-		// Denial-of-wallet: check tool call budget before forwarding.
-		if opts.DoWCheck != nil && verdict.Method == methodToolsCall && toolCallName != "" {
-			argsJSON := string(frame.Args)
-			allowed, dowAction, dowReason, dowBudgetType := opts.DoWCheck(toolCallName, argsJSON)
-			if !allowed {
-				logMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q DoW %s: %s (%s)",
-					lineNum, toolCallName, dowAction, dowReason, dowBudgetType)
-				_, _ = fmt.Fprintln(logW, logMsg)
-				if dowAction == config.ActionBlock {
-					if auditLogger != nil {
-						auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", dowReason)
-					}
-					if m != nil {
-						m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
-					}
-					recordAdaptiveSignal(session.SignalBlock)
-					blockedCh <- BlockedRequest{
-						ID:             verdict.ID,
-						IsNotification: isRPCNotification(verdict.ID),
-						LogMessage:     logMsg,
-						ErrorCode:      -32600,
-						ErrorMessage:   "pipelock: " + dowReason,
-					}
-					continue
-				}
-				// dow_action: warn — log and record near-miss, but forward the request.
-				if auditLogger != nil {
-					auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", dowReason, 0)
-				}
-				recordAdaptiveSignal(session.SignalNearMiss)
-			}
-		}
-
-		if bindingCfg != nil && bindingCfg.Baseline != nil && verdict.Method == methodToolsCall {
-			if toolCallName == "" {
-				// Fail closed: tools/call without a name is a binding violation.
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
-				bindingAction = bindingCfg.UnknownToolAction
-				bindingReason = "session_binding:missing_tool_name"
-			} else if !bindingCfg.Baseline.HasBaseline() {
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n",
-					lineNum, toolCallName)
-				bindingAction = bindingCfg.NoBaselineAction
-				bindingReason = "session_binding:no_baseline"
-			} else if !bindingCfg.Baseline.IsKnownTool(toolCallName) {
-				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n",
-					lineNum, toolCallName)
-				bindingAction = bindingCfg.UnknownToolAction
-				bindingReason = "session_binding:unknown_tool"
-			}
-		}
-		// Capture: record session binding verdict when a violation occurred.
+		// Session binding side effects. Fire the diagnostic log and
+		// capture observe for every binding violation regardless of
+		// which gate short-circuits later, preserving the pre-refactor
+		// ordering where binding observes run before frozen/chain/
+		// parse-error/taint have had a chance to fire.
 		if bindingReason != "" {
+			switch bindingReason {
+			case bindingReasonBatchRequest:
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: batch request with session binding active\n", lineNum)
+			case bindingReasonMissingToolName:
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call missing params.name\n", lineNum)
+			case bindingReasonNoBaseline:
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q before baseline established\n", lineNum, toolCallName)
+			case bindingReasonUnknownTool:
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n", lineNum, toolCallName)
+			}
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 				Subsurface: "session_binding",
 				Transport:  opts.Transport,
@@ -412,94 +364,33 @@ func ForwardScannedInput(
 			})
 		}
 
-		// Frozen tool enforcement: when a session is in airlock hard tier,
-		// only tools in the frozen snapshot are permitted. This prevents
-		// tool injection after quarantine begins.
-		if opts.ToolFreezer != nil && opts.FrozenToolStableKey != "" &&
-			opts.ToolFreezer.IsFrozen(opts.FrozenToolStableKey) {
-			// Fail-closed: block when tool name is empty (unparseable) or not in frozen set.
-			if toolCallName == "" || !opts.ToolFreezer.IsToolAllowed(opts.FrozenToolStableKey, toolCallName) {
-				frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, toolCallName)
-				_, _ = fmt.Fprintln(logW, frozenMsg)
-				if auditLogger != nil {
-					auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "frozen_tool", "tool not in frozen inventory")
-				}
-				if m != nil {
-					m.RecordBlocked("mcp", "frozen_tool", 0, "")
-				}
-				recordAdaptiveSignal(session.SignalBlock)
-				blockedCh <- BlockedRequest{
-					ID:             verdict.ID,
-					IsNotification: isRPCNotification(verdict.ID),
-					LogMessage:     frozenMsg,
-					ErrorCode:      -32600,
-					ErrorMessage:   "pipelock: tool not in frozen inventory",
-				}
-				continue
+		// Chain side effects. Log, audit, and capture observe on every
+		// match, block and warn alike. The block-dispatch switch below
+		// handles the block-specific adaptive signal + BlockedRequest;
+		// warn matches fall through into the effective-action merge
+		// below with chainAction / chainReason populated.
+		if eval.ChainMatched {
+			_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
+				eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
+			if auditLogger != nil {
+				auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolCallName, "default")
 			}
-		}
-
-		// Chain detection: check if this tool call matches an attack pattern.
-		// Runs on every tools/call regardless of content scan results.
-		chainAction := ""
-		chainReason := ""
-		// Stdio proxy has exactly one client session per process instance.
-		// "default" is the correct session key for this 1:1 architecture.
-		if chainMatcher != nil && toolCallName != "" {
-			cv := chainMatcher.Record("default", toolCallName, string(line))
-			if cv.Matched {
-				_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
-					cv.PatternName, cv.Severity, cv.Action)
-				if auditLogger != nil {
-					auditLogger.LogChainDetection(cv.PatternName, cv.Severity, cv.Action, toolCallName, "default")
-				}
-				// Capture: record chain detection verdict.
-				obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
-					Subsurface: "chain_detection",
-					Transport:  opts.Transport,
-					Request: capture.CaptureRequest{
-						ToolName:  toolCallName,
-						MCPMethod: methodToolsCall,
-					},
-					RawFindings: []capture.Finding{{
-						Kind:     capture.KindChainDetection,
-						Chain:    cv.PatternName,
-						Severity: cv.Severity,
-						Action:   cv.Action,
-					}},
-					EffectiveAction: cv.Action,
-					Outcome:         captureOutcome(cv.Action, false),
-				})
-				if cv.Action == config.ActionBlock {
-					// Use verdict.ID from the already-parsed ScanRequest result
-					// rather than re-parsing via extractRPCID. A tools/call always
-					// has an ID; using the parsed value avoids a silent-drop bug
-					// if re-parsing fails on unusual ID shapes.
-					recordAdaptiveSignal(session.SignalBlock)
-					blockedCh <- BlockedRequest{
-						ID:             verdict.ID,
-						IsNotification: isRPCNotification(verdict.ID),
-						LogMessage:     fmt.Sprintf("pipelock: input line %d: chain pattern %q blocked", lineNum, cv.PatternName),
-						ErrorCode:      -32004,
-						ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", cv.PatternName),
-					}
-					continue
-				}
-				// warn action: record reason for inclusion in combined verdict.
-				chainAction = cv.Action
-				chainReason = "chain:" + cv.PatternName
-			}
-		}
-
-		// Parse error — block by default (policy doesn't override parse errors).
-		if verdict.Error != "" {
-			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
-			blockedCh <- BlockedRequest{
-				ID:             verdict.ID,
-				IsNotification: isRPCNotification(verdict.ID),
-				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
-			}
-			continue
+			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
+				Subsurface: "chain_detection",
+				Transport:  opts.Transport,
+				Request: capture.CaptureRequest{
+					ToolName:  toolCallName,
+					MCPMethod: methodToolsCall,
+				},
+				RawFindings: []capture.Finding{{
+					Kind:     capture.KindChainDetection,
+					Chain:    eval.ChainPatternName,
+					Severity: eval.ChainSeverity,
+					Action:   eval.ChainAction,
+				}},
+				EffectiveAction: eval.ChainAction,
+				Outcome:         captureOutcome(eval.ChainAction, false),
+			})
 		}
 
 		// Pre-generate actionID for tools/call only — metadata methods
@@ -513,59 +404,130 @@ func ForwardScannedInput(
 			}
 		}
 
-		taintDecision := taintDecision{
-			Authority: session.AuthorityUserBroad,
-			Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
-		}
 		emitToolReceipt := func(receiptVerdict string) {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
 			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolCallName, receiptVerdict, taintDecision, redactionReport)
 		}
-		if verdict.Method == methodToolsCall {
-			taintDecision = evaluateMCPTaint(taintOpts, toolCallName, string(frame.Args))
-			if taintDecision.Result.Decision == session.PolicyAsk || taintDecision.Result.Decision == session.PolicyBlock {
-				if auditLogger != nil {
-					auditLogger.LogTaintDecision(
-						mustMCPAuditContext(auditLogger, "MCP", toolCallName),
-						taintDecision.Risk.Level.String(),
-						taintDecision.ActionClass.String(),
-						taintDecision.Sensitivity.String(),
-						taintDecision.Authority.String(),
-						taintDecision.Result.Decision.String(),
-						taintDecision.Result.Reason,
-						taintDecision.Risk.LastExternalURL,
-						taintDecision.Risk.LastExternalKind,
-					)
-				}
-				switch taintDecision.Result.Decision {
-				case session.PolicyBlock:
-					blockedCh <- BlockedRequest{
-						ID:             verdict.ID,
-						IsNotification: isRPCNotification(verdict.ID),
-						LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
-						ErrorCode:      -32002,
-						ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
-					}
-					emitToolReceipt(config.ActionBlock)
-					continue
-				case session.PolicyAsk:
-					preview := strings.TrimSpace(fmt.Sprintf("%s %s", toolCallName, taintDecision.ActionRef))
-					approved, hasApprover := taintDecisionRequiresApproval(opts, toolCallName, taintApprovalReason(taintDecision), preview)
-					if !hasApprover || !approved {
-						blockedCh <- BlockedRequest{
-							ID:             verdict.ID,
-							IsNotification: isRPCNotification(verdict.ID),
-							LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
-							ErrorCode:      -32002,
-							ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
-						}
-						emitToolReceipt(config.ActionBlock)
-						continue
-					}
-					approveTaintDecision(&taintDecision)
-				}
+
+		logTaintDecision := func() {
+			if auditLogger == nil {
+				return
 			}
+			decision := taintDecision
+			if eval.TaintAuditDecisionSet {
+				decision = eval.TaintAuditDecision
+			}
+			auditLogger.LogTaintDecision(
+				mustMCPAuditContext(auditLogger, "MCP", toolCallName),
+				decision.Risk.Level.String(),
+				decision.ActionClass.String(),
+				decision.Sensitivity.String(),
+				decision.Authority.String(),
+				decision.Result.Decision.String(),
+				decision.Result.Reason,
+				decision.Risk.LastExternalURL,
+				decision.Risk.LastExternalKind,
+			)
+		}
+
+		// DoW diagnostic log. Runs on any !allowed outcome (block or
+		// warn). Held in a local so the block-dispatch case below can
+		// reuse it verbatim as the BlockedRequest.LogMessage.
+		var dowLogMsg string
+		if !eval.DoWAllowed && eval.DoWAction != "" {
+			dowLogMsg = fmt.Sprintf("pipelock: input line %d: tools/call %q DoW %s: %s (%s)",
+				lineNum, toolCallName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
+			_, _ = fmt.Fprintln(logW, dowLogMsg)
+		}
+
+		// Block dispatch on the first gate that short-circuited. Per
+		// gate: audit + metrics + adaptive-signal + BlockedRequest.
+		// The response shape (JSON-RPC error code, LogMessage) stays
+		// here because it is transport-specific.
+		switch eval.BlockingGate {
+		case blockingGateDoW:
+			if auditLogger != nil {
+				auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", eval.DoWReason)
+			}
+			if m != nil {
+				m.RecordBlocked("mcp", "denial_of_wallet", 0, "")
+			}
+			recordAdaptiveSignal(session.SignalBlock)
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     dowLogMsg,
+				ErrorCode:      -32600,
+				ErrorMessage:   "pipelock: " + eval.DoWReason,
+			}
+			emitToolReceipt(config.ActionBlock)
+			continue
+		case blockingGateFrozenTool:
+			frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, eval.FrozenToolName)
+			_, _ = fmt.Fprintln(logW, frozenMsg)
+			if auditLogger != nil {
+				auditLogger.LogBlocked(mustMCPAuditContext(auditLogger, "MCP", eval.FrozenToolName), "frozen_tool", "tool not in frozen inventory")
+			}
+			if m != nil {
+				m.RecordBlocked("mcp", "frozen_tool", 0, "")
+			}
+			recordAdaptiveSignal(session.SignalBlock)
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     frozenMsg,
+				ErrorCode:      -32600,
+				ErrorMessage:   "pipelock: tool not in frozen inventory",
+			}
+			emitToolReceipt(config.ActionBlock)
+			continue
+		case blockingGateChain:
+			recordAdaptiveSignal(session.SignalBlock)
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     fmt.Sprintf("pipelock: input line %d: chain pattern %q blocked", lineNum, eval.ChainPatternName),
+				ErrorCode:      -32004,
+				ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", eval.ChainPatternName),
+			}
+			emitToolReceipt(config.ActionBlock)
+			continue
+		case blockingGateParseError:
+			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (parse error)", lineNum),
+			}
+			emitToolReceipt(config.ActionBlock)
+			continue
+		case blockingGateTaintBlock, blockingGateTaintAskDenied:
+			logTaintDecision()
+			blockedCh <- BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
+				ErrorCode:      -32002,
+				ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
+			}
+			emitToolReceipt(config.ActionBlock)
+			continue
+		}
+
+		// Non-blocking warn-level side effects from gates that did not
+		// short-circuit. DoW warn: audit anomaly + near-miss signal
+		// (the diagnostic log already ran above). Taint approved:
+		// audit the pre-approval decision so the operator sees the
+		// approval happened.
+		if !eval.DoWAllowed && eval.DoWAction != "" {
+			if auditLogger != nil {
+				auditLogger.LogAnomaly(mustMCPAuditContext(auditLogger, "MCP", toolCallName), "denial_of_wallet", eval.DoWReason, 0)
+			}
+			recordAdaptiveSignal(session.SignalNearMiss)
+		}
+		if eval.TaintApproved {
+			logTaintDecision()
 		}
 
 		// All clean — forward (with block_all and CEE checks).

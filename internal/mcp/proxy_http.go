@@ -383,7 +383,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// transport-specific response shape (JSON-RPC error codes,
 	// LogMessage strings) stays in the transport layer.
 	switch eval.BlockingGate {
-	case "a2a_body":
+	case blockingGateA2ABody:
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", eval.A2AResult.Reason)
 		if eval.A2AResult.IsConfigMismatch() {
 			recordAdaptiveSignal(session.SignalNearMiss)
@@ -399,7 +399,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ErrorMessage:   "pipelock: request blocked by A2A input scanning",
 		}
 		return result
-	case "dow":
+	case blockingGateDoW:
 		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",
 			toolName, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
 		if auditLogger != nil {
@@ -412,7 +412,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{ID: verdict.ID, IsNotification: isRPCNotification(verdict.ID), ErrorCode: -32600, ErrorMessage: "pipelock: " + eval.DoWReason}
 		return result
-	case "chain":
+	case blockingGateChain:
 		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
 		if auditLogger != nil {
@@ -428,7 +428,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			ErrorMessage:   fmt.Sprintf("tool call blocked: chain pattern %q detected", eval.ChainPatternName),
 		}
 		return result
-	case "parse_error":
+	case blockingGateParseError:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
@@ -437,7 +437,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			LogMessage:     "blocked (parse error)",
 		}
 		return result
-	case "taint_block", "taint_ask_denied":
+	case blockingGateTaintBlock, blockingGateTaintAskDenied:
 		logTaintDecision()
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{

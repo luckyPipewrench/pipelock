@@ -391,10 +391,10 @@ func (c *Config) ApplyDefaults() {
 		if c.RequestBodyScanning.MaxBodyBytes == 0 {
 			c.RequestBodyScanning.MaxBodyBytes = 5 * 1024 * 1024 // 5MB default
 		}
-		// Note: ScanHeaders defaults to false (Go bool zero value). YAML must
-		// explicitly set scan_headers: true to enable header scanning. This is a
-		// known limitation of Go's YAML bool unmarshaling (can't distinguish
-		// "omitted" from "explicitly false").
+		// ScanHeaders defaults to true when omitted or null in YAML; the
+		// bool-to-true coercion happens in applySecurityDefaults via
+		// setBoolDefault(reqBody, "scan_headers", ...). Explicit
+		// scan_headers: false still disables header scanning.
 		if c.RequestBodyScanning.HeaderMode == "" {
 			c.RequestBodyScanning.HeaderMode = HeaderModeSensitive
 		}

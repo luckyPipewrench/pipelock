@@ -97,7 +97,10 @@ func Load(path string) (*Config, error) {
 			// Verify the resolved path is still under the config directory.
 			// filepath.Rel returns a ".." prefix if the target escapes.
 			rel, err := filepath.Rel(configDir, resolved)
-			if err != nil || strings.HasPrefix(rel, "..") {
+			// Separator-aware escape check: exact ".." or a path segment
+			// starting with ".." + os.PathSeparator. Plain HasPrefix(rel, "..")
+			// would reject valid names like "..cache" inside the config dir.
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q escapes config directory (use absolute path instead)", i, p)
 			}
 			cfg.FileSentry.WatchPaths[i] = resolved

@@ -525,8 +525,8 @@ func TestValidate_ExemptDomainsWarnsWhenDisabled(t *testing.T) {
 					found = true
 					break
 				}
-				// Fallback: legacy tests match on the concatenated form.
-				if strings.Contains(wn.Field+" "+wn.Message, tt.wantMsg) {
+				// Fallback: legacy tests match on concatenated form, but keep field scoped.
+				if wn.Field == tt.wantField && strings.Contains(wn.Field+" "+wn.Message, tt.wantMsg) {
 					found = true
 					break
 				}

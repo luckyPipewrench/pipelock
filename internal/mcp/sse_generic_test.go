@@ -328,6 +328,90 @@ func TestScanGenericSSEStream_EventExceedsMaxEventBytes(t *testing.T) {
 	}
 }
 
+// TestScanGenericSSEStream_LargeMaxEventBytes proves the scanner works
+// correctly when MaxEventBytes is set ABOVE bufio.Scanner's default
+// 64 KB max-token-size. transport.NewSSEReader sizes the underlying
+// bufio.Scanner with (64 KB initial, MaxLineSize = 10 MB max); if the
+// buffer failed to grow, a 200 KB event would surface as bufio.ErrTooLong
+// before our ceiling check fires. Seeing ErrSSEEventTooLarge in block
+// mode and OnFinding(ErrSSEEventTooLarge) + a resumed stream in warn
+// mode proves the grown-buffer path round-trips. Adds transport-parity
+// evidence requested on the PR #429 review thread.
+func TestScanGenericSSEStream_LargeMaxEventBytes(t *testing.T) {
+	const (
+		ceiling      = 128 * 1024 // > default bufio 64 KB: forces buffer growth
+		oversizeSize = 200 * 1024 // > ceiling, < 10 MB scanner max
+	)
+	oversizeEvent := strings.Repeat("y", oversizeSize)
+
+	t.Run("block mode terminates on oversize beyond default bufio size", func(t *testing.T) {
+		cfg := enabledSSECfg()
+		cfg.MaxEventBytes = ceiling
+		body := "data: " + oversizeEvent + "\n\ndata: never-reached\n\n"
+
+		var out bytes.Buffer
+		err := ScanGenericSSEStream(
+			context.Background(),
+			strings.NewReader(body),
+			&out,
+			nil,
+			testA2AScanner(t),
+			cfg,
+		)
+		if !errors.Is(err, ErrSSEStreamFinding) {
+			t.Fatalf("expected ErrSSEStreamFinding, got %v", err)
+		}
+		if !errors.Is(err, ErrSSEEventTooLarge) {
+			t.Errorf("expected wrapped ErrSSEEventTooLarge, got %v", err)
+		}
+		if bytes.Contains(out.Bytes(), []byte("never-reached")) {
+			t.Errorf("events after a block must not be forwarded")
+		}
+	})
+
+	t.Run("warn mode drops oversize and continues streaming", func(t *testing.T) {
+		cfg := enabledSSECfg()
+		cfg.Action = config.ActionWarn
+		cfg.MaxEventBytes = ceiling
+		body := "data: " + oversizeEvent + "\n\ndata: after-oversize\n\n"
+
+		var findings int
+		var seenErr error
+		var out bytes.Buffer
+		err := ScanGenericSSEStreamWithOptions(
+			context.Background(),
+			strings.NewReader(body),
+			&out,
+			nil,
+			testA2AScanner(t),
+			cfg,
+			GenericSSEScanOptions{
+				OnFinding: func(e error) {
+					findings++
+					seenErr = e
+				},
+			},
+		)
+		if err != nil {
+			t.Fatalf("warn mode must not terminate stream on oversize, got %v", err)
+		}
+		if findings != 1 {
+			t.Fatalf("OnFinding callbacks = %d, want 1", findings)
+		}
+		if !errors.Is(seenErr, ErrSSEEventTooLarge) {
+			t.Errorf("OnFinding error = %v, want wrapped ErrSSEEventTooLarge", seenErr)
+		}
+		// Sample check: if any 1 KB run of the oversize payload leaks, the
+		// drop path is broken. Avoid Contains on the full needle to stay fast.
+		if bytes.Contains(out.Bytes(), []byte(strings.Repeat("y", 1024))) {
+			t.Errorf("oversize event leaked unscanned bytes to client in warn mode")
+		}
+		if !bytes.Contains(out.Bytes(), []byte("after-oversize")) {
+			t.Errorf("subsequent event must still be forwarded after warn-mode drop")
+		}
+	})
+}
+
 // closingWriter accepts the first N bytes then errors on every subsequent
 // write so we can prove the scanner loop breaks promptly when the
 // downstream consumer closes.

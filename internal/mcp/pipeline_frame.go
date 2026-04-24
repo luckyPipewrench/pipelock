@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 // ErrInvalidMethodType is surfaced via MCPFrame.ParseErr when a
@@ -109,6 +110,19 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	trimmed := bytes.TrimSpace(msg)
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		frame.IsBatch = true
+		return frame
+	}
+
+	// Fail closed on duplicate envelope keys before json.Unmarshal would
+	// silently collapse them. A duplicate `method` would let an attacker
+	// hide a tools/call behind a benign sibling that wins last-wins,
+	// while upstream first-wins parsers still see the real attack.
+	// ParseMCPFrame is the single entry point for HTTP + stdio input
+	// gates, so blocking here covers the gate-evaluation path. Codex C-1.
+	// Only fail-closed on actual duplicate-key matches; let malformed-
+	// JSON errors flow through to the existing structural parse path.
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+		frame.ParseErr = err
 		return frame
 	}
 

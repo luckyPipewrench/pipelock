@@ -10,23 +10,37 @@ import (
 	"io"
 )
 
-// checkNoDuplicateKeys verifies that no JSON object in body has two members
-// with the same name at the same nesting level. Decoding duplicate-key JSON
-// into map[string]interface{} silently discards all but one occurrence,
-// which lets an attacker smuggle a secret past redaction by pairing it with
-// a benign duplicate. A first-wins upstream parser (e.g. some compiled
-// reference implementations of RFC 8259) still treats the discarded secret
-// as the authoritative value. Fail closed when any duplicate is present.
-//
-// The check walks the token stream of the body via encoding/json so it sees
-// the raw key order, not the post-map representation. Arrays are walked for
-// contained objects but contribute no keys.
-//
-// Returns nil if every object is duplicate-free. On a duplicate, returns a
-// *BlockError with ReasonDuplicateKey. Any other tokenizer error returns a
-// *BlockError with ReasonBodyUnparseable so malformed input falls through
-// to the same fail-closed path as elsewhere in RewriteJSON.
+// checkNoDuplicateKeys is the package-internal wrapper used by RewriteJSON.
+// External callers (e.g. the MCP envelope/params decoders) use
+// NoDuplicateJSONKeys, which has the same semantics.
 func checkNoDuplicateKeys(body []byte) error {
+	return NoDuplicateJSONKeys(body)
+}
+
+// NoDuplicateJSONKeys verifies that no JSON object in body has two members
+// with the same name at the same nesting level. Decoding duplicate-key JSON
+// into map[string]interface{} (or map[string]json.RawMessage) silently
+// discards all but one occurrence, which lets an attacker smuggle a secret
+// past anything that selects values from the post-decode map by smuggling
+// the secret behind a benign duplicate. A first-wins upstream parser
+// still treats the discarded secret as the authoritative value, so the
+// JSON parser differential becomes an information-flow bypass.
+//
+// MCP redaction and MCP input scanning select tools/call routing fields
+// (`method`, `params`, `arguments`) from a decoded map BEFORE
+// RewriteJSON's own guard runs, so they need this check at the ingress
+// point — not inside the redaction engine.
+//
+// The check walks the token stream of body via encoding/json so it sees
+// the raw key order, not the post-map representation. Arrays are walked
+// for contained objects but contribute no keys.
+//
+// Returns nil if every object is duplicate-free. On a duplicate, returns
+// a *BlockError with ReasonDuplicateKey. Any other tokenizer error
+// returns a *BlockError with ReasonBodyUnparseable so malformed input
+// falls through to the same fail-closed path as elsewhere in
+// RewriteJSON.
+func NoDuplicateJSONKeys(body []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	// UseNumber for parity with the main decode path; it affects how
 	// numeric tokens are represented but is irrelevant for key tracking.

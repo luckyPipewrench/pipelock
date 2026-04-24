@@ -1046,8 +1046,18 @@ func RunHTTPListenerProxy(
 	// CheckRedirect closure so signed envelopes do not flow with
 	// stale @target-uri / ph / hop values. The same applies to
 	// internal/mcp/transport/httpclient.go:45.
+	// Clone http.DefaultTransport with DisableCompression: true so the
+	// upstream's Content-Encoding survives transparent-decompression
+	// stripping. The MCP HTTP listener forwards bodies to the scanner,
+	// and a gzip'd upstream response would otherwise reach the
+	// scanner's compressed-content guard with the encoding header
+	// already removed. (Codex C-2; same root cause as the forward
+	// and reverse transport fixes.)
+	upstreamTransport := http.DefaultTransport.(*http.Transport).Clone()
+	upstreamTransport.DisableCompression = true
 	upstreamClient := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: upstreamTransport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

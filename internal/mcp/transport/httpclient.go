@@ -36,10 +36,20 @@ type HTTPClient struct {
 // If headers is nil, no extra headers are added. Headers are cloned to
 // prevent mutation after construction.
 func NewHTTPClient(url string, headers http.Header) *HTTPClient {
+	// Clone http.DefaultTransport with DisableCompression: true so the
+	// SSE/JSON upstream's Content-Encoding survives transparent-
+	// decompression stripping. Without this, gzip-compressed MCP
+	// responses would be silently decompressed by Go's default
+	// transport and the compressed-stream guards downstream would
+	// never fire on gzip while still firing on br/zstd. (Codex C-2;
+	// same root cause as the forward + reverse transport fixes.)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
 	return &HTTPClient{
 		url:     url,
 		headers: headers.Clone(),
 		client: &http.Client{
+			Transport: transport,
 			// Disable redirects — the upstream URL is validated at the
 			// CLI layer, and following redirects could bypass that
 			// validation (SSRF vector). Envelope signing's redirect

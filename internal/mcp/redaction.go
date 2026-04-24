@@ -40,6 +40,17 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 	prefix := line[:leading]
 	suffix := line[len(line)-trailing:]
 
+	// Fail closed on duplicate envelope keys before the map decode would
+	// silently collapse them. A duplicate `method` lets an attacker hide
+	// a tools/call with secret-bearing arguments behind a benign sibling
+	// (or vice versa) — Go last-wins vs upstream first-wins parser
+	// differential. Codex C-1. Only block on actual duplicate-key
+	// matches; let malformed-JSON errors flow through to the existing
+	// parse-error path so the BlockError reason stays attributable.
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+		return nil, nil, err
+	}
+
 	var env map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &env); err != nil {
 		return nil, nil, &redact.BlockError{
@@ -66,6 +77,12 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 	paramsRaw, ok := env["params"]
 	if !ok || len(paramsRaw) == 0 || string(paramsRaw) == jsonrpc.Null {
 		return line, nil, nil
+	}
+
+	// Same dup-key trap on params: a duplicate `arguments` could hide
+	// secret-bearing args behind a benign sibling that wins last-wins.
+	if err := redact.NoDuplicateJSONKeys(paramsRaw); err != nil && isDuplicateKeyBlock(err) {
+		return nil, nil, err
 	}
 
 	var params map[string]json.RawMessage

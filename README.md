@@ -107,6 +107,8 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 25 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
+`text/event-stream` responses (OpenAI chat completions, Anthropic messages, Kilo Gateway, MCP HTTP/SSE) stream through with per-event DLP and injection scanning so token-by-token LLM chat UX is preserved while body scanning stays on. Clean events flush immediately; a detection terminates the stream fail-closed. Compressed SSE streams are rejected since compressed bytes evade regex matching. See [SSE streaming guide](docs/guides/sse-streaming.md).
+
 ### Request Redaction
 
 Optional request-side redaction rewrites matched JSON values before they leave the agent. The same matcher covers HTTP request bodies, outbound WebSocket client messages, and MCP `tools/call` `params.arguments` across stdio, HTTP/SSE, and WebSocket transports. Replacements are typed placeholders such as `<pl:aws-access-key:1>`, and signed action receipts record only the active profile plus per-class counts.

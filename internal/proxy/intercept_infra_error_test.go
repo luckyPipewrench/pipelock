@@ -20,10 +20,9 @@ import (
 
 // TestInterceptTunnel_DNSInfrastructureError_NoSignal verifies that a DNS
 // infrastructure error inside the intercept URL scan does NOT record a
-// SignalBlock. Previously this was the gap Codex flagged — recordSessionActivity
-// alone did not cover the intercept signal path. A burst of intercepted HTTPS
-// requests to a DNS-failing host would have escalated the session into airlock
-// lockdown.
+// SignalBlock. recordSessionActivity alone does not cover this independent
+// intercept signal path. A burst of intercepted HTTPS requests to a
+// DNS-failing host must not escalate the session into airlock lockdown.
 //
 // The test uses the RFC 2606 reserved `.invalid` TLD in the intercept target
 // and the HTTP request URL. Scanner DNS lookup on `.invalid` is guaranteed to

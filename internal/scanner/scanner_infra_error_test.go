@@ -1,3 +1,6 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
 package scanner
 
 import (
@@ -65,11 +68,10 @@ func TestIsAdaptiveNeutral(t *testing.T) {
 // the host machine's DNS configuration.
 //
 // Rationale (see also internal/proxy/proxy.go recordSessionActivity): a
-// burst of DNS failures during systemd-resolved restarts, upstream DNS
-// outages, or post-OOM recovery previously accumulated SignalBlock points
-// (+3.0 each) and pushed the session into airlock lockdown. Classifying
-// the block as an infrastructure error lets adaptive enforcement skip
-// the signal while preserving fail-closed semantics.
+// burst of DNS failures previously accumulated SignalBlock points (+3.0
+// each) and pushed the session into airlock lockdown. Classifying the
+// block as an infrastructure error lets adaptive enforcement skip the
+// signal while preserving fail-closed semantics.
 func TestScanURL_DNSFailure_ClassifiedAsInfrastructureError(t *testing.T) {
 	cfg := config.Defaults()
 	// SSRF layer needs at least one internal CIDR configured to run the

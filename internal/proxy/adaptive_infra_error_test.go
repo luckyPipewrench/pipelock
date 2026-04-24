@@ -72,8 +72,8 @@ func TestRecordSessionActivity_InfrastructureError_NoSignal(t *testing.T) {
 }
 
 // TestRecordSessionActivity_InfrastructureError_BurstStaysBelowThreshold is the
-// regression against the 2026-04-24 fedora airlock lockdown: a burst of DNS
-// resolver failures must not accumulate enough signal to enter the airlock.
+// regression against DNS resolver failures accumulating enough signal to enter
+// the airlock.
 // Threshold is 5.0; 20 infrastructure errors × 0 points each = 0 < 5.0.
 func TestRecordSessionActivity_InfrastructureError_BurstStaysBelowThreshold(t *testing.T) {
 	cfg := adaptiveConfig()
@@ -99,7 +99,7 @@ func TestRecordSessionActivity_InfrastructureError_BurstStaysBelowThreshold(t *t
 
 	// 20 consecutive infrastructure errors must not escalate the session.
 	// Prior to the fix, 2 would have been enough (6.0 > 5.0 threshold) to
-	// push into airlock hard tier for 10 minutes.
+	// push into an airlock tier.
 	if rec.EscalationLevel() != 0 {
 		t.Errorf("%d consecutive DNS failures must not escalate session; level=%d score=%f",
 			burstSize, rec.EscalationLevel(), rec.ThreatScore())

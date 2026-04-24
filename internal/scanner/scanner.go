@@ -73,10 +73,9 @@ const (
 	// failure (e.g., DNS resolver timeout, resolver unreachable) rather
 	// than adversarial behavior. Fail-closed semantics are preserved
 	// (the request is still blocked), but the block must not feed
-	// adaptive enforcement — resolver wobble is not evidence of threat.
-	// A burst of DNS failures during systemd-resolved restarts, upstream
-	// DNS outages, or post-OOM recovery would otherwise cascade into an
-	// airlock lockdown via SignalBlock accumulation.
+	// adaptive enforcement: resolver instability is not threat evidence.
+	// A burst of DNS failures would otherwise cascade into airlock lockdown
+	// via SignalBlock accumulation.
 	ClassInfrastructureError
 )
 
@@ -825,8 +824,8 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		// preserved (Allowed=false, request still blocked), but adaptive
 		// enforcement must not treat resolver wobble as evidence of an
 		// adversary. Without this classification, a burst of DNS timeouts
-		// (e.g. post-OOM systemd-resolved recovery) accumulates SignalBlock
-		// points until the session is pushed into airlock lockdown.
+		// accumulates SignalBlock points until the session is pushed into
+		// airlock lockdown.
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("SSRF check failed: DNS resolution error for %s: %v", hostname, err),

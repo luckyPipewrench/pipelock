@@ -457,15 +457,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	// Non-blocking warn-level side effects from gates that did not
-	// short-circuit. A2A warn logs and records a near-miss; DoW warn
-	// logs, records an anomaly, and records a near-miss. These
-	// happen after the switch so block dispatches skip them.
+	// short-circuit. A2A warn logs and records a near-miss unless the
+	// finding is adaptive-neutral; DoW warn logs, records an anomaly,
+	// and records a near-miss. These happen after the switch so block
+	// dispatches skip them.
 	if eval.TaintApproved {
 		logTaintDecision()
 	}
 	if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", eval.A2AResult.Reason)
-		recordAdaptiveSignal(session.SignalNearMiss)
+		if !eval.A2AResult.IsAdaptiveNeutral() {
+			recordAdaptiveSignal(session.SignalNearMiss)
+		}
 	}
 	if eval.DoWAction != "" && !eval.DoWAllowed && eval.DoWAction != config.ActionBlock {
 		_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q DoW %s: %s (%s)\n",

@@ -1486,8 +1486,8 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			// Covers protective enforcement (rate limiting, data budget)
 			// AND infrastructure errors (DNS resolver timeouts / unreachable
 			// resolver). Neither proves anything about threat posture, and
-			// treating resolver wobble as a threat cascade is what caused
-			// the post-OOM airlock lockdown on 2026-04-24.
+			// treating resolver instability as a threat cascade can push
+			// otherwise benign sessions into airlock lockdown.
 		} else if result.IsConfigMismatch() {
 			// Bounded signal: config-mismatch blocks (SSRF on an
 			// allowlisted domain) are not real attacks, but repeated

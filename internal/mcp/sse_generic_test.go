@@ -335,8 +335,7 @@ func TestScanGenericSSEStream_EventExceedsMaxEventBytes(t *testing.T) {
 // buffer failed to grow, a 200 KB event would surface as bufio.ErrTooLong
 // before our ceiling check fires. Seeing ErrSSEEventTooLarge in block
 // mode and OnFinding(ErrSSEEventTooLarge) + a resumed stream in warn
-// mode proves the grown-buffer path round-trips. Adds transport-parity
-// evidence requested on the PR #429 review thread.
+// mode proves the grown-buffer path round-trips.
 func TestScanGenericSSEStream_LargeMaxEventBytes(t *testing.T) {
 	const (
 		ceiling      = 128 * 1024 // > default bufio 64 KB: forces buffer growth

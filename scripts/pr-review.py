@@ -2,9 +2,8 @@
 """AI-powered PR review for Pipelock.
 
 Triggered by /review comments on PRs. Supports multiple review modes:
-  /review       - Security and correctness review (fast model)
-  /review fast  - Same as /review
-  /review deep  - Deeper review (large model)
+  /review       - Security and correctness review (smaller model, default)
+  /review deep  - Deeper review (larger model)
   /review tests - Test coverage and boundary analysis
   /review docs  - Documentation accuracy check
   /review stats - Compare codebase stats against docs (no LLM)
@@ -13,15 +12,19 @@ Requires environment variables:
   GITHUB_TOKEN       - GitHub token (provided by Actions)
   REPO               - owner/repo
   PR_NUMBER          - PR number
-  REVIEW_MODE        - "fast", "deep", "tests", "docs", or "stats"
+  REVIEW_MODE        - "default", "deep", "tests", "docs", or "stats"
 
 LLM configuration (one of, not needed for /review stats):
   LITELLM_BASE_URL + LITELLM_API_KEY  - LiteLLM proxy
   OPENAI_API_KEY                       - Direct OpenAI API
 
 Model selection:
-  PR_REVIEW_MODEL_FAST  - Model for fast/tests/docs (default: gpt-5.4-mini)
-  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-5.4)
+  PR_REVIEW_MODEL_FAST  - Model for default/tests/docs (default: gpt-5.5-mini)
+  PR_REVIEW_MODEL_DEEP  - Model for /review deep (default: gpt-5.5)
+
+The PR_REVIEW_MODEL_FAST env var keeps its name for backwards compatibility
+with any existing repo-secrets overrides; the user-facing /review fast
+alias was dropped 2026-04-23 because the default mode is fast enough.
 """
 
 import json
@@ -35,8 +38,8 @@ import requests
 # --- Constants ---
 
 MAX_DIFF_CHARS = 100_000
-DEFAULT_MODEL_FAST = "gpt-5.4-mini"
-DEFAULT_MODEL_DEEP = "gpt-5.4"
+DEFAULT_MODEL_FAST = "gpt-5.5-mini"
+DEFAULT_MODEL_DEEP = "gpt-5.5"
 
 PROMPT_SECURITY = """You are reviewing a pull request for Pipelock, an AI agent firewall and security boundary product. Pipelock is a network proxy that sits between AI agents and the internet, scanning HTTP/WebSocket/MCP traffic for secret exfiltration, prompt injection, SSRF, and tool poisoning.
 
@@ -294,7 +297,7 @@ def main() -> None:
     token = os.environ.get("GITHUB_TOKEN", "")
     repo = os.environ.get("REPO", "")
     pr_number = os.environ.get("PR_NUMBER", "")
-    mode = os.environ.get("REVIEW_MODE", "fast")
+    mode = os.environ.get("REVIEW_MODE", "default")
 
     if not all([token, repo, pr_number]):
         print("Missing required environment variables", file=sys.stderr)
@@ -326,7 +329,7 @@ def main() -> None:
 
     # Select prompt.
     prompts = {
-        "fast": PROMPT_SECURITY,
+        "default": PROMPT_SECURITY,
         "deep": PROMPT_SECURITY,
         "tests": PROMPT_TESTS,
         "docs": PROMPT_DOCS,
@@ -345,13 +348,17 @@ def main() -> None:
     )
 
     mode_labels = {
-        "fast": "security",
+        "default": "security",
         "deep": "security deep",
         "tests": "test coverage",
         "docs": "docs accuracy",
     }
     label = mode_labels.get(mode, mode)
-    header = f"## AI Review: {label} (`/review {mode}`)\n\n**Model:** `{model_name}`\n\n---\n\n"
+    # The default mode is invoked as bare `/review`, not `/review default`,
+    # so the header omits the suffix in that case to match what the user
+    # actually typed.
+    cmd = "/review" if mode == "default" else f"/review {mode}"
+    header = f"## AI Review: {label} (`{cmd}`)\n\n**Model:** `{model_name}`\n\n---\n\n"
     post_comment(repo, pr_number, token, header + review)
     print("Review posted.")
 

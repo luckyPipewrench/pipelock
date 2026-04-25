@@ -2186,6 +2186,11 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 		cfg.ForwardProxy.MaxTunnelSeconds = 10
 		cfg.ForwardProxy.IdleTimeoutSeconds = 2
 		cfg.FetchProxy.TimeoutSeconds = 5
+		// Disable the per-domain rate limit: this soak intentionally
+		// hammers one backend while reloads race with active requests, and
+		// rate-limit blocks would skip the redaction runtime path this test
+		// is meant to exercise.
+		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 		cfg.RequestBodyScanning.Enabled = true
 		cfg.RequestBodyScanning.Action = config.ActionWarn
 		if redactionEnabled {

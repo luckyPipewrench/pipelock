@@ -182,12 +182,22 @@ asyncio.run(main())
 > remote MCP connections.
 
 **Note:** Direct `MCPServerStreamableHttp` / `MCPServerSse` connections go
-straight to the remote endpoint and bypass Pipelock. To scan remote MCP traffic,
-register Pipelock as a stdio MCP server and point it at the remote endpoint with
-`pipelock mcp proxy --upstream https://api.example.com/mcp`, or use HTTP reverse
-proxy mode for clients that require an HTTP MCP URL. For outbound HTTP traffic
-from your agent code (API calls, web fetches), route those through `pipelock run`
-as a fetch proxy. See the [HTTP fetch proxy](#http-fetch-proxy) section below.
+straight to the remote endpoint and bypass Pipelock. To scan remote MCP traffic
+you have two options:
+
+- `pipelock mcp proxy --upstream https://api.example.com/mcp` registers
+  Pipelock as a stdio MCP server that bridges to the remote endpoint. Use this
+  when the upstream needs no client-supplied HTTP headers, since the stdio
+  bridge does not have a transparent path for the client's `Authorization` or
+  other custom headers.
+- HTTP reverse proxy mode (`pipelock run --mcp-listen ADDR --mcp-upstream URL`)
+  preserves request headers through to the upstream. Use this when the upstream
+  requires per-request `Authorization` or other client-supplied headers, or
+  when the client needs an HTTP MCP URL.
+
+For outbound HTTP traffic from your agent code (API calls, web fetches), route
+those through `pipelock run` as a fetch proxy. See the
+[HTTP fetch proxy](#http-fetch-proxy) section below.
 
 **Tip:** The SDK supports strict JSON schema validation on MCP tools, which
 pairs well with Pipelock. The SDK validates schema structure while Pipelock

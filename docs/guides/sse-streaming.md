@@ -16,7 +16,8 @@ and reverse proxy.
 ## What gets scanned
 
 Each SSE event is parsed per the WHATWG Server-Sent Events spec. Scanning
-runs on the concatenated `data:` payload of each event:
+runs on the canonical event text, which includes the `data:` payload
+plus the `event:`, `id:`, and `retry:` metadata fields:
 
 - DLP patterns (same set used for non-streaming response scanning)
 - Prompt injection detectors (jailbreak phrases, instruction override,
@@ -24,17 +25,16 @@ runs on the concatenated `data:` payload of each event:
   CJK instruction overrides)
 - Response-address protection and CEE taint propagation when enabled
 
-Event fields other than `data:` (such as `event:`, `id:`, `retry:`) pass
-through unscanned per SSE spec semantics, since those fields are
-metadata and not model output. Unknown fields and lines without a `:`
-delimiter are ignored by the parser rather than terminating the stream,
-matching the WHATWG SSE spec's forgiving parse rules.
+Unknown fields and lines without a `:` delimiter are ignored by the
+parser rather than terminating the stream, matching the WHATWG SSE
+spec's forgiving parse rules.
 
 Comment lines (`:` prefix) and keepalives are **dropped** before the
-event is forwarded to the client. They are protocol metadata, so the
-scanner neither inspects them nor re-emits them. This is consistent
-with the WHATWG spec and intentional so an upstream cannot smuggle
-bytes through comments.
+event is forwarded to the client. They are protocol metadata that the
+spec specifically excludes from event delivery, so they are never
+exposed to client code. The scanner neither inspects them nor re-emits
+them. This is consistent with the WHATWG spec and intentional so an
+upstream cannot smuggle bytes through comments.
 
 ## What is rejected fail-closed
 

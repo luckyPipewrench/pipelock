@@ -2177,6 +2177,12 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 	}))
 	defer backend.Close()
 
+	const (
+		workers           = 6
+		requestsPerWorker = 40
+		soakRateLimit     = workers * requestsPerWorker * 10
+	)
+
 	buildCfg := func(redactionEnabled bool) *config.Config {
 		cfg := config.Defaults()
 		cfg.Internal = nil
@@ -2186,11 +2192,6 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 		cfg.ForwardProxy.MaxTunnelSeconds = 10
 		cfg.ForwardProxy.IdleTimeoutSeconds = 2
 		cfg.FetchProxy.TimeoutSeconds = 5
-		// Disable the per-domain rate limit: this soak intentionally
-		// hammers one backend while reloads race with active requests, and
-		// rate-limit blocks would skip the redaction runtime path this test
-		// is meant to exercise.
-		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 		cfg.RequestBodyScanning.Enabled = true
 		cfg.RequestBodyScanning.Action = config.ActionWarn
 		if redactionEnabled {
@@ -2200,6 +2201,15 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 		}
 		cfg.ApplyDefaults()
 		cfg.Internal = nil
+		// Raise the per-domain rate limit far above the soak's worst case.
+		// This soak intentionally hammers one backend (6 workers * 40 requests)
+		// while reloads race with active requests, and rate-limit blocks would
+		// skip the redaction runtime path this test is meant to exercise.
+		// Set AFTER ApplyDefaults because the normalizer clamps <= 0 back to 60.
+		cfg.FetchProxy.Monitoring.MaxReqPerMinute = soakRateLimit
+		if cfg.FetchProxy.Monitoring.MaxReqPerMinute <= workers*requestsPerWorker {
+			t.Fatalf("reload soak rate limit = %d, want > %d", cfg.FetchProxy.Monitoring.MaxReqPerMinute, workers*requestsPerWorker)
+		}
 		return cfg
 	}
 
@@ -2217,8 +2227,6 @@ func TestProxy_Reload_RedactionRuntimePublishedAtomically(t *testing.T) {
 	client := proxyClient(strings.TrimPrefix(proxySrv.URL, "http://"))
 	targetURL := backend.URL + "/upload"
 
-	const workers = 6
-	const requestsPerWorker = 40
 	errCh := make(chan string, workers*requestsPerWorker+16)
 
 	var wg sync.WaitGroup

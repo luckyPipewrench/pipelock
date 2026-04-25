@@ -5,9 +5,27 @@ package mcp
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
+
+// hasNonIdentityEncoding reports whether the Content-Encoding header carries
+// any encoding other than "identity" (which means no encoding). Mirrors the
+// helper in internal/proxy/bodyscan.go; duplicated here to avoid pulling the
+// proxy package into mcp callers.
+func hasNonIdentityEncoding(ce string) bool {
+	if ce == "" {
+		return false
+	}
+	for _, enc := range strings.Split(ce, ",") {
+		enc = strings.TrimSpace(strings.ToLower(enc))
+		if enc != "" && enc != "identity" {
+			return true
+		}
+	}
+	return false
+}
 
 // isDuplicateKeyBlock reports whether err is the specific
 // redact.NoDuplicateJSONKeys outcome for an actual duplicate object

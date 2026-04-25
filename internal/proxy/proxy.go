@@ -2671,6 +2671,36 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
 
+	// Fail closed on compressed responses before reading the body. p.client
+	// is shared between forward proxy and /fetch and now sets
+	// DisableCompression: true so the upstream Content-Encoding survives
+	// transparent decompression. Without this guard, a gzip/br/zstd response
+	// would flow into readability extraction and the response scanner as
+	// binary garbage, bypassing both. Forward proxy already runs the same
+	// guard in forward.go; this completes parity on the fetch surface.
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		log.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
+		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     "response_scan",
+			Pattern:   "compressed_response",
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "compressed response cannot be scanned",
+		})
+		return
+	}
+
 	responsePromptHit := false
 	defer func() {
 		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), resp.Header.Get("Content-Type"), "fetch_response", responsePromptHit)

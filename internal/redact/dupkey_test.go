@@ -5,13 +5,19 @@ package redact
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 )
+
+// fakeAWSKey is split at build time so gosec G101 and the pipelock self-scan
+// see no embedded credential shape. The test fixture targets pipelock's own
+// AWS Access Key DLP pattern.
+const fakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
 
 // TestCheckNoDuplicateKeys_FlatObject catches the Rook finding #1 attack:
 // a duplicate key at the top object level hides a secret from redaction.
 func TestCheckNoDuplicateKeys_FlatObject(t *testing.T) {
-	body := []byte(`{"x":"AKIAIOSFODNN7EXAMPLE","x":"benign"}`)
+	body := []byte(fmt.Sprintf(`{"x":%q,"x":"benign"}`, fakeAWSKey))
 	err := checkNoDuplicateKeys(body)
 	if err == nil {
 		t.Fatal("expected duplicate-key block, got nil")
@@ -28,7 +34,7 @@ func TestCheckNoDuplicateKeys_FlatObject(t *testing.T) {
 // TestCheckNoDuplicateKeys_NestedObject catches a duplicate that lives
 // inside a nested object body.
 func TestCheckNoDuplicateKeys_NestedObject(t *testing.T) {
-	body := []byte(`{"outer":{"inner":"AKIAIOSFODNN7EXAMPLE","inner":"benign"}}`)
+	body := []byte(fmt.Sprintf(`{"outer":{"inner":%q,"inner":"benign"}}`, fakeAWSKey))
 	err := checkNoDuplicateKeys(body)
 	if err == nil {
 		t.Fatal("expected duplicate-key block, got nil")
@@ -100,21 +106,20 @@ func TestCheckNoDuplicateKeys_CleanObject(t *testing.T) {
 }
 
 // TestCheckNoDuplicateKeys_MalformedJSON returns ReasonBodyUnparseable
-// rather than panicking on broken input.
+// rather than panicking on broken input. Non-empty malformed inputs MUST
+// fail closed; empty body alone is allowed to return nil because zero
+// tokens cannot represent a duplicate-key attack.
 func TestCheckNoDuplicateKeys_MalformedJSON(t *testing.T) {
-	cases := [][]byte{
+	mustFail := [][]byte{
 		[]byte(`{`),
 		[]byte(`{"x":`),
 		[]byte(`{"x":,}`),
 		[]byte(`[1,`),
-		[]byte(``),
 	}
-	for _, c := range cases {
+	for _, c := range mustFail {
 		err := checkNoDuplicateKeys(c)
 		if err == nil {
-			// Empty body parses to zero tokens in this walker,
-			// which is not a duplicate-key case — acceptable.
-			continue
+			t.Fatalf("expected ReasonBodyUnparseable for %q, got nil", string(c))
 		}
 		var be *BlockError
 		if !errors.As(err, &be) {
@@ -122,6 +127,14 @@ func TestCheckNoDuplicateKeys_MalformedJSON(t *testing.T) {
 		}
 		if be.Reason != ReasonBodyUnparseable {
 			t.Fatalf("expected ReasonBodyUnparseable for %q, got %q", string(c), be.Reason)
+		}
+	}
+	// Empty body parses to zero tokens; nil is acceptable here, but if
+	// the walker ever starts erroring, it must do so with ReasonBodyUnparseable.
+	if err := checkNoDuplicateKeys([]byte("")); err != nil {
+		var be *BlockError
+		if !errors.As(err, &be) || be.Reason != ReasonBodyUnparseable {
+			t.Fatalf("empty body: unexpected error %v", err)
 		}
 	}
 }
@@ -132,7 +145,7 @@ func TestCheckNoDuplicateKeys_MalformedJSON(t *testing.T) {
 func TestRewriteJSON_DuplicateKeyBlocks(t *testing.T) {
 	m := NewDefaultMatcher()
 	r := NewRedactor()
-	body := []byte(`{"x":"AKIAIOSFODNN7EXAMPLE","x":"benign"}`)
+	body := []byte(fmt.Sprintf(`{"x":%q,"x":"benign"}`, fakeAWSKey))
 
 	out, report, err := RewriteJSON(body, m, r, Limits{})
 	if err == nil {
@@ -155,7 +168,7 @@ func TestRewriteJSON_DuplicateKeyBlocks(t *testing.T) {
 func TestRewriteJSON_NoDuplicateKeys_StillRedacts(t *testing.T) {
 	m := NewDefaultMatcher()
 	r := NewRedactor()
-	body := []byte(`{"x":"AKIAIOSFODNN7EXAMPLE"}`)
+	body := []byte(fmt.Sprintf(`{"x":%q}`, fakeAWSKey))
 
 	out, report, err := RewriteJSON(body, m, r, Limits{})
 	if err != nil {

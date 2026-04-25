@@ -849,6 +849,61 @@ func TestHTTPClient_SingleMessageReader_Overflow(t *testing.T) {
 	}
 }
 
+// TestHTTPClient_SendMessage_CompressedResponseBlocked covers the streamable
+// HTTP transport: SendMessage hands the response body to
+// SingleMessageReader/closingSSEReader, both of which see opaque bytes
+// after this point. Compressed responses must fail closed at the transport
+// boundary or the body scanners run on garbage and silently miss content.
+func TestHTTPClient_SendMessage_CompressedResponseBlocked(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "zstd"} {
+		t.Run(enc, func(t *testing.T) {
+			for _, contentType := range []string{"application/json", "text/event-stream"} {
+				t.Run(contentType, func(t *testing.T) {
+					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.Header().Set("Content-Type", contentType)
+						w.Header().Set("Content-Encoding", enc)
+						_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+					}))
+					defer srv.Close()
+
+					c := NewHTTPClient(srv.URL, nil)
+					_, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+					if !errors.Is(err, ErrCompressedResponse) {
+						t.Fatalf("expected ErrCompressedResponse on Content-Encoding=%s Content-Type=%s, got %v", enc, contentType, err)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestHTTPClient_OpenGETStream_CompressedResponseBlocked mirrors the
+// SendMessage check for the GET SSE path. SSEReader can't parse a gzipped
+// event stream; without DisableCompression + this guard, a compressed SSE
+// response would be silently dropped by the stream parser and the streaming
+// scanners would never see content.
+func TestHTTPClient_OpenGETStream_CompressedResponseBlocked(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "zstd"} {
+		t.Run(enc, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Encoding", enc)
+				_, _ = w.Write([]byte("data: {}\n\n"))
+			}))
+			defer srv.Close()
+
+			c := NewHTTPClient(srv.URL, nil)
+			_, err := c.OpenGETStream(context.Background())
+			if !errors.Is(err, ErrCompressedResponse) {
+				t.Fatalf("expected ErrCompressedResponse on Content-Encoding=%s, got %v", enc, err)
+			}
+		})
+	}
+}
+
 func TestHTTPClient_ClosingSSEReader_DoubleRead(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

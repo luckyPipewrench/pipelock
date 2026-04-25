@@ -99,7 +99,7 @@ If `mcp_input_scanning` is disabled, `tool_call` only checks tool policy. If too
   "scan_id": "scan-a1b2c3d4e5f60789",
   "request_id": "your-correlation-id",
   "duration_ms": 42,
-  "engine_version": "2.0.0",
+  "engine_version": "X.Y.Z",
   "findings": [ ... ],
   "errors": [ ... ]
 }
@@ -229,7 +229,7 @@ curl -s -X POST http://127.0.0.1:9090/api/v1/scan \
   "kind": "url",
   "scan_id": "scan-a1b2c3d4e5f67890",
   "duration_ms": 0,
-  "engine_version": "2.0.0",
+  "engine_version": "X.Y.Z",
   "findings": [
     {
       "scanner": "url",

@@ -85,10 +85,9 @@ response_scanning:
   upstream client sets its own proxy (not through `HTTPS_PROXY`), it
   may route around pipelock entirely. Configure clients to honor the
   system proxy env vars.
-- **Event fields other than `data:` are not scanned.** Per SSE spec,
-  `event:`, `id:`, and `retry:` fields are protocol metadata. If a
-  malicious upstream stuffs content into `id:` it will not be scanned.
-  The same is true of comment lines.
+- **SSE comment lines are not scanned.** Generic SSE scanning inspects the
+  `data:` payload plus `event:`, `id:`, and `retry:` metadata fields. Comment
+  lines are protocol keep-alives and are not exposed to clients as event data.
 
 ## See also
 

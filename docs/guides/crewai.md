@@ -158,9 +158,9 @@ agent = Agent(
             args=["mcp", "proxy", "--config", "pipelock.yaml", "--",
                   "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
         ),
-        # Remote server: NOT scanned by pipelock
-        # Pipelock's MCP proxy only wraps stdio servers.
-        # For remote SSE/HTTP servers, vet the server before connecting.
+        # Direct remote server: NOT scanned by Pipelock.
+        # To scan this path, expose the remote endpoint through:
+        # pipelock mcp proxy --upstream https://api.example.com/mcp/sse
         MCPServerSSE(
             url="https://api.example.com/mcp/sse",
             headers={"Authorization": "Bearer token"},
@@ -169,11 +169,13 @@ agent = Agent(
 )
 ```
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote SSE/HTTP
-MCP connections go directly to the remote endpoint and bypass Pipelock. For
-outbound HTTP traffic from your agent code (API calls, web fetches), you can
-route those through `pipelock run` as a fetch proxy. See the
-[HTTP fetch proxy](#http-fetch-proxy) section below.
+**Note:** Direct `MCPServerSSE` / HTTP MCP connections go straight to the remote
+endpoint and bypass Pipelock. To scan remote MCP traffic, register Pipelock as a
+stdio MCP server and point it at the remote endpoint with `pipelock mcp proxy
+--upstream https://api.example.com/mcp/sse`, or use HTTP reverse proxy mode for
+clients that require an HTTP MCP URL. For outbound HTTP traffic from your agent
+code (API calls, web fetches), you can route those through `pipelock run` as a
+fetch proxy. See the [HTTP fetch proxy](#http-fetch-proxy) section below.
 
 ## What Pipelock Catches
 

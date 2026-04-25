@@ -27,7 +27,7 @@ jobs:
         id: scan
         uses: luckyPipewrench/pipelock@v2
         with:
-          # version: '2.1.0'  # optional: pin to specific version
+          # version: 'X.Y.Z'  # optional: pin to a specific version (see https://github.com/luckyPipewrench/pipelock/releases)
           config: pipelock.yaml
           scan-diff: 'true'
           test-vectors: 'true'

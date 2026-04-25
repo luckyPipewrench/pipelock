@@ -189,9 +189,9 @@ local = McpToolset(
     )
 )
 
-# Remote server: NOT scanned by pipelock
-# Pipelock's MCP proxy only wraps stdio servers.
-# For remote servers, vet the server before connecting.
+# Direct remote server: NOT scanned by Pipelock.
+# To scan this path, expose the remote endpoint through:
+# pipelock mcp proxy --upstream https://api.example.com/mcp/sse
 remote = McpToolset(
     connection_params=SseConnectionParams(url="https://api.example.com/mcp/sse")
 )
@@ -204,11 +204,14 @@ agent = Agent(
 )
 ```
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote HTTP/SSE
-MCP connections go directly to the remote endpoint and bypass Pipelock. For
-outbound HTTP traffic from your agent code (API calls, web fetches), route those
-through `pipelock run` as a fetch proxy. See the
-[HTTP fetch proxy](#http-fetch-proxy) section below.
+**Note:** Direct `SseConnectionParams` / HTTP MCP connections go straight to the
+remote endpoint and bypass Pipelock. To scan remote MCP traffic, register
+Pipelock as a stdio MCP server and point it at the remote endpoint with
+`pipelock mcp proxy --upstream https://api.example.com/mcp/sse`, or use HTTP
+reverse proxy mode for clients that require an HTTP MCP URL. For outbound HTTP
+traffic from your agent code (API calls, web fetches), route those through
+`pipelock run` as a fetch proxy. See the [HTTP fetch proxy](#http-fetch-proxy)
+section below.
 
 ### Pattern D: Sub-Agents
 
@@ -272,7 +275,7 @@ networks:
 
 services:
   pipelock:
-    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:2.2.0)
+    # Pin to a specific version for production. See https://github.com/luckyPipewrench/pipelock/releases for available tags.
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal

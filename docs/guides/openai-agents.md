@@ -160,8 +160,9 @@ async def main():
             "args": ["mcp", "proxy", "--config", "pipelock.yaml", "--",
                      "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
         }) as local,
-        # Remote server: NOT scanned by pipelock
-        # Pipelock's MCP proxy only wraps stdio servers.
+        # Direct remote server: NOT scanned by Pipelock.
+        # To scan this path, expose the remote endpoint through:
+        # pipelock mcp proxy --upstream https://api.example.com/mcp
         MCPServerStreamableHttp(name="Remote API", params={
             "url": "https://api.example.com/mcp",
         }) as remote,
@@ -180,11 +181,13 @@ asyncio.run(main())
 > **Note:** `MCPServerSse` is deprecated. Use `MCPServerStreamableHttp` for new
 > remote MCP connections.
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote HTTP/SSE
-MCP connections go directly to the remote endpoint and bypass Pipelock. For
-outbound HTTP traffic from your agent code (API calls, web fetches), route those
-through `pipelock run` as a fetch proxy. See the
-[HTTP fetch proxy](#http-fetch-proxy) section below.
+**Note:** Direct `MCPServerStreamableHttp` / `MCPServerSse` connections go
+straight to the remote endpoint and bypass Pipelock. To scan remote MCP traffic,
+register Pipelock as a stdio MCP server and point it at the remote endpoint with
+`pipelock mcp proxy --upstream https://api.example.com/mcp`, or use HTTP reverse
+proxy mode for clients that require an HTTP MCP URL. For outbound HTTP traffic
+from your agent code (API calls, web fetches), route those through `pipelock run`
+as a fetch proxy. See the [HTTP fetch proxy](#http-fetch-proxy) section below.
 
 **Tip:** The SDK supports strict JSON schema validation on MCP tools, which
 pairs well with Pipelock. The SDK validates schema structure while Pipelock
@@ -257,7 +260,7 @@ networks:
 
 services:
   pipelock:
-    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:2.2.0)
+    # Pin to a specific version for production. See https://github.com/luckyPipewrench/pipelock/releases for available tags.
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal

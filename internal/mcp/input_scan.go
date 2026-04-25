@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -82,6 +83,19 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 	if len(trimmed) > 0 && trimmed[0] == '[' {
 		ctx = withMCPRequestWarnContext(ctx, "batch")
 		return scanRequestBatch(ctx, trimmed, sc, action, onParseError)
+	}
+
+	// Fail closed on duplicate envelope keys before json.Unmarshal would
+	// silently collapse them. A duplicate `method` or `params` lets an
+	// attacker hide a tools/call with secret-bearing arguments behind a
+	// benign sibling that wins last-wins, while upstream first-wins
+	// parsers still see the real attack. Codex C-1.
+	//
+	// Only block on actual duplicate-key matches; let malformed-JSON
+	// errors flow through to the existing parse-error path below so
+	// telemetry stays attributable to the right cause.
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+		return InputVerdict{Clean: false, Error: fmt.Sprintf("duplicate JSON object key: %v", err)}
 	}
 
 	var rpc jsonrpc.RPCResponse // Reuse struct — has Method and Params fields.

@@ -5127,3 +5127,36 @@ func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
 		t.Error("timeout")
 	}
 }
+
+// TestHTTPListener_CompressedUpstreamResponseBlocked locks down the MCP HTTP
+// listener path. The listener's upstreamClient sets
+// DisableCompression: true (proxy_http.go:1057) so the upstream
+// Content-Encoding header survives transparent decompression. Without the
+// fail-closed guard before SingleMessageReader wraps upResp.Body, gzip/br/zstd
+// responses would be fed into the body scanners as opaque bytes and bypass
+// detection entirely.
+func TestHTTPListener_CompressedUpstreamResponseBlocked(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "zstd"} {
+		t.Run(enc, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Encoding", enc)
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+			}))
+			defer upstream.Close()
+
+			sc := testScannerForHTTP(t)
+			baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
+
+			resp, postErr := http.Post(baseURL+"/", "application/json", strings.NewReader(jsonToolsCallEcho)) //nolint:gosec,noctx // test
+			if postErr != nil {
+				t.Fatalf("POST: %v", postErr)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusForbidden {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status on Content-Encoding=%s = %d, want 403; body=%s", enc, resp.StatusCode, string(body))
+			}
+		})
+	}
+}

@@ -470,6 +470,16 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		ResponseHeaderTimeout: time.Duration(cfg.FetchProxy.TimeoutSeconds) * time.Second,
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
+		// Force identity encoding so compressed-response guards in
+		// forward.go and the compressed-SSE guards in sse.go see the
+		// original upstream Content-Encoding header. Without this, Go's
+		// default transport auto-sends Accept-Encoding: gzip and
+		// transparently decompresses the response, stripping the header
+		// before pipelock's scanner sees it. That let gzip'd SSE
+		// streams slip past fail-closed while br/zstd correctly blocked
+		// (Rook finding #3). Matches the pattern at
+		// newTLSInterceptTransport and intercept.go.
+		DisableCompression: true,
 	}
 
 	p.client = &http.Client{
@@ -2660,6 +2670,36 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(resp.Body, "resp.Body", p.logger)
+
+	// Fail closed on compressed responses before reading the body. p.client
+	// is shared between forward proxy and /fetch and now sets
+	// DisableCompression: true so the upstream Content-Encoding survives
+	// transparent decompression. Without this guard, a gzip/br/zstd response
+	// would flow into readability extraction and the response scanner as
+	// binary garbage, bypassing both. Forward proxy already runs the same
+	// guard in forward.go; this completes parity on the fetch surface.
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		log.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
+		p.metrics.RecordBlocked(parsed.Hostname(), "response_scan", time.Since(start), agentLabel)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     "response_scan",
+			Pattern:   "compressed_response",
+			Transport: "fetch",
+			Method:    http.MethodGet,
+			Target:    displayURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "compressed response cannot be scanned",
+		})
+		return
+	}
 
 	responsePromptHit := false
 	defer func() {

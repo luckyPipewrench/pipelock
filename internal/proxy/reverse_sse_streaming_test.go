@@ -294,3 +294,42 @@ func readNextSSEData(t *testing.T, scanner *bufio.Scanner) string {
 	}
 	return ""
 }
+
+// TestReverseProxy_SSE_GzipFailsClosed locks down Codex finding C-2 on
+// the reverse proxy: before the reverse base transport was given
+// DisableCompression: true, Go's default transport stripped
+// Content-Encoding: gzip via transparent decompression and the
+// compressed-response guard at modifyResponse never fired. br/zstd
+// blocked correctly because Go does not auto-decompress those.
+//
+// The fix: clone http.DefaultTransport, set DisableCompression, use as
+// the base for reverseSigningRoundTripper.
+func TestReverseProxy_SSE_GzipFailsClosed(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "zstd"} {
+		enc := enc
+		t.Run(enc, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			upstream := func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Encoding", enc)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("data: payload\n\n"))
+			}
+			proxy := reverseTestSetup(t, cfg, upstream)
+
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/sse", nil)
+			if err != nil {
+				t.Fatalf("NewRequest: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Do: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("compressed SSE (%s) must fail closed with 403; got %d", enc, resp.StatusCode)
+			}
+		})
+	}
+}

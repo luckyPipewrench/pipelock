@@ -116,13 +116,23 @@ func NewReverseProxy(
 	// ErrorHandler returns a JSON error on upstream failures.
 	proxy.ErrorHandler = rp.errorHandler
 
-	// Signing transport: sits between httputil.ReverseProxy and
-	// http.DefaultTransport. Runs envelope injection + RFC 9421 signing
-	// on the post-Director request so @target-uri matches the upstream
-	// URL the transport is actually about to dial. A nil envelope
-	// emitter short-circuits to the base transport.
+	// Signing transport: sits between httputil.ReverseProxy and a
+	// disable-compression base. Runs envelope injection + RFC 9421
+	// signing on the post-Director request so @target-uri matches the
+	// upstream URL the transport is actually about to dial. A nil
+	// envelope emitter short-circuits to the base transport.
+	//
+	// The base is a clone of http.DefaultTransport with
+	// DisableCompression: true so upstream Content-Encoding survives
+	// transparent-decompression stripping. Without this, the
+	// compressed-response guard in modifyResponse cannot fail-closed
+	// on gzip — Go auto-decompresses and removes the header before
+	// pipelock sees it. (Codex C-2; same root cause as the forward
+	// transport fix in rc.2.)
+	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
+	baseTransport.DisableCompression = true
 	proxy.Transport = &reverseSigningRoundTripper{
-		base: http.DefaultTransport,
+		base: baseTransport,
 		rp:   rp,
 	}
 

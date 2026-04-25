@@ -37,6 +37,14 @@ const (
 	// the same placeholder. Silently letting one key overwrite another
 	// changes the forwarded object's structure, so we fail closed.
 	ReasonKeyCollision BlockReason = "key_collision"
+	// ReasonDuplicateKey — the input JSON contained a duplicate object
+	// member name at the same nesting level. Decoding into
+	// map[string]interface{} silently collapses duplicates before
+	// redaction can see them, which lets an attacker smuggle a secret
+	// past redaction by using the same key twice (first-wins upstream
+	// parsers still treat the secret as authoritative). Fail closed on
+	// duplicates before decoding.
+	ReasonDuplicateKey BlockReason = "duplicate_object_key"
 	// ReasonSecretInNumericScalar — a numeric JSON scalar (json.Number)
 	// matched a redaction pattern. Rewriting to a string placeholder would
 	// change the JSON type and likely break the upstream; redacting is

@@ -176,6 +176,62 @@ func TestFetchEndpoint_Success(t *testing.T) {
 	}
 }
 
+// TestFetchEndpoint_CompressedResponseBlocked locks down the fetch path:
+// p.client is shared between forward proxy and /fetch. After DisableCompression
+// was set on the shared transport, a server returning gzip/br/zstd would have
+// flowed into readability extraction and the response scanner as opaque bytes,
+// bypassing both. This regression test asserts each non-identity encoding is
+// blocked at the fetch boundary.
+func TestFetchEndpoint_CompressedResponseBlocked(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "zstd"} {
+		t.Run(enc, func(t *testing.T) {
+			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.Header().Set("Content-Encoding", enc)
+				// Body content does not need to actually be compressed;
+				// the guard runs on the header before the body is read,
+				// which is the entire point of the fail-closed check.
+				_, _ = fmt.Fprint(w, "<html>hello</html>")
+			}))
+			defer backend.Close()
+
+			cfg := config.Defaults()
+			cfg.FetchProxy.TimeoutSeconds = 5
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.APIAllowlist = nil
+
+			logger := audit.NewNop()
+			sc := scanner.New(cfg)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/", nil)
+			w := httptest.NewRecorder()
+
+			mux := http.NewServeMux()
+			mux.HandleFunc("/fetch", p.handleFetch)
+			mux.ServeHTTP(w, req)
+
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("expected 403 on Content-Encoding=%s, got %d body=%s", enc, w.Code, w.Body.String())
+			}
+			var resp FetchResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("expected valid JSON: %v", err)
+			}
+			if !resp.Blocked {
+				t.Fatalf("expected Blocked=true on %s, got %+v", enc, resp)
+			}
+			if !strings.Contains(resp.BlockReason, "compressed") {
+				t.Fatalf("expected compressed-response BlockReason on %s, got %q", enc, resp.BlockReason)
+			}
+		})
+	}
+}
+
 func TestFetchEndpoint_MissingURL(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()

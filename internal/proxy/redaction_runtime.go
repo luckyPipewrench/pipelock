@@ -69,19 +69,34 @@ func (p *Proxy) CurrentRedactionConfigFor(cfg *config.Config) (*redact.Matcher, 
 }
 
 func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[redactionRuntime]) *redactionRuntime {
-	if cfg == nil || !cfg.Redaction.Enabled {
-		return nil
-	}
-	configKey := redactionConfigKey(cfg)
+	// Trust whatever the reload path stored last. Earlier versions of this
+	// factory compared the caller's `cfg` hash against the stored runtime's
+	// `configKey`; during hot-reload, the cfgPtr and redactionRuntimePtr
+	// atomics are updated with a gap of a few instructions, so a request
+	// landing in that window would see OLD cfg + NEW runtime, the hashes
+	// would disagree, and the factory would return a fail-closed sentinel
+	// (matcher nil, required true) even though the freshly-published
+	// runtime was authoritative. The reload-time invariant is that
+	// `redactionRuntimePtr` reflects the current policy: nil when disabled,
+	// non-nil with a populated matcher when enabled. Honor that directly
+	// and stop racing with our own reload sequence.
 	if ptr != nil {
-		if rt := ptr.Load(); rt != nil && rt.configKey == configKey {
+		if rt := ptr.Load(); rt != nil && rt.matcher != nil {
 			return rt
 		}
 	}
+	// No runtime published yet (startup, or cfg disables redaction). Fall
+	// back to cfg so callers see the intended operator state.
+	if cfg == nil || !cfg.Redaction.Enabled {
+		return nil
+	}
+	// cfg says redaction is required but no matcher is available — this can
+	// only happen before startup setup runs. Keep the fail-closed sentinel
+	// so request handlers block instead of silently skipping.
 	return &redactionRuntime{
 		limits:               cfg.Redaction.Limits.ToLimits(),
 		allowlistUnparseable: append([]string(nil), cfg.Redaction.AllowlistUnparseable...),
-		configKey:            configKey,
+		configKey:            redactionConfigKey(cfg),
 		required:             true,
 	}
 }

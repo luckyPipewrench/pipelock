@@ -3019,3 +3019,55 @@ func TestForwardHTTP_ShieldOversizeTransportParity(t *testing.T) {
 		}
 	})
 }
+
+// TestForwardHTTP_CompressedSSE_GzipFailsClosed locks down the fix for
+// Rook finding #3 / CC-3: before the forward transport had
+// DisableCompression: true, Go's default http.Transport auto-sent
+// Accept-Encoding: gzip and transparently decompressed gzip responses,
+// stripping the Content-Encoding header before IsSSECompressed could see
+// it. That let gzip'd SSE responses stream through fail-closed while
+// br/zstd correctly blocked (asymmetric behavior that violates the
+// compressed-SSE invariant).
+//
+// The fix: set DisableCompression: true on the transport at proxy.go:467
+// so pipelock sees the original upstream Content-Encoding and the existing
+// IsSSECompressed gate fires uniformly.
+func TestForwardHTTP_CompressedSSE_GzipFailsClosed(t *testing.T) {
+	for _, enc := range []string{"gzip", "br", "zstd"} {
+		enc := enc
+		t.Run(enc, func(t *testing.T) {
+			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Encoding", enc)
+				w.Header().Set("Cache-Control", "no-cache")
+				w.WriteHeader(http.StatusOK)
+				// Body content is irrelevant — pipelock must see the
+				// Content-Encoding header and fail closed BEFORE reading.
+				_, _ = w.Write([]byte("data: payload\n\n"))
+			}))
+			defer backend.Close()
+
+			proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Action = config.ActionBlock
+				cfg.ResponseScanning.SSEStreaming.Enabled = true
+				cfg.ResponseScanning.SSEStreaming.Action = config.ActionBlock
+			})
+			defer cleanup()
+
+			client := proxyClient(proxyAddr)
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
+				backend.URL+"/sse", nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("request: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("compressed SSE (%s) must fail closed with 403; got %d",
+					enc, resp.StatusCode)
+			}
+		})
+	}
+}

@@ -19,6 +19,29 @@ import (
 // a GET request, meaning it does not support server-initiated SSE streams.
 var ErrStreamNotSupported = errors.New("server does not support GET stream")
 
+// ErrCompressedResponse indicates the upstream returned a non-identity
+// Content-Encoding. The downstream readers (SingleMessageReader, SSEReader)
+// only see opaque bytes after this point, so compressed payloads must fail
+// closed at the transport boundary or they bypass the body scanners. The
+// constructor sets DisableCompression so Go's transport leaves the encoding
+// header in place; this guard then fires on any non-identity encoding.
+var ErrCompressedResponse = errors.New("compressed response cannot be scanned")
+
+// hasNonIdentityEncoding mirrors internal/proxy/bodyscan.hasNonIdentityEncoding.
+// Duplicated here to avoid an import cycle (proxy depends on mcp/transport).
+func hasNonIdentityEncoding(ce string) bool {
+	if ce == "" {
+		return false
+	}
+	for _, enc := range strings.Split(ce, ",") {
+		enc = strings.TrimSpace(strings.ToLower(enc))
+		if enc != "" && enc != "identity" {
+			return true
+		}
+	}
+	return false
+}
+
 // HTTPClient sends JSON-RPC 2.0 messages over HTTP POST and returns
 // a MessageReader for each response. It implements the MCP Streamable HTTP
 // transport specification, handling both JSON and SSE response types,
@@ -36,10 +59,20 @@ type HTTPClient struct {
 // If headers is nil, no extra headers are added. Headers are cloned to
 // prevent mutation after construction.
 func NewHTTPClient(url string, headers http.Header) *HTTPClient {
+	// Clone http.DefaultTransport with DisableCompression: true so the
+	// SSE/JSON upstream's Content-Encoding survives transparent-
+	// decompression stripping. Without this, gzip-compressed MCP
+	// responses would be silently decompressed by Go's default
+	// transport and the compressed-stream guards downstream would
+	// never fire on gzip while still firing on br/zstd. This has the
+	// same root cause as the forward and reverse transport fixes.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
 	return &HTTPClient{
 		url:     url,
 		headers: headers.Clone(),
 		client: &http.Client{
+			Transport: transport,
 			// Disable redirects — the upstream URL is validated at the
 			// CLI layer, and following redirects could bypass that
 			// validation (SSRF vector). Envelope signing's redirect
@@ -133,6 +166,17 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 			return nil, fmt.Errorf("HTTP %d: %s: %s", resp.StatusCode, resp.Status, bytes.TrimSpace(body))
 		}
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
+	}
+
+	// Fail closed on compressed responses before wrapping the body in
+	// SingleMessageReader or SSEReader. Both readers see opaque bytes
+	// after this point; gzip/br/zstd would otherwise reach downstream
+	// scanners as binary garbage and never trigger the body-scan guards.
+	// DisableCompression on the transport guarantees the encoding header
+	// survives transparent decompression, so this check is authoritative.
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		return nil, ErrCompressedResponse
 	}
 
 	// Route based on Content-Type.
@@ -254,6 +298,15 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 			return nil, fmt.Errorf("GET stream HTTP %d: %s", resp.StatusCode, bytes.TrimSpace(body))
 		}
 		return nil, fmt.Errorf("GET stream returned HTTP %d", resp.StatusCode)
+	}
+
+	// Fail closed on compressed SSE responses. Same rationale as SendMessage:
+	// SSEReader receives opaque bytes and would silently fail to parse a
+	// gzipped event stream, which is a bypass vector against the streaming
+	// scanners.
+	if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
+		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
+		return nil, ErrCompressedResponse
 	}
 
 	return &closingSSEReader{

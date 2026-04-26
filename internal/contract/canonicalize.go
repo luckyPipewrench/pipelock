@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"unicode/utf8"
@@ -142,10 +143,13 @@ func ParseJSONStrict(data []byte) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Trailing whitespace is not a token and dec.Token() would return io.EOF for it.
-	// Any other token (another value, a delimiter) is an error.
-	if dec.More() {
-		return nil, fmt.Errorf("%w after top-level value", ErrTrailingTokens)
+	// Trailing whitespace is not a token and dec.Token returns io.EOF for it.
+	// Any other token, including a stray delimiter, is rejected.
+	if tok, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrTrailingTokens, err)
+		}
+		return nil, fmt.Errorf("%w: %v", ErrTrailingTokens, tok)
 	}
 	return val, nil
 }

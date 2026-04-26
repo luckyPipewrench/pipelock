@@ -347,6 +347,20 @@ func TestParseJSONStrict_RejectsTrailingTokens(t *testing.T) {
 	}
 }
 
+func TestParseJSONStrict_RejectsTrailingDelimiter(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		`{"a":1}]`,
+		`{"a":1}}`,
+	}
+	for _, tc := range cases {
+		_, err := ParseJSONStrict([]byte(tc))
+		if !errors.Is(err, ErrTrailingTokens) {
+			t.Errorf("%q: got %v, want ErrTrailingTokens", tc, err)
+		}
+	}
+}
+
 func TestParseJSONStrict_AcceptsTrailingWhitespace(t *testing.T) {
 	t.Parallel()
 	// Trailing whitespace (e.g., newline) is OK — it is not a token.

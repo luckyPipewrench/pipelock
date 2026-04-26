@@ -90,10 +90,26 @@ func TestContract_Validate_RejectsRegulatedField(t *testing.T) {
 		ContractKind:  ContractKind,
 		DataClassRoot: "internal",
 		FieldDataClasses: map[string]string{
-			"selector.agent": "regulated",
+			"selector.agent": string(DataClassRegulated),
 		},
 		Selector: Selector{Agent: "x"},
 	}
+	if err := c.Validate(); !errors.Is(err, ErrRegulatedField) {
+		t.Errorf("got %v, want ErrRegulatedField", err)
+	}
+}
+
+func TestContract_Validate_RejectsInvalidDataClassRoot(t *testing.T) {
+	t.Parallel()
+	c := Contract{SchemaVersion: SchemaVersionContract, ContractKind: ContractKind, DataClassRoot: invalidDataClassName}
+	if err := c.Validate(); !errors.Is(err, ErrInvalidDataClass) {
+		t.Errorf("got %v, want ErrInvalidDataClass", err)
+	}
+}
+
+func TestContract_Validate_RejectsRegulatedDataClassRoot(t *testing.T) {
+	t.Parallel()
+	c := Contract{SchemaVersion: SchemaVersionContract, ContractKind: ContractKind, DataClassRoot: string(DataClassRegulated)}
 	if err := c.Validate(); !errors.Is(err, ErrRegulatedField) {
 		t.Errorf("got %v, want ErrRegulatedField", err)
 	}

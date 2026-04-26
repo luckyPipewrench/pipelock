@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 )
 
 // Sentinel errors for payload dispatch and envelope validation.
@@ -38,7 +39,11 @@ func decodeStrict(raw json.RawMessage, target any) error {
 	if err := dec.Decode(target); err != nil {
 		return fmt.Errorf("strict decode: %w", err)
 	}
-	if dec.More() {
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err != nil {
+			return fmt.Errorf("trailing tokens after payload: %w", err)
+		}
 		return fmt.Errorf("trailing tokens after payload")
 	}
 	return nil

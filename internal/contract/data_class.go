@@ -39,6 +39,24 @@ func (c DataClass) Validate() error {
 	}
 }
 
+func validateDataClassRoot(root any) (bool, error) {
+	rs, ok := root.(string)
+	if !ok {
+		return false, fmt.Errorf("%w: data_class_root has non-string class value", ErrInvalidDataClass)
+	}
+	if rs == "" {
+		return false, nil
+	}
+	rootClass := DataClass(rs)
+	if err := rootClass.Validate(); err != nil {
+		return false, fmt.Errorf("data_class_root: %w", err)
+	}
+	if rootClass == DataClassRegulated {
+		return false, fmt.Errorf("%w at path %q", ErrRegulatedField, "data_class_root")
+	}
+	return true, nil
+}
+
 // ValidateDataClassCoverage walks the body recursively and verifies that:
 //   - every entry in fieldClasses maps to a value in the enum (rejects unknown classes)
 //   - no entry is "regulated" (forbidden in v2.4 signed artifacts)
@@ -68,9 +86,11 @@ func ValidateDataClassCoverage(body any, fieldClasses map[string]any) error {
 	hasRoot := false
 	if m, ok := body.(map[string]any); ok {
 		if root, present := m["data_class_root"]; present {
-			if rs, isStr := root.(string); isStr && rs != "" {
-				hasRoot = true
+			ok, err := validateDataClassRoot(root)
+			if err != nil {
+				return err
 			}
+			hasRoot = ok
 		}
 	}
 

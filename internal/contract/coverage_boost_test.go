@@ -8,31 +8,27 @@ import (
 	"testing"
 )
 
-// validateSettingsAllowlist branch coverage: when privacy or redaction is
-// non-map (e.g. a string or number), the type-assertion `.(map[string]any)`
-// fails and the walker continues without inspecting sub-keys. These cases
-// exercise the `continue` paths.
+// validateSettingsAllowlist rejects scalar values for structured settings
+// namespaces. Otherwise an allowed top-level key could smuggle arbitrary text.
 
-func TestCompileManifestAllowlist_PrivacyNonMapValueSkipped(t *testing.T) {
+func TestCompileManifestAllowlist_PrivacyNonMapValueRejected(t *testing.T) {
 	t.Parallel()
 	m := CompileManifest{
 		SchemaVersion: 1,
 		ModuleDigests: map[string]string{},
-		// privacy as a string slips past the sub-walk because the type
-		// assertion fails, so the walker hits the `continue` branch.
-		Settings: map[string]any{"privacy": "scalar-not-map"},
+		Settings:      map[string]any{"privacy": "scalar-not-map"},
 	}
 	root, err := m.ComputeModuleDigestRoot()
 	if err != nil {
 		t.Fatalf("module root: %v", err)
 	}
 	m.ModuleDigestRoot = root
-	if err := m.Validate(); err != nil {
-		t.Errorf("scalar privacy slipped through type-assert; want nil, got %v", err)
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
 	}
 }
 
-func TestCompileManifestAllowlist_RedactionNonMapValueSkipped(t *testing.T) {
+func TestCompileManifestAllowlist_RedactionNonMapValueRejected(t *testing.T) {
 	t.Parallel()
 	m := CompileManifest{
 		SchemaVersion: 1,
@@ -44,12 +40,12 @@ func TestCompileManifestAllowlist_RedactionNonMapValueSkipped(t *testing.T) {
 		t.Fatalf("module root: %v", err)
 	}
 	m.ModuleDigestRoot = root
-	if err := m.Validate(); err != nil {
-		t.Errorf("scalar redaction slipped through type-assert; want nil, got %v", err)
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
 	}
 }
 
-func TestCompileManifestAllowlist_SaltHashNonMapValueSkipped(t *testing.T) {
+func TestCompileManifestAllowlist_SaltHashNonMapValueRejected(t *testing.T) {
 	t.Parallel()
 	m := CompileManifest{
 		SchemaVersion: 1,
@@ -65,8 +61,8 @@ func TestCompileManifestAllowlist_SaltHashNonMapValueSkipped(t *testing.T) {
 		t.Fatalf("module root: %v", err)
 	}
 	m.ModuleDigestRoot = root
-	if err := m.Validate(); err != nil {
-		t.Errorf("scalar salt_hash slipped through type-assert; want nil, got %v", err)
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
 	}
 }
 

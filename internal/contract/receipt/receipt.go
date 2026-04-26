@@ -14,8 +14,11 @@
 package receipt
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
@@ -29,6 +32,11 @@ const (
 	RecordTypeActionV1 RecordType = "action_receipt_v1"
 	// RecordTypeEvidenceV2 is the v2 evidence receipt record type handled by this package.
 	RecordTypeEvidenceV2 RecordType = "evidence_receipt_v2"
+)
+
+const (
+	signatureAlgorithmEd25519 = "ed25519"
+	signaturePrefixEd25519    = "ed25519:"
 )
 
 // PayloadKind identifies the payload structure carried inside an EvidenceReceipt.
@@ -108,7 +116,36 @@ func (r EvidenceReceipt) Validate() error {
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownPayloadKind, r.PayloadKind)
 	}
-	return v(r.Payload)
+	if err := v(r.Payload); err != nil {
+		return err
+	}
+	return r.validateSignatureProof()
+}
+
+func (r EvidenceReceipt) validateSignatureProof() error {
+	if r.Signature.SignerKeyID == "" {
+		return fmt.Errorf("%w: signature.signer_key_id", ErrPayloadMissingField)
+	}
+	if r.Signature.KeyPurpose == "" {
+		return fmt.Errorf("%w: signature.key_purpose", ErrPayloadMissingField)
+	}
+	if err := contract.AuthorizeKeyPurpose(string(r.PayloadKind), r.Signature.KeyPurpose); err != nil {
+		return err
+	}
+	if r.Signature.Algorithm != signatureAlgorithmEd25519 {
+		return fmt.Errorf("%w: signature.algorithm=%q", ErrPayloadInvalidEnum, r.Signature.Algorithm)
+	}
+	if !strings.HasPrefix(r.Signature.Signature, signaturePrefixEd25519) {
+		return fmt.Errorf("%w: signature.signature prefix", ErrPayloadInvalidEnum)
+	}
+	sig, err := hex.DecodeString(strings.TrimPrefix(r.Signature.Signature, signaturePrefixEd25519))
+	if err != nil {
+		return fmt.Errorf("%w: signature.signature hex: %w", ErrPayloadInvalidEnum, err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return fmt.Errorf("%w: signature.signature length=%d", ErrPayloadInvalidEnum, len(sig))
+	}
+	return nil
 }
 
 // SignablePreimage returns the JCS-canonical bytes of the receipt with the

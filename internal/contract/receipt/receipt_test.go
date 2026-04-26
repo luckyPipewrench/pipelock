@@ -9,8 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
+
+const validReceiptSignature = "ed25519:" +
+	"0000000000000000000000000000000000000000000000000000000000000000" +
+	"0000000000000000000000000000000000000000000000000000000000000000"
 
 // minimalProxyDecisionPayload returns a valid proxy_decision payload as raw JSON.
 func minimalProxyDecisionPayload() json.RawMessage {
@@ -32,6 +37,12 @@ func validReceipt() receipt.EvidenceReceipt {
 		EventID:        "01900000-0000-7000-8000-000000000001",
 		Timestamp:      time.Now(),
 		Payload:        minimalProxyDecisionPayload(),
+		Signature: receipt.SignatureProof{
+			SignerKeyID: "receipt-key",
+			KeyPurpose:  "receipt-signing",
+			Algorithm:   "ed25519",
+			Signature:   validReceiptSignature,
+		},
 	}
 }
 
@@ -75,6 +86,42 @@ func TestEvidenceReceipt_Validate_AcceptsValidProxyDecision(t *testing.T) {
 	r := validReceipt()
 	if err := r.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsMissingSignature(t *testing.T) {
+	r := validReceipt()
+	r.Signature = receipt.SignatureProof{}
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsWrongKeyPurpose(t *testing.T) {
+	r := validReceipt()
+	r.Signature.KeyPurpose = "contract-activation-signing"
+	err := r.Validate()
+	if !errors.Is(err, contract.ErrWrongKeyPurpose) {
+		t.Fatalf("expected ErrWrongKeyPurpose, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsWrongSignatureAlgorithm(t *testing.T) {
+	r := validReceipt()
+	r.Signature.Algorithm = "ed25519ph"
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestEvidenceReceipt_Validate_RejectsBadSignatureEncoding(t *testing.T) {
+	r := validReceipt()
+	r.Signature.Signature = "ed25519:not-hex"
+	err := r.Validate()
+	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
 	}
 }
 

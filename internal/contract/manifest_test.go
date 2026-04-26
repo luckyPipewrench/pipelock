@@ -113,12 +113,31 @@ func TestActiveManifest_Validate_AcceptsRecomputedSelectorID(t *testing.T) {
 	}
 	sel.SelectorID = id
 	m := ActiveManifest{
+		SchemaVersion:   1,
+		ManifestKind:    ManifestKindActivation,
+		Selectors:       []ManifestSelector{sel},
+		SelectorSetHash: mustSelectorSetHash(t, []ManifestSelector{sel}),
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("got %v, want nil", err)
+	}
+}
+
+func TestActiveManifest_Validate_RejectsMissingSelectorSetHash(t *testing.T) {
+	t.Parallel()
+	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	id, err := sel.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("compute id: %v", err)
+	}
+	sel.SelectorID = id
+	m := ActiveManifest{
 		SchemaVersion: 1,
 		ManifestKind:  ManifestKindActivation,
 		Selectors:     []ManifestSelector{sel},
 	}
-	if err := m.Validate(); err != nil {
-		t.Errorf("got %v, want nil", err)
+	if err := m.Validate(); !errors.Is(err, ErrManifestMissingSelectorSetHash) {
+		t.Errorf("got %v, want ErrManifestMissingSelectorSetHash", err)
 	}
 }
 
@@ -159,12 +178,22 @@ func TestActiveManifest_Validate_AcceptsValidManifest(t *testing.T) {
 	s2.SelectorID = id2
 
 	m := ActiveManifest{
-		SchemaVersion: 1,
-		ManifestKind:  ManifestKindActivation,
-		Generation:    1,
-		Selectors:     []ManifestSelector{s1, s2},
+		SchemaVersion:   1,
+		ManifestKind:    ManifestKindActivation,
+		Generation:      1,
+		Selectors:       []ManifestSelector{s1, s2},
+		SelectorSetHash: mustSelectorSetHash(t, []ManifestSelector{s1, s2}),
 	}
 	if err := m.Validate(); err != nil {
 		t.Errorf("expected nil for valid manifest, got %v", err)
 	}
+}
+
+func mustSelectorSetHash(t *testing.T, selectors []ManifestSelector) string {
+	t.Helper()
+	hash, err := ComputeSelectorSetHash(selectors)
+	if err != nil {
+		t.Fatalf("compute selector_set_hash: %v", err)
+	}
+	return hash
 }

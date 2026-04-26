@@ -87,5 +87,8 @@ func (t Tombstone) Validate() error {
 	if t.KeyPurpose != keyPurposeTombstone {
 		return fmt.Errorf("%w: got %q", ErrTombstoneWrongKeyPurpose, t.KeyPurpose)
 	}
+	if _, err := validateDataClassRoot(t.DataClassRoot); err != nil {
+		return err
+	}
 	return nil
 }

@@ -104,5 +104,8 @@ func (v VerificationMetadata) Validate() error {
 	if v.TombstoneIndexRoot != computed {
 		return fmt.Errorf("%w: stored %q, computed %q", ErrTombstoneIndexRootMismatch, v.TombstoneIndexRoot, computed)
 	}
+	if _, err := validateDataClassRoot(v.DataClassRoot); err != nil {
+		return err
+	}
 	return nil
 }

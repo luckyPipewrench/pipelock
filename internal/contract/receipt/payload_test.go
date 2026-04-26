@@ -6,10 +6,15 @@ package receipt_test
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
+
+const testReceiptSignature = "ed25519:" + "" +
+	"0000000000000000000000000000000000000000000000000000000000000000" +
+	"0000000000000000000000000000000000000000000000000000000000000000"
 
 // marshalPayload marshals v to json.RawMessage for test use.
 func marshalPayload(t *testing.T, v any) json.RawMessage {
@@ -1216,6 +1221,20 @@ func TestValidateProxyDecision_RejectsTrailingTokens(t *testing.T) {
 	}
 }
 
+func TestValidateProxyDecision_RejectsTrailingDelimiter(t *testing.T) {
+	t.Parallel()
+	cases := []json.RawMessage{
+		json.RawMessage(`{"action_type":"connect","target":"x","verdict":"allow","transport":"forward","policy_sources":["a"],"winning_source":"a"}]`),
+		json.RawMessage(`{"action_type":"connect","target":"x","verdict":"allow","transport":"forward","policy_sources":["a"],"winning_source":"a"}}`),
+	}
+	for _, raw := range cases {
+		err := callValidator(t, receipt.PayloadProxyDecision, raw)
+		if err == nil {
+			t.Fatalf("trailing delimiter accepted for %s", raw)
+		}
+	}
+}
+
 // callValidator dispatches to the validator for kind with raw payload.
 // It is intentionally wired through the exported EvidenceReceipt.Validate()
 // to exercise the full dispatch path.
@@ -1227,6 +1246,31 @@ func callValidator(t *testing.T, kind receipt.PayloadKind, raw json.RawMessage) 
 		PayloadKind:    kind,
 		EventID:        "01900000-0000-7000-8000-000000000001",
 		Payload:        raw,
+		Signature: receipt.SignatureProof{
+			SignerKeyID: "test-key",
+			KeyPurpose:  testKeyPurposeForPayload(kind),
+			Algorithm:   "ed25519",
+			Signature:   testReceiptSignature,
+		},
 	}
 	return r.Validate()
+}
+
+func testKeyPurposeForPayload(kind receipt.PayloadKind) string {
+	switch kind {
+	case receipt.PayloadContractPromoteIntent,
+		receipt.PayloadContractRollbackAuthorized,
+		receipt.PayloadKeyRotation,
+		receipt.PayloadContractRedactionRequest:
+		return "contract-activation-signing"
+	default:
+		return "receipt-signing"
+	}
+}
+
+func TestTestReceiptSignatureShape(t *testing.T) {
+	t.Parallel()
+	if got := strings.TrimPrefix(testReceiptSignature, "ed25519:"); len(got) != 128 {
+		t.Fatalf("test signature hex length=%d, want 128", len(got))
+	}
 }

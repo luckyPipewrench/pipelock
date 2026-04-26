@@ -66,7 +66,7 @@ func validateSettingsAllowlist(settings map[string]any) error {
 		case "privacy":
 			sub, ok := v.(map[string]any)
 			if !ok {
-				continue
+				return fmt.Errorf("%w: privacy must be object", ErrCompileSettingsDisallowedKey)
 			}
 			for sk := range sub {
 				if !allowedPrivacySettings[sk] {
@@ -76,7 +76,7 @@ func validateSettingsAllowlist(settings map[string]any) error {
 		case "redaction":
 			sub, ok := v.(map[string]any)
 			if !ok {
-				continue
+				return fmt.Errorf("%w: redaction must be object", ErrCompileSettingsDisallowedKey)
 			}
 			for sk, sv := range sub {
 				if !allowedRedactionSettings[sk] {
@@ -85,7 +85,7 @@ func validateSettingsAllowlist(settings map[string]any) error {
 				if sk == "salt_hash" {
 					sh, ok := sv.(map[string]any)
 					if !ok {
-						continue
+						return fmt.Errorf("%w: redaction.salt_hash must be object", ErrCompileSettingsDisallowedKey)
 					}
 					for shk := range sh {
 						if !allowedSaltHashSettings[shk] {

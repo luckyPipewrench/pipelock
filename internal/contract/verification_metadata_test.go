@@ -118,6 +118,24 @@ func TestVerificationMetadata_Validate_RejectsBadSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestVerificationMetadata_Validate_RejectsInvalidDataClassRoot(t *testing.T) {
+	t.Parallel()
+	vm := baseVerificationMetadata()
+	vm.DataClassRoot = invalidDataClassName
+	if err := vm.Validate(); !errors.Is(err, ErrInvalidDataClass) {
+		t.Errorf("expected ErrInvalidDataClass, got %v", err)
+	}
+}
+
+func TestVerificationMetadata_Validate_RejectsRegulatedDataClassRoot(t *testing.T) {
+	t.Parallel()
+	vm := baseVerificationMetadata()
+	vm.DataClassRoot = string(DataClassRegulated)
+	if err := vm.Validate(); !errors.Is(err, ErrRegulatedField) {
+		t.Errorf("expected ErrRegulatedField, got %v", err)
+	}
+}
+
 func TestVerificationMetadata_ComputeTombstoneIndexRoot_NonEmpty(t *testing.T) {
 	t.Parallel()
 	// Non-empty list produces a root that differs from the empty-list root.

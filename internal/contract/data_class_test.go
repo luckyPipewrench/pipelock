@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+const invalidDataClassName = "private"
+
 func TestDataClass_Validate(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -19,7 +21,7 @@ func TestDataClass_Validate(t *testing.T) {
 		{"internal", DataClassInternal, true},
 		{"sensitive", DataClassSensitive, true},
 		{"regulated", DataClassRegulated, true},
-		{"unknown", DataClass("private"), false},
+		{"unknown", DataClass(invalidDataClassName), false},
 		{"empty", DataClass(""), false},
 	}
 	for _, tc := range cases {
@@ -43,7 +45,7 @@ func TestDataClassCoverage_RegulatedRejects(t *testing.T) {
 		"field_data_classes": map[string]any{
 			"selector.agent":                 "internal",
 			"observation_window.event_count": "public",
-			"rationale.summary":              "regulated",
+			"rationale.summary":              string(DataClassRegulated),
 		},
 		"selector": map[string]any{"agent": "buster"},
 	}
@@ -84,12 +86,38 @@ func TestDataClassCoverage_LenientWithRoot(t *testing.T) {
 	}
 }
 
+func TestDataClassCoverage_RejectsInvalidRoot(t *testing.T) {
+	t.Parallel()
+	body := map[string]any{
+		"data_class_root":    invalidDataClassName,
+		"field_data_classes": map[string]any{},
+		"selector":           map[string]any{"agent": "buster"},
+	}
+	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
+	if !errors.Is(err, ErrInvalidDataClass) {
+		t.Errorf("got %v, want ErrInvalidDataClass", err)
+	}
+}
+
+func TestDataClassCoverage_RejectsRegulatedRoot(t *testing.T) {
+	t.Parallel()
+	body := map[string]any{
+		"data_class_root":    string(DataClassRegulated),
+		"field_data_classes": map[string]any{},
+		"selector":           map[string]any{"agent": "buster"},
+	}
+	err := ValidateDataClassCoverage(body, body["field_data_classes"].(map[string]any))
+	if !errors.Is(err, ErrRegulatedField) {
+		t.Errorf("got %v, want ErrRegulatedField", err)
+	}
+}
+
 func TestDataClassCoverage_InvalidClassValueRejects(t *testing.T) {
 	t.Parallel()
 	body := map[string]any{
 		"data_class_root": "internal",
 		"field_data_classes": map[string]any{
-			"selector.agent": "private", // not in enum
+			"selector.agent": invalidDataClassName, // not in enum
 		},
 		"selector": map[string]any{"agent": "buster"},
 	}

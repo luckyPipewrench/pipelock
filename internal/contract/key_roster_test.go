@@ -95,3 +95,21 @@ func TestKeyRoster_Validate_RejectsBadSchemaVersion(t *testing.T) {
 		t.Errorf("expected ErrRosterSchemaVersion, got %v", err)
 	}
 }
+
+func TestKeyRoster_Validate_RejectsInvalidDataClassRoot(t *testing.T) {
+	t.Parallel()
+	r := baseKeyRoster()
+	r.DataClassRoot = invalidDataClassName
+	if err := r.Validate(); !errors.Is(err, ErrInvalidDataClass) {
+		t.Errorf("expected ErrInvalidDataClass, got %v", err)
+	}
+}
+
+func TestKeyRoster_Validate_RejectsRegulatedDataClassRoot(t *testing.T) {
+	t.Parallel()
+	r := baseKeyRoster()
+	r.DataClassRoot = string(DataClassRegulated)
+	if err := r.Validate(); !errors.Is(err, ErrRegulatedField) {
+		t.Errorf("expected ErrRegulatedField, got %v", err)
+	}
+}

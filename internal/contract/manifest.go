@@ -37,6 +37,9 @@ var ErrManifestSelectorIDMismatch = errors.New("manifest: selector_id does not m
 // match the value computed from the sorted selector IDs.
 var ErrManifestSelectorSetHashMismatch = errors.New("manifest: selector_set_hash does not match computed value")
 
+// ErrManifestMissingSelectorSetHash rejects manifests without a selector_set_hash.
+var ErrManifestMissingSelectorSetHash = errors.New("manifest: selector_set_hash is required")
+
 // ActiveManifest is the typed signable body of the active manifest.
 type ActiveManifest struct {
 	SchemaVersion     int                `json:"schema_version"`
@@ -87,7 +90,7 @@ type ActiveManifestEnvelope struct {
 // In addition to manifest_kind and duplicate selector_id checks, Validate now enforces:
 //   - schema_version must be 1
 //   - each selector_id must equal ComputeSelectorID() (prevents identity forgery)
-//   - selector_set_hash (when non-empty) must equal the value computed from sorted IDs
+//   - selector_set_hash must equal the value computed from sorted IDs
 func (m ActiveManifest) Validate() error {
 	if m.SchemaVersion != 1 {
 		return fmt.Errorf("%w: got %d, want 1", ErrManifestSchemaVersion, m.SchemaVersion)
@@ -110,24 +113,32 @@ func (m ActiveManifest) Validate() error {
 			return fmt.Errorf("%w: claimed=%q computed=%q", ErrManifestSelectorIDMismatch, s.SelectorID, computed)
 		}
 	}
-	// Recompute selector_set_hash from the sorted selector IDs when present.
-	if m.SelectorSetHash != "" {
-		ids := make([]string, 0, len(m.Selectors))
-		for _, s := range m.Selectors {
-			ids = append(ids, s.SelectorID)
-		}
-		sort.Strings(ids)
-		canon, err := Canonicalize(toAnySlice(ids))
-		if err != nil {
-			return fmt.Errorf("canonicalize selector ids: %w", err)
-		}
-		sum := sha256.Sum256(canon)
-		computed := "sha256:" + hex.EncodeToString(sum[:])
-		if m.SelectorSetHash != computed {
-			return fmt.Errorf("%w: claimed=%q computed=%q", ErrManifestSelectorSetHashMismatch, m.SelectorSetHash, computed)
-		}
+	if m.SelectorSetHash == "" {
+		return ErrManifestMissingSelectorSetHash
+	}
+	computed, err := ComputeSelectorSetHash(m.Selectors)
+	if err != nil {
+		return err
+	}
+	if m.SelectorSetHash != computed {
+		return fmt.Errorf("%w: claimed=%q computed=%q", ErrManifestSelectorSetHashMismatch, m.SelectorSetHash, computed)
 	}
 	return nil
+}
+
+// ComputeSelectorSetHash derives selector_set_hash from the sorted selector IDs.
+func ComputeSelectorSetHash(selectors []ManifestSelector) (string, error) {
+	ids := make([]string, 0, len(selectors))
+	for _, s := range selectors {
+		ids = append(ids, s.SelectorID)
+	}
+	sort.Strings(ids)
+	canon, err := Canonicalize(toAnySlice(ids))
+	if err != nil {
+		return "", fmt.Errorf("canonicalize selector ids: %w", err)
+	}
+	sum := sha256.Sum256(canon)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // toAnySlice converts a []string to []any for use with Canonicalize.

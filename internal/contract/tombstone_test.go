@@ -76,6 +76,24 @@ func TestTombstone_Validate_RejectsBadSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestTombstone_Validate_RejectsInvalidDataClassRoot(t *testing.T) {
+	t.Parallel()
+	ts := baseTombstone()
+	ts.DataClassRoot = invalidDataClassName
+	if err := ts.Validate(); !errors.Is(err, ErrInvalidDataClass) {
+		t.Errorf("expected ErrInvalidDataClass, got %v", err)
+	}
+}
+
+func TestTombstone_Validate_RejectsRegulatedDataClassRoot(t *testing.T) {
+	t.Parallel()
+	ts := baseTombstone()
+	ts.DataClassRoot = string(DataClassRegulated)
+	if err := ts.Validate(); !errors.Is(err, ErrRegulatedField) {
+		t.Errorf("expected ErrRegulatedField, got %v", err)
+	}
+}
+
 func TestNewTombstone_AppliesDefaults(t *testing.T) {
 	t.Parallel()
 	ts := NewTombstone(

@@ -98,5 +98,8 @@ func (r KeyRoster) Validate() error {
 	if !hasRoot {
 		return fmt.Errorf("%w: key_id %q not found with status %q", ErrRosterMissingRoot, r.RosterSignedBy, KeyStatusRoot)
 	}
+	if _, err := validateDataClassRoot(r.DataClassRoot); err != nil {
+		return err
+	}
 	return nil
 }

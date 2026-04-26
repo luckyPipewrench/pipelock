@@ -34,11 +34,12 @@ func MerkleRoot(rules []Rule) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("merkle leaf %d: %w", i, err)
 		}
-		buf := make([]byte, 0, 1+len(canon))
-		buf = append(buf, merkleLeafTag)
-		buf = append(buf, canon...)
-		s := sha256.Sum256(buf)
-		level = append(level, s[:])
+		// Streaming hash avoids the make([]byte, 0, 1+len(canon)) allocation
+		// pattern that CodeQL flags as go/allocation-size-overflow.
+		h := sha256.New()
+		h.Write([]byte{merkleLeafTag})
+		h.Write(canon)
+		level = append(level, h.Sum(nil))
 	}
 
 	for len(level) > 1 {
@@ -51,12 +52,11 @@ func MerkleRoot(rules []Rule) (string, error) {
 			} else {
 				right = left // duplicate odd leaf at this level
 			}
-			buf := make([]byte, 0, 1+len(left)+len(right))
-			buf = append(buf, merkleInternalTag)
-			buf = append(buf, left...)
-			buf = append(buf, right...)
-			s := sha256.Sum256(buf)
-			next = append(next, s[:])
+			h := sha256.New()
+			h.Write([]byte{merkleInternalTag})
+			h.Write(left)
+			h.Write(right)
+			next = append(next, h.Sum(nil))
 		}
 		level = next
 	}

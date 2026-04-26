@@ -56,6 +56,9 @@ var (
 	ErrRecoverySignatureFormat      = errors.New("recovery authorization signature format invalid")
 	ErrRecoverySignatureInvalid     = errors.New("recovery authorization signature does not verify")
 	ErrRecoveryFingerprintMismatch  = errors.New("recovery authorization signing key fingerprint does not match pinned")
+	ErrRecoveryLifetimeTooLong      = errors.New("recovery authorization lifetime (expires_at - issued_at) exceeds 1h ceiling")
+	ErrRecoveryExpiresBeforeIssued  = errors.New("recovery authorization expires_at is before issued_at")
+	ErrRecoveryTargetHashMismatch   = errors.New("recovery authorization target_roster_hash does not match expected")
 )
 
 // RecoveryAuthorizationBody is the typed signable body of a roster recovery
@@ -145,17 +148,36 @@ func (b RecoveryAuthorizationBody) Validate() error {
 // passing the wrong key surfaces a fingerprint-mismatch error rather than a
 // signature-mismatch error (more diagnostic).
 //
-// Time-window checks (clock-skew bounded, against the now parameter):
-//   - now < IssuedAt       -> ErrRecoveryNotYetValid (issued in the future)
-//   - now > ExpiresAt      -> ErrRecoveryExpired
-//   - ExpiresAt - now > 1h -> ErrRecoveryExpiryTooFar
+// expectedTargetRosterHash binds the authorization to a specific roster body
+// the runtime is about to recover into. When non-empty, body.TargetRosterHash
+// must equal it (string compare on the canonical "sha256:<hex>" form). When
+// empty, the binding check is skipped and the loader returns a verified
+// envelope without proving it authorises any particular roster — used by
+// the offline ceremony CLI to inspect a file before a target hash is known.
+// Runtime callers MUST pass a non-empty expected hash; mirroring the
+// pinned-fingerprint convention used by LoadRootTransition keeps the
+// distinction visible in source.
 //
-// The 1-hour ceiling is hard-coded per the design doc. There is no unsigned
-// recovery path: callers must pass a valid signed envelope or get an error.
+// Time-window checks (clock-skew bounded, against the now parameter):
+//   - now < IssuedAt              -> ErrRecoveryNotYetValid (issued in future)
+//   - now > ExpiresAt             -> ErrRecoveryExpired
+//   - ExpiresAt - now > 1h        -> ErrRecoveryExpiryTooFar (replay guard)
+//   - ExpiresAt <= IssuedAt       -> ErrRecoveryExpiresBeforeIssued
+//   - ExpiresAt - IssuedAt > 1h   -> ErrRecoveryLifetimeTooLong (lifetime cap)
+//
+// The 1-hour ceiling is enforced both on the LIFETIME (issued -> expired)
+// and the REMAINING WINDOW (now -> expired). Without the lifetime cap, an
+// authorization issued days ago but with expires_at = now + 30m would slip
+// past the replay guard while having an effective lifetime of days, which
+// violates the design's bounded blast-radius requirement.
+//
+// There is no unsigned recovery path: callers must pass a valid signed
+// envelope or get an error.
 func LoadRecoveryAuthorization(
 	path string,
 	recoveryRootPublicKey []byte,
 	pinnedRecoveryRootFingerprint string,
+	expectedTargetRosterHash string,
 	now time.Time,
 ) (*LoadedRecoveryAuthorization, error) {
 	// Step 1: Read file from disk.
@@ -184,18 +206,39 @@ func LoadRecoveryAuthorization(
 
 	// Step 5: Time-window checks.
 	issuedAt, _ := time.Parse(time.RFC3339, envelope.Body.IssuedAt)
+	expiresAt, _ := time.Parse(time.RFC3339, envelope.Body.ExpiresAt)
+
+	// Lifetime cap: expires must be after issued, and the gap must not
+	// exceed the 1h ceiling. Without these, a stale authorization with a
+	// short remaining window slips past the replay guard.
+	if !expiresAt.After(issuedAt) {
+		return nil, fmt.Errorf("%w: issued_at=%s, expires_at=%s",
+			ErrRecoveryExpiresBeforeIssued, envelope.Body.IssuedAt, envelope.Body.ExpiresAt)
+	}
+	if expiresAt.Sub(issuedAt) > recoveryExpiryCeiling {
+		return nil, fmt.Errorf("%w: lifetime=%s, ceiling=%s",
+			ErrRecoveryLifetimeTooLong, expiresAt.Sub(issuedAt), recoveryExpiryCeiling)
+	}
+
 	if now.Before(issuedAt) {
 		return nil, fmt.Errorf("%w: issued_at=%s, now=%s",
 			ErrRecoveryNotYetValid, envelope.Body.IssuedAt, now.Format(time.RFC3339))
 	}
-	expiresAt, _ := time.Parse(time.RFC3339, envelope.Body.ExpiresAt)
 	if now.After(expiresAt) {
 		return nil, fmt.Errorf("%w: expires_at=%s, now=%s",
 			ErrRecoveryExpired, envelope.Body.ExpiresAt, now.Format(time.RFC3339))
 	}
+	// Replay guard: even with a lawful 1h lifetime, the remaining window
+	// must also be no more than 1h. Cheap to enforce; same ceiling.
 	if expiresAt.Sub(now) > recoveryExpiryCeiling {
 		return nil, fmt.Errorf("%w: expires_at=%s, now=%s, delta=%s",
 			ErrRecoveryExpiryTooFar, envelope.Body.ExpiresAt, now.Format(time.RFC3339), expiresAt.Sub(now))
+	}
+
+	// Step 5b: Bind to expected target roster, when caller supplied one.
+	if expectedTargetRosterHash != "" && envelope.Body.TargetRosterHash != expectedTargetRosterHash {
+		return nil, fmt.Errorf("%w: got %q, want %q",
+			ErrRecoveryTargetHashMismatch, envelope.Body.TargetRosterHash, expectedTargetRosterHash)
 	}
 
 	// Step 6: Verify recovery-root fingerprint pinning.

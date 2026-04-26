@@ -135,7 +135,7 @@ func TestLoadRecoveryAuthorization_HappyPath_JSON(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	path, pub, fp := recoveryFixture(t, now, ".json")
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err != nil {
 		t.Fatalf("LoadRecoveryAuthorization: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestLoadRecoveryAuthorization_HappyPath_YAML(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	path, pub, fp := recoveryFixture(t, now, ".yaml")
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err != nil {
 		t.Fatalf("LoadRecoveryAuthorization YAML: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestLoadRecoveryAuthorization_HappyPath_YML(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	path, pub, fp := recoveryFixture(t, now, ".yml")
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err != nil {
 		t.Fatalf("LoadRecoveryAuthorization YML: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestLoadRecoveryAuthorization_RejectFileMissing(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	_, pub, fp := recoveryFixture(t, now, ".json")
 
-	_, err := LoadRecoveryAuthorization("/nonexistent/path/recovery.json", pub, fp, now)
+	_, err := LoadRecoveryAuthorization("/nonexistent/path/recovery.json", pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -209,7 +209,7 @@ func TestLoadRecoveryAuthorization_RejectUnsupportedExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadRecoveryAuthorization(badPath, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(badPath, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected error for unsupported extension")
 	}
@@ -229,7 +229,7 @@ func TestLoadRecoveryAuthorization_RejectMalformedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadRecoveryAuthorization(badPath, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(badPath, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -245,7 +245,7 @@ func TestLoadRecoveryAuthorization_RejectSchemaVersionWrong(t *testing.T) {
 		env.Body.SchemaVersion = 99
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoverySchemaVersion")
 	}
@@ -261,7 +261,7 @@ func TestLoadRecoveryAuthorization_RejectMissingReason(t *testing.T) {
 		env.Body.Reason = ""
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryReasonRequired")
 	}
@@ -277,7 +277,7 @@ func TestLoadRecoveryAuthorization_RejectMissingOperator(t *testing.T) {
 		env.Body.OperatorIdentity = ""
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryOperatorRequired")
 	}
@@ -293,7 +293,7 @@ func TestLoadRecoveryAuthorization_RejectExpiresAtNotRFC3339(t *testing.T) {
 		env.Body.ExpiresAt = testRecoveryBadDate
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryExpiryFormat")
 	}
@@ -309,7 +309,7 @@ func TestLoadRecoveryAuthorization_RejectIssuedAtNotRFC3339(t *testing.T) {
 		env.Body.IssuedAt = testRecoveryBadDate
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryIssuedAtFormat")
 	}
@@ -325,7 +325,7 @@ func TestLoadRecoveryAuthorization_RejectTargetHashWrongPrefix(t *testing.T) {
 		env.Body.TargetRosterHash = "md5:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryTargetHashFormat")
 	}
@@ -341,7 +341,7 @@ func TestLoadRecoveryAuthorization_RejectTargetHashWrongLength(t *testing.T) {
 		env.Body.TargetRosterHash = "sha256:aabb"
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryTargetHashFormat")
 	}
@@ -359,7 +359,7 @@ func TestLoadRecoveryAuthorization_RejectTargetHashNonHex(t *testing.T) {
 		env.Body.TargetRosterHash = badHash
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryTargetHashFormat")
 	}
@@ -371,12 +371,14 @@ func TestLoadRecoveryAuthorization_RejectTargetHashNonHex(t *testing.T) {
 func TestLoadRecoveryAuthorization_RejectIssuedInTheFuture(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
-	// Set issued_at to 1 hour in the future.
+	// Set issued_at to 1 hour in the future, expires_at to 1h30m to keep the
+	// lifetime under the ceiling so we can test the issued-in-future gate.
 	path, pub, fp := recoveryFixture(t, now, ".json", recoveryPreSignOpt(func(env *RecoveryAuthorizationEnvelope) {
 		env.Body.IssuedAt = now.Add(1 * time.Hour).UTC().Format(time.RFC3339)
+		env.Body.ExpiresAt = now.Add(1*time.Hour + 30*time.Minute).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryNotYetValid")
 	}
@@ -393,7 +395,7 @@ func TestLoadRecoveryAuthorization_RejectExpired(t *testing.T) {
 		env.Body.ExpiresAt = now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryExpired")
 	}
@@ -402,37 +404,99 @@ func TestLoadRecoveryAuthorization_RejectExpired(t *testing.T) {
 	}
 }
 
-func TestLoadRecoveryAuthorization_RejectExpiryMoreThan1HourOut(t *testing.T) {
+func TestLoadRecoveryAuthorization_RejectsLifetimeTooLong(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
-	// Set expires_at to 2 hours in the future.
+	// Lifetime = 2h10m (issued -10m, expires +2h) violates the lifetime cap
+	// regardless of where now sits inside the window. This is the cap that
+	// closes the "stale auth, short remaining" attack: a 30-day-old auth
+	// expiring in 30 minutes would slip past a remaining-only check.
 	path, pub, fp := recoveryFixture(t, now, ".json", recoveryPreSignOpt(func(env *RecoveryAuthorizationEnvelope) {
 		env.Body.ExpiresAt = now.Add(2 * time.Hour).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
-		t.Fatal("expected ErrRecoveryExpiryTooFar")
+		t.Fatal("expected ErrRecoveryLifetimeTooLong")
 	}
-	if !errors.Is(err, ErrRecoveryExpiryTooFar) {
-		t.Errorf("got %v, want ErrRecoveryExpiryTooFar", err)
+	if !errors.Is(err, ErrRecoveryLifetimeTooLong) {
+		t.Errorf("got %v, want ErrRecoveryLifetimeTooLong", err)
+	}
+}
+
+func TestLoadRecoveryAuthorization_RejectsStaleAuthShortRemaining(t *testing.T) {
+	t.Parallel()
+	// The exact attack the lifetime cap closes: an authorization issued 30
+	// days ago but with expires_at 30 minutes from now. The remaining
+	// window (30m) passes the replay check, but the lifetime (30 days)
+	// blows past the ceiling. Without the lifetime cap this would be
+	// accepted and an attacker who stole the auth weeks ago could still use
+	// it.
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json", recoveryPreSignOpt(func(env *RecoveryAuthorizationEnvelope) {
+		env.Body.IssuedAt = now.Add(-30 * 24 * time.Hour).UTC().Format(time.RFC3339)
+		env.Body.ExpiresAt = now.Add(30 * time.Minute).UTC().Format(time.RFC3339)
+	}))
+
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	if !errors.Is(err, ErrRecoveryLifetimeTooLong) {
+		t.Errorf("got %v, want ErrRecoveryLifetimeTooLong", err)
+	}
+}
+
+func TestLoadRecoveryAuthorization_RejectsExpiresBeforeIssued(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json", recoveryPreSignOpt(func(env *RecoveryAuthorizationEnvelope) {
+		env.Body.IssuedAt = now.UTC().Format(time.RFC3339)
+		env.Body.ExpiresAt = now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
+	}))
+
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	if !errors.Is(err, ErrRecoveryExpiresBeforeIssued) {
+		t.Errorf("got %v, want ErrRecoveryExpiresBeforeIssued", err)
 	}
 }
 
 func TestLoadRecoveryAuthorization_AcceptsExpiryExactly1Hour(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
-	// Set expires_at to exactly now + 1h. The check is > 1h, so exactly 1h passes.
+	// Lifetime = exactly 1h (issued = now, expires = now + 1h). The
+	// lifetime cap allows equality, so this should be accepted.
 	path, pub, fp := recoveryFixture(t, now, ".json", recoveryPreSignOpt(func(env *RecoveryAuthorizationEnvelope) {
+		env.Body.IssuedAt = now.UTC().Format(time.RFC3339)
 		env.Body.ExpiresAt = now.Add(recoveryExpiryCeiling).UTC().Format(time.RFC3339)
 	}))
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err != nil {
-		t.Fatalf("expected exactly 1h expiry to be accepted, got: %v", err)
+		t.Fatalf("expected exactly 1h lifetime to be accepted, got: %v", err)
 	}
 	if loaded.Body.Reason != testRecoveryReason {
 		t.Errorf("Reason = %q, want %q", loaded.Body.Reason, testRecoveryReason)
+	}
+}
+
+func TestLoadRecoveryAuthorization_RejectsTargetRosterHashMismatch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json")
+
+	const expected = "sha256:" + "0123456789abcdef0123456789abcdef" + "0123456789abcdef0123456789abcdef"
+	_, err := LoadRecoveryAuthorization(path, pub, fp, expected, now)
+	if !errors.Is(err, ErrRecoveryTargetHashMismatch) {
+		t.Errorf("got %v, want ErrRecoveryTargetHashMismatch", err)
+	}
+}
+
+func TestLoadRecoveryAuthorization_AcceptsMatchingTargetRosterHash(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json")
+
+	// recoveryFixture uses testRecoveryTargetHash for the body's TargetRosterHash.
+	if _, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now); err != nil {
+		t.Errorf("expected matching target hash to be accepted, got: %v", err)
 	}
 }
 
@@ -444,7 +508,7 @@ func TestLoadRecoveryAuthorization_RejectFingerprintMismatch(t *testing.T) {
 	// Use a wrong pinned fingerprint (valid format but different digest).
 	wrongFP := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	_, err := LoadRecoveryAuthorization(path, pub, wrongFP, now)
+	_, err := LoadRecoveryAuthorization(path, pub, wrongFP, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryFingerprintMismatch")
 	}
@@ -473,7 +537,7 @@ func TestLoadRecoveryAuthorization_RejectSignatureFormatBad(t *testing.T) {
 				env.Signature = tc.sig
 			}))
 
-			_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+			_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 			if err == nil {
 				t.Fatalf("expected ErrRecoverySignatureFormat for %q", tc.name)
 			}
@@ -500,7 +564,7 @@ func TestLoadRecoveryAuthorization_RejectSignatureInvalid(t *testing.T) {
 		env.Signature = sig[:len(sig)-1] + string(replacement)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
 	if err == nil {
 		t.Fatal("expected ErrRecoverySignatureInvalid")
 	}

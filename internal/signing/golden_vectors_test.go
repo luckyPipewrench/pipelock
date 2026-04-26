@@ -115,11 +115,16 @@ func goldenFingerprint(t *testing.T, pub ed25519.PublicKey) string {
 // --- Golden fixture constants ---
 
 const (
-	goldenRecoveryIssuedAt   = "2026-04-26T13:00:00Z"
-	goldenRecoveryExpiresAt  = "2026-04-26T13:30:00Z"
-	goldenRecoveryReason     = "roster root key compromised"
-	goldenRecoveryOperator   = "ops@example.com"
-	goldenRecoveryTargetHash = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	goldenRecoveryIssuedAt  = "2026-04-26T13:00:00Z"
+	goldenRecoveryExpiresAt = "2026-04-26T13:30:00Z"
+	goldenRecoveryReason    = "roster root key compromised"
+	goldenRecoveryOperator  = "ops@example.com"
+	// Deterministic stand-in for a real roster body hash, fixed at the
+	// digest of a constant string. Conformance fixtures need a non-zero
+	// value so the target-roster-hash binding gate exercises a real
+	// comparison instead of trivially matching the all-zero default.
+	// Computed from sha256("pipelock-test-recovery-target-roster-body-fixture").
+	goldenRecoveryTargetHash = "sha256:d0936185ee07c30a681e5beb49ef01899744df04bef122596467d9aa8ef24f7d"
 
 	goldenRTReason      = "scheduled annual key rotation"
 	goldenRTEffectiveAt = "2026-04-26T15:00:00Z"
@@ -281,7 +286,7 @@ func TestGolden_AllFixturesParseAndValidate(t *testing.T) {
 		}
 
 		path := filepath.Join(goldenDirRel, "valid_recovery_authorization.json")
-		loaded, loadErr := LoadRecoveryAuthorization(path, pub, fp, now)
+		loaded, loadErr := LoadRecoveryAuthorization(path, pub, fp, "", now)
 		if loadErr != nil {
 			t.Fatalf("LoadRecoveryAuthorization: %v", loadErr)
 		}

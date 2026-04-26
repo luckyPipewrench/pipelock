@@ -3,9 +3,9 @@
     "schema_version": 1,
     "reason": "roster root key compromised",
     "expires_at": "2026-04-26T13:30:00Z",
-    "target_roster_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "target_roster_hash": "sha256:d0936185ee07c30a681e5beb49ef01899744df04bef122596467d9aa8ef24f7d",
     "operator_identity": "ops@example.com",
     "issued_at": "2026-04-26T13:00:00Z"
   },
-  "signature": "ed25519:87f9600b25ebde8975fea0e6177093c261edbeac7a8d8835c05b08ed630c9ce6c75fb3ee68dc1bdd1fbf02b1760acca53a72c5542a14f13a7f0e29b06c7b2b0a"
+  "signature": "ed25519:12f5e5867a8dcc8777cdbe38e666794e152bf0820e4b15849702305860c2d823901bc5e911f285d4a1a06a49918bdae9d8b6bfa7940cb4bfc70e29b3c56f530a"
 }

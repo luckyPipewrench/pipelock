@@ -161,30 +161,68 @@ def _parse_rfc3339(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
+# Allowed top-level fields in a recovery_authorization envelope. Strict
+# schema parity with the Go DecodeStrictJSON path: unknown fields reject.
+_RECOVERY_ENVELOPE_FIELDS = frozenset({"body", "signature"})
+# Allowed fields inside the recovery_authorization body. Same strictness
+# rule as the envelope.
+_RECOVERY_BODY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "reason",
+        "expires_at",
+        "target_roster_hash",
+        "operator_identity",
+        "issued_at",
+    }
+)
+
+
+def _reject_unknown_fields(name: str, obj: dict, allowed: frozenset) -> None:
+    """Mirror Go's json.Decoder.DisallowUnknownFields by raising on extras."""
+    extras = set(obj.keys()) - allowed
+    if extras:
+        raise ValueError(
+            f"{name} contains unknown fields: {sorted(extras)}"
+        )
+
+
 def verify_recovery_authorization(
     envelope_json_bytes: bytes,
     recovery_root_pubkey_bytes: bytes,
     pinned_recovery_root_fingerprint: str,
     now_iso: str,
+    expected_target_roster_hash: str = "",
 ) -> dict:
     """Verify a recovery_authorization envelope.
 
     Performs:
+      - Strict schema parity with Go (unknown envelope or body fields reject)
       - Structural validation matching Go RecoveryAuthorizationBody.Validate()
+      - Lifetime cap (expires_at - issued_at <= 1h) AND replay guard
+        (expires_at - now <= 1h) AND expires_at > issued_at
       - Time-window check using now_iso
       - Fingerprint pinning
+      - Optional target_roster_hash binding when expected_target_roster_hash
+        is non-empty (mirrors Go LoadRecoveryAuthorization)
       - Ed25519 signature verification over JCS-canonicalized body
 
     Returns the parsed body dict on success; raises ValueError on failure.
     """
     envelope = json.loads(envelope_json_bytes)
 
+    if not isinstance(envelope, dict):
+        raise ValueError("recovery authorization envelope must be a JSON object")
+    _reject_unknown_fields("recovery authorization envelope", envelope, _RECOVERY_ENVELOPE_FIELDS)
     if "body" not in envelope:
         raise ValueError("missing body field")
     if "signature" not in envelope:
         raise ValueError("missing signature field")
 
     body = envelope["body"]
+    if not isinstance(body, dict):
+        raise ValueError("recovery authorization body must be a JSON object")
+    _reject_unknown_fields("recovery authorization body", body, _RECOVERY_BODY_FIELDS)
 
     # Structural validation.
     if body.get("schema_version") != 1:
@@ -205,6 +243,21 @@ def verify_recovery_authorization(
     expires_at = _parse_rfc3339(body["expires_at"])
     now = _parse_rfc3339(now_iso)
 
+    # Lifetime cap and ordering: expires must follow issued, and the
+    # absolute lifetime must not exceed 1h. Without this, a stale auth
+    # with a short remaining window slips past the replay guard.
+    if expires_at <= issued_at:
+        raise ValueError(
+            f"recovery authorization expires_at is before issued_at: "
+            f"issued_at={body['issued_at']}, expires_at={body['expires_at']}"
+        )
+    lifetime = expires_at - issued_at
+    if lifetime.total_seconds() > 3600:
+        raise ValueError(
+            f"recovery authorization lifetime exceeds 1h ceiling: "
+            f"lifetime={lifetime}"
+        )
+
     # Time-window checks.
     if now < issued_at:
         raise ValueError(
@@ -216,11 +269,20 @@ def verify_recovery_authorization(
             f"recovery authorization is expired: "
             f"now={now_iso}, expires_at={body['expires_at']}"
         )
+    # Replay guard (defense in depth; redundant with lifetime cap when
+    # now >= issued_at, kept explicit so the gate is visible in code).
     delta = expires_at - now
     if delta.total_seconds() > 3600:
         raise ValueError(
             f"recovery authorization expires more than 1h in the future: "
             f"delta={delta}"
+        )
+
+    # Target roster binding.
+    if expected_target_roster_hash and target_hash != expected_target_roster_hash:
+        raise ValueError(
+            f"target_roster_hash mismatch: got {target_hash}, "
+            f"want {expected_target_roster_hash}"
         )
 
     # Fingerprint pinning.
@@ -243,6 +305,21 @@ def verify_recovery_authorization(
     return body
 
 
+# Allowed top-level fields in a root_transition envelope and body. Strict
+# schema parity with the Go DecodeStrictJSON path: unknown fields reject.
+_ROOT_TRANSITION_ENVELOPE_FIELDS = frozenset({"body", "old_signature", "new_signature"})
+_ROOT_TRANSITION_BODY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "root_kind",
+        "old_fingerprint",
+        "new_fingerprint",
+        "effective_at",
+        "reason",
+    }
+)
+
+
 def verify_root_transition(
     envelope_json_bytes: bytes,
     old_pubkey_bytes: bytes,
@@ -252,6 +329,7 @@ def verify_root_transition(
     """Verify a root_transition envelope with dual signatures.
 
     Performs:
+      - Strict schema parity with Go (unknown envelope or body fields reject)
       - Structural validation matching Go RootTransitionBody.Validate()
       - Fingerprint matching for both old and new keys
       - Optional operator-pin check (if pinned_old_fingerprint is non-empty)
@@ -261,6 +339,9 @@ def verify_root_transition(
     """
     envelope = json.loads(envelope_json_bytes)
 
+    if not isinstance(envelope, dict):
+        raise ValueError("root transition envelope must be a JSON object")
+    _reject_unknown_fields("root transition envelope", envelope, _ROOT_TRANSITION_ENVELOPE_FIELDS)
     if "body" not in envelope:
         raise ValueError("missing body field")
     if "old_signature" not in envelope:
@@ -269,6 +350,9 @@ def verify_root_transition(
         raise ValueError("missing new_signature field")
 
     body = envelope["body"]
+    if not isinstance(body, dict):
+        raise ValueError("root transition body must be a JSON object")
+    _reject_unknown_fields("root transition body", body, _ROOT_TRANSITION_BODY_FIELDS)
 
     # Structural validation.
     if body.get("schema_version") != 1:
@@ -430,6 +514,15 @@ def _pubkey_from_seed_hex(seed_hex: str) -> bytes:
     return priv.public_key().public_bytes_raw()
 
 
+# Deterministic stand-in for the roster body hash the recovery
+# authorization is bound to. Must match goldenRecoveryTargetHash on the Go
+# side so cross-implementation parity is exercised end-to-end.
+# sha256("pipelock-test-recovery-target-roster-body-fixture")
+_GOLDEN_RECOVERY_TARGET_ROSTER_HASH = (
+    "sha256:d0936185ee07c30a681e5beb49ef01899744df04bef122596467d9aa8ef24f7d"
+)
+
+
 def smoke_test_recovery_authorization(fixture_path: str) -> int:
     """Verify a recovery_authorization golden fixture from the signing package."""
     pubkey = _pubkey_from_seed_hex(_GOLDEN_RECOVERY_ROOT_SEED_HEX)
@@ -437,11 +530,15 @@ def smoke_test_recovery_authorization(fixture_path: str) -> int:
     data = Path(fixture_path).read_bytes()
     try:
         body = verify_recovery_authorization(
-            data, pubkey, fp, "2026-04-26T13:10:00Z"
+            data,
+            pubkey,
+            fp,
+            "2026-04-26T13:10:00Z",
+            expected_target_roster_hash=_GOLDEN_RECOVERY_TARGET_ROSTER_HASH,
         )
         print(
             f"OK recovery_authorization: reason={body['reason']!r}, "
-            f"fingerprint={fp}"
+            f"fingerprint={fp}, target_roster_hash bound"
         )
         return 0
     except ValueError as e:

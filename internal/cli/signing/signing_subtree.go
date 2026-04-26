@@ -134,17 +134,24 @@ func recoveryVerifyCmd() *cobra.Command {
 	var path string
 	var recoveryPubkeyHex string
 	var pinnedFingerprint string
+	var expectedTargetRosterHash string
 
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Verify a recovery authorization file",
 		Long: `Loads and verifies a recovery authorization against the
 specified recovery-root public key and pinned fingerprint. Checks
-the signature, time window, and structural validity.
+the signature, time window, lifetime ceiling, and structural validity.
+
+The optional --expected-target-roster-hash binds the authorization to a
+specific roster body. Empty (the default) skips the binding check, which
+is appropriate for offline ceremony review when the target hash is not yet
+known. Runtime callers SHOULD pass a non-empty value.
 Exit 0 on success, non-zero on failure.
 
 Examples:
-  pipelock signing recovery verify --path recovery.json --recovery-pubkey <64-char-hex> --pinned-fingerprint sha256:abc123...`,
+  pipelock signing recovery verify --path recovery.json --recovery-pubkey <64-char-hex> --pinned-fingerprint sha256:abc123...
+  pipelock signing recovery verify --path recovery.json --recovery-pubkey <hex> --pinned-fingerprint sha256:abc... --expected-target-roster-hash sha256:def...`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			pubBytes, err := decodeHexPubkey(recoveryPubkeyHex)
 			if err != nil {
@@ -153,7 +160,7 @@ Examples:
 			}
 
 			loaded, err := domsigning.LoadRecoveryAuthorization(
-				filepath.Clean(path), pubBytes, pinnedFingerprint, time.Now())
+				filepath.Clean(path), pubBytes, pinnedFingerprint, expectedTargetRosterHash, time.Now())
 			if err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "verify failed: %v\n", err)
 				return err
@@ -162,6 +169,10 @@ Examples:
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"recovery authorization verified: reason=%s, expires_at=%s, operator=%s\n",
 				loaded.Body.Reason, loaded.Body.ExpiresAt, loaded.Body.OperatorIdentity)
+			if expectedTargetRosterHash == "" {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(),
+					"NOTE: target_roster_hash binding NOT verified (offline mode). Runtime callers must pass --expected-target-roster-hash.")
+			}
 			return nil
 		},
 	}
@@ -169,6 +180,7 @@ Examples:
 	cmd.Flags().StringVar(&path, "path", "", "path to recovery authorization file")
 	cmd.Flags().StringVar(&recoveryPubkeyHex, "recovery-pubkey", "", "recovery-root public key (64-char hex)")
 	cmd.Flags().StringVar(&pinnedFingerprint, "pinned-fingerprint", "", "operator-pinned recovery-root fingerprint (sha256:...)")
+	cmd.Flags().StringVar(&expectedTargetRosterHash, "expected-target-roster-hash", "", "expected target roster hash (sha256:...); empty = skip binding check (offline only)")
 	_ = cmd.MarkFlagRequired("path")
 	_ = cmd.MarkFlagRequired("recovery-pubkey")
 	_ = cmd.MarkFlagRequired("pinned-fingerprint")

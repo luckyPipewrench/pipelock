@@ -57,10 +57,19 @@ var allowedSaltHashSettings = map[string]bool{
 
 // validateSettingsAllowlist walks the Settings tree and rejects any key not in
 // the documented allowlist for its position in the hierarchy.
+//
+// All allowed top-level keys must hold OBJECTs (map[string]any). This blocks
+// the policy-smuggling pattern where an attacker stuffs a scalar or array
+// under an allowed namespace ("confidence": "anything-here") and downstream
+// components later interpret it with stronger semantics. The internal sub-key
+// allowlists for `privacy` and `redaction.*` apply on top of this rule.
 func validateSettingsAllowlist(settings map[string]any) error {
 	for k, v := range settings {
 		if !allowedTopLevelSettings[k] {
 			return fmt.Errorf("%w: %q at top level", ErrCompileSettingsDisallowedKey, k)
+		}
+		if _, ok := v.(map[string]any); !ok {
+			return fmt.Errorf("%w: %q must be an object (got %T)", ErrCompileSettingsDisallowedKey, k, v)
 		}
 		switch k {
 		case "privacy":

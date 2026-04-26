@@ -67,6 +67,11 @@ func extractReceiptsFromDir(t *testing.T, dir string) []receipt.Receipt {
 	return all
 }
 
+// waitForReceiptTimeout caps how long waitForReceiptOrTimeout polls the
+// recorder directory before giving up. Two seconds is comfortably above
+// the recorder flush latency while keeping the suite snappy under -race.
+const waitForReceiptTimeout = 2 * time.Second
+
 // waitForReceiptOrTimeout polls the recorder directory until at least one
 // JSONL file has non-zero size (i.e. a receipt has been flushed) or the
 // timeout expires. Deterministic alternative to time.Sleep that tolerates
@@ -76,9 +81,9 @@ func extractReceiptsFromDir(t *testing.T, dir string) []receipt.Receipt {
 // The recorder flushes after every write (see recorder.writeEntry), so a
 // non-empty JSONL file reliably indicates that at least one receipt has
 // been persisted. Callers can then Close() the recorder and extract.
-func waitForReceiptOrTimeout(t *testing.T, dir string, timeout time.Duration) {
+func waitForReceiptOrTimeout(t *testing.T, dir string) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(waitForReceiptTimeout)
 	for time.Now().Before(deadline) {
 		entries, _ := os.ReadDir(filepath.Clean(dir))
 		for _, e := range entries {
@@ -539,7 +544,7 @@ func TestReceiptCoverage_WSFrameBurst_NoReceiptsForAllowed(t *testing.T) {
 	// Deterministic wait: poll the recorder dir until at least one receipt
 	// has been flushed, or timeout. This avoids a fixed time.Sleep that can
 	// fail under CI load.
-	waitForReceiptOrTimeout(t, rph.dir, 2*time.Second)
+	waitForReceiptOrTimeout(t, rph.dir)
 
 	receipts := rph.findReceipts(t)
 
@@ -1518,7 +1523,7 @@ func TestReceiptCoverage_WSSessionClose_EmitsReceipt(t *testing.T) {
 
 	// Deterministic wait: poll the recorder dir for a flushed receipt with a
 	// generous timeout so slow CI doesn't produce a fixed-sleep flake.
-	waitForReceiptOrTimeout(t, rph.dir, 2*time.Second)
+	waitForReceiptOrTimeout(t, rph.dir)
 
 	r := rph.requireReceipt(t, "session_close")
 
@@ -1570,7 +1575,7 @@ func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
 	_ = ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
 	_ = conn.Close()
 
-	waitForReceiptOrTimeout(t, rph.dir, 2*time.Second)
+	waitForReceiptOrTimeout(t, rph.dir)
 
 	r := rph.requireReceipt(t, "session_close")
 	if r.ActionRecord.Redaction == nil {

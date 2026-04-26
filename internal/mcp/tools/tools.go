@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -245,6 +246,41 @@ func diffStringSlices(a, b []string) (added, removed []string) {
 		}
 	}
 	return added, removed
+}
+
+// ResetDriftState clears the drift-tracking maps (hashes, descs, params)
+// while preserving session binding state (knownTools, hasBaseline). Called
+// when mcp_session_binding.detect_drift transitions false→true via hot
+// reload: drift was not maintained while the flag was disabled, so the
+// retained hashes are stale relative to the current upstream tool
+// inventory. Re-seeding from the next tools/list avoids evaluating
+// post-flip traffic against pre-disable ground truth — the attacker
+// reload-cycle bypass this method closes. Session binding is intentionally
+// preserved: knownTools tracks "tools the session has ever seen" and
+// continues to flag wholly-new names through BindingUnknownAction.
+func (tb *ToolBaseline) ResetDriftState() {
+	tb.mu.Lock()
+	defer tb.mu.Unlock()
+	tb.hashes = make(map[string]string)
+	tb.descs = make(map[string]string)
+	tb.params = make(map[string][]string)
+}
+
+// DetectDriftRisingEdge tracks the previous detect_drift value across
+// hot-reload calls into the per-listener / server-level toolCfg closures.
+// The zero value is ready to use and starts at "previous=false". Safe for
+// concurrent Observe calls; one rising-edge transition in a flurry of
+// concurrent reloads will trigger exactly one true return.
+type DetectDriftRisingEdge struct {
+	prev atomic.Bool
+}
+
+// Observe records the new detect_drift value and reports whether it was a
+// rising edge (false→true). Other transitions return false. Callers fire
+// ResetDriftState on the associated baseline when this returns true.
+func (d *DetectDriftRisingEdge) Observe(curr bool) bool {
+	prev := d.prev.Swap(curr)
+	return curr && !prev
 }
 
 // SetKnownTools sets the session baseline from a tools/list response.

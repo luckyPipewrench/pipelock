@@ -165,6 +165,32 @@ type Scanner struct {
 	seedVerifyChecksum         bool
 	dlpWarnHookMu              sync.RWMutex
 	dlpWarnHook                func(ctx context.Context, patternName, severity string)
+
+	// Lifecycle: BeginUse / Close coordination. Once Close starts, BeginUse
+	// returns ok=false and callers must re-Load the proxy's scannerPtr to
+	// obtain the swapped-in scanner. Close blocks until inUse drains so an
+	// in-flight Scan never sees a half-torn-down scanner. Today only ticker
+	// goroutines are stopped, but future additions (sqlite handles, file
+	// descriptors) make this drain a hard prerequisite for safe reload.
+	closeMu sync.RWMutex
+	closed  bool
+	inUse   sync.WaitGroup
+}
+
+// scannerCloseDrainTimeout caps how long Close() waits for in-flight scans
+// to drain before forcing teardown of internal resources. Prevents a hung
+// upstream from leaking the scanner indefinitely on a hot reload. Override
+// only in tests via SetCloseDrainTimeoutForTest.
+var scannerCloseDrainTimeout = 30 * time.Second
+
+// SetCloseDrainTimeoutForTest overrides scannerCloseDrainTimeout for the
+// duration of a test and returns a restore function. Tests use a short
+// timeout to assert the drain-timeout fail-safe without slowing the suite.
+// Not safe for parallel tests touching this knob.
+func SetCloseDrainTimeoutForTest(d time.Duration) func() {
+	prev := scannerCloseDrainTimeout
+	scannerCloseDrainTimeout = d
+	return func() { scannerCloseDrainTimeout = prev }
 }
 
 // SetDLPWarnHook sets the callback for warn-mode DLP matches.
@@ -504,15 +530,63 @@ func (s *Scanner) IsInAPIAllowlist(hostname string) bool {
 	return false
 }
 
-// Close releases scanner resources, including stopping the rate limiter
-// cleanup goroutine. Safe to call multiple times.
+// Close drains in-flight Scan/BeginUse callers and then releases scanner
+// resources. After Close starts, BeginUse returns ok=false. Drain blocks
+// until every active BeginUse has called its release func, with a
+// scannerCloseDrainTimeout fail-safe so a hung scan can't leak the scanner.
+// Idempotent; further calls are no-ops.
 func (s *Scanner) Close() {
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return
+	}
+	s.closed = true
+	s.closeMu.Unlock()
+
+	drainDone := make(chan struct{})
+	go func() {
+		s.inUse.Wait()
+		close(drainDone)
+	}()
+	select {
+	case <-drainDone:
+	case <-time.After(scannerCloseDrainTimeout):
+		// Best-effort: proceed with teardown even if a scan never returned.
+	}
+
 	if s.rateLimiter != nil {
 		s.rateLimiter.Close()
 	}
 	if s.dataBudget != nil {
 		s.dataBudget.Close()
 	}
+}
+
+// BeginUse registers an in-flight scanner user. Callers MUST invoke the
+// returned release func when finished (defer is the canonical idiom).
+// Returns ok=false if Close has already been initiated; callers in that
+// case must re-Load the proxy's scanner pointer to acquire the freshly
+// swapped-in instance and retry. Cheap: two atomics + a WaitGroup Add on
+// the happy path.
+func (s *Scanner) BeginUse() (release func(), ok bool) {
+	s.closeMu.RLock()
+	if s.closed {
+		s.closeMu.RUnlock()
+		return nil, false
+	}
+	s.inUse.Add(1)
+	s.closeMu.RUnlock()
+	return s.inUse.Done, true
+}
+
+// Closed reports whether Close has been initiated. Used by tests to assert
+// hot-reload drained the prior scanner. Production callers should rely on
+// BeginUse's ok return instead.
+func (s *Scanner) Closed() bool {
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	return s.closed
 }
 
 // RecordRequest records response data for per-domain data budget tracking.

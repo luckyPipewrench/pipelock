@@ -1141,7 +1141,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	old := p.scannerPtr.Swap(sc)
 
 	if old != nil {
-		old.Close()
+		// Close drains in-flight scans before tearing down resources. Run
+		// in a goroutine so reload returns promptly: new traffic already
+		// uses sc, only stragglers from before the Swap are pinned to old.
+		go old.Close()
 	}
 
 	if prevEdSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); prevEdSnap != nil {

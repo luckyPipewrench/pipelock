@@ -68,6 +68,7 @@ type ReverseProxyHandler struct {
 	captureObs          capture.CaptureObserver
 	shieldEngine        *shield.Engine
 	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
+	receiptEmitterPtr   *atomic.Pointer[receipt.Emitter]
 	reloadMu            *sync.RWMutex
 }
 
@@ -146,6 +147,33 @@ func (rp *ReverseProxyHandler) SetEnvelopeEmitter(ptr *atomic.Pointer[envelope.E
 	rp.envelopeEmitterPtr = ptr
 }
 
+// SetReceiptEmitter sets the atomic pointer to the action-receipt emitter.
+// When unset (or pointing at nil), emitReceipt is a no-op so deployments
+// without flight-recorder signing keep their existing behavior. Wiring
+// the pointer is what gives reverse-proxy block paths receipt parity with
+// forward / intercept.
+func (rp *ReverseProxyHandler) SetReceiptEmitter(ptr *atomic.Pointer[receipt.Emitter]) {
+	rp.receiptEmitterPtr = ptr
+}
+
+// emitReceipt records a signed action receipt for a reverse-proxy
+// decision. Mirrors Proxy.emitReceipt: nil emitter is a no-op, errors are
+// logged but never propagated so a recorder failure cannot poison the
+// hot path. Reverse-proxy receipts use Transport="reverse"; the caller
+// supplies Layer/Pattern/ActionID/RequestID/Agent/Method/Target.
+func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
+	if rp.receiptEmitterPtr == nil {
+		return
+	}
+	e := rp.receiptEmitterPtr.Load()
+	if e == nil {
+		return
+	}
+	if err := e.Emit(opts); err != nil {
+		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+	}
+}
+
 // SetReloadLock lets ServeHTTP snapshot cfg/scanner/emitter state coherently
 // with Proxy.Reload publication.
 func (rp *ReverseProxyHandler) SetReloadLock(mu *sync.RWMutex) {
@@ -181,13 +209,36 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 	return snap
 }
 
+// snapshotAndAcquire reads the current runtime snapshot and registers the
+// loaded scanner for in-flight protection. Callers defer the
+// returned release; a no-op release is always safe to invoke. If the
+// scanner was Closed between Load and BeginUse — only possible during a
+// hot reload that has already swapped in a successor — re-snapshots up to
+// twice more to acquire the freshly published scanner. After three
+// failures the fallback returns a plain snapshot with a no-op release;
+// that path runs only if a reload thrashes the pointer faster than a
+// request can register, which would itself be a structural problem.
+func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, func()) {
+	for range 3 {
+		snap := rp.snapshotRuntime()
+		if snap.sc == nil {
+			return snap, func() {}
+		}
+		if release, ok := snap.sc.BeginUse(); ok {
+			return snap, release
+		}
+	}
+	return rp.snapshotRuntime(), func() {}
+}
+
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Strip inbound mediation envelope headers to prevent forgery.
 	envelope.StripInbound(r.Header)
 
-	snap := rp.snapshotRuntime()
+	snap, releaseScanner := rp.snapshotAndAcquire()
+	defer releaseScanner()
 	cfg := snap.cfg
 	sc := snap.sc
 	admissionEmitter := snap.admissionEmitter
@@ -514,6 +565,14 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 	clientIP, _ := resp.Request.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := resp.Request.Context().Value(ctxKeyRequestID).(string)
+	agent, _ := resp.Request.Context().Value(ctxKeyAgent).(string)
+	// One actionID per response covers every receipt this path may
+	// emit (compressed-body, oversize-body, read-error, SSE-stream-
+	// finding blocks). Only one block path is reachable per response,
+	// but the ID is also referenced from the SSE onComplete closure
+	// which runs asynchronously.
+	actionID := receipt.NewActionID()
+	targetURL := resp.Request.URL.String()
 
 	// Record the final client-visible status at each exit point, not here.
 	// The upstream status may be rewritten to 403 by scanning decisions.
@@ -670,6 +729,23 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "compressed")
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"compressed_response"}, nil)
+		// Reverse proxy has no session-profiling context; the taint
+		// fields that forward.go threads into its EmitOpts are
+		// intentionally omitted here and on the SSE / oversize / read-
+		// error block paths below. Adding them would require plumbing
+		// a session manager through ReverseProxyHandler, which is out
+		// of scope for this fix (parity for the existing block paths).
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     LayerReverseResponseBlocked,
+			Pattern:   "compressed response cannot be scanned",
+			Transport: "reverse",
+			Method:    resp.Request.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		replaceWithBlockResponse(resp, []string{"compressed response cannot be scanned"})
 		return nil
 	}
@@ -712,18 +788,24 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				rp.logger.LogError(actx, err)
 				return
 			}
-			// Reverse-proxy response-side findings (this branch + the
-			// existing buffered scan path below) emit log + metric only;
-			// no signed receipt. forward.go and intercept.go DO emit
-			// receipts via p.emitReceipt / interceptEmitReceipt and that
-			// asymmetry is a known reverse-proxy gap, not new to this
-			// branch. Tracked as a tech-debt followup for receipt parity
-			// across all reverse-proxy finding paths (compressed block at
-			// L657, oversize block, and this SSE block). Until that ships,
-			// SSE block decisions are auditable via the structured log
-			// line below plus the reverse_proxy_scan_blocked metric.
+			// Signed receipt for SSE stream findings. Mirrors
+			// forward.go (L1366) and intercept.go (L1158) for parity
+			// across transports — one decision receipt per finding,
+			// reusing the actionID generated at modifyResponse entry so
+			// downstream chain analysis sees a coherent decision graph.
 			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
 			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, sseLayer)
+			rp.emitReceipt(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     sseLayer,
+				Pattern:   err.Error(),
+				Transport: "reverse",
+				Method:    resp.Request.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			})
 		}
 		resp.Body = HijackResponseForSSE(resp.Request.Context(), resp, sc, sseOpts, onComplete)
 		// SSE is open-ended; the upstream Content-Length (if any) becomes
@@ -745,6 +827,19 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		_ = resp.Body.Close()
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "read_error")
+		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
+		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"response_read_error"}, nil)
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     LayerReverseResponseBlocked,
+			Pattern:   "response read error",
+			Transport: "reverse",
+			Method:    resp.Request.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		replaceWithBlockResponse(resp, []string{"response read error"})
 		return nil
 	}
@@ -759,6 +854,17 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "oversized")
 		actx := newHTTPAuditContext(rp.logger, resp.Request.Method, resp.Request.URL.String(), clientIP, requestID, "")
 		rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{"oversized_response"}, nil)
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     LayerReverseResponseBlocked,
+			Pattern:   "response exceeds scanning limit",
+			Transport: "reverse",
+			Method:    resp.Request.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		replaceWithBlockResponse(resp, []string{"response exceeds scanning limit"})
 		return nil
 	}

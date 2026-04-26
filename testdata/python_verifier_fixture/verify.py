@@ -87,6 +87,10 @@ def verify_evidence_receipt(fixture: Path, pubkey: bytes) -> tuple[bool, str]:
 
     # Zero the signature object for preimage computation.
     receipt_copy = dict(receipt)
+    # The four fields below MUST mirror the Go SignatureProof struct in
+    # internal/contract/receipt/receipt.go. If a field is added there, add it
+    # here too with the JSON-zero-value of its type, otherwise the Python
+    # preimage will diverge from Go and signature verification will fail.
     receipt_copy["signature"] = {
         "signer_key_id": "",
         "key_purpose": "",

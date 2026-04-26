@@ -4,7 +4,7 @@
     "manifest_kind": "activation_manifest",
     "generation": 1,
     "prior_manifest_hash": "sha256:0",
-    "selector_set_hash": "sha256:a3738c0b36efa691aee53357191f97f34457d55f2d792ab9aa2badc6309bda86",
+    "selector_set_hash": "sha256:bdeb5d429a31788f69db8a97385d8668cd20c7060c5d1ecbed6254f756d8994f",
     "environment": {
       "id": "test",
       "tenant": "test",
@@ -12,7 +12,7 @@
     },
     "selectors": [
       {
-        "selector_id": "sha256:77ec63361c11d04e4fdb8650f95af6570874a546549e87c054ecbc3740f06f16",
+        "selector_id": "sha256:e54212300fe30d664c6cfd5d3b2b641b8ae8bb5b30a344c701b91cc309d9ef4e",
         "agent": "buster",
         "contract_hash": "sha256:c1"
       }
@@ -26,7 +26,7 @@
       "principal": "test",
       "key_purpose": "contract-activation-signing",
       "algorithm": "ed25519",
-      "signature": "ed25519:8711f9984ad53c700b434522a6e92de683c672b7f244029284437f623c9737cb226c8d9f8932c8bdf771faf7006eb82a796b4a1e43d33658d08b630eb0583108"
+      "signature": "ed25519:f13417c7e6f6a8d870373676bf5d0faf6a9196751cd5a4cd3fc5670530b70fe1a4dc4229aacc9991e8116137e704d4feb2ef17716661a949464f13adb612c806"
     }
   ]
 }

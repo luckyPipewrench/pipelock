@@ -392,10 +392,11 @@ func TestGolden_VerificationMetadata(t *testing.T) {
 }
 
 // TestGolden_AllFixturesParseAndValidate is a smoke test confirming each known
-// golden fixture file exists on disk (written by UPDATE_GOLDEN=1 passes).
-// It is intentionally non-parallel: the file-existence check must run after the
-// individual writer tests have completed, and it is not useful in update mode
-// because the writers are still running concurrently when this executes.
+// golden fixture file exists on disk. The fixtures are committed; in normal
+// (non-UPDATE_GOLDEN) test runs this just checks the on-disk files are present.
+// In UPDATE_GOLDEN mode it is skipped because the parallel writer tests are
+// still pending when this serial test executes (parallel tests pause until all
+// serial tests are done), so a stat check here would race the writers.
 func TestGolden_AllFixturesParseAndValidate(t *testing.T) {
 	if updateGolden() {
 		t.Skip("skipped in UPDATE_GOLDEN mode; individual tests write and verify")

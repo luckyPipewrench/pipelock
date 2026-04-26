@@ -112,6 +112,9 @@ func (r EvidenceReceipt) Validate() error {
 	if r.EventID == "" {
 		return fmt.Errorf("%w: event_id", ErrPayloadMissingField)
 	}
+	if r.Timestamp.IsZero() {
+		return fmt.Errorf("%w: timestamp", ErrPayloadMissingField)
+	}
 	v, ok := payloadValidators[r.PayloadKind]
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownPayloadKind, r.PayloadKind)

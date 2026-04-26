@@ -1,2 +1,5 @@
-cryptography>=42.0.0
-jcs>=0.2.1
+# Pinned upper bounds prevent silent breakage if a future major release
+# changes the cryptography or jcs API. Bump deliberately when verifying
+# the fixture round-trip still produces 7/7 OK against the golden vectors.
+cryptography>=42.0.0,<46.0.0
+jcs>=0.2.1,<1.0.0

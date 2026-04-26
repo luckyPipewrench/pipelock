@@ -25,6 +25,15 @@ var ErrVerificationMetadataBundleKind = errors.New("unsupported bundle_kind; exp
 // does not match the value derived from tombstone_hashes.
 var ErrTombstoneIndexRootMismatch = errors.New("tombstone_index_root does not match computed value")
 
+// ErrTombstoneHashesDuplicate rejects VerificationMetadata whose tombstone_hashes
+// list contains the same entry more than once. The index is set-semantic: duplicates
+// would let two bundles with logically identical sets produce different roots.
+var ErrTombstoneHashesDuplicate = errors.New("tombstone_hashes contains duplicate entry")
+
+// ErrVerificationMetadataMissingField rejects VerificationMetadata missing a
+// required identity field (contract_hash, bundle_signed_at, signer_key_id, key_purpose).
+var ErrVerificationMetadataMissingField = errors.New("verification_metadata missing required field")
+
 // schemaVersionVerificationMetadata is the current VerificationMetadata schema version.
 const schemaVersionVerificationMetadata = 1
 
@@ -65,12 +74,18 @@ func (v VerificationMetadata) SignablePreimage() ([]byte, error) {
 
 // ComputeTombstoneIndexRoot derives the canonical tombstone_index_root from v.TombstoneHashes.
 // Recipe: sha256(jcs(sorted_tombstone_hashes)). Hashes are sorted lexicographically so
-// the result is insertion-order-invariant. An empty list produces a valid, stable root.
+// the result is insertion-order-invariant. Duplicates are rejected (set semantics).
+// An empty list produces a valid, stable root.
 func (v VerificationMetadata) ComputeTombstoneIndexRoot() (string, error) {
 	// Sort a copy so we do not mutate the receiver's slice.
 	sorted := make([]string, len(v.TombstoneHashes))
 	copy(sorted, v.TombstoneHashes)
 	sort.Strings(sorted)
+	for i := 1; i < len(sorted); i++ {
+		if sorted[i] == sorted[i-1] {
+			return "", fmt.Errorf("%w: %q", ErrTombstoneHashesDuplicate, sorted[i])
+		}
+	}
 
 	raw, err := json.Marshal(sorted)
 	if err != nil {
@@ -96,6 +111,16 @@ func (v VerificationMetadata) Validate() error {
 	}
 	if v.BundleKind != BundleKindPublicProof {
 		return fmt.Errorf("%w: got %q", ErrVerificationMetadataBundleKind, v.BundleKind)
+	}
+	for _, fld := range []struct{ name, val string }{
+		{"contract_hash", v.ContractHash},
+		{"bundle_signed_at", v.BundleSignedAt},
+		{"signer_key_id", v.SignerKeyID},
+		{"key_purpose", v.KeyPurpose},
+	} {
+		if fld.val == "" {
+			return fmt.Errorf("%w: %s", ErrVerificationMetadataMissingField, fld.name)
+		}
 	}
 	computed, err := v.ComputeTombstoneIndexRoot()
 	if err != nil {

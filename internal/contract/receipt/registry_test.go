@@ -6,6 +6,7 @@ package receipt_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
@@ -100,6 +101,7 @@ func TestRegistry_UnknownKindReturnsError(t *testing.T) {
 		ReceiptVersion: 2,
 		PayloadKind:    "totally_unknown",
 		EventID:        "01900000-0000-7000-8000-000000000006",
+		Timestamp:      time.Now(),
 		Payload:        []byte(`{}`),
 	}
 	err := r.Validate()

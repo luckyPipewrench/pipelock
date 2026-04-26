@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 )
@@ -1245,6 +1246,7 @@ func callValidator(t *testing.T, kind receipt.PayloadKind, raw json.RawMessage) 
 		ReceiptVersion: 2,
 		PayloadKind:    kind,
 		EventID:        "01900000-0000-7000-8000-000000000001",
+		Timestamp:      time.Now(),
 		Payload:        raw,
 		Signature: receipt.SignatureProof{
 			SignerKeyID: "test-key",

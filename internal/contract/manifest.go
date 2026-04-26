@@ -165,13 +165,22 @@ func (m ActiveManifest) SignablePreimage() ([]byte, error) {
 
 // ComputeSelectorID derives the canonical selector_id from a selector body.
 // Recipe: sha256(jcs(selector_without_selector_id)).
+//
+// Uses an anonymous struct that does not include selector_id at all, so the
+// preimage matches the documented "without selector_id" form. Reusing
+// ManifestSelector here would marshal `"selector_id":""` into the canonical
+// bytes since the field is not omitempty.
 func (s ManifestSelector) ComputeSelectorID() (string, error) {
-	body := ManifestSelector{
+	body := struct {
+		Agent        string `json:"agent,omitempty"`
+		AgentGlob    string `json:"agent_glob,omitempty"`
+		Default      bool   `json:"default,omitempty"`
+		ContractHash string `json:"contract_hash"`
+	}{
 		Agent:        s.Agent,
 		AgentGlob:    s.AgentGlob,
 		Default:      s.Default,
 		ContractHash: s.ContractHash,
-		// SelectorID intentionally omitted.
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {

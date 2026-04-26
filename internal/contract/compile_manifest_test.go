@@ -126,6 +126,67 @@ func TestCompileManifest_Validate_RejectsBadSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestCompileManifest_Validate_RejectsDisallowedTopLevelKey(t *testing.T) {
+	t.Parallel()
+	m := baseCompileManifest()
+	m.Settings = map[string]any{"escrow_keys": "secret"}
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
+	}
+}
+
+func TestCompileManifest_Validate_RejectsDisallowedPrivacyKey(t *testing.T) {
+	t.Parallel()
+	m := baseCompileManifest()
+	m.Settings = map[string]any{
+		"privacy": map[string]any{"raw_pii_storage": "yes"},
+	}
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
+	}
+}
+
+func TestCompileManifest_Validate_AcceptsAllowedSettings(t *testing.T) {
+	t.Parallel()
+	m := baseCompileManifest()
+	m.Settings = map[string]any{
+		"confidence":    map[string]any{"min": "0.95"},
+		"normalization": map[string]any{},
+		"privacy":       map[string]any{"default_data_class": "internal"},
+		"redaction": map[string]any{
+			"public_allowlist": []any{},
+			"salt_hash":        map[string]any{"salt_epoch": "1"},
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("got %v, want nil", err)
+	}
+}
+
+func TestCompileManifest_Validate_RejectsDisallowedSaltHashKey(t *testing.T) {
+	t.Parallel()
+	m := baseCompileManifest()
+	m.Settings = map[string]any{
+		"redaction": map[string]any{
+			"salt_hash": map[string]any{"raw_salt_value": "exposed"},
+		},
+	}
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
+	}
+}
+
+func TestCompileManifest_Validate_RejectsDisallowedRedactionKey(t *testing.T) {
+	t.Parallel()
+	m := baseCompileManifest()
+	m.Settings = map[string]any{
+		"redaction": map[string]any{"secret_sink": "exfil"},
+	}
+	if err := m.Validate(); !errors.Is(err, ErrCompileSettingsDisallowedKey) {
+		t.Errorf("got %v, want ErrCompileSettingsDisallowedKey", err)
+	}
+}
+
 func TestCompileManifest_SignablePreimage_MarshalError(t *testing.T) {
 	t.Parallel()
 	// Settings is map[string]any; a channel value makes json.Marshal fail,

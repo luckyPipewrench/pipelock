@@ -19,6 +19,86 @@ var ErrCompileManifestSchemaVersion = errors.New("unsupported compile_manifest s
 // does not match the value derived from module_digests.
 var ErrModuleDigestRootMismatch = errors.New("module_digest_root does not match computed value")
 
+// ErrCompileSettingsDisallowedKey rejects compile settings that include a key outside
+// the documented allowlist. See design doc R2 "Compile settings allowlist".
+var ErrCompileSettingsDisallowedKey = errors.New("compile manifest: disallowed key in settings")
+
+// allowedTopLevelSettings is the closed set of top-level keys permitted in
+// CompileManifest.Settings.
+var allowedTopLevelSettings = map[string]bool{
+	"confidence":    true,
+	"normalization": true,
+	"shadow":        true,
+	"drift":         true,
+	"privacy":       true,
+	"redaction":     true,
+}
+
+// allowedPrivacySettings is the closed set of privacy.* sub-keys.
+var allowedPrivacySettings = map[string]bool{
+	"default_data_class":                  true,
+	"forbid_classes":                      true,
+	"require_explicit_opt_in_for_classes": true,
+}
+
+// allowedRedactionSettings is the closed set of redaction.* sub-keys.
+var allowedRedactionSettings = map[string]bool{
+	"public_allowlist": true,
+	"salt_hash":        true,
+}
+
+// allowedSaltHashSettings is the closed set of redaction.salt_hash.* sub-keys.
+var allowedSaltHashSettings = map[string]bool{
+	"private_suffixes":          true,
+	"private_cidrs":             true,
+	"private_mcp_name_patterns": true,
+	"salt_epoch":                true,
+}
+
+// validateSettingsAllowlist walks the Settings tree and rejects any key not in
+// the documented allowlist for its position in the hierarchy.
+func validateSettingsAllowlist(settings map[string]any) error {
+	for k, v := range settings {
+		if !allowedTopLevelSettings[k] {
+			return fmt.Errorf("%w: %q at top level", ErrCompileSettingsDisallowedKey, k)
+		}
+		switch k {
+		case "privacy":
+			sub, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			for sk := range sub {
+				if !allowedPrivacySettings[sk] {
+					return fmt.Errorf("%w: %q under privacy", ErrCompileSettingsDisallowedKey, sk)
+				}
+			}
+		case "redaction":
+			sub, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			for sk, sv := range sub {
+				if !allowedRedactionSettings[sk] {
+					return fmt.Errorf("%w: %q under redaction", ErrCompileSettingsDisallowedKey, sk)
+				}
+				if sk == "salt_hash" {
+					sh, ok := sv.(map[string]any)
+					if !ok {
+						continue
+					}
+					for shk := range sh {
+						if !allowedSaltHashSettings[shk] {
+							return fmt.Errorf("%w: %q under redaction.salt_hash", ErrCompileSettingsDisallowedKey, shk)
+						}
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // schemaVersionCompileManifest is the current CompileManifest schema version.
 const schemaVersionCompileManifest = 1
 
@@ -102,6 +182,9 @@ func (m CompileManifest) Validate() error {
 	}
 	if m.ModuleDigestRoot != computed {
 		return fmt.Errorf("%w: stored %q, computed %q", ErrModuleDigestRootMismatch, m.ModuleDigestRoot, computed)
+	}
+	if err := validateSettingsAllowlist(m.Settings); err != nil {
+		return err
 	}
 	return nil
 }

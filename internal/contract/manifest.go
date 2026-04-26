@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -24,6 +25,17 @@ var ErrUnknownManifestKind = errors.New("unknown manifest_kind")
 
 // ErrDuplicateSelectorID rejects manifests with duplicate selector_id values.
 var ErrDuplicateSelectorID = errors.New("duplicate selector_id in manifest")
+
+// ErrManifestSchemaVersion rejects manifests with non-current schema_version.
+var ErrManifestSchemaVersion = errors.New("manifest: unsupported schema_version")
+
+// ErrManifestSelectorIDMismatch rejects manifests whose selector_id does not match
+// the value computed from the selector body via ComputeSelectorID.
+var ErrManifestSelectorIDMismatch = errors.New("manifest: selector_id does not match computed value")
+
+// ErrManifestSelectorSetHashMismatch rejects manifests whose selector_set_hash does not
+// match the value computed from the sorted selector IDs.
+var ErrManifestSelectorSetHashMismatch = errors.New("manifest: selector_set_hash does not match computed value")
 
 // ActiveManifest is the typed signable body of the active manifest.
 type ActiveManifest struct {
@@ -71,7 +83,15 @@ type ActiveManifestEnvelope struct {
 }
 
 // Validate runs structural checks. Cryptographic verification is in verify.go.
+//
+// In addition to manifest_kind and duplicate selector_id checks, Validate now enforces:
+//   - schema_version must be 1
+//   - each selector_id must equal ComputeSelectorID() (prevents identity forgery)
+//   - selector_set_hash (when non-empty) must equal the value computed from sorted IDs
 func (m ActiveManifest) Validate() error {
+	if m.SchemaVersion != 1 {
+		return fmt.Errorf("%w: got %d, want 1", ErrManifestSchemaVersion, m.SchemaVersion)
+	}
 	if _, ok := validManifestKinds[m.ManifestKind]; !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownManifestKind, m.ManifestKind)
 	}
@@ -81,8 +101,42 @@ func (m ActiveManifest) Validate() error {
 			return fmt.Errorf("%w: %q", ErrDuplicateSelectorID, s.SelectorID)
 		}
 		seen[s.SelectorID] = struct{}{}
+		// Recompute selector_id and verify it matches the claimed value.
+		computed, err := s.ComputeSelectorID()
+		if err != nil {
+			return fmt.Errorf("recompute selector_id for %q: %w", s.SelectorID, err)
+		}
+		if s.SelectorID != computed {
+			return fmt.Errorf("%w: claimed=%q computed=%q", ErrManifestSelectorIDMismatch, s.SelectorID, computed)
+		}
+	}
+	// Recompute selector_set_hash from the sorted selector IDs when present.
+	if m.SelectorSetHash != "" {
+		ids := make([]string, 0, len(m.Selectors))
+		for _, s := range m.Selectors {
+			ids = append(ids, s.SelectorID)
+		}
+		sort.Strings(ids)
+		canon, err := Canonicalize(toAnySlice(ids))
+		if err != nil {
+			return fmt.Errorf("canonicalize selector ids: %w", err)
+		}
+		sum := sha256.Sum256(canon)
+		computed := "sha256:" + hex.EncodeToString(sum[:])
+		if m.SelectorSetHash != computed {
+			return fmt.Errorf("%w: claimed=%q computed=%q", ErrManifestSelectorSetHashMismatch, m.SelectorSetHash, computed)
+		}
 	}
 	return nil
+}
+
+// toAnySlice converts a []string to []any for use with Canonicalize.
+func toAnySlice(strs []string) []any {
+	out := make([]any, len(strs))
+	for i, s := range strs {
+		out[i] = s
+	}
+	return out
 }
 
 // SignablePreimage returns JCS bytes over the manifest body with signatures excluded.

@@ -5,6 +5,7 @@ package contract
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -189,20 +190,36 @@ func TestGolden_Contract(t *testing.T) {
 func TestGolden_ActiveManifest(t *testing.T) {
 	t.Parallel()
 	priv := goldenSignKey(t)
+
+	// Compute a correct selector_id from the selector body (no SelectorID field).
+	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	selID, err := sel.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("compute selector_id: %v", err)
+	}
+	sel.SelectorID = selID
+
+	// Compute selector_set_hash: sha256(jcs(sorted selector IDs)).
+	ids := []any{selID}
+	idCanon, err := Canonicalize(ids)
+	if err != nil {
+		t.Fatalf("canonicalize selector ids: %v", err)
+	}
+	idSum := sha256.Sum256(idCanon)
+	setHash := "sha256:" + hex.EncodeToString(idSum[:])
+
 	m := ActiveManifest{
 		SchemaVersion:     1,
 		ManifestKind:      ManifestKindActivation,
 		Generation:        1,
 		PriorManifestHash: "sha256:0",
-		SelectorSetHash:   "sha256:set-test",
+		SelectorSetHash:   setHash,
 		Environment: Environment{
 			ID:           "test",
 			Tenant:       "test",
 			DeploymentID: "test",
 		},
-		Selectors: []ManifestSelector{
-			{SelectorID: "sha256:sel-1", Agent: "buster", ContractHash: "sha256:c1"},
-		},
+		Selectors:   []ManifestSelector{sel},
 		HistoryRoot: "contracts/history/",
 		SignedAt:    time.Date(2026, 4, 25, 22, 0, 0, 0, time.UTC),
 	}

@@ -4,6 +4,7 @@
 package contract
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -81,16 +82,87 @@ func TestActiveManifest_RejectsUnknownManifestKind(t *testing.T) {
 	}
 }
 
-func TestActiveManifest_Validate_AcceptsValidManifest(t *testing.T) {
+func TestActiveManifest_Validate_RejectsBadSchemaVersion(t *testing.T) {
+	t.Parallel()
+	m := ActiveManifest{SchemaVersion: 99, ManifestKind: ManifestKindActivation}
+	if err := m.Validate(); !errors.Is(err, ErrManifestSchemaVersion) {
+		t.Errorf("got %v, want ErrManifestSchemaVersion", err)
+	}
+}
+
+func TestActiveManifest_Validate_RejectsSelectorIDMismatch(t *testing.T) {
 	t.Parallel()
 	m := ActiveManifest{
 		SchemaVersion: 1,
 		ManifestKind:  ManifestKindActivation,
-		Generation:    1,
 		Selectors: []ManifestSelector{
-			{SelectorID: "sha256:a1", Agent: "buster", ContractHash: "sha256:c1"},
-			{SelectorID: "sha256:a2", Agent: "rook", ContractHash: "sha256:c2"},
+			{SelectorID: "sha256:claimed-but-wrong", Agent: "a", ContractHash: "sha256:c1"},
 		},
+	}
+	if err := m.Validate(); !errors.Is(err, ErrManifestSelectorIDMismatch) {
+		t.Errorf("got %v, want ErrManifestSelectorIDMismatch", err)
+	}
+}
+
+func TestActiveManifest_Validate_AcceptsRecomputedSelectorID(t *testing.T) {
+	t.Parallel()
+	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	id, err := sel.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("compute id: %v", err)
+	}
+	sel.SelectorID = id
+	m := ActiveManifest{
+		SchemaVersion: 1,
+		ManifestKind:  ManifestKindActivation,
+		Selectors:     []ManifestSelector{sel},
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("got %v, want nil", err)
+	}
+}
+
+func TestActiveManifest_Validate_RejectsSelectorSetHashMismatch(t *testing.T) {
+	t.Parallel()
+	sel := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	id, err := sel.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("compute id: %v", err)
+	}
+	sel.SelectorID = id
+	m := ActiveManifest{
+		SchemaVersion:   1,
+		ManifestKind:    ManifestKindActivation,
+		Selectors:       []ManifestSelector{sel},
+		SelectorSetHash: "sha256:wrong",
+	}
+	if err := m.Validate(); !errors.Is(err, ErrManifestSelectorSetHashMismatch) {
+		t.Errorf("got %v, want ErrManifestSelectorSetHashMismatch", err)
+	}
+}
+
+func TestActiveManifest_Validate_AcceptsValidManifest(t *testing.T) {
+	t.Parallel()
+	// Compute correct selector_ids so Validate passes identity checks.
+	s1 := ManifestSelector{Agent: "buster", ContractHash: "sha256:c1"}
+	id1, err := s1.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("compute id1: %v", err)
+	}
+	s1.SelectorID = id1
+
+	s2 := ManifestSelector{Agent: "rook", ContractHash: "sha256:c2"}
+	id2, err := s2.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("compute id2: %v", err)
+	}
+	s2.SelectorID = id2
+
+	m := ActiveManifest{
+		SchemaVersion: 1,
+		ManifestKind:  ManifestKindActivation,
+		Generation:    1,
+		Selectors:     []ManifestSelector{s1, s2},
 	}
 	if err := m.Validate(); err != nil {
 		t.Errorf("expected nil for valid manifest, got %v", err)

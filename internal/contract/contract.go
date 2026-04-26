@@ -101,6 +101,20 @@ type ContractEnvelope struct {
 	Signature string   `json:"signature"`
 }
 
+// SignablePreimage returns the JCS-canonicalized bytes for this Rule.
+// Used by MerkleRoot to produce deterministic leaf hashes per rule.
+func (r Rule) SignablePreimage() ([]byte, error) {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return nil, fmt.Errorf("marshal rule: %w", err)
+	}
+	tree, err := ParseJSONStrict(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse rule for canonicalization: %w", err)
+	}
+	return Canonicalize(tree)
+}
+
 // SignablePreimage returns the JCS-canonicalized bytes for this Contract.
 // The signature is not part of its own preimage; ContractEnvelope.Signature is detached.
 func (c Contract) SignablePreimage() ([]byte, error) {

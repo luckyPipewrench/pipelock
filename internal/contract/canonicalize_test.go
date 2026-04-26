@@ -96,3 +96,37 @@ func TestCanonicalize_RejectsDuplicateKeys(t *testing.T) {
 		t.Error("expected duplicate-key rejection, got nil")
 	}
 }
+
+func TestCanonicalize_NFCKeyLookupDoesNotMissValue(t *testing.T) {
+	t.Parallel()
+	// Build a map keyed with NFD bytes; the canonicalizer must look up the
+	// value using the original (NFD) key, not the NFC-normalized form, or
+	// the value would silently become its zero value.
+	nfd := "Å" // "Å" decomposed
+	in := map[string]any{nfd: 42}
+	got, err := Canonicalize(in)
+	if err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+	want := []byte("{\"Å\":42}") // NFC form in output, value preserved
+	if !bytes.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCanonicalize_NFCKeyCollisionRejected(t *testing.T) {
+	t.Parallel()
+	// Distinct original keys (NFC vs NFD form of "Å") collide once normalized.
+	// Must error rather than silently overwrite the lexically-later value.
+	in := map[string]any{
+		"Å":  1, // NFC "Å"
+		"Å": 2, // NFD "Å"
+	}
+	if len(in) != 2 {
+		t.Fatalf("test setup: map collapsed to %d keys; need 2 distinct byte sequences", len(in))
+	}
+	_, err := Canonicalize(in)
+	if err == nil {
+		t.Error("expected NFC collision error, got nil")
+	}
+}

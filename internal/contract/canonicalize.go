@@ -83,26 +83,38 @@ func canonicalizeInto(buf *bytes.Buffer, v any) error {
 		buf.WriteByte(']')
 		return nil
 	case map[string]any:
-		keys := make([]string, 0, len(x))
+		// Track both NFC-normalized form (for sort + output) and original form
+		// (for value lookup). Without this, a map keyed with NFD strings would
+		// silently miss the value lookup since x[nfc(k)] != x[k] when k is NFD.
+		type mapKey struct{ nfc, orig string }
+		pairs := make([]mapKey, 0, len(x))
 		for k := range x {
 			if !utf8.ValidString(k) {
 				return fmt.Errorf("invalid UTF-8 in map key: %q", k)
 			}
-			keys = append(keys, norm.NFC.String(k))
+			pairs = append(pairs, mapKey{nfc: norm.NFC.String(k), orig: k})
 		}
-		sort.Strings(keys)
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i].nfc < pairs[j].nfc })
+		// Reject NFC-collisions: two distinct original keys that normalize to the
+		// same NFC form would produce a JSON object with duplicate keys after
+		// canonicalization. Treat as fatal.
+		for i := 1; i < len(pairs); i++ {
+			if pairs[i].nfc == pairs[i-1].nfc && pairs[i].orig != pairs[i-1].orig {
+				return fmt.Errorf("%w: NFC collision between %q and %q", ErrDuplicateKey, pairs[i-1].orig, pairs[i].orig)
+			}
+		}
 		buf.WriteByte('{')
-		for i, k := range keys {
+		for i, p := range pairs {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			kb, err := json.Marshal(k)
+			kb, err := json.Marshal(p.nfc)
 			if err != nil {
-				return fmt.Errorf("marshal map key %q: %w", k, err)
+				return fmt.Errorf("marshal map key %q: %w", p.nfc, err)
 			}
 			buf.Write(kb)
 			buf.WriteByte(':')
-			if err := canonicalizeInto(buf, x[k]); err != nil {
+			if err := canonicalizeInto(buf, x[p.orig]); err != nil {
 				return err
 			}
 		}

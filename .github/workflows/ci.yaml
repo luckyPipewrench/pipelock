@@ -64,6 +64,8 @@ jobs:
             examples/demo-readme.sh
             examples/sample-events.jsonl
             examples/quickstart/
+            internal/contract/testdata/golden/
+            internal/contract/testdata/invalid/
 
   test:
     needs: [security-scan]

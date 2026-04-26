@@ -211,8 +211,9 @@ func TestReverseProxy_EmitReceipt_NilGuards(t *testing.T) {
 // snapshotAndAcquire branches that only fire when the loaded scanner has
 // already been Closed (BeginUse returns false). With the same closed
 // scanner pinned via scPtr, three iterations exhaust without success and
-// the helper returns the no-op release. The function must remain
-// race-safe and never panic on this path.
+// the helper returns ok=false plus a no-op release. The function must
+// remain race-safe and never panic on this path; callers fail the
+// request closed when ok=false.
 func TestReverseProxy_SnapshotAndAcquire_RetryAndFallback(t *testing.T) {
 	cfg := reverseTestConfig()
 	logger, _ := audit.New("json", "stdout", "", false, false)
@@ -229,8 +230,11 @@ func TestReverseProxy_SnapshotAndAcquire_RetryAndFallback(t *testing.T) {
 
 	rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
 
-	snap, release := rp.snapshotAndAcquire()
+	snap, release, ok := rp.snapshotAndAcquire()
 	defer release()
+	if ok {
+		t.Error("expected ok=false on triple-fail; helper would let scan proceed on a closed scanner")
+	}
 	if snap.sc != sc {
 		t.Errorf("fallback snapshot.sc = %p, want closed scanner %p", snap.sc, sc)
 	}

@@ -268,18 +268,38 @@ func (tb *ToolBaseline) ResetDriftState() {
 
 // DetectDriftRisingEdge tracks the previous detect_drift value across
 // hot-reload calls into the per-listener / server-level toolCfg closures.
-// The zero value is ready to use and starts at "previous=false". Safe for
-// concurrent Observe calls; one rising-edge transition in a flurry of
-// concurrent reloads will trigger exactly one true return.
+// The zero value is ready to use. Safe for concurrent Observe calls; one
+// rising-edge transition in a flurry of concurrent reloads will trigger
+// exactly one true return.
+//
+// `initialized` is set on the first Observe call so the helper can
+// distinguish "first observation of true at startup" (which is NOT a
+// transition; baseline already matches the operator-intended state) from
+// "false→true transition via hot reload" (which IS the rising edge that
+// must reseed drift state). Without this gate, an initial config load
+// with detect_drift=true would clobber any pre-seeded baseline. The
+// current code path uses `tools.NewToolBaseline()` per listener so the
+// initial baseline is empty and the discarded-Reset is a no-op, but the
+// gate makes intent explicit and survives any future code that
+// pre-populates a baseline (golden-vector seeds, persisted state).
 type DetectDriftRisingEdge struct {
-	prev atomic.Bool
+	initialized atomic.Bool
+	prev        atomic.Bool
 }
 
 // Observe records the new detect_drift value and reports whether it was a
-// rising edge (false→true). Other transitions return false. Callers fire
-// ResetDriftState on the associated baseline when this returns true.
+// rising edge (false→true). The first call records the initial state and
+// always returns false; subsequent calls return true only on an actual
+// false→true transition. Callers fire ResetDriftState on the associated
+// baseline when this returns true.
 func (d *DetectDriftRisingEdge) Observe(curr bool) bool {
 	prev := d.prev.Swap(curr)
+	// First observation: initialize without claiming a transition. Any
+	// concurrent racer that wins the Swap above will see initialized=true
+	// on its second pass and proceed normally.
+	if !d.initialized.Swap(true) {
+		return false
+	}
 	return curr && !prev
 }
 

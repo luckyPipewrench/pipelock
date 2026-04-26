@@ -79,6 +79,12 @@ func TestToolBaseline_ResetDriftState_Idempotent(t *testing.T) {
 // asserts the prescribed behavior. This is the helper that proxy_http.go
 // and server.go invoke via Observe; the four-cell transition matrix
 // lives here.
+//
+// The first Observe call NEVER reports a rising edge regardless of value:
+// it records the initial state without claiming a transition, so an
+// initial config load with detect_drift=true cannot clobber a pre-seeded
+// baseline. Only subsequent calls observing an actual false→true flip
+// fire Reset.
 func TestDetectDriftRisingEdge_StateMatrix(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -87,14 +93,13 @@ func TestDetectDriftRisingEdge_StateMatrix(t *testing.T) {
 		expectFirstEdge  bool
 		expectSecondEdge bool
 	}{
-		// Initial Observe(false) is a no-op (zero value already false). Then false→false: still no.
+		// First call is always initialization, never a rising edge.
 		{name: "false_then_false", first: false, second: false, expectFirstEdge: false, expectSecondEdge: false},
-		// Initial Observe(true) is a rising edge from the zero value. Then true→true: no edge.
-		{name: "true_then_true_preserves", first: true, second: true, expectFirstEdge: true, expectSecondEdge: false},
-		// false_then_true is the canonical rising edge.
+		{name: "true_then_true_initialization_then_steady", first: true, second: true, expectFirstEdge: false, expectSecondEdge: false},
+		// false_then_true is the canonical rising edge after initialization.
 		{name: "false_then_true", first: false, second: true, expectFirstEdge: false, expectSecondEdge: true},
-		// true_then_false is a falling edge, no Reset.
-		{name: "true_then_false", first: true, second: false, expectFirstEdge: true, expectSecondEdge: false},
+		// true_then_false is a falling edge after initialization, no Reset.
+		{name: "true_then_false", first: true, second: false, expectFirstEdge: false, expectSecondEdge: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,6 +114,25 @@ func TestDetectDriftRisingEdge_StateMatrix(t *testing.T) {
 	}
 }
 
+// TestDetectDriftRisingEdge_InitialTrueDoesNotReset proves the
+// initialization gate: an empty fresh helper observing detect_drift=true
+// for the first time must NOT call ResetDriftState on a baseline that
+// was already pre-seeded with state. Without the gate, a pre-existing
+// baseline (persisted state, golden-vector seeding, or any future
+// pre-population path) would be silently discarded on first config read.
+func TestDetectDriftRisingEdge_InitialTrueDoesNotReset(t *testing.T) {
+	tb := NewToolBaseline()
+	tb.CheckAndUpdate("tool-a", "hash-a-original")
+
+	var edge DetectDriftRisingEdge
+	if edge.Observe(true) {
+		t.Fatal("first Observe(true) reported a rising edge; would clobber a pre-seeded baseline")
+	}
+	if drifted, prev := tb.CheckAndUpdate("tool-a", "hash-a-tampered"); !drifted || prev != "hash-a-original" {
+		t.Errorf("baseline lost across initialization: drifted=%v prev=%q", drifted, prev)
+	}
+}
+
 // TestDetectDriftRisingEdge_ResetEffect proves the closure-equivalent
 // composition: the helper drives ResetDriftState exactly when expected
 // across realistic toggle sequences. Confirms NEW poisoned tools added
@@ -118,11 +142,13 @@ func TestDetectDriftRisingEdge_ResetEffect(t *testing.T) {
 	tb := NewToolBaseline()
 	var edge DetectDriftRisingEdge
 
-	// State 1: drift enabled from boot. Initial seed.
-	if !edge.Observe(true) {
-		t.Fatal("initial Observe(true) did not report a rising edge")
+	// State 1: drift enabled from boot. The first Observe is initialization,
+	// not a transition; the caller must not Reset on initialization. Seed
+	// the baseline directly to model a fresh listener serving its first
+	// tools/list.
+	if edge.Observe(true) {
+		t.Fatal("initial Observe(true) reported a rising edge; would clobber baseline")
 	}
-	tb.ResetDriftState() // closure-side: caller would skip since baseline is empty, but Reset is safe.
 	tb.CheckAndUpdate("tool-a", "hash-a-original")
 	tb.CheckAndUpdate("tool-b", "hash-b-original")
 

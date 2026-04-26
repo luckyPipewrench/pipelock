@@ -79,8 +79,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc, releaseScanner := p.pinResolvedScanner(resolved)
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
+	if !scOK {
+		http.Error(w, "scanner unavailable during reload", http.StatusServiceUnavailable)
+		return
+	}
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
@@ -558,8 +562,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc, releaseScanner := p.pinResolvedScanner(resolved)
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
+	if !scOK {
+		http.Error(w, "scanner unavailable during reload", http.StatusServiceUnavailable)
+		return
+	}
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous

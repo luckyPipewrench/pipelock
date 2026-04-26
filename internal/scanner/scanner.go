@@ -538,11 +538,25 @@ func (s *Scanner) IsInAPIAllowlist(hostname string) bool {
 	return false
 }
 
-// Close drains in-flight Scan/BeginUse callers and then releases scanner
-// resources. After Close starts, BeginUse returns ok=false. Drain blocks
-// until every active BeginUse has called its release func, with a
-// scannerCloseDrainTimeout fail-safe so a hung scan can't leak the scanner.
+// Close marks the scanner unusable for new BeginUse callers and tears
+// down internal resources once every active BeginUse has invoked release.
 // Idempotent; further calls are no-ops.
+//
+// Drain semantics: the call site (typically Proxy.Reload's `go old.Close()`)
+// gets scannerCloseDrainTimeout to wait for in-flight users. If drain
+// completes inside that window, teardown runs synchronously and Close
+// returns once Drained is true. If the timeout fires (a hung scan, an
+// adversarial slow-loris client), Close hands teardown off to a detached
+// goroutine that waits indefinitely for inUse to reach zero before
+// closing the rateLimiter and dataBudget tickers. The forced-teardown
+// path is gone: a hung user can no longer end up calling Scan on a
+// scanner whose ticker resources have been torn down underneath it.
+//
+// Trade-off: a permanently-hung scan retains the prior scanner forever.
+// That is preferable to fail-open enforcement; the proxy's reload-mu
+// guard plus the maxBaselineTools cap bound exposure, and the new
+// scanner already serves all post-swap traffic so the orphan affects
+// only the single hung request.
 func (s *Scanner) Close() {
 	s.closeMu.Lock()
 	if s.closed {
@@ -559,10 +573,22 @@ func (s *Scanner) Close() {
 	}()
 	select {
 	case <-drainDone:
+		s.tearDown()
 	case <-time.After(scannerCloseDrainTimeout):
-		// Best-effort: proceed with teardown even if a scan never returned.
+		// Drain timed out. Do NOT tear down ticker resources mid-scan;
+		// hand off to a detached goroutine that waits indefinitely for
+		// the hung user to release. Drained() flips only once that
+		// goroutine actually completes teardown.
+		go func() {
+			s.inUse.Wait()
+			s.tearDown()
+		}()
 	}
+}
 
+// tearDown stops the cleanup goroutines on rateLimiter and dataBudget and
+// flips drained=true. Safe to call exactly once per Close transition.
+func (s *Scanner) tearDown() {
 	if s.rateLimiter != nil {
 		s.rateLimiter.Close()
 	}

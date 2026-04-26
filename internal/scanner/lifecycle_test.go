@@ -109,10 +109,13 @@ func TestScanner_Close_BlocksUntilDrain(t *testing.T) {
 	}
 }
 
-// TestScanner_Close_DrainTimeout verifies the fail-safe: if an in-flight
-// caller never invokes release, Close still completes after the configured
-// drain timeout so a hung scan cannot leak the scanner indefinitely.
-func TestScanner_Close_DrainTimeout(t *testing.T) {
+// TestScanner_Close_DrainTimeoutDefersTeardown verifies that a hung
+// in-flight caller does NOT cause forced teardown of internal resources.
+// After the configured timeout fires, Close returns but Drained stays
+// false; teardown happens only after the hung user finally releases.
+// This prevents the fail-open path where a hung scan continues using a
+// scanner whose ticker resources have been torn down underneath it.
+func TestScanner_Close_DrainTimeoutDefersTeardown(t *testing.T) {
 	restore := scanner.SetCloseDrainTimeoutForTest(50 * time.Millisecond)
 	defer restore()
 
@@ -124,7 +127,6 @@ func TestScanner_Close_DrainTimeout(t *testing.T) {
 	if !ok {
 		t.Fatal("BeginUse returned ok=false")
 	}
-	defer release() // intentionally deferred to test runtime: never released during Close
 
 	start := time.Now()
 	sc.Close()
@@ -139,6 +141,23 @@ func TestScanner_Close_DrainTimeout(t *testing.T) {
 	if !sc.Closed() {
 		t.Fatal("Closed() returned false after drain-timeout Close")
 	}
+	// Drained must NOT be true yet: the hung user still holds the
+	// pinned scanner, so teardown is parked in the detached goroutine.
+	if sc.Drained() {
+		t.Fatal("Drained() returned true while hung user still pinned the scanner; resources torn down mid-scan")
+	}
+
+	// Releasing the hung user lets the detached goroutine finish drain
+	// and run teardown; Drained flips shortly afterwards.
+	release()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if sc.Drained() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("Drained() did not flip after hung user released")
 }
 
 // TestScanner_Close_Idempotent verifies repeated Close calls are safe

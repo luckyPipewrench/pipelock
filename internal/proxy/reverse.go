@@ -161,6 +161,11 @@ func (rp *ReverseProxyHandler) SetReceiptEmitter(ptr *atomic.Pointer[receipt.Emi
 // logged but never propagated so a recorder failure cannot poison the
 // hot path. Reverse-proxy receipts use Transport="reverse"; the caller
 // supplies Layer/Pattern/ActionID/RequestID/Agent/Method/Target.
+//
+// On emit failure the wrapped error carries every receipt field so an
+// operator reconstructing an enforcement decision after a missing-receipt
+// incident can correlate the audit log entry to the action that was
+// supposed to be attested. Plain RequestID alone is too thin for that.
 func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
 	if rp.receiptEmitterPtr == nil {
 		return
@@ -170,7 +175,10 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
 		return
 	}
 	if err := e.Emit(opts); err != nil {
-		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		rp.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
 	}
 }
 
@@ -210,25 +218,25 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 }
 
 // snapshotAndAcquire reads the current runtime snapshot and registers the
-// loaded scanner for in-flight protection. Callers defer the
-// returned release; a no-op release is always safe to invoke. If the
-// scanner was Closed between Load and BeginUse — only possible during a
-// hot reload that has already swapped in a successor — re-snapshots up to
-// twice more to acquire the freshly published scanner. After three
-// failures the fallback returns a plain snapshot with a no-op release;
-// that path runs only if a reload thrashes the pointer faster than a
-// request can register, which would itself be a structural problem.
-func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, func()) {
+// loaded scanner for in-flight protection. Returns the snapshot, a
+// release func (a no-op release is always safe to invoke), and ok=true
+// when acquisition succeeded. Callers defer release unconditionally; on
+// ok=false they MUST fail the request closed rather than scan against
+// an unpinned closed instance. Three back-to-back acquisition failures
+// only happen under reload thrash that publishes a successor faster
+// than a request can register; surfacing that as a 503 is preferable to
+// silently scanning on torn-down state.
+func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, func(), bool) {
 	for range 3 {
 		snap := rp.snapshotRuntime()
 		if snap.sc == nil {
-			return snap, func() {}
+			return snap, func() {}, false
 		}
 		if release, ok := snap.sc.BeginUse(); ok {
-			return snap, release
+			return snap, release, true
 		}
 	}
-	return rp.snapshotRuntime(), func() {}
+	return rp.snapshotRuntime(), func() {}, false
 }
 
 // ServeHTTP handles incoming requests: scan the request body for DLP,
@@ -237,8 +245,16 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// Strip inbound mediation envelope headers to prevent forgery.
 	envelope.StripInbound(r.Header)
 
-	snap, releaseScanner := rp.snapshotAndAcquire()
+	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
+	if !scOK {
+		// Reload thrash or no live scanner. Fail closed at the request
+		// level rather than scan on an unpinned, possibly-closed scanner.
+		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
+		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
+			"scanner unavailable during reload")
+		return
+	}
 	cfg := snap.cfg
 	sc := snap.sc
 	admissionEmitter := snap.admissionEmitter

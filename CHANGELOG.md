@@ -22,7 +22,6 @@ Two headline features. **Class-preserving redaction v1** lands as a first-party 
 ### Documented limitations
 
 - Generic SSE scanning inspects each event's `data:` payload independently. Cross-event payload splitting (a secret broken across two sequential events) is NOT detected in v1; A2A's rolling-tail scanner still catches that case for A2A traffic. Tracked as a follow-up.
-- Non-`data:` SSE fields (`event:`, `id:`, `retry:`) are not scanned.
 
 ### Internal Refactors (tech-debt sprint)
 

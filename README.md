@@ -25,6 +25,8 @@
 
 **Agent-external attestation built in.** Receipts are signed by the mediator, outside the agent process and outside its credentials, so evidence does not depend on the agent attesting to itself.
 
+**Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 48 credential patterns, and 25 injection patterns with 6-pass normalization.
+
 **Works with:** Claude Code · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
 [Quick Start](#quick-start) · [What It Does](#what-it-does) · [Docs](docs/) · [Blog](https://pipelab.org/blog/) · [Ask Dosu](https://app.dosu.dev/bcccd1cf-be85-4c0e-ae05-edeb0ff50b59/ask)

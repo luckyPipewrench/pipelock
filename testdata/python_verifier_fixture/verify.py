@@ -62,7 +62,14 @@ def verify_envelope(fixture: Path, pubkey: bytes) -> tuple[bool, str]:
         except InvalidSignature as e:
             return False, f"verify failed: {e}"
     elif "signatures" in envelope:
-        for i, sig_obj in enumerate(envelope["signatures"]):
+        sigs = envelope["signatures"]
+        # Fail closed on a missing-signature envelope. An empty list would
+        # otherwise skip the verify loop and silently return ok, even though
+        # no Ed25519.verify() ever ran. Cross-implementation oracles must
+        # never have a "no signatures = OK" path.
+        if not sigs:
+            return False, "empty signatures array"
+        for i, sig_obj in enumerate(sigs):
             sig = strip_sig_prefix(sig_obj["signature"])
             try:
                 pk.verify(sig, preimage)

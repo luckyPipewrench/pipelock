@@ -33,7 +33,16 @@ var ErrUnknownField = errors.New("unknown field in signed-artifact transport pay
 // SignablePreimage() never see the raw transport bytes; they only see the
 // typed struct, so unknown-field rejection MUST happen here.
 func DecodeStrictJSON(raw []byte, target any) error {
-	if len(raw) == 0 || string(raw) == "null" {
+	// RFC 8259 lets insignificant whitespace surround any JSON value, so a
+	// bare null payload can arrive as " null", "null\n", "\tnull\r\n", etc.
+	// Without trimming first, the equality check below misses those forms,
+	// json.Decoder.Decode then binds null to a typed struct as the zero
+	// value with no error, and the trailing-token guard sees EOF and returns
+	// nil. That silently violates the "no silent zero-value binding"
+	// invariant. Trim ASCII JSON whitespace before the literal compare.
+	trimmed := bytes.TrimLeft(raw, " \t\n\r")
+	trimmed = bytes.TrimRight(trimmed, " \t\n\r")
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return ErrEmptyPayload
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))

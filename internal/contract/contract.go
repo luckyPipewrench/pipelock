@@ -110,6 +110,15 @@ type ContractEnvelope struct {
 
 // Validate runs structural and data-class checks on the contract body.
 // Cryptographic verification (signature, contract_hash) happens externally in verify.go.
+//
+// Validate is the SECOND-LINE check on the typed struct. Unknown-field
+// rejection is the FIRST-LINE check and MUST happen at the transport
+// boundary via LoadContract / DecodeStrictJSON; once we are inside this
+// method the input has already been re-marshaled from the typed struct,
+// which means any unknown fields the caller might have parsed without
+// strict-decode have already been silently dropped. Callers that bypass
+// LoadContract and feed Contract directly into Validate forfeit
+// unknown-field detection. Use LoadContract.
 func (c Contract) Validate() error {
 	if c.SchemaVersion != SchemaVersionContract {
 		return fmt.Errorf("%w: got %d, want %d", ErrContractSchemaVersion, c.SchemaVersion, SchemaVersionContract)

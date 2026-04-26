@@ -10,7 +10,23 @@ import (
 
 func TestDecodeStrictJSON_RejectsEmptyAndNull(t *testing.T) {
 	t.Parallel()
-	for _, raw := range []string{"", "null"} {
+	// RFC 8259 lets insignificant whitespace surround any JSON value, so
+	// every whitespace-padded form of empty/null must reject. Without the
+	// trim guard, json.Decoder.Decode would silently bind the trimmed null
+	// to the typed struct as the zero value and return nil.
+	cases := []string{
+		"",
+		"null",
+		" null",
+		"null ",
+		" null ",
+		"\tnull\n",
+		"null\r\n",
+		"\n\t  null  \r\n",
+		"   ",
+		"\t\n\r ",
+	}
+	for _, raw := range cases {
 		var c Contract
 		if err := DecodeStrictJSON([]byte(raw), &c); !errors.Is(err, ErrEmptyPayload) {
 			t.Errorf("input %q: got %v, want ErrEmptyPayload", raw, err)

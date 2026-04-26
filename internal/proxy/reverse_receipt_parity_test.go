@@ -288,13 +288,21 @@ func TestReceiptCoverage_ReverseSSEStreamFinding_EmitsReceipt(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("Do: %v", err)
+	// Under CI load the SSE scan goroutine can terminate the io.Pipe
+	// with a finding-error before httputil.ReverseProxy has flushed
+	// response headers, leaving the client with an EOF on Do. That
+	// wire-level outcome is incidental: the SSE block path emits a
+	// receipt asynchronously via the onComplete callback regardless of
+	// what the client saw, and that receipt is what this test asserts.
+	// Log the error path for diagnostics and proceed to the receipt
+	// assertion either way.
+	switch {
+	case err != nil:
+		t.Logf("Do returned %v (acceptable: SSE block can close connection before headers flush)", err)
+	default:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 	}
-	// Drain so the upstream can finish writing and the SSE goroutine's
-	// onComplete fires before we tear down.
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
 
 	waitForReceiptOrTimeout(t, dir)
 	closeRec()

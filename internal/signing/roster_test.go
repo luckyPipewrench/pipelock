@@ -582,8 +582,10 @@ func TestResolveKey_HappyPath(t *testing.T) {
 	}
 }
 
-func TestResolveKey_HappyPath_RootKey(t *testing.T) {
+func TestResolveKey_RejectRootStatus(t *testing.T) {
 	t.Parallel()
+	// Root keys sign rosters and root transitions, never runtime payloads,
+	// so ResolveKey must reject them even though they are otherwise valid.
 	path, fp := rosterFixture(t)
 	roster, err := LoadRoster(path, fp)
 	if err != nil {
@@ -591,12 +593,8 @@ func TestResolveKey_HappyPath_RootKey(t *testing.T) {
 	}
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	key, err := roster.ResolveKey(testRosterKeyIDRoot, now)
-	if err != nil {
-		t.Fatalf("ResolveKey root: %v", err)
-	}
-	if key.KeyID != testRosterKeyIDRoot {
-		t.Errorf("KeyID = %q, want %q", key.KeyID, testRosterKeyIDRoot)
+	if _, err := roster.ResolveKey(testRosterKeyIDRoot, now); !errors.Is(err, ErrRosterKeyNotActive) {
+		t.Errorf("got %v, want ErrRosterKeyNotActive", err)
 	}
 }
 
@@ -710,7 +708,7 @@ func TestResolveKey_ValidUntilBoundary(t *testing.T) {
 	}
 }
 
-// --- AuthorizeSignature tests ---
+// --- AuthorizeSignerForPayload tests ---
 
 func TestAuthorizeSignature_HappyPath(t *testing.T) {
 	t.Parallel()
@@ -722,7 +720,7 @@ func TestAuthorizeSignature_HappyPath(t *testing.T) {
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
 	// receipt-signing key should be authorised for proxy_decision.
-	if err := roster.AuthorizeSignature("proxy_decision", testRosterKeyIDReceipt, now); err != nil {
+	if err := roster.AuthorizeSignerForPayload("proxy_decision", testRosterKeyIDReceipt, now); err != nil {
 		t.Errorf("AuthorizeSignature proxy_decision: %v", err)
 	}
 }
@@ -746,7 +744,7 @@ func TestAuthorizeSignature_RejectWrongPurpose(t *testing.T) {
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
 	// proxy_decision requires receipt-signing, not contract-activation-signing.
-	err = roster.AuthorizeSignature("proxy_decision", "activation-test", now)
+	err = roster.AuthorizeSignerForPayload("proxy_decision", "activation-test", now)
 	if err == nil {
 		t.Fatal("expected ErrWrongKeyPurpose")
 	}
@@ -764,7 +762,7 @@ func TestAuthorizeSignature_RejectUnknownPayloadKind(t *testing.T) {
 	}
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	err = roster.AuthorizeSignature("nonexistent_payload", testRosterKeyIDReceipt, now)
+	err = roster.AuthorizeSignerForPayload("nonexistent_payload", testRosterKeyIDReceipt, now)
 	if err == nil {
 		t.Fatal("expected ErrUnknownPayloadKind")
 	}
@@ -788,7 +786,7 @@ func TestAuthorizeSignature_RejectKeyNotResolved_Revoked(t *testing.T) {
 	}
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	err = roster.AuthorizeSignature("proxy_decision", testRosterKeyIDReceipt, now)
+	err = roster.AuthorizeSignerForPayload("proxy_decision", testRosterKeyIDReceipt, now)
 	if err == nil {
 		t.Fatal("expected ErrRosterKeyRevoked")
 	}
@@ -813,7 +811,7 @@ func TestAuthorizeSignature_RejectKeyNotResolved_Expired(t *testing.T) {
 	}
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	err = roster.AuthorizeSignature("proxy_decision", testRosterKeyIDReceipt, now)
+	err = roster.AuthorizeSignerForPayload("proxy_decision", testRosterKeyIDReceipt, now)
 	if err == nil {
 		t.Fatal("expected ErrRosterKeyExpired")
 	}
@@ -831,7 +829,7 @@ func TestAuthorizeSignature_RejectKeyNotResolved_Unknown(t *testing.T) {
 	}
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	err = roster.AuthorizeSignature("proxy_decision", "nonexistent", now)
+	err = roster.AuthorizeSignerForPayload("proxy_decision", "nonexistent", now)
 	if err == nil {
 		t.Fatal("expected ErrRosterKeyUnknown")
 	}
@@ -858,7 +856,7 @@ func TestAuthorizeSignature_ContractPromoteIntent(t *testing.T) {
 	}
 
 	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	if err := roster.AuthorizeSignature("contract_promote_intent", "activation-test", now); err != nil {
+	if err := roster.AuthorizeSignerForPayload("contract_promote_intent", "activation-test", now); err != nil {
 		t.Errorf("AuthorizeSignature contract_promote_intent: %v", err)
 	}
 }
@@ -881,9 +879,58 @@ func TestLoadRoster_RejectSignatureHexInvalidChars(t *testing.T) {
 	}
 }
 
-func TestAuthorizeSignature_RejectUnknownPurpose(t *testing.T) {
+func TestLoadRoster_RejectsUnknownKeyStatus(t *testing.T) {
 	t.Parallel()
-	// A key with an unrecognised purpose should fail at purpose.Validate().
+	// A signed roster entry with status="disabled" must reject at LoadRoster
+	// even though the rest of the entry is well-formed. Fail-open on unknown
+	// status would let an attacker smuggle a key that ResolveKey treats as
+	// active because the only explicit reject historically was "revoked".
+	path, fp := rosterFixture(t, preSignOpt(func(env *contract.RosterEnvelope) {
+		env.Body.Keys = append(env.Body.Keys, contract.KeyInfo{
+			KeyID:        "disabled-key",
+			KeyPurpose:   string(PurposeReceiptSigning),
+			PublicKeyHex: testRosterPubHex,
+			ValidFrom:    testRosterValidFrom,
+			Status:       "disabled",
+		})
+	}))
+
+	_, err := LoadRoster(path, fp)
+	if err == nil {
+		t.Fatal("expected ErrRosterKeyInvalidStatus")
+	}
+	if !errors.Is(err, ErrRosterKeyInvalidStatus) {
+		t.Errorf("got %v, want ErrRosterKeyInvalidStatus", err)
+	}
+}
+
+func TestLoadRoster_RejectsBadPublicKeyHex(t *testing.T) {
+	t.Parallel()
+	// Strict per-key validation must reject a non-32-byte public key even
+	// when the rest of the roster is otherwise valid.
+	path, fp := rosterFixture(t, preSignOpt(func(env *contract.RosterEnvelope) {
+		env.Body.Keys = append(env.Body.Keys, contract.KeyInfo{
+			KeyID:        "short-key",
+			KeyPurpose:   string(PurposeReceiptSigning),
+			PublicKeyHex: "deadbeef", // 4 bytes, not 32
+			ValidFrom:    testRosterValidFrom,
+			Status:       contract.KeyStatusActive,
+		})
+	}))
+
+	_, err := LoadRoster(path, fp)
+	if err == nil {
+		t.Fatal("expected ErrRosterKeyMissingPublicKey")
+	}
+	if !errors.Is(err, ErrRosterKeyMissingPublicKey) {
+		t.Errorf("got %v, want ErrRosterKeyMissingPublicKey", err)
+	}
+}
+
+func TestLoadRoster_RejectsUnknownKeyPurpose(t *testing.T) {
+	t.Parallel()
+	// A key with an unrecognised purpose must reject at LoadRoster (strict
+	// per-key validation runs before any signature lookup).
 	path, fp := rosterFixture(t, preSignOpt(func(env *contract.RosterEnvelope) {
 		env.Body.Keys = append(env.Body.Keys, contract.KeyInfo{
 			KeyID:        "bogus-purpose-key",
@@ -893,18 +940,13 @@ func TestAuthorizeSignature_RejectUnknownPurpose(t *testing.T) {
 			Status:       contract.KeyStatusActive,
 		})
 	}))
-	roster, err := LoadRoster(path, fp)
-	if err != nil {
-		t.Fatalf("LoadRoster: %v", err)
-	}
 
-	now, _ := time.Parse(time.RFC3339, "2026-05-01T00:00:00Z")
-	err = roster.AuthorizeSignature("proxy_decision", "bogus-purpose-key", now)
+	_, err := LoadRoster(path, fp)
 	if err == nil {
-		t.Fatal("expected ErrUnknownKeyPurpose")
+		t.Fatal("expected ErrRosterKeyInvalidPurpose")
 	}
-	if !errors.Is(err, ErrUnknownKeyPurpose) {
-		t.Errorf("got %v, want ErrUnknownKeyPurpose", err)
+	if !errors.Is(err, ErrRosterKeyInvalidPurpose) {
+		t.Errorf("got %v, want ErrRosterKeyInvalidPurpose", err)
 	}
 }
 
@@ -1036,9 +1078,12 @@ func TestLoadRoster_RejectRootKeyBadHex(t *testing.T) {
 
 	_, err = LoadRoster(fp, computeTestFingerprint(t))
 	if err == nil {
-		t.Fatal("expected ErrRosterRootMissing")
+		t.Fatal("expected ErrRosterKeyMissingPublicKey")
 	}
-	if !errors.Is(err, ErrRosterRootMissing) {
-		t.Errorf("got %v, want ErrRosterRootMissing", err)
+	// Strict per-key validation in LoadRoster catches the bad hex before any
+	// root-specific lookup runs, so the surfaced sentinel is the missing /
+	// malformed public-key sentinel.
+	if !errors.Is(err, ErrRosterKeyMissingPublicKey) {
+		t.Errorf("got %v, want ErrRosterKeyMissingPublicKey", err)
 	}
 }

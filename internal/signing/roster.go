@@ -4,6 +4,7 @@
 package signing
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -30,6 +31,10 @@ var (
 	ErrRosterKeyRevoked              = errors.New("key is revoked")
 	ErrRosterKeyNotYetValid          = errors.New("key is not yet valid")
 	ErrRosterKeyExpired              = errors.New("key is expired")
+	ErrRosterKeyInvalidStatus        = errors.New("key has unknown status")
+	ErrRosterKeyNotActive            = errors.New("key is not active")
+	ErrRosterKeyMissingPublicKey     = errors.New("key has missing or malformed public_key_hex")
+	ErrRosterKeyInvalidPurpose       = errors.New("key has unknown key_purpose")
 )
 
 // ed25519SignaturePrefix is the wire-format prefix for Ed25519 detached signatures.
@@ -98,6 +103,15 @@ func LoadRoster(path string, pinnedRootFingerprint string) (*LoadedRoster, error
 
 	// Step 3: Structural validation of the body.
 	if valErr := envelope.Body.Validate(); valErr != nil {
+		return nil, fmt.Errorf("%w: %w", ErrRosterInvalid, valErr)
+	}
+
+	// Step 3b: Strict per-key validation. The contract package's Validate()
+	// only checks duplicate IDs, root presence, and data class root. The
+	// signing package owns runtime trust decisions, so it tightens the gate:
+	// every key MUST have a known status, a known purpose, and a parseable
+	// 32-byte ed25519 public key.
+	if valErr := validateKeyInfos(envelope.Body.Keys); valErr != nil {
 		return nil, fmt.Errorf("%w: %w", ErrRosterInvalid, valErr)
 	}
 
@@ -173,6 +187,38 @@ func parseSignature(sig string) ([]byte, error) {
 	return sigBytes, nil
 }
 
+// validateKeyInfos runs strict per-key checks on every entry in a roster
+// body. It is the runtime-trust gate that catches values the contract
+// package's structural Validate() intentionally lets through (the contract
+// package validates SCHEMA; the signing package validates TRUST).
+//
+// Reject cases:
+//   - Status not in {active, revoked, root}              -> ErrRosterKeyInvalidStatus
+//   - KeyPurpose is not one of the six known purposes     -> ErrRosterKeyInvalidPurpose
+//   - PublicKeyHex is empty, non-hex, or wrong length     -> ErrRosterKeyMissingPublicKey
+func validateKeyInfos(keys []contract.KeyInfo) error {
+	for _, k := range keys {
+		switch k.Status {
+		case contract.KeyStatusActive, contract.KeyStatusRevoked, contract.KeyStatusRoot:
+			// known
+		default:
+			return fmt.Errorf("%w: key_id=%q status=%q", ErrRosterKeyInvalidStatus, k.KeyID, k.Status)
+		}
+		if err := KeyPurpose(k.KeyPurpose).Validate(); err != nil {
+			return fmt.Errorf("%w: key_id=%q: %w", ErrRosterKeyInvalidPurpose, k.KeyID, err)
+		}
+		pub, err := hex.DecodeString(k.PublicKeyHex)
+		if err != nil {
+			return fmt.Errorf("%w: key_id=%q hex decode: %w", ErrRosterKeyMissingPublicKey, k.KeyID, err)
+		}
+		if len(pub) != ed25519.PublicKeySize {
+			return fmt.Errorf("%w: key_id=%q got %d bytes, want %d",
+				ErrRosterKeyMissingPublicKey, k.KeyID, len(pub), ed25519.PublicKeySize)
+		}
+	}
+	return nil
+}
+
 // findRootKey locates the key in body.Keys whose key_id matches
 // body.RosterSignedBy AND whose status is "root".
 func findRootKey(body contract.KeyRoster) (contract.KeyInfo, error) {
@@ -189,11 +235,22 @@ func findRootKey(body contract.KeyRoster) (contract.KeyInfo, error) {
 }
 
 // ResolveKey returns the active, in-window key info for the given key_id.
+// Only keys with status="active" are resolvable; revoked, root, and any
+// unrecognised status reject. Root keys are intentionally not resolvable
+// here because they sign rosters and root transitions, never runtime
+// payloads — the loader uses findRootKey internally for that lookup.
+//
 // Reject cases (typed sentinels):
 //   - key_id not in roster                        -> ErrRosterKeyUnknown
 //   - key status is revoked                       -> ErrRosterKeyRevoked
+//   - key status is root                          -> ErrRosterKeyNotActive
+//   - key status is anything else                 -> ErrRosterKeyInvalidStatus
 //   - now < valid_from                            -> ErrRosterKeyNotYetValid
 //   - now > valid_until (when valid_until is set) -> ErrRosterKeyExpired
+//
+// LoadRoster runs validateKeyInfos before this method is reachable, so
+// unknown statuses are normally rejected at load time. The defense-in-depth
+// check here is for callers who construct a LoadedRoster by other means.
 //
 // The now parameter is for testability; pass time.Now() in production.
 // valid_from / valid_until on the wire are RFC 3339 UTC strings.
@@ -203,9 +260,16 @@ func (r *LoadedRoster) ResolveKey(keyID string, now time.Time) (contract.KeyInfo
 			continue
 		}
 
-		// Status check.
-		if k.Status == contract.KeyStatusRevoked {
+		// Status check: only active keys are resolvable.
+		switch k.Status {
+		case contract.KeyStatusActive:
+			// proceed to window check
+		case contract.KeyStatusRevoked:
 			return contract.KeyInfo{}, fmt.Errorf("%w: %q", ErrRosterKeyRevoked, keyID)
+		case contract.KeyStatusRoot:
+			return contract.KeyInfo{}, fmt.Errorf("%w: key_id=%q has status=root", ErrRosterKeyNotActive, keyID)
+		default:
+			return contract.KeyInfo{}, fmt.Errorf("%w: key_id=%q status=%q", ErrRosterKeyInvalidStatus, keyID, k.Status)
 		}
 
 		// Window check: valid_from.
@@ -235,10 +299,12 @@ func (r *LoadedRoster) ResolveKey(keyID string, now time.Time) (contract.KeyInfo
 	return contract.KeyInfo{}, fmt.Errorf("%w: %q", ErrRosterKeyUnknown, keyID)
 }
 
-// AuthorizeSignature combines roster lifecycle checks with the contract
-// package's payload-kind authority matrix. It is the canonical "is this
-// signature legitimate for this payload kind, by this key, right now"
-// gate.
+// AuthorizeSignerForPayload checks that signerKeyID is allowed to author the
+// given payload kind RIGHT NOW. It is the lifecycle-and-purpose gate, NOT a
+// cryptographic signature verifier — the actual Ed25519 verification happens
+// at the call site using the resolved key's public key. The name reflects
+// that distinction: this function answers "is this signer permitted?", not
+// "is this signature valid?".
 //
 // Steps (all must pass; first failure returns):
 //  1. Resolve the key via ResolveKey (active + in-window).
@@ -248,7 +314,7 @@ func (r *LoadedRoster) ResolveKey(keyID string, now time.Time) (contract.KeyInfo
 // Returns nil iff all three pass. Errors preserve errors.Is on every
 // underlying sentinel (ResolveKey's, contract.ErrWrongKeyPurpose,
 // contract.ErrUnknownPayloadKind, ErrUnknownKeyPurpose).
-func (r *LoadedRoster) AuthorizeSignature(payloadKind, signerKeyID string, now time.Time) error {
+func (r *LoadedRoster) AuthorizeSignerForPayload(payloadKind, signerKeyID string, now time.Time) error {
 	key, err := r.ResolveKey(signerKeyID, now)
 	if err != nil {
 		return err

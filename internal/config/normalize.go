@@ -6,10 +6,20 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"gopkg.in/yaml.v3"
 )
+
+// normalizeLearn trims surrounding whitespace from Learn.CaptureDir and
+// Learn.Privacy.SaltSource so config-load comparisons (canonical hash,
+// reload no-op detection) are stable against accidental indentation /
+// trailing-newline drift.
+func normalizeLearn(l *Learn) {
+	l.CaptureDir = strings.TrimSpace(l.CaptureDir)
+	l.Privacy.SaltSource = strings.TrimSpace(l.Privacy.SaltSource)
+}
 
 // applySecurityDefaults sets security-sensitive booleans to true when they are
 // omitted or null in the config YAML. YAML unmarshal into a plain bool cannot
@@ -33,6 +43,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ScanAPI.Kinds.PromptInjection = true
 		cfg.ScanAPI.Kinds.ToolCall = true
 		cfg.Taint.Enabled = true
+		cfg.Learn.Privacy.PublicAllowlistDefault = true
 		return
 	}
 
@@ -109,10 +120,21 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// Taint defaults to enabled when omitted, matching Defaults().
 	taint, _ := raw["taint"].(map[string]interface{})
 	setBoolDefault(taint, "enabled", &cfg.Taint.Enabled)
+
+	// Learn privacy: public_allowlist_default defaults to true so the
+	// canonical seed allowlist ships when the operator omits the privacy
+	// section or the field. Fail-closed for the privacy enforcer.
+	learn, _ := raw["learn"].(map[string]interface{})
+	var privacy map[string]interface{}
+	if learn != nil {
+		privacy, _ = learn["privacy"].(map[string]interface{})
+	}
+	setBoolDefault(privacy, "public_allowlist_default", &cfg.Learn.Privacy.PublicAllowlistDefault)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
 func (c *Config) ApplyDefaults() {
+	normalizeLearn(&c.Learn)
 	if c.Version == 0 {
 		c.Version = 1
 	}

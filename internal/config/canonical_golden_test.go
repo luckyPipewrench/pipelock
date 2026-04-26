@@ -33,20 +33,21 @@ const (
 	// constructed Defaults() config, post-ApplyDefaults + Validate.
 	// This is the "out of the box" hash a user gets from `pipelock
 	// run` with no --config flag.
-	// Bumped for the generic SSE streaming feature: Defaults() now
-	// includes ResponseScanning.SSEStreaming with its enabled/action/
-	// max_event_bytes defaults. New policy knob → ph must shift.
-	goldenHashDefaults = "bbc0e8d8ee618bedfd61b19f74af01b3786b12c181fd7abb1b1d262a0f060477"
+	// Bumped for the v2.4 learn-and-lock observation pipeline schema:
+	// Defaults() now includes the Learn top-level block (enabled=false,
+	// privacy.public_allowlist_default=true). New policy surface → ph
+	// must shift so verifiers detect the schema change.
+	goldenHashDefaults = "bfaf53a86f0a97d30975349cbe0ba09947dd42b413cd04c4076114e434ad91e8"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
 	// representative policy-semantic fixture with emphasis on the
 	// sections most likely to drift during TD-2b.
-	// Bumped for the generic SSE streaming feature: ResponseScanning now
-	// carries an SSEStreaming sub-struct that policySemanticView hashes
-	// through its shallow copy. Adding a new policy knob must bump ph
-	// so verifiers detect the semantics change.
-	goldenHashRichConfig = "5a7f7b603b2fcba853d333c8c7583b37fbca548260e8d963cbb20438e1d54544"
+	// Bumped for the v2.4 learn-and-lock observation pipeline schema:
+	// the rich fixture now carries a Learn block with enabled=false +
+	// privacy.public_allowlist_default=true defaults, so ph must shift
+	// in lockstep with the Defaults() bump above.
+	goldenHashRichConfig = "31c45f2e4131f4d780c6452192a98928d91b69a46c21e1858dfb5125d5e15dcb"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

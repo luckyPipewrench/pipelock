@@ -3,7 +3,10 @@
 
 package contract
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestPackageBootstraps(t *testing.T) {
 	t.Parallel()
@@ -48,6 +51,51 @@ func TestContract_SignablePreimage_MarshalError(t *testing.T) {
 	_, err := c.SignablePreimage()
 	if err == nil {
 		t.Error("expected error from SignablePreimage with unmarshalable Confidence, got nil")
+	}
+}
+
+func TestContract_Validate_AcceptsValidContract(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    "internal",
+		FieldDataClasses: map[string]string{},
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("got %v, want nil", err)
+	}
+}
+
+func TestContract_Validate_RejectsBadSchemaVersion(t *testing.T) {
+	t.Parallel()
+	c := Contract{SchemaVersion: 99, ContractKind: ContractKind, DataClassRoot: "internal"}
+	if err := c.Validate(); !errors.Is(err, ErrContractSchemaVersion) {
+		t.Errorf("got %v, want ErrContractSchemaVersion", err)
+	}
+}
+
+func TestContract_Validate_RejectsBadContractKind(t *testing.T) {
+	t.Parallel()
+	c := Contract{SchemaVersion: SchemaVersionContract, ContractKind: "wrong_kind", DataClassRoot: "internal"}
+	if err := c.Validate(); !errors.Is(err, ErrContractKind) {
+		t.Errorf("got %v, want ErrContractKind", err)
+	}
+}
+
+func TestContract_Validate_RejectsRegulatedField(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion: SchemaVersionContract,
+		ContractKind:  ContractKind,
+		DataClassRoot: "internal",
+		FieldDataClasses: map[string]string{
+			"selector.agent": "regulated",
+		},
+		Selector: Selector{Agent: "x"},
+	}
+	if err := c.Validate(); !errors.Is(err, ErrRegulatedField) {
+		t.Errorf("got %v, want ErrRegulatedField", err)
 	}
 }
 

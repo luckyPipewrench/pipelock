@@ -5,6 +5,7 @@ package contract
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -14,6 +15,12 @@ const SchemaVersionContract = 1
 
 // ContractKind is the only valid contract_kind value for v2.4.
 const ContractKind = "behavioral_contract"
+
+// ErrContractSchemaVersion rejects contracts with non-current schema_version.
+var ErrContractSchemaVersion = errors.New("contract: unsupported schema_version")
+
+// ErrContractKind rejects contracts with non-enumerated contract_kind.
+var ErrContractKind = errors.New("contract: invalid contract_kind")
 
 // Contract is the typed signable body of a learn-and-lock policy contract.
 //
@@ -99,6 +106,36 @@ type Rule struct {
 type ContractEnvelope struct {
 	Body      Contract `json:"body"`
 	Signature string   `json:"signature"`
+}
+
+// Validate runs structural and data-class checks on the contract body.
+// Cryptographic verification (signature, contract_hash) happens externally in verify.go.
+func (c Contract) Validate() error {
+	if c.SchemaVersion != SchemaVersionContract {
+		return fmt.Errorf("%w: got %d, want %d", ErrContractSchemaVersion, c.SchemaVersion, SchemaVersionContract)
+	}
+	if c.ContractKind != ContractKind {
+		return fmt.Errorf("%w: got %q, want %q", ErrContractKind, c.ContractKind, ContractKind)
+	}
+	// Data-class coverage: walk the contract body and reject regulated fields.
+	// Marshal back to generic tree so the existing walker can be reused.
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshal contract for validate: %w", err)
+	}
+	tree, err := ParseJSONStrict(raw)
+	if err != nil {
+		return fmt.Errorf("parse contract for validate: %w", err)
+	}
+	bodyMap, ok := tree.(map[string]any)
+	if !ok {
+		return fmt.Errorf("contract body is not a map after marshal+parse")
+	}
+	fcls := make(map[string]any, len(c.FieldDataClasses))
+	for k, v := range c.FieldDataClasses {
+		fcls[k] = v
+	}
+	return ValidateDataClassCoverage(bodyMap, fcls)
 }
 
 // SignablePreimage returns the JCS-canonicalized bytes for this Rule.

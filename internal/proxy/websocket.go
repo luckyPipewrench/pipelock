@@ -122,7 +122,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc := resolved.Scanner
+	sc, releaseScanner := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous

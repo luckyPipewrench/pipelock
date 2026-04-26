@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/publicsuffix"
@@ -172,9 +173,16 @@ type Scanner struct {
 	// in-flight Scan never sees a half-torn-down scanner. Today only ticker
 	// goroutines are stopped, but future additions (sqlite handles, file
 	// descriptors) make this drain a hard prerequisite for safe reload.
+	//
+	// drained transitions false→true exactly once at the end of Close,
+	// after the rateLimiter and dataBudget have been torn down. closed is
+	// set BEFORE drain begins, so Closed() and Drained() are distinct
+	// signals: Closed reports "Close was initiated", Drained reports
+	// "Close has completed teardown".
 	closeMu sync.RWMutex
 	closed  bool
 	inUse   sync.WaitGroup
+	drained atomic.Bool
 }
 
 // scannerCloseDrainTimeout caps how long Close() waits for in-flight scans
@@ -561,6 +569,7 @@ func (s *Scanner) Close() {
 	if s.dataBudget != nil {
 		s.dataBudget.Close()
 	}
+	s.drained.Store(true)
 }
 
 // BeginUse registers an in-flight scanner user. Callers MUST invoke the
@@ -587,6 +596,16 @@ func (s *Scanner) Closed() bool {
 	s.closeMu.RLock()
 	defer s.closeMu.RUnlock()
 	return s.closed
+}
+
+// Drained reports whether Close has finished its teardown — drain wait
+// returned (or timed out), and the rateLimiter / dataBudget cleanup
+// goroutines have been signaled to stop. Distinct from Closed, which
+// flips at the start of Close before drain runs. Tests use Drained to
+// assert the close goroutine actually completed; production code has no
+// reason to read this.
+func (s *Scanner) Drained() bool {
+	return s.drained.Load()
 }
 
 // RecordRequest records response data for per-domain data budget tracking.

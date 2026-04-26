@@ -1380,6 +1380,42 @@ func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.Resolv
 	return resolved, id, p.envelopeEmitterPtr.Load()
 }
 
+// pinResolvedScanner registers in-flight scanner use on a resolved-agent
+// snapshot, returning the pinned scanner and a release func. Mirrors
+// ReverseProxyHandler.snapshotAndAcquire for the fetch / forward /
+// intercept / WebSocket handlers, which would otherwise hold an unpinned
+// reference to resolved.Scanner across a hot reload and race the async
+// drain in Proxy.Reload.
+//
+// On a reload race (BeginUse returns ok=false because Close has flipped
+// the closed flag) the helper falls through to p.scannerPtr.Load to
+// acquire the freshly published successor and retries up to twice more.
+// After three failures it returns the original resolved scanner and a
+// no-op release; that path runs only if a reload thrashes the pointer
+// faster than a request can register, which would itself be a structural
+// problem. Scan calls on a closed scanner remain safe (Close only stops
+// the cleanup tickers; the rateLimiter / dataBudget data structures stay
+// valid), so a no-op release is a defensible fallback.
+//
+// Callers defer the returned release. A nil resolved or nil
+// resolved.Scanner returns a (nil, no-op) pair so callers can defer
+// unconditionally.
+func (p *Proxy) pinResolvedScanner(resolved *edition.ResolvedAgent) (*scanner.Scanner, func()) {
+	if resolved == nil || resolved.Scanner == nil {
+		return nil, func() {}
+	}
+	sc := resolved.Scanner
+	for range 3 {
+		if release, ok := sc.BeginUse(); ok {
+			return sc, release
+		}
+		if next := p.scannerPtr.Load(); next != nil {
+			sc = next
+		}
+	}
+	return sc, func() {}
+}
+
 func (p *Proxy) currentEnvelopeEmitter() *envelope.Emitter {
 	return p.envelopeEmitterPtr.Load()
 }
@@ -2009,7 +2045,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc := resolved.Scanner
+	sc, releaseScanner := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous

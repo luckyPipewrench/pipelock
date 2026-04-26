@@ -71,6 +71,22 @@ func reverseReceiptParitySetup(t *testing.T, cfg *config.Config, upstreamHandler
 	}
 }
 
+// findReceiptByLayer returns the first receipt whose ActionRecord.Layer
+// matches the wanted label. Tests use this instead of indexing
+// receipts[0] so they cannot silently validate a different receipt if a
+// future change emits an upstream URL/header DLP receipt before the
+// response block fires.
+func findReceiptByLayer(t *testing.T, receipts []receipt.Receipt, wantLayer string) receipt.Receipt {
+	t.Helper()
+	for _, r := range receipts {
+		if r.ActionRecord.Layer == wantLayer {
+			return r
+		}
+	}
+	t.Fatalf("no receipt with Layer=%q in %d emitted receipts", wantLayer, len(receipts))
+	return receipt.Receipt{} // unreachable
+}
+
 func gzipBody(t *testing.T, raw []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -115,18 +131,12 @@ func TestReceiptCoverage_ReverseCompressedBlock_EmitsReceipt(t *testing.T) {
 	closeRec()
 
 	receipts := extractReceiptsFromDir(t, dir)
-	if len(receipts) == 0 {
-		t.Fatal("no receipts emitted for reverse-proxy compressed block")
-	}
-	r := receipts[0]
+	r := findReceiptByLayer(t, receipts, LayerReverseResponseBlocked)
 	if r.ActionRecord.Transport != TransportReverse {
 		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
-	}
-	if r.ActionRecord.Layer != LayerReverseResponseBlocked {
-		t.Errorf("Layer = %q, want %q", r.ActionRecord.Layer, LayerReverseResponseBlocked)
 	}
 	if !strings.Contains(r.ActionRecord.Pattern, "compressed") {
 		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "compressed")
@@ -167,18 +177,12 @@ func TestReceiptCoverage_ReverseOversizeBlock_EmitsReceipt(t *testing.T) {
 	closeRec()
 
 	receipts := extractReceiptsFromDir(t, dir)
-	if len(receipts) == 0 {
-		t.Fatal("no receipts emitted for reverse-proxy oversize block")
-	}
-	r := receipts[0]
+	r := findReceiptByLayer(t, receipts, LayerReverseResponseBlocked)
 	if r.ActionRecord.Transport != TransportReverse {
 		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
-	}
-	if r.ActionRecord.Layer != LayerReverseResponseBlocked {
-		t.Errorf("Layer = %q, want %q", r.ActionRecord.Layer, LayerReverseResponseBlocked)
 	}
 	if !strings.Contains(r.ActionRecord.Pattern, "scanning limit") {
 		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "scanning limit")
@@ -195,13 +199,20 @@ func TestReceiptCoverage_ReverseOversizeBlock_EmitsReceipt(t *testing.T) {
 func TestReceiptCoverage_ReverseReadErrorBlock_EmitsReceipt(t *testing.T) {
 	cfg := reverseTestConfig()
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		// testing.T.Fatal* is only safe from the goroutine running the
+		// test function; calling it from this httptest handler goroutine
+		// stops the goroutine but not the test, and Do would hang on a
+		// torn-down connection. Use Errorf+return instead so a Hijack
+		// failure surfaces a real test failure.
 		hj, ok := w.(http.Hijacker)
 		if !ok {
-			t.Fatal("upstream ResponseWriter is not a Hijacker")
+			t.Errorf("upstream ResponseWriter is not a Hijacker")
+			return
 		}
 		conn, bw, err := hj.Hijack()
 		if err != nil {
-			t.Fatalf("Hijack: %v", err)
+			t.Errorf("Hijack: %v", err)
+			return
 		}
 		defer func() { _ = conn.Close() }()
 		// Announce a body of 100 bytes, send 5, close. Triggers
@@ -228,18 +239,12 @@ func TestReceiptCoverage_ReverseReadErrorBlock_EmitsReceipt(t *testing.T) {
 	closeRec()
 
 	receipts := extractReceiptsFromDir(t, dir)
-	if len(receipts) == 0 {
-		t.Fatal("no receipts emitted for reverse-proxy read-error block")
-	}
-	r := receipts[0]
+	r := findReceiptByLayer(t, receipts, LayerReverseResponseBlocked)
 	if r.ActionRecord.Transport != TransportReverse {
 		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
-	}
-	if r.ActionRecord.Layer != LayerReverseResponseBlocked {
-		t.Errorf("Layer = %q, want %q", r.ActionRecord.Layer, LayerReverseResponseBlocked)
 	}
 	if !strings.Contains(r.ActionRecord.Pattern, "read error") {
 		t.Errorf("Pattern = %q, expected substring %q", r.ActionRecord.Pattern, "read error")
@@ -254,9 +259,11 @@ func TestReceiptCoverage_ReverseReadErrorBlock_EmitsReceipt(t *testing.T) {
 // stream scanner and the block must be both logged AND attested.
 func TestReceiptCoverage_ReverseSSEStreamFinding_EmitsReceipt(t *testing.T) {
 	cfg := reverseTestConfig()
+	// reverseTestConfig already calls ApplyDefaults; ApplyDefaults uses
+	// set-if-zero semantics and does not touch SSEStreaming.Action, so
+	// these assignments override the defaults safely without re-applying.
 	cfg.ResponseScanning.SSEStreaming.Enabled = true
 	cfg.ResponseScanning.SSEStreaming.Action = config.ActionBlock
-	cfg.ApplyDefaults()
 
 	// SSE response with a single event carrying a hot injection pattern.
 	// Use one of the default response_scanning patterns: "ignore previous
@@ -293,17 +300,11 @@ func TestReceiptCoverage_ReverseSSEStreamFinding_EmitsReceipt(t *testing.T) {
 	closeRec()
 
 	receipts := extractReceiptsFromDir(t, dir)
-	if len(receipts) == 0 {
-		t.Fatal("no receipts emitted for reverse-proxy SSE stream finding")
-	}
-	r := receipts[0]
+	r := findReceiptByLayer(t, receipts, LayerSSEStream)
 	if r.ActionRecord.Transport != TransportReverse {
 		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("Verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
-	}
-	if r.ActionRecord.Layer != LayerSSEStream {
-		t.Errorf("Layer = %q, want %q", r.ActionRecord.Layer, LayerSSEStream)
 	}
 }

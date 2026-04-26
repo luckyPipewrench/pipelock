@@ -128,14 +128,10 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 
 	// The closed flag is published synchronously by Close, but BeginUse on
 	// initialSc must already reject newcomers — that is the gate that lets
-	// drain finish bounded.
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for !initialSc.Closed() && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !initialSc.Closed() {
-		t.Fatal("initial scanner did not enter closed state after Reload")
-	}
+	// drain finish bounded. waitForClosed gives 2 seconds; under -race on
+	// loaded CI a 500ms budget is a known flake source for goroutine
+	// scheduling, so reuse the helper that the state-matrix test uses.
+	waitForClosed(t, initialSc, "initial scanner after Reload")
 	if release2, ok2 := initialSc.BeginUse(); ok2 {
 		t.Error("BeginUse on initial scanner succeeded mid-drain")
 		release2()
@@ -149,8 +145,19 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 	newRelease()
 
 	// Releasing the in-flight user lets drain finish; the Close goroutine
-	// now proceeds to tear down ticker resources.
+	// now proceeds to tear down ticker resources. Drained() flips true
+	// only after rateLimiter / dataBudget Close runs, so polling it
+	// proves the close goroutine actually completed rather than relying
+	// solely on the earlier mid-drain BeginUse rejection.
 	release()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if initialSc.Drained() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("Close goroutine did not finish draining initialSc within 2s of release")
 }
 
 // waitForClosed polls Closed() until it returns true or the timeout

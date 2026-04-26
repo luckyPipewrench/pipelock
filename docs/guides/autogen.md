@@ -152,9 +152,9 @@ async def main():
               "npx", "-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
     )
 
-    # Remote server: NOT scanned by pipelock
-    # Pipelock's MCP proxy only wraps stdio servers.
-    # For remote servers, vet the server before connecting.
+    # Direct remote server: NOT scanned by Pipelock.
+    # To scan this path, expose the remote endpoint through:
+    # pipelock mcp proxy --upstream https://api.example.com/mcp
     remote_params = StreamableHttpServerParams(
         url="https://api.example.com/mcp",
         headers={"Authorization": "Bearer token"},
@@ -175,10 +175,22 @@ asyncio.run(main())
 > **Note:** `SseServerParams` is deprecated. Use `StreamableHttpServerParams`
 > for new remote MCP connections.
 
-**Note:** Pipelock's MCP proxy only wraps stdio-based servers. Remote HTTP/SSE
-MCP connections go directly to the remote endpoint and bypass Pipelock. For
-outbound HTTP traffic from your agent code (API calls, web fetches), route those
-through `pipelock run` as a fetch proxy. See the
+**Note:** Direct `StreamableHttpServerParams` / `SseServerParams` connections go
+straight to the remote endpoint and bypass Pipelock. To scan remote MCP traffic
+you have two options:
+
+- `pipelock mcp proxy --upstream https://api.example.com/mcp` registers
+  Pipelock as a stdio MCP server that bridges to the remote endpoint. Use this
+  when the upstream needs no client-supplied HTTP headers, since the stdio
+  bridge does not have a transparent path for the client's `Authorization` or
+  other custom headers.
+- HTTP reverse proxy mode (`pipelock run --mcp-listen ADDR --mcp-upstream URL`)
+  preserves request headers through to the upstream. Use this when the upstream
+  requires per-request `Authorization` or other client-supplied headers, or
+  when the client needs an HTTP MCP URL.
+
+For outbound HTTP traffic from your agent code (API calls, web fetches), route
+those through `pipelock run` as a fetch proxy. See the
 [HTTP fetch proxy](#http-fetch-proxy) section below.
 
 ### Pattern D: Multi-Agent Teams
@@ -251,7 +263,7 @@ networks:
 
 services:
   pipelock:
-    # Pin to a specific version for production (e.g., ghcr.io/luckypipewrench/pipelock:2.2.0)
+    # Pin to a specific version for production. See https://github.com/luckyPipewrench/pipelock/releases for available tags.
     image: ghcr.io/luckypipewrench/pipelock:latest
     networks:
       - pipelock-internal

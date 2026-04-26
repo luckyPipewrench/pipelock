@@ -98,3 +98,98 @@ func TestDataClassCoverage_InvalidClassValueRejects(t *testing.T) {
 		t.Errorf("got %v, want ErrInvalidDataClass", err)
 	}
 }
+
+func TestDataClassCoverage_NonStringClassValueRejects(t *testing.T) {
+	t.Parallel()
+	// fieldClasses entry is an int rather than a string; must reject with ErrInvalidDataClass.
+	body := map[string]any{
+		"data_class_root": "internal",
+		"selector":        map[string]any{"agent": "buster"},
+	}
+	fieldClasses := map[string]any{
+		"selector.agent": 42, // non-string class value
+	}
+	err := ValidateDataClassCoverage(body, fieldClasses)
+	if !errors.Is(err, ErrInvalidDataClass) {
+		t.Errorf("got %v, want ErrInvalidDataClass", err)
+	}
+}
+
+func TestDataClassCoverage_ArrayOfScalarsWithRoot(t *testing.T) {
+	t.Parallel()
+	// Body with an array of scalars; no root needed when fieldClasses has the [] entry.
+	body := map[string]any{
+		"data_class_root": "public",
+		"tags":            []any{"alpha", "beta"},
+	}
+	fieldClasses := map[string]any{}
+	err := ValidateDataClassCoverage(body, fieldClasses)
+	if err != nil {
+		t.Errorf("expected nil (root covers array scalars), got %v", err)
+	}
+}
+
+func TestDataClassCoverage_ArrayOfScalarsMissingClass(t *testing.T) {
+	t.Parallel()
+	// Array of scalars with no root and no [] entry triggers ErrMissingDataClass.
+	body := map[string]any{
+		"tags": []any{"alpha", "beta"},
+	}
+	fieldClasses := map[string]any{}
+	err := ValidateDataClassCoverage(body, fieldClasses)
+	if !errors.Is(err, ErrMissingDataClass) {
+		t.Errorf("got %v, want ErrMissingDataClass", err)
+	}
+}
+
+func TestDataClassCoverage_ArrayOfMapsRecursion(t *testing.T) {
+	t.Parallel()
+	// Array of maps exercises the sequence-of-maps recursion branch.
+	// With a root, leaf fields inside each map entry are covered by inheritance.
+	body := map[string]any{
+		"data_class_root": "internal",
+		"rules": []any{
+			map[string]any{"host": "example.com", "action": "block"},
+			map[string]any{"host": "safe.com", "action": "allow"},
+		},
+	}
+	fieldClasses := map[string]any{}
+	err := ValidateDataClassCoverage(body, fieldClasses)
+	if err != nil {
+		t.Errorf("expected nil (root covers nested array-of-maps leaves), got %v", err)
+	}
+}
+
+func TestDataClassCoverage_DeeplyNestedWithExplicitClass(t *testing.T) {
+	t.Parallel()
+	// Deeply nested body where a leaf at depth 3 has an explicit class entry.
+	body := map[string]any{
+		"level1": map[string]any{
+			"level2": map[string]any{
+				"leaf": "value",
+			},
+		},
+	}
+	fieldClasses := map[string]any{
+		"level1.level2.leaf": "public",
+	}
+	err := ValidateDataClassCoverage(body, fieldClasses)
+	if err != nil {
+		t.Errorf("expected nil for explicitly classified deep leaf, got %v", err)
+	}
+}
+
+func TestDataClassCoverage_ArrayOfMapsMissingLeafClass(t *testing.T) {
+	t.Parallel()
+	// Array of maps where a leaf is unclassified with no root triggers ErrMissingDataClass.
+	body := map[string]any{
+		"rules": []any{
+			map[string]any{"host": "example.com"},
+		},
+	}
+	fieldClasses := map[string]any{}
+	err := ValidateDataClassCoverage(body, fieldClasses)
+	if !errors.Is(err, ErrMissingDataClass) {
+		t.Errorf("got %v, want ErrMissingDataClass", err)
+	}
+}

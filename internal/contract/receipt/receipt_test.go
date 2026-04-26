@@ -111,6 +111,19 @@ func TestEvidenceReceipt_SignablePreimage_RejectsDuplicateJSONKey(t *testing.T) 
 	}
 }
 
+func TestEvidenceReceipt_SignablePreimage_RejectsPayloadDuplicateKey(t *testing.T) {
+	// A payload with duplicate JSON keys passes json.RawMessage.MarshalJSON
+	// (the bytes are valid JSON), but ParseJSONStrict (which rejects duplicate
+	// keys) returns ErrDuplicateKey. This exercises the ParseJSONStrict error
+	// branch in EvidenceReceipt.SignablePreimage.
+	r := validReceipt()
+	r.Payload = json.RawMessage(`{"action_type":"block","action_type":"warn"}`)
+	_, err := r.SignablePreimage()
+	if err == nil {
+		t.Fatal("expected error from ParseJSONStrict duplicate key, got nil")
+	}
+}
+
 func TestEvidenceReceipt_SignablePreimage_ExcludesSignature(t *testing.T) {
 	// Base receipt is shared; only Signature differs between the two variants.
 	base := validReceipt()

@@ -36,6 +36,21 @@ func TestContract_SignablePreimage_Stable(t *testing.T) {
 	}
 }
 
+func TestContract_SignablePreimage_MarshalError(t *testing.T) {
+	t.Parallel()
+	// A Contract whose Defaults.Confidence contains an unmarshalable value (channel)
+	// causes json.Marshal to fail in SignablePreimage, exercising that error branch.
+	c := Contract{
+		Defaults: ContractDefaults{
+			Confidence: map[string]any{"ch": make(chan int)},
+		},
+	}
+	_, err := c.SignablePreimage()
+	if err == nil {
+		t.Error("expected error from SignablePreimage with unmarshalable Confidence, got nil")
+	}
+}
+
 func TestContract_SignablePreimage_KeyOrderIndependent(t *testing.T) {
 	t.Parallel()
 	a := Contract{SchemaVersion: 1, ContractKind: "behavioral_contract", DataClassRoot: "internal", FieldDataClasses: map[string]string{"a": "public", "b": "internal"}}

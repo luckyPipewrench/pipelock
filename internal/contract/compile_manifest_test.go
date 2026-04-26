@@ -125,3 +125,16 @@ func TestCompileManifest_Validate_RejectsBadSchemaVersion(t *testing.T) {
 		t.Errorf("expected ErrCompileManifestSchemaVersion, got %v", err)
 	}
 }
+
+func TestCompileManifest_SignablePreimage_MarshalError(t *testing.T) {
+	t.Parallel()
+	// Settings is map[string]any; a channel value makes json.Marshal fail,
+	// exercising the marshal error branch in SignablePreimage.
+	m := CompileManifest{
+		Settings: map[string]any{"ch": make(chan int)},
+	}
+	_, err := m.SignablePreimage()
+	if err == nil {
+		t.Error("expected error from SignablePreimage with unmarshalable Settings, got nil")
+	}
+}

@@ -80,3 +80,19 @@ func TestActiveManifest_RejectsUnknownManifestKind(t *testing.T) {
 		t.Error("expected unknown manifest_kind rejection")
 	}
 }
+
+func TestActiveManifest_Validate_AcceptsValidManifest(t *testing.T) {
+	t.Parallel()
+	m := ActiveManifest{
+		SchemaVersion: 1,
+		ManifestKind:  ManifestKindActivation,
+		Generation:    1,
+		Selectors: []ManifestSelector{
+			{SelectorID: "sha256:a1", Agent: "buster", ContractHash: "sha256:c1"},
+			{SelectorID: "sha256:a2", Agent: "rook", ContractHash: "sha256:c2"},
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Errorf("expected nil for valid manifest, got %v", err)
+	}
+}

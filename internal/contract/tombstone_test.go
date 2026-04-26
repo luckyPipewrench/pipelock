@@ -75,3 +75,46 @@ func TestTombstone_Validate_RejectsBadSchemaVersion(t *testing.T) {
 		t.Errorf("expected ErrTombstoneSchemaVersion, got %v", err)
 	}
 }
+
+func TestNewTombstone_AppliesDefaults(t *testing.T) {
+	t.Parallel()
+	ts := NewTombstone(
+		"sha256:prior",
+		"2026-04-26T00:00:00Z",
+		"auth-007",
+		"key-signing",
+	)
+
+	// Required defaults.
+	if !ts.Tombstone {
+		t.Error("expected Tombstone=true, got false")
+	}
+	if ts.DataClassRoot != "internal" {
+		t.Errorf("expected DataClassRoot=%q, got %q", "internal", ts.DataClassRoot)
+	}
+	if ts.KeyPurpose != "contract-activation-signing" {
+		t.Errorf("expected KeyPurpose=%q, got %q", "contract-activation-signing", ts.KeyPurpose)
+	}
+	if ts.SchemaVersion != 1 {
+		t.Errorf("expected SchemaVersion=1, got %d", ts.SchemaVersion)
+	}
+
+	// Caller-supplied fields threaded through.
+	if ts.PriorContractHash != "sha256:prior" {
+		t.Errorf("PriorContractHash=%q, want %q", ts.PriorContractHash, "sha256:prior")
+	}
+	if ts.RedactedAt != "2026-04-26T00:00:00Z" {
+		t.Errorf("RedactedAt=%q, want %q", ts.RedactedAt, "2026-04-26T00:00:00Z")
+	}
+	if ts.RedactionAuthorizationID != "auth-007" {
+		t.Errorf("RedactionAuthorizationID=%q, want %q", ts.RedactionAuthorizationID, "auth-007")
+	}
+	if ts.SignerKeyID != "key-signing" {
+		t.Errorf("SignerKeyID=%q, want %q", ts.SignerKeyID, "key-signing")
+	}
+
+	// Must pass structural validation.
+	if err := ts.Validate(); err != nil {
+		t.Errorf("NewTombstone result fails Validate: %v", err)
+	}
+}

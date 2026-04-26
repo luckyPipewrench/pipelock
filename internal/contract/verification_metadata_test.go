@@ -117,3 +117,57 @@ func TestVerificationMetadata_Validate_RejectsBadSchemaVersion(t *testing.T) {
 		t.Errorf("expected ErrVerificationMetadataSchemaVersion, got %v", err)
 	}
 }
+
+func TestVerificationMetadata_ComputeTombstoneIndexRoot_NonEmpty(t *testing.T) {
+	t.Parallel()
+	// Non-empty list produces a root that differs from the empty-list root.
+	empty := VerificationMetadata{TombstoneHashes: []string{}}
+	emptyRoot, err := empty.ComputeTombstoneIndexRoot()
+	if err != nil {
+		t.Fatalf("empty ComputeTombstoneIndexRoot: %v", err)
+	}
+
+	nonempty := VerificationMetadata{TombstoneHashes: []string{
+		"sha256:aabbcc",
+		"sha256:ddeeff",
+	}}
+	nonemptyRoot, err := nonempty.ComputeTombstoneIndexRoot()
+	if err != nil {
+		t.Fatalf("non-empty ComputeTombstoneIndexRoot: %v", err)
+	}
+
+	if nonemptyRoot == emptyRoot {
+		t.Error("non-empty root matches empty root; expected them to differ")
+	}
+	if nonemptyRoot == "" {
+		t.Error("non-empty root is empty string")
+	}
+}
+
+func TestVerificationMetadata_ComputeSelectorID_DefaultSelector(t *testing.T) {
+	t.Parallel()
+	// A selector with Default=true and no agent/agentGlob fields.
+	s := ManifestSelector{
+		Default:      true,
+		ContractHash: "sha256:abc",
+	}
+	id, err := s.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("ComputeSelectorID: %v", err)
+	}
+	if id == "" {
+		t.Error("expected non-empty selector_id, got empty")
+	}
+	// Verify it differs from a non-default selector with same contract hash.
+	s2 := ManifestSelector{
+		Agent:        "buster",
+		ContractHash: "sha256:abc",
+	}
+	id2, err := s2.ComputeSelectorID()
+	if err != nil {
+		t.Fatalf("ComputeSelectorID (agent selector): %v", err)
+	}
+	if id == id2 {
+		t.Error("default selector and agent selector produced same ID")
+	}
+}

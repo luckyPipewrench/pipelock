@@ -88,6 +88,20 @@ func TestMerkleRoot_OddCountHandling(t *testing.T) {
 	}
 }
 
+func TestMerkleRoot_SignablePreimageError(t *testing.T) {
+	t.Parallel()
+	// A Rule whose json.Marshal will fail (channel value in Observation) causes
+	// MerkleRoot to return the leaf error, exercising merkle.go lines 34-36.
+	badRule := Rule{
+		RuleID:      "r-bad",
+		Observation: map[string]any{"ch": make(chan int)},
+	}
+	_, err := MerkleRoot([]Rule{badRule})
+	if err == nil {
+		t.Error("expected error for Rule with unmarshalable Observation, got nil")
+	}
+}
+
 // sha256Sum is a tiny test helper for empty-tree expectation.
 func sha256Sum(b []byte) []byte {
 	s := sha256.Sum256(b)

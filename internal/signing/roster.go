@@ -84,11 +84,11 @@ func LoadRoster(path string, pinnedRootFingerprint string) (*LoadedRoster, error
 	var envelope contract.RosterEnvelope
 	ext := strings.ToLower(filepath.Ext(cleanPath))
 	switch ext {
-	case ".json":
+	case envelopeExtJSON:
 		if decErr := contract.DecodeStrictJSON(raw, &envelope); decErr != nil {
 			return nil, fmt.Errorf("%w: %w", ErrRosterDecode, decErr)
 		}
-	case ".yaml", ".yml":
+	case envelopeExtYAML, envelopeExtYML:
 		if decErr := contract.DecodeStrictYAML(raw, &envelope); decErr != nil {
 			return nil, fmt.Errorf("%w: %w", ErrRosterDecode, decErr)
 		}
@@ -104,7 +104,7 @@ func LoadRoster(path string, pinnedRootFingerprint string) (*LoadedRoster, error
 	// Step 4: Validate signature format.
 	sigBytes, err := parseSignature(envelope.Signature)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrRosterSignatureFormat, err)
 	}
 
 	// Step 5: Locate the root key referenced by roster_signed_by.
@@ -152,21 +152,23 @@ func LoadRoster(path string, pinnedRootFingerprint string) (*LoadedRoster, error
 }
 
 // parseSignature validates and decodes the "ed25519:<hex>" wire format.
+// Returns descriptive errors WITHOUT a package-level sentinel; callers wrap
+// with their own ErrXxxSignatureFormat sentinel so that errors.Is works for
+// the right scope.
 func parseSignature(sig string) ([]byte, error) {
 	if sig == "" {
-		return nil, fmt.Errorf("%w: empty signature", ErrRosterSignatureFormat)
+		return nil, errors.New("empty signature")
 	}
 	if !strings.HasPrefix(sig, ed25519SignaturePrefix) {
-		return nil, fmt.Errorf("%w: missing %q prefix", ErrRosterSignatureFormat, ed25519SignaturePrefix)
+		return nil, fmt.Errorf("missing %q prefix", ed25519SignaturePrefix)
 	}
 	hexPart := sig[len(ed25519SignaturePrefix):]
 	if len(hexPart) != ed25519SignatureHexLen {
-		return nil, fmt.Errorf("%w: hex length %d, want %d",
-			ErrRosterSignatureFormat, len(hexPart), ed25519SignatureHexLen)
+		return nil, fmt.Errorf("hex length %d, want %d", len(hexPart), ed25519SignatureHexLen)
 	}
 	sigBytes, err := hex.DecodeString(hexPart)
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid hex: %w", ErrRosterSignatureFormat, err)
+		return nil, fmt.Errorf("invalid hex: %w", err)
 	}
 	return sigBytes, nil
 }

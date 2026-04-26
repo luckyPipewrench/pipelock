@@ -22,6 +22,10 @@ var ErrFloatNotAllowed = errors.New("float not allowed in canonicalization; use 
 // ErrDuplicateKey indicates a duplicate key was found during strict parse.
 var ErrDuplicateKey = errors.New("duplicate key in JSON object")
 
+// ErrTrailingTokens indicates that valid JSON was followed by additional non-whitespace tokens.
+// Trailing tokens are a potential injection vector in signed artifact payloads.
+var ErrTrailingTokens = errors.New("trailing tokens after JSON value")
+
 // Canonicalize produces RFC 8785 JCS bytes for the given value.
 // Strings are NFC-normalized. Floats are rejected. Map keys are sorted lexicographically by codepoint.
 func Canonicalize(v any) ([]byte, error) {
@@ -128,10 +132,22 @@ func canonicalizeInto(buf *bytes.Buffer, v any) error {
 // ParseJSONStrict decodes JSON with duplicate-key rejection and integer
 // preservation via json.Decoder.UseNumber. Returns map[string]any / []any
 // trees suitable for Canonicalize.
+//
+// ErrTrailingTokens is returned if any non-whitespace tokens follow the value.
+// Trailing whitespace (spaces, newlines) is permitted by the JSON spec and is not an error.
 func ParseJSONStrict(data []byte) (any, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	return parseStrictValue(dec)
+	val, err := parseStrictValue(dec)
+	if err != nil {
+		return nil, err
+	}
+	// Trailing whitespace is not a token and dec.Token() would return io.EOF for it.
+	// Any other token (another value, a delimiter) is an error.
+	if dec.More() {
+		return nil, fmt.Errorf("%w after top-level value", ErrTrailingTokens)
+	}
+	return val, nil
 }
 
 // parseStrictValue walks a json.Decoder rejecting duplicate keys.

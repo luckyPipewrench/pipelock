@@ -6,6 +6,7 @@ package contract
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -335,5 +336,22 @@ func TestParseStrictFrom_ObjectKeyTokenError(t *testing.T) {
 	_, err = parseStrictFrom(dec, tok) // tok == json.Delim('{')
 	if err == nil {
 		t.Error("expected error from truncated object key read, got nil")
+	}
+}
+
+func TestParseJSONStrict_RejectsTrailingTokens(t *testing.T) {
+	t.Parallel()
+	_, err := ParseJSONStrict([]byte(`{"a":1} junk`))
+	if !errors.Is(err, ErrTrailingTokens) {
+		t.Errorf("got %v, want ErrTrailingTokens", err)
+	}
+}
+
+func TestParseJSONStrict_AcceptsTrailingWhitespace(t *testing.T) {
+	t.Parallel()
+	// Trailing whitespace (e.g., newline) is OK — it is not a token.
+	_, err := ParseJSONStrict([]byte("{\"a\":1}" + "\n"))
+	if err != nil {
+		t.Errorf("trailing whitespace rejected: %v", err)
 	}
 }

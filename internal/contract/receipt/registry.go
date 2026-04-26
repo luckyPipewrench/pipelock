@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,26 @@ var (
 	// ErrWrongReceiptVersion is returned when receipt_version is not 2.
 	ErrWrongReceiptVersion = errors.New("EvidenceReceipt requires receipt_version=2")
 )
+
+// decodeStrict unmarshals raw into target with strict semantics:
+//   - DisallowUnknownFields: rejects any key not present in the typed struct
+//   - UseNumber: preserves integer fidelity through round-trips
+//   - trailing tokens after the value are rejected (no junk after the payload)
+func decodeStrict(raw json.RawMessage, target any) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return errors.New("empty or null payload")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	dec.UseNumber()
+	if err := dec.Decode(target); err != nil {
+		return fmt.Errorf("strict decode: %w", err)
+	}
+	if dec.More() {
+		return fmt.Errorf("trailing tokens after payload")
+	}
+	return nil
+}
 
 // payloadValidators maps every known PayloadKind to its structural validator.
 var payloadValidators = map[PayloadKind]func(json.RawMessage) error{
@@ -70,7 +91,7 @@ const (
 
 func validateProxyDecision(raw json.RawMessage) error {
 	var p PayloadProxyDecisionStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: action_type (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("action_type", p.ActionType); err != nil {
@@ -93,7 +114,7 @@ func validateProxyDecision(raw json.RawMessage) error {
 
 func validateContractRatified(raw json.RawMessage) error {
 	var p PayloadContractRatifiedStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("contract_hash", p.ContractHash); err != nil {
@@ -113,7 +134,7 @@ func validateContractRatified(raw json.RawMessage) error {
 
 func validateContractPromoteIntent(raw json.RawMessage) error {
 	var p PayloadContractPromoteIntentStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: target_manifest_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("target_manifest_hash", p.TargetManifestHash); err != nil {
@@ -127,7 +148,7 @@ func validateContractPromoteIntent(raw json.RawMessage) error {
 
 func validateContractPromoteCommitted(raw json.RawMessage) error {
 	var p PayloadContractPromoteCommittedStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: target_manifest_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("target_manifest_hash", p.TargetManifestHash); err != nil {
@@ -151,7 +172,7 @@ func validateContractPromoteCommitted(raw json.RawMessage) error {
 
 func validateContractRollbackAuthorized(raw json.RawMessage) error {
 	var p PayloadContractRollbackAuthorizedStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: rollback_target_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("rollback_target_hash", p.RollbackTargetHash); err != nil {
@@ -165,7 +186,7 @@ func validateContractRollbackAuthorized(raw json.RawMessage) error {
 
 func validateContractRollbackCommitted(raw json.RawMessage) error {
 	var p PayloadContractRollbackCommittedStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: rollback_target_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("rollback_target_hash", p.RollbackTargetHash); err != nil {
@@ -189,7 +210,7 @@ func validateContractRollbackCommitted(raw json.RawMessage) error {
 
 func validateContractDemoted(raw json.RawMessage) error {
 	var p PayloadContractDemotedStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("contract_hash", p.ContractHash); err != nil {
@@ -212,7 +233,7 @@ func validateContractDemoted(raw json.RawMessage) error {
 
 func validateContractExpired(raw json.RawMessage) error {
 	var p PayloadContractExpiredStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("contract_hash", p.ContractHash); err != nil {
@@ -226,7 +247,7 @@ func validateContractExpired(raw json.RawMessage) error {
 
 func validateContractDrift(raw json.RawMessage) error {
 	var p PayloadContractDriftStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("contract_hash", p.ContractHash); err != nil {
@@ -240,7 +261,7 @@ func validateContractDrift(raw json.RawMessage) error {
 
 func validateShadowDelta(raw json.RawMessage) error {
 	var p PayloadShadowDeltaStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("contract_hash", p.ContractHash); err != nil {
@@ -263,7 +284,7 @@ func validateShadowDelta(raw json.RawMessage) error {
 
 func validateOpportunityMissing(raw json.RawMessage) error {
 	var p PayloadOpportunityMissingStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("contract_hash", p.ContractHash); err != nil {
@@ -286,7 +307,7 @@ func validateOpportunityMissing(raw json.RawMessage) error {
 
 func validateKeyRotation(raw json.RawMessage) error {
 	var p PayloadKeyRotationStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: key_id (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("key_id", p.KeyID); err != nil {
@@ -309,7 +330,7 @@ func validateKeyRotation(raw json.RawMessage) error {
 
 func validateContractRedactionRequest(raw json.RawMessage) error {
 	var p PayloadContractRedactionRequestStruct
-	if err := json.Unmarshal(raw, &p); err != nil {
+	if err := decodeStrict(raw, &p); err != nil {
 		return fmt.Errorf("%w: target_contract_hash (unmarshal: %w)", ErrPayloadMissingField, err)
 	}
 	if err := requireNonEmpty("target_contract_hash", p.TargetContractHash); err != nil {

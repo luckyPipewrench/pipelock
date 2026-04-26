@@ -1176,6 +1176,46 @@ func TestValidateContractRedactionRequest_InvalidJSON(t *testing.T) {
 	}
 }
 
+// --- strict decode: unknown-field and trailing-token rejection ---
+
+func TestValidateProxyDecision_RejectsUnknownField(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`{
+		"action_type":"connect","target":"x.com","verdict":"allow",
+		"transport":"forward","policy_sources":["a"],"winning_source":"a",
+		"future_field":"sneaky"
+	}`)
+	err := callValidator(t, receipt.PayloadProxyDecision, raw)
+	if err == nil {
+		t.Fatal("unknown field accepted")
+	}
+}
+
+func TestValidateContractRedactionRequest_RejectsUnknownField(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`{
+		"target_contract_hash":"sha256:abc",
+		"request_kind":"withdraw_public_proof",
+		"reason_class":"legal",
+		"authorization_id":"sha256:auth",
+		"tombstone_hash":"sha256:tomb",
+		"advisory_extension":"hidden"
+	}`)
+	err := callValidator(t, receipt.PayloadContractRedactionRequest, raw)
+	if err == nil {
+		t.Fatal("unknown field accepted")
+	}
+}
+
+func TestValidateProxyDecision_RejectsTrailingTokens(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`{"action_type":"connect","target":"x","verdict":"allow","transport":"forward","policy_sources":["a"],"winning_source":"a"} extra`)
+	err := callValidator(t, receipt.PayloadProxyDecision, raw)
+	if err == nil {
+		t.Fatal("trailing tokens accepted")
+	}
+}
+
 // callValidator dispatches to the validator for kind with raw payload.
 // It is intentionally wired through the exported EvidenceReceipt.Validate()
 // to exercise the full dispatch path.

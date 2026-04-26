@@ -127,7 +127,10 @@ func (b RecoveryAuthorizationBody) Validate() error {
 	if _, err := time.Parse(time.RFC3339, b.IssuedAt); err != nil {
 		return fmt.Errorf("%w: %w", ErrRecoveryIssuedAtFormat, err)
 	}
-	// TODO: caller must match TargetRosterHash against the actual loaded roster body in a future PR.
+	// Format-only check here. The binding to a specific roster body is
+	// enforced by LoadRecoveryAuthorization's expectedTargetRosterHash
+	// argument; runtime callers must pass a non-empty value to make that
+	// gate fire. Validate must stay deterministic for canonicalization.
 	if !targetRosterHashPattern.MatchString(b.TargetRosterHash) {
 		return fmt.Errorf("%w: got %q", ErrRecoveryTargetHashFormat, b.TargetRosterHash)
 	}

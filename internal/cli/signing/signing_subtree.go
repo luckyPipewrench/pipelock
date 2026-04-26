@@ -146,7 +146,7 @@ the signature, time window, lifetime ceiling, and structural validity.
 The optional --expected-target-roster-hash binds the authorization to a
 specific roster body. Empty (the default) skips the binding check, which
 is appropriate for offline ceremony review when the target hash is not yet
-known. Runtime callers SHOULD pass a non-empty value.
+known. Runtime callers MUST pass a non-empty value.
 Exit 0 on success, non-zero on failure.
 
 Examples:
@@ -171,7 +171,7 @@ Examples:
 				loaded.Body.Reason, loaded.Body.ExpiresAt, loaded.Body.OperatorIdentity)
 			if expectedTargetRosterHash == "" {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(),
-					"NOTE: target_roster_hash binding NOT verified (offline mode). Runtime callers must pass --expected-target-roster-hash.")
+					"NOTE: target_roster_hash binding NOT verified (offline mode). Runtime callers MUST pass --expected-target-roster-hash.")
 			}
 			return nil
 		},

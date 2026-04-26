@@ -89,6 +89,15 @@ const LayerA2AStream = "a2a_stream"
 // SSE streaming findings on every transport.
 const LayerSSEStream = "sse_stream"
 
+// LayerReverseResponseBlocked is the receipt layer label used for
+// reverse-proxy fail-closed response blocks that are not finding-driven:
+// compressed bodies the regex pipeline cannot inspect, oversize bodies
+// that exceed the scanning limit, and read errors. The Pattern field
+// carries the specific reason. Forward and intercept currently emit the
+// equivalent shape under "tls_response_blocked" / inline pattern strings;
+// "reverse" is split out so dashboards can pivot per transport.
+const LayerReverseResponseBlocked = "reverse_response_blocked"
+
 // SSEStreamLayer returns the layer label to use when emitting receipts
 // for a given dispatch outcome. A2A findings keep the existing
 // LayerA2AStream label so dashboards and alerts stay continuous; generic

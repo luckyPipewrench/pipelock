@@ -79,12 +79,33 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc := resolved.Scanner
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
 	}
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
+	if !scOK {
+		// Reload thrash beat the request to scanner acquisition. Fail
+		// closed AND attest the deny so an operator reconstructing the
+		// enforcement timeline from receipts sees the request resolved
+		// to a verdict rather than vanishing.
+		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportConnect, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     scannerLabelUnavailable,
+			Pattern:   scannerPatternUnavailable,
+			Transport: TransportConnect,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		http.Error(w, scannerPatternUnavailable, http.StatusServiceUnavailable)
+		return
+	}
 
 	// Strip inbound mediation envelope headers to prevent forgery.
 	envelope.StripInbound(r.Header)
@@ -557,12 +578,29 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc := resolved.Scanner
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
 	}
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
+	if !scOK {
+		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportForward, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     scannerLabelUnavailable,
+			Pattern:   scannerPatternUnavailable,
+			Transport: TransportForward,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		http.Error(w, scannerPatternUnavailable, http.StatusServiceUnavailable)
+		return
+	}
 	var forwardRedactionReport *redact.Report
 	withForwardRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
 		opts.RedactionProfile = cfg.Redaction.DefaultProfile

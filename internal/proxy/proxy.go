@@ -797,13 +797,21 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // Safe to call when the emitter is nil (no-op). The call is synchronous
 // through the recorder mutex — same cost as recordDecision. Errors are logged
 // but not propagated.
+//
+// On emit failure the wrapped error carries every receipt field so an
+// operator reconstructing the enforcement decision after a missing-receipt
+// incident can correlate the audit log entry to the action that was
+// supposed to be attested.
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
 		return
 	}
 	if err := e.Emit(opts); err != nil {
-		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID), err)
+		p.logger.LogError(audit.NewRequestLogContext(opts.RequestID),
+			fmt.Errorf("emit receipt action_id=%s verdict=%s layer=%s pattern=%q transport=%s method=%s target=%s agent=%s: %w",
+				opts.ActionID, opts.Verdict, opts.Layer, opts.Pattern,
+				opts.Transport, opts.Method, opts.Target, opts.Agent, err))
 	}
 }
 
@@ -1141,7 +1149,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	old := p.scannerPtr.Swap(sc)
 
 	if old != nil {
-		old.Close()
+		// Close drains in-flight scans before tearing down resources. Run
+		// in a goroutine so reload returns promptly: new traffic already
+		// uses sc, only stragglers from before the Swap are pinned to old.
+		go old.Close()
 	}
 
 	if prevEdSnap := p.editionPtr.Swap(&editionSnapshot{newEd}); prevEdSnap != nil {
@@ -1375,6 +1386,42 @@ func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.Resolv
 	defer p.reloadMu.RUnlock()
 	resolved, id := p.resolveAgentFromRequest(r)
 	return resolved, id, p.envelopeEmitterPtr.Load()
+}
+
+// pinResolvedScanner registers in-flight scanner use on a resolved-agent
+// snapshot, returning the pinned scanner, a release func, and ok=true
+// when acquisition succeeded. Mirrors ReverseProxyHandler.snapshotAndAcquire
+// for the fetch / forward / intercept / WebSocket handlers, which would
+// otherwise hold an unpinned reference to resolved.Scanner across a hot
+// reload and race the async drain in Proxy.Reload.
+//
+// On a reload race (BeginUse returns ok=false because Close has flipped
+// the closed flag) the helper falls through to p.scannerPtr.Load to
+// acquire the freshly published successor and retries up to twice more.
+// After three failures it returns ok=false and a no-op release; the
+// caller MUST fail the request closed in that branch rather than scan
+// against an unpinned closed instance. Three back-to-back acquisition
+// failures only happen under reload thrash that publishes a successor
+// faster than a request can register against it, which would itself be a
+// structural problem worth surfacing as a 503 rather than silently
+// scanning on torn-down state.
+//
+// A nil resolved or nil resolved.Scanner returns (nil, no-op, false)
+// so callers can defer release unconditionally and inspect ok.
+func (p *Proxy) pinResolvedScanner(resolved *edition.ResolvedAgent) (*scanner.Scanner, func(), bool) {
+	if resolved == nil || resolved.Scanner == nil {
+		return nil, func() {}, false
+	}
+	sc := resolved.Scanner
+	for range 3 {
+		if release, ok := sc.BeginUse(); ok {
+			return sc, release, true
+		}
+		if next := p.scannerPtr.Load(); next != nil {
+			sc = next
+		}
+	}
+	return nil, func() {}, false
 }
 
 func (p *Proxy) currentEnvelopeEmitter() *envelope.Emitter {
@@ -2006,12 +2053,33 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc := resolved.Scanner
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
 	}
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
+	if !scOK {
+		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportFetch, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     scannerLabelUnavailable,
+			Pattern:   scannerPatternUnavailable,
+			Transport: TransportFetch,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{
+			Blocked:    true,
+			Error:      scannerPatternUnavailable,
+			StatusCode: http.StatusServiceUnavailable,
+		})
+		return
+	}
 
 	// Create a per-request sub-logger tagged with the agent name
 	log := p.logger.With("agent", agent)

@@ -970,10 +970,23 @@ func RunHTTPListenerProxy(
 	// lifetime of this listener; reload updates policy knobs, not the
 	// listener's observed tool inventory.
 	toolBaseline := tools.NewToolBaseline()
+	// driftEdge detects detect_drift false→true transitions. When
+	// detect_drift transitions false→true via hot reload, the drift maps
+	// retained from before the disabled window are stale relative to the
+	// upstream's current tool inventory; ResetDriftState forces a re-seed
+	// on the next tools/list so post-flip traffic is evaluated against the
+	// new ground truth rather than pre-disable hashes. Other transitions
+	// are no-ops: true→true preserves a legitimate baseline, true→false
+	// leaves the maps intact so a subsequent re-enable can still detect
+	// drift across short toggles, false→false stays empty.
+	var driftEdge tools.DetectDriftRisingEdge
 	toolCfgFn := func() *tools.ToolScanConfig {
 		cfg := opts.toolCfg()
 		if cfg == nil || cfg.Action == "" {
 			return nil
+		}
+		if driftEdge.Observe(cfg.DetectDrift) {
+			toolBaseline.ResetDriftState()
 		}
 		return &tools.ToolScanConfig{
 			Baseline:                toolBaseline,

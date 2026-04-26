@@ -856,10 +856,21 @@ func (s *Server) Start(ctx context.Context) error {
 		// when the operator did not configure them; the effective cfg
 		// already reflects those defaults.
 		mcpToolBaseline := tools.NewToolBaseline()
+		// mcpDriftEdge detects detect_drift false→true transitions for
+		// the server-level tool baseline shared across stdio / WS / forward
+		// MCP sessions. On false→true reload, ResetDriftState clears stale
+		// drift hashes so a subsequent session does not evaluate post-flip
+		// tools/list against pre-disable ground truth. See proxy_http.go
+		// for the equivalent detector on the per-listener baseline.
+		var mcpDriftEdge tools.DetectDriftRisingEdge
 		mcpScannerFn := func() *scanner.Scanner { return s.proxy.ScannerPtr().Load() }
 		mcpInputCfgFn := func() *mcp.InputScanConfig { return buildMCPInputCfg(s.proxy.CurrentConfig()) }
 		mcpToolCfgFn := func() *tools.ToolScanConfig {
-			return buildMCPToolCfg(s.proxy.CurrentConfig(), s.currentMCPToolExtraPoison(), mcpToolBaseline)
+			cfg := buildMCPToolCfg(s.proxy.CurrentConfig(), s.currentMCPToolExtraPoison(), mcpToolBaseline)
+			if cfg != nil && mcpDriftEdge.Observe(cfg.DetectDrift) {
+				mcpToolBaseline.ResetDriftState()
+			}
+			return cfg
 		}
 		mcpRedirectRTFn := func() *mcp.RedirectRuntime {
 			c := s.proxy.CurrentConfig()
@@ -996,6 +1007,7 @@ func (s *Server) Start(ctx context.Context) error {
 			s.logger, s.metrics, s.killswitch, rpCaptureObs, s.proxy.ShieldEngine(),
 		)
 		rpHandler.SetEnvelopeEmitter(s.proxy.EnvelopeEmitterPtr())
+		rpHandler.SetReceiptEmitter(s.proxy.ReceiptEmitterPtr())
 		rpHandler.SetReloadLock(s.proxy.ReloadLock())
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())
 

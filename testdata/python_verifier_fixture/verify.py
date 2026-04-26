@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
 SIG_PREFIX = "ed25519:"
+FINGERPRINT_ALGORITHM = "sha256"
 
 
 def load_test_pubkey(golden_dir: Path) -> bytes:
@@ -114,6 +115,36 @@ def verify_evidence_receipt(fixture: Path, pubkey: bytes) -> tuple[bool, str]:
         return False, f"verify failed: {e}"
 
 
+def fingerprint(pubkey_bytes: bytes) -> str:
+    """Pipelock canonical key fingerprint: "sha256:" + lowercase hex of
+    sha256 over the raw 32-byte ed25519 public key.
+
+    Cross-implementation: the Go Fingerprint() function computes the same
+    value byte for byte. Changing this format requires a roster
+    schema_version bump.
+    """
+    if len(pubkey_bytes) != 32:
+        raise ValueError(
+            f"expected 32-byte ed25519 public key, got {len(pubkey_bytes)}"
+        )
+    import hashlib
+
+    return FINGERPRINT_ALGORITHM + ":" + hashlib.sha256(pubkey_bytes).hexdigest()
+
+
+def verify_fingerprint(pubkey_hex: str, expected_fingerprint: str) -> None:
+    """Decode a hex public key, compute its fingerprint, and compare to expected.
+
+    Raises ValueError on mismatch or invalid input.
+    """
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
+    computed = fingerprint(pubkey_bytes)
+    if computed != expected_fingerprint:
+        raise ValueError(
+            f"fingerprint mismatch: computed {computed}, expected {expected_fingerprint}"
+        )
+
+
 # Map fixture filename -> verifier function.
 VERIFIERS = {
     "valid_contract.json": verify_envelope,
@@ -159,5 +190,28 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+def smoke_test_fingerprint() -> int:
+    """Standalone smoke test for the fingerprint function.
+
+    Uses the RFC 8032 section 7.1 test vector 1 public key.
+    The expected value must match the Go rfcTestPubFingerprint constant.
+    """
+    rfc_pubkey_hex = (
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    )
+    expected = (
+        "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+    )
+    try:
+        verify_fingerprint(rfc_pubkey_hex, expected)
+        print(f"OK fingerprint: {expected}")
+        return 0
+    except ValueError as e:
+        print(f"FAIL fingerprint: {e}")
+        return 1
+
+
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--fingerprint":
+        sys.exit(smoke_test_fingerprint())
     sys.exit(main(sys.argv))

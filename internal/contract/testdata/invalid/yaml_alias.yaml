@@ -1,0 +1,3 @@
+defaults: &d
+  fidelity: medium
+copy: *d

@@ -1,0 +1,5 @@
+defaults: &d
+  fidelity: medium
+selector:
+  <<: *d
+  agent: buster

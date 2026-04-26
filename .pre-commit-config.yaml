@@ -6,7 +6,7 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^charts/.*/templates/
+        exclude: ^(charts/.*/templates/|internal/contract/testdata/invalid/)
       - id: check-merge-conflict
       - id: detect-private-key
       - id: check-added-large-files

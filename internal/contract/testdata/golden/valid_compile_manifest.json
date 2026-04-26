@@ -1,0 +1,27 @@
+{
+  "body": {
+    "schema_version": 1,
+    "contract_hash": "sha256:c1",
+    "compile_started_at": "2026-04-25T22:00:00Z",
+    "compile_finished_at": "2026-04-25T22:00:42Z",
+    "pipelock_version": "v2.4.0-test",
+    "pipelock_build_sha": "test",
+    "go_version": "go1.26.0",
+    "module_digest_root": "sha256:420b0c21d529c660ef95ddb5686e20bf16371f27803c77bdd676977d94deeb72",
+    "module_digests": {
+      "github.com/luckyPipewrench/pipelock": "sha256:test"
+    },
+    "compile_config_hash": "sha256:cfg",
+    "inputs": [
+      {
+        "path": "test.jsonl",
+        "sha256": "sha256:i1",
+        "event_count": 100
+      }
+    ],
+    "observation_window_root": "sha256:obswin",
+    "signer_key_id": "contract-compile-key-v1-test",
+    "key_purpose": "contract-compile-signing"
+  },
+  "signature": "ed25519:c627eee40d26b5c6ec523f858f9160fdf09f6daa852e0f07ede3caafcbbfef0230e9608777bff8f01c8ca9d9e2cf1ca914c501af52d13b5803182c3164b4170d"
+}

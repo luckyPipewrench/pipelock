@@ -1,0 +1,25 @@
+{
+  "record_type": "evidence_receipt_v2",
+  "receipt_version": 2,
+  "payload_kind": "proxy_decision",
+  "event_id": "01F8MECHZX3TBDSZ7XRADM79XV",
+  "timestamp": "2026-04-25T22:00:00Z",
+  "signature": {
+    "signer_key_id": "receipt-signing-test",
+    "key_purpose": "receipt-signing",
+    "algorithm": "ed25519",
+    "signature": "ed25519:30f45377027171fa71dd57c0c6c4b597c4f3e50e5681f006dde449578d7ee261d43d5dc63f02fce36ebeab902149e5b981bb0690a33eadb819b234a81eafe204"
+  },
+  "chain_seq": 1,
+  "chain_prev_hash": "sha256:0",
+  "payload": {
+    "action_type": "connect",
+    "target": "example.com",
+    "verdict": "allow",
+    "transport": "forward",
+    "policy_sources": [
+      "test"
+    ],
+    "winning_source": "test"
+  }
+}

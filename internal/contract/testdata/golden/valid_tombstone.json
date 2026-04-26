@@ -1,0 +1,13 @@
+{
+  "body": {
+    "schema_version": 1,
+    "tombstone": true,
+    "prior_contract_hash": "sha256:prev-c",
+    "redacted_at": "2026-04-25T22:00:00Z",
+    "redaction_authorization_id": "sha256:auth",
+    "signer_key_id": "test-key",
+    "key_purpose": "contract-activation-signing",
+    "data_class_root": "internal"
+  },
+  "signature": "ed25519:ab27504ae5c5096fe15447da13d1108d8f56ea074ca9ce919bc0e4f94e0104c7befb2b2ed75892f8cf35cfb8d4f99b3f4f5face765fcd531078f91b4894c2402"
+}

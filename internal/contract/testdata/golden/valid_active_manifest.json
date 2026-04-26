@@ -1,0 +1,32 @@
+{
+  "body": {
+    "schema_version": 1,
+    "manifest_kind": "activation_manifest",
+    "generation": 1,
+    "prior_manifest_hash": "sha256:0",
+    "selector_set_hash": "sha256:set-test",
+    "environment": {
+      "id": "test",
+      "tenant": "test",
+      "deployment_id": "test"
+    },
+    "selectors": [
+      {
+        "selector_id": "sha256:sel-1",
+        "agent": "buster",
+        "contract_hash": "sha256:c1"
+      }
+    ],
+    "history_root": "contracts/history/",
+    "signed_at": "2026-04-25T22:00:00Z"
+  },
+  "signatures": [
+    {
+      "key_id": "test-key",
+      "principal": "test",
+      "key_purpose": "contract-activation-signing",
+      "algorithm": "ed25519",
+      "signature": "ed25519:918d6f8eb08499ef02555be1410dc03d598f8cd7713f4b009ba5adf110e157bed6c9050b41134d277b9382c993f38f6f53776e09a25cf752897fa7f34ebc2309"
+    }
+  ]
+}

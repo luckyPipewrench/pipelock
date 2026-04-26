@@ -22,6 +22,7 @@ func TestParseYAMLStrict_Rejects(t *testing.T) {
 		{"alias", "yaml_alias.yaml", ErrYAMLAliasOrAnchor},
 		{"merge key", "yaml_merge_key.yaml", ErrYAMLMergeKey},
 		{"custom tag", "yaml_custom_tag.yaml", ErrYAMLCustomTag},
+		{"long-form tag", "yaml_longform_tag.yaml", ErrYAMLCustomTag},
 		{"multi-doc", "yaml_multi_doc.yaml", ErrYAMLMultiDoc},
 	}
 	for _, tc := range cases {

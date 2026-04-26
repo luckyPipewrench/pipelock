@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/publicsuffix"
@@ -165,6 +166,39 @@ type Scanner struct {
 	seedVerifyChecksum         bool
 	dlpWarnHookMu              sync.RWMutex
 	dlpWarnHook                func(ctx context.Context, patternName, severity string)
+
+	// Lifecycle: BeginUse / Close coordination. Once Close starts, BeginUse
+	// returns ok=false and callers must re-Load the proxy's scannerPtr to
+	// obtain the swapped-in scanner. Close blocks until inUse drains so an
+	// in-flight Scan never sees a half-torn-down scanner. Today only ticker
+	// goroutines are stopped, but future additions (sqlite handles, file
+	// descriptors) make this drain a hard prerequisite for safe reload.
+	//
+	// drained transitions false→true exactly once at the end of Close,
+	// after the rateLimiter and dataBudget have been torn down. closed is
+	// set BEFORE drain begins, so Closed() and Drained() are distinct
+	// signals: Closed reports "Close was initiated", Drained reports
+	// "Close has completed teardown".
+	closeMu sync.RWMutex
+	closed  bool
+	inUse   sync.WaitGroup
+	drained atomic.Bool
+}
+
+// scannerCloseDrainTimeout caps how long Close() waits for in-flight scans
+// to drain before forcing teardown of internal resources. Prevents a hung
+// upstream from leaking the scanner indefinitely on a hot reload. Override
+// only in tests via SetCloseDrainTimeoutForTest.
+var scannerCloseDrainTimeout = 30 * time.Second
+
+// SetCloseDrainTimeoutForTest overrides scannerCloseDrainTimeout for the
+// duration of a test and returns a restore function. Tests use a short
+// timeout to assert the drain-timeout fail-safe without slowing the suite.
+// Not safe for parallel tests touching this knob.
+func SetCloseDrainTimeoutForTest(d time.Duration) func() {
+	prev := scannerCloseDrainTimeout
+	scannerCloseDrainTimeout = d
+	return func() { scannerCloseDrainTimeout = prev }
 }
 
 // SetDLPWarnHook sets the callback for warn-mode DLP matches.
@@ -504,15 +538,100 @@ func (s *Scanner) IsInAPIAllowlist(hostname string) bool {
 	return false
 }
 
-// Close releases scanner resources, including stopping the rate limiter
-// cleanup goroutine. Safe to call multiple times.
+// Close marks the scanner unusable for new BeginUse callers and tears
+// down internal resources once every active BeginUse has invoked release.
+// Idempotent; further calls are no-ops.
+//
+// Drain semantics: the call site (typically Proxy.Reload's `go old.Close()`)
+// gets scannerCloseDrainTimeout to wait for in-flight users. If drain
+// completes inside that window, teardown runs synchronously and Close
+// returns once Drained is true. If the timeout fires (a hung scan, an
+// adversarial slow-loris client), Close hands teardown off to a detached
+// goroutine that waits indefinitely for inUse to reach zero before
+// closing the rateLimiter and dataBudget tickers. The forced-teardown
+// path is gone: a hung user can no longer end up calling Scan on a
+// scanner whose ticker resources have been torn down underneath it.
+//
+// Trade-off: a permanently-hung scan retains the prior scanner forever.
+// That is preferable to fail-open enforcement; the proxy's reload-mu
+// guard plus the maxBaselineTools cap bound exposure, and the new
+// scanner already serves all post-swap traffic so the orphan affects
+// only the single hung request.
 func (s *Scanner) Close() {
+	s.closeMu.Lock()
+	if s.closed {
+		s.closeMu.Unlock()
+		return
+	}
+	s.closed = true
+	s.closeMu.Unlock()
+
+	drainDone := make(chan struct{})
+	go func() {
+		s.inUse.Wait()
+		close(drainDone)
+	}()
+	select {
+	case <-drainDone:
+		s.tearDown()
+	case <-time.After(scannerCloseDrainTimeout):
+		// Drain timed out. Do NOT tear down ticker resources mid-scan;
+		// hand off to a detached goroutine that waits indefinitely for
+		// the hung user to release. Drained() flips only once that
+		// goroutine actually completes teardown.
+		go func() {
+			s.inUse.Wait()
+			s.tearDown()
+		}()
+	}
+}
+
+// tearDown stops the cleanup goroutines on rateLimiter and dataBudget and
+// flips drained=true. Safe to call exactly once per Close transition.
+func (s *Scanner) tearDown() {
 	if s.rateLimiter != nil {
 		s.rateLimiter.Close()
 	}
 	if s.dataBudget != nil {
 		s.dataBudget.Close()
 	}
+	s.drained.Store(true)
+}
+
+// BeginUse registers an in-flight scanner user. Callers MUST invoke the
+// returned release func when finished (defer is the canonical idiom).
+// Returns ok=false if Close has already been initiated; callers in that
+// case must re-Load the proxy's scanner pointer to acquire the freshly
+// swapped-in instance and retry. Cheap: two atomics + a WaitGroup Add on
+// the happy path.
+func (s *Scanner) BeginUse() (release func(), ok bool) {
+	s.closeMu.RLock()
+	if s.closed {
+		s.closeMu.RUnlock()
+		return nil, false
+	}
+	s.inUse.Add(1)
+	s.closeMu.RUnlock()
+	return s.inUse.Done, true
+}
+
+// Closed reports whether Close has been initiated. Used by tests to assert
+// hot-reload drained the prior scanner. Production callers should rely on
+// BeginUse's ok return instead.
+func (s *Scanner) Closed() bool {
+	s.closeMu.RLock()
+	defer s.closeMu.RUnlock()
+	return s.closed
+}
+
+// Drained reports whether Close has finished its teardown — drain wait
+// returned (or timed out), and the rateLimiter / dataBudget cleanup
+// goroutines have been signaled to stop. Distinct from Closed, which
+// flips at the start of Close before drain runs. Tests use Drained to
+// assert the close goroutine actually completed; production code has no
+// reason to read this.
+func (s *Scanner) Drained() bool {
+	return s.drained.Load()
 }
 
 // RecordRequest records response data for per-domain data budget tracking.

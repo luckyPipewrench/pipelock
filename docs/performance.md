@@ -193,7 +193,7 @@ Response scanning is the most CPU-intensive path. At high throughput with large 
 | Shared proxy (small org) | 100-1,000 req/sec | 0.5 CPU, 128MB RAM |
 | Platform deployment | 10,000+ req/sec | 2+ CPU, 256MB RAM |
 
-The binary is ~18MB static (release build with symbol stripping). Memory usage is dominated by the DLP regex compilation (~40MB RSS at idle with default patterns) and scales linearly with concurrent connections, not pattern count.
+The binary is ~20MB static (release build with symbol stripping). Memory usage is dominated by the DLP regex compilation (~40MB RSS at idle with default patterns) and scales linearly with concurrent connections, not pattern count.
 
 ## Design Decisions That Affect Performance
 

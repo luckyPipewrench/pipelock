@@ -122,10 +122,28 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc := resolved.Scanner
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
+	}
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
+	if !scOK {
+		_, requestID := requestMeta(r)
+		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportWS, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     scannerLabelUnavailable,
+			Pattern:   scannerPatternUnavailable,
+			Transport: TransportWS,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		http.Error(w, scannerPatternUnavailable, http.StatusServiceUnavailable)
+		return
 	}
 
 	if !cfg.WebSocketProxy.Enabled {

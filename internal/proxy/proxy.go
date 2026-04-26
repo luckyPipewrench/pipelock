@@ -2053,21 +2053,33 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// and resolveAgent() could read different registries.
 	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
-	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
-	defer releaseScanner()
-	if !scOK {
-		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{
-			Blocked:    true,
-			Error:      "scanner unavailable during reload",
-			StatusCode: http.StatusServiceUnavailable,
-		})
-		return
-	}
 	agent := id.Name
 	if agent == "" {
 		agent = agentAnonymous
 	}
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
+	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
+	defer releaseScanner()
+	if !scOK {
+		p.recordDecision(config.ActionBlock, scannerLabelUnavailable, scannerPatternUnavailable, TransportFetch, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     scannerLabelUnavailable,
+			Pattern:   scannerPatternUnavailable,
+			Transport: TransportFetch,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeJSON(w, http.StatusServiceUnavailable, FetchResponse{
+			Blocked:    true,
+			Error:      scannerPatternUnavailable,
+			StatusCode: http.StatusServiceUnavailable,
+		})
+		return
+	}
 
 	// Create a per-request sub-logger tagged with the agent name
 	log := p.logger.With("agent", agent)

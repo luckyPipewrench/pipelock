@@ -250,9 +250,24 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if !scOK {
 		// Reload thrash or no live scanner. Fail closed at the request
 		// level rather than scan on an unpinned, possibly-closed scanner.
+		// Attest the deny so an operator reconstructing the enforcement
+		// timeline from receipts sees the request resolved to a verdict.
+		_, requestID := requestMeta(r)
+		agent, _ := r.Context().Value(ctxKeyAgent).(string)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     scannerLabelUnavailable,
+			Pattern:   scannerPatternUnavailable,
+			Transport: "reverse",
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
-			"scanner unavailable during reload")
+			scannerPatternUnavailable)
 		return
 	}
 	cfg := snap.cfg

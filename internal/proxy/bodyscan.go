@@ -57,6 +57,19 @@ const (
 	// scannerLabelRedaction is the scanner label for fail-closed request-side
 	// redaction gates and redaction-derived block receipts.
 	scannerLabelRedaction = "redaction"
+
+	// scannerLabelUnavailable is the scanner label for fail-closed denies
+	// produced when scanner acquisition fails under reload thrash. The
+	// helpers (pinResolvedScanner, snapshotAndAcquire) return ok=false
+	// after three failed BeginUse attempts so callers can attest the
+	// deny rather than silently scanning on a closed instance.
+	scannerLabelUnavailable = "scanner_unavailable"
+
+	// scannerPatternUnavailable is the human-readable Pattern emitted on
+	// scanner_unavailable receipts and in the 503 response body so
+	// operators reconstructing the enforcement timeline see the same
+	// reason in the audit log, the receipt, and the wire response.
+	scannerPatternUnavailable = "scanner unavailable during reload"
 )
 
 // isDomainExempt checks if a hostname matches any pattern in a domain

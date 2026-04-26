@@ -272,20 +272,38 @@ func (tb *ToolBaseline) ResetDriftState() {
 // rising-edge transition in a flurry of concurrent reloads will trigger
 // exactly one true return.
 //
-// `initialized` is set on the first Observe call so the helper can
-// distinguish "first observation of true at startup" (which is NOT a
-// transition; baseline already matches the operator-intended state) from
-// "false→true transition via hot reload" (which IS the rising edge that
-// must reseed drift state). Without this gate, an initial config load
-// with detect_drift=true would clobber any pre-seeded baseline. The
-// current code path uses `tools.NewToolBaseline()` per listener so the
-// initial baseline is empty and the discarded-Reset is a no-op, but the
-// gate makes intent explicit and survives any future code that
-// pre-populates a baseline (golden-vector seeds, persisted state).
+// State is encoded in a single atomic Uint32 so initialization and the
+// previous-value flag stay composed under concurrent Observe calls. The
+// earlier two-Bool implementation had a race where a concurrent pair of
+// initial Observe(true) calls could fire a spurious rising edge: one
+// goroutine could see prev=false from its Swap and then lose the
+// initialization Swap to a peer, ending up with curr=true && !prev=true,
+// returning a transition that did not happen. Single-Swap state machine
+// closes that.
+//
+// The initialization gate distinguishes "first observation of true at
+// startup" (which is NOT a transition; baseline already matches the
+// operator-intended state) from "false→true transition via hot reload"
+// (which IS the rising edge that must reseed drift state). Without this
+// gate, an initial config load with detect_drift=true would clobber any
+// pre-seeded baseline. The current code path uses tools.NewToolBaseline
+// per listener so the initial baseline is empty and the discarded-Reset
+// is a no-op, but the gate makes intent explicit and survives any future
+// code that pre-populates a baseline (golden-vector seeds, persisted
+// state).
 type DetectDriftRisingEdge struct {
-	initialized atomic.Bool
-	prev        atomic.Bool
+	// state encoding:
+	//   driftEdgeStateUninit (0): never observed
+	//   driftEdgeStatePrevFalse (1): last observed value was false
+	//   driftEdgeStatePrevTrue  (2): last observed value was true
+	state atomic.Uint32
 }
+
+const (
+	driftEdgeStateUninit    uint32 = 0
+	driftEdgeStatePrevFalse uint32 = 1
+	driftEdgeStatePrevTrue  uint32 = 2
+)
 
 // Observe records the new detect_drift value and reports whether it was a
 // rising edge (false→true). The first call records the initial state and
@@ -293,14 +311,15 @@ type DetectDriftRisingEdge struct {
 // false→true transition. Callers fire ResetDriftState on the associated
 // baseline when this returns true.
 func (d *DetectDriftRisingEdge) Observe(curr bool) bool {
-	prev := d.prev.Swap(curr)
-	// First observation: initialize without claiming a transition. Any
-	// concurrent racer that wins the Swap above will see initialized=true
-	// on its second pass and proceed normally.
-	if !d.initialized.Swap(true) {
+	next := driftEdgeStatePrevFalse
+	if curr {
+		next = driftEdgeStatePrevTrue
+	}
+	prev := d.state.Swap(next)
+	if prev == driftEdgeStateUninit {
 		return false
 	}
-	return curr && !prev
+	return prev == driftEdgeStatePrevFalse && curr
 }
 
 // SetKnownTools sets the session baseline from a tools/list response.

@@ -4,6 +4,8 @@
 package tools
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -111,6 +113,38 @@ func TestDetectDriftRisingEdge_StateMatrix(t *testing.T) {
 				t.Errorf("second Observe(%v) = %v, want %v", tc.second, got, tc.expectSecondEdge)
 			}
 		})
+	}
+}
+
+// TestDetectDriftRisingEdge_ConcurrentInitDoesNotFireSpurious is the
+// regression guard for the dual-atomic race that motivated moving to a
+// single Uint32 state machine. With the previous (initialized + prev)
+// implementation, two concurrent Observe(true) calls from a fresh helper
+// could fire a spurious rising edge if one goroutine read `prev=false`
+// from its Swap and then lost the initialization Swap to the other.
+// Run a swarm of concurrent Observe(true) calls and assert AT MOST one
+// returns true (the genuine first transition, which the initialization
+// gate also suppresses, so really the count must be zero).
+func TestDetectDriftRisingEdge_ConcurrentInitDoesNotFireSpurious(t *testing.T) {
+	const goroutines = 64
+	var d DetectDriftRisingEdge
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	hitCount := atomic.Int32{}
+	start := make(chan struct{})
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			<-start
+			if d.Observe(true) {
+				hitCount.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := hitCount.Load(); got != 0 {
+		t.Errorf("concurrent initial Observe(true) fired %d rising-edge returns, want 0 (initialization must always suppress)", got)
 	}
 }
 

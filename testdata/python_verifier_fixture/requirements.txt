@@ -1,0 +1,2 @@
+cryptography>=42.0.0
+jcs>=0.2.1

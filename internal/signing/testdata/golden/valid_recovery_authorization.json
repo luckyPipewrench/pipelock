@@ -1,0 +1,11 @@
+{
+  "body": {
+    "schema_version": 1,
+    "reason": "roster root key compromised",
+    "expires_at": "2026-04-26T13:30:00Z",
+    "target_roster_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "operator_identity": "ops@example.com",
+    "issued_at": "2026-04-26T13:00:00Z"
+  },
+  "signature": "ed25519:87f9600b25ebde8975fea0e6177093c261edbeac7a8d8835c05b08ed630c9ce6c75fb3ee68dc1bdd1fbf02b1760acca53a72c5542a14f13a7f0e29b06c7b2b0a"
+}

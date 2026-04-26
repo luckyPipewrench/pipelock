@@ -66,6 +66,7 @@ jobs:
             examples/quickstart/
             internal/contract/testdata/golden/
             internal/contract/testdata/invalid/
+            internal/signing/testdata/
 
   test:
     needs: [security-scan]

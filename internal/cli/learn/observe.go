@@ -19,6 +19,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// loadConfig is the package-level seam for cliutil.LoadConfigOrDefault.
+// Tests override it to inject a config without going through disk.
+var loadConfig = cliutil.LoadConfigOrDefault
+
 // errNoCaptureDir is returned when neither --capture-dir nor
 // learn.capture_dir is set. Callers and tests check for this via
 // errors.Is.
@@ -60,22 +64,26 @@ func observeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "observe",
 		Short: "Run the proxy in observation mode for learn-and-lock",
-		Long: `Run the proxy with the learn observation pipeline enabled.
+		Long: `Run the proxy in observation mode for the learn-and-lock pipeline.
 
 The proxy listens for traffic, scans it through the normal pipeline, and
-writes recorder JSONL evidence into --capture-dir. Each entry carries an
-event_kind classifier sourced from the action verb at scan time. The
-classification metadata feeds the compile stage (later phase) and is the
-input the unclassified-rate ship gate measures against.
+writes hash-chained recorder JSONL evidence into --capture-dir. Each entry
+carries an event_kind classifier on the recorder envelope and an
+action_class field on the capture summary; both feed the compile stage
+that lands in a follow-up.
 
-Privacy filtering is on by default: regulated-class fields are dropped
-before reaching the recorder; internal-class fields are salt-hashed (see
-learn.privacy.salt_source); sensitive-class fields require an explicit
-opt-in annotation in the originating contract.
+Today this command is a thin facade over 'pipelock run --capture-output':
+it validates that --capture-dir or learn.capture_dir is set and absolute,
+emits a session-id banner, and hands off to the same runtime. The
+'learn:' config block (enabled, capture_dir, privacy.salt_source,
+privacy.public_allowlist_default) is structural plumbing: the data-class
+enforcement, salt-hashing, and regulated-data blocking the privacy
+package implements wire through in the next phase, when the compile-time
+classifier is available to attach data classes to observation events.
+Until that wiring lands, this command produces the same recorder output
+as 'pipelock run --capture-output' plus the new event_kind metadata.
 
-This subcommand is a thin facade over 'pipelock run --capture-output': it
-loads the configured config, ensures the learn block is enabled, and
-delegates to the same runtime. The proxy exits cleanly on SIGINT/SIGTERM.`,
+The proxy exits cleanly on SIGINT/SIGTERM.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runObserve(cmd, configPath, captureDir)
@@ -89,12 +97,19 @@ delegates to the same runtime. The proxy exits cleanly on SIGINT/SIGTERM.`,
 	return cmd
 }
 
-// runObserve loads the config, derives the effective capture dir, mutates
-// the config to enable the learn pipeline, and hands off to observeRunner.
+// runObserve loads the config, derives the effective capture dir, and hands
+// off to observeRunner. The loaded config is consulted to read
+// learn.capture_dir as a fallback when --capture-dir is not supplied; the
+// runtime reloads opts.ConfigFile from disk and is the source of truth for
+// every other field. The CLI does NOT mutate cfg — any such mutation would
+// be silently dropped on the runtime's reload, and the privacy enforcer
+// surface (LoadSalt + Apply) is not yet wired into the capture writer
+// path, so a "we set learn.enabled=true" claim would overstate behavior.
+//
 // All non-runtime logic lives in pure helpers so tests can exercise it
 // without starting the proxy.
 func runObserve(cmd *cobra.Command, configPath, captureDir string) error {
-	cfg, err := cliutil.LoadConfigOrDefault(configPath)
+	cfg, err := loadConfig(configPath)
 	if err != nil {
 		return err
 	}
@@ -103,8 +118,6 @@ func runObserve(cmd *cobra.Command, configPath, captureDir string) error {
 	if err != nil {
 		return err
 	}
-
-	enableLearnObservation(cfg, effectiveDir)
 
 	sessionID := uuid.NewString()
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(),
@@ -135,15 +148,6 @@ func resolveCaptureDir(cfg *config.Config, flagDir string) (string, error) {
 		return "", fmt.Errorf("%w: %q", errRelativeCaptureDir, effective)
 	}
 	return effective, nil
-}
-
-// enableLearnObservation mutates cfg so that the learn observation
-// pipeline is on with the resolved capture dir. The runtime config is
-// the source of truth for downstream components (recorder, privacy
-// enforcer, metrics); a thin facade like observeCmd must not bypass it.
-func enableLearnObservation(cfg *config.Config, captureDir string) {
-	cfg.Learn.Enabled = true
-	cfg.Learn.CaptureDir = captureDir
 }
 
 // runObserveServer is the production observeRunner. It builds a Server

@@ -161,30 +161,44 @@ func TestResolveCaptureDir_RejectsRelativeFromConfig(t *testing.T) {
 	}
 }
 
-func TestEnableLearnObservation_SetsFields(t *testing.T) {
-	cfg := config.Defaults()
-	if cfg.Learn.Enabled {
-		t.Fatal("precondition: defaults must have Learn.Enabled=false")
+// TestRunObserve_DoesNotMutateConfig proves runObserve does NOT mutate the
+// loaded config. The runtime reloads opts.ConfigFile from disk, so a CLI-side
+// mutation would be silently dropped on construction; rather than create a
+// false promise of "the runtime will see learn.enabled=true", the CLI relies
+// on opts.CaptureOutput as the single source of truth and leaves cfg untouched.
+func TestRunObserve_DoesNotMutateConfig(t *testing.T) {
+	prevLoad := loadConfig
+	t.Cleanup(func() { loadConfig = prevLoad })
+
+	const originalDir = "/tmp/from-config"
+
+	var sharedCfg *config.Config
+	loadConfig = func(string) (*config.Config, error) {
+		// Same pointer returned every call so the test can witness the
+		// state runObserve hands to opts.
+		if sharedCfg == nil {
+			sharedCfg = config.Defaults()
+			sharedCfg.Learn.Enabled = false
+			sharedCfg.Learn.CaptureDir = originalDir
+		}
+		return sharedCfg, nil
 	}
 
-	enableLearnObservation(cfg, testCaptureDirAbs)
+	withStubRunner(t, nil)
 
-	if !cfg.Learn.Enabled {
-		t.Errorf("expected Learn.Enabled=true after enable")
+	cmd := observeCmd()
+	cmd.SetOut(&strings.Builder{})
+	cmd.SetErr(&strings.Builder{})
+	cmd.SetArgs([]string{"--capture-dir", testCaptureDirAbs})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if cfg.Learn.CaptureDir != testCaptureDirAbs {
-		t.Errorf("expected CaptureDir=%q, got %q", testCaptureDirAbs, cfg.Learn.CaptureDir)
+
+	if sharedCfg.Learn.Enabled {
+		t.Errorf("Learn.Enabled mutated: got true, want false")
 	}
-}
-
-func TestEnableLearnObservation_OverridesConfigDir(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Learn.CaptureDir = "/tmp/old-dir"
-
-	enableLearnObservation(cfg, testCaptureDirAbs)
-
-	if cfg.Learn.CaptureDir != testCaptureDirAbs {
-		t.Errorf("enable should overwrite stale config dir; got %q", cfg.Learn.CaptureDir)
+	if sharedCfg.Learn.CaptureDir != originalDir {
+		t.Errorf("Learn.CaptureDir mutated: got %q, want %q", sharedCfg.Learn.CaptureDir, originalDir)
 	}
 }
 

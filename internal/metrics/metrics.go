@@ -101,6 +101,12 @@ type Metrics struct {
 	// Capture (capture.go).
 	CaptureDropped prometheus.Counter
 
+	// Learn-and-lock observation pipeline (learn.go).
+	learnObservationEvents    *prometheus.CounterVec
+	learnRegulatedDataBlocked *prometheus.CounterVec
+	learnUnclassifiedActions  prometheus.Counter
+	learnUnclassifiedRate     prometheus.Gauge
+
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex
 	startTime              time.Time
@@ -159,6 +165,7 @@ func New() *Metrics {
 	m.registerKillSwitchMetrics(reg)
 	m.registerShieldMetrics(reg)
 	m.registerCaptureMetrics(reg)
+	m.registerLearnMetrics(reg)
 
 	return m
 }

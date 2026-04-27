@@ -204,6 +204,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: recorderSessionID,
 		Type:      recorderEntryType,
+		EventKind: string(ar.ActionType),
 		Transport: opts.Transport,
 		Summary:   fmt.Sprintf("receipt: %s %s %s", ar.Verdict, ar.ActionType, ar.Transport),
 		Detail:    json.RawMessage(receiptJSON),
@@ -304,6 +305,7 @@ func (e *Emitter) EmitTranscriptRoot(sessionID string) error {
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: recorderSessionID,
 		Type:      transcriptRootEntryType,
+		EventKind: transcriptRootEntryType,
 		Summary:   fmt.Sprintf("transcript_root: %d receipts, root=%s", root.ReceiptCount, root.RootHash[:16]),
 		Detail:    root,
 	}); err != nil {

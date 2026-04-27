@@ -59,6 +59,12 @@ var (
 	ErrRecoveryLifetimeTooLong      = errors.New("recovery authorization lifetime (expires_at - issued_at) exceeds 1h ceiling")
 	ErrRecoveryExpiresBeforeIssued  = errors.New("recovery authorization expires_at is before issued_at")
 	ErrRecoveryTargetHashMismatch   = errors.New("recovery authorization target_roster_hash does not match expected")
+	// ErrRecoveryTargetHashRequired is returned by LoadRecoveryAuthorization when
+	// expectedTargetRosterHash is empty. The runtime entry point fails closed on
+	// missing target binding so a forgotten argument never silently accepts a
+	// valid authorization for an arbitrary roster body. Offline ceremony tooling
+	// uses InspectRecoveryAuthorizationOffline instead.
+	ErrRecoveryTargetHashRequired = errors.New("recovery authorization expectedTargetRosterHash is required at runtime; use InspectRecoveryAuthorizationOffline for ceremony review")
 )
 
 // RecoveryAuthorizationBody is the typed signable body of a roster recovery
@@ -140,26 +146,23 @@ func (b RecoveryAuthorizationBody) Validate() error {
 	return nil
 }
 
-// LoadRecoveryAuthorization reads a recovery_authorization file from disk,
-// decodes it strictly, runs structural validation, then cryptographically
-// verifies the detached signature against the operator-pinned recovery-root
-// public key.
+// LoadRecoveryAuthorization is the runtime entry point for verifying a
+// recovery authorization before applying it to a live roster. It reads,
+// decodes, structurally validates, fingerprint-pins, time-window-checks,
+// and signature-verifies the envelope, then enforces the target-roster
+// binding against expectedTargetRosterHash.
 //
-// The recoveryRootPublicKey must be the raw 32-byte Ed25519 public key of the
-// recovery-root. Pinning by fingerprint is enforced via VerifyFingerprint
-// against pinnedRecoveryRootFingerprint before the signature check, so that
-// passing the wrong key surfaces a fingerprint-mismatch error rather than a
-// signature-mismatch error (more diagnostic).
+// Empty expectedTargetRosterHash is rejected with ErrRecoveryTargetHashRequired:
+// at runtime, an authorization that is not bound to a specific roster body is
+// an authorization for ANY roster body, which is an authorization-bypass
+// footgun in a security-boundary product. Ceremony tooling that needs to
+// inspect a file before the target hash is known calls
+// InspectRecoveryAuthorizationOffline instead.
 //
-// expectedTargetRosterHash binds the authorization to a specific roster body
-// the runtime is about to recover into. When non-empty, body.TargetRosterHash
-// must equal it (string compare on the canonical "sha256:<hex>" form). When
-// empty, the binding check is skipped and the loader returns a verified
-// envelope without proving it authorises any particular roster — used by
-// the offline ceremony CLI to inspect a file before a target hash is known.
-// Runtime callers MUST pass a non-empty expected hash; mirroring the
-// pinned-fingerprint convention used by LoadRootTransition keeps the
-// distinction visible in source.
+// recoveryRootPublicKey is the raw 32-byte Ed25519 key. Pinning by fingerprint
+// runs via VerifyFingerprint against pinnedRecoveryRootFingerprint before the
+// signature check, so that passing the wrong key surfaces a fingerprint
+// mismatch (more diagnostic) rather than a signature mismatch.
 //
 // Time-window checks (clock-skew bounded, against the now parameter):
 //   - now < IssuedAt              -> ErrRecoveryNotYetValid (issued in future)
@@ -177,6 +180,46 @@ func (b RecoveryAuthorizationBody) Validate() error {
 // There is no unsigned recovery path: callers must pass a valid signed
 // envelope or get an error.
 func LoadRecoveryAuthorization(
+	path string,
+	recoveryRootPublicKey []byte,
+	pinnedRecoveryRootFingerprint string,
+	expectedTargetRosterHash string,
+	now time.Time,
+) (*LoadedRecoveryAuthorization, error) {
+	if expectedTargetRosterHash == "" {
+		return nil, ErrRecoveryTargetHashRequired
+	}
+	return loadRecoveryAuthorizationCore(
+		path, recoveryRootPublicKey, pinnedRecoveryRootFingerprint,
+		expectedTargetRosterHash, now)
+}
+
+// InspectRecoveryAuthorizationOffline is the offline-ceremony entry point. It
+// runs every check LoadRecoveryAuthorization performs except the target-roster
+// binding, returning a verified envelope when the file is structurally and
+// cryptographically valid against the pinned recovery-root.
+//
+// Use this only from offline ceremony tooling (the pipelock signing recovery
+// verify CLI) where the operator is reviewing an authorization before a target
+// roster body exists. Runtime callers must use LoadRecoveryAuthorization so the
+// target binding is enforced.
+func InspectRecoveryAuthorizationOffline(
+	path string,
+	recoveryRootPublicKey []byte,
+	pinnedRecoveryRootFingerprint string,
+	now time.Time,
+) (*LoadedRecoveryAuthorization, error) {
+	return loadRecoveryAuthorizationCore(
+		path, recoveryRootPublicKey, pinnedRecoveryRootFingerprint,
+		"", now)
+}
+
+// loadRecoveryAuthorizationCore is the shared verification path. It is
+// unexported so callers must pick the runtime (LoadRecoveryAuthorization) or
+// offline-ceremony (InspectRecoveryAuthorizationOffline) entry point and the
+// target-binding policy is visible in the API surface, not buried in an
+// argument default.
+func loadRecoveryAuthorizationCore(
 	path string,
 	recoveryRootPublicKey []byte,
 	pinnedRecoveryRootFingerprint string,
@@ -239,6 +282,9 @@ func LoadRecoveryAuthorization(
 	}
 
 	// Step 5b: Bind to expected target roster, when caller supplied one.
+	// LoadRecoveryAuthorization rejects the empty case at the entry point;
+	// only InspectRecoveryAuthorizationOffline reaches here with empty
+	// expectedTargetRosterHash.
 	if expectedTargetRosterHash != "" && envelope.Body.TargetRosterHash != expectedTargetRosterHash {
 		return nil, fmt.Errorf("%w: got %q, want %q",
 			ErrRecoveryTargetHashMismatch, envelope.Body.TargetRosterHash, expectedTargetRosterHash)
@@ -258,10 +304,23 @@ func LoadRecoveryAuthorization(
 		return nil, fmt.Errorf("%w", ErrRecoverySignatureInvalid)
 	}
 
+	// Step 8: Compute the canonical fingerprint from the verified key
+	// rather than echoing back the operator-supplied input. ParseFingerprint
+	// accepts uppercase hex and normalizes; persisting the canonical form
+	// keeps audit records consistent across systems regardless of how the
+	// operator typed the pin in.
+	canonicalFP, fpErr := Fingerprint(recoveryRootPublicKey)
+	if fpErr != nil {
+		// Unreachable: VerifyFingerprint above already proved key length is
+		// 32 bytes, which is the only way Fingerprint fails. Preserve the
+		// fail-closed invariant explicitly anyway.
+		return nil, fmt.Errorf("%w: canonical fingerprint: %w", ErrRecoveryFingerprintMismatch, fpErr)
+	}
+
 	return &LoadedRecoveryAuthorization{
 		Body:                    envelope.Body,
 		Signature:               envelope.Signature,
-		RecoveryRootFingerprint: pinnedRecoveryRootFingerprint,
+		RecoveryRootFingerprint: canonicalFP,
 		LoadedAt:                now,
 		SourcePath:              cleanPath,
 	}, nil

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -718,6 +719,150 @@ func TestDecodeHexPubkey_InvalidHex(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid hex") {
 		t.Errorf("error should mention invalid hex, got: %v", err)
+	}
+}
+
+// --- Pubkey-file resolution tests ---
+
+// TestReadPubkeyFile_HappyPath confirms a file containing a valid 64-char
+// hex Ed25519 key (with or without trailing whitespace) decodes to 32 raw
+// bytes.
+func TestReadPubkeyFile_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	const validHex = "1111111111111111111111111111111111111111111111111111111111111111"
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"no_trailing_newline", validHex},
+		{"trailing_newline", validHex + "\n"},
+		{"crlf_trailing", validHex + "\r\n"},
+		{"leading_whitespace", "  " + validHex + "\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			p := filepath.Join(dir, "pub.hex")
+			if err := os.WriteFile(p, []byte(tc.content), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := readPubkeyFile(p)
+			if err != nil {
+				t.Fatalf("readPubkeyFile: %v", err)
+			}
+			if len(got) != 32 {
+				t.Errorf("got %d bytes, want 32", len(got))
+			}
+		})
+	}
+}
+
+// TestReadPubkeyFile_RejectsOversize confirms the size cap fires on any
+// pathologically large input. A 5KB file should not be a public key.
+func TestReadPubkeyFile_RejectsOversize(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pub.hex")
+	if err := os.WriteFile(p, make([]byte, pubkeyFileMaxSize+1), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := readPubkeyFile(p)
+	if err == nil {
+		t.Fatal("expected size-cap rejection")
+	}
+	if !errors.Is(err, errPubkeyFileTooLarge) {
+		t.Errorf("got %v, want errPubkeyFileTooLarge", err)
+	}
+}
+
+// TestResolvePubkey_FileWinsWhenInlineEmpty proves the file flag is consulted
+// and decoded when the inline flag is empty.
+func TestResolvePubkey_FileWinsWhenInlineEmpty(t *testing.T) {
+	t.Parallel()
+	const validHex = "2222222222222222222222222222222222222222222222222222222222222222"
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pub.hex")
+	if err := os.WriteFile(p, []byte(validHex), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got, err := resolvePubkey("recovery-pubkey", "", p)
+	if err != nil {
+		t.Fatalf("resolvePubkey: %v", err)
+	}
+	if len(got) != 32 {
+		t.Errorf("got %d bytes, want 32", len(got))
+	}
+}
+
+// TestResolvePubkey_BothFlagsSet covers the defense-in-depth rejection of
+// passing both inline + file. cobra's MarkFlagsMutuallyExclusive should catch
+// this at parse time, but the helper is also called from tests that bypass
+// cobra.
+func TestResolvePubkey_BothFlagsSet(t *testing.T) {
+	t.Parallel()
+	const validHex = "3333333333333333333333333333333333333333333333333333333333333333"
+	dir := t.TempDir()
+	p := filepath.Join(dir, "pub.hex")
+	if err := os.WriteFile(p, []byte(validHex), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := resolvePubkey("recovery-pubkey", validHex, p)
+	if err == nil {
+		t.Fatal("expected rejection when both flags are set")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Errorf("error should mention not both, got: %v", err)
+	}
+}
+
+// TestResolvePubkey_NeitherFlagSet covers the same defense-in-depth case from
+// the empty side. Cobra's MarkFlagsOneRequired should catch this at parse
+// time.
+func TestResolvePubkey_NeitherFlagSet(t *testing.T) {
+	t.Parallel()
+	_, err := resolvePubkey("recovery-pubkey", "", "")
+	if err == nil {
+		t.Fatal("expected rejection when neither flag is set")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Errorf("error should mention required, got: %v", err)
+	}
+}
+
+// --- sanitizeForTerminal tests ---
+
+// TestSanitizeForTerminal_QuotesControlCharacters proves attacker-controlled
+// fields with newlines, escape sequences, and ANSI control bytes render as a
+// quoted Go literal rather than landing raw on stdout.
+func TestSanitizeForTerminal_QuotesControlCharacters(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		in           string
+		mustNotEqual string
+	}{
+		{"newline_injection", "line1\nFAKE: verified", "line1\nFAKE: verified"},
+		{"ansi_escape", "\x1b[31mred", "\x1b[31mred"},
+		{"carriage_return", "before\rafter", "before\rafter"},
+		{"null_byte", "before\x00after", "before\x00after"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := sanitizeForTerminal(tc.in)
+			if got == tc.mustNotEqual {
+				t.Errorf("sanitizeForTerminal returned raw input %q", got)
+			}
+			if !strings.HasPrefix(got, `"`) || !strings.HasSuffix(got, `"`) {
+				t.Errorf("expected quoted form, got %q", got)
+			}
+			if strings.ContainsAny(got, "\n\r\x00\x1b") {
+				t.Errorf("sanitized output still contains control chars: %q", got)
+			}
+		})
 	}
 }
 

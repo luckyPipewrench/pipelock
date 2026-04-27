@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,7 +141,7 @@ func TestLoadRecoveryAuthorization_HappyPath_JSON(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	path, pub, fp := recoveryFixture(t, now, ".json")
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err != nil {
 		t.Fatalf("LoadRecoveryAuthorization: %v", err)
 	}
@@ -166,7 +167,7 @@ func TestLoadRecoveryAuthorization_HappyPath_YAML(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	path, pub, fp := recoveryFixture(t, now, ".yaml")
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err != nil {
 		t.Fatalf("LoadRecoveryAuthorization YAML: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestLoadRecoveryAuthorization_HappyPath_YML(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	path, pub, fp := recoveryFixture(t, now, ".yml")
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err != nil {
 		t.Fatalf("LoadRecoveryAuthorization YML: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestLoadRecoveryAuthorization_RejectFileMissing(t *testing.T) {
 	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
 	_, pub, fp := recoveryFixture(t, now, ".json")
 
-	_, err := LoadRecoveryAuthorization("/nonexistent/path/recovery.json", pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization("/nonexistent/path/recovery.json", pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -214,7 +215,7 @@ func TestLoadRecoveryAuthorization_RejectUnsupportedExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadRecoveryAuthorization(badPath, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(badPath, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected error for unsupported extension")
 	}
@@ -234,7 +235,7 @@ func TestLoadRecoveryAuthorization_RejectMalformedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadRecoveryAuthorization(badPath, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(badPath, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -250,7 +251,7 @@ func TestLoadRecoveryAuthorization_RejectSchemaVersionWrong(t *testing.T) {
 		env.Body.SchemaVersion = 99
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoverySchemaVersion")
 	}
@@ -266,7 +267,7 @@ func TestLoadRecoveryAuthorization_RejectMissingReason(t *testing.T) {
 		env.Body.Reason = ""
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryReasonRequired")
 	}
@@ -282,7 +283,7 @@ func TestLoadRecoveryAuthorization_RejectMissingOperator(t *testing.T) {
 		env.Body.OperatorIdentity = ""
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryOperatorRequired")
 	}
@@ -298,7 +299,7 @@ func TestLoadRecoveryAuthorization_RejectExpiresAtNotRFC3339(t *testing.T) {
 		env.Body.ExpiresAt = testRecoveryBadDate
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryExpiryFormat")
 	}
@@ -314,7 +315,7 @@ func TestLoadRecoveryAuthorization_RejectIssuedAtNotRFC3339(t *testing.T) {
 		env.Body.IssuedAt = testRecoveryBadDate
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryIssuedAtFormat")
 	}
@@ -330,7 +331,7 @@ func TestLoadRecoveryAuthorization_RejectTargetHashWrongPrefix(t *testing.T) {
 		env.Body.TargetRosterHash = "md5:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryTargetHashFormat")
 	}
@@ -346,7 +347,7 @@ func TestLoadRecoveryAuthorization_RejectTargetHashWrongLength(t *testing.T) {
 		env.Body.TargetRosterHash = "sha256:aabb"
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryTargetHashFormat")
 	}
@@ -364,7 +365,7 @@ func TestLoadRecoveryAuthorization_RejectTargetHashNonHex(t *testing.T) {
 		env.Body.TargetRosterHash = badHash
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryTargetHashFormat")
 	}
@@ -383,7 +384,7 @@ func TestLoadRecoveryAuthorization_RejectIssuedInTheFuture(t *testing.T) {
 		env.Body.ExpiresAt = now.Add(1*time.Hour + 30*time.Minute).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryNotYetValid")
 	}
@@ -400,7 +401,7 @@ func TestLoadRecoveryAuthorization_RejectExpired(t *testing.T) {
 		env.Body.ExpiresAt = now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryExpired")
 	}
@@ -420,7 +421,7 @@ func TestLoadRecoveryAuthorization_RejectsLifetimeTooLong(t *testing.T) {
 		env.Body.ExpiresAt = now.Add(2 * time.Hour).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryLifetimeTooLong")
 	}
@@ -443,7 +444,7 @@ func TestLoadRecoveryAuthorization_RejectsStaleAuthShortRemaining(t *testing.T) 
 		env.Body.ExpiresAt = now.Add(30 * time.Minute).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if !errors.Is(err, ErrRecoveryLifetimeTooLong) {
 		t.Errorf("got %v, want ErrRecoveryLifetimeTooLong", err)
 	}
@@ -457,7 +458,7 @@ func TestLoadRecoveryAuthorization_RejectsExpiresBeforeIssued(t *testing.T) {
 		env.Body.ExpiresAt = now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if !errors.Is(err, ErrRecoveryExpiresBeforeIssued) {
 		t.Errorf("got %v, want ErrRecoveryExpiresBeforeIssued", err)
 	}
@@ -473,7 +474,7 @@ func TestLoadRecoveryAuthorization_AcceptsExpiryExactly1Hour(t *testing.T) {
 		env.Body.ExpiresAt = now.Add(recoveryExpiryCeiling).UTC().Format(time.RFC3339)
 	}))
 
-	loaded, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	loaded, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err != nil {
 		t.Fatalf("expected exactly 1h lifetime to be accepted, got: %v", err)
 	}
@@ -513,7 +514,7 @@ func TestLoadRecoveryAuthorization_RejectFingerprintMismatch(t *testing.T) {
 	// Use a wrong pinned fingerprint (valid format but different digest).
 	wrongFP := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	_, err := LoadRecoveryAuthorization(path, pub, wrongFP, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, wrongFP, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoveryFingerprintMismatch")
 	}
@@ -542,7 +543,7 @@ func TestLoadRecoveryAuthorization_RejectSignatureFormatBad(t *testing.T) {
 				env.Signature = tc.sig
 			}))
 
-			_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+			_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 			if err == nil {
 				t.Fatalf("expected ErrRecoverySignatureFormat for %q", tc.name)
 			}
@@ -569,7 +570,7 @@ func TestLoadRecoveryAuthorization_RejectSignatureInvalid(t *testing.T) {
 		env.Signature = sig[:len(sig)-1] + string(replacement)
 	}))
 
-	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	_, err := LoadRecoveryAuthorization(path, pub, fp, testRecoveryTargetHash, now)
 	if err == nil {
 		t.Fatal("expected ErrRecoverySignatureInvalid")
 	}
@@ -698,5 +699,102 @@ func TestRecoveryAuthorizationBody_Validate_Errors(t *testing.T) {
 				t.Errorf("got %v, want %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestLoadRecoveryAuthorization_RejectsEmptyTargetHash proves the runtime
+// entry point fails closed when expectedTargetRosterHash is empty, even when
+// every other input is valid. Matches the deep-review HIGH finding: a runtime
+// caller that forgets the parameter must not silently accept an
+// authorization for any roster.
+func TestLoadRecoveryAuthorization_RejectsEmptyTargetHash(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json")
+
+	_, err := LoadRecoveryAuthorization(path, pub, fp, "", now)
+	if err == nil {
+		t.Fatal("expected ErrRecoveryTargetHashRequired, got nil")
+	}
+	if !errors.Is(err, ErrRecoveryTargetHashRequired) {
+		t.Errorf("got %v, want ErrRecoveryTargetHashRequired", err)
+	}
+}
+
+// TestInspectRecoveryAuthorizationOffline_HappyPath proves the offline entry
+// point loads a valid envelope without enforcing target binding, returning the
+// same envelope content the runtime path would.
+func TestInspectRecoveryAuthorizationOffline_HappyPath(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json")
+
+	loaded, err := InspectRecoveryAuthorizationOffline(path, pub, fp, now)
+	if err != nil {
+		t.Fatalf("InspectRecoveryAuthorizationOffline: %v", err)
+	}
+	if loaded.Body.Reason != testRecoveryReason {
+		t.Errorf("Reason = %q, want %q", loaded.Body.Reason, testRecoveryReason)
+	}
+	if loaded.Body.TargetRosterHash != testRecoveryTargetHash {
+		t.Errorf("TargetRosterHash = %q, want %q",
+			loaded.Body.TargetRosterHash, testRecoveryTargetHash)
+	}
+}
+
+// TestInspectRecoveryAuthorizationOffline_StillVerifiesSignature proves the
+// offline entry point only relaxes the target-binding check; signature
+// verification is still mandatory.
+func TestInspectRecoveryAuthorizationOffline_StillVerifiesSignature(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+
+	// Mutate the signature post-sign so verification fails. 64 bytes = 128 hex.
+	const badSig = "ed25519:" +
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" +
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	path, pub, fp := recoveryFixture(t, now, ".json", recoveryPostSignOpt(func(env *RecoveryAuthorizationEnvelope) {
+		env.Signature = badSig
+	}))
+
+	_, err := InspectRecoveryAuthorizationOffline(path, pub, fp, now)
+	if err == nil {
+		t.Fatal("expected signature verification failure, got nil")
+	}
+	if !errors.Is(err, ErrRecoverySignatureInvalid) {
+		t.Errorf("got %v, want ErrRecoverySignatureInvalid", err)
+	}
+}
+
+// TestLoadRecoveryAuthorization_StoresCanonicalFingerprint proves the
+// returned LoadedRecoveryAuthorization records the canonical lowercase-hex
+// fingerprint computed from the verified key, NOT the operator-supplied
+// string (which ParseFingerprint accepts in mixed case). Matches the
+// deep-review LOW finding: audit records must reflect the actual trust
+// anchor identity, not the keystroke that produced the pin.
+func TestLoadRecoveryAuthorization_StoresCanonicalFingerprint(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 26, 14, 0, 0, 0, time.UTC)
+	path, pub, fp := recoveryFixture(t, now, ".json")
+
+	// Operator typed the fingerprint with uppercase hex digits. ParseFingerprint
+	// accepts that, but the loaded record must store the canonical lowercase
+	// form computed from the public key directly.
+	upperFP := "sha256:" + strings.ToUpper(strings.TrimPrefix(fp, "sha256:"))
+	if upperFP == fp {
+		t.Fatalf("test setup: uppercase form is identical to lowercase, fp=%q", fp)
+	}
+
+	loaded, err := LoadRecoveryAuthorization(path, pub, upperFP, testRecoveryTargetHash, now)
+	if err != nil {
+		t.Fatalf("LoadRecoveryAuthorization: %v", err)
+	}
+	if loaded.RecoveryRootFingerprint != fp {
+		t.Errorf("RecoveryRootFingerprint = %q, want canonical %q (operator passed %q)",
+			loaded.RecoveryRootFingerprint, fp, upperFP)
+	}
+	if strings.ContainsAny(loaded.RecoveryRootFingerprint, "ABCDEF") {
+		t.Errorf("RecoveryRootFingerprint contains uppercase hex: %q",
+			loaded.RecoveryRootFingerprint)
 	}
 }

@@ -285,10 +285,14 @@ func TestGolden_AllFixturesParseAndValidate(t *testing.T) {
 			t.Fatalf("parse now: %v", err)
 		}
 
+		// Use the offline-inspection entry point: this golden test verifies
+		// the envelope's signature and structural validity without binding
+		// to a particular target roster body, which mirrors the offline
+		// ceremony review use case.
 		path := filepath.Join(goldenDirRel, "valid_recovery_authorization.json")
-		loaded, loadErr := LoadRecoveryAuthorization(path, pub, fp, "", now)
+		loaded, loadErr := InspectRecoveryAuthorizationOffline(path, pub, fp, now)
 		if loadErr != nil {
-			t.Fatalf("LoadRecoveryAuthorization: %v", loadErr)
+			t.Fatalf("InspectRecoveryAuthorizationOffline: %v", loadErr)
 		}
 		if loaded.Body.Reason != goldenRecoveryReason {
 			t.Errorf("reason = %q, want %q", loaded.Body.Reason, goldenRecoveryReason)

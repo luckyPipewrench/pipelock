@@ -441,6 +441,30 @@ func TestValidate_LearnSaltSource(t *testing.T) {
 			t.Errorf("error %q does not mention regular file", err)
 		}
 	})
+
+	t.Run("file_symlink_rejected", func(t *testing.T) {
+		// A symlink at the configured path must reject at config-load even
+		// when the symlink target is a perfectly valid 0o600 regular file.
+		// This is the defense-in-depth half of the TOCTOU pair; the runtime
+		// resolver has its own O_NOFOLLOW open + fd-stat that closes the
+		// stat-then-read race on the same condition.
+		dir := t.TempDir()
+		target := filepath.Join(dir, "real-salt.txt")
+		if err := os.WriteFile(target, []byte("salty"), 0o600); err != nil {
+			t.Fatalf("write target: %v", err)
+		}
+		link := filepath.Join(dir, "link-salt.txt")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		err := validateLearnSaltSource("file:" + link)
+		if err == nil {
+			t.Fatal("expected error for symlink path")
+		}
+		if !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("error %q does not mention symlink", err)
+		}
+	})
 }
 
 // TestNormalizeLearn_TrimsWhitespace confirms the normalizer strips

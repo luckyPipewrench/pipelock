@@ -210,3 +210,52 @@ func TestLoadSalt_FileIsDir(t *testing.T) {
 		t.Fatalf("LoadSalt: got mismatched sentinel %v", err)
 	}
 }
+
+func TestLoadSalt_FileOpenFails(t *testing.T) {
+	// Lstat passes (regular file, owner-only mode), but OpenFile fails
+	// because the file's permission bits are 0 (owner can't read either).
+	// Exercises the OpenFile-error fallback after the Lstat checks pass.
+	dir := t.TempDir()
+	p := filepath.Join(dir, testSaltFile)
+	if err := os.WriteFile(p, []byte(testSaltLiteral), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := os.Chmod(p, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	_, err := LoadSalt("file:" + p)
+	if err == nil {
+		t.Fatalf("LoadSalt: want error for unreadable file")
+	}
+	// OpenFile returns EACCES wrapped in os.PathError; the resolver wraps
+	// it again. We don't pin a sentinel — just confirm it's neither
+	// Missing nor Mode (those are the named branches we route to).
+	if errors.Is(err, ErrSaltMissing) || errors.Is(err, ErrSaltMode) ||
+		errors.Is(err, ErrSaltUnset) || errors.Is(err, ErrSaltNotAbsolute) {
+		t.Fatalf("LoadSalt: got mismatched sentinel %v", err)
+	}
+}
+
+func TestLoadSalt_FileIsSymlink(t *testing.T) {
+	// Symlinks must be rejected at the directory-entry level, regardless of
+	// the target's permissions. This closes the TOCTOU window where a path
+	// the operator configured as a regular file gets swapped for a symlink
+	// to a different file with looser permissions.
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real-"+testSaltFile)
+	if err := os.WriteFile(target, []byte(testSaltLiteral), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(dir, "link-"+testSaltFile)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	_, err := LoadSalt("file:" + link)
+	if err == nil {
+		t.Fatalf("LoadSalt: want error for symlink path")
+	}
+	if !errors.Is(err, ErrSaltMode) {
+		t.Fatalf("LoadSalt: want ErrSaltMode, got %v", err)
+	}
+}

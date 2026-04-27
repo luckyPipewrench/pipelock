@@ -6,9 +6,11 @@ package privacy
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Sentinel errors for salt resolution. All are errors.Is-comparable.
@@ -73,9 +75,16 @@ func LoadSalt(source string) ([]byte, error) {
 	return []byte(source), nil
 }
 
-// loadSaltFile resolves a file: salt source. The path validation here
-// mirrors validateLearnSaltSource in internal/config: absolute, canonical,
-// regular file, mode 0o600 or stricter.
+// loadSaltFile resolves a file: salt source. Path validation mirrors
+// validateLearnSaltSource in internal/config (absolute, canonical, regular
+// file, mode 0o600 or stricter) and then opens with O_NOFOLLOW + checks the
+// mode on the opened fd to close the stat-then-read TOCTOU window.
+//
+// Why two checks: Lstat rejects symlinks at the directory entry level
+// (defense in depth against an attacker who points the configured path at a
+// shadow file before the resolver runs); O_NOFOLLOW + fd-stat handles the
+// race where the symlink is swapped in between Lstat and Open. After the
+// fd is open it pins the inode, so the mode check is no longer racy.
 func loadSaltFile(rawPath string) ([]byte, error) {
 	if !filepath.IsAbs(rawPath) {
 		return nil, fmt.Errorf("%w: %q", ErrSaltNotAbsolute, rawPath)
@@ -84,20 +93,45 @@ func loadSaltFile(rawPath string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: path is not in canonical form: %q", ErrSaltNotAbsolute, rawPath)
 	}
 	cleanPath := filepath.Clean(rawPath)
-	info, err := os.Stat(cleanPath)
+
+	li, err := os.Lstat(cleanPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %q", ErrSaltMissing, cleanPath)
 		}
-		return nil, fmt.Errorf("learn salt file stat %q: %w", cleanPath, err)
+		return nil, fmt.Errorf("learn salt file lstat %q: %w", cleanPath, err)
 	}
-	if !info.Mode().IsRegular() {
+	if li.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: symlinks not permitted: %q", ErrSaltMode, cleanPath)
+	}
+	if !li.Mode().IsRegular() {
 		return nil, fmt.Errorf("learn salt file %q is not a regular file", cleanPath)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("%w: got mode 0o%03o for %q", ErrSaltMode, info.Mode().Perm(), cleanPath)
+
+	f, err := os.OpenFile(cleanPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %q", ErrSaltMissing, cleanPath)
+		}
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: symlink raced into place: %q", ErrSaltMode, cleanPath)
+		}
+		return nil, fmt.Errorf("learn salt file open %q: %w", cleanPath, err)
 	}
-	data, err := os.ReadFile(cleanPath)
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("learn salt file fstat %q: %w", cleanPath, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("learn salt file %q is not a regular file", cleanPath)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return nil, fmt.Errorf("%w: got mode 0o%03o for %q", ErrSaltMode, fi.Mode().Perm(), cleanPath)
+	}
+
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return nil, fmt.Errorf("learn salt file read %q: %w", cleanPath, err)
 	}

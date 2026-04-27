@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -289,18 +290,41 @@ func validateLearnSaltSource(src string) error {
 		return fmt.Errorf("learn.privacy.salt_source: file path must be in canonical form (no ..,  redundant separators, or trailing slash)")
 	}
 	cleanPath := filepath.Clean(rawPath)
-	info, err := os.Stat(cleanPath)
+
+	// Lstat rejects symlinks at the directory entry level. The runtime
+	// resolver in internal/contract/privacy re-validates with O_NOFOLLOW on
+	// the open fd so a between-stat-and-open swap also fails closed.
+	li, err := os.Lstat(cleanPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("learn.privacy.salt_source: file does not exist")
 		}
-		return fmt.Errorf("learn.privacy.salt_source: stat %s: %w", cleanPath, err)
+		return fmt.Errorf("learn.privacy.salt_source: lstat %s: %w", cleanPath, err)
 	}
-	if !info.Mode().IsRegular() {
+	if li.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("learn.privacy.salt_source: symlinks not permitted: %s", cleanPath)
+	}
+	if !li.Mode().IsRegular() {
 		return fmt.Errorf("learn.privacy.salt_source: file must be a regular file")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("learn.privacy.salt_source: file must have mode 0o600 or stricter (got: 0o%03o)", info.Mode().Perm())
+
+	f, err := os.OpenFile(cleanPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return fmt.Errorf("learn.privacy.salt_source: symlink raced into place: %s", cleanPath)
+		}
+		return fmt.Errorf("learn.privacy.salt_source: open %s: %w", cleanPath, err)
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("learn.privacy.salt_source: fstat %s: %w", cleanPath, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("learn.privacy.salt_source: file must be a regular file")
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("learn.privacy.salt_source: file must have mode 0o600 or stricter (got: 0o%03o)", fi.Mode().Perm())
 	}
 	return nil
 }

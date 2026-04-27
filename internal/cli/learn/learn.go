@@ -3,8 +3,11 @@
 
 // Package learn provides the `pipelock learn` command tree for the v2.4
 // learn-and-lock observation pipeline. The `observe` subverb runs the
-// proxy in capture mode with privacy filtering enabled and writes a
-// hash-chained recorder JSONL stream to the configured capture directory.
+// proxy in capture mode and writes a hash-chained recorder JSONL stream
+// to the configured capture directory; entries carry an event_kind
+// classifier that the downstream compile stage consumes. The privacy
+// enforcer surface lives in internal/contract/privacy and is structural
+// plumbing for the next phase, not active enforcement at observe time.
 //
 // Future commits add `compile`, `review`, `shadow`, `ratify`, `forget`,
 // `promote`, and `rollback` subverbs as the corresponding pipeline

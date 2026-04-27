@@ -48,13 +48,15 @@ var errRelativeCaptureDir = errors.New(
 var observeRunner = runObserveServer
 
 // observeCmd returns the `pipelock learn observe` subcommand. It runs the
-// proxy in capture mode with the learn observation pipeline enabled.
+// proxy in capture mode and writes hash-chained recorder JSONL evidence to
+// the configured directory.
 //
 // Behavior is intentionally a thin facade over `pipelock run --capture-output`:
 // the underlying runtime, hot reload, and signal handling all live in
-// internal/cli/runtime. observeCmd loads the configured config, ensures
-// learn.enabled and learn.capture_dir are set in the effective Config, then
-// hands off to the runtime via ServerOpts.
+// internal/cli/runtime. observeCmd loads the configured config only to read
+// learn.capture_dir as a fallback when --capture-dir is not supplied; it does
+// not mutate cfg. The runtime reloads opts.ConfigFile from disk, so any
+// CLI-side mutation would be silently dropped.
 func observeCmd() *cobra.Command {
 	var (
 		configPath string
@@ -68,9 +70,10 @@ func observeCmd() *cobra.Command {
 
 The proxy listens for traffic, scans it through the normal pipeline, and
 writes hash-chained recorder JSONL evidence into --capture-dir. Each entry
-carries an event_kind classifier on the recorder envelope and an
-action_class field on the capture summary; both feed the compile stage
-that lands in a follow-up.
+carries an event_kind classifier on the recorder envelope; the capture
+summary schema includes an optional action_class field that call sites
+populate once the proxy/MCP wiring lands. Both feed the compile stage in
+a follow-up.
 
 Today this command is a thin facade over 'pipelock run --capture-output':
 it validates that --capture-dir or learn.capture_dir is set and absolute,

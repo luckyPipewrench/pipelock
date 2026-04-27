@@ -148,6 +148,9 @@ jobs:
       - name: golangci-lint (enterprise)
         run: golangci-lint run --build-tags enterprise ./...
 
+      - name: Python pin policy
+        run: bash scripts/check-python-pins.sh
+
   govulncheck:
     needs: [security-scan]
     runs-on: ubuntu-latest

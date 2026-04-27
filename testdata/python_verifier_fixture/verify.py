@@ -157,7 +157,14 @@ def _parse_rfc3339(s: str) -> datetime:
     """Parse an RFC 3339 timestamp string into a timezone-aware datetime.
 
     Raises ValueError on malformed input.
+
+    datetime.fromisoformat does not accept a trailing 'Z' suffix until
+    Python 3.11; the repo targets earlier interpreters too, so normalize
+    'Z' to '+00:00' before delegating. Other valid offsets pass through
+    untouched.
     """
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
     return datetime.fromisoformat(s)
 
 
@@ -233,6 +240,14 @@ def verify_recovery_authorization(
         raise ValueError("reason is required")
     if not body.get("operator_identity"):
         raise ValueError("operator_identity is required")
+    # Explicit presence checks so missing required body fields surface
+    # as ValueError rather than KeyError on the subscript below; matches
+    # the Go side's ErrRecoveryIssuedAtFormat / ErrRecoveryExpiryFormat
+    # behavior when the JSON decoder yields a zero-value empty string.
+    if "issued_at" not in body:
+        raise ValueError("issued_at is required")
+    if "expires_at" not in body:
+        raise ValueError("expires_at is required")
 
     target_hash = body.get("target_roster_hash", "")
     if not _SHA256_HASH_RE.match(target_hash):

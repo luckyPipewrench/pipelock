@@ -14,13 +14,18 @@ import (
 	"testing"
 )
 
-// RFC 8032 section 7.1 test 2 private seed for the OLD keypair, split per
-// G101 lint rule.
+// Deterministic test seed for the OLD keypair (RFC 8032 section 7.1
+// test 1's first 24 bytes, with the trailing 8 bytes replaced by a
+// duplicated 1b6ff1ae block so the OLD and NEW seeds below differ in
+// their suffix without colliding with any published vector). Split
+// across string concatenations per G101 lint rule.
 const testRTOldSeedHex = "" +
 	"9d61b19d" + "effd5a60" + "ba844af4" + "92ec2cc4" +
 	"4449c569" + "8b64e70e" + "1b6ff1ae" + "1b6ff1ae"
 
-// Different seed for the NEW keypair (last 4 bytes flipped relative to old).
+// NEW keypair seed: same first 24 bytes as OLD, with the trailing 8
+// bytes replaced by ae1bff6b ae1bff6b so the two seeds produce
+// distinct keypairs without colliding with any RFC 8032 vector.
 const testRTNewSeedHex = "" +
 	"9d61b19d" + "effd5a60" + "ba844af4" + "92ec2cc4" +
 	"4449c569" + "8b64e70e" + "ae1bff6b" + "ae1bff6b"

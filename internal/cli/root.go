@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
+	"github.com/luckyPipewrench/pipelock/internal/cli/learn"
 	"github.com/luckyPipewrench/pipelock/internal/cli/policy"
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
@@ -91,6 +92,8 @@ Quick start:
 		generate.Cmd(),
 		// Git
 		git.Cmd(),
+		// Learn-and-lock observation pipeline
+		learn.Cmd(),
 		// Rules
 		rules.Cmd(),
 		// Runtime

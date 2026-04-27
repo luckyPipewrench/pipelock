@@ -162,10 +162,22 @@ def _parse_rfc3339(s: str) -> datetime:
     Python 3.11; the repo targets earlier interpreters too, so normalize
     'Z' to '+00:00' before delegating. Other valid offsets pass through
     untouched.
+
+    RFC 3339 mandates a UTC offset on every timestamp. fromisoformat
+    happily produces a naive datetime for an offset-less input, which
+    later trips the timezone-aware comparisons with TypeError instead
+    of the documented ValueError. Reject naive results explicitly so
+    the error class matches the docstring and matches the Go side
+    parity (Go's time.Parse with RFC 3339 fails fast on missing zone).
     """
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    return datetime.fromisoformat(s)
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError(
+            f"RFC 3339 timestamp must include a UTC offset: {s!r}"
+        )
+    return dt
 
 
 # Allowed top-level fields in a recovery_authorization envelope. Strict
@@ -619,10 +631,23 @@ if __name__ == "__main__":
         sys.exit(smoke_test_signing_goldens())
 
     # Default: verify contract-package golden-dir.
-    # Also verify signing-package goldens if the directory exists.
+    # Also verify signing-package goldens, but only when the signing
+    # directory actually exists. Without this gate, an explicit
+    # `python3 verify.py <golden-dir>` invocation outside the repo tree
+    # would fail solely because the script's relative path to
+    # internal/signing/testdata/golden does not resolve there. Explicit
+    # `--signing-goldens` keeps its hard-fail-on-missing semantics.
     exit_code = main(sys.argv)
     if exit_code == 0:
-        signing_result = smoke_test_signing_goldens()
-        if signing_result > 0:
-            exit_code = 1
+        signing_golden = (
+            Path(__file__).resolve().parent.parent.parent
+            / "internal"
+            / "signing"
+            / "testdata"
+            / "golden"
+        )
+        if signing_golden.is_dir():
+            signing_result = smoke_test_signing_goldens()
+            if signing_result > 0:
+                exit_code = 1
     sys.exit(exit_code)

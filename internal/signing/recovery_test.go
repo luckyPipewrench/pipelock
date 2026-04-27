@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	goyaml "github.com/goccy/go-yaml"
 )
 
 // RFC 8032 section 7.1 test 2 private seed, split per G101 lint rule.
@@ -98,14 +100,17 @@ func recoveryFixture(t *testing.T, now time.Time, ext string, opts ...any) (path
 		}
 	}
 
-	// Serialize.
+	// Serialize. YAML extensions emit a native YAML document so the
+	// happy-path test exercises the YAML parser, not just the
+	// JSON-as-YAML compatibility surface (CodeRabbit thread on PR #444).
 	var data []byte
 	switch ext {
 	case envelopeExtYAML, envelopeExtYML:
-		// JSON is valid YAML; DecodeStrictYAML handles it.
-		data, err = json.Marshal(envelope)
+		data, err = goyaml.MarshalWithOptions(envelope,
+			goyaml.UseLiteralStyleIfMultiline(true),
+			goyaml.IndentSequence(true))
 		if err != nil {
-			t.Fatalf("json marshal for yaml: %v", err)
+			t.Fatalf("yaml marshal: %v", err)
 		}
 	default:
 		data, err = json.MarshalIndent(envelope, "", "  ")

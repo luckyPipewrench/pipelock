@@ -19,7 +19,6 @@ import (
 	"golang.org/x/crypto/nacl/box"
 
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
-	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // dropSentinelInterval controls how many drops occur between sentinel entries
@@ -302,15 +301,15 @@ func captureEventKind(surface string) string {
 }
 
 // buildSummary constructs a CaptureSummary, truncating scanner and wire
-// payload samples to maxScannerSample bytes. actionClass is the session-level
-// action verb classification supplied by the call site; the zero value
-// (ActionClassRead) is rendered as the literal wire label "read" — callers
-// that have not classified should still pass the zero value, and downstream
-// consumers must not interpret a populated ActionClass field as proof of
-// explicit classification.
+// payload samples to maxScannerSample bytes. actionClass carries the
+// session-level action verb when the call site classified inline (e.g.
+// session.ActionClassWrite.String() == "write"); empty means unclassified
+// and the field is omitted from the wire so the unclassified-rate metric
+// in a downstream commit can count missing classifications honestly
+// instead of having every observation render as "read" by default.
 func (w *Writer) buildSummary(
 	surface, subsurface, configHash, agent, profile string,
-	actionClass session.ActionClass,
+	actionClass string,
 	scannerInput string,
 	payloadComplete bool,
 	transformKind, wirePayload string,
@@ -329,7 +328,7 @@ func (w *Writer) buildSummary(
 		BuildSHA:             w.buildSHA,
 		Agent:                agent,
 		Profile:              profile,
-		ActionClass:          actionClass.String(),
+		ActionClass:          actionClass,
 		PayloadComplete:      payloadComplete,
 		TransformKind:        transformKind,
 		Request:              req,

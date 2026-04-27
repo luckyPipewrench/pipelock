@@ -10,12 +10,10 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
-	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
 	ekTestRequestID    = "req-event-kind"
-	ekActionClassRead  = "read"
 	ekActionClassWrite = "write"
 	ekDropOverflow     = "capture queue overflow"
 )
@@ -65,8 +63,9 @@ func newEventKindTestWriter(t *testing.T) (*capture.Writer, string) {
 }
 
 // TestObserveURLVerdict_StampsEventKind asserts that URL pipeline observations
-// stamp event_kind="url" on the recorder envelope and propagate the zero
-// ActionClass as the literal "read" wire label.
+// stamp event_kind="url" on the recorder envelope and leave summary.ActionClass
+// empty when the call site did not classify (the zero string is the
+// unclassified signal so the unclassified-rate metric counts honestly).
 func TestObserveURLVerdict_StampsEventKind(t *testing.T) {
 	w, dir := newEventKindTestWriter(t)
 
@@ -88,9 +87,9 @@ func TestObserveURLVerdict_StampsEventKind(t *testing.T) {
 	if entry.EventKind != capture.SurfaceURL {
 		t.Errorf("EventKind: got %q, want %q", entry.EventKind, capture.SurfaceURL)
 	}
-	if summary.ActionClass != ekActionClassRead {
-		t.Errorf("summary.ActionClass: got %q, want %q (zero ActionClass renders as %q)",
-			summary.ActionClass, ekActionClassRead, ekActionClassRead)
+	if summary.ActionClass != "" {
+		t.Errorf("summary.ActionClass: got %q, want empty (no classification supplied)",
+			summary.ActionClass)
 	}
 }
 
@@ -119,13 +118,13 @@ func TestObserveResponseVerdict_StampsEventKind(t *testing.T) {
 	if entry.EventKind != capture.SurfaceResponse {
 		t.Errorf("EventKind: got %q, want %q", entry.EventKind, capture.SurfaceResponse)
 	}
-	if summary.ActionClass != ekActionClassRead {
-		t.Errorf("summary.ActionClass: got %q, want %q", summary.ActionClass, ekActionClassRead)
+	if summary.ActionClass != "" {
+		t.Errorf("summary.ActionClass: got %q, want empty", summary.ActionClass)
 	}
 }
 
 // TestObserveDLPVerdict_StampsEventKind asserts DLP observations stamp
-// event_kind="dlp" and the explicit ActionClassWrite renders as "write".
+// event_kind="dlp" and the explicit "write" classification reaches the wire.
 func TestObserveDLPVerdict_StampsEventKind(t *testing.T) {
 	w, dir := newEventKindTestWriter(t)
 
@@ -135,7 +134,7 @@ func TestObserveDLPVerdict_StampsEventKind(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		ActionClass:     session.ActionClassWrite,
+		ActionClass:     ekActionClassWrite,
 		Request:         capture.CaptureRequest{Method: "POST", URL: testURLVerdict},
 		TransformKind:   capture.TransformJoinedFields,
 		ScannerInput:    "field=value",
@@ -299,12 +298,12 @@ func TestWriteDropSentinel_StampsEventKind(t *testing.T) {
 	}
 }
 
-// TestBuildSummary_ActionClassPropagates_ZeroValue exercises the ActionClass
-// passthrough via the URL Observe surface. The zero value (ActionClassRead)
-// must render as the wire label "read" so summaries are immediately consumable
-// by replay; downstream classification debt must be inferred from a different
-// channel (presence of EventKind != surface name in a future PR).
-func TestBuildSummary_ActionClassPropagates_ZeroValue(t *testing.T) {
+// TestBuildSummary_ActionClassUnset exercises the URL Observe surface with no
+// classification supplied. The empty string must round-trip to wire as an
+// omitted action_class field so the unclassified-rate metric in a follow-up
+// commit can count missing classifications honestly instead of reading every
+// observation as "read".
+func TestBuildSummary_ActionClassUnset(t *testing.T) {
 	w, dir := newEventKindTestWriter(t)
 
 	w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
@@ -322,14 +321,15 @@ func TestBuildSummary_ActionClassPropagates_ZeroValue(t *testing.T) {
 	}
 
 	_, summary := readCaptureSummary(t, dir)
-	if summary.ActionClass != ekActionClassRead {
-		t.Errorf("summary.ActionClass with zero ActionClass: got %q, want %q",
-			summary.ActionClass, ekActionClassRead)
+	if summary.ActionClass != "" {
+		t.Errorf("summary.ActionClass with no classification: got %q, want empty",
+			summary.ActionClass)
 	}
 }
 
 // TestBuildSummary_ActionClassPropagates_ExplicitWrite verifies that an
-// explicit ActionClassWrite reaches CaptureSummary.action_class as "write".
+// explicit "write" classification on the verdict record reaches
+// CaptureSummary.action_class on the wire.
 func TestBuildSummary_ActionClassPropagates_ExplicitWrite(t *testing.T) {
 	w, dir := newEventKindTestWriter(t)
 
@@ -339,7 +339,7 @@ func TestBuildSummary_ActionClassPropagates_ExplicitWrite(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		ActionClass:     session.ActionClassWrite,
+		ActionClass:     ekActionClassWrite,
 		Request:         capture.CaptureRequest{Method: "POST", URL: testURLVerdict},
 		TransformKind:   capture.TransformJoinedFields,
 		ScannerInput:    "key=secret",
@@ -352,7 +352,7 @@ func TestBuildSummary_ActionClassPropagates_ExplicitWrite(t *testing.T) {
 
 	_, summary := readCaptureSummary(t, dir)
 	if summary.ActionClass != ekActionClassWrite {
-		t.Errorf("summary.ActionClass with ActionClassWrite: got %q, want %q",
+		t.Errorf("summary.ActionClass with explicit write: got %q, want %q",
 			summary.ActionClass, ekActionClassWrite)
 	}
 }

@@ -7,11 +7,7 @@
 // recorder.Entry.Detail values in the evidence log.
 package capture
 
-import (
-	"context"
-
-	"github.com/luckyPipewrench/pipelock/internal/session"
-)
+import "context"
 
 // CaptureSchemaV1 is the current CaptureSummary schema version.
 // Replay engines must reject summaries with unknown versions.
@@ -251,11 +247,13 @@ type URLVerdictRecord struct {
 	ConfigHash string
 	Agent      string
 	Profile    string
-	// ActionClass is the session-level action verb classification at scan
-	// time. Zero value (ActionClassRead) implies the call site has not
-	// classified; the writer falls back to the surface name when stamping
-	// recorder.Entry.EventKind.
-	ActionClass       session.ActionClass
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	RawFindings       []Finding
 	EffectiveFindings []Finding
@@ -273,11 +271,13 @@ type ResponseVerdictRecord struct {
 	ConfigHash string
 	Agent      string
 	Profile    string
-	// ActionClass is the session-level action verb classification at scan
-	// time. Zero value (ActionClassRead) implies the call site has not
-	// classified; the writer falls back to the surface name when stamping
-	// recorder.Entry.EventKind.
-	ActionClass       session.ActionClass
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
 	WirePayload       []byte
@@ -297,11 +297,13 @@ type DLPVerdictRecord struct {
 	ConfigHash string
 	Agent      string
 	Profile    string
-	// ActionClass is the session-level action verb classification at scan
-	// time. Zero value (ActionClassRead) implies the call site has not
-	// classified; the writer falls back to the surface name when stamping
-	// recorder.Entry.EventKind.
-	ActionClass       session.ActionClass
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
 	ScannerInput      string
@@ -321,11 +323,13 @@ type CEERecord struct {
 	ConfigHash string
 	Agent      string
 	Profile    string
-	// ActionClass is the session-level action verb classification at scan
-	// time. Zero value (ActionClassRead) implies the call site has not
-	// classified; the writer falls back to the surface name when stamping
-	// recorder.Entry.EventKind.
-	ActionClass       session.ActionClass
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
 	ScannerInput      string
@@ -345,11 +349,13 @@ type ToolPolicyRecord struct {
 	ConfigHash string
 	Agent      string
 	Profile    string
-	// ActionClass is the session-level action verb classification at scan
-	// time. Zero value (ActionClassRead) implies the call site has not
-	// classified; the writer falls back to the surface name when stamping
-	// recorder.Entry.EventKind.
-	ActionClass       session.ActionClass
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	BatchIndex        *int
 	Request           CaptureRequest
 	RawFindings       []Finding
@@ -369,11 +375,13 @@ type ToolScanRecord struct {
 	ConfigHash string
 	Agent      string
 	Profile    string
-	// ActionClass is the session-level action verb classification at scan
-	// time. Zero value (ActionClassRead) implies the call site has not
-	// classified; the writer falls back to the surface name when stamping
-	// recorder.Entry.EventKind.
-	ActionClass       session.ActionClass
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	BatchIndex        *int
 	Request           CaptureRequest
 	TransformKind     string

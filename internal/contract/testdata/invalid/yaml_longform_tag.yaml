@@ -1,0 +1,2 @@
+schema_version: !<tag:yaml.org,2002:int> "1"
+contract_kind: behavioral_contract

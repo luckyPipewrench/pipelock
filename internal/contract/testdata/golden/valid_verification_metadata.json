@@ -1,0 +1,14 @@
+{
+  "body": {
+    "schema_version": 1,
+    "bundle_kind": "public_proof_bundle",
+    "contract_hash": "sha256:c1",
+    "tombstone_index_root": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "tombstone_hashes": [],
+    "bundle_signed_at": "2026-04-25T22:00:00Z",
+    "signer_key_id": "test-key",
+    "key_purpose": "contract-activation-signing",
+    "data_class_root": "public"
+  },
+  "signature": "ed25519:f0a0b3b595ab1393ed977abe656be35e8a454dc86b3c9e7f079668e012269bc92a6aa9865a5bcde3625220fbb5147f24ef1bdfd22c912d31cc29bc41af231e06"
+}

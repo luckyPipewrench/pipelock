@@ -6,7 +6,20 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
-        exclude: ^charts/.*/templates/
+        # Narrow: name only the intentionally-malformed strict-YAML test
+        # fixtures. The rest of internal/contract/testdata/invalid/ stays
+        # under check-yaml so accidental corruption is still caught.
+        exclude: |
+          (?x)^(
+            charts/.*/templates/|
+            internal/contract/testdata/invalid/duplicate_key\.yaml|
+            internal/contract/testdata/invalid/yaml_alias\.yaml|
+            internal/contract/testdata/invalid/yaml_anchor\.yaml|
+            internal/contract/testdata/invalid/yaml_custom_tag\.yaml|
+            internal/contract/testdata/invalid/yaml_longform_tag\.yaml|
+            internal/contract/testdata/invalid/yaml_merge_key\.yaml|
+            internal/contract/testdata/invalid/yaml_multi_doc\.yaml
+          )$
       - id: check-merge-conflict
       - id: detect-private-key
       - id: check-added-large-files

@@ -10,6 +10,7 @@ require (
 	github.com/getsentry/sentry-go v0.45.1
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gobwas/ws v1.4.0
+	github.com/goccy/go-yaml v1.19.2
 	github.com/google/uuid v1.6.0
 	github.com/landlock-lsm/go-landlock v0.8.1
 	github.com/prometheus/client_golang v1.23.2

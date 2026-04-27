@@ -1,0 +1,26 @@
+{
+  "body": {
+    "schema_version": 1,
+    "roster_signed_by": "roster-root-test",
+    "keys": [
+      {
+        "key_id": "roster-root-test",
+        "key_purpose": "roster-root",
+        "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "valid_from": "2026-04-01T00:00:00Z",
+        "valid_until": null,
+        "status": "root"
+      },
+      {
+        "key_id": "receipt-signing-test",
+        "key_purpose": "receipt-signing",
+        "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+        "valid_from": "2026-04-01T00:00:00Z",
+        "valid_until": null,
+        "status": "active"
+      }
+    ],
+    "data_class_root": "internal"
+  },
+  "signature": "ed25519:80413b34a180dd841481cb3e772384bdf7e52390166c3e474a27ae6731d88feb5d7221bce39ffacfb7e56580189c8dfc5ce089048a1ca782883792ee9b96fd08"
+}

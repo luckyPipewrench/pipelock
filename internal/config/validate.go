@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -275,6 +274,13 @@ func validateLearnSaltSource(src string) error {
 		return nil
 	}
 	if strings.HasPrefix(src, "${") && strings.HasSuffix(src, "}") {
+		name := strings.TrimSuffix(strings.TrimPrefix(src, "${"), "}")
+		if name == "" {
+			return fmt.Errorf("learn.privacy.salt_source: env var name must not be empty")
+		}
+		if strings.TrimSpace(name) != name {
+			return fmt.Errorf("learn.privacy.salt_source: env var name must not contain surrounding whitespace")
+		}
 		// env-var reference; resolved at observe time
 		return nil
 	}
@@ -308,9 +314,9 @@ func validateLearnSaltSource(src string) error {
 		return fmt.Errorf("learn.privacy.salt_source: file must be a regular file")
 	}
 
-	f, err := os.OpenFile(cleanPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(cleanPath, os.O_RDONLY|noFollowFlag, 0)
 	if err != nil {
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, errELOOP) {
 			return fmt.Errorf("learn.privacy.salt_source: symlink raced into place: %s", cleanPath)
 		}
 		return fmt.Errorf("learn.privacy.salt_source: open %s: %w", cleanPath, err)

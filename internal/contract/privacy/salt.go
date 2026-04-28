@@ -4,13 +4,13 @@
 package privacy
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // Sentinel errors for salt resolution. All are errors.Is-comparable.
@@ -108,12 +108,12 @@ func loadSaltFile(rawPath string) ([]byte, error) {
 		return nil, fmt.Errorf("learn salt file %q is not a regular file", cleanPath)
 	}
 
-	f, err := os.OpenFile(cleanPath, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	f, err := os.OpenFile(cleanPath, os.O_RDONLY|noFollowFlag, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %q", ErrSaltMissing, cleanPath)
 		}
-		if errors.Is(err, syscall.ELOOP) {
+		if errors.Is(err, errELOOP) {
 			return nil, fmt.Errorf("%w: symlink raced into place: %q", ErrSaltMode, cleanPath)
 		}
 		return nil, fmt.Errorf("learn salt file open %q: %w", cleanPath, err)
@@ -135,11 +135,16 @@ func loadSaltFile(rawPath string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("learn salt file read %q: %w", cleanPath, err)
 	}
-	// Trim one trailing newline so operators using `echo "salt" > /path` get
-	// the salt they expect, not "salt\n". Only ONE newline; multi-line files
-	// keep their internal structure intact.
-	if n := len(data); n > 0 && data[n-1] == '\n' {
-		data = data[:n-1]
+	// Trim one trailing newline (LF or CRLF) so operators using
+	// `echo "salt" > /path` get the salt they expect, not "salt\n", and
+	// a Windows-edited file with CRLF doesn't produce a different HMAC
+	// from the same logical salt on Unix. Only ONE newline; multi-line
+	// files keep their internal structure intact.
+	switch {
+	case bytes.HasSuffix(data, []byte("\r\n")):
+		data = data[:len(data)-2]
+	case bytes.HasSuffix(data, []byte("\n")):
+		data = data[:len(data)-1]
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("%w: file %q", ErrSaltUnset, cleanPath)

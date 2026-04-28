@@ -12,13 +12,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// normalizeLearn trims surrounding whitespace from Learn.CaptureDir and
-// Learn.Privacy.SaltSource so config-load comparisons (canonical hash,
-// reload no-op detection) are stable against accidental indentation /
-// trailing-newline drift.
+// normalizeLearn trims surrounding whitespace from Learn.CaptureDir and,
+// conditionally, from Learn.Privacy.SaltSource. Literal salt sources are
+// preserved byte-for-byte: trimming `" secret "` to `"secret"` would
+// silently change the HMAC and break continuity across reloads, so only
+// `file:` paths and `${VAR}` env references (where surrounding whitespace
+// is meaningless and likely YAML indentation drift) get trimmed. An
+// all-whitespace literal collapses to "" and is treated as unset by the
+// downstream resolver.
 func normalizeLearn(l *Learn) {
 	l.CaptureDir = strings.TrimSpace(l.CaptureDir)
-	l.Privacy.SaltSource = strings.TrimSpace(l.Privacy.SaltSource)
+	src := l.Privacy.SaltSource
+	trimmed := strings.TrimSpace(src)
+	if trimmed == "" {
+		l.Privacy.SaltSource = ""
+		return
+	}
+	if strings.HasPrefix(trimmed, "file:") ||
+		(strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}")) {
+		l.Privacy.SaltSource = trimmed
+	}
 }
 
 // applySecurityDefaults sets security-sensitive booleans to true when they are

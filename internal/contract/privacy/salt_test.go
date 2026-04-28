@@ -224,6 +224,14 @@ func TestLoadSalt_FileOpenFails(t *testing.T) {
 		t.Fatalf("chmod: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	// Privileged runners (root in CI containers, some BSD configs) can
+	// still read mode-0 files. Skip rather than flap: this case exercises
+	// the post-Lstat OpenFile error path, and if the runner can't trigger
+	// that path the test has nothing to assert.
+	if f, openErr := os.Open(filepath.Clean(p)); openErr == nil {
+		_ = f.Close()
+		t.Skip("runner can still open mode-0 files; skipping permission-dependent case")
+	}
 	_, err := LoadSalt("file:" + p)
 	if err == nil {
 		t.Fatalf("LoadSalt: want error for unreadable file")

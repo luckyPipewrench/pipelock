@@ -103,8 +103,11 @@ verifier fixture at `testdata/python_verifier_fixture/` and the
 `pr-review.yaml` workflow's runtime deps at
 `.github/requirements-pr-review.txt`.
 
-**Rule: Python dep manifests in this repo MUST be `==`-pinned with
-`--hash` lines.** Loose `>=` ranges are forbidden. Reasons:
+**Rule: Generated Python lockfiles (`requirements*.txt`) in this repo
+MUST be `==`-pinned with `--hash` lines.** `requirements*.in` is the
+source-manifest exception and may carry loose bounds; the lockfile
+generated from it must be strict. Loose `>=`, `<=`, `~=`, `>`, `<`, and
+`===` operators are forbidden in lockfiles. Reasons:
 
 1. OSV-Scanner (run by the OpenSSF Scorecard workflow) over-reports on
    range pins. A `>=46.0.7,<47.0.0` cryptography line has triggered
@@ -117,7 +120,7 @@ verifier fixture at `testdata/python_verifier_fixture/` and the
 
 The lockfile pattern, modeled on `.github/requirements-pr-review.txt`:
 
-```
+```text
 package==X.Y.Z \
     --hash=sha256:<hash-1> \
     --hash=sha256:<hash-2>

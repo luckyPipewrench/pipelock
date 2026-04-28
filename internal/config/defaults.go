@@ -441,7 +441,15 @@ func Defaults() *Config {
 			RecentSources: 10,
 		},
 		MediationEnvelope: MediationEnvelope{},
-		MediaPolicy:       MediaPolicy{
+		Learn: Learn{
+			Enabled:    false,
+			CaptureDir: "",
+			Privacy: LearnPrivacy{
+				SaltSource:             "",
+				PublicAllowlistDefault: true, // security-sensitive default
+			},
+		},
+		MediaPolicy: MediaPolicy{
 			// Boolean fields left nil intentionally: all getters return the
 			// security-preserving default when unset. Explicit YAML values
 			// override, omission hits the default (enabled, strip audio+video,

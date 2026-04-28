@@ -82,12 +82,14 @@ func TestComputeHash_FieldChange(t *testing.T) {
 
 	baseHash := recorder.ComputeHash(base)
 
-	// Each field change must produce a different hash
+	// Each field change must produce a different hash. Version=1 here
+	// covers the version-dispatch in ComputeHash (v2 base → v1 modified
+	// crosses the projection boundary).
 	tests := []struct {
 		name   string
 		modify func(e recorder.Entry) recorder.Entry
 	}{
-		{"version", func(e recorder.Entry) recorder.Entry { e.Version = 2; return e }},
+		{"version", func(e recorder.Entry) recorder.Entry { e.Version = 1; return e }},
 		{"sequence", func(e recorder.Entry) recorder.Entry { e.Sequence = 2; return e }},
 		{"timestamp", func(e recorder.Entry) recorder.Entry {
 			e.Timestamp = ts.Add(time.Second)
@@ -96,6 +98,7 @@ func TestComputeHash_FieldChange(t *testing.T) {
 		{"session_id", func(e recorder.Entry) recorder.Entry { e.SessionID = "sess-2"; return e }},
 		{"trace_id", func(e recorder.Entry) recorder.Entry { e.TraceID = "trace-1"; return e }},
 		{"type", func(e recorder.Entry) recorder.Entry { e.Type = "response"; return e }},
+		{"event_kind", func(e recorder.Entry) recorder.Entry { e.EventKind = "write"; return e }},
 		{"transport", func(e recorder.Entry) recorder.Entry { e.Transport = "connect"; return e }},
 		{"summary", func(e recorder.Entry) recorder.Entry { e.Summary = "changed"; return e }},
 		{"detail", func(e recorder.Entry) recorder.Entry {
@@ -158,9 +161,9 @@ func TestReadEntries_RejectsUnknownVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	// Write an entry with Version=2 (unknown)
+	// Write an entry with Version=99 (out of accepted range {1, 2})
 	e := recorder.Entry{
-		Version: 2, Sequence: 0, SessionID: "s1",
+		Version: 99, Sequence: 0, SessionID: "s1",
 		Timestamp: time.Now().UTC(), Type: testType, Transport: testTransport,
 		Summary: "future", PrevHash: recorder.GenesisHash,
 	}
@@ -173,7 +176,7 @@ func TestReadEntries_RejectsUnknownVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown version, got nil")
 	}
-	if got := err.Error(); !strings.Contains(got, "unsupported entry version 2") {
+	if got := err.Error(); !strings.Contains(got, "unsupported entry version 99") {
 		t.Errorf("error = %q, want mention of unsupported version", got)
 	}
 }

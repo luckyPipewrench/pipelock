@@ -19,13 +19,30 @@ import (
 	"time"
 )
 
-// EntryVersion is the current schema version. Readers MUST reject unknown versions.
-const EntryVersion = 1
+// EntryVersion is the current schema version for new writes. Readers MUST
+// reject versions outside acceptedEntryVersions; v1 chains continue to
+// verify with the v1 hash projection so pre-upgrade audit logs stay valid.
+const EntryVersion = 2
+
+// acceptedEntryVersions is the inclusive set of schema versions ReadEntries
+// and VerifyChain will load. New writes always use EntryVersion; v1 entries
+// keep verifying via computeHashV1 so the chain integrity guarantee survives
+// the schema bump.
+var acceptedEntryVersions = map[int]bool{1: true, 2: true}
 
 // GenesisHash is the PrevHash of the first entry in a chain.
 const GenesisHash = "genesis"
 
 // Entry is a single evidence record in the hash chain.
+//
+// EventKind is informational at the recorder layer. Empty for envelope
+// entries (capture_drop, checkpoint, transcript_root) is acceptable. For
+// entries wrapping action receipts it carries the action verb (read, derive,
+// write, delegate, authorize, spend, commit, actuate, unclassified). For
+// entries wrapping capture summaries it carries the surface (url, response,
+// dlp, cee, tool_policy, tool_scan). Downstream consumers (compile,
+// classification debt) drive their behavior off this field; the recorder
+// itself only stamps it through and binds it into the v2 chain hash.
 type Entry struct {
 	Version   int       `json:"v"`
 	Sequence  uint64    `json:"seq"`
@@ -33,6 +50,7 @@ type Entry struct {
 	SessionID string    `json:"session_id"`
 	TraceID   string    `json:"trace_id,omitempty"`
 	Type      string    `json:"type"`
+	EventKind string    `json:"event_kind,omitempty"`
 	Transport string    `json:"transport"`
 	Summary   string    `json:"summary"`
 	Detail    any       `json:"detail"`
@@ -49,18 +67,37 @@ type CheckpointDetail struct {
 	Signature  string `json:"signature"`
 }
 
-// ComputeHash calculates the SHA-256 hash of an entry over all fields except Hash.
-// Hash chain: SHA256(v || seq || ts || session_id || trace_id || type || transport
+// ComputeHash returns the canonical chain hash for an entry. The canonical
+// projection differs by Version: v1 omits EventKind from the digest input
+// (preserving pre-upgrade chain verification); v2 inserts EventKind between
+// Type and Transport so v2 entries bind the classification to the chain.
 //
-//	|| summary || detail_json || raw_ref || prev_hash)
+// Both versions use the same null-byte field separator and field ordering
+// for fields they share. Unknown versions return the empty string —
+// VerifyChain checks the version fence separately and surfaces a clear
+// error.
 func ComputeHash(e Entry) string {
+	switch e.Version {
+	case 1:
+		return computeHashV1(e)
+	case 2:
+		return computeHashV2(e)
+	default:
+		return ""
+	}
+}
+
+// computeHashV1 is the frozen v1 canonical projection. Do NOT modify this
+// function — pre-upgrade chains depend on byte-for-byte identical output.
+// Field order: v, seq, ts, session_id, trace_id, type, transport, summary,
+// detail_json, raw_ref, prev_hash. Null byte separators between fields.
+func computeHashV1(e Entry) string {
 	detailJSON, err := json.Marshal(e.Detail)
 	if err != nil {
 		detailJSON = []byte("null")
 	}
 
 	h := sha256.New()
-	// Each field separated by null byte to prevent field-boundary ambiguity
 	fields := []string{
 		strconv.Itoa(e.Version),
 		strconv.FormatUint(e.Sequence, 10),
@@ -76,7 +113,42 @@ func ComputeHash(e Entry) string {
 	}
 	for i, f := range fields {
 		if i > 0 {
-			_, _ = h.Write([]byte{0}) // null separator
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte(f))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// computeHashV2 is the v2 canonical projection. Identical to v1 but inserts
+// EventKind between Type and Transport. The version field itself ("1" vs
+// "2") differs by definition, so v1 and v2 produce different hashes for the
+// same logical entry even when EventKind is empty — this is the v1/v2
+// isolation guarantee.
+func computeHashV2(e Entry) string {
+	detailJSON, err := json.Marshal(e.Detail)
+	if err != nil {
+		detailJSON = []byte("null")
+	}
+
+	h := sha256.New()
+	fields := []string{
+		strconv.Itoa(e.Version),
+		strconv.FormatUint(e.Sequence, 10),
+		e.Timestamp.UTC().Format(time.RFC3339Nano),
+		e.SessionID,
+		e.TraceID,
+		e.Type,
+		e.EventKind,
+		e.Transport,
+		e.Summary,
+		string(detailJSON),
+		e.RawRef,
+		e.PrevHash,
+	}
+	for i, f := range fields {
+		if i > 0 {
+			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte(f))
 	}
@@ -84,12 +156,15 @@ func ComputeHash(e Entry) string {
 }
 
 // VerifyChain checks the integrity of a sequence of entries. Returns an error
-// describing the first break found, or nil if the chain is intact.
+// describing the first break found, or nil if the chain is intact. Mixed v1
+// and v2 entries are accepted; each entry's hash is computed using the
+// projection matching its Version field, and PrevHash linkage is enforced
+// across the version boundary.
 // If pubKey is provided, checkpoint entry signatures are also verified.
 func VerifyChain(entries []Entry, pubKey ...ed25519.PublicKey) error {
 	for i, e := range entries {
-		if e.Version != EntryVersion {
-			return fmt.Errorf("entry seq %d: unsupported version %d (expected %d)", e.Sequence, e.Version, EntryVersion)
+		if !acceptedEntryVersions[e.Version] {
+			return fmt.Errorf("entry seq %d: unsupported version %d (accepted: 1, 2)", e.Sequence, e.Version)
 		}
 		computed := ComputeHash(e)
 		if computed != e.Hash {
@@ -153,7 +228,7 @@ func VerifyCheckpoints(entries []Entry, pubKey ed25519.PublicKey) error {
 }
 
 // ReadEntries reads and parses JSONL evidence entries from a file.
-// Rejects entries with unknown versions.
+// Accepts the versions in acceptedEntryVersions; rejects unknown versions.
 func ReadEntries(path string) ([]Entry, error) {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
@@ -180,8 +255,8 @@ func ReadEntries(path string) ([]Entry, error) {
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
 			return nil, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
-		if e.Version != EntryVersion {
-			return nil, fmt.Errorf("line %d: unsupported entry version %d (expected %d)", lineNum, e.Version, EntryVersion)
+		if !acceptedEntryVersions[e.Version] {
+			return nil, fmt.Errorf("line %d: unsupported entry version %d (accepted: 1, 2)", lineNum, e.Version)
 		}
 		entries = append(entries, e)
 	}

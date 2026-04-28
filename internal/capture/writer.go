@@ -277,6 +277,7 @@ func (w *Writer) writeDropSentinel(count int64) {
 	_ = w.metaRec.Record(recorder.Entry{
 		SessionID: metaSessionID,
 		Type:      EntryTypeCaptureDrop,
+		EventKind: EntryTypeCaptureDrop,
 		Summary:   "capture queue overflow",
 		Detail: CaptureDropDetail{
 			Count:  int(count),
@@ -285,10 +286,31 @@ func (w *Writer) writeDropSentinel(count int64) {
 	})
 }
 
+// captureEventKind returns the event_kind string to stamp on a capture
+// recorder.Entry. The current PR uses the surface name (url, response, dlp,
+// cee, tool_policy, tool_scan) unconditionally — proxy and MCP call sites do
+// not yet populate Verdict.ActionClass, so switching on the zero value would
+// silently mark every observation as "read" and mask the unclassified state.
+//
+// The follow-up task that wires ActionClass through the proxy/mcp layers will
+// swap this helper to prefer the classified verb when set, falling back to
+// the surface only for pre-classification callers. Until then, surface names
+// preserve attributability without inventing a classification.
+func captureEventKind(surface string) string {
+	return surface
+}
+
 // buildSummary constructs a CaptureSummary, truncating scanner and wire
-// payload samples to maxScannerSample bytes.
+// payload samples to maxScannerSample bytes. actionClass carries the
+// session-level action verb when the call site classified inline (e.g.
+// session.ActionClassWrite.String() == "write"); empty means unclassified
+// and the field is omitted from the wire so the unclassified-rate metric
+// in a downstream commit can count missing classifications honestly
+// instead of having every observation render as "read" by default.
 func (w *Writer) buildSummary(
-	surface, subsurface, configHash, agent, profile, scannerInput string,
+	surface, subsurface, configHash, agent, profile string,
+	actionClass string,
+	scannerInput string,
 	payloadComplete bool,
 	transformKind, wirePayload string,
 	batchIndex *int,
@@ -306,6 +328,7 @@ func (w *Writer) buildSummary(
 		BuildSHA:             w.buildSHA,
 		Agent:                agent,
 		Profile:              profile,
+		ActionClass:          actionClass,
 		PayloadComplete:      payloadComplete,
 		TransformKind:        transformKind,
 		Request:              req,
@@ -367,11 +390,13 @@ func (w *Writer) ObserveURLVerdict(_ context.Context, rec *URLVerdictRecord) {
 			SessionID: rec.SessionID,
 			TraceID:   rec.RequestID,
 			Type:      EntryTypeCapture,
+			EventKind: captureEventKind(SurfaceURL),
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + rec.EffectiveAction,
 		},
 		summary: w.buildSummary(
 			SurfaceURL, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+			rec.ActionClass,
 			scannerInput, true, TransformRaw, "", nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			rec.EffectiveAction, rec.Outcome, rec.SkipReason,
@@ -388,11 +413,13 @@ func (w *Writer) ObserveResponseVerdict(_ context.Context, rec *ResponseVerdictR
 			SessionID: rec.SessionID,
 			TraceID:   rec.RequestID,
 			Type:      EntryTypeCapture,
+			EventKind: captureEventKind(SurfaceResponse),
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + rec.EffectiveAction,
 		},
 		summary: w.buildSummary(
 			SurfaceResponse, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+			rec.ActionClass,
 			"", false, rec.TransformKind, wire, nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			rec.EffectiveAction, rec.Outcome, rec.SkipReason,
@@ -408,11 +435,13 @@ func (w *Writer) ObserveDLPVerdict(_ context.Context, rec *DLPVerdictRecord) {
 			SessionID: rec.SessionID,
 			TraceID:   rec.RequestID,
 			Type:      EntryTypeCapture,
+			EventKind: captureEventKind(SurfaceDLP),
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + rec.EffectiveAction,
 		},
 		summary: w.buildSummary(
 			SurfaceDLP, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+			rec.ActionClass,
 			rec.ScannerInput, false, rec.TransformKind, "", nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			rec.EffectiveAction, rec.Outcome, rec.SkipReason,
@@ -428,11 +457,13 @@ func (w *Writer) ObserveCEEVerdict(_ context.Context, rec *CEERecord) {
 			SessionID: rec.SessionID,
 			TraceID:   rec.RequestID,
 			Type:      EntryTypeCapture,
+			EventKind: captureEventKind(SurfaceCEE),
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + rec.EffectiveAction,
 		},
 		summary: w.buildSummary(
 			SurfaceCEE, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+			rec.ActionClass,
 			rec.ScannerInput, false, rec.TransformKind, "", nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			rec.EffectiveAction, rec.Outcome, rec.SkipReason,
@@ -448,11 +479,13 @@ func (w *Writer) ObserveToolPolicyVerdict(_ context.Context, rec *ToolPolicyReco
 			SessionID: rec.SessionID,
 			TraceID:   rec.RequestID,
 			Type:      EntryTypeCapture,
+			EventKind: captureEventKind(SurfaceToolPolicy),
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + rec.EffectiveAction,
 		},
 		summary: w.buildSummary(
 			SurfaceToolPolicy, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+			rec.ActionClass,
 			"", rec.Request.ToolArgsJSON != "", TransformRaw, "", rec.BatchIndex,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			rec.EffectiveAction, rec.Outcome, rec.SkipReason,
@@ -467,11 +500,13 @@ func (w *Writer) ObserveToolScanVerdict(_ context.Context, rec *ToolScanRecord) 
 			SessionID: rec.SessionID,
 			TraceID:   rec.RequestID,
 			Type:      EntryTypeCapture,
+			EventKind: captureEventKind(SurfaceToolScan),
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + rec.EffectiveAction,
 		},
 		summary: w.buildSummary(
 			SurfaceToolScan, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+			rec.ActionClass,
 			rec.ScannerInput, false, rec.TransformKind, "", rec.BatchIndex,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			rec.EffectiveAction, rec.Outcome, rec.SkipReason,

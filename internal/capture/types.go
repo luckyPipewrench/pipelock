@@ -104,6 +104,12 @@ type CaptureSummary struct {
 	Agent string `json:"agent,omitempty"`
 	// Profile is the resolved config profile name.
 	Profile string `json:"profile,omitempty"`
+	// ActionClass is the session-level action verb (read, browse, summarize,
+	// write, exec, secret, publish, network) at scan time, if the call site
+	// classified the action. Empty when the producing surface has not wired
+	// classification through; downstream consumers should treat the absence
+	// as "unclassified" rather than assuming the zero-value "read".
+	ActionClass string `json:"action_class,omitempty"`
 
 	// PayloadRef is the recorder RawRef for the full raw payload (optional;
 	// only set when raw escrow is enabled).
@@ -234,13 +240,20 @@ type CaptureObserver interface {
 
 // URLVerdictRecord holds the context for a URL-pipeline scan result.
 type URLVerdictRecord struct {
-	Subsurface        string
-	Transport         string
-	SessionID         string
-	RequestID         string
-	ConfigHash        string
-	Agent             string
-	Profile           string
+	Subsurface string
+	Transport  string
+	SessionID  string
+	RequestID  string
+	ConfigHash string
+	Agent      string
+	Profile    string
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	RawFindings       []Finding
 	EffectiveFindings []Finding
@@ -251,13 +264,20 @@ type URLVerdictRecord struct {
 
 // ResponseVerdictRecord holds the context for a response injection scan result.
 type ResponseVerdictRecord struct {
-	Subsurface        string
-	Transport         string
-	SessionID         string
-	RequestID         string
-	ConfigHash        string
-	Agent             string
-	Profile           string
+	Subsurface string
+	Transport  string
+	SessionID  string
+	RequestID  string
+	ConfigHash string
+	Agent      string
+	Profile    string
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
 	WirePayload       []byte
@@ -270,13 +290,20 @@ type ResponseVerdictRecord struct {
 
 // DLPVerdictRecord holds the context for a DLP body-scan result.
 type DLPVerdictRecord struct {
-	Subsurface        string
-	Transport         string
-	SessionID         string
-	RequestID         string
-	ConfigHash        string
-	Agent             string
-	Profile           string
+	Subsurface string
+	Transport  string
+	SessionID  string
+	RequestID  string
+	ConfigHash string
+	Agent      string
+	Profile    string
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
 	ScannerInput      string
@@ -289,13 +316,20 @@ type DLPVerdictRecord struct {
 
 // CEERecord holds the context for a cross-entry entropy (CEE) scan result.
 type CEERecord struct {
-	Subsurface        string
-	Transport         string
-	SessionID         string
-	RequestID         string
-	ConfigHash        string
-	Agent             string
-	Profile           string
+	Subsurface string
+	Transport  string
+	SessionID  string
+	RequestID  string
+	ConfigHash string
+	Agent      string
+	Profile    string
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
 	ScannerInput      string
@@ -308,13 +342,20 @@ type CEERecord struct {
 
 // ToolPolicyRecord holds the context for a tool-policy evaluation result.
 type ToolPolicyRecord struct {
-	Subsurface        string
-	Transport         string
-	SessionID         string
-	RequestID         string
-	ConfigHash        string
-	Agent             string
-	Profile           string
+	Subsurface string
+	Transport  string
+	SessionID  string
+	RequestID  string
+	ConfigHash string
+	Agent      string
+	Profile    string
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	BatchIndex        *int
 	Request           CaptureRequest
 	RawFindings       []Finding
@@ -327,13 +368,20 @@ type ToolPolicyRecord struct {
 // ToolScanRecord holds the context for a tool-description scan result (tool
 // poisoning detection, drift detection).
 type ToolScanRecord struct {
-	Subsurface        string
-	Transport         string
-	SessionID         string
-	RequestID         string
-	ConfigHash        string
-	Agent             string
-	Profile           string
+	Subsurface string
+	Transport  string
+	SessionID  string
+	RequestID  string
+	ConfigHash string
+	Agent      string
+	Profile    string
+	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
+	// String() == "read") at scan time, populated by callers that classify
+	// inline. Empty string means the call site did not classify; the writer
+	// falls back to the surface name when stamping recorder.Entry.EventKind
+	// and leaves CaptureSummary.action_class absent so the unclassified-rate
+	// metric does not undercount.
+	ActionClass       string
 	BatchIndex        *int
 	Request           CaptureRequest
 	TransformKind     string

@@ -6,10 +6,33 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"gopkg.in/yaml.v3"
 )
+
+// normalizeLearn trims surrounding whitespace from Learn.CaptureDir and,
+// conditionally, from Learn.Privacy.SaltSource. Literal salt sources are
+// preserved byte-for-byte: trimming `" secret "` to `"secret"` would
+// silently change the HMAC and break continuity across reloads, so only
+// `file:` paths and `${VAR}` env references (where surrounding whitespace
+// is meaningless and likely YAML indentation drift) get trimmed. An
+// all-whitespace literal collapses to "" and is treated as unset by the
+// downstream resolver.
+func normalizeLearn(l *Learn) {
+	l.CaptureDir = strings.TrimSpace(l.CaptureDir)
+	src := l.Privacy.SaltSource
+	trimmed := strings.TrimSpace(src)
+	if trimmed == "" {
+		l.Privacy.SaltSource = ""
+		return
+	}
+	if strings.HasPrefix(trimmed, "file:") ||
+		(strings.HasPrefix(trimmed, "${") && strings.HasSuffix(trimmed, "}")) {
+		l.Privacy.SaltSource = trimmed
+	}
+}
 
 // applySecurityDefaults sets security-sensitive booleans to true when they are
 // omitted or null in the config YAML. YAML unmarshal into a plain bool cannot
@@ -33,6 +56,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ScanAPI.Kinds.PromptInjection = true
 		cfg.ScanAPI.Kinds.ToolCall = true
 		cfg.Taint.Enabled = true
+		cfg.Learn.Privacy.PublicAllowlistDefault = true
 		return
 	}
 
@@ -109,10 +133,21 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// Taint defaults to enabled when omitted, matching Defaults().
 	taint, _ := raw["taint"].(map[string]interface{})
 	setBoolDefault(taint, "enabled", &cfg.Taint.Enabled)
+
+	// Learn privacy: public_allowlist_default defaults to true so the
+	// canonical seed allowlist ships when the operator omits the privacy
+	// section or the field. Fail-closed for the privacy enforcer.
+	learn, _ := raw["learn"].(map[string]interface{})
+	var privacy map[string]interface{}
+	if learn != nil {
+		privacy, _ = learn["privacy"].(map[string]interface{})
+	}
+	setBoolDefault(privacy, "public_allowlist_default", &cfg.Learn.Privacy.PublicAllowlistDefault)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
 func (c *Config) ApplyDefaults() {
+	normalizeLearn(&c.Learn)
 	if c.Version == 0 {
 		c.Version = 1
 	}

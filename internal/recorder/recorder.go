@@ -45,6 +45,16 @@ const (
 	// replacement, preserving receipt structure for audit while preventing
 	// plaintext secrets in evidence files.
 	recorderTypeReceipt = "action_receipt"
+
+	// eventKindCheckpoint is the EventKind value stamped on checkpoint
+	// entries written by the recorder. Fixed value — checkpoints are an
+	// envelope concern owned by the recorder package.
+	eventKindCheckpoint = "checkpoint"
+
+	// eventKindProxyDecision is the EventKind value stamped on signed
+	// decision entries written via RecordDecision. Fixed value — these are
+	// signed verdict proofs and the classifier is the entry type itself.
+	eventKindProxyDecision = "proxy_decision"
 )
 
 // Config configures the flight recorder.
@@ -302,6 +312,7 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 	return r.Record(Entry{
 		SessionID: dr.SessionID,
 		Type:      decisionEntryType,
+		EventKind: eventKindProxyDecision,
 		Transport: dr.RequestContext.Transport,
 		Summary:   summary,
 		Detail:    detail,
@@ -349,6 +360,7 @@ func (r *Recorder) checkpointLocked() error {
 		Timestamp: time.Now().UTC(),
 		SessionID: r.sessionID,
 		Type:      checkpointType,
+		EventKind: eventKindCheckpoint,
 		PrevHash:  r.prevHash,
 	}
 

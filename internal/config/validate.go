@@ -218,6 +218,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateRedaction(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateLearn(); err != nil {
+		return warnings, err
+	}
 	return warnings, nil
 }
 
@@ -235,6 +238,99 @@ func (c *Config) validateRedaction() error {
 	}
 	if c.Redaction.Enabled && !c.RequestBodyScanning.Enabled {
 		return fmt.Errorf("redaction: enabled=true requires request_body_scanning.enabled=true (the redaction hook lives in the body-scan path)")
+	}
+	return nil
+}
+
+// validateLearn enforces the v2.4 learn-and-lock observation pipeline schema.
+// Schema-level checks only: PR 1.3 ships the surface, the privacy enforcer
+// (internal/contract/privacy) and recorder integration land in later commits.
+//
+// Rules:
+//   - When learn.enabled is true, learn.capture_dir must be non-empty.
+//   - learn.privacy.salt_source supports three resolver shapes: "${VAR}"
+//     (env var, validated at observe time), "file:/abs/path" (file
+//     contents, path validated here at config-load), and literal value
+//     (test/dev only). Empty string is accepted; the privacy enforcer
+//     fails closed at observe time when classification needs salt.
+func (c *Config) validateLearn() error {
+	if c.Learn.Enabled && c.Learn.CaptureDir == "" {
+		return fmt.Errorf("learn.capture_dir required when learn.enabled is true")
+	}
+	if err := validateLearnSaltSource(c.Learn.Privacy.SaltSource); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLearnSaltSource validates the salt_source field. file:-prefixed
+// values are resolved here so config-load fails loud if the file is
+// missing, traversal-bearing, relative, or world/group readable. Env-var
+// references are accepted as-is and resolved at observe time. Other values
+// are accepted as literal salts (test/dev only) — production deployments
+// should always use file: or ${VAR} so the salt never lives in config YAML.
+func validateLearnSaltSource(src string) error {
+	if src == "" {
+		return nil
+	}
+	if strings.HasPrefix(src, "${") && strings.HasSuffix(src, "}") {
+		name := strings.TrimSuffix(strings.TrimPrefix(src, "${"), "}")
+		if name == "" {
+			return fmt.Errorf("learn.privacy.salt_source: env var name must not be empty")
+		}
+		if strings.TrimSpace(name) != name {
+			return fmt.Errorf("learn.privacy.salt_source: env var name must not contain surrounding whitespace")
+		}
+		// env-var reference; resolved at observe time
+		return nil
+	}
+	if !strings.HasPrefix(src, "file:") {
+		// literal salt value (test/dev only)
+		return nil
+	}
+	rawPath := strings.TrimPrefix(src, "file:")
+	if !filepath.IsAbs(rawPath) {
+		return fmt.Errorf("learn.privacy.salt_source: file path must be absolute")
+	}
+	if filepath.Clean(rawPath) != rawPath {
+		return fmt.Errorf("learn.privacy.salt_source: file path must be in canonical form (no .., redundant separators, or trailing slash)")
+	}
+	cleanPath := filepath.Clean(rawPath)
+
+	// Lstat rejects symlinks at the directory entry level. The runtime
+	// resolver in internal/contract/privacy re-validates with O_NOFOLLOW on
+	// the open fd so a between-stat-and-open swap also fails closed.
+	li, err := os.Lstat(cleanPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("learn.privacy.salt_source: file does not exist")
+		}
+		return fmt.Errorf("learn.privacy.salt_source: lstat %s: %w", cleanPath, err)
+	}
+	if li.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("learn.privacy.salt_source: symlinks not permitted: %s", cleanPath)
+	}
+	if !li.Mode().IsRegular() {
+		return fmt.Errorf("learn.privacy.salt_source: file must be a regular file")
+	}
+
+	f, err := os.OpenFile(cleanPath, os.O_RDONLY|noFollowFlag, 0)
+	if err != nil {
+		if errors.Is(err, errELOOP) {
+			return fmt.Errorf("learn.privacy.salt_source: symlink raced into place: %s", cleanPath)
+		}
+		return fmt.Errorf("learn.privacy.salt_source: open %s: %w", cleanPath, err)
+	}
+	defer func() { _ = f.Close() }()
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("learn.privacy.salt_source: fstat %s: %w", cleanPath, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("learn.privacy.salt_source: file must be a regular file")
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("learn.privacy.salt_source: file must have mode 0o600 or stricter (got: 0o%03o)", fi.Mode().Perm())
 	}
 	return nil
 }

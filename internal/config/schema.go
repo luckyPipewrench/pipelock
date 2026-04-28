@@ -248,6 +248,7 @@ type Config struct {
 	Taint                    TaintConfig             `yaml:"taint"`
 	MediationEnvelope        MediationEnvelope       `yaml:"mediation_envelope"`
 	Redaction                redact.Config           `yaml:"redaction"`
+	Learn                    Learn                   `yaml:"learn"`
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
 	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
 	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
@@ -1101,4 +1102,36 @@ type ScanAPIKinds struct {
 	DLP             bool `yaml:"dlp"`
 	PromptInjection bool `yaml:"prompt_injection"`
 	ToolCall        bool `yaml:"tool_call"`
+}
+
+// Learn governs the v2.4 learn-and-lock observation pipeline. When Enabled,
+// the proxy emits classification metadata into the recorder JSONL stream so
+// that pipelock learn compile (PR 2.x) can build a behavioral contract.
+// All fields are reload-safe.
+type Learn struct {
+	Enabled    bool         `yaml:"enabled"`
+	CaptureDir string       `yaml:"capture_dir"`
+	Privacy    LearnPrivacy `yaml:"privacy"`
+}
+
+// LearnPrivacy controls the privacy budget on data flowing through the
+// observation pipeline. The privacy enforcer (internal/contract/privacy,
+// shipped in a later commit on this PR) consults these settings; PR 1.3
+// only ships the schema + defaults + validation surface.
+type LearnPrivacy struct {
+	// SaltSource is a single string with an auto-detected resolver:
+	//   "${VAR}"           -> env var lookup at runtime
+	//   "file:/abs/path"   -> file contents at runtime (path validated at config-load)
+	//   ""                 -> empty (fail-closed when classification needs salt)
+	//   anything else      -> literal salt value (test/dev only)
+	// No salt is stored in this string after Normalize; the resolver runs
+	// at observation time, not config-load time.
+	SaltSource string `yaml:"salt_source"`
+
+	// PublicAllowlistDefault toggles whether the privacy enforcer ships a
+	// canonical seed public-allowlist (common public APIs, well-known
+	// public domains) when the operator's explicit allowlist is empty.
+	// Default true. Security-sensitive boolean: 6-state default-true tests
+	// required (see CLAUDE.md's security invariants section).
+	PublicAllowlistDefault bool `yaml:"public_allowlist_default"`
 }

@@ -293,7 +293,7 @@ func validateLearnSaltSource(src string) error {
 		return fmt.Errorf("learn.privacy.salt_source: file path must be absolute")
 	}
 	if filepath.Clean(rawPath) != rawPath {
-		return fmt.Errorf("learn.privacy.salt_source: file path must be in canonical form (no ..,  redundant separators, or trailing slash)")
+		return fmt.Errorf("learn.privacy.salt_source: file path must be in canonical form (no .., redundant separators, or trailing slash)")
 	}
 	cleanPath := filepath.Clean(rawPath)
 

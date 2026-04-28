@@ -47,11 +47,25 @@ func (m *Metrics) registerLearnMetrics(reg *prometheus.Registry) {
 		Help:      "Sliding window unclassified-event ratio, computed and set by the observation pipeline. 0.0 = all events classified; 1.0 = none classified.",
 	})
 
+	m.learnInferenceClassifications = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: learnNamespace,
+		Name:      "inference_classify_total",
+		Help:      "Total inference classifications produced by the contract-compile engine, labeled by outcome (never_confirmed, brittle, stable). Used by the review UX to render the inference-verdict histogram.",
+	}, []string{"outcome"})
+
+	m.learnInferenceFloorFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: learnNamespace,
+		Name:      "inference_floor_failures_total",
+		Help:      "Total floor failures across all inference classifications, labeled by which floor caused the rule to fall back to never_confirmed (sessions, events, windows). Diagnostic for which floor is the bottleneck on a deployment's data volume.",
+	}, []string{"floor"})
+
 	reg.MustRegister(
 		m.learnObservationEvents,
 		m.learnRegulatedDataBlocked,
 		m.learnUnclassifiedActions,
 		m.learnUnclassifiedRate,
+		m.learnInferenceClassifications,
+		m.learnInferenceFloorFailures,
 	)
 }
 
@@ -97,4 +111,26 @@ func (m *Metrics) SetUnclassifiedRate(rate float64) {
 		return
 	}
 	m.learnUnclassifiedRate.Set(rate)
+}
+
+// RecordInferenceClassification increments the inference_classify_total
+// counter for the given outcome. Outcome must be one of "never_confirmed",
+// "brittle", "stable" (the wire form of inference.Confidence.String()).
+// The caller is responsible for passing a canonical value; this helper
+// does NOT normalize or validate.
+func (m *Metrics) RecordInferenceClassification(outcome string) {
+	if m == nil {
+		return
+	}
+	m.learnInferenceClassifications.WithLabelValues(outcome).Inc()
+}
+
+// RecordInferenceFloorFailure increments the inference_floor_failures_total
+// counter for the named floor. Floor must be one of "sessions", "events",
+// "windows". The caller is responsible for passing a canonical value.
+func (m *Metrics) RecordInferenceFloorFailure(floor string) {
+	if m == nil {
+		return
+	}
+	m.learnInferenceFloorFailures.WithLabelValues(floor).Inc()
 }

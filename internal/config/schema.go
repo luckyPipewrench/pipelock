@@ -1109,9 +1109,10 @@ type ScanAPIKinds struct {
 // that pipelock learn compile (PR 2.x) can build a behavioral contract.
 // All fields are reload-safe.
 type Learn struct {
-	Enabled    bool         `yaml:"enabled"`
-	CaptureDir string       `yaml:"capture_dir"`
-	Privacy    LearnPrivacy `yaml:"privacy"`
+	Enabled    bool           `yaml:"enabled"`
+	CaptureDir string         `yaml:"capture_dir"`
+	Privacy    LearnPrivacy   `yaml:"privacy"`
+	Inference  LearnInference `yaml:"inference"`
 }
 
 // LearnPrivacy controls the privacy budget on data flowing through the
@@ -1134,4 +1135,27 @@ type LearnPrivacy struct {
 	// Default true. Security-sensitive boolean: 6-state default-true tests
 	// required (see CLAUDE.md's security invariants section).
 	PublicAllowlistDefault bool `yaml:"public_allowlist_default"`
+}
+
+// LearnInference governs the contract-compile inference engine
+// (internal/contract/inference). The threshold constants (Wilson alpha,
+// tau_brittle, tau_stable, headroom defaults) are NOT exposed here —
+// they are part of the statistical contract and are hardcoded in the
+// inference package. Floors ARE deployment-configurable because traffic
+// volumes differ across deployments, and the floors are exposure gates
+// rather than confidence thresholds.
+type LearnInference struct {
+	Floors LearnInferenceFloors `yaml:"floors"`
+}
+
+// LearnInferenceFloors mirrors inference.Floors at the YAML wire layer.
+// Each field is the minimum count required before a rule may be
+// classified `stable`. Missing or zero values resolve to the package
+// defaults (5 / 20 / 3) at runtime via inference.Floors.Resolved().
+// Negative values are rejected at config validation with a clear
+// field-path error.
+type LearnInferenceFloors struct {
+	MinSessions int `yaml:"min_sessions"`
+	MinEvents   int `yaml:"min_events"`
+	MinWindows  int `yaml:"min_windows"`
 }

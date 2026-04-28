@@ -17,6 +17,8 @@ var expectedLearnMetricNames = []string{
 	"pipelock_learn_regulated_data_blocked_total",
 	"pipelock_learn_unclassified_actions_total",
 	"pipelock_learn_unclassified_rate",
+	"pipelock_learn_inference_classify_total",
+	"pipelock_learn_inference_floor_failures_total",
 }
 
 func TestRegisterLearnMetrics_RegistersAllFour(t *testing.T) {
@@ -31,6 +33,8 @@ func TestRegisterLearnMetrics_RegistersAllFour(t *testing.T) {
 	// for the Vec metrics so this touch can't be confused with real data.
 	m.RecordObservationEvent("registration_probe")
 	m.RecordRegulatedDataBlocked("registration_probe")
+	m.RecordInferenceClassification("registration_probe")
+	m.RecordInferenceFloorFailure("registration_probe")
 
 	families, err := m.Registry().Gather()
 	if err != nil {
@@ -154,4 +158,73 @@ func TestSetUnclassifiedRate_NilSafe(t *testing.T) {
 	t.Parallel()
 	var m *Metrics
 	m.SetUnclassifiedRate(0.5) // no panic
+}
+
+// TestRecordInferenceClassification_IncrementsByOutcome confirms each
+// canonical outcome label increments its own counter independently.
+// The wire labels (never_confirmed, brittle, stable) must agree with
+// inference.Confidence.String() so the metric is groupable in Grafana
+// against the recorder's emitted values byte-for-byte.
+func TestRecordInferenceClassification_IncrementsByOutcome(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	m.RecordInferenceClassification("stable")
+	m.RecordInferenceClassification("stable")
+	m.RecordInferenceClassification("stable")
+	m.RecordInferenceClassification("brittle")
+
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("stable")); got != 3 {
+		t.Errorf("stable counter = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("brittle")); got != 1 {
+		t.Errorf("brittle counter = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("never_confirmed")); got != 0 {
+		t.Errorf("never_confirmed counter = %v, want 0 (untouched)", got)
+	}
+}
+
+// TestRecordInferenceClassification_NilSafe matches the existing nil-safe
+// pattern across the learn metrics. A nil *Metrics receiver is the legal
+// "metrics disabled" sentinel — the helper must not panic.
+func TestRecordInferenceClassification_NilSafe(t *testing.T) {
+	t.Parallel()
+	var m *Metrics
+	m.RecordInferenceClassification("stable") // no panic
+}
+
+// TestRecordInferenceFloorFailure_IncrementsByFloor confirms each canonical
+// floor label increments its own counter independently. The wire labels
+// (sessions, events, windows) match the YAML field-name suffixes the
+// operator sees in pipelock.yaml so the diagnostic counter and the
+// validator error message use the same vocabulary.
+func TestRecordInferenceFloorFailure_IncrementsByFloor(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	m.RecordInferenceFloorFailure("sessions")
+	m.RecordInferenceFloorFailure("sessions")
+	m.RecordInferenceFloorFailure("events")
+	m.RecordInferenceFloorFailure("windows")
+	m.RecordInferenceFloorFailure("windows")
+	m.RecordInferenceFloorFailure("windows")
+
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("sessions")); got != 2 {
+		t.Errorf("sessions counter = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("events")); got != 1 {
+		t.Errorf("events counter = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("windows")); got != 3 {
+		t.Errorf("windows counter = %v, want 3", got)
+	}
+}
+
+// TestRecordInferenceFloorFailure_NilSafe matches the existing nil-safe
+// pattern.
+func TestRecordInferenceFloorFailure_NilSafe(t *testing.T) {
+	t.Parallel()
+	var m *Metrics
+	m.RecordInferenceFloorFailure("sessions") // no panic
 }

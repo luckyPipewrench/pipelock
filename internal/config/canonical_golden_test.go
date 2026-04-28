@@ -37,7 +37,12 @@ const (
 	// Defaults() now includes the Learn top-level block (enabled=false,
 	// privacy.public_allowlist_default=true). New policy surface → ph
 	// must shift so verifiers detect the schema change.
-	goldenHashDefaults = "bfaf53a86f0a97d30975349cbe0ba09947dd42b413cd04c4076114e434ad91e8"
+	// Re-bumped on the inference-engine wiring PR: Learn now carries an
+	// inference.floors substruct (min_sessions/min_events/min_windows).
+	// Floors are detection-relevant (they decide stable vs
+	// never_confirmed at compile time), so they must flow into ph so
+	// verifiers detect deployments that loosen the exposure gates.
+	goldenHashDefaults = "2fc2087f2baaf55caeff6aea778760eee3f2e16a36687473ab29e338c95ea624"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -47,7 +52,11 @@ const (
 	// the rich fixture now carries a Learn block with enabled=false +
 	// privacy.public_allowlist_default=true defaults, so ph must shift
 	// in lockstep with the Defaults() bump above.
-	goldenHashRichConfig = "31c45f2e4131f4d780c6452192a98928d91b69a46c21e1858dfb5125d5e15dcb"
+	// Re-bumped on the inference-engine wiring PR: see goldenHashDefaults
+	// note above. Floors decode as zero in the rich fixture (which does
+	// not set them) and Resolved() supplies defaults at runtime, so the
+	// rich-config hash shifts in lockstep with Defaults().
+	goldenHashRichConfig = "19acd838ef7d36ed467077dd56a545e60808a5155fa61715aa5f889ee5f7aac7"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -8,13 +8,18 @@ between the Go and Python implementations.
 
 Usage:
     python3 verify.py <golden-dir>
+    python3 verify.py --fingerprint
+    python3 verify.py --recovery-authorization <path>
+    python3 verify.py --root-transition <path>
 
 Exits 0 on success, 1 on any verification failure.
 """
 
 import json
 import os
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import jcs
@@ -23,6 +28,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 
 SIG_PREFIX = "ed25519:"
+FINGERPRINT_ALGORITHM = "sha256"
+
+# sha256:<64 lowercase hex chars>
+_SHA256_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def load_test_pubkey(golden_dir: Path) -> bytes:
@@ -114,6 +123,377 @@ def verify_evidence_receipt(fixture: Path, pubkey: bytes) -> tuple[bool, str]:
         return False, f"verify failed: {e}"
 
 
+def fingerprint(pubkey_bytes: bytes) -> str:
+    """Pipelock canonical key fingerprint: "sha256:" + lowercase hex of
+    sha256 over the raw 32-byte ed25519 public key.
+
+    Cross-implementation: the Go Fingerprint() function computes the same
+    value byte for byte. Changing this format requires a roster
+    schema_version bump.
+    """
+    if len(pubkey_bytes) != 32:
+        raise ValueError(
+            f"expected 32-byte ed25519 public key, got {len(pubkey_bytes)}"
+        )
+    import hashlib
+
+    return FINGERPRINT_ALGORITHM + ":" + hashlib.sha256(pubkey_bytes).hexdigest()
+
+
+def parse_fingerprint(s: str) -> str:
+    """Validate and normalize a sha256:<hex> fingerprint string.
+
+    Returns the canonical lowercase form. Raises ValueError on a missing
+    algorithm prefix, an unknown algorithm, a non-hex digest, or a digest
+    of the wrong length. Mirrors the Go ParseFingerprint behavior so that
+    a pin typed with uppercase hex on either side compares equal to its
+    canonical form.
+    """
+    idx = s.find(":")
+    if idx < 0:
+        raise ValueError(f"fingerprint missing algorithm prefix: {s!r}")
+    algorithm = s[:idx]
+    digest = s[idx + 1 :]
+    if algorithm != FINGERPRINT_ALGORITHM:
+        raise ValueError(
+            f"fingerprint algorithm {algorithm!r} not supported "
+            f"(expected {FINGERPRINT_ALGORITHM!r})"
+        )
+    # 32 bytes = 64 hex chars for sha256.
+    if len(digest) != 64:
+        raise ValueError(
+            f"fingerprint digest must be 64 hex chars, got {len(digest)}"
+        )
+    try:
+        bytes.fromhex(digest)
+    except ValueError as e:
+        raise ValueError(f"fingerprint digest is not hex: {digest!r}") from e
+    return FINGERPRINT_ALGORITHM + ":" + digest.lower()
+
+
+def verify_fingerprint(pubkey_hex: str, expected_fingerprint: str) -> None:
+    """Decode a hex public key, compute its fingerprint, and compare to expected.
+
+    The expected_fingerprint is parsed and normalized via parse_fingerprint
+    so a mixed-case pin compares equal to its canonical form (Go's
+    ParseFingerprint accepts uppercase hex; this verifier must stay
+    wire-compatible). Raises ValueError on mismatch or invalid input.
+    """
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
+    computed = fingerprint(pubkey_bytes)
+    expected_canonical = parse_fingerprint(expected_fingerprint)
+    if computed != expected_canonical:
+        raise ValueError(
+            f"fingerprint mismatch: computed {computed}, expected {expected_canonical}"
+        )
+
+
+def _parse_rfc3339(s: str) -> datetime:
+    """Parse an RFC 3339 timestamp string into a timezone-aware datetime.
+
+    Raises ValueError on malformed input.
+
+    datetime.fromisoformat does not accept a trailing 'Z' suffix until
+    Python 3.11; the repo targets earlier interpreters too, so normalize
+    'Z' to '+00:00' before delegating. Other valid offsets pass through
+    untouched.
+
+    RFC 3339 mandates a UTC offset on every timestamp. fromisoformat
+    happily produces a naive datetime for an offset-less input, which
+    later trips the timezone-aware comparisons with TypeError instead
+    of the documented ValueError. Reject naive results explicitly so
+    the error class matches the docstring and matches the Go side
+    parity (Go's time.Parse with RFC 3339 fails fast on missing zone).
+    """
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError(
+            f"RFC 3339 timestamp must include a UTC offset: {s!r}"
+        )
+    return dt
+
+
+# Allowed top-level fields in a recovery_authorization envelope. Strict
+# schema parity with the Go DecodeStrictJSON path: unknown fields reject.
+_RECOVERY_ENVELOPE_FIELDS = frozenset({"body", "signature"})
+# Allowed fields inside the recovery_authorization body. Same strictness
+# rule as the envelope.
+_RECOVERY_BODY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "reason",
+        "expires_at",
+        "target_roster_hash",
+        "operator_identity",
+        "issued_at",
+    }
+)
+
+
+def _reject_unknown_fields(name: str, obj: dict, allowed: frozenset) -> None:
+    """Mirror Go's json.Decoder.DisallowUnknownFields by raising on extras."""
+    extras = set(obj.keys()) - allowed
+    if extras:
+        raise ValueError(
+            f"{name} contains unknown fields: {sorted(extras)}"
+        )
+
+
+def verify_recovery_authorization(
+    envelope_json_bytes: bytes,
+    recovery_root_pubkey_bytes: bytes,
+    pinned_recovery_root_fingerprint: str,
+    now_iso: str,
+    expected_target_roster_hash: str = "",
+) -> dict:
+    """Verify a recovery_authorization envelope.
+
+    Performs:
+      - Strict schema parity with Go (unknown envelope or body fields reject)
+      - Structural validation matching Go RecoveryAuthorizationBody.Validate()
+      - Lifetime cap (expires_at - issued_at <= 1h) AND replay guard
+        (expires_at - now <= 1h) AND expires_at > issued_at
+      - Time-window check using now_iso
+      - Fingerprint pinning
+      - Optional target_roster_hash binding when expected_target_roster_hash
+        is non-empty (mirrors Go LoadRecoveryAuthorization)
+      - Ed25519 signature verification over JCS-canonicalized body
+
+    Returns the parsed body dict on success; raises ValueError on failure.
+    """
+    envelope = json.loads(envelope_json_bytes)
+
+    if not isinstance(envelope, dict):
+        raise ValueError("recovery authorization envelope must be a JSON object")
+    _reject_unknown_fields("recovery authorization envelope", envelope, _RECOVERY_ENVELOPE_FIELDS)
+    if "body" not in envelope:
+        raise ValueError("missing body field")
+    if "signature" not in envelope:
+        raise ValueError("missing signature field")
+
+    body = envelope["body"]
+    if not isinstance(body, dict):
+        raise ValueError("recovery authorization body must be a JSON object")
+    _reject_unknown_fields("recovery authorization body", body, _RECOVERY_BODY_FIELDS)
+
+    # Structural validation.
+    if body.get("schema_version") != 1:
+        raise ValueError(
+            f"unsupported schema_version: {body.get('schema_version')}"
+        )
+    if not body.get("reason"):
+        raise ValueError("reason is required")
+    if not body.get("operator_identity"):
+        raise ValueError("operator_identity is required")
+    # Explicit presence checks so missing required body fields surface
+    # as ValueError rather than KeyError on the subscript below; matches
+    # the Go side's ErrRecoveryIssuedAtFormat / ErrRecoveryExpiryFormat
+    # behavior when the JSON decoder yields a zero-value empty string.
+    if "issued_at" not in body:
+        raise ValueError("issued_at is required")
+    if "expires_at" not in body:
+        raise ValueError("expires_at is required")
+
+    target_hash = body.get("target_roster_hash", "")
+    if not _SHA256_HASH_RE.match(target_hash):
+        raise ValueError(f"target_roster_hash format invalid: {target_hash!r}")
+
+    # Parse timestamps (raises ValueError on bad format).
+    issued_at = _parse_rfc3339(body["issued_at"])
+    expires_at = _parse_rfc3339(body["expires_at"])
+    now = _parse_rfc3339(now_iso)
+
+    # Lifetime cap and ordering: expires must follow issued, and the
+    # absolute lifetime must not exceed 1h. Without this, a stale auth
+    # with a short remaining window slips past the replay guard.
+    if expires_at <= issued_at:
+        raise ValueError(
+            f"recovery authorization expires_at is before issued_at: "
+            f"issued_at={body['issued_at']}, expires_at={body['expires_at']}"
+        )
+    lifetime = expires_at - issued_at
+    if lifetime.total_seconds() > 3600:
+        raise ValueError(
+            f"recovery authorization lifetime exceeds 1h ceiling: "
+            f"lifetime={lifetime}"
+        )
+
+    # Time-window checks.
+    if now < issued_at:
+        raise ValueError(
+            f"recovery authorization issued_at is in the future: "
+            f"now={now_iso}, issued_at={body['issued_at']}"
+        )
+    if now > expires_at:
+        raise ValueError(
+            f"recovery authorization is expired: "
+            f"now={now_iso}, expires_at={body['expires_at']}"
+        )
+    # Replay guard (defense in depth; redundant with lifetime cap when
+    # now >= issued_at, kept explicit so the gate is visible in code).
+    delta = expires_at - now
+    if delta.total_seconds() > 3600:
+        raise ValueError(
+            f"recovery authorization expires more than 1h in the future: "
+            f"delta={delta}"
+        )
+
+    # Target roster binding.
+    if expected_target_roster_hash and target_hash != expected_target_roster_hash:
+        raise ValueError(
+            f"target_roster_hash mismatch: got {target_hash}, "
+            f"want {expected_target_roster_hash}"
+        )
+
+    # Fingerprint pinning. Normalize the operator-supplied pin via
+    # parse_fingerprint so a mixed-case input compares equal to its
+    # canonical form, matching Go's ParseFingerprint behavior.
+    computed_fp = fingerprint(recovery_root_pubkey_bytes)
+    pinned_canonical = parse_fingerprint(pinned_recovery_root_fingerprint)
+    if computed_fp != pinned_canonical:
+        raise ValueError(
+            f"fingerprint mismatch: computed {computed_fp}, "
+            f"pinned {pinned_canonical}"
+        )
+
+    # Signature verification.
+    preimage = jcs.canonicalize(body)
+    sig = strip_sig_prefix(envelope["signature"])
+    pk = Ed25519PublicKey.from_public_bytes(recovery_root_pubkey_bytes)
+    try:
+        pk.verify(sig, preimage)
+    except InvalidSignature as e:
+        raise ValueError(f"signature verify failed: {e}") from e
+
+    return body
+
+
+# Allowed top-level fields in a root_transition envelope and body. Strict
+# schema parity with the Go DecodeStrictJSON path: unknown fields reject.
+_ROOT_TRANSITION_ENVELOPE_FIELDS = frozenset({"body", "old_signature", "new_signature"})
+_ROOT_TRANSITION_BODY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "root_kind",
+        "old_fingerprint",
+        "new_fingerprint",
+        "effective_at",
+        "reason",
+    }
+)
+
+
+def verify_root_transition(
+    envelope_json_bytes: bytes,
+    old_pubkey_bytes: bytes,
+    new_pubkey_bytes: bytes,
+    pinned_old_fingerprint: str = "",
+) -> dict:
+    """Verify a root_transition envelope with dual signatures.
+
+    Performs:
+      - Strict schema parity with Go (unknown envelope or body fields reject)
+      - Structural validation matching Go RootTransitionBody.Validate()
+      - Fingerprint matching for both old and new keys
+      - Optional operator-pin check (if pinned_old_fingerprint is non-empty)
+      - Dual Ed25519 signature verification over JCS-canonicalized body
+
+    Returns the parsed body dict on success; raises ValueError on failure.
+    """
+    envelope = json.loads(envelope_json_bytes)
+
+    if not isinstance(envelope, dict):
+        raise ValueError("root transition envelope must be a JSON object")
+    _reject_unknown_fields("root transition envelope", envelope, _ROOT_TRANSITION_ENVELOPE_FIELDS)
+    if "body" not in envelope:
+        raise ValueError("missing body field")
+    if "old_signature" not in envelope:
+        raise ValueError("missing old_signature field")
+    if "new_signature" not in envelope:
+        raise ValueError("missing new_signature field")
+
+    body = envelope["body"]
+    if not isinstance(body, dict):
+        raise ValueError("root transition body must be a JSON object")
+    _reject_unknown_fields("root transition body", body, _ROOT_TRANSITION_BODY_FIELDS)
+
+    # Structural validation.
+    if body.get("schema_version") != 1:
+        raise ValueError(
+            f"unsupported schema_version: {body.get('schema_version')}"
+        )
+
+    root_kind = body.get("root_kind", "")
+    if root_kind not in ("roster-root", "recovery-root"):
+        raise ValueError(f"root_kind must be roster-root or recovery-root: {root_kind!r}")
+
+    old_fp = body.get("old_fingerprint", "")
+    new_fp = body.get("new_fingerprint", "")
+    if not _SHA256_HASH_RE.match(old_fp):
+        raise ValueError(f"old_fingerprint format invalid: {old_fp!r}")
+    if not _SHA256_HASH_RE.match(new_fp):
+        raise ValueError(f"new_fingerprint format invalid: {new_fp!r}")
+    if old_fp == new_fp:
+        raise ValueError("old_fingerprint and new_fingerprint must differ")
+
+    # Explicit presence check so a missing effective_at surfaces as
+    # ValueError rather than KeyError on the subscript below.
+    if "effective_at" not in body:
+        raise ValueError("effective_at is required")
+    _parse_rfc3339(body["effective_at"])  # validates format
+
+    if not body.get("reason"):
+        raise ValueError("reason is required")
+
+    # Fingerprint matching. Body fields are already validated against
+    # _SHA256_HASH_RE which only admits lowercase hex, so they are
+    # canonical by construction; computed fingerprints are also
+    # canonical. Operator-supplied pin must be normalized.
+    computed_old_fp = fingerprint(old_pubkey_bytes)
+    if computed_old_fp != old_fp:
+        raise ValueError(
+            f"old key fingerprint mismatch: computed {computed_old_fp}, "
+            f"body has {old_fp}"
+        )
+    computed_new_fp = fingerprint(new_pubkey_bytes)
+    if computed_new_fp != new_fp:
+        raise ValueError(
+            f"new key fingerprint mismatch: computed {computed_new_fp}, "
+            f"body has {new_fp}"
+        )
+
+    # Optional operator-pin check. Normalize via parse_fingerprint so a
+    # mixed-case input compares equal to the canonical body value.
+    if pinned_old_fingerprint:
+        pinned_old_canonical = parse_fingerprint(pinned_old_fingerprint)
+        if old_fp != pinned_old_canonical:
+            raise ValueError(
+                f"old_fingerprint does not match operator-pinned fingerprint: "
+                f"body={old_fp}, pinned={pinned_old_canonical}"
+            )
+
+    # Dual signature verification.
+    preimage = jcs.canonicalize(body)
+
+    old_sig = strip_sig_prefix(envelope["old_signature"])
+    old_pk = Ed25519PublicKey.from_public_bytes(old_pubkey_bytes)
+    try:
+        old_pk.verify(old_sig, preimage)
+    except InvalidSignature as e:
+        raise ValueError(f"old_signature verify failed: {e}") from e
+
+    new_sig = strip_sig_prefix(envelope["new_signature"])
+    new_pk = Ed25519PublicKey.from_public_bytes(new_pubkey_bytes)
+    try:
+        new_pk.verify(new_sig, preimage)
+    except InvalidSignature as e:
+        raise ValueError(f"new_signature verify failed: {e}") from e
+
+    return body
+
+
 # Map fixture filename -> verifier function.
 VERIFIERS = {
     "valid_contract.json": verify_envelope,
@@ -159,5 +539,163 @@ def main(argv: list[str]) -> int:
     return 0
 
 
+def smoke_test_fingerprint() -> int:
+    """Standalone smoke test for the fingerprint function.
+
+    Uses the RFC 8032 section 7.1 test vector 1 public key.
+    The expected value must match the Go rfcTestPubFingerprint constant.
+    """
+    rfc_pubkey_hex = (
+        "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    )
+    expected = (
+        "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9"
+    )
+    try:
+        verify_fingerprint(rfc_pubkey_hex, expected)
+        print(f"OK fingerprint: {expected}")
+        return 0
+    except ValueError as e:
+        print(f"FAIL fingerprint: {e}")
+        return 1
+
+
+# --- Deterministic key seeds (must match Go golden_vectors_test.go) ---
+
+# Recovery-root seed (same as Go goldenRecoveryRootSeedHex).
+_GOLDEN_RECOVERY_ROOT_SEED_HEX = (
+    "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb"
+)
+
+# New-root seed for root-transition (same as Go goldenNewRootSeedHex).
+_GOLDEN_NEW_ROOT_SEED_HEX = (
+    "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fc"
+)
+
+# Old-root seed (RFC 8032 test 1 seed, same as Go goldenOldRootSeedHex).
+_GOLDEN_OLD_ROOT_SEED_HEX = (
+    "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+)
+
+
+def _pubkey_from_seed_hex(seed_hex: str) -> bytes:
+    """Derive the Ed25519 public key from a hex-encoded 32-byte seed."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey,
+    )
+
+    seed = bytes.fromhex(seed_hex)
+    priv = Ed25519PrivateKey.from_private_bytes(seed)
+    return priv.public_key().public_bytes_raw()
+
+
+# Deterministic stand-in for the roster body hash the recovery
+# authorization is bound to. Must match goldenRecoveryTargetHash on the Go
+# side so cross-implementation parity is exercised end-to-end.
+# sha256("pipelock-test-recovery-target-roster-body-fixture")
+_GOLDEN_RECOVERY_TARGET_ROSTER_HASH = (
+    "sha256:d0936185ee07c30a681e5beb49ef01899744df04bef122596467d9aa8ef24f7d"
+)
+
+
+def smoke_test_recovery_authorization(fixture_path: str) -> int:
+    """Verify a recovery_authorization golden fixture from the signing package."""
+    pubkey = _pubkey_from_seed_hex(_GOLDEN_RECOVERY_ROOT_SEED_HEX)
+    fp = fingerprint(pubkey)
+    data = Path(fixture_path).read_bytes()
+    try:
+        body = verify_recovery_authorization(
+            data,
+            pubkey,
+            fp,
+            "2026-04-26T13:10:00Z",
+            expected_target_roster_hash=_GOLDEN_RECOVERY_TARGET_ROSTER_HASH,
+        )
+        print(
+            f"OK recovery_authorization: reason={body['reason']!r}, "
+            f"fingerprint={fp}, target_roster_hash bound"
+        )
+        return 0
+    except ValueError as e:
+        print(f"FAIL recovery_authorization: {e}")
+        return 1
+
+
+def smoke_test_root_transition(fixture_path: str) -> int:
+    """Verify a root_transition golden fixture from the signing package."""
+    old_pubkey = _pubkey_from_seed_hex(_GOLDEN_OLD_ROOT_SEED_HEX)
+    new_pubkey = _pubkey_from_seed_hex(_GOLDEN_NEW_ROOT_SEED_HEX)
+    old_fp = fingerprint(old_pubkey)
+    data = Path(fixture_path).read_bytes()
+    try:
+        body = verify_root_transition(data, old_pubkey, new_pubkey, old_fp)
+        print(
+            f"OK root_transition: reason={body['reason']!r}, "
+            f"old_fingerprint={body['old_fingerprint']}, "
+            f"new_fingerprint={body['new_fingerprint']}"
+        )
+        return 0
+    except ValueError as e:
+        print(f"FAIL root_transition: {e}")
+        return 1
+
+
+def smoke_test_signing_goldens() -> int:
+    """Auto-locate and verify both signing-package golden fixtures.
+
+    Looks relative to this script's location:
+      ../../internal/signing/testdata/golden/
+    """
+    script_dir = Path(__file__).resolve().parent
+    signing_golden = script_dir.parent.parent / "internal" / "signing" / "testdata" / "golden"
+
+    failures = 0
+
+    recovery_path = signing_golden / "valid_recovery_authorization.json"
+    if recovery_path.exists():
+        failures += smoke_test_recovery_authorization(str(recovery_path))
+    else:
+        print(f"FAIL recovery_authorization: file missing at {recovery_path}")
+        failures += 1
+
+    transition_path = signing_golden / "valid_root_transition.json"
+    if transition_path.exists():
+        failures += smoke_test_root_transition(str(transition_path))
+    else:
+        print(f"FAIL root_transition: file missing at {transition_path}")
+        failures += 1
+
+    return failures
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    if len(sys.argv) == 2 and sys.argv[1] == "--fingerprint":
+        sys.exit(smoke_test_fingerprint())
+    if len(sys.argv) == 3 and sys.argv[1] == "--recovery-authorization":
+        sys.exit(smoke_test_recovery_authorization(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--root-transition":
+        sys.exit(smoke_test_root_transition(sys.argv[2]))
+    if len(sys.argv) == 2 and sys.argv[1] == "--signing-goldens":
+        sys.exit(smoke_test_signing_goldens())
+
+    # Default: verify contract-package golden-dir.
+    # Also verify signing-package goldens, but only when the signing
+    # directory actually exists. Without this gate, an explicit
+    # `python3 verify.py <golden-dir>` invocation outside the repo tree
+    # would fail solely because the script's relative path to
+    # internal/signing/testdata/golden does not resolve there. Explicit
+    # `--signing-goldens` keeps its hard-fail-on-missing semantics.
+    exit_code = main(sys.argv)
+    if exit_code == 0:
+        signing_golden = (
+            Path(__file__).resolve().parent.parent.parent
+            / "internal"
+            / "signing"
+            / "testdata"
+            / "golden"
+        )
+        if signing_golden.is_dir():
+            signing_result = smoke_test_signing_goldens()
+            if signing_result > 0:
+                exit_code = 1
+    sys.exit(exit_code)

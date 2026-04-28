@@ -1,0 +1,12 @@
+{
+  "body": {
+    "schema_version": 1,
+    "root_kind": "roster-root",
+    "old_fingerprint": "sha256:21fe31dfa154a261626bf854046fd2271b7bed4b6abe45aa58877ef47f9721b9",
+    "new_fingerprint": "sha256:82b554bd0ac856758d29d195d8a3c1d633086f8df6cd1b19318d15967ff66450",
+    "effective_at": "2026-04-26T15:00:00Z",
+    "reason": "scheduled annual key rotation"
+  },
+  "old_signature": "ed25519:e1e1a93198d95cf85a8b9921693dc88dec9eec20fba139cec99e1086c013e78726ad357e1405926f12b0c2300407a70bf53eb2339094d8fca997b75790841c00",
+  "new_signature": "ed25519:8df1082c41ad17133b23ac6a8aeb482c93064cbf10d7ec7921cc6503e3f6948c9945c7561deba771986bf1a0ce45f760c7eeda708d3a5ee9e2a19a8ee2c9f409"
+}

@@ -57,9 +57,10 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 		t.Fatal("scenario invalid: no adopted zombie ever appeared (helper didn't double-fork as expected)")
 	}
 
-	// Step 2: start the reaper. Initial sweep runs synchronously before
-	// the SIGCHLD listener loop, so the existing zombie should be
-	// drained immediately. Future grandchildren get drained on SIGCHLD.
+	// Step 2: start the reaper. Initial sweep runs first inside the
+	// goroutine (before it blocks on the select), so the existing
+	// zombie should be drained within the next scheduling tick.
+	// Future grandchildren get drained on SIGCHLD.
 	reaperDone := make(chan struct{})
 	startAdoptedReaper(directPID, reaperDone)
 

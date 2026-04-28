@@ -71,6 +71,14 @@ func startAdoptedReaper(directPID int, done <-chan struct{}) {
 // direct child's exit, which is what makes this safe to run alongside
 // exec.Cmd.Wait().
 //
+// One-wrap-per-process assumption: this helper only protects its own
+// directPID. The MCP CLI today is one `pipelock mcp proxy --` invocation
+// per pipelock process, so directPID uniquely identifies the wrapped
+// child. If RunProxy is ever called concurrently inside one process,
+// a reaper from one call could Wait4 a sibling's direct child. Either
+// keep the one-wrap-per-process invariant or extend this to a shared
+// protected-PID registry before that change lands.
+//
 // Best-effort throughout — ESRCH on PID-recycle race, EINTR on signal,
 // EPERM on namespace boundary all fall through silently.
 func reapAdoptedZombies(directPID int) {

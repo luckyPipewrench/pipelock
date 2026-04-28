@@ -140,16 +140,51 @@ def fingerprint(pubkey_bytes: bytes) -> str:
     return FINGERPRINT_ALGORITHM + ":" + hashlib.sha256(pubkey_bytes).hexdigest()
 
 
+def parse_fingerprint(s: str) -> str:
+    """Validate and normalize a sha256:<hex> fingerprint string.
+
+    Returns the canonical lowercase form. Raises ValueError on a missing
+    algorithm prefix, an unknown algorithm, a non-hex digest, or a digest
+    of the wrong length. Mirrors the Go ParseFingerprint behavior so that
+    a pin typed with uppercase hex on either side compares equal to its
+    canonical form.
+    """
+    idx = s.find(":")
+    if idx < 0:
+        raise ValueError(f"fingerprint missing algorithm prefix: {s!r}")
+    algorithm = s[:idx]
+    digest = s[idx + 1 :]
+    if algorithm != FINGERPRINT_ALGORITHM:
+        raise ValueError(
+            f"fingerprint algorithm {algorithm!r} not supported "
+            f"(expected {FINGERPRINT_ALGORITHM!r})"
+        )
+    # 32 bytes = 64 hex chars for sha256.
+    if len(digest) != 64:
+        raise ValueError(
+            f"fingerprint digest must be 64 hex chars, got {len(digest)}"
+        )
+    try:
+        bytes.fromhex(digest)
+    except ValueError as e:
+        raise ValueError(f"fingerprint digest is not hex: {digest!r}") from e
+    return FINGERPRINT_ALGORITHM + ":" + digest.lower()
+
+
 def verify_fingerprint(pubkey_hex: str, expected_fingerprint: str) -> None:
     """Decode a hex public key, compute its fingerprint, and compare to expected.
 
-    Raises ValueError on mismatch or invalid input.
+    The expected_fingerprint is parsed and normalized via parse_fingerprint
+    so a mixed-case pin compares equal to its canonical form (Go's
+    ParseFingerprint accepts uppercase hex; this verifier must stay
+    wire-compatible). Raises ValueError on mismatch or invalid input.
     """
     pubkey_bytes = bytes.fromhex(pubkey_hex)
     computed = fingerprint(pubkey_bytes)
-    if computed != expected_fingerprint:
+    expected_canonical = parse_fingerprint(expected_fingerprint)
+    if computed != expected_canonical:
         raise ValueError(
-            f"fingerprint mismatch: computed {computed}, expected {expected_fingerprint}"
+            f"fingerprint mismatch: computed {computed}, expected {expected_canonical}"
         )
 
 
@@ -312,12 +347,15 @@ def verify_recovery_authorization(
             f"want {expected_target_roster_hash}"
         )
 
-    # Fingerprint pinning.
+    # Fingerprint pinning. Normalize the operator-supplied pin via
+    # parse_fingerprint so a mixed-case input compares equal to its
+    # canonical form, matching Go's ParseFingerprint behavior.
     computed_fp = fingerprint(recovery_root_pubkey_bytes)
-    if computed_fp != pinned_recovery_root_fingerprint:
+    pinned_canonical = parse_fingerprint(pinned_recovery_root_fingerprint)
+    if computed_fp != pinned_canonical:
         raise ValueError(
             f"fingerprint mismatch: computed {computed_fp}, "
-            f"pinned {pinned_recovery_root_fingerprint}"
+            f"pinned {pinned_canonical}"
         )
 
     # Signature verification.
@@ -400,12 +438,19 @@ def verify_root_transition(
     if old_fp == new_fp:
         raise ValueError("old_fingerprint and new_fingerprint must differ")
 
+    # Explicit presence check so a missing effective_at surfaces as
+    # ValueError rather than KeyError on the subscript below.
+    if "effective_at" not in body:
+        raise ValueError("effective_at is required")
     _parse_rfc3339(body["effective_at"])  # validates format
 
     if not body.get("reason"):
         raise ValueError("reason is required")
 
-    # Fingerprint matching.
+    # Fingerprint matching. Body fields are already validated against
+    # _SHA256_HASH_RE which only admits lowercase hex, so they are
+    # canonical by construction; computed fingerprints are also
+    # canonical. Operator-supplied pin must be normalized.
     computed_old_fp = fingerprint(old_pubkey_bytes)
     if computed_old_fp != old_fp:
         raise ValueError(
@@ -419,12 +464,15 @@ def verify_root_transition(
             f"body has {new_fp}"
         )
 
-    # Optional operator-pin check.
-    if pinned_old_fingerprint and old_fp != pinned_old_fingerprint:
-        raise ValueError(
-            f"old_fingerprint does not match operator-pinned fingerprint: "
-            f"body={old_fp}, pinned={pinned_old_fingerprint}"
-        )
+    # Optional operator-pin check. Normalize via parse_fingerprint so a
+    # mixed-case input compares equal to the canonical body value.
+    if pinned_old_fingerprint:
+        pinned_old_canonical = parse_fingerprint(pinned_old_fingerprint)
+        if old_fp != pinned_old_canonical:
+            raise ValueError(
+                f"old_fingerprint does not match operator-pinned fingerprint: "
+                f"body={old_fp}, pinned={pinned_old_canonical}"
+            )
 
     # Dual signature verification.
     preimage = jcs.canonicalize(body)

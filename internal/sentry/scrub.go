@@ -134,7 +134,7 @@ func (s *Scrubber) scrubStacktrace(st *sentry.Stacktrace) {
 // ScrubEvent scrubs all string fields in a Sentry event before transmission.
 // This is used as the BeforeSend hook in sentry.ClientOptions.
 //
-// Fail-closed: non-string interface{} values in Extra, Breadcrumbs.Data,
+// Fail-closed: non-string interface{} values in Breadcrumbs.Data, Contexts,
 // and Stacktrace.Vars are deleted rather than passed through unscrubbed.
 func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.Event {
 	if event == nil {
@@ -179,15 +179,6 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.
 	// Scrub tags.
 	for k, v := range event.Tags {
 		event.Tags[k] = s.ScrubString(v)
-	}
-
-	// Scrub extra values — fail-closed for non-strings.
-	for k, v := range event.Extra {
-		if sv, ok := v.(string); ok {
-			event.Extra[k] = s.ScrubString(sv)
-		} else {
-			delete(event.Extra, k)
-		}
 	}
 
 	// Scrub contexts — auto-populated with device/os/runtime info (ints,

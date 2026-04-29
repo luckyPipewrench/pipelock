@@ -193,22 +193,6 @@ func TestScrubEvent_Tags(t *testing.T) {
 	}
 }
 
-func TestScrubEvent_Extra(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
-	s := NewScrubber(testDLPPatterns(), nil)
-	event := &sentry.Event{
-		Extra: map[string]interface{}{"detail": "key=" + awsKey},
-	}
-	result := s.ScrubEvent(event, nil)
-	sv, ok := result.Extra["detail"].(string)
-	if !ok {
-		t.Fatal("expected extra detail to be string")
-	}
-	if !containsRedacted(sv) {
-		t.Errorf("expected [REDACTED] in extra %q", sv)
-	}
-}
-
 func TestScrubEvent_RequestWiped(t *testing.T) {
 	s := NewScrubber(nil, nil)
 	event := &sentry.Event{
@@ -316,27 +300,6 @@ func TestScrubEvent_Fingerprint(t *testing.T) {
 	result := s.ScrubEvent(event, nil)
 	if !containsRedacted(result.Fingerprint[1]) {
 		t.Errorf("expected [REDACTED] in fingerprint %q", result.Fingerprint[1])
-	}
-}
-
-func TestScrubEvent_ExtraNonStringDeleted(t *testing.T) {
-	s := NewScrubber(nil, nil)
-	event := &sentry.Event{
-		Extra: map[string]interface{}{
-			"safe_string": "hello",
-			"dangerous":   []byte("secret bytes"),
-			"number":      42,
-		},
-	}
-	result := s.ScrubEvent(event, nil)
-	if _, ok := result.Extra["dangerous"]; ok {
-		t.Error("expected non-string Extra value to be deleted (fail-closed)")
-	}
-	if _, ok := result.Extra["number"]; ok {
-		t.Error("expected non-string Extra value to be deleted (fail-closed)")
-	}
-	if _, ok := result.Extra["safe_string"]; !ok {
-		t.Error("expected string Extra value to be preserved")
 	}
 }
 

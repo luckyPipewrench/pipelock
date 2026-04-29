@@ -73,6 +73,13 @@ func runPin(cmd *cobra.Command, candidatePath, ruleID, segment, outPath string) 
 	if trimmed == "" {
 		return fmt.Errorf("learn pin: %w", ErrEmptySegment)
 	}
+	// Apply the same grammar that split-side validateRuleSegments
+	// enforces on YAML literals so CLI input and YAML-carried values
+	// share one rejection surface. Catches operator typos like passing
+	// "/admin" or "*" before the value reaches the candidate file.
+	if err := validateSegmentLiteral(trimmed); err != nil {
+		return fmt.Errorf("learn pin: %w", err)
+	}
 
 	cleanCandidate, doc, err := loadCandidate(candidatePath)
 	if err != nil {
@@ -81,6 +88,10 @@ func runPin(cmd *cobra.Command, candidatePath, ruleID, segment, outPath string) 
 
 	rule, err := findRule(doc, ruleID)
 	if err != nil {
+		return fmt.Errorf("learn pin: %w", err)
+	}
+
+	if err := validateRuleSegments(rule); err != nil {
 		return fmt.Errorf("learn pin: %w", err)
 	}
 
@@ -93,6 +104,16 @@ func runPin(cmd *cobra.Command, candidatePath, ruleID, segment, outPath string) 
 	if err := writeCandidate(dest, doc); err != nil {
 		return err
 	}
+
+	emitAuditEvent(cmd, auditEvent{
+		Event:           "learn_pin",
+		Candidate:       cleanCandidate,
+		Dest:            dest,
+		Rule:            ruleID,
+		Segment:         trimmed,
+		SegmentsChanged: added,
+		NoOp:            added == 0,
+	})
 
 	if added == 0 {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),

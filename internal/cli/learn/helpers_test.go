@@ -4,10 +4,23 @@
 package learn
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+// goosWindows is the runtime.GOOS string for Windows. Extracted so the
+// symlink-skip predicate across multiple test files can share the
+// literal (goconst).
+const goosWindows = "windows"
 
 // These tests exercise low-level YAML helper functions directly so we
 // hit the defensive nil/empty branches that the canonical fixture
@@ -398,4 +411,317 @@ rules:
 	if len(pinned) != 3 {
 		t.Errorf("expected 3 entries (bare + existing + users), got %d", len(pinned))
 	}
+}
+
+// TestValidateSegmentLiteral_Grammar pins the closed grammar that both
+// pin --segment input and split-time YAML reads must satisfy. Each row
+// names exactly one rejection class so a future regression points at
+// the offending validator branch.
+func TestValidateSegmentLiteral_Grammar(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		in        string
+		wantOK    bool
+		wantSubst string // substring expected in the error if !wantOK
+	}{
+		{name: "happy_alpha", in: "users", wantOK: true},
+		{name: "happy_alphanumeric", in: "v1abc123", wantOK: true},
+		{name: "happy_dash_underscore_dot", in: "release-2026.04_29", wantOK: true},
+		{name: "rejects_empty", in: "", wantOK: false, wantSubst: "empty"},
+		{name: "rejects_path_separator_leading", in: "/admin", wantOK: false, wantSubst: "path separator"},
+		{name: "rejects_path_separator_embedded", in: "users/me", wantOK: false, wantSubst: "path separator"},
+		{name: "rejects_nul_byte", in: "abc\x00def", wantOK: false, wantSubst: "control"},
+		{name: "rejects_newline", in: "abc\ndef", wantOK: false, wantSubst: "control"},
+		{name: "rejects_carriage_return", in: "abc\rdef", wantOK: false, wantSubst: "control"},
+		{name: "rejects_tab", in: "abc\tdef", wantOK: false, wantSubst: "control"},
+		{name: "rejects_del", in: "abc\x7fdef", wantOK: false, wantSubst: "control"},
+		{name: "rejects_wildcard_star", in: "*", wantOK: false, wantSubst: "wildcard"},
+		{name: "rejects_wildcard_question", in: "ab?", wantOK: false, wantSubst: "wildcard"},
+		{name: "rejects_bracket_open", in: "ab[c", wantOK: false, wantSubst: "bracket"},
+		{name: "rejects_bracket_close", in: "ab]c", wantOK: false, wantSubst: "bracket"},
+		{name: "rejects_overlong", in: strings.Repeat("a", 257), wantOK: false, wantSubst: "exceeds"},
+		{name: "boundary_exactly_max_len", in: strings.Repeat("a", 256), wantOK: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSegmentLiteral(tc.in)
+			if tc.wantOK {
+				if err != nil {
+					t.Fatalf("validateSegmentLiteral(%q) = %v, want nil", tc.in, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validateSegmentLiteral(%q) = nil, want error", tc.in)
+			}
+			if !errors.Is(err, ErrInvalidSegment) {
+				t.Errorf("validateSegmentLiteral(%q): err not ErrInvalidSegment-wrapped: %v", tc.in, err)
+			}
+			if tc.wantSubst != "" && !strings.Contains(err.Error(), tc.wantSubst) {
+				t.Errorf("validateSegmentLiteral(%q): err %q lacks expected substring %q", tc.in, err, tc.wantSubst)
+			}
+		})
+	}
+}
+
+// TestPin_RejectsInvalidSegment proves the pin --segment input boundary
+// applies validateSegmentLiteral so an operator typo cannot poison the
+// candidate.
+func TestPin_RejectsInvalidSegment(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cand := filepath.Join(dir, "cand.yaml")
+	if err := os.WriteFile(cand, []byte(canonicalCandidate), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		segment string
+	}{
+		{"path_separator", "/admin"},
+		{"wildcard", "*"},
+		{"control_char", "ab\x00cd"},
+		{"newline", "ab\ncd"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := pinCmd()
+			cmd.SetArgs([]string{"--candidate", cand, "--rule", "r-test-rule-001", "--segment", tc.segment})
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected ErrInvalidSegment for %q, got nil", tc.segment)
+			}
+			if !errors.Is(err, ErrInvalidSegment) {
+				t.Errorf("err not ErrInvalidSegment-wrapped: %v", err)
+			}
+		})
+	}
+}
+
+// TestLoadCandidate_RejectsSymlink proves the trust boundary on
+// candidate input: a symlink at the candidate path is rejected up
+// front rather than chased to its target.
+func TestLoadCandidate_RejectsSymlink(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == goosWindows {
+		t.Skip("symlink semantics differ on Windows; covered by Lstat regular-file branch")
+	}
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.yaml")
+	if err := os.WriteFile(target, []byte(canonicalCandidate), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	link := filepath.Join(dir, "link.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, _, err := loadCandidate(link)
+	if err == nil {
+		t.Fatalf("expected ErrInvalidCandidate on symlink, got nil")
+	}
+	if !errors.Is(err, ErrInvalidCandidate) {
+		t.Errorf("err not ErrInvalidCandidate-wrapped: %v", err)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("err message lacks 'symlink': %v", err)
+	}
+}
+
+// TestLoadCandidate_RejectsNonRegular proves the regular-file gate by
+// pointing at a directory.
+func TestLoadCandidate_RejectsNonRegular(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	_, _, err := loadCandidate(dir)
+	if err == nil {
+		t.Fatalf("expected ErrInvalidCandidate on directory, got nil")
+	}
+	if !errors.Is(err, ErrInvalidCandidate) {
+		t.Errorf("err not ErrInvalidCandidate-wrapped: %v", err)
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("err message lacks 'regular file': %v", err)
+	}
+}
+
+// TestResolveOut_RejectsSymlinkOut proves the trust boundary on
+// --out: an existing symlink at the destination is rejected before
+// the atomic rename runs.
+func TestResolveOut_RejectsSymlinkOut(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == goosWindows {
+		t.Skip("symlink semantics differ on Windows")
+	}
+
+	dir := t.TempDir()
+	cand := filepath.Join(dir, "cand.yaml")
+	if err := os.WriteFile(cand, []byte("hi\n"), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+	target := filepath.Join(dir, "elsewhere.yaml")
+	if err := os.WriteFile(target, []byte("hi\n"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	out := filepath.Join(dir, "out.yaml")
+	if err := os.Symlink(target, out); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := resolveOut(cand, out)
+	if err == nil {
+		t.Fatalf("expected ErrInvalidCandidate on --out symlink, got nil")
+	}
+	if !errors.Is(err, ErrInvalidCandidate) {
+		t.Errorf("err not ErrInvalidCandidate-wrapped: %v", err)
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("err message lacks 'symlink': %v", err)
+	}
+}
+
+// TestResolveOut_AcceptsNonExistentOut proves the creation case: an
+// --out path that does not exist yet is fine; the atomic-write path
+// will create it without resolving any symlink.
+func TestResolveOut_AcceptsNonExistentOut(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cand := filepath.Join(dir, "cand.yaml")
+	out := filepath.Join(dir, "new.yaml")
+
+	got, err := resolveOut(cand, out)
+	if err != nil {
+		t.Fatalf("expected nil on non-existent --out, got %v", err)
+	}
+	if got != out {
+		t.Errorf("expected returned dest = %q, got %q", out, got)
+	}
+}
+
+// TestValidateRuleSegments_RejectsMaliciousYAML proves the YAML-side
+// boundary: a candidate carrying a path-separator literal in a
+// retained_segments value is rejected before any mutation runs.
+func TestValidateRuleSegments_RejectsMaliciousYAML(t *testing.T) {
+	t.Parallel()
+
+	const malicious = `---
+contract_version: v2.4
+rules:
+  - rule_id: r-test-rule-001
+    selector:
+      paths:
+        - value: /repos/*
+          normalization:
+            algorithm: frequency_weighted_entropy_v1
+            bucket: {host: api.example.com, method: GET, parent_prefix: /repos}
+            retained_segments:
+              - {index: 1, value: "users/me", reason: low_entropy_literal_segment}
+            collapsed_segments: []
+            pinned_segments: []
+`
+
+	dir := t.TempDir()
+	cand := filepath.Join(dir, "evil.yaml")
+	if err := os.WriteFile(cand, []byte(malicious), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+
+	cmd := splitCmd()
+	cmd.SetArgs([]string{"--candidate", cand, "--rule", "r-test-rule-001"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected ErrInvalidSegment on malicious YAML, got nil")
+	}
+	if !errors.Is(err, ErrInvalidSegment) {
+		t.Errorf("err not ErrInvalidSegment-wrapped: %v", err)
+	}
+	if !strings.Contains(err.Error(), "path separator") {
+		t.Errorf("err message lacks 'path separator': %v", err)
+	}
+}
+
+// TestEmitAuditEvent_StructuredOnStderr proves both runners write a
+// JSON-formatted audit event to stderr alongside the human-readable
+// stdout summary. Asserts the required fields are present and that
+// the line is parseable JSON.
+func TestEmitAuditEvent_StructuredOnStderr(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cand := filepath.Join(dir, "cand.yaml")
+	if err := os.WriteFile(cand, []byte(canonicalCandidate), 0o600); err != nil {
+		t.Fatalf("write candidate: %v", err)
+	}
+
+	t.Run("split", func(t *testing.T) {
+		t.Parallel()
+		var stdout, stderr bytes.Buffer
+		cmd := splitCmd()
+		cmd.SetArgs([]string{"--candidate", cand, "--rule", "r-test-rule-001"})
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("split: %v", err)
+		}
+		var ev auditEvent
+		if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &ev); err != nil {
+			t.Fatalf("stderr line is not JSON: %v\n%s", err, stderr.String())
+		}
+		if ev.Event != "learn_split" {
+			t.Errorf("event = %q, want learn_split", ev.Event)
+		}
+		if ev.Rule != "r-test-rule-001" {
+			t.Errorf("rule = %q, want r-test-rule-001", ev.Rule)
+		}
+		if ev.Candidate != cand {
+			t.Errorf("candidate = %q, want %q", ev.Candidate, cand)
+		}
+		if ev.Dest != cand {
+			t.Errorf("dest = %q, want %q (in-place)", ev.Dest, cand)
+		}
+	})
+
+	t.Run("pin", func(t *testing.T) {
+		t.Parallel()
+		// Distinct candidate file so the parallel split test cannot race.
+		c2 := filepath.Join(dir, "cand-pin.yaml")
+		if err := os.WriteFile(c2, []byte(canonicalCandidate), 0o600); err != nil {
+			t.Fatalf("write candidate: %v", err)
+		}
+		var stdout, stderr bytes.Buffer
+		cmd := pinCmd()
+		cmd.SetArgs([]string{"--candidate", c2, "--rule", "r-test-rule-001", "--segment", "production"})
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("pin: %v", err)
+		}
+		var ev auditEvent
+		if err := json.Unmarshal(bytes.TrimSpace(stderr.Bytes()), &ev); err != nil {
+			t.Fatalf("stderr line is not JSON: %v\n%s", err, stderr.String())
+		}
+		if ev.Event != "learn_pin" {
+			t.Errorf("event = %q, want learn_pin", ev.Event)
+		}
+		if ev.Segment != "production" {
+			t.Errorf("segment = %q, want production", ev.Segment)
+		}
+		if ev.NoOp {
+			t.Errorf("noop = true, want false (first pin)")
+		}
+	})
 }

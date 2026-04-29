@@ -282,7 +282,7 @@ func TestSplit_RejectsMissingIndex(t *testing.T) {
 }
 
 func TestSplit_AtomicWrite_OnFailure(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("read-only directory semantics differ on Windows")
 	}
 	if os.Geteuid() == 0 {

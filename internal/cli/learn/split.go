@@ -4,8 +4,10 @@
 package learn
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,7 +39,23 @@ var (
 	// not "flag value is empty string", so we enforce non-empty
 	// explicitly.
 	ErrEmptySegment = errors.New("learn: pin segment must be non-empty")
+
+	// ErrInvalidSegment is returned when a segment literal (whether
+	// from --segment input on pin or from a YAML retained/pinned entry
+	// on split) fails the segment grammar: empty after trim, contains
+	// a path separator, control character, wildcard glyph, or exceeds
+	// the bounded length. Both code paths share the validator so CLI
+	// input and YAML-carried values are constrained identically.
+	ErrInvalidSegment = errors.New("learn: invalid segment literal")
 )
+
+// maxSegmentLiteralLen bounds the length of a path segment literal.
+// 256 bytes is generous for real-world API segments (usernames, repo
+// names, IDs) while keeping a malicious YAML from blowing up the
+// rebuilt path string. Aligns with the 2048-char path-canonical cap in
+// internal/contract/inference/normalize: a 2048-char path with 256-char
+// segments is at most 8 segments, comfortably realistic.
+const maxSegmentLiteralLen = 256
 
 // reasonOperatorSplit / reasonOperatorPin label segments that an
 // operator manually demoted or pinned. The future compile pipeline
@@ -123,6 +141,10 @@ func runSplit(cmd *cobra.Command, candidatePath, ruleID string, index int, outPa
 		return fmt.Errorf("learn split: %w", err)
 	}
 
+	if err := validateRuleSegments(rule); err != nil {
+		return fmt.Errorf("learn split: %w", err)
+	}
+
 	moved, err := splitRule(rule, index)
 	if err != nil {
 		return fmt.Errorf("learn split: %w", err)
@@ -135,6 +157,16 @@ func runSplit(cmd *cobra.Command, candidatePath, ruleID string, index int, outPa
 	if err := writeCandidate(dest, doc); err != nil {
 		return err
 	}
+
+	emitAuditEvent(cmd, auditEvent{
+		Event:           "learn_split",
+		Candidate:       cleanCandidate,
+		Dest:            dest,
+		Rule:            ruleID,
+		Index:           index,
+		SegmentsChanged: moved,
+		NoOp:            moved == 0,
+	})
 
 	if moved == 0 {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
@@ -152,9 +184,13 @@ func runSplit(cmd *cobra.Command, candidatePath, ruleID string, index int, outPa
 // file, and parses it as YAML. Returns the cleaned path and the parsed
 // document.
 //
-// Absolute-path validation is part of the trust boundary. A relative
-// candidate path is operator-controlled and could be interpreted
-// against a surprising cwd; reject up front rather than guess.
+// Absolute-path validation, symlink rejection, and regular-file
+// confirmation form the trust boundary on the candidate input. A
+// relative path is operator-controlled and could be interpreted
+// against a surprising cwd; a symlink could redirect reads to a file
+// outside the intended candidate area; a non-regular file is a sign of
+// pipe / device confusion that the rewrite path cannot handle safely.
+// All three reject up front rather than guess.
 func loadCandidate(path string) (string, *yaml.Node, error) {
 	if path == "" {
 		return "", nil, fmt.Errorf("%w: empty candidate path", ErrInvalidCandidate)
@@ -165,14 +201,9 @@ func loadCandidate(path string) (string, *yaml.Node, error) {
 			ErrInvalidCandidate, path)
 	}
 
-	// G304: clean is filepath.Clean'd above. Operator-supplied path is
-	// the trust boundary; absolute-path requirement plus YAML parse
-	// failure-mode covers traversal: even if a symlink were chased, we
-	// only ever read+rewrite the linked file, never escape to anything
-	// the caller couldn't already write to.
-	data, err := os.ReadFile(clean)
+	data, err := safeReadCandidate(clean)
 	if err != nil {
-		return "", nil, fmt.Errorf("read candidate: %w: %w", ErrInvalidCandidate, err)
+		return "", nil, err
 	}
 
 	var doc yaml.Node
@@ -185,9 +216,49 @@ func loadCandidate(path string) (string, *yaml.Node, error) {
 	return clean, &doc, nil
 }
 
+// safeReadCandidate reads the file at clean (already filepath.Clean'd
+// and absolute) with two-step symlink protection:
+//
+//   - Lstat rejects symlinks and non-regular files at the directory
+//     entry level.
+//   - Open with O_RDONLY|O_NOFOLLOW so a between-stat-and-open swap
+//     also fails closed on Unix. Windows lacks O_NOFOLLOW (noFollowFlag
+//     is zero); the Lstat regular-file check still runs and is the
+//     primary defense, since Go's os.Lstat maps Windows reparse points
+//     to ModeSymlink.
+//
+// Errors wrap ErrInvalidCandidate so callers detect the trust-boundary
+// failure with errors.Is.
+func safeReadCandidate(clean string) ([]byte, error) {
+	li, err := os.Lstat(clean)
+	if err != nil {
+		return nil, fmt.Errorf("read candidate: %w: %w", ErrInvalidCandidate, err)
+	}
+	if li.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%w: candidate must not be a symlink: %s", ErrInvalidCandidate, clean)
+	}
+	if !li.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: candidate must be a regular file: %s", ErrInvalidCandidate, clean)
+	}
+	// G304: clean is filepath.Clean'd by the caller and Lstat-validated
+	// above; symlinks and non-regular files are already rejected.
+	f, err := os.OpenFile(filepath.Clean(clean), os.O_RDONLY|noFollowFlag, 0) //nolint:gosec // path is operator-supplied and validated
+	if err != nil {
+		if errors.Is(err, errELOOP) {
+			return nil, fmt.Errorf("%w: symlink raced into place: %s", ErrInvalidCandidate, clean)
+		}
+		return nil, fmt.Errorf("read candidate: %w: %w", ErrInvalidCandidate, err)
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
+}
+
 // resolveOut returns the destination path for the rewrite. If outPath
-// is empty, the candidate is rewritten in place. Both paths are
-// cleaned and required to be absolute.
+// is empty, the candidate is rewritten in place. Both paths must be
+// absolute. If outPath points to an existing file, it must already be
+// a regular file (not a symlink, device, or directory) so the atomic
+// rename does not redirect through a symlink to write outside the
+// intended directory.
 func resolveOut(candidatePath, outPath string) (string, error) {
 	if outPath == "" {
 		return candidatePath, nil
@@ -196,6 +267,22 @@ func resolveOut(candidatePath, outPath string) (string, error) {
 	if !filepath.IsAbs(clean) {
 		return "", fmt.Errorf("%w: --out must be absolute, got %q",
 			ErrInvalidCandidate, outPath)
+	}
+	li, err := os.Lstat(clean)
+	switch {
+	case err == nil:
+		if li.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("%w: --out must not be a symlink: %s", ErrInvalidCandidate, clean)
+		}
+		if !li.Mode().IsRegular() {
+			return "", fmt.Errorf("%w: --out must be a regular file when it exists: %s", ErrInvalidCandidate, clean)
+		}
+	case os.IsNotExist(err):
+		// Creation case is fine; atomicfile.Write creates a sibling
+		// temp file in the parent directory and renames over the
+		// target name, never resolving a symlink at the dest position.
+	default:
+		return "", fmt.Errorf("%w: --out lstat: %w", ErrInvalidCandidate, err)
 	}
 	return clean, nil
 }
@@ -365,6 +452,22 @@ func rebuildPathValue(p *yaml.Node) {
 			return
 		}
 		val := mappingScalar(seg, "value")
+		// Defense-in-depth: validateRuleSegments runs before mutation
+		// and rejects malformed literals at the entry boundary, but if
+		// a future caller invokes rebuildPathValue on a tree that did
+		// not pass through that gate we want the slot to render as a
+		// wildcard rather than embed a path-corrupting value. Empty
+		// values are common (operator-split entries with no original
+		// literal recorded) and intentionally render as wildcards.
+		if val == "" || validateSegmentLiteral(val) != nil {
+			if idx > maxIdx {
+				maxIdx = idx
+			}
+			if _, exists := slots[idx]; !exists {
+				slots[idx] = slot{wildcard: true}
+			}
+			return
+		}
 		if idx > maxIdx {
 			maxIdx = idx
 		}
@@ -523,4 +626,126 @@ func nodeIntValue(n *yaml.Node) (int, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// validateSegmentLiteral enforces the segment grammar that both
+// CLI-side --segment input on `pin` and YAML-side retained/pinned
+// values on `split` must satisfy. Used to keep policy artifacts
+// well-formed against operator typos and against YAML smuggled in
+// from a less-trusted source.
+//
+// Rejected:
+//   - empty after TrimSpace (pin enforces this separately as
+//     ErrEmptySegment for the precise CLI error; here it folds in)
+//   - any byte 0x00-0x1F or 0x7F (control characters)
+//   - the path separator '/' (would smuggle one segment as multiple)
+//   - the wildcard glyphs '*' and '?' (have meaning in the contract
+//     grammar; an operator pinning literal "*" is almost certainly a
+//     mistake and would silently broaden compile-time matching)
+//   - bracket glyphs '[' and ']' (set / range characters in path
+//     globs; same hazard)
+//   - more than maxSegmentLiteralLen bytes
+func validateSegmentLiteral(s string) error {
+	if s == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidSegment)
+	}
+	if len(s) > maxSegmentLiteralLen {
+		return fmt.Errorf("%w: length %d exceeds %d", ErrInvalidSegment, len(s), maxSegmentLiteralLen)
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c < 0x20 || c == 0x7F:
+			return fmt.Errorf("%w: control character at offset %d", ErrInvalidSegment, i)
+		case c == '/':
+			return fmt.Errorf("%w: path separator '/' at offset %d", ErrInvalidSegment, i)
+		case c == '*' || c == '?':
+			return fmt.Errorf("%w: wildcard glyph %q at offset %d", ErrInvalidSegment, c, i)
+		case c == '[' || c == ']':
+			return fmt.Errorf("%w: bracket glyph %q at offset %d", ErrInvalidSegment, c, i)
+		}
+	}
+	return nil
+}
+
+// validateRuleSegments walks every selector.paths[].normalization on
+// the rule and validates retained_segments[].value and
+// pinned_segments[].value against validateSegmentLiteral. Empty
+// values, missing values, or absent normalization blocks are skipped
+// (the rebuilder handles those cases). Returns the first failure as
+// an ErrInvalidSegment-wrapped error so the operator sees a precise
+// path-and-offset message.
+//
+// Run before mutation in both runSplit and runPin so an operator
+// invocation against a candidate carrying an attacker-supplied
+// segment literal fails closed without rewriting the file.
+func validateRuleSegments(rule *yaml.Node) error {
+	selector := mappingValue(rule, "selector")
+	if selector == nil {
+		return nil
+	}
+	paths := mappingValue(selector, "paths")
+	if paths == nil || paths.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for pi, p := range paths.Content {
+		if p.Kind != yaml.MappingNode {
+			continue
+		}
+		norm := mappingValue(p, "normalization")
+		if norm == nil {
+			continue
+		}
+		for _, listKey := range []string{"retained_segments", "pinned_segments"} {
+			lst := mappingValue(norm, listKey)
+			if lst == nil || lst.Kind != yaml.SequenceNode {
+				continue
+			}
+			for ei, entry := range lst.Content {
+				if entry.Kind != yaml.MappingNode {
+					continue
+				}
+				val := mappingScalar(entry, "value")
+				if val == "" {
+					continue
+				}
+				if err := validateSegmentLiteral(val); err != nil {
+					return fmt.Errorf("%w (path %d, %s[%d])", err, pi, listKey, ei)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// auditEvent is the structured audit-log payload emitted on stderr by
+// learn split / learn pin. It is JSON-encoded one event per line so
+// log shippers can parse it without buffering. Fields mirror the
+// minimum information needed for incident reconstruction: the command
+// name, the candidate path (input), the destination path (output,
+// which differs from candidate when --out is set), the rule_id, the
+// segment-or-index target, the count of entries actually changed,
+// and whether the call was a no-op.
+type auditEvent struct {
+	Event           string `json:"event"`
+	Candidate       string `json:"candidate"`
+	Dest            string `json:"dest"`
+	Rule            string `json:"rule"`
+	Segment         string `json:"segment,omitempty"`
+	Index           int    `json:"index,omitempty"`
+	SegmentsChanged int    `json:"segments_changed"`
+	NoOp            bool   `json:"noop"`
+}
+
+// emitAuditEvent writes an auditEvent as a single JSON line to stderr.
+// Marshal failures are swallowed: an audit-log emit failing must never
+// block the operator command, and json.Marshal of a fully-typed struct
+// only fails on programming errors (channels, functions, cycles)
+// which the auditEvent shape cannot produce.
+func emitAuditEvent(cmd *cobra.Command, ev auditEvent) {
+	out, err := json.Marshal(ev)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(), string(out))
 }

@@ -102,10 +102,12 @@ type Metrics struct {
 	CaptureDropped prometheus.Counter
 
 	// Learn-and-lock observation pipeline (learn.go).
-	learnObservationEvents    *prometheus.CounterVec
-	learnRegulatedDataBlocked *prometheus.CounterVec
-	learnUnclassifiedActions  prometheus.Counter
-	learnUnclassifiedRate     prometheus.Gauge
+	learnObservationEvents        *prometheus.CounterVec
+	learnRegulatedDataBlocked     *prometheus.CounterVec
+	learnUnclassifiedActions      prometheus.Counter
+	learnUnclassifiedRate         prometheus.Gauge
+	learnInferenceClassifications *prometheus.CounterVec
+	learnInferenceFloorFailures   *prometheus.CounterVec
 
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex

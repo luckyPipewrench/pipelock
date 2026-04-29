@@ -17,20 +17,26 @@ var expectedLearnMetricNames = []string{
 	"pipelock_learn_regulated_data_blocked_total",
 	"pipelock_learn_unclassified_actions_total",
 	"pipelock_learn_unclassified_rate",
+	"pipelock_learn_inference_classify_total",
+	"pipelock_learn_inference_floor_failures_total",
 }
 
 func TestRegisterLearnMetrics_RegistersAllFour(t *testing.T) {
 	t.Parallel()
 	m := New()
 
-	// Touch the CounterVec metrics with a synthetic label so Gather()
-	// emits them. CounterVec/GaugeVec are lazy: descriptors are registered
-	// at New() time, but no MetricFamily appears in Gather output until
-	// at least one labeled child is observed. The non-Vec counter and
-	// gauge appear immediately. We use a distinct test-only label value
-	// for the Vec metrics so this touch can't be confused with real data.
+	// Touch the CounterVec metrics so Gather() emits them. CounterVec/
+	// GaugeVec are lazy: descriptors are registered at New() time, but
+	// no MetricFamily appears in Gather output until at least one
+	// labeled child is observed. The new inference helpers enforce a
+	// closed allowlist on their labels (cardinality protection), so we
+	// touch them with canonical values rather than a synthetic probe;
+	// the pre-existing helpers retain the probe label because their
+	// behavior is out of scope for this PR.
 	m.RecordObservationEvent("registration_probe")
 	m.RecordRegulatedDataBlocked("registration_probe")
+	m.RecordInferenceClassification(OutcomeStable)
+	m.RecordInferenceFloorFailure(FloorSessions)
 
 	families, err := m.Registry().Gather()
 	if err != nil {
@@ -154,4 +160,143 @@ func TestSetUnclassifiedRate_NilSafe(t *testing.T) {
 	t.Parallel()
 	var m *Metrics
 	m.SetUnclassifiedRate(0.5) // no panic
+}
+
+// TestRecordInferenceClassification_IncrementsByOutcome confirms each
+// canonical outcome label increments its own counter independently.
+// The wire labels (never_confirmed, brittle, stable) must agree with
+// inference.Confidence.String() so the metric is groupable in Grafana
+// against the recorder's emitted values byte-for-byte.
+func TestRecordInferenceClassification_IncrementsByOutcome(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	m.RecordInferenceClassification("stable")
+	m.RecordInferenceClassification("stable")
+	m.RecordInferenceClassification("stable")
+	m.RecordInferenceClassification("brittle")
+
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("stable")); got != 3 {
+		t.Errorf("stable counter = %v, want 3", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("brittle")); got != 1 {
+		t.Errorf("brittle counter = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("never_confirmed")); got != 0 {
+		t.Errorf("never_confirmed counter = %v, want 0 (untouched)", got)
+	}
+}
+
+// TestRecordInferenceClassification_NilSafe matches the existing nil-safe
+// pattern across the learn metrics. A nil *Metrics receiver is the legal
+// "metrics disabled" sentinel — the helper must not panic.
+func TestRecordInferenceClassification_NilSafe(t *testing.T) {
+	t.Parallel()
+	var m *Metrics
+	m.RecordInferenceClassification("stable") // no panic
+}
+
+// TestRecordInferenceFloorFailure_IncrementsByFloor confirms each canonical
+// floor label increments its own counter independently. The wire labels
+// (sessions, events, windows) match the YAML field-name suffixes the
+// operator sees in pipelock.yaml so the diagnostic counter and the
+// validator error message use the same vocabulary.
+func TestRecordInferenceFloorFailure_IncrementsByFloor(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	m.RecordInferenceFloorFailure("sessions")
+	m.RecordInferenceFloorFailure("sessions")
+	m.RecordInferenceFloorFailure("events")
+	m.RecordInferenceFloorFailure("windows")
+	m.RecordInferenceFloorFailure("windows")
+	m.RecordInferenceFloorFailure("windows")
+
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("sessions")); got != 2 {
+		t.Errorf("sessions counter = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("events")); got != 1 {
+		t.Errorf("events counter = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("windows")); got != 3 {
+		t.Errorf("windows counter = %v, want 3", got)
+	}
+}
+
+// TestRecordInferenceFloorFailure_NilSafe matches the existing nil-safe
+// pattern.
+func TestRecordInferenceFloorFailure_NilSafe(t *testing.T) {
+	t.Parallel()
+	var m *Metrics
+	m.RecordInferenceFloorFailure("sessions") // no panic
+}
+
+// TestRecordInferenceClassification_DropsNonCanonical confirms the
+// closed-allowlist contract: a label value outside {never_confirmed,
+// brittle, stable} is dropped silently, never increments any series,
+// and cannot expand cardinality. Catches future caller drift before it
+// bakes into dashboards or alerts.
+func TestRecordInferenceClassification_DropsNonCanonical(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	// Cast a non-canonical literal through the typed parameter to
+	// reach the default branch.
+	m.RecordInferenceClassification(InferenceOutcome("malicious_label"))
+	m.RecordInferenceClassification(InferenceOutcome(""))
+	m.RecordInferenceClassification(InferenceOutcome("STABLE")) // case-sensitive
+
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("malicious_label")); got != 0 {
+		t.Errorf("non-canonical label leaked into counter: got %v", got)
+	}
+	if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues("STABLE")); got != 0 {
+		t.Errorf("case-variant label leaked into counter: got %v", got)
+	}
+	// All canonical labels must remain at zero too: the helper dropped
+	// every input above.
+	for _, canonical := range []string{"never_confirmed", "brittle", "stable"} {
+		if got := testutil.ToFloat64(m.learnInferenceClassifications.WithLabelValues(canonical)); got != 0 {
+			t.Errorf("canonical %q counter = %v, want 0 after non-canonical-only inputs", canonical, got)
+		}
+	}
+}
+
+// TestRecordInferenceFloorFailure_DropsNonCanonical mirrors the
+// classification drop test for the floor-failure counter.
+func TestRecordInferenceFloorFailure_DropsNonCanonical(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	m.RecordInferenceFloorFailure(FloorFailure("requests"))
+	m.RecordInferenceFloorFailure(FloorFailure(""))
+	m.RecordInferenceFloorFailure(FloorFailure("Sessions")) // case-sensitive
+
+	if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues("requests")); got != 0 {
+		t.Errorf("non-canonical floor leaked into counter: got %v", got)
+	}
+	for _, canonical := range []string{"sessions", "events", "windows"} {
+		if got := testutil.ToFloat64(m.learnInferenceFloorFailures.WithLabelValues(canonical)); got != 0 {
+			t.Errorf("canonical %q counter = %v, want 0 after non-canonical-only inputs", canonical, got)
+		}
+	}
+}
+
+// TestInferenceOutcome_AlignsWithConfidenceString documents the
+// cross-package wire-form contract: the metrics package's canonical
+// outcome strings must equal inference.Confidence.String() byte-for-byte.
+// We assert the literals here rather than importing inference (to avoid
+// a layering edge); inference's TestConfidence_String is the symmetric
+// guard on the other side.
+func TestInferenceOutcome_AlignsWithConfidenceString(t *testing.T) {
+	t.Parallel()
+	cases := map[InferenceOutcome]string{
+		OutcomeNeverConfirmed: "never_confirmed",
+		OutcomeBrittle:        "brittle",
+		OutcomeStable:         "stable",
+	}
+	for got, want := range cases {
+		if string(got) != want {
+			t.Errorf("InferenceOutcome %q wire form = %q, want %q (must match inference.Confidence.String())", want, string(got), want)
+		}
+	}
 }

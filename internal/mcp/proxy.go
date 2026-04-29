@@ -951,6 +951,20 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// no-op, matching the no-op setupChildProcessGroup call above.
 	childPgid := captureChildPgid(cmd.Process.Pid)
 
+	// Drain adopted-descendant zombies live, while the direct child is
+	// still running. Without this, long-running MCP wraps (codex
+	// mcp-server, playwright MCP — multi-hour direct children) accumulate
+	// zombies under pipelock because the post-Wait killAdoptedDescendants
+	// sweep below only fires when the direct child exits. PR_SET_CHILD_SUBREAPER
+	// turned on above causes orphan adoption from minute one; this goroutine
+	// reaps the resulting zombies as they appear. Reaper Wait4's only
+	// PID-specific (never -1) and skips the direct child PID, so
+	// exec.Cmd.Wait()'s ownership of the direct child's exit is preserved.
+	// On non-Linux builds startAdoptedReaper is a no-op.
+	reaperDone := make(chan struct{})
+	defer close(reaperDone)
+	startAdoptedReaper(cmd.Process.Pid, reaperDone)
+
 	// Track child PID for file write attribution.
 	if lineage != nil {
 		lineage.TrackPID(cmd.Process.Pid)

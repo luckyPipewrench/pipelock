@@ -253,12 +253,44 @@ func (c *Config) validateRedaction() error {
 //     contents, path validated here at config-load), and literal value
 //     (test/dev only). Empty string is accepted; the privacy enforcer
 //     fails closed at observe time when classification needs salt.
+//   - learn.inference.floors.min_* must each be non-negative.
+//
+// Note: validateLearnInferenceFloors duplicates the negative-rejection
+// shape of inference.Floors.Validate() on purpose. The inference package
+// emits API-facing errors keyed by short field names (min_sessions,
+// min_events, min_windows). The config validator must surface the full
+// YAML path the operator sees in pipelock.yaml
+// (learn.inference.floors.min_sessions, …). Keeping the validator local
+// also avoids importing inference here, mirroring the privacy package
+// layering — schema-level checks live in config; resolver semantics
+// live in the contract package.
 func (c *Config) validateLearn() error {
 	if c.Learn.Enabled && c.Learn.CaptureDir == "" {
 		return fmt.Errorf("learn.capture_dir required when learn.enabled is true")
 	}
 	if err := validateLearnSaltSource(c.Learn.Privacy.SaltSource); err != nil {
 		return err
+	}
+	if err := validateLearnInferenceFloors(c.Learn.Inference.Floors); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLearnInferenceFloors rejects negative exposure-floor counts on
+// the YAML wire layer. The fields are checked in declaration order
+// (sessions, events, windows) so a config with multiple negative values
+// always reports the first one — operators get a deterministic error
+// message regardless of map ordering or future field additions.
+func validateLearnInferenceFloors(f LearnInferenceFloors) error {
+	if f.MinSessions < 0 {
+		return fmt.Errorf("learn.inference.floors.min_sessions: %d: must be non-negative", f.MinSessions)
+	}
+	if f.MinEvents < 0 {
+		return fmt.Errorf("learn.inference.floors.min_events: %d: must be non-negative", f.MinEvents)
+	}
+	if f.MinWindows < 0 {
+		return fmt.Errorf("learn.inference.floors.min_windows: %d: must be non-negative", f.MinWindows)
 	}
 	return nil
 }

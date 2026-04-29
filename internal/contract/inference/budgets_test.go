@@ -382,9 +382,9 @@ func TestEnforcedValue_PropertyHeadroomMonotonic(t *testing.T) {
 }
 
 // TestEnforcedValue_NegativeHeadroomShrinks proves the documented
-// behavior that negative headroom shrinks the ceiling without a
-// defensive clamp. Callers that want a tighter-than-observed ceiling
-// can express it directly.
+// behavior that negative headroom in [-1, 0) shrinks the ceiling
+// without ever going negative. Callers that want a tighter-than-
+// observed ceiling can express it directly.
 func TestEnforcedValue_NegativeHeadroomShrinks(t *testing.T) {
 	t.Parallel()
 
@@ -393,6 +393,44 @@ func TestEnforcedValue_NegativeHeadroomShrinks(t *testing.T) {
 	want := 90.0
 	if !floatEq(got, want) {
 		t.Fatalf("EnforcedValue(-0.10) = %v, want %v", got, want)
+	}
+}
+
+// TestEnforcedValue_ClampsAtZero proves the fail-closed-but-valid
+// contract: headroom that would otherwise yield a negative ceiling is
+// clamped to 0. Negative ceilings are nonsensical for a budget; a
+// future caller bug that produced one could cascade into deny-all or
+// allow-all behavior in downstream enforcement paths depending on how
+// each callsite handles the value. Clamping here guarantees the
+// invariant `EnforcedValue(...) >= 0` for any (Budget, headroom) input.
+func TestEnforcedValue_ClampsAtZero(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		p99      float64
+		headroom float64
+		want     float64
+	}{
+		{"headroom_minus_one_exact_zero", 100, -1.0, 0.0},
+		{"headroom_minus_one_point_five_clamps", 100, -1.5, 0.0},
+		{"headroom_minus_two_clamps", 100, -2.0, 0.0},
+		{"headroom_minus_one_thousand_clamps", 100, -1000.0, 0.0},
+		{"empty_budget_with_clamping_headroom", 0, -10.0, 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b := Budget{P99: tt.p99, SampleCount: 50}
+			got := b.EnforcedValue(tt.headroom)
+			if !floatEq(got, tt.want) {
+				t.Fatalf("EnforcedValue(p99=%v, headroom=%v) = %v, want %v", tt.p99, tt.headroom, got, tt.want)
+			}
+			if got < 0 {
+				t.Fatalf("EnforcedValue produced negative %v; clamp invariant violated", got)
+			}
+		})
 	}
 }
 

@@ -113,24 +113,72 @@ func (m *Metrics) SetUnclassifiedRate(rate float64) {
 	m.learnUnclassifiedRate.Set(rate)
 }
 
+// InferenceOutcome is the closed wire-form domain for the
+// inference_classify_total counter's outcome label. The string values
+// agree byte-for-byte with inference.Confidence.String() so dashboards
+// and alerts grouping by outcome see the same vocabulary the recorder
+// emits. The metrics package owns the enum locally to avoid a layering
+// import on internal/contract/inference; cross-package alignment is
+// asserted by the metrics test pack.
+type InferenceOutcome string
+
+// Canonical InferenceOutcome values. Any value outside this set is
+// dropped at record time to prevent label-cardinality drift.
+const (
+	OutcomeNeverConfirmed InferenceOutcome = "never_confirmed"
+	OutcomeBrittle        InferenceOutcome = "brittle"
+	OutcomeStable         InferenceOutcome = "stable"
+)
+
+// FloorFailure is the closed wire-form domain for the
+// inference_floor_failures_total counter's floor label. Values match
+// the YAML field-name suffix the operator sees in pipelock.yaml
+// (learn.inference.floors.min_sessions etc.) so the diagnostic counter
+// and the validator error message use one vocabulary.
+type FloorFailure string
+
+// Canonical FloorFailure values. Any value outside this set is dropped
+// at record time to prevent label-cardinality drift.
+const (
+	FloorSessions FloorFailure = "sessions"
+	FloorEvents   FloorFailure = "events"
+	FloorWindows  FloorFailure = "windows"
+)
+
 // RecordInferenceClassification increments the inference_classify_total
-// counter for the given outcome. Outcome must be one of "never_confirmed",
-// "brittle", "stable" (the wire form of inference.Confidence.String()).
-// The caller is responsible for passing a canonical value; this helper
-// does NOT normalize or validate.
-func (m *Metrics) RecordInferenceClassification(outcome string) {
+// counter for the given outcome. Non-canonical values are dropped
+// silently: Prometheus creates a new time series for every distinct
+// label value, so accepting arbitrary strings would let a future caller
+// bug expand cardinality without an obvious failure mode. The closed
+// allowlist (OutcomeNeverConfirmed / Brittle / Stable) is enforced at
+// runtime; the typed parameter steers callers toward the constants but
+// untyped string literals still convert per Go's constant rules.
+func (m *Metrics) RecordInferenceClassification(outcome InferenceOutcome) {
 	if m == nil {
 		return
 	}
-	m.learnInferenceClassifications.WithLabelValues(outcome).Inc()
+	switch outcome {
+	case OutcomeNeverConfirmed, OutcomeBrittle, OutcomeStable:
+		m.learnInferenceClassifications.WithLabelValues(string(outcome)).Inc()
+	default:
+		// Drop non-canonical: future caller drift cannot expand the
+		// cardinality of pipelock_learn_inference_classify_total beyond
+		// the three legitimate outcomes.
+	}
 }
 
 // RecordInferenceFloorFailure increments the inference_floor_failures_total
-// counter for the named floor. Floor must be one of "sessions", "events",
-// "windows". The caller is responsible for passing a canonical value.
-func (m *Metrics) RecordInferenceFloorFailure(floor string) {
+// counter for the named floor. Same closed-allowlist contract as
+// RecordInferenceClassification: non-canonical values drop silently to
+// prevent cardinality drift on a security-relevant diagnostic counter.
+func (m *Metrics) RecordInferenceFloorFailure(floor FloorFailure) {
 	if m == nil {
 		return
 	}
-	m.learnInferenceFloorFailures.WithLabelValues(floor).Inc()
+	switch floor {
+	case FloorSessions, FloorEvents, FloorWindows:
+		m.learnInferenceFloorFailures.WithLabelValues(string(floor)).Inc()
+	default:
+		// Drop non-canonical (see RecordInferenceClassification).
+	}
 }

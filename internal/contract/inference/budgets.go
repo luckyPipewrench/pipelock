@@ -139,16 +139,24 @@ func nearestRank(sorted []float64, p int) float64 {
 }
 
 // EnforcedValue returns the enforced ceiling for the budget under the
-// given multiplicative headroom: `enforced = b.P99 * (1 + headroom)`.
+// given multiplicative headroom: `enforced = b.P99 * (1 + headroom)`,
+// clamped to a non-negative result.
 //
-// Headroom is intentionally not clamped:
+// Headroom semantics:
 //   - Positive headroom widens the ceiling (the common case; pass
 //     DefaultHeadroomRate or DefaultHeadroomSize).
 //   - Zero headroom returns P99 itself (no widening).
-//   - Negative headroom shrinks the ceiling — supported by design so a
-//     caller that wants a tighter-than-observed ceiling can express it
-//     with a negative value without a separate code path. A defensive
-//     clamp would silently mask intent.
+//   - Negative headroom in the half-open range [-1, 0) shrinks the
+//     ceiling, supported so a caller that wants a tighter-than-observed
+//     ceiling can express it without a separate code path. The shrunk
+//     value remains non-negative because P99 is non-negative.
+//   - Negative headroom below -1 would otherwise produce a nonsensical
+//     negative ceiling. The result is clamped to 0 so a future caller
+//     bug or bad plumbing cannot push a negative ceiling into an
+//     enforcement path. This is the fail-closed-but-valid contract: a
+//     budget of 0 denies everything (which any reasonable enforcer
+//     handles), whereas a negative budget could trigger
+//     undefined-behavior cascades depending on downstream comparisons.
 //
 // An empty Budget (SampleCount == 0, all percentiles zero) yields 0
 // for any headroom; no special branch needed because the formula
@@ -156,7 +164,11 @@ func nearestRank(sorted []float64, p int) float64 {
 //
 // Pure: no I/O, no allocations beyond the float result.
 func (b Budget) EnforcedValue(headroom float64) float64 {
-	return b.P99 * (1 + headroom)
+	v := b.P99 * (1 + headroom)
+	if v < 0 {
+		return 0
+	}
+	return v
 }
 
 // ThinSample reports whether SampleCount is below minEvents. The review

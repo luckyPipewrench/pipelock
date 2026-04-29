@@ -7,6 +7,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,15 +170,14 @@ func dumpZombies(t *testing.T, directPID int) {
 
 // isReaperStoleExitError detects the symptom of the reaper consuming
 // the direct child's exit status: a syscall.ECHILD wrapped somewhere in
-// the cmd.Wait error chain.
+// the cmd.Wait error chain. Match through errors.Is so any wrapper
+// preserving the chain (exec.Cmd.Wait, os.SyscallError, etc.) resolves
+// to the same verdict regardless of the surrounding message text.
 func isReaperStoleExitError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// exec.Cmd.Wait wraps the underlying syscall error in a "wait:
-	// no child processes" string when ECHILD bubbles up.
-	return strings.Contains(err.Error(), "no child processes") ||
-		strings.Contains(err.Error(), "ECHILD")
+	return errors.Is(err, syscall.ECHILD)
 }
 
 // TestReaper_DoneChannelStopsGoroutine covers the done-channel teardown

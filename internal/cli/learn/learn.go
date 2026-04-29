@@ -17,9 +17,9 @@
 // formatting and comments, both write atomically, and both are
 // idempotent.
 //
-// Future commits add `compile`, `review`, `shadow`, `ratify`, `forget`,
-// `promote`, and `rollback` subverbs as the corresponding pipeline
-// stages ship.
+// The compile and review subverbs produce candidate artifacts. Later lifecycle
+// subverbs handle shadowing, ratification, promotion, rollback, and erasure
+// workflows.
 package learn
 
 import "github.com/spf13/cobra"
@@ -38,11 +38,17 @@ Observe: pipelock learn observe --capture-dir <dir>
   pipeline stages compile a behavioral contract from the captured
   evidence.
 
+Compile and review:
+  pipelock learn compile --agent <name> [--input <glob>]
+  pipelock learn review <candidate.yaml>
+
 Operator affordances (mutate candidate YAML before ratification):
   pipelock learn split --candidate <path> --rule <rule_id> [--index N] [--out <path>]
   pipelock learn pin   --candidate <path> --rule <rule_id> --segment <value> [--out <path>]`,
 	}
 	cmd.AddCommand(observeCmd())
+	cmd.AddCommand(compileCmd())
+	cmd.AddCommand(reviewCmd())
 	cmd.AddCommand(splitCmd())
 	cmd.AddCommand(pinCmd())
 	return cmd

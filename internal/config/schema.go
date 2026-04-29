@@ -1104,10 +1104,10 @@ type ScanAPIKinds struct {
 	ToolCall        bool `yaml:"tool_call"`
 }
 
-// Learn governs the v2.4 learn-and-lock observation pipeline. When Enabled,
-// the proxy emits classification metadata into the recorder JSONL stream so
-// that pipelock learn compile (PR 2.x) can build a behavioral contract.
-// All fields are reload-safe.
+// Learn governs the contract-compile observation pipeline. When Enabled,
+// the proxy emits classification metadata into the recorder JSONL stream
+// so the future compile pipeline can build a behavioral contract from
+// it. All fields are reload-safe.
 type Learn struct {
 	Enabled    bool           `yaml:"enabled"`
 	CaptureDir string         `yaml:"capture_dir"`
@@ -1145,7 +1145,75 @@ type LearnPrivacy struct {
 // volumes differ across deployments, and the floors are exposure gates
 // rather than confidence thresholds.
 type LearnInference struct {
-	Floors LearnInferenceFloors `yaml:"floors"`
+	Floors        LearnInferenceFloors        `yaml:"floors"`
+	Normalization LearnInferenceNormalization `yaml:"normalization"`
+}
+
+// Default values for the LearnInferenceFloors substruct. Mirrors the
+// inference package's DefaultMinSessions / DefaultMinEvents /
+// DefaultMinWindows so the config layer can resolve omitted floors to
+// their effective values without importing the domain package.
+// TestLearnInferenceFloorsDefaults_MatchInferencePackage in the test
+// file imports inference and asserts the values agree.
+const (
+	defaultLearnFloorMinSessions = 5
+	defaultLearnFloorMinEvents   = 20
+	defaultLearnFloorMinWindows  = 3
+)
+
+// Default values for the LearnInferenceNormalization substruct. Mirrors
+// the normalize package's DefaultDecideConfig / DefaultCapConfig
+// values; sync test asserts they agree.
+const (
+	defaultLearnNormMinEvents             = 10
+	defaultLearnNormMinDistinctValues     = 5
+	defaultLearnNormEntropyThresholdBits  = 3.0
+	defaultLearnNormCardinalityCapPerHost = 1000
+	defaultLearnNormTailPromotionBlockPct = 5.0
+)
+
+// Resolved returns a copy of the floors substruct with any zero field
+// replaced by its corresponding default. Used by policySemanticView so
+// the canonical policy hash reflects effective floors, not literal
+// YAML zeros: a YAML omitting the floors and a YAML setting them
+// explicitly to 5/20/3 must hash identically because they describe the
+// same effective policy.
+func (f LearnInferenceFloors) Resolved() LearnInferenceFloors {
+	if f.MinSessions == 0 {
+		f.MinSessions = defaultLearnFloorMinSessions
+	}
+	if f.MinEvents == 0 {
+		f.MinEvents = defaultLearnFloorMinEvents
+	}
+	if f.MinWindows == 0 {
+		f.MinWindows = defaultLearnFloorMinWindows
+	}
+	return f
+}
+
+// Resolved returns a copy of the normalization substruct with any zero
+// field replaced by its corresponding default. Same canonicalization
+// contract as LearnInferenceFloors.Resolved.
+func (n LearnInferenceNormalization) Resolved() LearnInferenceNormalization {
+	if n.Algorithm == "" {
+		n.Algorithm = LearnNormalizationAlgorithmV1
+	}
+	if n.MinEvents == 0 {
+		n.MinEvents = defaultLearnNormMinEvents
+	}
+	if n.MinDistinctValues == 0 {
+		n.MinDistinctValues = defaultLearnNormMinDistinctValues
+	}
+	if n.EntropyThresholdBits == 0 {
+		n.EntropyThresholdBits = defaultLearnNormEntropyThresholdBits
+	}
+	if n.CardinalityCapPerHost == 0 {
+		n.CardinalityCapPerHost = defaultLearnNormCardinalityCapPerHost
+	}
+	if n.TailPromotionBlockPct == 0 {
+		n.TailPromotionBlockPct = defaultLearnNormTailPromotionBlockPct
+	}
+	return n
 }
 
 // LearnInferenceFloors mirrors inference.Floors at the YAML wire layer.
@@ -1158,4 +1226,62 @@ type LearnInferenceFloors struct {
 	MinSessions int `yaml:"min_sessions"`
 	MinEvents   int `yaml:"min_events"`
 	MinWindows  int `yaml:"min_windows"`
+}
+
+// LearnNormalizationAlgorithmV1 is the canonical path-normalization
+// algorithm name. Operators set learn.inference.normalization.algorithm
+// to this string (or omit it, which means "use default at runtime").
+// Anything else is rejected at config validation. A future algorithm
+// bump adds a new constant and a version-gated dispatch in the
+// inference package, never by relaxing the validator to accept
+// arbitrary names.
+const LearnNormalizationAlgorithmV1 = "frequency_weighted_entropy_v1"
+
+// LearnInferenceNormalization mirrors normalize.DecideConfig and
+// normalize.CapConfig at the YAML wire layer. Algorithm is locked to
+// LearnNormalizationAlgorithmV1 today; future algorithm bumps go
+// through a new constant + version-gated dispatch in the inference
+// package, not by accepting arbitrary algorithm strings here. The
+// numeric knobs are deployment-configurable (traffic volumes vary)
+// but bounded so a misconfiguration cannot disable safety properties.
+type LearnInferenceNormalization struct {
+	// Algorithm names the normalization algorithm. The only accepted
+	// value is LearnNormalizationAlgorithmV1 today; a future algorithm
+	// bump will require schema changes in the inference package itself.
+	Algorithm string `yaml:"algorithm"`
+
+	// MinEvents is the minimum number of events that must be observed
+	// in a (host, method, parent_prefix) bucket before any segment
+	// position in that bucket is eligible for collapse. Default 10.
+	MinEvents int `yaml:"min_events"`
+
+	// MinDistinctValues is the minimum number of distinct segment
+	// values at a given index before that position is eligible for
+	// collapse. Default 5.
+	MinDistinctValues int `yaml:"min_distinct_values"`
+
+	// EntropyThresholdBits is the minimum frequency-weighted Shannon
+	// entropy (in bits) at a given index for that position to be
+	// collapsed. Below this threshold the segment retains as a
+	// literal. Default 3.0.
+	EntropyThresholdBits float64 `yaml:"entropy_threshold_bits"`
+
+	// ReservedSegmentsExtra is the operator-supplied extension to the
+	// canonical reserved-segment blocklist (admin/auth/... in
+	// normalize.CanonicalReservedSegments()). Empty by default.
+	// Operators may extend but cannot remove from the canonical list.
+	ReservedSegmentsExtra []string `yaml:"reserved_segments_extra"`
+
+	// CardinalityCapPerHost is the maximum number of distinct
+	// path-families per host before overflow is bucketed into the
+	// _other tail. Default 1000.
+	CardinalityCapPerHost int `yaml:"cardinality_cap_per_host"`
+
+	// TailPromotionBlockPct is the percentage of host-event traffic
+	// that, if represented in the _other tail bucket, blocks
+	// promotion of the contract without explicit accept_tail: true.
+	// Default 5.0 (i.e., a contract with > 5% of events in tail
+	// requires operator acknowledgement). Strict greater-than: a
+	// tail at exactly the threshold does not block.
+	TailPromotionBlockPct float64 `yaml:"tail_promotion_block_pct"`
 }

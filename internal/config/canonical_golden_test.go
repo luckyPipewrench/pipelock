@@ -33,7 +33,7 @@ const (
 	// constructed Defaults() config, post-ApplyDefaults + Validate.
 	// This is the "out of the box" hash a user gets from `pipelock
 	// run` with no --config flag.
-	// Bumped for the v2.4 learn-and-lock observation pipeline schema:
+	// Bumped for the contract-compile observation pipeline schema:
 	// Defaults() now includes the Learn top-level block (enabled=false,
 	// privacy.public_allowlist_default=true). New policy surface → ph
 	// must shift so verifiers detect the schema change.
@@ -42,13 +42,29 @@ const (
 	// Floors are detection-relevant (they decide stable vs
 	// never_confirmed at compile time), so they must flow into ph so
 	// verifiers detect deployments that loosen the exposure gates.
-	goldenHashDefaults = "2fc2087f2baaf55caeff6aea778760eee3f2e16a36687473ab29e338c95ea624"
+	// Re-bumped on the path-normalization wiring PR: Learn now also
+	// carries an inference.normalization substruct (algorithm,
+	// min_events, min_distinct_values, entropy_threshold_bits,
+	// reserved_segments_extra, cardinality_cap_per_host,
+	// tail_promotion_block_pct). Normalization knobs are
+	// policy-relevant because they decide which path segments collapse
+	// to wildcards at compile time. An operator who lowers the entropy
+	// threshold or raises the cardinality cap silently widens the
+	// wildcard surface of every emitted contract; the verifier must
+	// observe the schema change through ph.
+	// Re-bumped on the same PR after policySemanticView started
+	// resolving zero-valued floors and normalization fields to their
+	// effective defaults before hashing. The change closes a verifier-
+	// drift hole: a YAML omitting learn.inference.floors and a YAML
+	// setting them explicitly to 5/20/3 now hash identically because
+	// they describe the same effective policy.
+	goldenHashDefaults = "3991ac9dbd84ba3683c0b855c979c4bd0bf422362a12ea85354ef90c58da3a31"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
 	// representative policy-semantic fixture with emphasis on the
 	// sections most likely to drift during TD-2b.
-	// Bumped for the v2.4 learn-and-lock observation pipeline schema:
+	// Bumped for the contract-compile observation pipeline schema:
 	// the rich fixture now carries a Learn block with enabled=false +
 	// privacy.public_allowlist_default=true defaults, so ph must shift
 	// in lockstep with the Defaults() bump above.
@@ -56,7 +72,16 @@ const (
 	// note above. Floors decode as zero in the rich fixture (which does
 	// not set them) and Resolved() supplies defaults at runtime, so the
 	// rich-config hash shifts in lockstep with Defaults().
-	goldenHashRichConfig = "19acd838ef7d36ed467077dd56a545e60808a5155fa61715aa5f889ee5f7aac7"
+	// Re-bumped on the path-normalization wiring PR: see goldenHashDefaults
+	// note above. Normalization knobs decode as zero in the rich fixture
+	// (which does not set them) and Resolved() supplies defaults at
+	// runtime, so the rich-config hash shifts in lockstep with Defaults().
+	// Re-bumped on the same PR after policySemanticView started
+	// resolving zero-valued floors and normalization fields to their
+	// effective defaults before hashing. See goldenHashDefaults note
+	// above. The rich fixture omits the inference substruct, so
+	// resolved-default values flow into ph identically to Defaults().
+	goldenHashRichConfig = "8584aecb9ff688cc0062249fa24581cda8fb8883d94d73a1aaa559ca13d494ce"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -5,18 +5,57 @@ package metrics
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// learnNamespace is the Prometheus namespace for all learn-and-lock metrics.
-// Per the v2.4 design, the observation pipeline emits under pipelock_learn_*;
-// the rest of pipelock emits under pipelock_* directly. Keeping the
-// namespaces separate makes alerting on observation-pipeline health
-// independent of proxy/scanner alerts.
+// learnNamespace is the Prometheus namespace for the contract-compile
+// observation-pipeline metrics. The pipeline emits under
+// pipelock_learn_*; the rest of pipelock emits under pipelock_*
+// directly. Keeping the namespaces separate makes alerting on
+// observation-pipeline health independent of proxy/scanner alerts.
 const learnNamespace = "pipelock_learn"
 
-// learnActionClassUnclassified is the canonical wire-form label for
-// observation events whose action class could not be resolved by the
-// classifier. Kept as a const so the bookkeeping in RecordObservationEvent
-// agrees with the upstream emitters byte-for-byte.
-const learnActionClassUnclassified = "unclassified"
+// ActionClass is the closed wire-form domain for the
+// observation_events_total counter's action_class label. The string
+// values come from the action-class taxonomy in the contract-compile
+// design baseline; the capture pipeline produces these and only these.
+// Any value outside the canonical set is dropped at record time to
+// prevent label-cardinality drift on a security-relevant counter.
+//
+// The metrics package owns the enum locally to avoid a layering import
+// on internal/contract/inference (or any other domain package).
+// Cross-package alignment is asserted by the metrics test pack.
+type ActionClass string
+
+// Canonical ActionClass values per the action-class taxonomy.
+// Wire form (snake_case lowercase verb) — must agree with the recorder
+// emitter's wire output byte-for-byte. Add a new constant here when
+// the taxonomy gains a verb; never widen the closed set silently.
+const (
+	ActionRead         ActionClass = "read"
+	ActionDerive       ActionClass = "derive"
+	ActionWrite        ActionClass = "write"
+	ActionDelegate     ActionClass = "delegate"
+	ActionAuthorize    ActionClass = "authorize"
+	ActionSpend        ActionClass = "spend"
+	ActionCommit       ActionClass = "commit"
+	ActionActuate      ActionClass = "actuate"
+	ActionUnclassified ActionClass = "unclassified"
+)
+
+// BlockReason is the closed wire-form domain for the
+// regulated_data_blocked_total counter's reason label. Values mirror
+// the privacy enforcer's classifier-rule names (snake_case). Any value
+// outside the canonical set is dropped at record time to prevent
+// label-cardinality drift.
+type BlockReason string
+
+// Canonical BlockReason values. Add new values here when the privacy
+// enforcer (internal/contract/privacy) gains additional rules. The
+// three values below mirror the godoc on RecordRegulatedDataBlocked
+// and the privacy-enforcer rule set in the design baseline.
+const (
+	BlockReasonFieldClassRegulated BlockReason = "field_class_regulated"
+	BlockReasonRootClassRegulated  BlockReason = "root_class_regulated"
+	BlockReasonExplicitBlock       BlockReason = "explicit_block"
+)
 
 // registerLearnMetrics builds and registers the observation-pipeline counters
 // (events emitted by event_kind, regulated data blocked by reason,
@@ -69,37 +108,64 @@ func (m *Metrics) registerLearnMetrics(reg *prometheus.Registry) {
 	)
 }
 
-// RecordObservationEvent increments the observation events counter for the
-// given action class. The capture writer (and receipt emitter) call this
-// on every recorder.Entry write for capture/action_receipt entries.
+// RecordObservationEvent increments the observation_events_total
+// counter for the given action class. The capture writer (and receipt
+// emitter) call this on every recorder.Entry write for
+// capture/action_receipt entries.
 //
-// actionClass is the wire-form label string (lower-case verb: read, derive,
-// write, delegate, authorize, spend, commit, actuate, unclassified). The
-// caller must pass the canonical form; this helper does NOT normalize.
-func (m *Metrics) RecordObservationEvent(actionClass string) {
+// Non-canonical values are dropped silently: Prometheus creates a new
+// time series for every distinct label value, so accepting arbitrary
+// strings would let a future caller bug expand cardinality on a
+// security-relevant telemetry counter without an obvious failure mode.
+// The closed allowlist (ActionRead / Derive / Write / Delegate /
+// Authorize / Spend / Commit / Actuate / Unclassified) is enforced at
+// runtime; the typed parameter steers callers toward the constants but
+// untyped string literals still convert per Go's constant rules.
+//
+// When actionClass is ActionUnclassified, also increments the
+// unclassified-actions total (the v2.4 done-state classification-debt
+// gate watches that counter).
+func (m *Metrics) RecordObservationEvent(actionClass ActionClass) {
 	if m == nil {
 		return
 	}
-	m.learnObservationEvents.WithLabelValues(actionClass).Inc()
-	if actionClass == learnActionClassUnclassified {
-		m.learnUnclassifiedActions.Inc()
+	switch actionClass {
+	case ActionRead, ActionDerive, ActionWrite, ActionDelegate,
+		ActionAuthorize, ActionSpend, ActionCommit, ActionActuate,
+		ActionUnclassified:
+		m.learnObservationEvents.WithLabelValues(string(actionClass)).Inc()
+		if actionClass == ActionUnclassified {
+			m.learnUnclassifiedActions.Inc()
+		}
+	default:
+		// Drop non-canonical: future caller drift cannot expand the
+		// cardinality of pipelock_learn_observation_events_total
+		// beyond the nine legitimate action classes.
 	}
 }
 
-// RecordRegulatedDataBlocked increments the regulated-data-blocked counter
-// with the given reason label. The privacy enforcer calls this when an
-// observation event's data class resolves to regulated and is dropped
-// before reaching the recorder.
+// RecordRegulatedDataBlocked increments the regulated_data_blocked_total
+// counter with the given reason label. The privacy enforcer calls this
+// when an observation event's data class resolves to regulated and is
+// dropped before reaching the recorder.
 //
-// reason should be a stable, low-cardinality string identifying which
-// classifier rule fired (e.g., "field_class_regulated", "root_class_regulated",
-// "explicit_block"). The caller is responsible for keeping the cardinality
-// bounded; do not pass user-supplied or unbounded values.
-func (m *Metrics) RecordRegulatedDataBlocked(reason string) {
+// Same closed-allowlist contract as RecordObservationEvent:
+// non-canonical values drop silently to prevent cardinality drift on a
+// security-relevant counter. The typed parameter steers callers toward
+// the BlockReason constants but untyped string literals still convert
+// per Go's constant rules.
+func (m *Metrics) RecordRegulatedDataBlocked(reason BlockReason) {
 	if m == nil {
 		return
 	}
-	m.learnRegulatedDataBlocked.WithLabelValues(reason).Inc()
+	switch reason {
+	case BlockReasonFieldClassRegulated,
+		BlockReasonRootClassRegulated,
+		BlockReasonExplicitBlock:
+		m.learnRegulatedDataBlocked.WithLabelValues(string(reason)).Inc()
+	default:
+		// Drop non-canonical (see RecordObservationEvent).
+	}
 }
 
 // SetUnclassifiedRate updates the unclassified-rate gauge. The observation

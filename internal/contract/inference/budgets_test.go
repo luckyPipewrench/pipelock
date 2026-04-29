@@ -66,6 +66,69 @@ func TestBudgetStats_EmptyWindow(t *testing.T) {
 	}
 }
 
+// TestBudgetStats_FiltersNonFinite asserts that NaN and +/-Inf values
+// in the input window are filtered out before percentile computation,
+// so the resulting Budget never persists non-finite floats. SampleCount
+// reflects the count after filtering. A window containing only
+// non-finite values returns a zero-valued Budget. This is the
+// fail-closed-but-valid contract on the budget math: a future caller
+// that pipes a divide-by-zero result into BudgetStats cannot poison
+// the persisted contract or the policy hash with NaN/Inf.
+func TestBudgetStats_FiltersNonFinite(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   []float64
+		want Budget
+	}{
+		{
+			name: "interleaved_finite_and_nan",
+			in:   []float64{10, math.NaN(), 20, 30, math.NaN(), 40},
+			// After filtering: [10, 20, 30, 40]. Nearest-rank median:
+			// ceil(50*4/100) = 2, sorted[1] = 20.
+			want: Budget{P99: 40, P95: 40, Median: 20, Max: 40, SampleCount: 4},
+		},
+		{
+			name: "interleaved_finite_and_inf",
+			in:   []float64{10, math.Inf(1), 20, math.Inf(-1), 30},
+			want: Budget{P99: 30, P95: 30, Median: 20, Max: 30, SampleCount: 3},
+		},
+		{
+			name: "all_nan_returns_zero_budget",
+			in:   []float64{math.NaN(), math.NaN(), math.NaN()},
+			want: Budget{},
+		},
+		{
+			name: "all_inf_returns_zero_budget",
+			in:   []float64{math.Inf(1), math.Inf(-1)},
+			want: Budget{},
+		},
+		{
+			name: "mixed_inf_nan_returns_zero_budget",
+			in:   []float64{math.NaN(), math.Inf(1), math.Inf(-1)},
+			want: Budget{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := BudgetStats(tc.in)
+			if got != tc.want {
+				t.Fatalf("BudgetStats(%v) = %+v, want %+v", tc.in, got, tc.want)
+			}
+			if math.IsNaN(got.P99) || math.IsInf(got.P99, 0) ||
+				math.IsNaN(got.P95) || math.IsInf(got.P95, 0) ||
+				math.IsNaN(got.Median) || math.IsInf(got.Median, 0) ||
+				math.IsNaN(got.Max) || math.IsInf(got.Max, 0) {
+				t.Fatalf("Budget contains non-finite value: %+v", got)
+			}
+		})
+	}
+}
+
 // TestBudgetStats_SingleElement verifies that a one-element window
 // collapses to a Budget where all four percentile/max values equal the
 // single sample.

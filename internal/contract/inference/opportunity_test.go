@@ -147,7 +147,7 @@ func TestDenominator_HappyPath(t *testing.T) {
 
 // TestDenominator_RejectsUnknownLevel asserts the zero value and any
 // out-of-range int both return ErrUnknownOpportunityLevel. The error MUST
-// be detectable via errors.Is — never raw equality (PR 1.3 lesson).
+// be detectable via errors.Is, never raw equality.
 func TestDenominator_RejectsUnknownLevel(t *testing.T) {
 	t.Parallel()
 
@@ -260,9 +260,9 @@ func TestDenominator_RejectsNegativeCount(t *testing.T) {
 }
 
 // TestDenominator_ZeroCountAllowed asserts that an opportunity count of
-// zero is a valid state, not an error. Floor gates downstream (PR 2.2)
-// turn zero into a "not enough evidence yet" classification; Denominator
-// just reports the count.
+// zero is a valid state, not an error. The downstream floor gates turn
+// zero into a "not enough evidence yet" classification; Denominator just
+// reports the count.
 func TestDenominator_ZeroCountAllowed(t *testing.T) {
 	t.Parallel()
 

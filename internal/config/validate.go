@@ -274,6 +274,57 @@ func (c *Config) validateLearn() error {
 	if err := validateLearnInferenceFloors(c.Learn.Inference.Floors); err != nil {
 		return err
 	}
+	if err := validateLearnInferenceNormalization(c.Learn.Inference.Normalization); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLearnInferenceNormalization rejects malformed normalization
+// configuration on the YAML wire layer. Algorithm must be the v2.4
+// canonical value; numeric fields must be non-negative; the entropy
+// threshold must fit the [0, 8.0] band that path inference can
+// reasonably operate in (>8 bits per single segment is a typo);
+// the tail-promotion threshold is a percentage in [0, 100]. Errors
+// emit the full YAML path the operator sees in pipelock.yaml.
+//
+// Mirrors validateLearnInferenceFloors's layering choice: no import on
+// internal/contract/inference/normalize; the validator inlines the
+// rules that the normalize package's CapConfig.Validate and
+// DecideConfig.Validate also enforce, because operator-facing error
+// messages must use the YAML field path.
+func validateLearnInferenceNormalization(n LearnInferenceNormalization) error {
+	if n.Algorithm != "" && n.Algorithm != LearnNormalizationAlgorithmV1 {
+		return fmt.Errorf("learn.inference.normalization.algorithm: %q: must be %q (only supported algorithm in v2.4)", n.Algorithm, LearnNormalizationAlgorithmV1)
+	}
+	if n.MinEvents < 0 {
+		return fmt.Errorf("learn.inference.normalization.min_events: %d: must be non-negative", n.MinEvents)
+	}
+	if n.MinDistinctValues < 0 {
+		return fmt.Errorf("learn.inference.normalization.min_distinct_values: %d: must be non-negative", n.MinDistinctValues)
+	}
+	if n.EntropyThresholdBits < 0 {
+		return fmt.Errorf("learn.inference.normalization.entropy_threshold_bits: %v: must be non-negative", n.EntropyThresholdBits)
+	}
+	if n.EntropyThresholdBits > 8.0 {
+		return fmt.Errorf("learn.inference.normalization.entropy_threshold_bits: %v: must not exceed 8.0 (more than 8 bits per single segment is implausible)", n.EntropyThresholdBits)
+	}
+	if n.CardinalityCapPerHost < 0 {
+		return fmt.Errorf("learn.inference.normalization.cardinality_cap_per_host: %d: must be non-negative", n.CardinalityCapPerHost)
+	}
+	if n.TailPromotionBlockPct < 0 {
+		return fmt.Errorf("learn.inference.normalization.tail_promotion_block_pct: %v: must be non-negative", n.TailPromotionBlockPct)
+	}
+	if n.TailPromotionBlockPct > 100.0 {
+		return fmt.Errorf("learn.inference.normalization.tail_promotion_block_pct: %v: must not exceed 100", n.TailPromotionBlockPct)
+	}
+	// Reserved-segments-extra must not contain empty strings (would shadow
+	// the canonical list lookup ambiguously).
+	for i, s := range n.ReservedSegmentsExtra {
+		if s == "" {
+			return fmt.Errorf("learn.inference.normalization.reserved_segments_extra[%d]: empty string not permitted", i)
+		}
+	}
 	return nil
 }
 

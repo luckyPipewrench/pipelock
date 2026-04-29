@@ -65,8 +65,8 @@ func observeCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "observe",
-		Short: "Run the proxy in observation mode for learn-and-lock",
-		Long: `Run the proxy in observation mode for the learn-and-lock pipeline.
+		Short: "Run the proxy in observation mode for contract compile",
+		Long: `Run the proxy in observation mode for the contract-compile pipeline.
 
 The proxy listens for traffic, scans it through the normal pipeline, and
 writes hash-chained recorder JSONL evidence into --capture-dir. Each entry

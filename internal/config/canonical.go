@@ -175,6 +175,16 @@ func (c *Config) policySemanticView() Config {
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = sortedCopy(view.TrustedDomains)
 
+	// Resolve omitted-or-zero learn-inference fields to their effective
+	// defaults so the policy hash reflects the runtime-effective policy,
+	// not the literal YAML representation. Without this, a YAML omitting
+	// learn.inference.floors.* and a YAML setting them explicitly to
+	// 5/20/3 would produce different hashes despite describing the same
+	// effective policy. The drift would surface as spurious verifier
+	// rejections on merge requests that just clarify defaults.
+	view.Learn.Inference.Floors = view.Learn.Inference.Floors.Resolved()
+	view.Learn.Inference.Normalization = view.Learn.Inference.Normalization.Resolved()
+
 	return view
 }
 

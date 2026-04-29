@@ -108,8 +108,8 @@ func (l OpportunityLevel) Valid() bool {
 
 // OpportunityContext holds the precomputed counts the inference engine needs
 // to pick a denominator for any rule level. Each field documents which level
-// reads it. The upstream aggregator (PR 2.3 territory) populates these counts
-// from the recorder; Denominator just selects the right field and validates.
+// reads it. The upstream aggregator populates these counts from the recorder;
+// Denominator just selects the right field and validates.
 //
 // Passed by value: the struct is small, value semantics make accidental
 // mutation impossible, and the cost is below measurement noise.
@@ -153,9 +153,9 @@ var (
 
 	// ErrNegativeOpportunityCount is returned by Denominator when the
 	// selected count is negative. Negative counts indicate an aggregator
-	// bug, not adversarial input — but the inference engine is no-panic
-	// per CLAUDE.md hard rules, so we return the error and let the caller
-	// decide. Callers can detect this with
+	// bug, not adversarial input, but the inference engine never panics
+	// on runtime input, so we return the error and let the caller decide.
+	// Callers can detect this with
 	// errors.Is(err, ErrNegativeOpportunityCount).
 	ErrNegativeOpportunityCount = errors.New("inference: negative opportunity count")
 )
@@ -171,8 +171,8 @@ var (
 //   - Negative selected count: returns (0, wrapped
 //     ErrNegativeOpportunityCount with level + count context).
 //   - Zero selected count: returns (0, nil). Zero is a valid "no
-//     opportunity yet" state; the floor gates downstream (PR 2.2) handle
-//     the implication.
+//     opportunity yet" state; the downstream floor gates handle the
+//     implication.
 func Denominator(level OpportunityLevel, ctx OpportunityContext) (int, error) {
 	var count int
 	switch level {

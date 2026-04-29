@@ -15,8 +15,8 @@ import (
 // contract and is NOT exposed as a config field. Making the threshold
 // deployment-configurable would let two installs infer different
 // classifications from identical recorder data, which is audit drift
-// rather than flexibility. The value comes from the v2.4 learn-and-lock
-// design (Round 5 spec).
+// rather than flexibility. The value comes from the contract inference
+// engine design baseline.
 const TauStable = 0.85
 
 // TauBrittle is the Wilson lower-bound threshold a rule must clear (in
@@ -24,7 +24,7 @@ const TauStable = 0.85
 // rather than ConfidenceNeverConfirmed.
 //
 // Same contract logic as TauStable: locked, not deployment-configurable,
-// sourced from the Round 5 spec.
+// sourced from the design baseline.
 const TauBrittle = 0.50
 
 // Default exposure floors. A rule cannot be classified ConfidenceStable
@@ -32,7 +32,7 @@ const TauBrittle = 0.50
 // how high the Wilson lower bound climbs. Floors are AND-composed with
 // Wilson — never OR — so a low-volume signal cannot promote itself to
 // stable just by being lucky on a handful of trials. Values come from
-// the v2.4 learn-and-lock design (Round 5 spec).
+// the contract inference engine design baseline.
 const (
 	// DefaultMinSessions is the minimum number of distinct sessions in
 	// which a rule must have been observed before it can be classified

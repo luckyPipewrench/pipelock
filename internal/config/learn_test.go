@@ -6,11 +6,17 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+// reservedExtraInternal is the operator-supplied reserved-segment
+// extension used in normalization round-trip fixtures. Extracted as a
+// const to satisfy goconst across the round-trip and load tests.
+const reservedExtraInternal = "internal"
 
 const (
 	// learnYAMLOmittedPrivacy is a YAML fragment with learn enabled and a
@@ -552,6 +558,13 @@ func TestLearn_YAMLRoundTrip(t *testing.T) {
 	cfg.Learn.Inference.Floors.MinSessions = 7
 	cfg.Learn.Inference.Floors.MinEvents = 30
 	cfg.Learn.Inference.Floors.MinWindows = 4
+	cfg.Learn.Inference.Normalization.Algorithm = LearnNormalizationAlgorithmV1
+	cfg.Learn.Inference.Normalization.MinEvents = 12
+	cfg.Learn.Inference.Normalization.MinDistinctValues = 6
+	cfg.Learn.Inference.Normalization.EntropyThresholdBits = 3.5
+	cfg.Learn.Inference.Normalization.ReservedSegmentsExtra = []string{"corp", reservedExtraInternal}
+	cfg.Learn.Inference.Normalization.CardinalityCapPerHost = 2000
+	cfg.Learn.Inference.Normalization.TailPromotionBlockPct = 7.5
 
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -581,6 +594,29 @@ func TestLearn_YAMLRoundTrip(t *testing.T) {
 	}
 	if got.Learn.Inference.Floors.MinWindows != 4 {
 		t.Errorf("Inference.Floors.MinWindows=%d lost on round-trip", got.Learn.Inference.Floors.MinWindows)
+	}
+	if got.Learn.Inference.Normalization.Algorithm != LearnNormalizationAlgorithmV1 {
+		t.Errorf("Normalization.Algorithm=%q lost on round-trip", got.Learn.Inference.Normalization.Algorithm)
+	}
+	if got.Learn.Inference.Normalization.MinEvents != 12 {
+		t.Errorf("Normalization.MinEvents=%d lost on round-trip", got.Learn.Inference.Normalization.MinEvents)
+	}
+	if got.Learn.Inference.Normalization.MinDistinctValues != 6 {
+		t.Errorf("Normalization.MinDistinctValues=%d lost on round-trip", got.Learn.Inference.Normalization.MinDistinctValues)
+	}
+	if got.Learn.Inference.Normalization.EntropyThresholdBits != 3.5 {
+		t.Errorf("Normalization.EntropyThresholdBits=%v lost on round-trip", got.Learn.Inference.Normalization.EntropyThresholdBits)
+	}
+	if len(got.Learn.Inference.Normalization.ReservedSegmentsExtra) != 2 ||
+		got.Learn.Inference.Normalization.ReservedSegmentsExtra[0] != "corp" ||
+		got.Learn.Inference.Normalization.ReservedSegmentsExtra[1] != reservedExtraInternal {
+		t.Errorf("Normalization.ReservedSegmentsExtra=%v lost on round-trip", got.Learn.Inference.Normalization.ReservedSegmentsExtra)
+	}
+	if got.Learn.Inference.Normalization.CardinalityCapPerHost != 2000 {
+		t.Errorf("Normalization.CardinalityCapPerHost=%d lost on round-trip", got.Learn.Inference.Normalization.CardinalityCapPerHost)
+	}
+	if got.Learn.Inference.Normalization.TailPromotionBlockPct != 7.5 {
+		t.Errorf("Normalization.TailPromotionBlockPct=%v lost on round-trip", got.Learn.Inference.Normalization.TailPromotionBlockPct)
 	}
 }
 
@@ -756,5 +792,554 @@ func TestLoad_LearnInferenceFloors_NegativeRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "learn.inference.floors.min_sessions") {
 		t.Errorf("error %q missing operator-facing YAML path", err)
+	}
+}
+
+// TestValidateLearnInferenceNormalization_Algorithm pins the algorithm
+// gate. Empty is accepted (defaults flow through Resolved at runtime),
+// the canonical algorithm value is accepted, and any other value
+// rejects with the operator-facing YAML path. A future algorithm bump
+// must extend this test, never weaken it.
+func TestValidateLearnInferenceNormalization_Algorithm(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		algorithm  string
+		wantErr    bool
+		wantInPath string
+	}{
+		{"empty_accepted", "", false, ""},
+		{"canonical_v1_accepted", LearnNormalizationAlgorithmV1, false, ""},
+		{"unknown_rejected", "frequency_weighted_entropy_v2", true, "learn.inference.normalization.algorithm"},
+		{"misspelled_rejected", "frequency-weighted-entropy-v1", true, "learn.inference.normalization.algorithm"},
+		{"random_string_rejected", "naive", true, "learn.inference.normalization.algorithm"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			n := LearnInferenceNormalization{Algorithm: tt.algorithm}
+			err := validateLearnInferenceNormalization(n)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for algorithm=%q", tt.algorithm)
+				}
+				if !strings.Contains(err.Error(), tt.wantInPath) {
+					t.Errorf("error %q missing YAML path %q", err, tt.wantInPath)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error for algorithm=%q: %v", tt.algorithm, err)
+			}
+		})
+	}
+}
+
+// TestValidateLearnInferenceNormalization_NumericFields_RejectNegative
+// exercises one row per numeric knob, each row setting exactly one field
+// to -1. The error message must surface the YAML path the operator sees
+// in pipelock.yaml plus the numeric value.
+func TestValidateLearnInferenceNormalization_NumericFields_RejectNegative(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mut       func(*LearnInferenceNormalization)
+		wantPath  string
+		wantValue string
+	}{
+		{
+			name:      "min_events_negative",
+			mut:       func(n *LearnInferenceNormalization) { n.MinEvents = -1 },
+			wantPath:  "learn.inference.normalization.min_events",
+			wantValue: "-1",
+		},
+		{
+			name:      "min_distinct_values_negative",
+			mut:       func(n *LearnInferenceNormalization) { n.MinDistinctValues = -1 },
+			wantPath:  "learn.inference.normalization.min_distinct_values",
+			wantValue: "-1",
+		},
+		{
+			name:      "entropy_threshold_bits_negative",
+			mut:       func(n *LearnInferenceNormalization) { n.EntropyThresholdBits = -1 },
+			wantPath:  "learn.inference.normalization.entropy_threshold_bits",
+			wantValue: "-1",
+		},
+		{
+			name:      "cardinality_cap_per_host_negative",
+			mut:       func(n *LearnInferenceNormalization) { n.CardinalityCapPerHost = -1 },
+			wantPath:  "learn.inference.normalization.cardinality_cap_per_host",
+			wantValue: "-1",
+		},
+		{
+			name:      "tail_promotion_block_pct_negative",
+			mut:       func(n *LearnInferenceNormalization) { n.TailPromotionBlockPct = -1 },
+			wantPath:  "learn.inference.normalization.tail_promotion_block_pct",
+			wantValue: "-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var n LearnInferenceNormalization
+			tt.mut(&n)
+			err := validateLearnInferenceNormalization(n)
+			if err == nil {
+				t.Fatalf("expected error for %s", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.wantPath) {
+				t.Errorf("error %q missing YAML path %q", err, tt.wantPath)
+			}
+			if !strings.Contains(err.Error(), tt.wantValue) {
+				t.Errorf("error %q missing numeric value %q", err, tt.wantValue)
+			}
+			if !strings.Contains(err.Error(), "non-negative") {
+				t.Errorf("error %q missing constraint phrasing", err)
+			}
+		})
+	}
+}
+
+// TestValidateLearnInferenceNormalization_EntropyThresholdBitsBand pins
+// the [0, 8.0] band for entropy_threshold_bits. Boundary cases at 0 and
+// 8.0 accept; anything outside rejects.
+func TestValidateLearnInferenceNormalization_EntropyThresholdBitsBand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		bits    float64
+		wantErr bool
+	}{
+		{"at_zero_accepted", 0, false},
+		{"just_above_zero_accepted", 0.001, false},
+		{"at_eight_accepted", 8.0, false},
+		{"just_above_eight_rejected", 8.0001, true},
+		{"just_below_zero_rejected", -0.001, true},
+		{"way_too_high_rejected", 1000.0, true},
+		{"way_too_low_rejected", -100.0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			n := LearnInferenceNormalization{EntropyThresholdBits: tt.bits}
+			err := validateLearnInferenceNormalization(n)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for bits=%v", tt.bits)
+				}
+				if !strings.Contains(err.Error(), "learn.inference.normalization.entropy_threshold_bits") {
+					t.Errorf("error %q missing YAML path", err)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error for bits=%v: %v", tt.bits, err)
+			}
+		})
+	}
+}
+
+// TestValidateLearnInferenceNormalization_TailPctBand pins the [0, 100]
+// band for tail_promotion_block_pct. 0 and 100 both accept (defaults
+// land at 5.0, but operators may dial to either extreme).
+func TestValidateLearnInferenceNormalization_TailPctBand(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pct     float64
+		wantErr bool
+	}{
+		{"at_zero_accepted", 0, false},
+		{"at_hundred_accepted", 100.0, false},
+		{"just_above_hundred_rejected", 100.0001, true},
+		{"just_below_zero_rejected", -0.001, true},
+		{"middle_default_accepted", 5.0, false},
+		{"way_too_high_rejected", 1000.0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			n := LearnInferenceNormalization{TailPromotionBlockPct: tt.pct}
+			err := validateLearnInferenceNormalization(n)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for pct=%v", tt.pct)
+				}
+				if !strings.Contains(err.Error(), "learn.inference.normalization.tail_promotion_block_pct") {
+					t.Errorf("error %q missing YAML path", err)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error for pct=%v: %v", tt.pct, err)
+			}
+		})
+	}
+}
+
+// TestValidateLearnInferenceNormalization_ReservedExtras_RejectsEmpty
+// confirms an empty string anywhere in reserved_segments_extra trips
+// the validator with the index in the error so the operator can find
+// the offending entry without counting list items by hand.
+func TestValidateLearnInferenceNormalization_ReservedExtras_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		extras    []string
+		wantErr   bool
+		wantIndex string
+	}{
+		{"all_valid_accepted", []string{"valid", "also-valid", "third"}, false, ""},
+		{"empty_at_zero_rejected", []string{"", "valid"}, true, "[0]"},
+		{"empty_at_one_rejected", []string{"valid", "", "also-valid"}, true, "[1]"},
+		{"empty_at_two_rejected", []string{"valid", "also-valid", ""}, true, "[2]"},
+		{"nil_accepted", nil, false, ""},
+		{"empty_slice_accepted", []string{}, false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			n := LearnInferenceNormalization{ReservedSegmentsExtra: tt.extras}
+			err := validateLearnInferenceNormalization(n)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for extras=%v", tt.extras)
+				}
+				if !strings.Contains(err.Error(), "learn.inference.normalization.reserved_segments_extra") {
+					t.Errorf("error %q missing YAML path", err)
+				}
+				if !strings.Contains(err.Error(), tt.wantIndex) {
+					t.Errorf("error %q missing index %q", err, tt.wantIndex)
+				}
+			} else if err != nil {
+				t.Errorf("unexpected error for extras=%v: %v", tt.extras, err)
+			}
+		})
+	}
+}
+
+// TestValidateLearnInferenceNormalization_AllZeroAccepted confirms a
+// fully-zero struct (operator omitted the entire normalization block)
+// validates clean. Zero is the "use default" sentinel: the runtime
+// applies normalize.DefaultDecideConfig / DefaultCapConfig at use time
+// via Resolved().
+func TestValidateLearnInferenceNormalization_AllZeroAccepted(t *testing.T) {
+	t.Parallel()
+
+	if err := validateLearnInferenceNormalization(LearnInferenceNormalization{}); err != nil {
+		t.Errorf("unexpected error on zero-value struct: %v", err)
+	}
+}
+
+// TestValidateLearnInferenceNormalization_FieldOrder pins the sequential
+// validation contract: when multiple fields are bad, the validator
+// returns the first error in declaration order. Operators read the
+// first error in their logs and fix it before re-running — non-
+// deterministic ordering would force multiple round-trips. Algorithm
+// is checked first; numeric fields follow in struct declaration order.
+func TestValidateLearnInferenceNormalization_FieldOrder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("algorithm_before_numeric", func(t *testing.T) {
+		t.Parallel()
+		// Bad algorithm + multiple bad numerics: algorithm error wins.
+		n := LearnInferenceNormalization{
+			Algorithm:             "bogus",
+			MinEvents:             -1,
+			MinDistinctValues:     -1,
+			EntropyThresholdBits:  -1,
+			CardinalityCapPerHost: -1,
+			TailPromotionBlockPct: -1,
+		}
+		err := validateLearnInferenceNormalization(n)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "algorithm") {
+			t.Errorf("expected algorithm error first, got: %v", err)
+		}
+	})
+
+	t.Run("min_events_before_other_numerics", func(t *testing.T) {
+		t.Parallel()
+		// Algorithm clean: first bad numeric (min_events) wins.
+		n := LearnInferenceNormalization{
+			MinEvents:             -1,
+			MinDistinctValues:     -2,
+			EntropyThresholdBits:  -3,
+			CardinalityCapPerHost: -4,
+			TailPromotionBlockPct: -5,
+		}
+		err := validateLearnInferenceNormalization(n)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "min_events") {
+			t.Errorf("expected min_events error first, got: %v", err)
+		}
+		if strings.Contains(err.Error(), "min_distinct_values") ||
+			strings.Contains(err.Error(), "entropy_threshold_bits") ||
+			strings.Contains(err.Error(), "cardinality_cap_per_host") ||
+			strings.Contains(err.Error(), "tail_promotion_block_pct") {
+			t.Errorf("first error must report only min_events, got: %v", err)
+		}
+	})
+}
+
+// TestValidateLearn_PropagatesNormalizationError walks the full
+// Validate() pipeline with a bad Normalization sub-block so the
+// validateLearn → return-err branch is exercised end-to-end (mirrors
+// the salt-source and floor propagation tests already in this file).
+func TestValidateLearn_PropagatesNormalizationError(t *testing.T) {
+	cfg := Defaults()
+	cfg.Learn.Inference.Normalization.CardinalityCapPerHost = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error from validateLearn through full Validate() chain")
+	}
+	if !strings.Contains(err.Error(), "learn.inference.normalization.cardinality_cap_per_host") {
+		t.Errorf("error %q does not propagate normalization detail", err)
+	}
+}
+
+// TestLoad_LearnInferenceNormalization_RoundTrip confirms YAML decoding
+// routes the normalization knobs into the right struct. The Load()
+// round-trip is the layer most likely to drift if the yaml tags get
+// mistyped, so we exercise it explicitly through the public API.
+func TestLoad_LearnInferenceNormalization_RoundTrip(t *testing.T) {
+	body := "" +
+		"mode: balanced\n" +
+		"learn:\n" +
+		"  enabled: true\n" +
+		"  capture_dir: /tmp/c\n" +
+		"  inference:\n" +
+		"    normalization:\n" +
+		"      algorithm: frequency_weighted_entropy_v1\n" +
+		"      min_events: 25\n" +
+		"      min_distinct_values: 8\n" +
+		"      entropy_threshold_bits: 4.2\n" +
+		"      reserved_segments_extra:\n" +
+		"        - corp\n" +
+		"        - tenant\n" +
+		"      cardinality_cap_per_host: 1500\n" +
+		"      tail_promotion_block_pct: 8.0\n"
+	p := writeLearnConfig(t, body)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	n := cfg.Learn.Inference.Normalization
+	if n.Algorithm != LearnNormalizationAlgorithmV1 {
+		t.Errorf("Algorithm=%q lost on Load", n.Algorithm)
+	}
+	if n.MinEvents != 25 {
+		t.Errorf("MinEvents=%d, want 25", n.MinEvents)
+	}
+	if n.MinDistinctValues != 8 {
+		t.Errorf("MinDistinctValues=%d, want 8", n.MinDistinctValues)
+	}
+	if n.EntropyThresholdBits != 4.2 {
+		t.Errorf("EntropyThresholdBits=%v, want 4.2", n.EntropyThresholdBits)
+	}
+	if len(n.ReservedSegmentsExtra) != 2 ||
+		n.ReservedSegmentsExtra[0] != "corp" ||
+		n.ReservedSegmentsExtra[1] != "tenant" {
+		t.Errorf("ReservedSegmentsExtra=%v lost on Load", n.ReservedSegmentsExtra)
+	}
+	if n.CardinalityCapPerHost != 1500 {
+		t.Errorf("CardinalityCapPerHost=%d, want 1500", n.CardinalityCapPerHost)
+	}
+	if n.TailPromotionBlockPct != 8.0 {
+		t.Errorf("TailPromotionBlockPct=%v, want 8.0", n.TailPromotionBlockPct)
+	}
+}
+
+// TestLoad_LearnInferenceNormalization_Negative_Rejected confirms a YAML
+// doc with a negative normalization knob fails Load() — the YAML
+// decode must reach Validate() and the validator must reject it with
+// the operator-facing YAML path so a misconfigured deployment cannot
+// silently widen the wildcard surface.
+func TestLoad_LearnInferenceNormalization_Negative_Rejected(t *testing.T) {
+	body := "" +
+		"mode: balanced\n" +
+		"learn:\n" +
+		"  enabled: true\n" +
+		"  capture_dir: /tmp/c\n" +
+		"  inference:\n" +
+		"    normalization:\n" +
+		"      cardinality_cap_per_host: -1\n"
+	p := writeLearnConfig(t, body)
+	_, err := Load(p)
+	if err == nil {
+		t.Fatal("expected Load error for negative cardinality_cap_per_host")
+	}
+	if !strings.Contains(err.Error(), "learn.inference.normalization.cardinality_cap_per_host") {
+		t.Errorf("error %q missing operator-facing YAML path", err)
+	}
+}
+
+// TestCanonicalPolicyHash_OmittedFloorsHashAsExplicitDefaults proves the
+// hash invariant policySemanticView promises: a config with omitted
+// learn.inference.floors and a config with explicit 5/20/3 must produce
+// identical canonical policy hashes. Without the Resolved() pre-pass,
+// these would diverge despite describing the same effective policy,
+// causing spurious verifier rejections on PRs that just clarify
+// defaults.
+func TestCanonicalPolicyHash_OmittedFloorsHashAsExplicitDefaults(t *testing.T) {
+	t.Parallel()
+
+	omitted := Defaults()
+	if got := omitted.Learn.Inference.Floors; (got != LearnInferenceFloors{}) {
+		t.Fatalf("Defaults() should leave inference.floors at zero, got %+v", got)
+	}
+
+	explicit := Defaults()
+	explicit.Learn.Inference.Floors = LearnInferenceFloors{
+		MinSessions: defaultLearnFloorMinSessions,
+		MinEvents:   defaultLearnFloorMinEvents,
+		MinWindows:  defaultLearnFloorMinWindows,
+	}
+
+	if h1, h2 := omitted.CanonicalPolicyHash(), explicit.CanonicalPolicyHash(); h1 != h2 {
+		t.Errorf("omitted floors and explicit defaults produced different hashes; the Resolved() pre-pass should make them identical\n  omitted:  %s\n  explicit: %s", h1, h2)
+	}
+}
+
+// TestCanonicalPolicyHash_OmittedNormalizationHashAsExplicitDefaults is
+// the parallel invariant for the normalization substruct.
+func TestCanonicalPolicyHash_OmittedNormalizationHashAsExplicitDefaults(t *testing.T) {
+	t.Parallel()
+
+	omitted := Defaults()
+	if got := omitted.Learn.Inference.Normalization; !reflect.DeepEqual(got, LearnInferenceNormalization{}) {
+		t.Fatalf("Defaults() should leave inference.normalization at zero, got %+v", got)
+	}
+
+	explicit := Defaults()
+	explicit.Learn.Inference.Normalization = LearnInferenceNormalization{
+		Algorithm:             LearnNormalizationAlgorithmV1,
+		MinEvents:             defaultLearnNormMinEvents,
+		MinDistinctValues:     defaultLearnNormMinDistinctValues,
+		EntropyThresholdBits:  defaultLearnNormEntropyThresholdBits,
+		CardinalityCapPerHost: defaultLearnNormCardinalityCapPerHost,
+		TailPromotionBlockPct: defaultLearnNormTailPromotionBlockPct,
+	}
+
+	if h1, h2 := omitted.CanonicalPolicyHash(), explicit.CanonicalPolicyHash(); h1 != h2 {
+		t.Errorf("omitted normalization and explicit defaults produced different hashes; the Resolved() pre-pass should make them identical\n  omitted:  %s\n  explicit: %s", h1, h2)
+	}
+}
+
+// TestLearnInferenceFloors_Resolved exercises the Resolved() canonical
+// pre-pass directly. Each row pins one input/output expectation so a
+// future regression in the zero-fill logic surfaces with a precise
+// failure message.
+func TestLearnInferenceFloors_Resolved(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   LearnInferenceFloors
+		want LearnInferenceFloors
+	}{
+		{
+			name: "all_zero_resolves_to_defaults",
+			in:   LearnInferenceFloors{},
+			want: LearnInferenceFloors{MinSessions: 5, MinEvents: 20, MinWindows: 3},
+		},
+		{
+			name: "partial_zero_only_zero_fields_default",
+			in:   LearnInferenceFloors{MinSessions: 0, MinEvents: 50, MinWindows: 0},
+			want: LearnInferenceFloors{MinSessions: 5, MinEvents: 50, MinWindows: 3},
+		},
+		{
+			name: "all_set_passes_through",
+			in:   LearnInferenceFloors{MinSessions: 99, MinEvents: 999, MinWindows: 9},
+			want: LearnInferenceFloors{MinSessions: 99, MinEvents: 999, MinWindows: 9},
+		},
+		{
+			name: "explicit_defaults_pass_through",
+			in:   LearnInferenceFloors{MinSessions: 5, MinEvents: 20, MinWindows: 3},
+			want: LearnInferenceFloors{MinSessions: 5, MinEvents: 20, MinWindows: 3},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.in.Resolved(); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Resolved(%+v) = %+v, want %+v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestLearnInferenceNormalization_Resolved is the parallel test for the
+// normalization substruct.
+func TestLearnInferenceNormalization_Resolved(t *testing.T) {
+	t.Parallel()
+
+	defaults := LearnInferenceNormalization{
+		Algorithm:             LearnNormalizationAlgorithmV1,
+		MinEvents:             10,
+		MinDistinctValues:     5,
+		EntropyThresholdBits:  3.0,
+		CardinalityCapPerHost: 1000,
+		TailPromotionBlockPct: 5.0,
+	}
+
+	tests := []struct {
+		name string
+		in   LearnInferenceNormalization
+		want LearnInferenceNormalization
+	}{
+		{name: "all_zero_resolves_to_defaults", in: LearnInferenceNormalization{}, want: defaults},
+		{
+			name: "partial_set_only_zero_fields_default",
+			in: LearnInferenceNormalization{
+				MinEvents:             100,
+				CardinalityCapPerHost: 5000,
+			},
+			want: LearnInferenceNormalization{
+				Algorithm:             LearnNormalizationAlgorithmV1,
+				MinEvents:             100,
+				MinDistinctValues:     5,
+				EntropyThresholdBits:  3.0,
+				CardinalityCapPerHost: 5000,
+				TailPromotionBlockPct: 5.0,
+			},
+		},
+		{
+			name: "all_set_passes_through",
+			in: LearnInferenceNormalization{
+				Algorithm:             LearnNormalizationAlgorithmV1,
+				MinEvents:             50,
+				MinDistinctValues:     8,
+				EntropyThresholdBits:  4.0,
+				CardinalityCapPerHost: 2000,
+				TailPromotionBlockPct: 2.5,
+			},
+			want: LearnInferenceNormalization{
+				Algorithm:             LearnNormalizationAlgorithmV1,
+				MinEvents:             50,
+				MinDistinctValues:     8,
+				EntropyThresholdBits:  4.0,
+				CardinalityCapPerHost: 2000,
+				TailPromotionBlockPct: 2.5,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tc.in.Resolved(); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Resolved(%+v) = %+v, want %+v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

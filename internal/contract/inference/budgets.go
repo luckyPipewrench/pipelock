@@ -3,7 +3,10 @@
 
 package inference
 
-import "slices"
+import (
+	"math"
+	"slices"
+)
 
 // DefaultHeadroomRate is the default multiplicative headroom applied to
 // the observed P99 of a rate-dimensioned numeric budget (events per unit
@@ -14,8 +17,8 @@ import "slices"
 // part of the statistical contract and is NOT exposed as a config field.
 // Making it deployment-configurable would let two installs derive
 // different enforced ceilings from identical recorder data, which is
-// audit drift rather than flexibility. The value comes from the v2.4
-// learn-and-lock design (Round 5 spec).
+// audit drift rather than flexibility. The value comes from the
+// contract inference engine design baseline.
 //
 // The Budget type itself is dimension-agnostic; the caller picks
 // DefaultHeadroomRate vs DefaultHeadroomSize when invoking
@@ -31,14 +34,15 @@ const DefaultHeadroomRate = 0.20
 // without admitting noise.
 //
 // Same contract logic as DefaultHeadroomRate: locked, not deployment-
-// configurable, sourced from the v2.4 learn-and-lock design (Round 5
-// spec). The value is 0.50, meaning "allow 50% above the observed tail".
+// configurable, sourced from the contract inference engine design
+// baseline. The value is 0.50, meaning "allow 50% above the observed
+// tail".
 const DefaultHeadroomSize = 0.50
 
 // Budget is the inference package's pure value type for the persisted
 // statistics of a numeric-budget rule. The four observed statistics
 // (P99, P95, Median, Max) plus SampleCount are the canonical record-level
-// shape from the Round 5 design: review UX renders all of them, the
+// shape from the design baseline: review UX renders all of them, the
 // "thin-sample" badge is driven by SampleCount vs the rule's MinEvents
 // floor, and the property test pack uses Median to prove the
 // percentile-monotonicity invariant.
@@ -93,19 +97,28 @@ type Budget struct {
 // The caller's slice is NOT mutated: BudgetStats works on a clone made
 // via slices.Clone.
 //
-// Caller responsibility: NaN or Inf values in the input produce
-// undefined sort ordering and NaN-tainted percentile outputs. Recorder
-// inputs are non-NaN by construction (counts and sizes), so adding
-// defensive NaN/Inf filtering here would expand the API surface
-// without an attacker model. Callers that ingest untrusted floats must
-// filter at their boundary, not here.
+// Non-finite samples (NaN, +Inf, -Inf) are filtered out before
+// computing statistics so the inference path cannot persist nonsensical
+// budgets that downstream JSON encoding or enforcement comparisons
+// might handle inconsistently. SampleCount reflects the count after
+// filtering. A window that contains only non-finite values returns a
+// zero-valued Budget (same shape as an empty input window).
 func BudgetStats(window []float64) Budget {
-	n := len(window)
-	if n == 0 {
+	if len(window) == 0 {
 		return Budget{}
 	}
 
-	sorted := slices.Clone(window)
+	sorted := make([]float64, 0, len(window))
+	for _, v := range window {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			continue
+		}
+		sorted = append(sorted, v)
+	}
+	n := len(sorted)
+	if n == 0 {
+		return Budget{}
+	}
 	slices.Sort(sorted)
 
 	return Budget{

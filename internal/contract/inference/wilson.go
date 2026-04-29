@@ -1,7 +1,7 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// Package inference implements the v2.4 contract-compile inference engine:
+// Package inference implements the contract-compile inference engine:
 // Wilson lower-bound confidence, conditional opportunity denominators,
 // exposure-floor gates, and numeric-budget statistics. Pure functions —
 // no I/O, no transports, no logging. Inputs are recorder.Entry events that
@@ -119,9 +119,20 @@ func wilsonZ(alpha float64) float64 {
 // within the test tolerance of 3 decimal places for any non-default alpha
 // the engine would realistically encounter.
 //
-// p in (0, 1) is guaranteed by the caller (WilsonLowerBound /
-// WilsonUpperBound validate alpha before reaching this path).
+// Caller validates 0 < alpha < 1 before reaching this path, but very
+// small alpha (e.g. 1e-16) can round 1 - alpha/2 to exactly 1.0 in
+// IEEE-754 double, which would otherwise drive the rational
+// approximation toward +Inf. The clamp pulls p back into a safely
+// representable open interval (1e-15, 1 - 1e-15) so the function never
+// returns NaN or Inf even for degenerate alpha. The supported alpha
+// range for accurate output is roughly [1e-12, 1 - 1e-12]; outside that
+// band the result remains finite but accuracy degrades.
 func invNormalCDF(p float64) float64 {
+	if p < 1e-15 {
+		p = 1e-15
+	} else if p > 1-1e-15 {
+		p = 1 - 1e-15
+	}
 	// Beasley-Springer central region coefficients.
 	a := [...]float64{
 		-3.969683028665376e+01,

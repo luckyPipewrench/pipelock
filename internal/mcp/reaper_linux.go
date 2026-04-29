@@ -15,7 +15,10 @@ import (
 	"syscall"
 )
 
-var protectedDirectPIDs sync.Map // map[int]struct{}
+var (
+	protectedDirectPIDsMu sync.Mutex
+	protectedDirectPIDs   = make(map[int]int)
+)
 
 // startAdoptedReaper drains exited adopted descendants while the direct
 // MCP child is still alive. Without it, long-running wraps (codex
@@ -112,11 +115,21 @@ func registerProtectedDirectPID(pid int) func() {
 	if pid <= 0 {
 		return func() {}
 	}
-	protectedDirectPIDs.Store(pid, struct{}{})
+	protectedDirectPIDsMu.Lock()
+	protectedDirectPIDs[pid]++
+	protectedDirectPIDsMu.Unlock()
+
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			protectedDirectPIDs.Delete(pid)
+			protectedDirectPIDsMu.Lock()
+			defer protectedDirectPIDsMu.Unlock()
+			n := protectedDirectPIDs[pid]
+			if n <= 1 {
+				delete(protectedDirectPIDs, pid)
+				return
+			}
+			protectedDirectPIDs[pid] = n - 1
 		})
 	}
 }
@@ -125,7 +138,9 @@ func isProtectedDirectPID(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	_, ok := protectedDirectPIDs.Load(pid)
+	protectedDirectPIDsMu.Lock()
+	_, ok := protectedDirectPIDs[pid]
+	protectedDirectPIDsMu.Unlock()
 	return ok
 }
 

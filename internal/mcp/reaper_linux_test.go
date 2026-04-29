@@ -118,6 +118,17 @@ func TestReaper_ProtectedDirectPIDRegistry(t *testing.T) {
 	if isProtectedDirectPID(pid) {
 		t.Fatal("second unregister call restored protected PID")
 	}
+
+	unregisterFirst := registerProtectedDirectPID(pid)
+	unregisterSecond := registerProtectedDirectPID(pid)
+	unregisterFirst()
+	if !isProtectedDirectPID(pid) {
+		t.Fatal("first unregister cleared overlapping same-PID registration")
+	}
+	unregisterSecond()
+	if isProtectedDirectPID(pid) {
+		t.Fatal("direct PID remained protected after all overlapping registrations were unregistered")
+	}
 }
 
 // waitForCondition polls cond every 25 ms until it returns true or the

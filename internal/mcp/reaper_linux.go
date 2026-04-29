@@ -11,8 +11,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 )
+
+var protectedDirectPIDs sync.Map // map[int]struct{}
 
 // startAdoptedReaper drains exited adopted descendants while the direct
 // MCP child is still alive. Without it, long-running wraps (codex
@@ -40,9 +43,11 @@ import (
 // causes pipelock to adopt orphans in the first place) is Linux-only.
 // Non-Linux builds use the no-op stub.
 func startAdoptedReaper(directPID int, done <-chan struct{}) {
+	unregister := registerProtectedDirectPID(directPID)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGCHLD)
 	go func() {
+		defer unregister()
 		defer signal.Stop(sigCh)
 		// Initial sweep covers two narrow windows:
 		//   1. A grandchild that exited before cmd.Start finished
@@ -71,13 +76,9 @@ func startAdoptedReaper(directPID int, done <-chan struct{}) {
 // direct child's exit, which is what makes this safe to run alongside
 // exec.Cmd.Wait().
 //
-// One-wrap-per-process assumption: this helper only protects its own
-// directPID. The MCP CLI today is one `pipelock mcp proxy --` invocation
-// per pipelock process, so directPID uniquely identifies the wrapped
-// child. If RunProxy is ever called concurrently inside one process,
-// a reaper from one call could Wait4 a sibling's direct child. Either
-// keep the one-wrap-per-process invariant or extend this to a shared
-// protected-PID registry before that change lands.
+// Active direct-child PIDs are also held in a shared protected registry
+// so concurrent RunProxy calls in one process cannot steal each other's
+// child exits while still draining adopted descendants.
 //
 // Best-effort throughout — ESRCH on PID-recycle race, EINTR on signal,
 // EPERM on namespace boundary all fall through silently.
@@ -96,7 +97,7 @@ func reapAdoptedZombies(directPID int) {
 		if convErr != nil {
 			continue
 		}
-		if childPID == selfPID || childPID == directPID {
+		if childPID == selfPID || childPID == directPID || isProtectedDirectPID(childPID) {
 			continue
 		}
 		if !isAdoptedZombie(name, selfPID) {
@@ -105,6 +106,27 @@ func reapAdoptedZombies(directPID int) {
 		var status syscall.WaitStatus
 		_, _ = syscall.Wait4(childPID, &status, syscall.WNOHANG, nil)
 	}
+}
+
+func registerProtectedDirectPID(pid int) func() {
+	if pid <= 0 {
+		return func() {}
+	}
+	protectedDirectPIDs.Store(pid, struct{}{})
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			protectedDirectPIDs.Delete(pid)
+		})
+	}
+}
+
+func isProtectedDirectPID(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	_, ok := protectedDirectPIDs.Load(pid)
+	return ok
 }
 
 // isAdoptedZombie returns true iff /proc/<name>/stat shows state "Z"

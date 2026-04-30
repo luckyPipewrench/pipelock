@@ -225,6 +225,25 @@ func TestContract_Validate_RejectsInvalidCaptureGrade(t *testing.T) {
 	}
 }
 
+func TestContract_Validate_RejectsMissingRuleKind(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-missing-kind",
+			LifecycleState:       "capture_only",
+			RequiredCaptureGrade: CaptureGradeFull,
+			ObservedCaptureGrade: CaptureGradeFull,
+		}},
+	}
+	if err := c.Validate(); !errors.Is(err, ErrCaptureGrade) {
+		t.Errorf("got %v, want ErrCaptureGrade", err)
+	}
+}
+
 func TestContract_SignablePreimage_KeyOrderIndependent(t *testing.T) {
 	t.Parallel()
 	a := Contract{SchemaVersion: 1, ContractKind: "behavioral_contract", DataClassRoot: "internal", FieldDataClasses: map[string]string{"a": "public", "b": "internal"}}

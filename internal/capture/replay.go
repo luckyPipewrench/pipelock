@@ -109,8 +109,10 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 	if err != nil || u.Hostname() == "" {
 		return re.replayURL(summary, scannerInput)
 	}
+	replayGrade := captureGradeForReplay(summary, scannerInput)
 
 	hostHasEnforceRule := false
+	hasComparableEvidence := false
 	for _, rule := range re.contract.Rules {
 		if rule.LifecycleState != "enforce" || (rule.RuleKind != "http_destination" && rule.RuleKind != "http_action") {
 			continue
@@ -123,6 +125,10 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 		if !canCompare {
 			return re.replayURL(summary, scannerInput)
 		}
+		if !captureGradeSatisfies(replayGrade, rule.RequiredCaptureGrade) {
+			continue
+		}
+		hasComparableEvidence = true
 		if matches {
 			return ReplayResult{
 				OriginalAction:  summary.EffectiveAction,
@@ -132,6 +138,9 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 		}
 	}
 	if !hostHasEnforceRule {
+		return re.replayURL(summary, scannerInput)
+	}
+	if !hasComparableEvidence {
 		return re.replayURL(summary, scannerInput)
 	}
 	return ReplayResult{
@@ -147,15 +156,15 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 }
 
 func contractRuleHostMatches(rule contract.Rule, host string) bool {
-	ruleHost := selectorString(rule.Selector, "host")
-	return ruleHost != "" && strings.EqualFold(ruleHost, host)
+	ruleHost := normalizeHost(selectorString(rule.Selector, "host"))
+	return ruleHost != "" && ruleHost == normalizeHost(host)
 }
 
 func contractRuleMatchesURL(rule contract.Rule, u *url.URL, summary CaptureSummary) (bool, bool) {
 	matchedConstraint := selectorString(rule.Selector, "host") != ""
 	if methodValues := selectorStringList(rule.Selector, "methods"); len(methodValues) > 0 {
 		matchedConstraint = true
-		if !containsString(methodValues, summary.Request.Method) {
+		if !containsFoldedMethod(methodValues, summary.Request.Method) {
 			return false, true
 		}
 	}
@@ -223,13 +232,18 @@ func selectorPathValues(selector map[string]any) []string {
 	return out
 }
 
-func containsString(values []string, target string) bool {
+func containsFoldedMethod(values []string, target string) bool {
+	target = strings.ToUpper(strings.TrimSpace(target))
 	for _, value := range values {
-		if value == target {
+		if strings.ToUpper(strings.TrimSpace(value)) == target {
 			return true
 		}
 	}
 	return false
+}
+
+func normalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 func pathMatchesAny(escapedPath string, values []string) (bool, bool) {
@@ -246,6 +260,13 @@ func pathMatchesAny(escapedPath string, values []string) (bool, bool) {
 		}
 	}
 	return false, true
+}
+
+func captureGradeSatisfies(actual, required string) bool {
+	if required == "" {
+		required = contract.CaptureGradeFull
+	}
+	return captureGradeRank(actual) >= captureGradeRank(required)
 }
 
 func captureGradeForReplay(summary CaptureSummary, scannerInput string) string {

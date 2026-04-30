@@ -6,16 +6,20 @@ package policy
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"golang.org/x/crypto/nacl/box"
 )
@@ -309,45 +313,9 @@ func TestReplayCmd_EmptySessions(t *testing.T) {
 	}
 }
 
-func TestReplayCmd_ContractWarning(t *testing.T) {
+func TestReplayCmd_ContractVerification(t *testing.T) {
 	configFile := writeCandidateConfig(t)
-	contractPath := filepath.Join(t.TempDir(), "candidate.yaml")
-	contractYAML := `body:
-  schema_version: 1
-  contract_kind: behavioral_contract
-  contract_hash: ""
-  signer_key_id: test
-  key_purpose: contract-compile-signing
-  data_class_root: internal
-  field_data_classes: {}
-  selector:
-    selector_id: sha256:test
-  observation_window:
-    start: "2026-04-29T00:00:00Z"
-    end: "2026-04-29T01:00:00Z"
-    event_count: 0
-    session_count: 0
-    observation_window_root: sha256:test
-  compile:
-    pipelock_version: test
-    pipelock_build_sha: test
-    go_version: test
-    module_digest_root: sha256:test
-    compile_config_hash: sha256:test
-    inference_algorithm: test
-    normalization_algorithm: test
-  defaults:
-    fidelity: medium
-    confidence: {}
-    privacy:
-      default_data_class: internal
-      forbid_classes: []
-  rules: []
-signature: ed25519:test
-`
-	if err := os.WriteFile(contractPath, []byte(contractYAML), 0o600); err != nil {
-		t.Fatalf("WriteFile contract: %v", err)
-	}
+	contractPath, publicKey := writeSignedReplayContract(t)
 
 	cmd := Cmd()
 	cmd.SetArgs([]string{
@@ -355,6 +323,7 @@ signature: ed25519:test
 		"--config", configFile,
 		"--sessions", t.TempDir(),
 		"--contract", contractPath,
+		"--contract-key", publicKey,
 	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -364,9 +333,108 @@ signature: ed25519:test
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "contract signature not verified") {
-		t.Fatalf("stderr missing signature warning:\n%s", stderr.String())
+	if strings.Contains(stderr.String(), "unverified contract") {
+		t.Fatalf("stderr has unexpected unverified warning:\n%s", stderr.String())
 	}
+
+	cmd = Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+		"--contract-key", strings.Repeat("00", ed25519.PublicKeySize),
+	})
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+		t.Fatalf("expected signature verification error, got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	cmd = Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+	})
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--contract-key is required") {
+		t.Fatalf("expected contract-key error, got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	cmd = Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+		"--allow-unsigned-contract-for-diagnostics",
+	})
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute unsafe diagnostic: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unverified contract accepted") {
+		t.Fatalf("stderr missing unsafe contract warning:\n%s", stderr.String())
+	}
+}
+
+func writeSignedReplayContract(t *testing.T) (string, string) {
+	t.Helper()
+	seed := sha256.Sum256([]byte("policy replay contract verification test"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	body := contract.Contract{
+		SchemaVersion:     contract.SchemaVersionContract,
+		ContractKind:      contract.ContractKind,
+		ContractHash:      "",
+		SignerKeyID:       "test",
+		KeyPurpose:        "contract-compile-signing",
+		DataClassRoot:     "internal",
+		FieldDataClasses:  map[string]string{},
+		Selector:          contract.Selector{SelectorID: "sha256:test"},
+		ObservationWindow: contract.ObservationWindow{Start: time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 4, 29, 1, 0, 0, 0, time.UTC), ObservationWindowRoot: "sha256:test"},
+		Compile: contract.ContractCompile{
+			PipelockVersion:        "test",
+			PipelockBuildSHA:       "test",
+			GoVersion:              "test",
+			ModuleDigestRoot:       "sha256:test",
+			CompileConfigHash:      "sha256:test",
+			InferenceAlgorithm:     "test",
+			NormalizationAlgorithm: "test",
+		},
+		Defaults: contract.ContractDefaults{
+			Fidelity:   "medium",
+			Confidence: map[string]any{},
+			Privacy:    contract.ContractDefaultsPrivacy{DefaultDataClass: contract.DataClassInternal, ForbidClasses: []contract.DataClass{}},
+		},
+		Rules: []contract.Rule{},
+	}
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	env := contract.ContractEnvelope{
+		Body:      body,
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal contract: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "candidate.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile contract: %v", err)
+	}
+	return path, hex.EncodeToString(priv.Public().(ed25519.PublicKey))
 }
 
 // TestReplayCmd_HTMLOnly verifies replay works with only --report (no JSON).

@@ -199,6 +199,46 @@ func TestComputeDiff_FailClosedTreatedAsBlock(t *testing.T) {
 	}
 }
 
+func TestComputeDiff_CaptureSurfaces(t *testing.T) {
+	records := []ReplayedRecord{
+		{
+			Summary: CaptureSummary{Surface: SurfaceDLP},
+			Result:  ReplayResult{CaptureGrade: CaptureGradePartial},
+		},
+		{
+			Summary: CaptureSummary{Surface: SurfaceDLP},
+			Result:  ReplayResult{CaptureGrade: CaptureGradeFull, SidecarDecrypted: true},
+		},
+		{
+			Summary: CaptureSummary{Surface: SurfaceURL},
+			Result:  ReplayResult{CaptureGrade: CaptureGradeSummary},
+		},
+		{
+			Summary: CaptureSummary{Surface: ""},
+			Result:  ReplayResult{CaptureGrade: CaptureGradeFull},
+		},
+		{
+			Summary: CaptureSummary{Surface: SurfaceResponse},
+			Result:  ReplayResult{},
+		},
+	}
+
+	diff := ComputeDiff(records, 0, 0, testOriginalHash, testCandidateHash)
+	if got := diff.CaptureSurfaces[SurfaceDLP]; got.Grade != CaptureGradeFull || !got.Sidecar {
+		t.Fatalf("dlp status = %#v, want full sidecar", got)
+	}
+	if got := diff.CaptureSurfaces[SurfaceURL]; got.Grade != CaptureGradeSummary || got.Sidecar {
+		t.Fatalf("url status = %#v, want summary non-sidecar", got)
+	}
+	if _, ok := diff.CaptureSurfaces[SurfaceResponse]; ok {
+		t.Fatal("empty grade should not create surface status")
+	}
+	surfaces := SortedCaptureSurfaces(diff.CaptureSurfaces)
+	if len(surfaces) != 2 || surfaces[0] != SurfaceDLP || surfaces[1] != SurfaceURL {
+		t.Fatalf("SortedCaptureSurfaces = %v", surfaces)
+	}
+}
+
 func TestIsBlockAction(t *testing.T) {
 	tests := []struct {
 		action string

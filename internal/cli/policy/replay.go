@@ -4,18 +4,21 @@
 package policy
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // replayCmd returns the "policy replay" subcommand.
@@ -26,7 +29,9 @@ func replayCmd() *cobra.Command {
 		reportPath     string
 		reportJSONPath string
 		contractPath   string
+		contractKey    string
 		escrowPrivKey  string
+		allowUnsigned  bool
 	)
 
 	cmd := &cobra.Command{
@@ -48,7 +53,16 @@ Examples:
 			if sessionsDir == "" {
 				return fmt.Errorf("--sessions is required")
 			}
-			return runReplay(cmd, configFile, sessionsDir, reportPath, reportJSONPath, contractPath, escrowPrivKey)
+			return runReplay(cmd, replayOpts{
+				configFile:     configFile,
+				sessionsDir:    sessionsDir,
+				reportPath:     reportPath,
+				reportJSONPath: reportJSONPath,
+				contractPath:   contractPath,
+				contractKey:    contractKey,
+				escrowPrivKey:  escrowPrivKey,
+				allowUnsigned:  allowUnsigned,
+			})
 		},
 	}
 
@@ -57,15 +71,28 @@ Examples:
 	cmd.Flags().StringVar(&reportPath, "report", "", "HTML report output path")
 	cmd.Flags().StringVar(&reportJSONPath, "report-json", "", "JSON report output path")
 	cmd.Flags().StringVar(&contractPath, "contract", "", "signed candidate contract YAML for contract-aware URL replay")
+	cmd.Flags().StringVar(&contractKey, "contract-key", "", "trusted Ed25519 public key (hex or file) used to verify --contract")
 	cmd.Flags().StringVar(&escrowPrivKey, "escrow-private-key", "", "X25519 hex private key for sidecar decryption")
+	cmd.Flags().BoolVar(&allowUnsigned, "allow-unsigned-contract-for-diagnostics", false, "allow unverified --contract input for diagnostics only (unsafe)")
 
 	return cmd
 }
 
+type replayOpts struct {
+	configFile     string
+	sessionsDir    string
+	reportPath     string
+	reportJSONPath string
+	contractPath   string
+	contractKey    string
+	escrowPrivKey  string
+	allowUnsigned  bool
+}
+
 // runReplay is the testable core of the replay command.
-func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJSONPath, contractPath, escrowPrivKey string) error {
+func runReplay(cmd *cobra.Command, opts replayOpts) error {
 	// Load and validate the candidate config.
-	cfg, err := config.Load(configFile)
+	cfg, err := config.Load(opts.configFile)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -75,21 +102,21 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	cfg.DLP.ScanEnv = false
 
 	// Compute candidate config hash from raw file bytes.
-	candidateHash, err := hashFile(configFile)
+	candidateHash, err := hashFile(opts.configFile)
 	if err != nil {
 		return fmt.Errorf("hashing config: %w", err)
 	}
 
-	escrowKey, err := decodeReplayEscrowPrivateKey(escrowPrivKey)
+	escrowKey, err := decodeReplayEscrowPrivateKey(opts.escrowPrivKey)
 	if err != nil {
 		return err
 	}
-	replayContract, err := loadReplayContract(contractPath)
+	replayContract, verifiedContract, err := loadReplayContract(opts.contractPath, opts.contractKey, opts.allowUnsigned)
 	if err != nil {
 		return err
 	}
-	if replayContract != nil {
-		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: contract signature not verified; replay is diagnostic only")
+	if replayContract != nil && !verifiedContract {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: unverified contract accepted because --allow-unsigned-contract-for-diagnostics is set; replay is diagnostic only")
 	}
 
 	// Replay all captured sessions.
@@ -97,7 +124,7 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	if replayContract != nil {
 		replayOpts.Contract = replayContract
 	}
-	records, dropped, skipped, originalHash, err := capture.LoadAndReplayWithOptions(cfg, sessionsDir, replayOpts)
+	records, dropped, skipped, originalHash, err := capture.LoadAndReplayWithOptions(cfg, opts.sessionsDir, replayOpts)
 	if err != nil {
 		return fmt.Errorf("replaying sessions: %w", err)
 	}
@@ -120,15 +147,15 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	writeCaptureSurfaceStatus(w, diff)
 
 	// Write HTML report if requested.
-	if reportPath != "" {
-		if err := writeReport(reportPath, diff, capture.RenderDiffHTML); err != nil {
+	if opts.reportPath != "" {
+		if err := writeReport(opts.reportPath, diff, capture.RenderDiffHTML); err != nil {
 			return fmt.Errorf("writing HTML report: %w", err)
 		}
 	}
 
 	// Write JSON report if requested.
-	if reportJSONPath != "" {
-		if err := writeReport(reportJSONPath, diff, capture.RenderDiffJSON); err != nil {
+	if opts.reportJSONPath != "" {
+		if err := writeReport(opts.reportJSONPath, diff, capture.RenderDiffJSON); err != nil {
 			return fmt.Errorf("writing JSON report: %w", err)
 		}
 	}
@@ -136,22 +163,59 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	return nil
 }
 
-func loadReplayContract(path string) (*contract.Contract, error) {
+func loadReplayContract(path, publicKey string, allowUnsigned bool) (*contract.Contract, bool, error) {
 	if path == "" {
-		return nil, nil
+		return nil, false, nil
 	}
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return nil, fmt.Errorf("loading contract: %w", err)
+		return nil, false, fmt.Errorf("loading contract: %w", err)
 	}
 	var env contract.ContractEnvelope
 	if err := contract.DecodeStrictYAML(data, &env); err != nil {
-		return nil, fmt.Errorf("loading contract: %w", err)
+		return nil, false, fmt.Errorf("loading contract: %w", err)
 	}
 	if err := env.Body.Validate(); err != nil {
-		return nil, fmt.Errorf("validating contract: %w", err)
+		return nil, false, fmt.Errorf("validating contract: %w", err)
 	}
-	return &env.Body, nil
+	if publicKey == "" {
+		if !allowUnsigned {
+			return nil, false, fmt.Errorf("validating contract: --contract-key is required for --contract (or use --allow-unsigned-contract-for-diagnostics)")
+		}
+		return &env.Body, false, nil
+	}
+	pubKey, err := signing.LoadPublicKey(publicKey)
+	if err != nil {
+		return nil, false, fmt.Errorf("loading contract verification key: %w", err)
+	}
+	if err := verifyContractEnvelope(env, pubKey); err != nil {
+		return nil, false, fmt.Errorf("verifying contract: %w", err)
+	}
+	return &env.Body, true, nil
+}
+
+func verifyContractEnvelope(env contract.ContractEnvelope, pubKey ed25519.PublicKey) error {
+	if env.Body.KeyPurpose != signing.PurposeContractCompileSigning.String() {
+		return fmt.Errorf("key_purpose must be %q, got %q", signing.PurposeContractCompileSigning.String(), env.Body.KeyPurpose)
+	}
+	if !strings.HasPrefix(env.Signature, "ed25519:") {
+		return fmt.Errorf("signature must use ed25519:<hex>")
+	}
+	sig, err := hex.DecodeString(strings.TrimPrefix(env.Signature, "ed25519:"))
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	if len(sig) != ed25519.SignatureSize {
+		return fmt.Errorf("signature length=%d, want %d", len(sig), ed25519.SignatureSize)
+	}
+	preimage, err := env.Body.SignablePreimage()
+	if err != nil {
+		return fmt.Errorf("build preimage: %w", err)
+	}
+	if !ed25519.Verify(pubKey, preimage, sig) {
+		return fmt.Errorf("signature verification failed")
+	}
+	return nil
 }
 
 func decodeReplayEscrowPrivateKey(value string) ([]byte, error) {

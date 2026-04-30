@@ -40,6 +40,13 @@ func TestReplayCmd_RequiresSessions(t *testing.T) {
 }
 
 func TestDecodeReplayEscrowPrivateKey(t *testing.T) {
+	empty, err := decodeReplayEscrowPrivateKey("")
+	if err != nil {
+		t.Fatalf("decodeReplayEscrowPrivateKey empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty key len = %d, want 0", len(empty))
+	}
 	key, err := decodeReplayEscrowPrivateKey(strings.Repeat("0a", 32))
 	if err != nil {
 		t.Fatalf("decodeReplayEscrowPrivateKey: %v", err)

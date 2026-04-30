@@ -94,11 +94,20 @@ type PayloadContractDriftStruct struct {
 
 // PayloadShadowDeltaStruct holds the typed fields for a shadow_delta payload.
 type PayloadShadowDeltaStruct struct {
-	ContractHash     string            `json:"contract_hash"`
-	RuleID           string            `json:"rule_id"`
-	OriginalVerdict  string            `json:"original_verdict"`
-	CandidateVerdict string            `json:"candidate_verdict"`
-	Aggregation      map[string]string `json:"aggregation"`
+	ContractHash     string                 `json:"contract_hash"`
+	RuleID           string                 `json:"rule_id"`
+	OriginalVerdict  string                 `json:"original_verdict"`
+	CandidateVerdict string                 `json:"candidate_verdict"`
+	Aggregation      ShadowDeltaAggregation `json:"aggregation"`
+}
+
+// ShadowDeltaAggregation summarizes one rule/window delta bucket.
+type ShadowDeltaAggregation struct {
+	WindowStart      string   `json:"window_start"`
+	WindowEnd        string   `json:"window_end"`
+	LosslessCount    uint64   `json:"lossless_count"`
+	DeltaSampleCount uint64   `json:"delta_sample_count"`
+	ExemplarIDs      []string `json:"exemplar_ids"`
 }
 
 // PayloadOpportunityMissingStruct holds the typed fields for an opportunity_missing payload.

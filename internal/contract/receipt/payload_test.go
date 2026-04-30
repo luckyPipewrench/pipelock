@@ -310,7 +310,7 @@ func TestValidateShadowDelta_AcceptsValid(t *testing.T) {
 		RuleID:           "rule-1",
 		OriginalVerdict:  "blocked",
 		CandidateVerdict: "allowed",
-		Aggregation:      map[string]string{"window": "7d"},
+		Aggregation:      validShadowDeltaAggregation(),
 	}
 	if err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p)); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -323,7 +323,7 @@ func TestValidateShadowDelta_RejectsMissingOriginalVerdict(t *testing.T) {
 		RuleID:           "rule-1",
 		OriginalVerdict:  "",
 		CandidateVerdict: "allowed",
-		Aggregation:      map[string]string{"window": "7d"},
+		Aggregation:      validShadowDeltaAggregation(),
 	}
 	err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
@@ -884,7 +884,7 @@ func TestValidateShadowDelta_RejectsMissingContractHash(t *testing.T) {
 		RuleID:           "rule-1",
 		OriginalVerdict:  "blocked",
 		CandidateVerdict: "allowed",
-		Aggregation:      map[string]string{"window": "7d"},
+		Aggregation:      validShadowDeltaAggregation(),
 	}
 	err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
@@ -898,7 +898,7 @@ func TestValidateShadowDelta_RejectsMissingRuleID(t *testing.T) {
 		RuleID:           "",
 		OriginalVerdict:  "blocked",
 		CandidateVerdict: "allowed",
-		Aggregation:      map[string]string{"window": "7d"},
+		Aggregation:      validShadowDeltaAggregation(),
 	}
 	err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
@@ -912,7 +912,7 @@ func TestValidateShadowDelta_RejectsMissingCandidateVerdict(t *testing.T) {
 		RuleID:           "rule-1",
 		OriginalVerdict:  "blocked",
 		CandidateVerdict: "",
-		Aggregation:      map[string]string{"window": "7d"},
+		Aggregation:      validShadowDeltaAggregation(),
 	}
 	err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
@@ -926,7 +926,7 @@ func TestValidateShadowDelta_RejectsMissingAggregation(t *testing.T) {
 		RuleID:           "rule-1",
 		OriginalVerdict:  "blocked",
 		CandidateVerdict: "allowed",
-		Aggregation:      nil,
+		Aggregation:      receipt.ShadowDeltaAggregation{},
 	}
 	err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
@@ -934,10 +934,52 @@ func TestValidateShadowDelta_RejectsMissingAggregation(t *testing.T) {
 	}
 }
 
+func TestValidateShadowDelta_RejectsSampleCountMismatch(t *testing.T) {
+	cases := []receipt.ShadowDeltaAggregation{
+		{
+			WindowStart:      "2026-04-30T12:00:00Z",
+			WindowEnd:        "2026-04-30T12:01:00Z",
+			LosslessCount:    1,
+			DeltaSampleCount: 2,
+			ExemplarIDs:      []string{"ex-1"},
+		},
+		{
+			WindowStart:      "2026-04-30T12:00:00Z",
+			WindowEnd:        "2026-04-30T12:01:00Z",
+			LosslessCount:    1,
+			DeltaSampleCount: 2,
+			ExemplarIDs:      []string{"ex-1", "ex-2"},
+		},
+	}
+	for _, aggregation := range cases {
+		p := receipt.PayloadShadowDeltaStruct{
+			ContractHash:     "sha256:abc",
+			RuleID:           "rule-1",
+			OriginalVerdict:  "blocked",
+			CandidateVerdict: "allowed",
+			Aggregation:      aggregation,
+		}
+		err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
+		if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+			t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+		}
+	}
+}
+
 func TestValidateShadowDelta_InvalidJSON(t *testing.T) {
 	err := callValidator(t, receipt.PayloadShadowDelta, json.RawMessage(`{bad}`))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {
 		t.Fatalf("expected ErrPayloadMissingField on invalid JSON, got: %v", err)
+	}
+}
+
+func validShadowDeltaAggregation() receipt.ShadowDeltaAggregation {
+	return receipt.ShadowDeltaAggregation{
+		WindowStart:      "2026-04-30T12:00:00Z",
+		WindowEnd:        "2026-04-30T12:01:00Z",
+		LosslessCount:    7,
+		DeltaSampleCount: 2,
+		ExemplarIDs:      []string{"ex-1", "ex-2"},
 	}
 }
 

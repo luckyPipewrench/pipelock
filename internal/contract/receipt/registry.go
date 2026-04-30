@@ -281,8 +281,29 @@ func validateShadowDelta(raw json.RawMessage) error {
 	if err := requireNonEmpty("candidate_verdict", p.CandidateVerdict); err != nil {
 		return err
 	}
-	if len(p.Aggregation) == 0 {
-		return fmt.Errorf("%w: aggregation", ErrPayloadMissingField)
+	return validateShadowDeltaAggregation(p.Aggregation)
+}
+
+func validateShadowDeltaAggregation(a ShadowDeltaAggregation) error {
+	if err := requireNonEmpty("aggregation.window_start", a.WindowStart); err != nil {
+		return err
+	}
+	if err := requireNonEmpty("aggregation.window_end", a.WindowEnd); err != nil {
+		return err
+	}
+	if a.LosslessCount == 0 {
+		return fmt.Errorf("%w: aggregation.lossless_count", ErrPayloadMissingField)
+	}
+	if a.DeltaSampleCount != uint64(len(a.ExemplarIDs)) {
+		return fmt.Errorf("%w: aggregation.delta_sample_count", ErrPayloadInvalidEnum)
+	}
+	if a.DeltaSampleCount > a.LosslessCount {
+		return fmt.Errorf("%w: aggregation.delta_sample_count", ErrPayloadInvalidEnum)
+	}
+	for i, id := range a.ExemplarIDs {
+		if id == "" {
+			return fmt.Errorf("%w: aggregation.exemplar_ids[%d]", ErrPayloadMissingField, i)
+		}
 	}
 	return nil
 }

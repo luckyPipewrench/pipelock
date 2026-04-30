@@ -15,6 +15,7 @@ package receipt
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -168,4 +169,45 @@ func (r EvidenceReceipt) SignablePreimage() ([]byte, error) {
 		return nil, fmt.Errorf("parse receipt for canonicalization: %w", err)
 	}
 	return contract.Canonicalize(tree)
+}
+
+// ReceiptHash computes the SHA-256 hex digest of the canonical full receipt.
+func ReceiptHash(r EvidenceReceipt) (string, error) {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return "", fmt.Errorf("marshal receipt: %w", err)
+	}
+	tree, err := contract.ParseJSONStrict(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse receipt for hashing: %w", err)
+	}
+	canonical, err := contract.Canonicalize(tree)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize receipt for hashing: %w", err)
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// VerifyWithKey verifies the detached Ed25519 signature against pubKey.
+func VerifyWithKey(r EvidenceReceipt, pubKey ed25519.PublicKey) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
+	if len(pubKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: signature public key length=%d", ErrPayloadInvalidEnum, len(pubKey))
+	}
+	sigHex := strings.TrimPrefix(r.Signature.Signature, signaturePrefixEd25519)
+	sig, err := hex.DecodeString(sigHex)
+	if err != nil {
+		return fmt.Errorf("%w: signature.signature hex: %w", ErrPayloadInvalidEnum, err)
+	}
+	preimage, err := r.SignablePreimage()
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(pubKey, preimage, sig) {
+		return fmt.Errorf("%w: signature verification failed", ErrPayloadInvalidEnum)
+	}
+	return nil
 }

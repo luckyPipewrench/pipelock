@@ -58,6 +58,7 @@ var (
 	ErrDecode              = errors.New("contract store: decode failed")
 	ErrStructural          = errors.New("contract store: structural validation failed")
 	ErrSignature           = errors.New("contract store: manifest signature invalid")
+	ErrContractSignature   = errors.New("contract store: contract signature invalid")
 	ErrDualControl         = errors.New("contract store: dual control requirement not met")
 	ErrEnvironmentMismatch = errors.New("contract store: manifest environment mismatch")
 	ErrGeneration          = errors.New("contract store: manifest generation is not monotonic")
@@ -121,13 +122,14 @@ func (s Store) Reload(opts Options) (State, error) {
 		}
 		accepted, err := s.ValidateEnvelope(raw, opts)
 		if err != nil {
-			// Rejections are audit events even when accepted-manifest persistence is
-			// disabled. Audit write failures do not hide the validation failure.
-			_ = s.appendJournalLocked(JournalEntry{
-				Timestamp: now(opts),
-				Outcome:   "rejected",
-				Reason:    err.Error(),
-			})
+			if !opts.ReadOnly {
+				// Audit write failures do not hide the validation failure.
+				_ = s.appendJournalLocked(JournalEntry{
+					Timestamp: now(opts),
+					Outcome:   "rejected",
+					Reason:    err.Error(),
+				})
+			}
 			return err
 		}
 		acceptedPath := ""
@@ -136,7 +138,10 @@ func (s Store) Reload(opts Options) (State, error) {
 			if encErr != nil {
 				return encErr
 			}
-			path := s.manifestPath(accepted.ManifestHash)
+			path, pathErr := s.manifestPath(accepted.ManifestHash)
+			if pathErr != nil {
+				return pathErr
+			}
 			if journalErr := s.appendJournalLocked(JournalEntry{
 				Timestamp:         now(opts),
 				Outcome:           "accepted",
@@ -192,7 +197,7 @@ func (s Store) ValidateEnvelope(raw []byte, opts Options) (State, error) {
 	if err := verifyManifestSignatures(env, opts); err != nil {
 		return State{}, err
 	}
-	contracts, err := s.loadContracts(env.Body.Selectors)
+	contracts, err := s.loadContracts(env.Body.Selectors, opts)
 	if err != nil {
 		return State{}, err
 	}
@@ -204,7 +209,16 @@ func (s Store) ValidateEnvelope(raw []byte, opts Options) (State, error) {
 func (s Store) WriteActive(raw []byte, opts Options) (string, error) {
 	var manifestHash string
 	err := s.withLock(func() error {
-		state, err := s.ValidateEnvelope(raw, opts)
+		lockedOpts := opts
+		current, err := s.currentActiveLocked(opts)
+		if err != nil && !errors.Is(err, ErrNoActiveManifest) {
+			return err
+		}
+		if err == nil {
+			lockedOpts.PreviousHash = current.ManifestHash
+			lockedOpts.PreviousGeneration = current.Envelope.Body.Generation
+		}
+		state, err := s.ValidateEnvelope(raw, lockedOpts)
 		if err != nil {
 			return err
 		}
@@ -221,7 +235,7 @@ func (s Store) WriteActive(raw []byte, opts Options) (string, error) {
 }
 
 // PutHistoryContract stores a signed contract envelope by its contract_hash.
-func (s Store) PutHistoryContract(raw []byte) (string, error) {
+func (s Store) PutHistoryContract(raw []byte, opts Options) (string, error) {
 	var env contract.ContractEnvelope
 	if err := contract.DecodeStrictYAML(raw, &env); err != nil {
 		return "", fmt.Errorf("%w: contract history: %w", ErrDecode, err)
@@ -236,8 +250,15 @@ func (s Store) PutHistoryContract(raw []byte) (string, error) {
 	if err := env.Body.Validate(); err != nil {
 		return "", fmt.Errorf("%w: contract: %w", ErrStructural, err)
 	}
+	if err := verifyContractSignature(env, opts); err != nil {
+		return "", err
+	}
+	path, err := s.historyPath(hash)
+	if err != nil {
+		return "", err
+	}
 	if err := s.withLock(func() error {
-		return writeOnce(s.historyPath(hash), append(bytes.TrimSpace(raw), '\n'))
+		return writeOnce(path, append(bytes.TrimSpace(raw), '\n'))
 	}); err != nil {
 		return "", err
 	}
@@ -270,7 +291,11 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 		if err != nil {
 			return State{}, err
 		}
-		if hashFilePrefix+strings.TrimPrefix(hash, hashPrefix)+jsonExt != entry.Name() {
+		expectedName, err := hashFilename(hash, jsonExt)
+		if err != nil {
+			return State{}, err
+		}
+		if expectedName != entry.Name() {
 			return State{}, fmt.Errorf("%w: accepted manifest filename/hash mismatch", ErrContractHistory)
 		}
 		if err := verifyEnvironment(env.Body.Environment, opts.Environment); err != nil {
@@ -279,7 +304,11 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 		if err := verifyManifestSignatures(env, opts); err != nil {
 			return State{}, err
 		}
-		contracts, err := s.loadContracts(env.Body.Selectors)
+		contracts, err := s.loadContracts(env.Body.Selectors, opts)
+		if err != nil {
+			return State{}, err
+		}
+		acceptedPath, err := s.manifestPath(hash)
 		if err != nil {
 			return State{}, err
 		}
@@ -288,7 +317,7 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 				Envelope:     env,
 				ManifestHash: hash,
 				Contracts:    contracts,
-				AcceptedPath: filepath.Join(s.manifestDir(), entry.Name()),
+				AcceptedPath: acceptedPath,
 			}
 		}
 	}
@@ -320,10 +349,14 @@ func ContractHash(c contract.Contract) (string, error) {
 	return hashPrefix + hex.EncodeToString(sum[:]), nil
 }
 
-func (s Store) loadContracts(selectors []contract.ManifestSelector) (map[string]contract.ContractEnvelope, error) {
+func (s Store) loadContracts(selectors []contract.ManifestSelector, opts Options) (map[string]contract.ContractEnvelope, error) {
 	out := make(map[string]contract.ContractEnvelope, len(selectors))
 	for _, selector := range selectors {
-		raw, err := readFile(s.historyPath(selector.ContractHash))
+		path, err := s.historyPath(selector.ContractHash)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := readFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("%w: read %s: %w", ErrContractHistory, selector.ContractHash, err)
 		}
@@ -342,9 +375,26 @@ func (s Store) loadContracts(selectors []contract.ManifestSelector) (map[string]
 		if err := env.Body.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: contract %s: %w", ErrStructural, selector.ContractHash, err)
 		}
+		if err := verifyContractSignature(env, opts); err != nil {
+			return nil, err
+		}
 		out[selector.SelectorID] = env
 	}
 	return out, nil
+}
+
+func (s Store) currentActiveLocked(opts Options) (State, error) {
+	raw, err := readFile(s.activePath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return State{}, fmt.Errorf("%w: %w", ErrNoActiveManifest, err)
+		}
+		return State{}, fmt.Errorf("%w: read active manifest: %w", ErrDecode, err)
+	}
+	currentOpts := opts
+	currentOpts.PreviousHash = ""
+	currentOpts.PreviousGeneration = 0
+	return s.ValidateEnvelope(raw, currentOpts)
 }
 
 func verifyManifestSignatures(env contract.ActiveManifestEnvelope, opts Options) error {
@@ -407,6 +457,38 @@ func verifyManifestSignatures(env contract.ActiveManifestEnvelope, opts Options)
 	}
 	if valid < required {
 		return fmt.Errorf("%w: got %d valid distinct signatures, want %d", ErrDualControl, valid, required)
+	}
+	return nil
+}
+
+func verifyContractSignature(env contract.ContractEnvelope, opts Options) error {
+	if opts.Roster == nil {
+		return fmt.Errorf("%w: roster is required", ErrContractSignature)
+	}
+	if env.Body.KeyPurpose != signing.PurposeContractCompileSigning.String() {
+		return fmt.Errorf("%w: key_id=%q purpose=%q", ErrContractSignature, env.Body.SignerKeyID, env.Body.KeyPurpose)
+	}
+	key, err := opts.Roster.ResolveKey(env.Body.SignerKeyID, now(opts))
+	if err != nil {
+		return fmt.Errorf("%w: key_id=%q: %w", ErrContractSignature, env.Body.SignerKeyID, err)
+	}
+	if key.KeyPurpose != signing.PurposeContractCompileSigning.String() {
+		return fmt.Errorf("%w: key_id=%q roster purpose=%q", ErrContractSignature, env.Body.SignerKeyID, key.KeyPurpose)
+	}
+	sigBytes, err := parseSignature(env.Signature)
+	if err != nil {
+		return fmt.Errorf("%w: key_id=%q: %w", ErrContractSignature, env.Body.SignerKeyID, err)
+	}
+	pub, err := hex.DecodeString(key.PublicKeyHex)
+	if err != nil {
+		return fmt.Errorf("%w: key_id=%q public key: %w", ErrContractSignature, env.Body.SignerKeyID, err)
+	}
+	preimage, err := env.Body.SignablePreimage()
+	if err != nil {
+		return fmt.Errorf("%w: contract preimage: %w", ErrContractSignature, err)
+	}
+	if !contract.VerifyEd25519PureEdDSA(pub, preimage, sigBytes) {
+		return fmt.Errorf("%w: key_id=%q", ErrContractSignature, env.Body.SignerKeyID)
 	}
 	return nil
 }
@@ -496,20 +578,56 @@ func (s Store) manifestDir() string {
 	return filepath.Join(s.root, manifestDirname)
 }
 
-func (s Store) manifestPath(hash string) string {
-	return filepath.Join(s.manifestDir(), hashFilename(hash, jsonExt))
+func (s Store) manifestPath(hash string) (string, error) {
+	return objectPath(s.manifestDir(), hash, jsonExt)
 }
 
-func (s Store) historyPath(hash string) string {
-	return filepath.Join(s.root, historyDirname, hashFilename(hash, yamlExt))
+func (s Store) historyPath(hash string) (string, error) {
+	return objectPath(filepath.Join(s.root, historyDirname), hash, yamlExt)
 }
 
 func (s Store) journalPath() string {
 	return filepath.Join(s.root, journalFilename)
 }
 
-func hashFilename(hash, ext string) string {
-	return hashFilePrefix + strings.TrimPrefix(hash, hashPrefix) + ext
+func objectPath(dir, hash, ext string) (string, error) {
+	name, err := hashFilename(hash, ext)
+	if err != nil {
+		return "", err
+	}
+	cleanDir := filepath.Clean(dir)
+	path := filepath.Join(cleanDir, name)
+	rel, err := filepath.Rel(cleanDir, path)
+	if err != nil {
+		return "", fmt.Errorf("%w: object path: %w", ErrContractHistory, err)
+	}
+	if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("%w: object path escapes store root", ErrContractHistory)
+	}
+	return path, nil
+}
+
+func hashFilename(hash, ext string) (string, error) {
+	if err := validateHash(hash); err != nil {
+		return "", err
+	}
+	return hashFilePrefix + strings.TrimPrefix(hash, hashPrefix) + ext, nil
+}
+
+func validateHash(hash string) error {
+	if !strings.HasPrefix(hash, hashPrefix) {
+		return fmt.Errorf("%w: hash %q missing %q prefix", ErrContractHistory, hash, hashPrefix)
+	}
+	hexPart := strings.TrimPrefix(hash, hashPrefix)
+	if len(hexPart) != 64 {
+		return fmt.Errorf("%w: hash %q length %d, want 64 hex chars", ErrContractHistory, hash, len(hexPart))
+	}
+	for _, r := range hexPart {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return fmt.Errorf("%w: hash %q is not lowercase hex", ErrContractHistory, hash)
+		}
+	}
+	return nil
 }
 
 func signerKeyIDs(sigs []contract.ManifestSignature) []string {

@@ -28,6 +28,11 @@ type testSigner struct {
 	priv      ed25519.PrivateKey
 }
 
+type testRosterKey struct {
+	signer  testSigner
+	purpose signing.KeyPurpose
+}
+
 func TestReloadAcceptsSignedManifestAndPersistsAccepted(t *testing.T) {
 	st := New(t.TempDir())
 	cHash := putTestContract(t, st)
@@ -77,7 +82,7 @@ func TestReloadReadOnlyDoesNotPersistAcceptedOrJournal(t *testing.T) {
 	}
 }
 
-func TestReloadReadOnlyJournalsRejections(t *testing.T) {
+func TestReloadReadOnlyDoesNotJournalRejections(t *testing.T) {
 	st := New(t.TempDir())
 	if err := os.MkdirAll(st.root, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -90,12 +95,19 @@ func TestReloadReadOnlyJournalsRejections(t *testing.T) {
 	if _, err := st.Reload(opts); !errors.Is(err, ErrDecode) {
 		t.Fatalf("Reload err = %v, want ErrDecode", err)
 	}
-	raw, err := os.ReadFile(st.journalPath())
-	if err != nil {
-		t.Fatalf("read journal: %v", err)
+	if _, err := os.Stat(st.journalPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal err = %v, want not exist", err)
 	}
-	if !strings.Contains(string(raw), `"outcome":"rejected"`) {
-		t.Fatalf("journal = %s, want rejected outcome", raw)
+}
+
+func TestReloadPropagatesActiveReadError(t *testing.T) {
+	st := New(t.TempDir())
+	restore := replaceReadFile(func(string) ([]byte, error) {
+		return nil, fmt.Errorf("forced read error")
+	})
+	defer restore()
+	if _, err := st.Reload(testOptions(testRoster(newTestSigner(t, "act-1", "alice")), "", 0, 1)); !errors.Is(err, ErrDecode) {
+		t.Fatalf("Reload err = %v, want ErrDecode", err)
 	}
 }
 
@@ -209,6 +221,46 @@ func TestWriteActiveChecksExpectedPrior(t *testing.T) {
 	}
 }
 
+func TestWriteActiveChecksLockedCurrentActive(t *testing.T) {
+	st := New(t.TempDir())
+	cHash := putTestContract(t, st)
+	signer := newTestSigner(t, "act-1", "alice")
+	env1 := signedManifest(t, cHash, 1, "sha256:genesis", testEnv(), signer)
+	hash1, err := st.WriteActive(mustJSON(t, env1), testOptions(testRoster(signer), "", 0, 1))
+	if err != nil {
+		t.Fatalf("WriteActive gen1: %v", err)
+	}
+	env2 := signedManifest(t, cHash, 2, "sha256:genesis", testEnv(), signer)
+	if _, err := st.WriteActive(mustJSON(t, env2), testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrPriorManifest) {
+		t.Fatalf("WriteActive stale prior err = %v, want ErrPriorManifest", err)
+	}
+	env3 := signedManifest(t, cHash, 2, hash1, testEnv(), signer)
+	if _, err := st.WriteActive(mustJSON(t, env3), testOptions(testRoster(signer), "", 0, 1)); err != nil {
+		t.Fatalf("WriteActive current prior: %v", err)
+	}
+}
+
+func TestWriteActiveRejectsUnreadableCurrentActive(t *testing.T) {
+	st := New(t.TempDir())
+	cHash := putTestContract(t, st)
+	signer := newTestSigner(t, "act-1", "alice")
+	env := signedManifest(t, cHash, 1, "sha256:genesis", testEnv(), signer)
+	if _, err := st.WriteActive(mustJSON(t, env), testOptions(testRoster(signer), "", 0, 1)); err != nil {
+		t.Fatalf("WriteActive initial: %v", err)
+	}
+	restore := replaceReadFile(func(path string) ([]byte, error) {
+		if path == st.activePath() {
+			return nil, fmt.Errorf("forced read error")
+		}
+		return nil, fmt.Errorf("unexpected read: %s", path)
+	})
+	defer restore()
+	env2 := signedManifest(t, cHash, 2, "sha256:genesis", testEnv(), signer)
+	if _, err := st.WriteActive(mustJSON(t, env2), testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrDecode) {
+		t.Fatalf("WriteActive err = %v, want ErrDecode", err)
+	}
+}
+
 func TestReloadRejectsInvalidActiveAndJournalsFailure(t *testing.T) {
 	st := New(t.TempDir())
 	if err := os.MkdirAll(st.root, 0o700); err != nil {
@@ -319,7 +371,7 @@ func TestValidateEnvelopeRejectsRosterPurposeMismatch(t *testing.T) {
 	alice := newTestSigner(t, "act-1", "alice")
 	env := signedManifest(t, cHash, 1, "sha256:genesis", testEnv(), alice)
 	roster := testRoster(alice)
-	roster.Body.Keys[0].KeyPurpose = signing.PurposeReceiptSigning.String()
+	roster.Body.Keys[1].KeyPurpose = signing.PurposeReceiptSigning.String()
 	_, err := st.ValidateEnvelope(mustJSON(t, env), testOptions(roster, "", 0, 1))
 	if !errors.Is(err, ErrSignature) {
 		t.Fatalf("ValidateEnvelope err = %v, want ErrSignature", err)
@@ -341,31 +393,39 @@ func TestValidateEnvelopeRejectsStructuralManifest(t *testing.T) {
 func TestLoadContractsRejectsDecodeAndHashMismatch(t *testing.T) {
 	st := New(t.TempDir())
 	badHash := "sha256:" + stringsOf("b", 64)
-	if err := os.MkdirAll(filepath.Dir(st.historyPath(badHash)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustHistoryPath(t, st, badHash)), 0o700); err != nil {
 		t.Fatalf("mkdir history: %v", err)
 	}
-	if err := os.WriteFile(st.historyPath(badHash), []byte("{"), 0o600); err != nil {
+	if err := os.WriteFile(mustHistoryPath(t, st, badHash), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write bad contract: %v", err)
 	}
 	sel := contract.ManifestSelector{SelectorID: "sha256:s", ContractHash: badHash}
-	if _, err := st.loadContracts([]contract.ManifestSelector{sel}); !errors.Is(err, ErrDecode) {
+	if _, err := st.loadContracts([]contract.ManifestSelector{sel}, Options{}); !errors.Is(err, ErrDecode) {
 		t.Fatalf("decode err = %v, want ErrDecode", err)
 	}
 
 	goodHash := putTestContract(t, st)
 	mismatch := "sha256:" + stringsOf("c", 64)
-	if err := os.Rename(st.historyPath(goodHash), st.historyPath(mismatch)); err != nil {
+	if err := os.Rename(mustHistoryPath(t, st, goodHash), mustHistoryPath(t, st, mismatch)); err != nil {
 		t.Fatalf("rename history: %v", err)
 	}
 	sel.ContractHash = mismatch
-	if _, err := st.loadContracts([]contract.ManifestSelector{sel}); !errors.Is(err, ErrContractHistory) {
+	if _, err := st.loadContracts([]contract.ManifestSelector{sel}, Options{}); !errors.Is(err, ErrContractHistory) {
 		t.Fatalf("mismatch err = %v, want ErrContractHistory", err)
+	}
+}
+
+func TestLoadContractsRejectsMalformedSelectorHashBeforePathUse(t *testing.T) {
+	st := New(t.TempDir())
+	sel := contract.ManifestSelector{SelectorID: "sha256:s", ContractHash: "sha256:../evil"}
+	if _, err := st.loadContracts([]contract.ManifestSelector{sel}, testOptions(testRoster(), "", 0, 1)); !errors.Is(err, ErrContractHistory) {
+		t.Fatalf("loadContracts err = %v, want ErrContractHistory", err)
 	}
 }
 
 func TestPutHistoryContractRejectsDecodeAndHashMismatch(t *testing.T) {
 	st := New(t.TempDir())
-	if _, err := st.PutHistoryContract([]byte("{")); !errors.Is(err, ErrDecode) {
+	if _, err := st.PutHistoryContract([]byte("{"), Options{}); !errors.Is(err, ErrDecode) {
 		t.Fatalf("decode err = %v, want ErrDecode", err)
 	}
 	c := contract.Contract{
@@ -376,8 +436,147 @@ func TestPutHistoryContractRejectsDecodeAndHashMismatch(t *testing.T) {
 		FieldDataClasses: map[string]string{},
 	}
 	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
-	if _, err := st.PutHistoryContract(raw); !errors.Is(err, ErrContractHistory) {
+	if _, err := st.PutHistoryContract(raw, Options{}); !errors.Is(err, ErrContractHistory) {
 		t.Fatalf("hash mismatch err = %v, want ErrContractHistory", err)
+	}
+}
+
+func TestPutHistoryContractRejectsBadContractSignature(t *testing.T) {
+	st := New(t.TempDir())
+	compileSigner := testCompileSigner()
+	c := testContractBody(compileSigner)
+	hash, err := ContractHash(c)
+	if err != nil {
+		t.Fatalf("ContractHash: %v", err)
+	}
+	c.ContractHash = hash
+	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
+	if _, err := st.PutHistoryContract(raw, testOptions(testRoster(), "", 0, 1)); !errors.Is(err, ErrContractSignature) {
+		t.Fatalf("PutHistoryContract err = %v, want ErrContractSignature", err)
+	}
+}
+
+func TestLoadContractsRejectsBadContractSignature(t *testing.T) {
+	st := New(t.TempDir())
+	compileSigner := testCompileSigner()
+	c := testContractBody(compileSigner)
+	hash, err := ContractHash(c)
+	if err != nil {
+		t.Fatalf("ContractHash: %v", err)
+	}
+	c.ContractHash = hash
+	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
+	if err := os.MkdirAll(filepath.Dir(mustHistoryPath(t, st, hash)), 0o700); err != nil {
+		t.Fatalf("mkdir history: %v", err)
+	}
+	if err := os.WriteFile(mustHistoryPath(t, st, hash), raw, 0o600); err != nil {
+		t.Fatalf("write contract: %v", err)
+	}
+	sel := contract.ManifestSelector{SelectorID: "sha256:s", ContractHash: hash}
+	if _, err := st.loadContracts([]contract.ManifestSelector{sel}, testOptions(testRoster(), "", 0, 1)); !errors.Is(err, ErrContractSignature) {
+		t.Fatalf("loadContracts err = %v, want ErrContractSignature", err)
+	}
+}
+
+func TestVerifyContractSignatureRejectsAuthorityFailures(t *testing.T) {
+	compileSigner := testCompileSigner()
+	body := testContractBody(compileSigner)
+	hash, err := ContractHash(body)
+	if err != nil {
+		t.Fatalf("ContractHash: %v", err)
+	}
+	body.ContractHash = hash
+	base := signTestContract(t, body, compileSigner)
+
+	tests := []struct {
+		name   string
+		mutate func(*contract.ContractEnvelope, *signing.LoadedRoster)
+		roster *signing.LoadedRoster
+	}{
+		{
+			name:   "nil_roster",
+			roster: nil,
+		},
+		{
+			name:   "wrong_body_purpose",
+			roster: testRoster(),
+			mutate: func(env *contract.ContractEnvelope, _ *signing.LoadedRoster) {
+				env.Body.KeyPurpose = signing.PurposeReceiptSigning.String()
+			},
+		},
+		{
+			name:   "unknown_key",
+			roster: testRoster(),
+			mutate: func(env *contract.ContractEnvelope, _ *signing.LoadedRoster) {
+				env.Body.SignerKeyID = "missing"
+			},
+		},
+		{
+			name:   "wrong_roster_purpose",
+			roster: testRoster(),
+			mutate: func(_ *contract.ContractEnvelope, roster *signing.LoadedRoster) {
+				roster.Body.Keys[0].KeyPurpose = signing.PurposeReceiptSigning.String()
+			},
+		},
+		{
+			name:   "bad_signature_format",
+			roster: testRoster(),
+			mutate: func(env *contract.ContractEnvelope, _ *signing.LoadedRoster) {
+				env.Signature = "ed25519:aabb"
+			},
+		},
+		{
+			name:   "bad_public_key_hex",
+			roster: testRoster(),
+			mutate: func(_ *contract.ContractEnvelope, roster *signing.LoadedRoster) {
+				roster.Body.Keys[0].PublicKeyHex = "not-hex"
+			},
+		},
+		{
+			name:   "bad_signature_bytes",
+			roster: testRoster(),
+			mutate: func(env *contract.ContractEnvelope, _ *signing.LoadedRoster) {
+				env.Signature = "ed25519:" + stringsOf("0", 128)
+			},
+		},
+		{
+			name:   "preimage_error",
+			roster: testRoster(),
+			mutate: func(env *contract.ContractEnvelope, _ *signing.LoadedRoster) {
+				env.Body.Defaults.Confidence = map[string]any{"bad": make(chan int)}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env := base
+			roster := tt.roster
+			if roster != nil {
+				copied := *roster
+				copied.Body.Keys = append([]contract.KeyInfo(nil), roster.Body.Keys...)
+				roster = &copied
+			}
+			if tt.mutate != nil {
+				tt.mutate(&env, roster)
+			}
+			if err := verifyContractSignature(env, testOptions(roster, "", 0, 1)); !errors.Is(err, ErrContractSignature) {
+				t.Fatalf("verifyContractSignature err = %v, want ErrContractSignature", err)
+			}
+		})
+	}
+}
+
+func TestHashPathValidationRejectsMalformedHashes(t *testing.T) {
+	for _, hash := range []string{
+		"not-sha256:" + stringsOf("0", 64),
+		"sha256:" + stringsOf("0", 63),
+		"sha256:" + stringsOf("A", 64),
+		"sha256:" + stringsOf("0", 63) + "/",
+	} {
+		if _, err := hashFilename(hash, jsonExt); !errors.Is(err, ErrContractHistory) {
+			t.Fatalf("hashFilename(%q) err = %v, want ErrContractHistory", hash, err)
+		}
 	}
 }
 
@@ -394,7 +593,7 @@ func TestLatestAcceptedRejectsBadHistoryAndMissingHistory(t *testing.T) {
 	}
 	signer := newTestSigner(t, "act-1", "alice")
 	env := signedManifest(t, "sha256:"+stringsOf("d", 64), 1, "sha256:genesis", testEnv(), signer)
-	if err := os.WriteFile(filepath.Join(st.manifestDir(), hashFilename("sha256:"+stringsOf("e", 64), jsonExt)), mustJSON(t, env), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(st.manifestDir(), mustHashFilename(t, "sha256:"+stringsOf("e", 64), jsonExt)), mustJSON(t, env), 0o600); err != nil {
 		t.Fatalf("write bad accepted manifest: %v", err)
 	}
 	if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrContractHistory) {
@@ -447,10 +646,10 @@ func TestReloadAcceptedManifestWriteConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateEnvelope: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(st.manifestPath(state.ManifestHash)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustManifestPath(t, st, state.ManifestHash)), 0o700); err != nil {
 		t.Fatalf("mkdir manifest: %v", err)
 	}
-	if err := os.WriteFile(st.manifestPath(state.ManifestHash), []byte("different\n"), 0o600); err != nil {
+	if err := os.WriteFile(mustManifestPath(t, st, state.ManifestHash), []byte("different\n"), 0o600); err != nil {
 		t.Fatalf("write conflicting manifest: %v", err)
 	}
 	if err := os.WriteFile(st.activePath(), raw, 0o600); err != nil {
@@ -475,10 +674,10 @@ func TestReloadReturnsJournalAppendFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeForStorage: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(st.manifestPath(state.ManifestHash)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustManifestPath(t, st, state.ManifestHash)), 0o700); err != nil {
 		t.Fatalf("mkdir manifest: %v", err)
 	}
-	if err := os.WriteFile(st.manifestPath(state.ManifestHash), accepted, 0o600); err != nil {
+	if err := os.WriteFile(mustManifestPath(t, st, state.ManifestHash), accepted, 0o600); err != nil {
 		t.Fatalf("write accepted: %v", err)
 	}
 	if err := os.WriteFile(st.activePath(), raw, 0o600); err != nil {
@@ -519,7 +718,7 @@ func TestReloadDoesNotPersistAcceptedWhenJournalFails(t *testing.T) {
 	if _, err := st.Reload(testOptions(testRoster(signer), "", 0, 1)); err == nil {
 		t.Fatal("Reload returned nil error with journal open failure")
 	}
-	if _, err := os.Stat(st.manifestPath(state.ManifestHash)); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(mustManifestPath(t, st, state.ManifestHash)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("accepted manifest err = %v, want not exist", err)
 	}
 }
@@ -583,7 +782,7 @@ func TestPutHistoryContractRejectsStructuralContract(t *testing.T) {
 	}
 	c.ContractHash = hash
 	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
-	if _, err := st.PutHistoryContract(raw); !errors.Is(err, ErrStructural) {
+	if _, err := st.PutHistoryContract(raw, Options{}); !errors.Is(err, ErrStructural) {
 		t.Fatalf("PutHistoryContract err = %v, want ErrStructural", err)
 	}
 }
@@ -591,13 +790,14 @@ func TestPutHistoryContractRejectsStructuralContract(t *testing.T) {
 func TestPutHistoryContractRejectsWriteOnceConflict(t *testing.T) {
 	st := New(t.TempDir())
 	cHash := putTestContract(t, st)
-	if err := os.WriteFile(st.historyPath(cHash), []byte("different\n"), 0o600); err != nil {
+	if err := os.WriteFile(mustHistoryPath(t, st, cHash), []byte("different\n"), 0o600); err != nil {
 		t.Fatalf("overwrite history: %v", err)
 	}
+	compileSigner := testCompileSigner()
 	c := contract.Contract{
 		SchemaVersion:    contract.SchemaVersionContract,
 		ContractKind:     contract.ContractKind,
-		SignerKeyID:      "compile-key",
+		SignerKeyID:      compileSigner.keyID,
 		KeyPurpose:       signing.PurposeContractCompileSigning.String(),
 		DataClassRoot:    "internal",
 		FieldDataClasses: map[string]string{},
@@ -608,8 +808,8 @@ func TestPutHistoryContractRejectsWriteOnceConflict(t *testing.T) {
 		t.Fatalf("ContractHash: %v", err)
 	}
 	c.ContractHash = hash
-	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
-	if _, err := st.PutHistoryContract(raw); !errors.Is(err, ErrWriteOnceConflict) {
+	raw := mustJSON(t, signTestContract(t, c, compileSigner))
+	if _, err := st.PutHistoryContract(raw, testOptions(testRoster(), "", 0, 1)); !errors.Is(err, ErrWriteOnceConflict) {
 		t.Fatalf("PutHistoryContract err = %v, want ErrWriteOnceConflict", err)
 	}
 }
@@ -619,7 +819,7 @@ func TestLatestAcceptedRejectsReadAndDecodeErrors(t *testing.T) {
 	if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
 		t.Fatalf("mkdir manifests: %v", err)
 	}
-	name := hashFilename("sha256:"+stringsOf("0", 64), jsonExt)
+	name := mustHashFilename(t, "sha256:"+stringsOf("0", 64), jsonExt)
 	if err := os.WriteFile(filepath.Join(st.manifestDir(), name), []byte("{"), 0o600); err != nil {
 		t.Fatalf("write bad manifest: %v", err)
 	}
@@ -633,6 +833,49 @@ func TestLatestAcceptedRejectsReadAndDecodeErrors(t *testing.T) {
 	if _, err := st.LatestAccepted(Options{}); err == nil {
 		t.Fatal("LatestAccepted returned nil error with read failure")
 	}
+}
+
+func TestLatestAcceptedRejectsStructuralAndEnvironmentErrors(t *testing.T) {
+	t.Run("structural", func(t *testing.T) {
+		st := New(t.TempDir())
+		cHash := putTestContract(t, st)
+		signer := newTestSigner(t, "act-1", "alice")
+		env := signedManifest(t, cHash, 1, "sha256:genesis", testEnv(), signer)
+		env.Body.SelectorSetHash = "sha256:wrong"
+		hash, err := ActiveManifestHash(env.Body)
+		if err != nil {
+			t.Fatalf("ActiveManifestHash: %v", err)
+		}
+		if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
+			t.Fatalf("mkdir manifests: %v", err)
+		}
+		if err := os.WriteFile(mustManifestPath(t, st, hash), mustJSON(t, env), 0o600); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrStructural) {
+			t.Fatalf("LatestAccepted err = %v, want ErrStructural", err)
+		}
+	})
+
+	t.Run("environment", func(t *testing.T) {
+		st := New(t.TempDir())
+		cHash := putTestContract(t, st)
+		signer := newTestSigner(t, "act-1", "alice")
+		env := signedManifest(t, cHash, 1, "sha256:genesis", contract.Environment{ID: "dev", Tenant: "tenant", DeploymentID: "deployment"}, signer)
+		hash, err := ActiveManifestHash(env.Body)
+		if err != nil {
+			t.Fatalf("ActiveManifestHash: %v", err)
+		}
+		if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
+			t.Fatalf("mkdir manifests: %v", err)
+		}
+		if err := os.WriteFile(mustManifestPath(t, st, hash), mustJSON(t, env), 0o600); err != nil {
+			t.Fatalf("write manifest: %v", err)
+		}
+		if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrEnvironmentMismatch) {
+			t.Fatalf("LatestAccepted err = %v, want ErrEnvironmentMismatch", err)
+		}
+	})
 }
 
 func TestLatestAcceptedSkipsNonManifestEntries(t *testing.T) {
@@ -661,7 +904,7 @@ func TestLatestAcceptedRejectsForgedManifestWithMatchingFilename(t *testing.T) {
 	if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
 		t.Fatalf("mkdir manifests: %v", err)
 	}
-	if err := os.WriteFile(st.manifestPath(hash), mustJSON(t, env), 0o600); err != nil {
+	if err := os.WriteFile(mustManifestPath(t, st, hash), mustJSON(t, env), 0o600); err != nil {
 		t.Fatalf("write forged manifest: %v", err)
 	}
 	if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrSignature) {
@@ -680,7 +923,7 @@ func TestLatestAcceptedRejectsMissingContractHistory(t *testing.T) {
 	if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
 		t.Fatalf("mkdir manifests: %v", err)
 	}
-	if err := os.WriteFile(st.manifestPath(hash), mustJSON(t, env), 0o600); err != nil {
+	if err := os.WriteFile(mustManifestPath(t, st, hash), mustJSON(t, env), 0o600); err != nil {
 		t.Fatalf("write accepted manifest: %v", err)
 	}
 	if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrContractHistory) {
@@ -741,7 +984,7 @@ func TestValidateEnvelopeRejectsBadRosterPublicKeyHex(t *testing.T) {
 	signer := newTestSigner(t, "act-1", "alice")
 	env := signedManifest(t, cHash, 1, "sha256:genesis", testEnv(), signer)
 	roster := testRoster(signer)
-	roster.Body.Keys[0].PublicKeyHex = "not-hex"
+	roster.Body.Keys[1].PublicKeyHex = "not-hex"
 	_, err := st.ValidateEnvelope(mustJSON(t, env), testOptions(roster, "", 0, 1))
 	if !errors.Is(err, ErrSignature) {
 		t.Fatalf("ValidateEnvelope err = %v, want ErrSignature", err)
@@ -846,14 +1089,14 @@ func TestLoadContractsRejectsStructurallyInvalidContract(t *testing.T) {
 	}
 	c.ContractHash = hash
 	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
-	if err := os.MkdirAll(filepath.Dir(st.historyPath(hash)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mustHistoryPath(t, st, hash)), 0o700); err != nil {
 		t.Fatalf("mkdir history: %v", err)
 	}
-	if err := os.WriteFile(st.historyPath(hash), raw, 0o600); err != nil {
+	if err := os.WriteFile(mustHistoryPath(t, st, hash), raw, 0o600); err != nil {
 		t.Fatalf("write contract: %v", err)
 	}
 	sel := contract.ManifestSelector{SelectorID: "sha256:s", ContractHash: hash}
-	if _, err := st.loadContracts([]contract.ManifestSelector{sel}); !errors.Is(err, ErrStructural) {
+	if _, err := st.loadContracts([]contract.ManifestSelector{sel}, Options{}); !errors.Is(err, ErrStructural) {
 		t.Fatalf("loadContracts err = %v, want ErrStructural", err)
 	}
 }
@@ -906,22 +1149,15 @@ func (f fakeWritableFile) Close() error {
 
 func putTestContract(t *testing.T, st Store) string {
 	t.Helper()
-	c := contract.Contract{
-		SchemaVersion:    contract.SchemaVersionContract,
-		ContractKind:     contract.ContractKind,
-		SignerKeyID:      "compile-key",
-		KeyPurpose:       signing.PurposeContractCompileSigning.String(),
-		DataClassRoot:    "internal",
-		FieldDataClasses: map[string]string{},
-		Selector:         contract.Selector{Agent: "agent-a", SelectorID: "sha256:selector"},
-	}
+	compileSigner := testCompileSigner()
+	c := testContractBody(compileSigner)
 	hash, err := ContractHash(c)
 	if err != nil {
 		t.Fatalf("ContractHash: %v", err)
 	}
 	c.ContractHash = hash
-	raw := mustJSON(t, contract.ContractEnvelope{Body: c, Signature: "ed25519:" + stringsOf("0", 128)})
-	got, err := st.PutHistoryContract(raw)
+	raw := mustJSON(t, signTestContract(t, c, compileSigner))
+	got, err := st.PutHistoryContract(raw, testOptions(testRoster(), "", 0, 1))
 	if err != nil {
 		t.Fatalf("PutHistoryContract: %v", err)
 	}
@@ -929,6 +1165,28 @@ func putTestContract(t *testing.T, st Store) string {
 		t.Fatalf("PutHistoryContract hash = %q, want %q", got, hash)
 	}
 	return hash
+}
+
+func testContractBody(signer testSigner) contract.Contract {
+	return contract.Contract{
+		SchemaVersion:    contract.SchemaVersionContract,
+		ContractKind:     contract.ContractKind,
+		SignerKeyID:      signer.keyID,
+		KeyPurpose:       signing.PurposeContractCompileSigning.String(),
+		DataClassRoot:    "internal",
+		FieldDataClasses: map[string]string{},
+		Selector:         contract.Selector{Agent: "agent-a", SelectorID: "sha256:selector"},
+	}
+}
+
+func signTestContract(t *testing.T, body contract.Contract, signer testSigner) contract.ContractEnvelope {
+	t.Helper()
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	sig := ed25519.Sign(signer.priv, preimage)
+	return contract.ContractEnvelope{Body: body, Signature: "ed25519:" + hex.EncodeToString(sig)}
 }
 
 func signedManifest(t *testing.T, cHash string, generation uint64, prior string, env contract.Environment, signers ...testSigner) contract.ActiveManifestEnvelope {
@@ -984,18 +1242,33 @@ func testOptions(roster *signing.LoadedRoster, previousHash string, previousGene
 }
 
 func testRoster(signers ...testSigner) *signing.LoadedRoster {
-	keys := make([]contract.KeyInfo, 0, len(signers))
+	entries := make([]testRosterKey, 0, len(signers)+1)
+	entries = append(entries, testRosterKey{signer: testCompileSigner(), purpose: signing.PurposeContractCompileSigning})
 	for _, signer := range signers {
+		entries = append(entries, testRosterKey{signer: signer, purpose: signing.PurposeContractActivationSigning})
+	}
+	return testRosterWithKeys(entries...)
+}
+
+func testRosterWithKeys(entries ...testRosterKey) *signing.LoadedRoster {
+	keys := make([]contract.KeyInfo, 0, len(entries))
+	for _, entry := range entries {
 		keys = append(keys, contract.KeyInfo{
-			KeyID:        signer.keyID,
-			KeyPurpose:   signing.PurposeContractActivationSigning.String(),
-			PublicKeyHex: hex.EncodeToString(signer.pub),
+			KeyID:        entry.signer.keyID,
+			KeyPurpose:   entry.purpose.String(),
+			PublicKeyHex: hex.EncodeToString(entry.signer.pub),
 			ValidFrom:    testNow.Add(-time.Hour).Format(time.RFC3339),
 			Status:       contract.KeyStatusActive,
-			Principal:    signer.principal,
+			Principal:    entry.signer.principal,
 		})
 	}
 	return &signing.LoadedRoster{Body: contract.KeyRoster{Keys: keys}}
+}
+
+func testCompileSigner() testSigner {
+	priv := ed25519.NewKeyFromSeed([]byte("0123456789abcdef0123456789abcdef"))
+	pub := priv.Public().(ed25519.PublicKey)
+	return testSigner{keyID: "compile-key", principal: "compiler", pub: pub, priv: priv}
 }
 
 func newTestSigner(t *testing.T, keyID, principal string) testSigner {
@@ -1018,6 +1291,33 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("Marshal: %v", err)
 	}
 	return append(raw, '\n')
+}
+
+func mustHistoryPath(t *testing.T, st Store, hash string) string {
+	t.Helper()
+	path, err := st.historyPath(hash)
+	if err != nil {
+		t.Fatalf("historyPath: %v", err)
+	}
+	return path
+}
+
+func mustManifestPath(t *testing.T, st Store, hash string) string {
+	t.Helper()
+	path, err := st.manifestPath(hash)
+	if err != nil {
+		t.Fatalf("manifestPath: %v", err)
+	}
+	return path
+}
+
+func mustHashFilename(t *testing.T, hash, ext string) string {
+	t.Helper()
+	name, err := hashFilename(hash, ext)
+	if err != nil {
+		t.Fatalf("hashFilename: %v", err)
+	}
+	return name
 }
 
 func stringsOf(s string, n int) string {

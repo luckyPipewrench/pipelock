@@ -90,11 +90,10 @@ type Options struct {
 
 // State is the accepted manifest and resolved contract set.
 type State struct {
-	Envelope       contract.ActiveManifestEnvelope
-	ManifestHash   string
-	Contracts      map[string]contract.ContractEnvelope
-	AcceptedPath   string
-	JournalOutcome string
+	Envelope     contract.ActiveManifestEnvelope
+	ManifestHash string
+	Contracts    map[string]contract.ContractEnvelope
+	AcceptedPath string
 }
 
 // JournalEntry is appended for accepted and rejected reload attempts.
@@ -131,6 +130,7 @@ func (s Store) Reload(opts Options) (State, error) {
 			})
 			return err
 		}
+		acceptedPath := ""
 		if !opts.ReadOnly {
 			encoded, encErr := encodeForStorage(accepted.Envelope)
 			if encErr != nil {
@@ -150,10 +150,14 @@ func (s Store) Reload(opts Options) (State, error) {
 			if writeErr := writeOnce(path, encoded); writeErr != nil {
 				return writeErr
 			}
-			accepted.AcceptedPath = path
+			acceptedPath = path
 		}
-		accepted.JournalOutcome = "accepted"
-		state = accepted
+		state = State{
+			Envelope:     accepted.Envelope,
+			ManifestHash: accepted.ManifestHash,
+			Contracts:    accepted.Contracts,
+			AcceptedPath: acceptedPath,
+		}
 		return nil
 	})
 	if err != nil {

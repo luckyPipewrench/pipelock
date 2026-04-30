@@ -349,9 +349,6 @@ func (e *Emitter) EmitBatch(batch Batch) error {
 		return fmt.Errorf("marshal shadow delta receipt: %w", err)
 	}
 
-	e.chainPrevHash = receiptHash
-	e.chainSeq++
-
 	if err := e.recorder.Record(recorder.Entry{
 		SessionID: e.sessionID,
 		Type:      evidenceReceiptEntryType,
@@ -363,6 +360,8 @@ func (e *Emitter) EmitBatch(batch Batch) error {
 	}); err != nil {
 		return fmt.Errorf("record shadow delta receipt: %w", err)
 	}
+	e.chainPrevHash = receiptHash
+	e.chainSeq++
 	return nil
 }
 

@@ -966,6 +966,52 @@ func TestValidateShadowDelta_RejectsSampleCountMismatch(t *testing.T) {
 	}
 }
 
+func TestValidateShadowDelta_RejectsInvalidWindow(t *testing.T) {
+	cases := []receipt.ShadowDeltaAggregation{
+		{
+			WindowStart:      "not-time",
+			WindowEnd:        "2026-04-30T12:01:00Z",
+			LosslessCount:    1,
+			DeltaSampleCount: 1,
+			ExemplarIDs:      []string{"ex-1"},
+		},
+		{
+			WindowStart:      "2026-04-30T12:00:00Z",
+			WindowEnd:        "not-time",
+			LosslessCount:    1,
+			DeltaSampleCount: 1,
+			ExemplarIDs:      []string{"ex-1"},
+		},
+		{
+			WindowStart:      "2026-04-30T12:01:00Z",
+			WindowEnd:        "2026-04-30T12:00:00Z",
+			LosslessCount:    1,
+			DeltaSampleCount: 1,
+			ExemplarIDs:      []string{"ex-1"},
+		},
+		{
+			WindowStart:      "2026-04-30T12:00:00Z",
+			WindowEnd:        "2026-04-30T12:00:00Z",
+			LosslessCount:    1,
+			DeltaSampleCount: 1,
+			ExemplarIDs:      []string{"ex-1"},
+		},
+	}
+	for _, aggregation := range cases {
+		p := receipt.PayloadShadowDeltaStruct{
+			ContractHash:     "sha256:abc",
+			RuleID:           "rule-1",
+			OriginalVerdict:  "blocked",
+			CandidateVerdict: "allowed",
+			Aggregation:      aggregation,
+		}
+		err := callValidator(t, receipt.PayloadShadowDelta, marshalPayload(t, p))
+		if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+			t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+		}
+	}
+}
+
 func TestValidateShadowDelta_InvalidJSON(t *testing.T) {
 	err := callValidator(t, receipt.PayloadShadowDelta, json.RawMessage(`{bad}`))
 	if !errors.Is(err, receipt.ErrPayloadMissingField) {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 // Sentinel errors for payload dispatch and envelope validation.
@@ -290,6 +291,17 @@ func validateShadowDeltaAggregation(a ShadowDeltaAggregation) error {
 	}
 	if err := requireNonEmpty("aggregation.window_end", a.WindowEnd); err != nil {
 		return err
+	}
+	start, err := time.Parse(time.RFC3339Nano, a.WindowStart)
+	if err != nil {
+		return fmt.Errorf("%w: aggregation.window_start", ErrPayloadInvalidEnum)
+	}
+	end, err := time.Parse(time.RFC3339Nano, a.WindowEnd)
+	if err != nil {
+		return fmt.Errorf("%w: aggregation.window_end", ErrPayloadInvalidEnum)
+	}
+	if !end.After(start) {
+		return fmt.Errorf("%w: aggregation.window_end", ErrPayloadInvalidEnum)
 	}
 	if a.LosslessCount == 0 {
 		return fmt.Errorf("%w: aggregation.lossless_count", ErrPayloadMissingField)

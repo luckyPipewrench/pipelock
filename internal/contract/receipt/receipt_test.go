@@ -4,8 +4,11 @@
 package receipt_test
 
 import (
+	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -202,4 +205,78 @@ func TestEvidenceReceipt_SignablePreimage_ExcludesSignature(t *testing.T) {
 	if string(preimageWithSig) != string(preimageWithDiffSig) {
 		t.Fatalf("signature field affects preimage: got different bytes")
 	}
+}
+
+func TestReceiptHash_StableAndPayloadSensitive(t *testing.T) {
+	r := validReceipt()
+	first, err := receipt.ReceiptHash(r)
+	if err != nil {
+		t.Fatalf("ReceiptHash first: %v", err)
+	}
+	second, err := receipt.ReceiptHash(r)
+	if err != nil {
+		t.Fatalf("ReceiptHash second: %v", err)
+	}
+	if first != second {
+		t.Fatalf("ReceiptHash unstable: first=%q second=%q", first, second)
+	}
+
+	r.Payload = json.RawMessage(`{"action_type":"block","target":"https://example.com/other","verdict":"blocked","transport":"forward","policy_sources":["dlp"],"winning_source":"dlp"}`)
+	changed, err := receipt.ReceiptHash(r)
+	if err != nil {
+		t.Fatalf("ReceiptHash changed payload: %v", err)
+	}
+	if changed == first {
+		t.Fatalf("ReceiptHash did not change after payload mutation: %q", changed)
+	}
+}
+
+func TestReceiptHash_RejectsInvalidPayloadJSON(t *testing.T) {
+	r := validReceipt()
+	r.Payload = json.RawMessage(`{invalid`)
+	if _, err := receipt.ReceiptHash(r); err == nil {
+		t.Fatal("ReceiptHash invalid payload error = nil, want error")
+	}
+}
+
+func TestVerifyWithKey(t *testing.T) {
+	r, pub := signedReceipt(t)
+	if err := receipt.VerifyWithKey(r, pub); err != nil {
+		t.Fatalf("VerifyWithKey valid receipt: %v", err)
+	}
+
+	if err := receipt.VerifyWithKey(r, ed25519.PublicKey("short")); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("VerifyWithKey short key error = %v, want ErrPayloadInvalidEnum", err)
+	}
+
+	badHex := r
+	badHex.Signature.Signature = "ed25519:not-hex"
+	if err := receipt.VerifyWithKey(badHex, pub); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("VerifyWithKey bad hex error = %v, want ErrPayloadInvalidEnum", err)
+	}
+
+	tampered := r
+	tampered.Payload = json.RawMessage(`{"action_type":"block","target":"https://example.com/tampered","verdict":"blocked","transport":"forward","policy_sources":["dlp"],"winning_source":"dlp"}`)
+	if err := receipt.VerifyWithKey(tampered, pub); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("VerifyWithKey tampered error = %v, want ErrPayloadInvalidEnum", err)
+	}
+}
+
+func signedReceipt(t *testing.T) (receipt.EvidenceReceipt, ed25519.PublicKey) {
+	t.Helper()
+	seed := sha256.Sum256([]byte("receipt verify test key"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	r := validReceipt()
+	r.Signature = receipt.SignatureProof{}
+	preimage, err := r.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	r.Signature = receipt.SignatureProof{
+		SignerKeyID: "receipt-key",
+		KeyPurpose:  "receipt-signing",
+		Algorithm:   "ed25519",
+		Signature:   "ed25519:" + fmt.Sprintf("%x", ed25519.Sign(priv, preimage)),
+	}
+	return r, priv.Public().(ed25519.PublicKey)
 }

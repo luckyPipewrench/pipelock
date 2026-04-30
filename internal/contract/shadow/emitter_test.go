@@ -364,6 +364,9 @@ func TestEmitter_SurfacesSignerValidateAndRecordErrors(t *testing.T) {
 	if err := emitter.EmitBatch(batch); !errors.Is(err, recordErr) {
 		t.Fatalf("EmitBatch record error = %v, want recordErr", err)
 	}
+	if emitter.chainSeq != 0 || emitter.chainPrevHash != recorder.GenesisHash {
+		t.Fatalf("chain state advanced after record failure: seq=%d prev=%q", emitter.chainSeq, emitter.chainPrevHash)
+	}
 }
 
 func TestEmitter_ErrorSeams(t *testing.T) {

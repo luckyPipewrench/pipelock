@@ -26,7 +26,7 @@ var (
 	readDir  = os.ReadDir
 	mkdirAll = os.MkdirAll
 	openFile = func(name string, flag int, perm os.FileMode) (writableFile, error) {
-		return os.OpenFile(name, flag, perm) //nolint:gosec // Store callers provide paths rooted in the configured contracts directory.
+		return os.OpenFile(filepath.Clean(name), flag, perm)
 	}
 	atomicWrite = atomicfile.Write
 	marshalJSON = json.Marshal

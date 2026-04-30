@@ -743,7 +743,7 @@ func TestReloadReturnsJournalAppendFailure(t *testing.T) {
 		if strings.HasSuffix(name, journalFilename) {
 			return nil, fmt.Errorf("forced open error")
 		}
-		return os.OpenFile(name, flag, perm) //nolint:gosec // Test seam delegates to the production path for non-journal files.
+		return os.OpenFile(filepath.Clean(name), flag, perm)
 	})
 	defer restore()
 	if _, err := st.Reload(testOptions(testRoster(signer), "", 0, 1)); err == nil {
@@ -768,7 +768,7 @@ func TestReloadPersistsAcceptedBeforeJournalAppend(t *testing.T) {
 		if strings.HasSuffix(name, journalFilename) {
 			return nil, fmt.Errorf("forced open error")
 		}
-		return os.OpenFile(name, flag, perm) //nolint:gosec // Test seam delegates to the production path for non-journal files.
+		return os.OpenFile(filepath.Clean(name), flag, perm)
 	})
 	defer restore()
 	if _, err := st.Reload(testOptions(testRoster(signer), "", 0, 1)); err == nil {

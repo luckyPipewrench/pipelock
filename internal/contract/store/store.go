@@ -39,6 +39,8 @@ type writableFile interface {
 
 const (
 	defaultMinSignatures = 1
+	dirPerm              = 0o750
+	filePerm             = 0o600
 
 	activeFilename  = "active.json"
 	historyDirname  = "history"
@@ -109,51 +111,54 @@ type JournalEntry struct {
 // Reload validates active.json and returns the accepted state. If validation
 // fails, the caller keeps its previous in-memory state.
 func (s Store) Reload(opts Options) (State, error) {
-	raw, err := readFile(s.activePath())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return State{}, fmt.Errorf("%w: %w", ErrNoActiveManifest, err)
+	var state State
+	err := s.withLock(func() error {
+		raw, err := readFile(s.activePath())
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("%w: %w", ErrNoActiveManifest, err)
+			}
+			return fmt.Errorf("%w: read active manifest: %w", ErrDecode, err)
 		}
-		return State{}, fmt.Errorf("%w: read active manifest: %w", ErrDecode, err)
-	}
-	state, err := s.ValidateEnvelope(raw, opts)
-	if err != nil {
-		// Rejections are audit events even when accepted-manifest persistence is
-		// disabled. Audit write failures do not hide the validation failure.
-		_ = s.appendJournal(JournalEntry{
-			Timestamp: now(opts),
-			Outcome:   "rejected",
-			Reason:    err.Error(),
-		})
-		return State{}, err
-	}
-	if !opts.ReadOnly {
-		encoded, encErr := encodeForStorage(state.Envelope)
-		if encErr != nil {
-			return State{}, encErr
+		accepted, err := s.ValidateEnvelope(raw, opts)
+		if err != nil {
+			// Rejections are audit events even when accepted-manifest persistence is
+			// disabled. Audit write failures do not hide the validation failure.
+			_ = s.appendJournalLocked(JournalEntry{
+				Timestamp: now(opts),
+				Outcome:   "rejected",
+				Reason:    err.Error(),
+			})
+			return err
 		}
-		path := s.manifestPath(state.ManifestHash)
-		if err := s.withLock(func() error {
+		if !opts.ReadOnly {
+			encoded, encErr := encodeForStorage(accepted.Envelope)
+			if encErr != nil {
+				return encErr
+			}
+			path := s.manifestPath(accepted.ManifestHash)
 			if journalErr := s.appendJournalLocked(JournalEntry{
 				Timestamp:         now(opts),
 				Outcome:           "accepted",
-				ManifestHash:      state.ManifestHash,
-				Generation:        state.Envelope.Body.Generation,
-				PriorManifestHash: state.Envelope.Body.PriorManifestHash,
-				SignerKeyIDs:      signerKeyIDs(state.Envelope.Signatures),
+				ManifestHash:      accepted.ManifestHash,
+				Generation:        accepted.Envelope.Body.Generation,
+				PriorManifestHash: accepted.Envelope.Body.PriorManifestHash,
+				SignerKeyIDs:      signerKeyIDs(accepted.Envelope.Signatures),
 			}); journalErr != nil {
 				return journalErr
 			}
 			if writeErr := writeOnce(path, encoded); writeErr != nil {
 				return writeErr
 			}
-			return nil
-		}); err != nil {
-			return State{}, err
+			accepted.AcceptedPath = path
 		}
-		state.AcceptedPath = path
+		accepted.JournalOutcome = "accepted"
+		state = accepted
+		return nil
+	})
+	if err != nil {
+		return State{}, err
 	}
-	state.JournalOutcome = "accepted"
 	return state, nil
 }
 
@@ -200,10 +205,10 @@ func (s Store) WriteActive(raw []byte, opts Options) (string, error) {
 			return err
 		}
 		manifestHash = state.ManifestHash
-		if err := mkdirAll(s.root, 0o700); err != nil {
+		if err := mkdirAll(s.root, dirPerm); err != nil {
 			return fmt.Errorf("create contract store root: %w", err)
 		}
-		if err := atomicWrite(s.activePath(), append(bytes.TrimSpace(raw), '\n'), 0o600); err != nil {
+		if err := atomicWrite(s.activePath(), append(bytes.TrimSpace(raw), '\n'), filePerm); err != nil {
 			return fmt.Errorf("write active manifest: %w", err)
 		}
 		return nil
@@ -270,10 +275,15 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 		if err := verifyManifestSignatures(env, opts); err != nil {
 			return State{}, err
 		}
+		contracts, err := s.loadContracts(env.Body.Selectors)
+		if err != nil {
+			return State{}, err
+		}
 		if env.Body.Generation > latest.Envelope.Body.Generation {
 			latest = State{
 				Envelope:     env,
 				ManifestHash: hash,
+				Contracts:    contracts,
 				AcceptedPath: filepath.Join(s.manifestDir(), entry.Name()),
 			}
 		}
@@ -409,7 +419,7 @@ func verifyEnvironment(got, want contract.Environment) error {
 
 func writeOnce(path string, data []byte) error {
 	path = filepath.Clean(path)
-	if err := mkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := mkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		return fmt.Errorf("create store directory: %w", err)
 	}
 	existing, err := readFile(path)
@@ -422,20 +432,14 @@ func writeOnce(path string, data []byte) error {
 	if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read write-once object: %w", err)
 	}
-	if err := atomicWrite(path, data, 0o600); err != nil {
+	if err := atomicWrite(path, data, filePerm); err != nil {
 		return fmt.Errorf("write write-once object: %w", err)
 	}
 	return nil
 }
 
-func (s Store) appendJournal(entry JournalEntry) error {
-	return s.withLock(func() error {
-		return s.appendJournalLocked(entry)
-	})
-}
-
 func (s Store) appendJournalLocked(entry JournalEntry) error {
-	if err := mkdirAll(s.root, 0o700); err != nil {
+	if err := mkdirAll(s.root, dirPerm); err != nil {
 		return fmt.Errorf("create contract store root: %w", err)
 	}
 	raw, err := marshalJSON(entry)
@@ -443,7 +447,7 @@ func (s Store) appendJournalLocked(entry JournalEntry) error {
 		return fmt.Errorf("marshal activation journal entry: %w", err)
 	}
 	raw = append(raw, '\n')
-	f, err := openFile(s.journalPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	f, err := openFile(s.journalPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, filePerm)
 	if err != nil {
 		return fmt.Errorf("open activation journal: %w", err)
 	}

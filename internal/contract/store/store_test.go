@@ -194,6 +194,9 @@ func TestLatestAcceptedUsesImmutableManifestHistory(t *testing.T) {
 	if latest.Envelope.Body.Generation != 2 {
 		t.Fatalf("latest generation = %d, want 2", latest.Envelope.Body.Generation)
 	}
+	if len(latest.Contracts) != 1 {
+		t.Fatalf("latest contracts len = %d, want 1", len(latest.Contracts))
+	}
 }
 
 func TestWriteActiveChecksExpectedPrior(t *testing.T) {
@@ -666,6 +669,25 @@ func TestLatestAcceptedRejectsForgedManifestWithMatchingFilename(t *testing.T) {
 	}
 }
 
+func TestLatestAcceptedRejectsMissingContractHistory(t *testing.T) {
+	st := New(t.TempDir())
+	signer := newTestSigner(t, "act-1", "alice")
+	env := signedManifest(t, "sha256:"+stringsOf("f", 64), 1, "sha256:genesis", testEnv(), signer)
+	hash, err := ActiveManifestHash(env.Body)
+	if err != nil {
+		t.Fatalf("ActiveManifestHash: %v", err)
+	}
+	if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(st.manifestPath(hash), mustJSON(t, env), 0o600); err != nil {
+		t.Fatalf("write accepted manifest: %v", err)
+	}
+	if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrContractHistory) {
+		t.Fatalf("LatestAccepted err = %v, want ErrContractHistory", err)
+	}
+}
+
 func TestValidateEnvelopeAllowsEmptyExpectedEnvironmentAndDefaultSignatureCount(t *testing.T) {
 	st := New(t.TempDir())
 	cHash := putTestContract(t, st)
@@ -727,33 +749,37 @@ func TestValidateEnvelopeRejectsBadRosterPublicKeyHex(t *testing.T) {
 }
 
 func TestWriteOncePropagatesFilesystemErrors(t *testing.T) {
-	restoreMkdir := replaceMkdirAll(func(string, os.FileMode) error {
-		return fmt.Errorf("forced mkdir error")
+	t.Run("mkdir", func(t *testing.T) {
+		restore := replaceMkdirAll(func(string, os.FileMode) error {
+			return fmt.Errorf("forced mkdir error")
+		})
+		t.Cleanup(restore)
+		if err := writeOnce(filepath.Join(t.TempDir(), "a", "object"), []byte("x")); err == nil {
+			t.Fatal("writeOnce returned nil with mkdir failure")
+		}
 	})
-	if err := writeOnce(filepath.Join(t.TempDir(), "a", "object"), []byte("x")); err == nil {
-		t.Fatal("writeOnce returned nil with mkdir failure")
-	}
-	restoreMkdir()
-
-	restoreRead := replaceReadFile(func(string) ([]byte, error) {
-		return nil, fmt.Errorf("forced read error")
+	t.Run("read", func(t *testing.T) {
+		restore := replaceReadFile(func(string) ([]byte, error) {
+			return nil, fmt.Errorf("forced read error")
+		})
+		t.Cleanup(restore)
+		if err := writeOnce(filepath.Join(t.TempDir(), "object"), []byte("x")); err == nil {
+			t.Fatal("writeOnce returned nil with read failure")
+		}
 	})
-	if err := writeOnce(filepath.Join(t.TempDir(), "object"), []byte("x")); err == nil {
-		t.Fatal("writeOnce returned nil with read failure")
-	}
-	restoreRead()
-
-	restoreRead = replaceReadFile(func(string) ([]byte, error) {
-		return nil, os.ErrNotExist
+	t.Run("atomic", func(t *testing.T) {
+		restoreRead := replaceReadFile(func(string) ([]byte, error) {
+			return nil, os.ErrNotExist
+		})
+		t.Cleanup(restoreRead)
+		restoreAtomic := replaceAtomicWrite(func(string, []byte, os.FileMode) error {
+			return fmt.Errorf("forced atomic write error")
+		})
+		t.Cleanup(restoreAtomic)
+		if err := writeOnce(filepath.Join(t.TempDir(), "object"), []byte("x")); err == nil {
+			t.Fatal("writeOnce returned nil with atomic write failure")
+		}
 	})
-	restoreAtomic := replaceAtomicWrite(func(string, []byte, os.FileMode) error {
-		return fmt.Errorf("forced atomic write error")
-	})
-	if err := writeOnce(filepath.Join(t.TempDir(), "object"), []byte("x")); err == nil {
-		t.Fatal("writeOnce returned nil with atomic write failure")
-	}
-	restoreAtomic()
-	restoreRead()
 }
 
 func TestEncodeForStoragePropagatesMarshalError(t *testing.T) {
@@ -764,27 +790,30 @@ func TestEncodeForStoragePropagatesMarshalError(t *testing.T) {
 	if _, err := encodeForStorage(struct{}{}); err == nil {
 		t.Fatal("encodeForStorage returned nil with marshal failure")
 	}
-	if err := New(t.TempDir()).appendJournal(JournalEntry{}); err == nil {
+	if err := appendJournalForTest(New(t.TempDir())); err == nil {
 		t.Fatal("appendJournal returned nil with marshal failure")
 	}
 }
 
 func TestAppendJournalPropagatesWriteAndCloseErrors(t *testing.T) {
-	restoreOpen := replaceOpenFile(func(string, int, os.FileMode) (writableFile, error) {
-		return fakeWritableFile{writeErr: fmt.Errorf("forced write error")}, nil
+	t.Run("write", func(t *testing.T) {
+		restore := replaceOpenFile(func(string, int, os.FileMode) (writableFile, error) {
+			return fakeWritableFile{writeErr: fmt.Errorf("forced write error")}, nil
+		})
+		t.Cleanup(restore)
+		if err := appendJournalForTest(New(t.TempDir())); err == nil {
+			t.Fatal("appendJournal returned nil with write failure")
+		}
 	})
-	if err := New(t.TempDir()).appendJournal(JournalEntry{}); err == nil {
-		t.Fatal("appendJournal returned nil with write failure")
-	}
-	restoreOpen()
-
-	restoreOpen = replaceOpenFile(func(string, int, os.FileMode) (writableFile, error) {
-		return fakeWritableFile{closeErr: fmt.Errorf("forced close error")}, nil
+	t.Run("close", func(t *testing.T) {
+		restore := replaceOpenFile(func(string, int, os.FileMode) (writableFile, error) {
+			return fakeWritableFile{closeErr: fmt.Errorf("forced close error")}, nil
+		})
+		t.Cleanup(restore)
+		if err := appendJournalForTest(New(t.TempDir())); err == nil {
+			t.Fatal("appendJournal returned nil with close failure")
+		}
 	})
-	if err := New(t.TempDir()).appendJournal(JournalEntry{}); err == nil {
-		t.Fatal("appendJournal returned nil with close failure")
-	}
-	restoreOpen()
 }
 
 func TestAppendJournalPropagatesMkdirError(t *testing.T) {
@@ -792,9 +821,15 @@ func TestAppendJournalPropagatesMkdirError(t *testing.T) {
 		return fmt.Errorf("forced mkdir error")
 	})
 	defer restore()
-	if err := New(t.TempDir()).appendJournal(JournalEntry{}); err == nil {
+	if err := appendJournalForTest(New(t.TempDir())); err == nil {
 		t.Fatal("appendJournal returned nil with mkdir failure")
 	}
+}
+
+func appendJournalForTest(st Store) error {
+	return st.withLock(func() error {
+		return st.appendJournalLocked(JournalEntry{Outcome: "forced"})
+	})
 }
 
 func TestLoadContractsRejectsStructurallyInvalidContract(t *testing.T) {

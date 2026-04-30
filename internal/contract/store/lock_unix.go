@@ -13,10 +13,10 @@ import (
 )
 
 func (s Store) withLock(fn func() error) error {
-	if err := os.MkdirAll(s.root, 0o700); err != nil {
+	if err := os.MkdirAll(s.root, dirPerm); err != nil {
 		return fmt.Errorf("create contract store root: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(s.root, ".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(s.root, ".lock"), os.O_CREATE|os.O_RDWR, filePerm)
 	if err != nil {
 		return fmt.Errorf("open contract store lock: %w", err)
 	}

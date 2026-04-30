@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 )
 
 // replayCmd returns the "policy replay" subcommand.
@@ -24,6 +25,7 @@ func replayCmd() *cobra.Command {
 		sessionsDir    string
 		reportPath     string
 		reportJSONPath string
+		contractPath   string
 		escrowPrivKey  string
 	)
 
@@ -46,7 +48,7 @@ Examples:
 			if sessionsDir == "" {
 				return fmt.Errorf("--sessions is required")
 			}
-			return runReplay(cmd, configFile, sessionsDir, reportPath, reportJSONPath, escrowPrivKey)
+			return runReplay(cmd, configFile, sessionsDir, reportPath, reportJSONPath, contractPath, escrowPrivKey)
 		},
 	}
 
@@ -54,13 +56,14 @@ Examples:
 	cmd.Flags().StringVarP(&sessionsDir, "sessions", "s", "", "capture sessions directory (required)")
 	cmd.Flags().StringVar(&reportPath, "report", "", "HTML report output path")
 	cmd.Flags().StringVar(&reportJSONPath, "report-json", "", "JSON report output path")
+	cmd.Flags().StringVar(&contractPath, "contract", "", "signed candidate contract YAML for contract-aware URL replay")
 	cmd.Flags().StringVar(&escrowPrivKey, "escrow-private-key", "", "X25519 hex private key for sidecar decryption")
 
 	return cmd
 }
 
 // runReplay is the testable core of the replay command.
-func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJSONPath, _ string) error {
+func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJSONPath, contractPath, escrowPrivKey string) error {
 	// Load and validate the candidate config.
 	cfg, err := config.Load(configFile)
 	if err != nil {
@@ -77,8 +80,24 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 		return fmt.Errorf("hashing config: %w", err)
 	}
 
+	escrowKey, err := decodeReplayEscrowPrivateKey(escrowPrivKey)
+	if err != nil {
+		return err
+	}
+	replayContract, err := loadReplayContract(contractPath)
+	if err != nil {
+		return err
+	}
+	if replayContract != nil {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: contract signature not verified; replay is diagnostic only")
+	}
+
 	// Replay all captured sessions.
-	records, dropped, skipped, originalHash, err := capture.LoadAndReplay(cfg, sessionsDir)
+	replayOpts := capture.ReplayOptions{EscrowPrivateKey: escrowKey}
+	if replayContract != nil {
+		replayOpts.Contract = replayContract
+	}
+	records, dropped, skipped, originalHash, err := capture.LoadAndReplayWithOptions(cfg, sessionsDir, replayOpts)
 	if err != nil {
 		return fmt.Errorf("replaying sessions: %w", err)
 	}
@@ -98,6 +117,7 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	_, _ = fmt.Fprintf(w, "Skipped:       %d\n", diff.Skipped)
 	_, _ = fmt.Fprintf(w, "Original hash: %s\n", diff.OriginalConfigHash)
 	_, _ = fmt.Fprintf(w, "Candidate hash:%s\n", diff.CandidateConfigHash)
+	writeCaptureSurfaceStatus(w, diff)
 
 	// Write HTML report if requested.
 	if reportPath != "" {
@@ -114,6 +134,53 @@ func runReplay(cmd *cobra.Command, configFile, sessionsDir, reportPath, reportJS
 	}
 
 	return nil
+}
+
+func loadReplayContract(path string) (*contract.Contract, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("loading contract: %w", err)
+	}
+	var env contract.ContractEnvelope
+	if err := contract.DecodeStrictYAML(data, &env); err != nil {
+		return nil, fmt.Errorf("loading contract: %w", err)
+	}
+	if err := env.Body.Validate(); err != nil {
+		return nil, fmt.Errorf("validating contract: %w", err)
+	}
+	return &env.Body, nil
+}
+
+func decodeReplayEscrowPrivateKey(value string) ([]byte, error) {
+	if value == "" {
+		return nil, nil
+	}
+	key, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --escrow-private-key: must be hex: %w", err)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("invalid --escrow-private-key: must be 64 hex chars (32 bytes)")
+	}
+	return key, nil
+}
+
+func writeCaptureSurfaceStatus(w io.Writer, diff *capture.DiffReport) {
+	if len(diff.CaptureSurfaces) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(w, "Capture surfaces:")
+	for _, surface := range capture.SortedCaptureSurfaces(diff.CaptureSurfaces) {
+		status := diff.CaptureSurfaces[surface]
+		value := status.Grade
+		if status.Sidecar {
+			value += " (sidecar)"
+		}
+		_, _ = fmt.Fprintf(w, "  %s: %s\n", surface, value)
+	}
 }
 
 // writeReport opens path and calls renderFn to write the DiffReport.

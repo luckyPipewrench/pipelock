@@ -23,6 +23,14 @@ const (
 	SurfaceToolScan   = "tool_scan"
 )
 
+// Capture-grade constants describe how much evidence is available for replay.
+const (
+	CaptureGradeNone    = "none"
+	CaptureGradeSummary = "summary"
+	CaptureGradePartial = "partial"
+	CaptureGradeFull    = "full"
+)
+
 // Outcome constants describe what the scanner decided to do with a request.
 const (
 	OutcomeClean      = "clean"
@@ -45,6 +53,7 @@ const (
 	KindToolPoison        = "tool_poison"
 	KindToolDrift         = "tool_drift"
 	KindToolPolicy        = "tool_policy"
+	KindContract          = "contract"
 	KindRedirect          = "redirect"
 )
 

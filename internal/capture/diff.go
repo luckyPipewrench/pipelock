@@ -3,6 +3,8 @@
 
 package capture
 
+import "sort"
+
 // reportVersion is the current DiffReport schema version.
 const reportVersion = 1
 
@@ -25,20 +27,28 @@ type ReplayedRecord struct {
 // DiffReport is the output of ComputeDiff. It summarises how a candidate
 // configuration differs from the original across all replayed records.
 type DiffReport struct {
-	ReportVersion       int         `json:"report_version"`
-	OriginalConfigHash  string      `json:"original_config_hash"`
-	CandidateConfigHash string      `json:"candidate_config_hash"`
-	TotalRecords        int         `json:"total_records"`
-	Replayed            int         `json:"replayed"`
-	NewBlocks           int         `json:"new_blocks"`
-	NewAllows           int         `json:"new_allows"`
-	Unchanged           int         `json:"unchanged"`
-	EvidenceOnly        int         `json:"evidence_only"`
-	SummaryOnly         int         `json:"summary_only"`
-	Dropped             int         `json:"dropped"`
-	Skipped             int         `json:"skipped"`
-	Changes             []DiffEntry `json:"changes"`
-	AllRecords          []DiffEntry `json:"all_records,omitempty"`
+	ReportVersion       int                      `json:"report_version"`
+	OriginalConfigHash  string                   `json:"original_config_hash"`
+	CandidateConfigHash string                   `json:"candidate_config_hash"`
+	TotalRecords        int                      `json:"total_records"`
+	Replayed            int                      `json:"replayed"`
+	NewBlocks           int                      `json:"new_blocks"`
+	NewAllows           int                      `json:"new_allows"`
+	Unchanged           int                      `json:"unchanged"`
+	EvidenceOnly        int                      `json:"evidence_only"`
+	SummaryOnly         int                      `json:"summary_only"`
+	Dropped             int                      `json:"dropped"`
+	Skipped             int                      `json:"skipped"`
+	Changes             []DiffEntry              `json:"changes"`
+	AllRecords          []DiffEntry              `json:"all_records,omitempty"`
+	CaptureSurfaces     map[string]SurfaceStatus `json:"capture_surfaces,omitempty"`
+}
+
+// SurfaceStatus summarizes the best capture fidelity observed for a replay
+// surface.
+type SurfaceStatus struct {
+	Grade   string `json:"grade"`
+	Sidecar bool   `json:"sidecar"`
 }
 
 // DiffEntry describes a single record in a DiffReport.
@@ -66,6 +76,7 @@ func ComputeDiff(records []ReplayedRecord, dropped, skipped int, originalHash, c
 		TotalRecords:        len(records),
 		Dropped:             dropped,
 		Skipped:             skipped,
+		CaptureSurfaces:     map[string]SurfaceStatus{},
 	}
 
 	for _, r := range records {
@@ -109,9 +120,50 @@ func ComputeDiff(records []ReplayedRecord, dropped, skipped int, originalHash, c
 		}
 
 		report.AllRecords = append(report.AllRecords, entry)
+		report.recordSurfaceStatus(r.Summary.Surface, r.Result.CaptureGrade, r.Result.SidecarDecrypted)
 	}
 
+	if len(report.CaptureSurfaces) == 0 {
+		report.CaptureSurfaces = nil
+	}
 	return report
+}
+
+func (d *DiffReport) recordSurfaceStatus(surface, grade string, sidecar bool) {
+	if surface == "" || grade == "" {
+		return
+	}
+	current := d.CaptureSurfaces[surface]
+	if captureGradeRank(grade) > captureGradeRank(current.Grade) {
+		current.Grade = grade
+	}
+	current.Sidecar = current.Sidecar || sidecar
+	d.CaptureSurfaces[surface] = current
+}
+
+func captureGradeRank(grade string) int {
+	switch grade {
+	case CaptureGradeNone:
+		return 0
+	case CaptureGradeSummary:
+		return 1
+	case CaptureGradePartial:
+		return 2
+	case CaptureGradeFull:
+		return 3
+	default:
+		return -1
+	}
+}
+
+// SortedCaptureSurfaces returns deterministic surface keys for presentation.
+func SortedCaptureSurfaces(status map[string]SurfaceStatus) []string {
+	keys := make([]string, 0, len(status))
+	for key := range status {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // isBlockAction returns true when action represents a blocking outcome.

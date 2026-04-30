@@ -6,6 +6,8 @@ package policy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // testBuildVersion and testBuildSHA are stub build metadata for fixture writers.
@@ -25,6 +28,8 @@ const (
 
 // testCaptureSession is the session ID used across replay integration tests.
 const testCaptureSession = "replay-test"
+
+const replayFakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
 
 // writeFixtureCaptures writes two URL verdicts to sessionsDir: one originally
 // allowed (api.example.com) and one originally blocked with a DLP finding
@@ -179,6 +184,84 @@ func TestReplayCmd_FullRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReplayCmd_EscrowSidecarRoundTrip(t *testing.T) {
+	sessionsDir := t.TempDir()
+	pub, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	w, err := capture.NewWriter(capture.WriterConfig{
+		RecorderConfig: recorder.Config{
+			Enabled:           true,
+			Dir:               sessionsDir,
+			MaxEntriesPerFile: 100,
+		},
+		QueueSize:       64,
+		BuildVersion:    testBuildVersion,
+		BuildSHA:        testBuildSHA,
+		EscrowPublicKey: pub,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+		Subsurface:      "forward",
+		Transport:       "forward",
+		SessionID:       testCaptureSession,
+		RequestID:       "req-sidecar",
+		ConfigHash:      "original-hash",
+		TransformKind:   capture.TransformRaw,
+		ScannerInput:    replayFakeAWSKey,
+		EffectiveAction: config.ActionAllow,
+		Outcome:         capture.OutcomeClean,
+		Request: capture.CaptureRequest{
+			Method: "POST",
+			URL:    "https://api.example.com/upload",
+		},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Writer.Close: %v", err)
+	}
+
+	configFile := writeCandidateConfig(t)
+	jsonPath := filepath.Join(t.TempDir(), "diff.json")
+	cmd := Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", sessionsDir,
+		"--escrow-private-key", hex.EncodeToString(priv[:]),
+		"--report-json", jsonPath,
+	})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nOutput: %s", err, buf.String())
+	}
+	output := buf.String()
+	if !strings.Contains(output, "dlp: full (sidecar)") {
+		t.Fatalf("stdout missing sidecar status:\n%s", output)
+	}
+
+	jsonData, err := os.ReadFile(filepath.Clean(jsonPath))
+	if err != nil {
+		t.Fatalf("ReadFile JSON: %v", err)
+	}
+	var report capture.DiffReport
+	if err := json.Unmarshal(jsonData, &report); err != nil {
+		t.Fatalf("Unmarshal DiffReport: %v", err)
+	}
+	status := report.CaptureSurfaces[capture.SurfaceDLP]
+	if status.Grade != capture.CaptureGradeFull || !status.Sidecar {
+		t.Fatalf("dlp status = %#v, want full sidecar", status)
+	}
+	if report.NewBlocks != 1 {
+		t.Fatalf("NewBlocks = %d, want 1", report.NewBlocks)
+	}
+}
+
 // TestReplayCmd_InvalidConfig verifies that a nonexistent config file produces
 // an error mentioning config loading.
 func TestReplayCmd_InvalidConfig(t *testing.T) {
@@ -223,6 +306,66 @@ func TestReplayCmd_EmptySessions(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "Records:       0") {
 		t.Errorf("expected 0 records in output, got:\n%s", output)
+	}
+}
+
+func TestReplayCmd_ContractWarning(t *testing.T) {
+	configFile := writeCandidateConfig(t)
+	contractPath := filepath.Join(t.TempDir(), "candidate.yaml")
+	contractYAML := `body:
+  schema_version: 1
+  contract_kind: behavioral_contract
+  contract_hash: ""
+  signer_key_id: test
+  key_purpose: contract-compile-signing
+  data_class_root: internal
+  field_data_classes: {}
+  selector:
+    selector_id: sha256:test
+  observation_window:
+    start: "2026-04-29T00:00:00Z"
+    end: "2026-04-29T01:00:00Z"
+    event_count: 0
+    session_count: 0
+    observation_window_root: sha256:test
+  compile:
+    pipelock_version: test
+    pipelock_build_sha: test
+    go_version: test
+    module_digest_root: sha256:test
+    compile_config_hash: sha256:test
+    inference_algorithm: test
+    normalization_algorithm: test
+  defaults:
+    fidelity: medium
+    confidence: {}
+    privacy:
+      default_data_class: internal
+      forbid_classes: []
+  rules: []
+signature: ed25519:test
+`
+	if err := os.WriteFile(contractPath, []byte(contractYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile contract: %v", err)
+	}
+
+	cmd := Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "contract signature not verified") {
+		t.Fatalf("stderr missing signature warning:\n%s", stderr.String())
 	}
 }
 
@@ -329,6 +472,9 @@ func TestCmdPolicy_ReplaySubcommand(t *testing.T) {
 	}
 	if !strings.Contains(help, "--report") {
 		t.Error("replay help missing --report flag")
+	}
+	if !strings.Contains(help, "--contract") {
+		t.Error("replay help missing --contract flag")
 	}
 }
 

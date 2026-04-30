@@ -22,6 +22,18 @@ var ErrContractSchemaVersion = errors.New("contract: unsupported schema_version"
 // ErrContractKind rejects contracts with non-enumerated contract_kind.
 var ErrContractKind = errors.New("contract: invalid contract_kind")
 
+// ErrCaptureGrade rejects rules that claim enforcement without sufficient
+// capture-surface evidence.
+var ErrCaptureGrade = errors.New("contract: invalid capture grade")
+
+// Capture-grade values describe how much scanner evidence backed a rule.
+const (
+	CaptureGradeNone    = "none"
+	CaptureGradeSummary = "summary"
+	CaptureGradePartial = "partial"
+	CaptureGradeFull    = "full"
+)
+
 // Contract is the typed signable body of a learn-and-lock policy contract.
 //
 // The struct's json tags ARE the projection that feeds JCS canonicalization.
@@ -88,18 +100,20 @@ type ContractDefaultsPrivacy struct {
 
 // Rule is a single learned rule.
 type Rule struct {
-	RuleID            string         `json:"rule_id"`
-	DisplayName       string         `json:"display_name"`
-	RuleKind          string         `json:"rule_kind"`
-	LifecycleState    string         `json:"lifecycle_state"`
-	Confidence        string         `json:"confidence"`
-	WilsonLower       string         `json:"wilson_lower"` // decimal string per JCS rule
-	Observation       map[string]any `json:"observation"`
-	Selector          map[string]any `json:"selector"`
-	Budgets           map[string]any `json:"budgets,omitempty"`
-	Rationale         map[string]any `json:"rationale"`
-	RecurringSupport  map[string]any `json:"recurring_support"`
-	OpportunityHealth map[string]any `json:"opportunity_health"`
+	RuleID               string         `json:"rule_id"`
+	DisplayName          string         `json:"display_name"`
+	RuleKind             string         `json:"rule_kind"`
+	LifecycleState       string         `json:"lifecycle_state"`
+	RequiredCaptureGrade string         `json:"required_capture_grade,omitempty"`
+	ObservedCaptureGrade string         `json:"observed_capture_grade,omitempty"`
+	Confidence           string         `json:"confidence"`
+	WilsonLower          string         `json:"wilson_lower"` // decimal string per JCS rule
+	Observation          map[string]any `json:"observation"`
+	Selector             map[string]any `json:"selector"`
+	Budgets              map[string]any `json:"budgets,omitempty"`
+	Rationale            map[string]any `json:"rationale"`
+	RecurringSupport     map[string]any `json:"recurring_support"`
+	OpportunityHealth    map[string]any `json:"opportunity_health"`
 }
 
 // ContractEnvelope is the unsigned outer wrapper carrying body + detached signature.
@@ -140,11 +154,75 @@ func (c Contract) Validate() error {
 	if !ok {
 		return fmt.Errorf("contract body is not a map after marshal+parse")
 	}
+	if err := validateRuleCaptureGrades(c.Rules); err != nil {
+		return err
+	}
 	fcls := make(map[string]any, len(c.FieldDataClasses))
 	for k, v := range c.FieldDataClasses {
 		fcls[k] = v
 	}
 	return ValidateDataClassCoverage(bodyMap, fcls)
+}
+
+func validateRuleCaptureGrades(rules []Rule) error {
+	for i, rule := range rules {
+		if rule.RuleKind == "" {
+			return fmt.Errorf("%w: rules[%d] missing rule_kind", ErrCaptureGrade, i)
+		}
+		required, observed := effectiveCaptureGrades(rule)
+		if required == "" {
+			return fmt.Errorf("%w: rules[%d] missing required_capture_grade", ErrCaptureGrade, i)
+		}
+		if observed == "" {
+			return fmt.Errorf("%w: rules[%d] missing observed_capture_grade", ErrCaptureGrade, i)
+		}
+		if !validCaptureGrade(required) {
+			return fmt.Errorf("%w: rules[%d] invalid required_capture_grade %q", ErrCaptureGrade, i, required)
+		}
+		if !validCaptureGrade(observed) {
+			return fmt.Errorf("%w: rules[%d] invalid observed_capture_grade %q", ErrCaptureGrade, i, observed)
+		}
+		if rule.LifecycleState == "enforce" && compareCaptureGrade(observed, required) < 0 {
+			return fmt.Errorf(
+				"%w: rules[%d] enforce requires %s evidence, observed %s",
+				ErrCaptureGrade,
+				i,
+				required,
+				observed,
+			)
+		}
+	}
+	return nil
+}
+
+func effectiveCaptureGrades(rule Rule) (string, string) {
+	if rule.LifecycleState == "capture_only" && rule.RequiredCaptureGrade == "" && rule.ObservedCaptureGrade == "" {
+		return CaptureGradeFull, CaptureGradeFull
+	}
+	return rule.RequiredCaptureGrade, rule.ObservedCaptureGrade
+}
+
+func validCaptureGrade(grade string) bool {
+	return captureGradeRank(grade) >= 0
+}
+
+func compareCaptureGrade(observed, required string) int {
+	return captureGradeRank(observed) - captureGradeRank(required)
+}
+
+func captureGradeRank(grade string) int {
+	switch grade {
+	case CaptureGradeNone:
+		return 0
+	case CaptureGradeSummary:
+		return 1
+	case CaptureGradePartial:
+		return 2
+	case CaptureGradeFull:
+		return 3
+	default:
+		return -1
+	}
 }
 
 // SignablePreimage returns the JCS-canonicalized bytes for this Rule.

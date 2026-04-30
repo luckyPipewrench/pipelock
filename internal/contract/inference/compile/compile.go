@@ -283,12 +283,14 @@ func buildRule(key string, counts aggregate.RuleCounts, confidence inference.Con
 	}
 
 	return contract.Rule{
-		RuleID:         ruleID(key),
-		DisplayName:    displayName(parts),
-		RuleKind:       ruleKind,
-		LifecycleState: "capture_only",
-		Confidence:     confidence.String(),
-		WilsonLower:    fmt.Sprintf("%.6f", wilson),
+		RuleID:               ruleID(key),
+		DisplayName:          displayName(parts),
+		RuleKind:             ruleKind,
+		LifecycleState:       "capture_only",
+		RequiredCaptureGrade: contract.CaptureGradeFull,
+		ObservedCaptureGrade: contract.CaptureGradeFull,
+		Confidence:           confidence.String(),
+		WilsonLower:          fmt.Sprintf("%.6f", wilson),
 		Observation: map[string]any{
 			"sessions_with_opportunity": counts.Opportunities,
 			"sessions_observed":         counts.Sessions,
@@ -421,6 +423,7 @@ func ReviewMarkdown(c contract.Contract, aggs aggregate.Aggregates, cfg CompileC
 	writeCounts(&b, "Lifecycle", lifecycle)
 	writeCounts(&b, "Confidence", confidence)
 	writeClassificationDebt(&b, aggs)
+	writeCaptureFidelity(&b, c)
 	writeThinSamples(&b, c, cfg.Floors.Resolved())
 	writeOpportunityHealth(&b, c)
 	writeTailCoverage(&b, aggs, cfg)
@@ -459,6 +462,26 @@ func writeClassificationDebt(b *strings.Builder, aggs aggregate.Aggregates) {
 	}
 	for _, key := range aggs.ActionClasses() {
 		_, _ = fmt.Fprintf(b, "- %s: %d\n", key, aggs.ActionClassHistogram[key])
+	}
+	_, _ = fmt.Fprintln(b)
+}
+
+func writeCaptureFidelity(b *strings.Builder, c contract.Contract) {
+	_, _ = fmt.Fprintln(b, "## Capture Fidelity")
+	_, _ = fmt.Fprintln(b)
+	if len(c.Rules) == 0 {
+		_, _ = fmt.Fprintln(b, "- none")
+		_, _ = fmt.Fprintln(b)
+		return
+	}
+	for _, rule := range c.Rules {
+		_, _ = fmt.Fprintf(
+			b,
+			"- %s: observed %s / required %s\n",
+			rule.RuleID,
+			rule.ObservedCaptureGrade,
+			rule.RequiredCaptureGrade,
+		)
 	}
 	_, _ = fmt.Fprintln(b)
 }

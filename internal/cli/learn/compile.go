@@ -406,7 +406,10 @@ func decodeOptionalHex(value string) ([]byte, error) {
 	}
 	out, err := hex.DecodeString(strings.TrimSpace(value))
 	if err != nil {
-		return nil, fmt.Errorf("%w: --escrow-private-key must be hex", errCompileInput)
+		return nil, fmt.Errorf("%w: --escrow-private-key must be hex: %w", errCompileInput, err)
+	}
+	if len(out) != 32 {
+		return nil, fmt.Errorf("%w: --escrow-private-key must be 64 hex chars (32 bytes)", errCompileInput)
 	}
 	return out, nil
 }

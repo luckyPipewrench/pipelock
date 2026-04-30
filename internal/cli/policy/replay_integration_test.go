@@ -6,15 +6,22 @@ package policy
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // testBuildVersion and testBuildSHA are stub build metadata for fixture writers.
@@ -25,6 +32,8 @@ const (
 
 // testCaptureSession is the session ID used across replay integration tests.
 const testCaptureSession = "replay-test"
+
+const replayFakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
 
 // writeFixtureCaptures writes two URL verdicts to sessionsDir: one originally
 // allowed (api.example.com) and one originally blocked with a DLP finding
@@ -179,6 +188,84 @@ func TestReplayCmd_FullRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReplayCmd_EscrowSidecarRoundTrip(t *testing.T) {
+	sessionsDir := t.TempDir()
+	pub, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	w, err := capture.NewWriter(capture.WriterConfig{
+		RecorderConfig: recorder.Config{
+			Enabled:           true,
+			Dir:               sessionsDir,
+			MaxEntriesPerFile: 100,
+		},
+		QueueSize:       64,
+		BuildVersion:    testBuildVersion,
+		BuildSHA:        testBuildSHA,
+		EscrowPublicKey: pub,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+		Subsurface:      "forward",
+		Transport:       "forward",
+		SessionID:       testCaptureSession,
+		RequestID:       "req-sidecar",
+		ConfigHash:      "original-hash",
+		TransformKind:   capture.TransformRaw,
+		ScannerInput:    replayFakeAWSKey,
+		EffectiveAction: config.ActionAllow,
+		Outcome:         capture.OutcomeClean,
+		Request: capture.CaptureRequest{
+			Method: "POST",
+			URL:    "https://api.example.com/upload",
+		},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Writer.Close: %v", err)
+	}
+
+	configFile := writeCandidateConfig(t)
+	jsonPath := filepath.Join(t.TempDir(), "diff.json")
+	cmd := Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", sessionsDir,
+		"--escrow-private-key", hex.EncodeToString(priv[:]),
+		"--report-json", jsonPath,
+	})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nOutput: %s", err, buf.String())
+	}
+	output := buf.String()
+	if !strings.Contains(output, "dlp: full (sidecar)") {
+		t.Fatalf("stdout missing sidecar status:\n%s", output)
+	}
+
+	jsonData, err := os.ReadFile(filepath.Clean(jsonPath))
+	if err != nil {
+		t.Fatalf("ReadFile JSON: %v", err)
+	}
+	var report capture.DiffReport
+	if err := json.Unmarshal(jsonData, &report); err != nil {
+		t.Fatalf("Unmarshal DiffReport: %v", err)
+	}
+	status := report.CaptureSurfaces[capture.SurfaceDLP]
+	if status.Grade != capture.CaptureGradeFull || !status.Sidecar {
+		t.Fatalf("dlp status = %#v, want full sidecar", status)
+	}
+	if report.NewBlocks != 1 {
+		t.Fatalf("NewBlocks = %d, want 1", report.NewBlocks)
+	}
+}
+
 // TestReplayCmd_InvalidConfig verifies that a nonexistent config file produces
 // an error mentioning config loading.
 func TestReplayCmd_InvalidConfig(t *testing.T) {
@@ -224,6 +311,130 @@ func TestReplayCmd_EmptySessions(t *testing.T) {
 	if !strings.Contains(output, "Records:       0") {
 		t.Errorf("expected 0 records in output, got:\n%s", output)
 	}
+}
+
+func TestReplayCmd_ContractVerification(t *testing.T) {
+	configFile := writeCandidateConfig(t)
+	contractPath, publicKey := writeSignedReplayContract(t)
+
+	cmd := Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+		"--contract-key", publicKey,
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stderr.String(), "unverified contract") {
+		t.Fatalf("stderr has unexpected unverified warning:\n%s", stderr.String())
+	}
+
+	cmd = Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+		"--contract-key", strings.Repeat("00", ed25519.PublicKeySize),
+	})
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+		t.Fatalf("expected signature verification error, got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	cmd = Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+	})
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--contract-key is required") {
+		t.Fatalf("expected contract-key error, got %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+
+	cmd = Cmd()
+	cmd.SetArgs([]string{
+		"replay",
+		"--config", configFile,
+		"--sessions", t.TempDir(),
+		"--contract", contractPath,
+		"--allow-unsigned-contract-for-diagnostics",
+	})
+	stdout.Reset()
+	stderr.Reset()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute unsafe diagnostic: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "unverified contract accepted") {
+		t.Fatalf("stderr missing unsafe contract warning:\n%s", stderr.String())
+	}
+}
+
+func writeSignedReplayContract(t *testing.T) (string, string) {
+	t.Helper()
+	seed := sha256.Sum256([]byte("policy replay contract verification test"))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	body := contract.Contract{
+		SchemaVersion:     contract.SchemaVersionContract,
+		ContractKind:      contract.ContractKind,
+		ContractHash:      "",
+		SignerKeyID:       "test",
+		KeyPurpose:        "contract-compile-signing",
+		DataClassRoot:     "internal",
+		FieldDataClasses:  map[string]string{},
+		Selector:          contract.Selector{SelectorID: "sha256:test"},
+		ObservationWindow: contract.ObservationWindow{Start: time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC), End: time.Date(2026, 4, 29, 1, 0, 0, 0, time.UTC), ObservationWindowRoot: "sha256:test"},
+		Compile: contract.ContractCompile{
+			PipelockVersion:        "test",
+			PipelockBuildSHA:       "test",
+			GoVersion:              "test",
+			ModuleDigestRoot:       "sha256:test",
+			CompileConfigHash:      "sha256:test",
+			InferenceAlgorithm:     "test",
+			NormalizationAlgorithm: "test",
+		},
+		Defaults: contract.ContractDefaults{
+			Fidelity:   "medium",
+			Confidence: map[string]any{},
+			Privacy:    contract.ContractDefaultsPrivacy{DefaultDataClass: contract.DataClassInternal, ForbidClasses: []contract.DataClass{}},
+		},
+		Rules: []contract.Rule{},
+	}
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage: %v", err)
+	}
+	env := contract.ContractEnvelope{
+		Body:      body,
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal contract: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "candidate.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile contract: %v", err)
+	}
+	return path, hex.EncodeToString(priv.Public().(ed25519.PublicKey))
 }
 
 // TestReplayCmd_HTMLOnly verifies replay works with only --report (no JSON).
@@ -329,6 +540,9 @@ func TestCmdPolicy_ReplaySubcommand(t *testing.T) {
 	}
 	if !strings.Contains(help, "--report") {
 		t.Error("replay help missing --report flag")
+	}
+	if !strings.Contains(help, "--contract") {
+		t.Error("replay help missing --contract flag")
 	}
 }
 

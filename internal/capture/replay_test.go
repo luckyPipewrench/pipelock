@@ -4,12 +4,18 @@
 package capture
 
 import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"golang.org/x/crypto/nacl/box"
 )
 
 // loadReplaySessionID is the session ID used in LoadAndReplay tests.
@@ -95,6 +101,143 @@ func TestReplayURLVerdict_ScannerInput(t *testing.T) {
 	result := re.ReplayRecord(summary, "https://evil.com/exfil")
 	if result.CandidateAction != config.ActionBlock {
 		t.Fatalf("expected block from scannerInput URL, got %q", result.CandidateAction)
+	}
+}
+
+func TestReplayContractURL(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.ScanEnv = false
+	sc := newTestScanner(t, nil)
+	re := NewContractReplayEngine(cfg, sc, contract.Contract{
+		Rules: []contract.Rule{{
+			RuleID:               "r-api",
+			RuleKind:             "http_destination",
+			LifecycleState:       "enforce",
+			RequiredCaptureGrade: contract.CaptureGradeFull,
+			ObservedCaptureGrade: contract.CaptureGradeFull,
+			Selector: map[string]any{
+				"host": map[string]any{"value": "api.example.com"},
+				"paths": []any{
+					map[string]any{"value": "/repos/foo"},
+				},
+				"methods": []any{"GET"},
+			},
+		}},
+	})
+
+	allowed := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceURL,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			Method: "get",
+			URL:    "https://API.EXAMPLE.COM./Repos/Foo",
+		},
+	}, "")
+	if allowed.Changed || allowed.CandidateAction != config.ActionAllow {
+		t.Fatalf("allowed result = changed %v action %q, want false/allow", allowed.Changed, allowed.CandidateAction)
+	}
+
+	blocked := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceURL,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			Method: "GET",
+			URL:    "https://api.example.com/repos/bar",
+		},
+	}, "")
+	if !blocked.Changed || blocked.CandidateAction != config.ActionBlock {
+		t.Fatalf("blocked result = changed %v action %q, want true/block", blocked.Changed, blocked.CandidateAction)
+	}
+	if len(blocked.CandidateFindings) != 1 || blocked.CandidateFindings[0].Kind != KindContract {
+		t.Fatalf("contract findings = %#v, want one contract finding", blocked.CandidateFindings)
+	}
+
+	otherHost := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceURL,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			Method: "GET",
+			URL:    "https://evil.example.com/repos/foo",
+		},
+	}, "")
+	if otherHost.Changed || otherHost.CandidateAction != config.ActionAllow {
+		t.Fatalf("other host result = changed %v action %q, want scanner fallback allow", otherHost.Changed, otherHost.CandidateAction)
+	}
+
+	for _, rawURL := range []string{
+		"https://api.example.com/repos/foo/",
+		"https://api.example.com/repos%2ffoo",
+	} {
+		result := re.ReplayRecord(CaptureSummary{
+			Surface:         SurfaceURL,
+			EffectiveAction: config.ActionAllow,
+			Request: CaptureRequest{
+				Method: "GET",
+				URL:    rawURL,
+			},
+		}, "")
+		if result.Changed || result.CandidateAction != config.ActionAllow {
+			t.Fatalf("%s result = changed %v action %q, want non-canonical scanner fallback allow", rawURL, result.Changed, result.CandidateAction)
+		}
+	}
+}
+
+func TestReplayContractURL_FallsBackWhenCaptureGradeInsufficient(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.ScanEnv = false
+	sc := newTestScanner(t, nil)
+	re := NewContractReplayEngine(cfg, sc, contract.Contract{
+		Rules: []contract.Rule{{
+			RuleID:               "r-response",
+			RuleKind:             "http_destination",
+			LifecycleState:       "enforce",
+			RequiredCaptureGrade: contract.CaptureGradeFull,
+			ObservedCaptureGrade: contract.CaptureGradeFull,
+			Selector: map[string]any{
+				"host": map[string]any{"value": "api.example.com"},
+			},
+		}},
+	})
+
+	result := re.replayContractURL(CaptureSummary{
+		Surface:         SurfaceResponse,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			Method: "GET",
+			URL:    "https://api.example.com/repos/bar",
+		},
+	}, "")
+	if result.Changed || result.CandidateAction != config.ActionAllow {
+		t.Fatalf("result = changed %v action %q, want scanner fallback allow", result.Changed, result.CandidateAction)
+	}
+}
+
+func TestReplayContractURL_NoEnforceRulesAllows(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.ScanEnv = false
+	sc := newTestScanner(t, nil)
+	re := NewContractReplayEngine(cfg, sc, contract.Contract{
+		Rules: []contract.Rule{{
+			RuleID:         "r-capture",
+			RuleKind:       "http_destination",
+			LifecycleState: "capture_only",
+			Selector:       map[string]any{"host": map[string]any{"value": "api.example.com"}},
+		}},
+	})
+
+	result := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceURL,
+		EffectiveAction: config.ActionAllow,
+		Request:         CaptureRequest{Method: "GET", URL: "https://other.example.com"},
+	}, "")
+	if result.Changed || result.CandidateAction != config.ActionAllow {
+		t.Fatalf("result = changed %v action %q, want false/allow", result.Changed, result.CandidateAction)
 	}
 }
 
@@ -469,6 +612,141 @@ func TestLoadAndReplay(t *testing.T) {
 	}
 	if r.Result.CandidateAction != config.ActionBlock {
 		t.Fatalf("expected CandidateAction=%q, got %q", config.ActionBlock, r.Result.CandidateAction)
+	}
+}
+
+func TestLoadAndReplayWithOptions_DecryptsSidecar(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	w, err := NewWriter(WriterConfig{
+		RecorderConfig: recorder.Config{
+			Enabled:           true,
+			Dir:               dir,
+			MaxEntriesPerFile: 100,
+		},
+		QueueSize:       64,
+		BuildVersion:    "test",
+		BuildSHA:        "sha",
+		EscrowPublicKey: pub,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	w.ObserveDLPVerdict(context.Background(), &DLPVerdictRecord{
+		Subsurface:      "forward",
+		Transport:       "forward",
+		SessionID:       loadReplaySessionID,
+		RequestID:       "req-sidecar",
+		ConfigHash:      loadReplayOriginalHash,
+		TransformKind:   TransformRaw,
+		ScannerInput:    fakeAWSKey,
+		EffectiveAction: config.ActionAllow,
+		Outcome:         OutcomeClean,
+		Request: CaptureRequest{
+			Method: "POST",
+			URL:    "https://api.example.com/upload",
+		},
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.ScanEnv = false
+
+	withoutEscrow, _, _, _, err := LoadAndReplay(cfg, dir)
+	if err != nil {
+		t.Fatalf("LoadAndReplay without escrow: %v", err)
+	}
+	if len(withoutEscrow) != 1 {
+		t.Fatalf("without escrow records = %d, want 1", len(withoutEscrow))
+	}
+	if !withoutEscrow[0].Result.SummaryOnly {
+		t.Fatal("without escrow should be summary-only")
+	}
+	if withoutEscrow[0].Result.CaptureGrade != CaptureGradePartial {
+		t.Fatalf("without escrow grade = %q, want %q", withoutEscrow[0].Result.CaptureGrade, CaptureGradePartial)
+	}
+
+	withEscrow, _, _, _, err := LoadAndReplayWithOptions(cfg, dir, ReplayOptions{EscrowPrivateKey: priv[:]})
+	if err != nil {
+		t.Fatalf("LoadAndReplayWithOptions: %v", err)
+	}
+	if len(withEscrow) != 1 {
+		t.Fatalf("with escrow records = %d, want 1", len(withEscrow))
+	}
+	got := withEscrow[0].Result
+	if got.SummaryOnly {
+		t.Fatal("with escrow should replay full payload")
+	}
+	if !got.Changed || got.CandidateAction != config.ActionBlock {
+		t.Fatalf("with escrow result changed/action = %v/%q, want true/%q", got.Changed, got.CandidateAction, config.ActionBlock)
+	}
+	if got.CaptureGrade != CaptureGradeFull || !got.SidecarDecrypted {
+		t.Fatalf("with escrow grade/sidecar = %q/%v, want %q/true", got.CaptureGrade, got.SidecarDecrypted, CaptureGradeFull)
+	}
+}
+
+func TestDecryptPayloadSidecar_RequiresPayloadSHA256(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	ciphertext, err := box.SealAnonymous(nil, []byte("payload"), pub, rand.Reader)
+	if err != nil {
+		t.Fatalf("SealAnonymous: %v", err)
+	}
+	const payloadRef = "000000.payload.enc"
+	if err := os.WriteFile(filepath.Join(dir, payloadRef), ciphertext, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	key, err := decodeReplayEscrowPrivateKey(priv[:])
+	if err != nil {
+		t.Fatalf("decodeReplayEscrowPrivateKey: %v", err)
+	}
+	_, err = decryptPayloadSidecar(dir, CaptureSummary{PayloadRef: payloadRef}, key)
+	if !errors.Is(err, ErrSidecarDecrypt) {
+		t.Fatalf("decryptPayloadSidecar error = %v, want ErrSidecarDecrypt", err)
+	}
+}
+
+func TestReplayEscrowAndPayloadRefValidation(t *testing.T) {
+	if key, err := decodeReplayEscrowPrivateKey(nil); err != nil || key != nil {
+		t.Fatalf("empty replay key = %v/%v, want nil/nil", key, err)
+	}
+	if _, err := decodeReplayEscrowPrivateKey([]byte("short")); !errors.Is(err, ErrSidecarDecrypt) {
+		t.Fatalf("short replay key error = %v, want ErrSidecarDecrypt", err)
+	}
+	for _, ref := range []string{"", "/tmp/payload", "../payload", "nested/payload", "payload..json"} {
+		if safePayloadRef(ref) {
+			t.Fatalf("safePayloadRef(%q) = true, want false", ref)
+		}
+	}
+	if !safePayloadRef("payload.json") {
+		t.Fatal("safePayloadRef(payload.json) = false, want true")
+	}
+}
+
+func TestDecryptPayloadSidecarRejectsUnsafeInputs(t *testing.T) {
+	seed := [32]byte{1}
+	key, err := decodeReplayEscrowPrivateKey(seed[:])
+	if err != nil {
+		t.Fatalf("decodeReplayEscrowPrivateKey: %v", err)
+	}
+	if _, err := decryptPayloadSidecar("", CaptureSummary{PayloadRef: "payload.enc"}, key); !errors.Is(err, ErrSidecarDecrypt) {
+		t.Fatalf("empty session dir error = %v, want ErrSidecarDecrypt", err)
+	}
+	if _, err := decryptPayloadSidecar(t.TempDir(), CaptureSummary{PayloadRef: "../payload.enc"}, key); !errors.Is(err, ErrSidecarDecrypt) {
+		t.Fatalf("unsafe ref error = %v, want ErrSidecarDecrypt", err)
+	}
+	if _, err := decryptPayloadSidecar(t.TempDir(), CaptureSummary{PayloadRef: "missing.enc"}, key); !errors.Is(err, ErrSidecarDecrypt) {
+		t.Fatalf("missing sidecar error = %v, want ErrSidecarDecrypt", err)
 	}
 }
 

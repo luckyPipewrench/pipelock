@@ -115,6 +115,135 @@ func TestContract_Validate_RejectsRegulatedDataClassRoot(t *testing.T) {
 	}
 }
 
+func TestContract_Validate_RejectsEnforceWithInsufficientCaptureGrade(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-response",
+			RuleKind:             "response_injection",
+			LifecycleState:       "enforce",
+			RequiredCaptureGrade: CaptureGradeFull,
+			ObservedCaptureGrade: CaptureGradePartial,
+			Confidence:           "stable",
+			WilsonLower:          "0.99",
+			Observation:          map[string]any{},
+			Selector:             map[string]any{},
+			Rationale:            map[string]any{},
+			RecurringSupport:     map[string]any{},
+			OpportunityHealth:    map[string]any{},
+		}},
+	}
+	if err := c.Validate(); !errors.Is(err, ErrCaptureGrade) {
+		t.Errorf("got %v, want ErrCaptureGrade", err)
+	}
+}
+
+func TestContract_Validate_AcceptsEnforceWithFullCaptureGrade(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-url",
+			RuleKind:             "http_destination",
+			LifecycleState:       "enforce",
+			RequiredCaptureGrade: CaptureGradeFull,
+			ObservedCaptureGrade: CaptureGradeFull,
+			Confidence:           "stable",
+			WilsonLower:          "0.99",
+			Observation:          map[string]any{},
+			Selector:             map[string]any{},
+			Rationale:            map[string]any{},
+			RecurringSupport:     map[string]any{},
+			OpportunityHealth:    map[string]any{},
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("got %v, want nil", err)
+	}
+}
+
+func TestContract_Validate_BackfillsV1CaptureOnlyCaptureGrade(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:         "r-missing",
+			RuleKind:       "http_destination",
+			LifecycleState: "capture_only",
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("got %v, want nil", err)
+	}
+}
+
+func TestContract_Validate_RejectsEnforceMissingCaptureGrade(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:         "r-missing",
+			RuleKind:       "http_destination",
+			LifecycleState: "enforce",
+		}},
+	}
+	if err := c.Validate(); !errors.Is(err, ErrCaptureGrade) {
+		t.Errorf("got %v, want ErrCaptureGrade", err)
+	}
+}
+
+func TestContract_Validate_RejectsInvalidCaptureGrade(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-invalid",
+			RuleKind:             "http_destination",
+			LifecycleState:       "capture_only",
+			RequiredCaptureGrade: "complete",
+			ObservedCaptureGrade: CaptureGradeFull,
+		}},
+	}
+	if err := c.Validate(); !errors.Is(err, ErrCaptureGrade) {
+		t.Errorf("got %v, want ErrCaptureGrade", err)
+	}
+}
+
+func TestContract_Validate_RejectsMissingRuleKind(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-missing-kind",
+			LifecycleState:       "capture_only",
+			RequiredCaptureGrade: CaptureGradeFull,
+			ObservedCaptureGrade: CaptureGradeFull,
+		}},
+	}
+	if err := c.Validate(); !errors.Is(err, ErrCaptureGrade) {
+		t.Errorf("got %v, want ErrCaptureGrade", err)
+	}
+}
+
 func TestContract_SignablePreimage_KeyOrderIndependent(t *testing.T) {
 	t.Parallel()
 	a := Contract{SchemaVersion: 1, ContractKind: "behavioral_contract", DataClassRoot: "internal", FieldDataClasses: map[string]string{"a": "public", "b": "internal"}}

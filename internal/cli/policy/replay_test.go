@@ -38,3 +38,26 @@ func TestReplayCmd_RequiresSessions(t *testing.T) {
 		t.Errorf("expected error to mention --sessions, got: %v", err)
 	}
 }
+
+func TestDecodeReplayEscrowPrivateKey(t *testing.T) {
+	empty, err := decodeReplayEscrowPrivateKey("")
+	if err != nil {
+		t.Fatalf("decodeReplayEscrowPrivateKey empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("empty key len = %d, want 0", len(empty))
+	}
+	key, err := decodeReplayEscrowPrivateKey(strings.Repeat("0a", 32))
+	if err != nil {
+		t.Fatalf("decodeReplayEscrowPrivateKey: %v", err)
+	}
+	if len(key) != 32 {
+		t.Fatalf("key len = %d, want 32", len(key))
+	}
+	if _, err := decodeReplayEscrowPrivateKey("not-hex"); err == nil {
+		t.Fatal("expected invalid hex error")
+	}
+	if _, err := decodeReplayEscrowPrivateKey("abcd"); err == nil {
+		t.Fatal("expected invalid length error")
+	}
+}

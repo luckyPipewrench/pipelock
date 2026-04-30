@@ -73,8 +73,18 @@ func TestCompile_DeterministicRecompile(t *testing.T) {
 	if first.Contract.Rules[0].LifecycleState != "capture_only" {
 		t.Fatalf("LifecycleState = %q, want capture_only", first.Contract.Rules[0].LifecycleState)
 	}
+	if first.Contract.Rules[0].RequiredCaptureGrade != contract.CaptureGradeFull ||
+		first.Contract.Rules[0].ObservedCaptureGrade != contract.CaptureGradeFull {
+		t.Fatalf("capture grades = %q/%q, want full/full",
+			first.Contract.Rules[0].RequiredCaptureGrade,
+			first.Contract.Rules[0].ObservedCaptureGrade,
+		)
+	}
 	if !strings.Contains(first.Review, "Classification Debt") {
 		t.Fatalf("review missing Classification Debt:\n%s", first.Review)
+	}
+	if !strings.Contains(first.Review, "Capture Fidelity") {
+		t.Fatalf("review missing Capture Fidelity:\n%s", first.Review)
 	}
 }
 
@@ -176,6 +186,16 @@ func TestReviewMarkdown_Badges(t *testing.T) {
 	}
 }
 
+func TestReviewMarkdown_CaptureFidelityNoRules(t *testing.T) {
+	t.Parallel()
+	c := baseReviewContract()
+	c.Rules = nil
+	review := ReviewMarkdown(c, emptyAggregates(), CompileConfig{})
+	if !strings.Contains(review, "## Capture Fidelity\n\n- none") {
+		t.Fatalf("review missing empty capture fidelity:\n%s", review)
+	}
+}
+
 func TestHelpersCoverEdgeBranches(t *testing.T) {
 	t.Parallel()
 	if IntToUint64(-1) != 0 {
@@ -219,11 +239,14 @@ func baseReviewContract() contract.Contract {
 			EventCount: 1,
 		},
 		Rules: []contract.Rule{{
-			RuleID:         "r-one",
-			LifecycleState: "capture_only",
-			Confidence:     "never_confirmed",
-			Observation:    map[string]any{},
-			Budgets:        map[string]any{},
+			RuleID:               "r-one",
+			RuleKind:             "http_destination",
+			LifecycleState:       "capture_only",
+			RequiredCaptureGrade: contract.CaptureGradeFull,
+			ObservedCaptureGrade: contract.CaptureGradeFull,
+			Confidence:           "never_confirmed",
+			Observation:          map[string]any{},
+			Budgets:              map[string]any{},
 		}},
 	}
 }

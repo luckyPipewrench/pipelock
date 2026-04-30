@@ -6,8 +6,12 @@ package capture
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/contract/inference/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -29,6 +33,12 @@ type ReplayResult struct {
 	// SummaryOnly is true when the capture has no scanner input and
 	// therefore cannot be replayed.
 	SummaryOnly bool
+	// CaptureGrade describes the fidelity of evidence available for this
+	// replayed record.
+	CaptureGrade string
+	// SidecarDecrypted is true when scanner input came from an encrypted
+	// payload sidecar.
+	SidecarDecrypted bool
 	// CandidateFindings holds findings produced by the candidate scanner.
 	CandidateFindings []Finding
 }
@@ -38,8 +48,9 @@ type ReplayResult struct {
 // re-running the scanner; stateful surfaces (CEE, tool_scan) are marked
 // evidence-only.
 type ReplayEngine struct {
-	cfg *config.Config
-	sc  *scanner.Scanner
+	cfg      *config.Config
+	sc       *scanner.Scanner
+	contract *contract.Contract
 }
 
 // NewReplayEngine creates a ReplayEngine. sc may be nil when only tool
@@ -49,29 +60,234 @@ func NewReplayEngine(cfg *config.Config, sc *scanner.Scanner) *ReplayEngine {
 	return &ReplayEngine{cfg: cfg, sc: sc}
 }
 
+// NewContractReplayEngine creates a ReplayEngine that evaluates enforce-state
+// contract rules for URL captures before falling back to candidate config replay
+// for other surfaces.
+func NewContractReplayEngine(cfg *config.Config, sc *scanner.Scanner, c contract.Contract) *ReplayEngine {
+	return &ReplayEngine{cfg: cfg, sc: sc, contract: &c}
+}
+
 // ReplayRecord dispatches a capture summary to the appropriate surface
 // replay function. scannerInput is the full scanner input text; for URL
 // surfaces it may be empty (the URL from the summary is used instead).
 func (re *ReplayEngine) ReplayRecord(summary CaptureSummary, scannerInput string) ReplayResult {
+	var result ReplayResult
 	switch summary.Surface {
 	case SurfaceURL:
-		return re.replayURL(summary, scannerInput)
+		if re.contract != nil {
+			result = re.replayContractURL(summary, scannerInput)
+		} else {
+			result = re.replayURL(summary, scannerInput)
+		}
 	case SurfaceResponse:
-		return re.replayResponse(summary, scannerInput)
+		result = re.replayResponse(summary, scannerInput)
 	case SurfaceDLP:
-		return re.replayDLP(summary, scannerInput)
+		result = re.replayDLP(summary, scannerInput)
 	case SurfaceToolPolicy:
-		return re.replayToolPolicy(summary)
+		result = re.replayToolPolicy(summary)
 	case SurfaceCEE, SurfaceToolScan:
-		return ReplayResult{
+		result = ReplayResult{
 			OriginalAction: summary.EffectiveAction,
 			EvidenceOnly:   true,
 		}
 	default:
-		return ReplayResult{
+		result = ReplayResult{
 			OriginalAction: summary.EffectiveAction,
 			EvidenceOnly:   true,
 		}
+	}
+	result.CaptureGrade = captureGradeForReplay(summary, scannerInput)
+	return result
+}
+
+func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput string) ReplayResult {
+	target := scannerInput
+	if target == "" {
+		target = summary.Request.URL
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Hostname() == "" {
+		return re.replayURL(summary, scannerInput)
+	}
+	replayGrade := captureGradeForReplay(summary, scannerInput)
+
+	hostHasEnforceRule := false
+	hasComparableEvidence := false
+	for _, rule := range re.contract.Rules {
+		if rule.LifecycleState != "enforce" || (rule.RuleKind != "http_destination" && rule.RuleKind != "http_action") {
+			continue
+		}
+		if !contractRuleHostMatches(rule, u.Hostname()) {
+			continue
+		}
+		hostHasEnforceRule = true
+		matches, canCompare := contractRuleMatchesURL(rule, u, summary)
+		if !canCompare {
+			return re.replayURL(summary, scannerInput)
+		}
+		if !captureGradeSatisfies(replayGrade, rule.RequiredCaptureGrade) {
+			continue
+		}
+		hasComparableEvidence = true
+		if matches {
+			return ReplayResult{
+				OriginalAction:  summary.EffectiveAction,
+				CandidateAction: config.ActionAllow,
+				Changed:         summary.EffectiveAction != config.ActionAllow,
+			}
+		}
+	}
+	if !hostHasEnforceRule {
+		return re.replayURL(summary, scannerInput)
+	}
+	if !hasComparableEvidence {
+		return re.replayURL(summary, scannerInput)
+	}
+	return ReplayResult{
+		OriginalAction:  summary.EffectiveAction,
+		CandidateAction: config.ActionBlock,
+		Changed:         summary.EffectiveAction != config.ActionBlock,
+		CandidateFindings: []Finding{{
+			Kind:      KindContract,
+			Action:    config.ActionBlock,
+			MatchText: target,
+		}},
+	}
+}
+
+func contractRuleHostMatches(rule contract.Rule, host string) bool {
+	ruleHost := normalizeHost(selectorString(rule.Selector, "host"))
+	return ruleHost != "" && ruleHost == normalizeHost(host)
+}
+
+func contractRuleMatchesURL(rule contract.Rule, u *url.URL, summary CaptureSummary) (bool, bool) {
+	matchedConstraint := selectorString(rule.Selector, "host") != ""
+	if methodValues := selectorStringList(rule.Selector, "methods"); len(methodValues) > 0 {
+		matchedConstraint = true
+		if !containsFoldedMethod(methodValues, summary.Request.Method) {
+			return false, true
+		}
+	}
+	if pathValues := selectorPathValues(rule.Selector); len(pathValues) > 0 {
+		matchedConstraint = true
+		matches, canCompare := pathMatchesAny(u.EscapedPath(), pathValues)
+		if !canCompare || !matches {
+			return matches, canCompare
+		}
+	}
+	if action := selectorRawString(rule.Selector, "effective_action"); action != "" {
+		matchedConstraint = true
+		if action != summary.EffectiveAction {
+			return false, true
+		}
+	}
+	return matchedConstraint, true
+}
+
+func selectorString(selector map[string]any, key string) string {
+	value, ok := selector[key].(map[string]any)
+	if !ok {
+		return ""
+	}
+	raw, _ := value["value"].(string)
+	return raw
+}
+
+func selectorRawString(selector map[string]any, key string) string {
+	value, _ := selector[key].(string)
+	return value
+}
+
+func selectorStringList(selector map[string]any, key string) []string {
+	values, ok := selector[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		text, ok := value.(string)
+		if ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func selectorPathValues(selector map[string]any) []string {
+	values, ok := selector["paths"].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, ok := item["value"].(string)
+		if ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+func containsFoldedMethod(values []string, target string) bool {
+	target = strings.ToUpper(strings.TrimSpace(target))
+	for _, value := range values {
+		if strings.ToUpper(strings.TrimSpace(value)) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
+func pathMatchesAny(escapedPath string, values []string) (bool, bool) {
+	if escapedPath == "" {
+		escapedPath = "/"
+	}
+	canonicalPath, _, err := normalize.Canonicalize(escapedPath)
+	if err != nil {
+		return false, false
+	}
+	for _, value := range values {
+		if value == canonicalPath {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+func captureGradeSatisfies(actual, required string) bool {
+	if required == "" {
+		required = contract.CaptureGradeFull
+	}
+	return captureGradeRank(actual) >= captureGradeRank(required)
+}
+
+func captureGradeForReplay(summary CaptureSummary, scannerInput string) string {
+	switch summary.Surface {
+	case SurfaceURL, SurfaceToolPolicy:
+		return CaptureGradeFull
+	case SurfaceCEE:
+		if scannerInput != "" {
+			return CaptureGradeFull
+		}
+		return CaptureGradeNone
+	case SurfaceResponse, SurfaceDLP, SurfaceToolScan:
+		if scannerInput != "" {
+			return CaptureGradeFull
+		}
+		return CaptureGradePartial
+	default:
+		if scannerInput != "" {
+			return CaptureGradeFull
+		}
+		return CaptureGradeSummary
 	}
 }
 

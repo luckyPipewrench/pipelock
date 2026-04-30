@@ -62,6 +62,7 @@ type Aggregates struct {
 	WindowEnd   time.Time
 
 	TotalEvents     int
+	SessionCount    int
 	DroppedEvents   int
 	MalformedEvents int
 
@@ -164,6 +165,7 @@ type aggregateState struct {
 	malformedEvents int
 	windowStart     time.Time
 	windowEnd       time.Time
+	sessions        map[string]struct{}
 
 	ruleObserved map[string]int
 	ruleScope    map[string]string
@@ -199,6 +201,7 @@ type normalizedEvent struct {
 func newAggregateState(windowDuration time.Duration) *aggregateState {
 	return &aggregateState{
 		windowDuration:   windowDuration,
+		sessions:         make(map[string]struct{}),
 		ruleObserved:     make(map[string]int),
 		ruleScope:        make(map[string]string),
 		ruleSessions:     make(map[string]map[string]struct{}),
@@ -241,6 +244,7 @@ func (s *aggregateState) add(event ingest.Entry) {
 
 	s.totalEvents++
 	s.totalHTTPEvents++
+	s.sessions[sessionKey(normalized.sessionID)] = struct{}{}
 	s.updateWindowRange(normalized.timestamp)
 	s.actionClasses[normalized.actionClass]++
 
@@ -300,6 +304,7 @@ func (s *aggregateState) finish() Aggregates {
 		WindowStart:          s.windowStart,
 		WindowEnd:            s.windowEnd,
 		TotalEvents:          s.totalEvents,
+		SessionCount:         len(s.sessions),
 		DroppedEvents:        s.droppedEvents,
 		MalformedEvents:      s.malformedEvents,
 		Rules:                rules,
@@ -313,16 +318,12 @@ func (s *aggregateState) observeRule(key, scope string, event normalizedEvent) {
 	s.ruleObserved[key]++
 	s.ruleScope[key] = scope
 
-	sessionID := event.sessionID
-	if sessionID == "" {
-		sessionID = "(empty)"
-	}
 	sessions := s.ruleSessions[key]
 	if sessions == nil {
 		sessions = make(map[string]struct{})
 		s.ruleSessions[key] = sessions
 	}
-	sessions[sessionID] = struct{}{}
+	sessions[sessionKey(event.sessionID)] = struct{}{}
 
 	window := event.timestamp.Truncate(s.windowDuration)
 	windows := s.ruleWindows[key]
@@ -331,6 +332,13 @@ func (s *aggregateState) observeRule(key, scope string, event normalizedEvent) {
 		s.ruleWindows[key] = windows
 	}
 	windows[window] = struct{}{}
+}
+
+func sessionKey(sessionID string) string {
+	if sessionID == "" {
+		return "(empty)"
+	}
+	return sessionID
 }
 
 func (s *aggregateState) opportunitiesFor(key string) int {

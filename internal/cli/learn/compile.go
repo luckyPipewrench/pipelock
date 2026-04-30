@@ -130,17 +130,19 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 	}
 
 	emitAuditEvent(cmd, auditEvent{
-		Event:          "learn_compile",
-		Agent:          flags.agent,
-		Since:          flags.since.String(),
-		Inputs:         inputs,
-		Output:         output,
-		Review:         reviewPath,
-		Manifest:       manifestPath,
-		EventsIngested: result.Stats.EventsIngested,
-		EventsDropped:  result.Stats.EventsDropped + result.Stats.EventsMalformed,
-		RulesEmitted:   result.Stats.RulesEmitted,
-		NoOp:           result.Stats.NoOp,
+		Event:             "learn_compile",
+		Agent:             flags.agent,
+		SignerKeyID:       signer.KeyID(),
+		CrossAgentSigning: flags.agent != signer.KeyID(),
+		Since:             flags.since.String(),
+		Inputs:            inputs,
+		Output:            output,
+		Review:            reviewPath,
+		Manifest:          manifestPath,
+		EventsIngested:    result.Stats.EventsIngested,
+		EventsDropped:     result.Stats.EventsDropped + result.Stats.EventsMalformed,
+		RulesEmitted:      result.Stats.RulesEmitted,
+		NoOp:              result.Stats.NoOp,
 	})
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "compile: %d events, %d rules, written to %s\n", result.Stats.EventsIngested, result.Stats.RulesEmitted, output)
 	return nil
@@ -182,13 +184,36 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("%w: no recorder JSONL inputs matched", errCompileInput)
 	}
-	for _, path := range paths {
-		clean := filepath.Clean(path)
-		if !filepath.IsAbs(clean) {
-			return nil, fmt.Errorf("%w: input path must be absolute: %s", errCompileInput, path)
+	for i, path := range paths {
+		resolved, err := resolveCompileInputPath(path)
+		if err != nil {
+			return nil, err
 		}
+		paths[i] = resolved
 	}
 	return paths, nil
+}
+
+func resolveCompileInputPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("%w: input path must be absolute: %s", errCompileInput, path)
+	}
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("%w: inspect input path: %w", errCompileInput, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: input path must not be a symlink: %s", errCompileInput, path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%w: input path must be a regular file: %s", errCompileInput, path)
+	}
+	realPath, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve input path: %w", errCompileInput, err)
+	}
+	return filepath.Clean(realPath), nil
 }
 
 func validateCompileAgent(agent string) error {

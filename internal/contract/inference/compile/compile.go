@@ -212,7 +212,7 @@ func inferContract(aggs aggregate.Aggregates, cfg CompileConfig) (contract.Contr
 			Start:                 aggs.WindowStart,
 			End:                   aggs.WindowEnd,
 			EventCount:            IntToUint64(aggs.TotalEvents),
-			SessionCount:          IntToUint64(sessionCount(aggs)),
+			SessionCount:          IntToUint64(aggs.SessionCount),
 			ObservationWindowRoot: windowRoot,
 		},
 		Compile: contract.ContractCompile{
@@ -360,18 +360,6 @@ func observationWindowRoot(aggs aggregate.Aggregates, override string) (string, 
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-func sessionCount(aggs aggregate.Aggregates) int {
-	// Aggregates do not retain per-session IDs after counting. Use the maximum
-	// per-rule session count as the deterministic lower-bound window summary.
-	maxSessions := 0
-	for _, counts := range aggs.Rules {
-		if counts.Sessions > maxSessions {
-			maxSessions = counts.Sessions
-		}
-	}
-	return maxSessions
 }
 
 func displayName(parts map[string]string) string {

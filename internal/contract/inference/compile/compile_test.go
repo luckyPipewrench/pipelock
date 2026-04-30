@@ -67,6 +67,9 @@ func TestCompile_DeterministicRecompile(t *testing.T) {
 	if first.Stats.RulesEmitted == 0 {
 		t.Fatal("expected rules")
 	}
+	if first.Contract.ObservationWindow.SessionCount != 3 {
+		t.Fatalf("SessionCount = %d, want 3", first.Contract.ObservationWindow.SessionCount)
+	}
 	if first.Contract.Rules[0].LifecycleState != "capture_only" {
 		t.Fatalf("LifecycleState = %q, want capture_only", first.Contract.Rules[0].LifecycleState)
 	}

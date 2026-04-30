@@ -727,23 +727,25 @@ func validateRuleSegments(rule *yaml.Node) error {
 // segment-or-index target, the count of entries actually changed,
 // and whether the call was a no-op.
 type auditEvent struct {
-	Event           string   `json:"event"`
-	Candidate       string   `json:"candidate,omitempty"`
-	Dest            string   `json:"dest,omitempty"`
-	Rule            string   `json:"rule,omitempty"`
-	Segment         string   `json:"segment,omitempty"`
-	Index           int      `json:"index,omitempty"`
-	SegmentsChanged int      `json:"segments_changed,omitempty"`
-	Agent           string   `json:"agent,omitempty"`
-	Since           string   `json:"since,omitempty"`
-	Inputs          []string `json:"inputs,omitempty"`
-	Output          string   `json:"output,omitempty"`
-	Review          string   `json:"review,omitempty"`
-	Manifest        string   `json:"manifest,omitempty"`
-	EventsIngested  int      `json:"events_ingested,omitempty"`
-	EventsDropped   int      `json:"events_dropped,omitempty"`
-	RulesEmitted    int      `json:"rules_emitted,omitempty"`
-	NoOp            bool     `json:"noop"`
+	Event             string   `json:"event"`
+	Candidate         string   `json:"candidate,omitempty"`
+	Dest              string   `json:"dest,omitempty"`
+	Rule              string   `json:"rule,omitempty"`
+	Segment           string   `json:"segment,omitempty"`
+	Index             int      `json:"index,omitempty"`
+	SegmentsChanged   int      `json:"segments_changed,omitempty"`
+	Agent             string   `json:"agent,omitempty"`
+	SignerKeyID       string   `json:"signer_key_id,omitempty"`
+	Since             string   `json:"since,omitempty"`
+	Inputs            []string `json:"inputs,omitempty"`
+	Output            string   `json:"output,omitempty"`
+	Review            string   `json:"review,omitempty"`
+	Manifest          string   `json:"manifest,omitempty"`
+	EventsIngested    int      `json:"events_ingested,omitempty"`
+	EventsDropped     int      `json:"events_dropped,omitempty"`
+	RulesEmitted      int      `json:"rules_emitted,omitempty"`
+	CrossAgentSigning bool     `json:"cross_agent_signing,omitempty"`
+	NoOp              bool     `json:"noop"`
 }
 
 // emitAuditEvent writes an auditEvent as a single JSON line to stderr.

@@ -12,8 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -29,6 +27,7 @@ import (
 const (
 	inferenceAlgorithmWilsonV1 = "wilson_lb_v1"
 	ed25519Prefix              = "ed25519:"
+	moduleDigestUnavailableKey = "build_info_unavailable"
 )
 
 var (
@@ -224,9 +223,10 @@ func moduleDigests() map[string]string {
 		out = moduleDigestsFromBuildInfo(info)
 	}
 	if len(out) == 0 {
-		// Test binaries may not carry module dependency metadata. Fall back to a
-		// CWD-relative repository go.sum digest so provenance remains deterministic.
-		out["go.sum"] = digestFile("go.sum")
+		// Test binaries may not carry module dependency metadata. Use an
+		// explicit marker rather than CWD-relative files so signed provenance
+		// does not depend on the caller's working directory.
+		out[moduleDigestUnavailableKey] = digestString("build-info unavailable")
 	}
 	return out
 }
@@ -247,15 +247,6 @@ func moduleDigestsFromBuildInfo(info *debug.BuildInfo) map[string]string {
 		out[dep.Path] = digestString(dep.Version)
 	}
 	return out
-}
-
-func digestFile(path string) string {
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return digestString("")
-	}
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func digestString(s string) string {

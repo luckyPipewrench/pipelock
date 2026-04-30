@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -229,16 +228,6 @@ func TestHelpers(t *testing.T) {
 	if got := signatureString([]byte{0xab}); got != "ed25519:ab" {
 		t.Fatalf("signatureString = %q", got)
 	}
-	if got := digestFile("/definitely/not/present"); !strings.HasPrefix(got, "sha256:") {
-		t.Fatalf("digestFile missing = %q", got)
-	}
-	tmp := t.TempDir() + "/sum.txt"
-	if err := os.WriteFile(tmp, []byte("module sum"), 0o600); err != nil {
-		t.Fatalf("write temp digest file: %v", err)
-	}
-	if got := digestFile(tmp); !strings.HasPrefix(got, "sha256:") {
-		t.Fatalf("digestFile existing = %q", got)
-	}
 	if got := cloneSettings(nil); len(got) != 0 {
 		t.Fatalf("cloneSettings(nil) len = %d, want 0", len(got))
 	}
@@ -276,7 +265,7 @@ func TestModuleDigestsFromBuildInfo(t *testing.T) {
 	}
 }
 
-func TestModuleDigestsFallbackUsesGoSum(t *testing.T) {
+func TestModuleDigestsFallbackUsesUnavailableMarker(t *testing.T) {
 	oldReadBuildInfo := readBuildInfo
 	t.Cleanup(func() {
 		readBuildInfo = oldReadBuildInfo
@@ -286,8 +275,8 @@ func TestModuleDigestsFallbackUsesGoSum(t *testing.T) {
 	}
 
 	got := moduleDigests()
-	if got["go.sum"] == "" {
-		t.Fatalf("moduleDigests fallback missing go.sum: %#v", got)
+	if got[moduleDigestUnavailableKey] == "" {
+		t.Fatalf("moduleDigests fallback missing unavailable marker: %#v", got)
 	}
 }
 

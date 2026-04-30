@@ -30,6 +30,9 @@ func TestAggregate_CounterCorrectness(t *testing.T) {
 	if got.TotalEvents != 3 {
 		t.Fatalf("TotalEvents = %d, want 3", got.TotalEvents)
 	}
+	if got.SessionCount != 3 {
+		t.Fatalf("SessionCount = %d, want 3", got.SessionCount)
+	}
 
 	assertRule(t, got, "host=api.example.com", RuleCounts{
 		Observed:      2,

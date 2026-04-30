@@ -52,6 +52,25 @@ func TestResolveCompileInputsAcceptsSingleSegmentAgent(t *testing.T) {
 	}
 }
 
+func TestResolveCompileInputsRejectsSymlinkInput(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.jsonl")
+	if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+	link := filepath.Join(dir, "link.jsonl")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	cfg := config.Defaults()
+
+	_, err := resolveCompileInputs(cfg, compileFlags{agent: "agent-a", inputGlob: link, since: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("resolveCompileInputs symlink error = %v, want symlink rejection", err)
+	}
+}
+
 func TestReadCompileInputsCountsAppendedNewline(t *testing.T) {
 	t.Parallel()
 	input := filepath.Join(t.TempDir(), "capture.jsonl")

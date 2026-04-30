@@ -128,11 +128,11 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	if err != nil {
 		return err
 	}
-	receiptsEmitted, err := emitShadowReceipts(flags, env.Body, report, now)
-	if err != nil {
+	if err := writeShadowReports(cmd, report, flags); err != nil {
 		return err
 	}
-	if err := writeShadowReports(cmd, report, flags); err != nil {
+	receiptsEmitted, err := emitShadowReceipts(flags, env.Body, report, now)
+	if err != nil {
 		return err
 	}
 

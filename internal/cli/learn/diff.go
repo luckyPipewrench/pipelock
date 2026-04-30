@@ -46,8 +46,11 @@ func runDiff(cmd *cobra.Command, firstPath, secondPath, outPath string) error {
 		emitAuditEvent(cmd, auditEvent{
 			Event:     "learn_diff",
 			Candidate: filepath.Clean(firstPath),
-			Dest:      filepath.Clean(secondPath),
-			NoOp:      len(rows) == 0,
+			Inputs: []string{
+				filepath.Clean(firstPath),
+				filepath.Clean(secondPath),
+			},
+			NoOp: len(rows) == 0,
 		})
 		_, _ = fmt.Fprint(cmd.OutOrStdout(), markdown)
 		return nil
@@ -62,8 +65,12 @@ func runDiff(cmd *cobra.Command, firstPath, secondPath, outPath string) error {
 	emitAuditEvent(cmd, auditEvent{
 		Event:     "learn_diff",
 		Candidate: filepath.Clean(firstPath),
-		Dest:      dest,
-		NoOp:      len(rows) == 0,
+		Inputs: []string{
+			filepath.Clean(firstPath),
+			filepath.Clean(secondPath),
+		},
+		Dest: dest,
+		NoOp: len(rows) == 0,
 	})
 	return nil
 }

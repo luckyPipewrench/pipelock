@@ -27,6 +27,8 @@ const loadReplayOriginalHash = "sha256:original"
 // fakeAWSKey is split to avoid gosec G101.
 const fakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
 
+const testContractRuleIDAPI = "r-api"
+
 func newTestScanner(t *testing.T, mutate func(*config.Config)) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
@@ -112,7 +114,7 @@ func TestReplayContractURL(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	re := NewContractReplayEngine(cfg, sc, contract.Contract{
 		Rules: []contract.Rule{{
-			RuleID:               "r-api",
+			RuleID:               testContractRuleIDAPI,
 			RuleKind:             "http_destination",
 			LifecycleState:       "enforce",
 			RequiredCaptureGrade: contract.CaptureGradeFull,
@@ -138,7 +140,7 @@ func TestReplayContractURL(t *testing.T) {
 	if allowed.Changed || allowed.CandidateAction != config.ActionAllow {
 		t.Fatalf("allowed result = changed %v action %q, want false/allow", allowed.Changed, allowed.CandidateAction)
 	}
-	if len(allowed.CandidateFindings) != 1 || allowed.CandidateFindings[0].PolicyRule != "r-api" {
+	if len(allowed.CandidateFindings) != 1 || allowed.CandidateFindings[0].PolicyRule != testContractRuleIDAPI {
 		t.Fatalf("allowed contract findings = %#v, want rule id", allowed.CandidateFindings)
 	}
 
@@ -154,7 +156,7 @@ func TestReplayContractURL(t *testing.T) {
 		t.Fatalf("blocked result = changed %v action %q, want true/block", blocked.Changed, blocked.CandidateAction)
 	}
 	if len(blocked.CandidateFindings) != 1 || blocked.CandidateFindings[0].Kind != KindContract ||
-		blocked.CandidateFindings[0].PolicyRule != "r-api" {
+		blocked.CandidateFindings[0].PolicyRule != testContractRuleIDAPI {
 		t.Fatalf("contract findings = %#v, want one contract finding", blocked.CandidateFindings)
 	}
 
@@ -185,6 +187,72 @@ func TestReplayContractURL(t *testing.T) {
 		if result.Changed || result.CandidateAction != config.ActionAllow {
 			t.Fatalf("%s result = changed %v action %q, want non-canonical scanner fallback allow", rawURL, result.Changed, result.CandidateAction)
 		}
+	}
+}
+
+func TestReplayContractURL_DeduplicatesDenyRuleIDs(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.DLP.ScanEnv = false
+	sc := newTestScanner(t, nil)
+	re := NewContractReplayEngine(cfg, sc, contract.Contract{
+		Rules: []contract.Rule{
+			{
+				RuleID:               " r-api ",
+				RuleKind:             "http_destination",
+				LifecycleState:       "enforce",
+				RequiredCaptureGrade: contract.CaptureGradeFull,
+				ObservedCaptureGrade: contract.CaptureGradeFull,
+				Selector: map[string]any{
+					"host": map[string]any{"value": "api.example.com"},
+					"paths": []any{
+						map[string]any{"value": "/repos/foo"},
+					},
+				},
+			},
+			{
+				RuleID:               testContractRuleIDAPI,
+				RuleKind:             "http_destination",
+				LifecycleState:       "enforce",
+				RequiredCaptureGrade: contract.CaptureGradeFull,
+				ObservedCaptureGrade: contract.CaptureGradeFull,
+				Selector: map[string]any{
+					"host": map[string]any{"value": "api.example.com"},
+					"paths": []any{
+						map[string]any{"value": "/repos/baz"},
+					},
+				},
+			},
+			{
+				RuleID:               "",
+				RuleKind:             "http_destination",
+				LifecycleState:       "enforce",
+				RequiredCaptureGrade: contract.CaptureGradeFull,
+				ObservedCaptureGrade: contract.CaptureGradeFull,
+				Selector: map[string]any{
+					"host": map[string]any{"value": "api.example.com"},
+					"paths": []any{
+						map[string]any{"value": "/repos/qux"},
+					},
+				},
+			},
+		},
+	})
+
+	result := re.ReplayRecord(CaptureSummary{
+		Surface:         SurfaceURL,
+		EffectiveAction: config.ActionAllow,
+		Request: CaptureRequest{
+			Method: "GET",
+			URL:    "https://api.example.com/repos/bar",
+		},
+	}, "")
+	if result.CandidateAction != config.ActionBlock || len(result.CandidateFindings) != 1 {
+		t.Fatalf("result findings = %+v, want one contract deny finding", result.CandidateFindings)
+	}
+	if got := result.CandidateFindings[0].PolicyRule; got != testContractRuleIDAPI {
+		t.Fatalf("PolicyRule = %q, want trimmed unique rule id", got)
 	}
 }
 

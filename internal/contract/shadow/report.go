@@ -152,7 +152,12 @@ func Analyze(records []capture.ReplayedRecord, opts AnalyzeOptions) (Report, err
 	if opts.Quarantine.CeilingPct == 0 && opts.Quarantine.ReleaseFloorPct == 0 &&
 		opts.Quarantine.MinEvaluations == 0 && opts.Quarantine.Cooldown == 0 &&
 		opts.Quarantine.PageLimitPerHour == 0 {
-		opts.Quarantine = DefaultQuarantineConfig()
+		defaults := DefaultQuarantineConfig()
+		opts.Quarantine.CeilingPct = defaults.CeilingPct
+		opts.Quarantine.ReleaseFloorPct = defaults.ReleaseFloorPct
+		opts.Quarantine.MinEvaluations = defaults.MinEvaluations
+		opts.Quarantine.Cooldown = defaults.Cooldown
+		opts.Quarantine.PageLimitPerHour = defaults.PageLimitPerHour
 	}
 	if err := opts.Quarantine.Validate(); err != nil {
 		return Report{}, err

@@ -114,6 +114,7 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 	hostHasEnforceRule := false
 	hasComparableEvidence := false
 	var hostRuleIDs []string
+	seenHostRuleIDs := map[string]struct{}{}
 	for _, rule := range re.contract.Rules {
 		if rule.LifecycleState != "enforce" || (rule.RuleKind != "http_destination" && rule.RuleKind != "http_action") {
 			continue
@@ -122,7 +123,7 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 			continue
 		}
 		hostHasEnforceRule = true
-		hostRuleIDs = append(hostRuleIDs, rule.RuleID)
+		hostRuleIDs = appendContractRuleID(hostRuleIDs, seenHostRuleIDs, rule.RuleID)
 		matches, canCompare := contractRuleMatchesURL(rule, u, summary)
 		if !canCompare {
 			return re.replayURL(summary, scannerInput)
@@ -159,16 +160,33 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 	}
 }
 
+func appendContractRuleID(ruleIDs []string, seen map[string]struct{}, ruleID string) []string {
+	ruleID = strings.TrimSpace(ruleID)
+	if ruleID == "" {
+		return ruleIDs
+	}
+	if _, ok := seen[ruleID]; ok {
+		return ruleIDs
+	}
+	seen[ruleID] = struct{}{}
+	return append(ruleIDs, ruleID)
+}
+
 func contractDenyFindings(ruleIDs []string, target string) []Finding {
-	if len(ruleIDs) == 0 {
+	seen := map[string]struct{}{}
+	unique := make([]string, 0, len(ruleIDs))
+	for _, ruleID := range ruleIDs {
+		unique = appendContractRuleID(unique, seen, ruleID)
+	}
+	if len(unique) == 0 {
 		return []Finding{{
 			Kind:      KindContract,
 			Action:    config.ActionBlock,
 			MatchText: target,
 		}}
 	}
-	out := make([]Finding, 0, len(ruleIDs))
-	for _, ruleID := range ruleIDs {
+	out := make([]Finding, 0, len(unique))
+	for _, ruleID := range unique {
 		out = append(out, Finding{
 			Kind:       KindContract,
 			Action:     config.ActionBlock,

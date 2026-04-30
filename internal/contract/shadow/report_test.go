@@ -14,6 +14,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const (
+	testRuleIDA = "rule-a"
+	testRuleIDB = "rule-b"
+)
+
 func TestAnalyze_BuildsBatchesAndQuarantineCandidate(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
@@ -37,7 +42,7 @@ func TestAnalyze_BuildsBatchesAndQuarantineCandidate(t *testing.T) {
 	if report.Batches[0].LosslessCount != 4 || len(report.Batches[0].ExemplarIDs) != 3 {
 		t.Fatalf("batch = %+v, want four lossless and three exemplars", report.Batches[0])
 	}
-	if len(report.Quarantines) != 1 || report.Quarantines[0].RuleID != "rule-a" {
+	if len(report.Quarantines) != 1 || report.Quarantines[0].RuleID != testRuleIDA {
 		t.Fatalf("quarantines = %+v, want rule-a", report.Quarantines)
 	}
 	if got := report.Rules[0].State; got != quarantineStateCandidate {
@@ -51,7 +56,7 @@ func TestAnalyze_QuarantineCooldownAndHysteresis(t *testing.T) {
 	now := base.Add(2 * time.Hour)
 
 	cooldownCfg := DefaultQuarantineConfig()
-	cooldownCfg.LastQuarantinedAt = map[string]time.Time{"rule-a": now.Add(-30 * time.Minute)}
+	cooldownCfg.LastQuarantinedAt = map[string]time.Time{testRuleIDA: now.Add(-30 * time.Minute)}
 	report, err := Analyze(shadowRecords(base, 4), AnalyzeOptions{
 		ContractHash: "sha256:contract",
 		GeneratedAt:  now,
@@ -66,7 +71,7 @@ func TestAnalyze_QuarantineCooldownAndHysteresis(t *testing.T) {
 	}
 
 	heldCfg := DefaultQuarantineConfig()
-	heldCfg.ActiveRules = map[string]bool{"rule-a": true}
+	heldCfg.ActiveRules = map[string]bool{testRuleIDA: true}
 	held, err := Analyze(shadowRecords(base, 2), AnalyzeOptions{
 		ContractHash: "sha256:contract",
 		GeneratedAt:  now,
@@ -94,6 +99,27 @@ func TestAnalyze_QuarantineCooldownAndHysteresis(t *testing.T) {
 	}
 }
 
+func TestAnalyze_DefaultQuarantineThresholdsPreserveState(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	cfg := QuarantineConfig{
+		LastQuarantinedAt: map[string]time.Time{testRuleIDA: base.Add(-30 * time.Minute)},
+		RecentPageTimes:   []time.Time{base.Add(-time.Minute)},
+	}
+	report, err := Analyze(shadowRecords(base, 4), AnalyzeOptions{
+		ContractHash: "sha256:contract",
+		GeneratedAt:  base,
+		Aggregation:  AggregateConfig{WindowDuration: time.Hour, SampleCount: 1},
+		Quarantine:   cfg,
+	})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if report.Rules[0].Reason != quarantineReasonCooldown {
+		t.Fatalf("rule reason = %q, want preserved cooldown state", report.Rules[0].Reason)
+	}
+}
+
 func TestRenderJSONMarkdownAndDiffReports(t *testing.T) {
 	t.Parallel()
 	report := Report{
@@ -103,7 +129,7 @@ func TestRenderJSONMarkdownAndDiffReports(t *testing.T) {
 		TotalRecords:  10,
 		NewBlocks:     1,
 		Rules: []RuleStats{{
-			RuleID:          "rule-a",
+			RuleID:          testRuleIDA,
 			Evaluations:     10,
 			NewBlocks:       1,
 			NewBlockRatePct: 10,
@@ -159,6 +185,13 @@ func TestAnalyze_DefaultsSkipsAndValidation(t *testing.T) {
 	}
 	if _, err := Analyze(nil, AnalyzeOptions{
 		ContractHash: "sha256:contract",
+		Aggregation:  AggregateConfig{WindowDuration: -time.Minute, SampleCount: 1},
+		Quarantine:   DefaultQuarantineConfig(),
+	}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Analyze invalid aggregation error = %v, want ErrInvalidConfig", err)
+	}
+	if _, err := Analyze(nil, AnalyzeOptions{
+		ContractHash: "sha256:contract",
 		Aggregation:  AggregateConfig{WindowDuration: time.Minute, SampleCount: 1},
 		Quarantine: QuarantineConfig{
 			CeilingPct:       -1,
@@ -197,8 +230,8 @@ func TestAnalyze_DefaultsSkipsAndValidation(t *testing.T) {
 				Changed:         true,
 				CaptureGrade:    capture.CaptureGradeFull,
 				CandidateFindings: []capture.Finding{
-					{Kind: capture.KindContract, PolicyRule: "rule-b"},
-					{Kind: capture.KindContract, PolicyRule: "rule-b"},
+					{Kind: capture.KindContract, PolicyRule: testRuleIDB},
+					{Kind: capture.KindContract, PolicyRule: testRuleIDB},
 					{Kind: capture.KindDLP, PolicyRule: "ignored"},
 				},
 			},
@@ -211,11 +244,35 @@ func TestAnalyze_DefaultsSkipsAndValidation(t *testing.T) {
 	if report.EvidenceOnly != 1 || report.SummaryOnly != 1 || report.Replayed != 2 || report.NewAllows != 1 {
 		t.Fatalf("report skip counts = %+v", report)
 	}
-	if len(report.Rules) != 1 || report.Rules[0].RuleID != "rule-b" || report.Rules[0].NewAllows != 1 {
+	if len(report.Rules) != 1 || report.Rules[0].RuleID != testRuleIDB || report.Rules[0].NewAllows != 1 {
 		t.Fatalf("rule stats = %+v", report.Rules)
 	}
 	if got := report.CaptureSurfaces[capture.SurfaceDLP].Grade; got != capture.CaptureGradePartial {
 		t.Fatalf("surface grade = %q, want partial", got)
+	}
+
+	empty, err := Analyze(nil, AnalyzeOptions{ContractHash: "sha256:contract"})
+	if err != nil {
+		t.Fatalf("Analyze empty defaults: %v", err)
+	}
+	if empty.CaptureSurfaces != nil || empty.GeneratedAt.IsZero() {
+		t.Fatalf("empty report surfaces/time = %#v/%s, want nil surfaces and generated time", empty.CaptureSurfaces, empty.GeneratedAt)
+	}
+	if _, err := Analyze([]capture.ReplayedRecord{{
+		Result: capture.ReplayResult{
+			Changed: true,
+			CandidateFindings: []capture.Finding{{
+				Kind:       capture.KindContract,
+				PolicyRule: testRuleIDB,
+			}},
+		},
+	}}, AnalyzeOptions{
+		ContractHash: "sha256:contract",
+		GeneratedAt:  base,
+		Aggregation:  AggregateConfig{WindowDuration: time.Minute, SampleCount: 1},
+		Quarantine:   DefaultQuarantineConfig(),
+	}); !errors.Is(err, ErrInvalidDelta) {
+		t.Fatalf("Analyze invalid delta error = %v, want ErrInvalidDelta", err)
 	}
 }
 
@@ -224,10 +281,12 @@ func TestQuarantineDecisionPageLimitThinSampleAndClear(t *testing.T) {
 	now := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	cfg := DefaultQuarantineConfig()
 	cfg.MinEvaluations = 10
+	cfg.ActiveRules = map[string]bool{"thin": true}
 	state, reason, event := quarantineDecision(RuleStats{RuleID: "thin", Evaluations: 9}, cfg, now)
-	if state != quarantineStateClear || reason != quarantineReasonThinSample || event != nil {
+	if state != quarantineStateHeld || reason != quarantineReasonThinSample || event != nil {
 		t.Fatalf("thin decision = %s/%s/%+v", state, reason, event)
 	}
+	cfg.ActiveRules = nil
 	state, reason, event = quarantineDecision(RuleStats{RuleID: "clear", Evaluations: 10, NewBlocks: 0}, cfg, now)
 	if state != quarantineStateClear || reason != "" || event != nil {
 		t.Fatalf("clear decision = %s/%s/%+v", state, reason, event)
@@ -246,6 +305,13 @@ func TestQuarantineDecisionPageLimitThinSampleAndClear(t *testing.T) {
 	if recentPages(now, []time.Time{now.Add(-2 * time.Hour), now.Add(-30 * time.Minute), now.Add(time.Minute)}) != 1 {
 		t.Fatal("recentPages did not count only timestamps in the last hour and not in the future")
 	}
+	ids := contractRuleIDs([]capture.Finding{{
+		Kind:       capture.KindContract,
+		PolicyRule: " rule-a, ,rule-b,rule-a ",
+	}})
+	if len(ids) != 2 || ids[0] != testRuleIDA || ids[1] != testRuleIDB {
+		t.Fatalf("contractRuleIDs = %#v, want trimmed unique ids", ids)
+	}
 }
 
 func TestRenderMarkdownNoRulesAndRankFallbacks(t *testing.T) {
@@ -256,6 +322,22 @@ func TestRenderMarkdownNoRulesAndRankFallbacks(t *testing.T) {
 	}
 	if !bytes.Contains(md.Bytes(), []byte("No contract rule evaluations.")) {
 		t.Fatalf("markdown =\n%s", md.String())
+	}
+	md.Reset()
+	if err := RenderMarkdown(&md, Report{
+		GeneratedAt: time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC),
+		Quarantines: []QuarantineEvent{{
+			RuleID:          testRuleIDA,
+			Evaluations:     60,
+			NewBlocks:       4,
+			NewBlockRatePct: 6.67,
+			CooldownUntil:   time.Date(2026, 4, 30, 13, 0, 0, 0, time.UTC),
+		}},
+	}); err != nil {
+		t.Fatalf("RenderMarkdown quarantine: %v", err)
+	}
+	if !bytes.Contains(md.Bytes(), []byte("cooldown until")) {
+		t.Fatalf("markdown missing quarantine entry:\n%s", md.String())
 	}
 	for _, grade := range []string{
 		capture.CaptureGradeNone,
@@ -294,7 +376,7 @@ func shadowRecords(base time.Time, newBlocks int) []capture.ReplayedRecord {
 				CandidateFindings: []capture.Finding{{
 					Kind:       capture.KindContract,
 					Action:     candidate,
-					PolicyRule: "rule-a",
+					PolicyRule: testRuleIDA,
 				}},
 			},
 		})

@@ -216,11 +216,11 @@ func TestEmitContract_ContractHashPreimageErrorFeedsValidation(t *testing.T) {
 	c := baseContract()
 	c.Defaults.Confidence = map[string]any{"bad": make(chan int)}
 	_, err := EmitContract(c, signer, EmitOptions{})
-	if !errors.Is(err, ErrInvalidArtifact) {
-		t.Fatalf("got %v, want ErrInvalidArtifact", err)
+	if err == nil || !strings.Contains(err.Error(), "compute contract hash") {
+		t.Fatalf("got %v, want contract hash error", err)
 	}
-	if hash := hashContractWithEmptyHash(c); hash != "" {
-		t.Fatalf("hashContractWithEmptyHash = %q, want empty", hash)
+	if hash, err := hashContractWithEmptyHash(c); err == nil || hash != "" {
+		t.Fatalf("hashContractWithEmptyHash = %q, %v; want empty hash and error", hash, err)
 	}
 }
 
@@ -241,6 +241,13 @@ func TestHelpers(t *testing.T) {
 	}
 	if got := cloneSettings(nil); len(got) != 0 {
 		t.Fatalf("cloneSettings(nil) len = %d, want 0", len(got))
+	}
+	settings := map[string]any{"nested": map[string]any{"items": []any{map[string]any{"k": "v"}}}}
+	cloned := cloneSettings(settings)
+	settings["nested"].(map[string]any)["items"].([]any)[0].(map[string]any)["k"] = "mutated"
+	gotNested := cloned["nested"].(map[string]any)["items"].([]any)[0].(map[string]any)["k"]
+	if gotNested != "v" {
+		t.Fatalf("cloneSettings nested value = %q, want independent copy", gotNested)
 	}
 	if _, err := marshalDeterministicJSON(map[string]any{"bad": make(chan int)}); err == nil {
 		t.Fatal("marshalDeterministicJSON expected error")

@@ -409,15 +409,55 @@ func normalizeEvent(event ingest.Entry) (normalizedEvent, bool) {
 }
 
 func captureDropCount(detail any) (int, bool) {
-	detailJSON, err := json.Marshal(detail)
-	if err != nil {
-		return 0, false
+	switch typed := detail.(type) {
+	case capture.CaptureDropDetail:
+		return nonNegative(typed.Count), true
+	case json.RawMessage:
+		return captureDropCountJSON(typed)
+	case []byte:
+		return captureDropCountJSON(typed)
+	case string:
+		return captureDropCountJSON([]byte(typed))
+	case map[string]any:
+		count, ok := typed["count"]
+		if !ok {
+			count = typed["Count"]
+		}
+		return captureDropCountValue(count)
+	default:
+		detailJSON, err := json.Marshal(detail)
+		if err != nil {
+			return 0, false
+		}
+		return captureDropCountJSON(detailJSON)
 	}
+}
+
+func captureDropCountJSON(detailJSON []byte) (int, bool) {
 	var drop capture.CaptureDropDetail
 	if err := json.Unmarshal(detailJSON, &drop); err != nil {
 		return 0, false
 	}
 	return nonNegative(drop.Count), true
+}
+
+func captureDropCountValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return nonNegative(typed), true
+	case int64:
+		return nonNegative(int(typed)), true
+	case float64:
+		return nonNegative(int(typed)), true
+	case json.Number:
+		out, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return nonNegative(int(out)), true
+	default:
+		return 0, false
+	}
 }
 
 func nonNegative(v int) int {

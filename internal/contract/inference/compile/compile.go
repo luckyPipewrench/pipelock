@@ -288,8 +288,10 @@ func buildRule(key string, counts aggregate.RuleCounts, confidence inference.Con
 			"sessions_with_opportunity": counts.Opportunities,
 			"sessions_observed":         counts.Sessions,
 			"events_observed":           counts.Observed,
-			"windows_with_opportunity":  counts.Windows,
-			"windows_observed":          counts.Windows,
+			// Aggregation currently records only windows where this rule had
+			// observations, so opportunity and observed windows are identical.
+			"windows_with_opportunity": counts.Windows,
+			"windows_observed":         counts.Windows,
 		},
 		Selector: selector,
 		Budgets:  budgets,
@@ -361,6 +363,8 @@ func observationWindowRoot(aggs aggregate.Aggregates, override string) (string, 
 }
 
 func sessionCount(aggs aggregate.Aggregates) int {
+	// Aggregates do not retain per-session IDs after counting. Use the maximum
+	// per-rule session count as the deterministic lower-bound window summary.
 	maxSessions := 0
 	for _, counts := range aggs.Rules {
 		if counts.Sessions > maxSessions {

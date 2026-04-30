@@ -33,6 +33,11 @@ var acceptedEntryVersions = map[int]bool{1: true, 2: true}
 // GenesisHash is the PrevHash of the first entry in a chain.
 const GenesisHash = "genesis"
 
+// IsAcceptedEntryVersion reports whether recorder readers accept version.
+func IsAcceptedEntryVersion(version int) bool {
+	return acceptedEntryVersions[version]
+}
+
 // Entry is a single evidence record in the hash chain.
 //
 // EventKind is informational at the recorder layer. Empty for envelope

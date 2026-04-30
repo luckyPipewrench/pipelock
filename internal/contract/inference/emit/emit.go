@@ -78,8 +78,15 @@ func EmitContract(c contract.Contract, signer Signer, opts EmitOptions) (Result,
 	}
 	c.SignerKeyID = signer.KeyID()
 	c.KeyPurpose = signing.PurposeContractCompileSigning.String()
-	c.Compile = fillCompileProvenance(c.Compile, opts)
-	c.ContractHash = hashContractWithEmptyHash(c)
+	var err error
+	c.Compile, err = fillCompileProvenance(c.Compile, opts)
+	if err != nil {
+		return Result{}, err
+	}
+	c.ContractHash, err = hashContractWithEmptyHash(c)
+	if err != nil {
+		return Result{}, err
+	}
 
 	if err := c.Validate(); err != nil {
 		return Result{}, fmt.Errorf("%w: contract: %w", ErrInvalidArtifact, err)
@@ -134,7 +141,7 @@ func EmitContract(c contract.Contract, signer Signer, opts EmitOptions) (Result,
 	}, nil
 }
 
-func fillCompileProvenance(in contract.ContractCompile, opts EmitOptions) contract.ContractCompile {
+func fillCompileProvenance(in contract.ContractCompile, opts EmitOptions) (contract.ContractCompile, error) {
 	if in.PipelockVersion == "" {
 		in.PipelockVersion = cliutil.Version
 	}
@@ -147,9 +154,10 @@ func fillCompileProvenance(in contract.ContractCompile, opts EmitOptions) contra
 	if in.ModuleDigestRoot == "" {
 		digests := moduleDigests()
 		root, err := (contract.CompileManifest{ModuleDigests: digests}).ComputeModuleDigestRoot()
-		if err == nil {
-			in.ModuleDigestRoot = root
+		if err != nil {
+			return contract.ContractCompile{}, fmt.Errorf("compute module digest root: %w", err)
 		}
+		in.ModuleDigestRoot = root
 	}
 	if in.CompileConfigHash == "" {
 		in.CompileConfigHash = opts.CompileConfigHash
@@ -160,7 +168,7 @@ func fillCompileProvenance(in contract.ContractCompile, opts EmitOptions) contra
 	if in.NormalizationAlgorithm == "" {
 		in.NormalizationAlgorithm = "frequency_weighted_entropy_v1"
 	}
-	return in
+	return in, nil
 }
 
 func buildManifest(c contract.Contract, signerKeyID string, opts EmitOptions) (contract.CompileManifest, error) {
@@ -196,14 +204,14 @@ func buildManifest(c contract.Contract, signerKeyID string, opts EmitOptions) (c
 	}, nil
 }
 
-func hashContractWithEmptyHash(c contract.Contract) string {
+func hashContractWithEmptyHash(c contract.Contract) (string, error) {
 	c.ContractHash = ""
 	preimage, err := c.SignablePreimage()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("compute contract hash: %w", err)
 	}
 	sum := sha256.Sum256(preimage)
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func signatureString(sig []byte) string {
@@ -261,9 +269,24 @@ func cloneSettings(in map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(in))
 	for k, v := range in {
-		out[k] = v
+		out[k] = cloneSettingValue(v)
 	}
 	return out
+}
+
+func cloneSettingValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return cloneSettings(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneSettingValue(item)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func marshalDeterministicJSON(v any) ([]byte, error) {

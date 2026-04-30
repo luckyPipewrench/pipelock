@@ -78,6 +78,9 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 		ensureEnvDefault("TZ", "UTC")
 		ensureEnvDefault("LC_ALL", "C")
 	}
+	if err := validateCompileAgent(flags.agent); err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig(flags.configPath)
 	if err != nil {
@@ -158,6 +161,9 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 		if !filepath.IsAbs(filepath.Clean(cfg.Learn.CaptureDir)) {
 			return nil, fmt.Errorf("%w: learn.capture_dir must be absolute", errCompileInput)
 		}
+		if err := validateCompileAgent(flags.agent); err != nil {
+			return nil, err
+		}
 		paths, err = filepath.Glob(filepath.Join(cfg.Learn.CaptureDir, flags.agent, "*.jsonl"))
 		if err != nil {
 			return nil, fmt.Errorf("%w: capture glob: %w", errCompileInput, err)
@@ -185,6 +191,20 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 	return paths, nil
 }
 
+func validateCompileAgent(agent string) error {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return fmt.Errorf("%w: --agent is required", errCompileInput)
+	}
+	if agent == "." || agent == ".." || strings.Contains(agent, "/") || strings.Contains(agent, `\`) {
+		return fmt.Errorf("%w: --agent must be a single path segment", errCompileInput)
+	}
+	if filepath.Base(agent) != agent {
+		return fmt.Errorf("%w: --agent must be a single path segment", errCompileInput)
+	}
+	return nil
+}
+
 func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, error) {
 	var buf bytes.Buffer
 	refs := make([]contract.InputRef, 0, len(paths))
@@ -196,7 +216,9 @@ func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, erro
 		if _, err := buf.Write(data); err != nil {
 			return nil, nil, fmt.Errorf("buffer input: %w", err)
 		}
+		eventCount := bytes.Count(data, []byte("\n"))
 		if len(data) > 0 && data[len(data)-1] != '\n' {
+			eventCount++
 			if err := buf.WriteByte('\n'); err != nil {
 				return nil, nil, fmt.Errorf("buffer newline: %w", err)
 			}
@@ -205,7 +227,7 @@ func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, erro
 		refs = append(refs, contract.InputRef{
 			Path:       path,
 			SHA256:     "sha256:" + hex.EncodeToString(sum[:]),
-			EventCount: contractcompile.IntToUint64(bytes.Count(data, []byte("\n"))),
+			EventCount: contractcompile.IntToUint64(eventCount),
 		})
 	}
 	return bytes.NewReader(buf.Bytes()), refs, nil
@@ -214,6 +236,9 @@ func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, erro
 func resolveCompileOutputs(flags compileFlags) (string, string, string, error) {
 	output := flags.output
 	if output == "" {
+		if err := validateCompileAgent(flags.agent); err != nil {
+			return "", "", "", err
+		}
 		base, err := contractsCandidateDir()
 		if err != nil {
 			return "", "", "", err

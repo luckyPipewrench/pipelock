@@ -41,6 +41,8 @@ Observe: pipelock learn observe --capture-dir <dir>
 Compile and review:
   pipelock learn compile --agent <name> [--input <glob>]
   pipelock learn review <candidate.yaml>
+  pipelock learn shadow --contract <candidate.yaml> --sessions <dir>
+  pipelock learn diff <shadow-a.json> <shadow-b.json>
 
 Operator affordances (mutate candidate YAML before ratification):
   pipelock learn split --candidate <path> --rule <rule_id> [--index N] [--out <path>]
@@ -49,6 +51,8 @@ Operator affordances (mutate candidate YAML before ratification):
 	cmd.AddCommand(observeCmd())
 	cmd.AddCommand(compileCmd())
 	cmd.AddCommand(reviewCmd())
+	cmd.AddCommand(shadowCmd())
+	cmd.AddCommand(diffCmd())
 	cmd.AddCommand(splitCmd())
 	cmd.AddCommand(pinCmd())
 	return cmd

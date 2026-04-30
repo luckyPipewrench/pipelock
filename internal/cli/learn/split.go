@@ -741,9 +741,13 @@ type auditEvent struct {
 	Output            string   `json:"output,omitempty"`
 	Review            string   `json:"review,omitempty"`
 	Manifest          string   `json:"manifest,omitempty"`
+	Sessions          string   `json:"sessions,omitempty"`
+	RecorderDir       string   `json:"recorder_dir,omitempty"`
 	EventsIngested    int      `json:"events_ingested,omitempty"`
 	EventsDropped     int      `json:"events_dropped,omitempty"`
 	RulesEmitted      int      `json:"rules_emitted,omitempty"`
+	Quarantines       int      `json:"quarantines,omitempty"`
+	ReceiptsEmitted   int      `json:"receipts_emitted,omitempty"`
 	CrossAgentSigning bool     `json:"cross_agent_signing,omitempty"`
 	NoOp              bool     `json:"noop"`
 }

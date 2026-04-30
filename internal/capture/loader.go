@@ -153,8 +153,9 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 				replayed := re.ReplayRecord(summary, scannerInput)
 				replayed.SidecarDecrypted = sidecarDecrypted
 				allRecords = append(allRecords, ReplayedRecord{
-					Summary: summary,
-					Result:  replayed,
+					Summary:   summary,
+					Result:    replayed,
+					Timestamp: entry.Timestamp,
 				})
 			}
 		}

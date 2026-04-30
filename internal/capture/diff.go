@@ -3,7 +3,10 @@
 
 package capture
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // reportVersion is the current DiffReport schema version.
 const reportVersion = 1
@@ -22,6 +25,10 @@ const (
 type ReplayedRecord struct {
 	Summary CaptureSummary
 	Result  ReplayResult
+	// Timestamp is the recorder-envelope timestamp for the captured entry.
+	// It is used by shadow reporting to bucket deltas without trusting
+	// wall-clock time at analysis time.
+	Timestamp time.Time
 }
 
 // DiffReport is the output of ComputeDiff. It summarises how a candidate

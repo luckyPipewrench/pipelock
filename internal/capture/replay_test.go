@@ -138,6 +138,9 @@ func TestReplayContractURL(t *testing.T) {
 	if allowed.Changed || allowed.CandidateAction != config.ActionAllow {
 		t.Fatalf("allowed result = changed %v action %q, want false/allow", allowed.Changed, allowed.CandidateAction)
 	}
+	if len(allowed.CandidateFindings) != 1 || allowed.CandidateFindings[0].PolicyRule != "r-api" {
+		t.Fatalf("allowed contract findings = %#v, want rule id", allowed.CandidateFindings)
+	}
 
 	blocked := re.ReplayRecord(CaptureSummary{
 		Surface:         SurfaceURL,
@@ -150,7 +153,8 @@ func TestReplayContractURL(t *testing.T) {
 	if !blocked.Changed || blocked.CandidateAction != config.ActionBlock {
 		t.Fatalf("blocked result = changed %v action %q, want true/block", blocked.Changed, blocked.CandidateAction)
 	}
-	if len(blocked.CandidateFindings) != 1 || blocked.CandidateFindings[0].Kind != KindContract {
+	if len(blocked.CandidateFindings) != 1 || blocked.CandidateFindings[0].Kind != KindContract ||
+		blocked.CandidateFindings[0].PolicyRule != "r-api" {
 		t.Fatalf("contract findings = %#v, want one contract finding", blocked.CandidateFindings)
 	}
 

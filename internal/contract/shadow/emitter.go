@@ -28,7 +28,6 @@ const (
 	evidenceReceiptEntryType = "evidence_receipt"
 	recorderSessionID        = "proxy"
 	shadowTransport          = "shadow"
-	fallbackEventID          = "00000000-0000-7000-8000-000000000000"
 	signatureAlgorithm       = "ed25519"
 	signaturePrefix          = "ed25519:"
 	keyPurposeReceiptSigning = "receipt-signing"
@@ -63,24 +62,20 @@ type AggregateConfig struct {
 	SampleCount    int
 }
 
-// Resolved fills default aggregation settings.
-func (cfg AggregateConfig) Resolved() AggregateConfig {
-	out := cfg
-	if out.WindowDuration == 0 {
-		out.WindowDuration = defaultWindowDuration
+// DefaultAggregateConfig returns the standard window and sample settings.
+func DefaultAggregateConfig() AggregateConfig {
+	return AggregateConfig{
+		WindowDuration: defaultWindowDuration,
+		SampleCount:    defaultSampleCount,
 	}
-	if out.SampleCount == 0 {
-		out.SampleCount = defaultSampleCount
-	}
-	return out
 }
 
 // Validate reports invalid aggregation settings.
 func (cfg AggregateConfig) Validate() error {
-	if cfg.WindowDuration < 0 {
+	if cfg.WindowDuration <= 0 {
 		return fmt.Errorf("%w: window_duration=%s", ErrInvalidConfig, cfg.WindowDuration)
 	}
-	if cfg.SampleCount < 0 {
+	if cfg.SampleCount <= 0 {
 		return fmt.Errorf("%w: sample_count=%d", ErrInvalidConfig, cfg.SampleCount)
 	}
 	return nil
@@ -103,7 +98,6 @@ func Aggregate(deltas []Delta, cfg AggregateConfig) ([]Batch, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	resolved := cfg.Resolved()
 
 	input := append([]Delta(nil), deltas...)
 	sort.SliceStable(input, func(i, j int) bool {
@@ -124,7 +118,7 @@ func Aggregate(deltas []Delta, cfg AggregateConfig) ([]Batch, error) {
 		if err := validateDelta(delta); err != nil {
 			return nil, err
 		}
-		start := delta.ObservedAt.UTC().Truncate(resolved.WindowDuration)
+		start := delta.ObservedAt.UTC().Truncate(cfg.WindowDuration)
 		key := batchKey{
 			contractHash:     delta.ContractHash,
 			ruleID:           delta.RuleID,
@@ -140,12 +134,12 @@ func Aggregate(deltas []Delta, cfg AggregateConfig) ([]Batch, error) {
 				OriginalVerdict:  delta.OriginalVerdict,
 				CandidateVerdict: delta.CandidateVerdict,
 				WindowStart:      start,
-				WindowEnd:        start.Add(resolved.WindowDuration),
+				WindowEnd:        start.Add(cfg.WindowDuration),
 			}
 			batches[key] = batch
 		}
 		batch.LosslessCount++
-		if delta.ExemplarID != "" && len(batch.ExemplarIDs) < resolved.SampleCount {
+		if delta.ExemplarID != "" && len(batch.ExemplarIDs) < cfg.SampleCount {
 			batch.ExemplarIDs = append(batch.ExemplarIDs, delta.ExemplarID)
 		}
 	}
@@ -219,7 +213,7 @@ type EmitterConfig struct {
 	SelectorID         string
 	ContractGeneration uint64
 	Clock              func() time.Time
-	EventID            func() string
+	EventID            func() (string, error)
 }
 
 // Emitter signs aggregated shadow_delta receipts and records them.
@@ -233,7 +227,7 @@ type Emitter struct {
 	selectorID         string
 	contractGeneration uint64
 	clock              func() time.Time
-	eventID            func() string
+	eventID            func() (string, error)
 
 	mu            sync.Mutex
 	chainSeq      uint64
@@ -302,12 +296,16 @@ func (e *Emitter) EmitBatch(batch Batch) error {
 	if err != nil {
 		return fmt.Errorf("marshal shadow delta payload: %w", err)
 	}
+	eventID, err := e.eventID()
+	if err != nil {
+		return fmt.Errorf("generate shadow delta event id: %w", err)
+	}
 
 	rcpt := contractreceipt.EvidenceReceipt{
 		RecordType:         contractreceipt.RecordTypeEvidenceV2,
 		ReceiptVersion:     2,
 		PayloadKind:        contractreceipt.PayloadShadowDelta,
-		EventID:            e.eventID(),
+		EventID:            eventID,
 		Timestamp:          e.clock().UTC(),
 		Principal:          e.principal,
 		Actor:              e.actor,
@@ -392,10 +390,10 @@ func validateBatch(batch Batch) error {
 	return nil
 }
 
-func newEventID() string {
+func newEventID() (string, error) {
 	id, err := newUUIDV7()
 	if err != nil {
-		return fallbackEventID
+		return "", fmt.Errorf("uuid v7: %w", err)
 	}
-	return id.String()
+	return id.String(), nil
 }

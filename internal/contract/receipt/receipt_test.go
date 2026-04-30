@@ -241,23 +241,31 @@ func TestReceiptHash_RejectsInvalidPayloadJSON(t *testing.T) {
 
 func TestVerifyWithKey(t *testing.T) {
 	r, pub := signedReceipt(t)
-	if err := receipt.VerifyWithKey(r, pub); err != nil {
+	if err := receipt.VerifyWithKey(r, pub, "receipt-key"); err != nil {
 		t.Fatalf("VerifyWithKey valid receipt: %v", err)
 	}
 
-	if err := receipt.VerifyWithKey(r, ed25519.PublicKey("short")); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+	if err := receipt.VerifyWithKey(r, pub, ""); !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("VerifyWithKey empty signer key id error = %v, want ErrPayloadMissingField", err)
+	}
+
+	if err := receipt.VerifyWithKey(r, pub, "other-key"); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+		t.Fatalf("VerifyWithKey signer key mismatch error = %v, want ErrPayloadInvalidEnum", err)
+	}
+
+	if err := receipt.VerifyWithKey(r, ed25519.PublicKey("short"), "receipt-key"); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
 		t.Fatalf("VerifyWithKey short key error = %v, want ErrPayloadInvalidEnum", err)
 	}
 
 	badHex := r
 	badHex.Signature.Signature = "ed25519:not-hex"
-	if err := receipt.VerifyWithKey(badHex, pub); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+	if err := receipt.VerifyWithKey(badHex, pub, "receipt-key"); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
 		t.Fatalf("VerifyWithKey bad hex error = %v, want ErrPayloadInvalidEnum", err)
 	}
 
 	tampered := r
 	tampered.Payload = json.RawMessage(`{"action_type":"block","target":"https://example.com/tampered","verdict":"blocked","transport":"forward","policy_sources":["dlp"],"winning_source":"dlp"}`)
-	if err := receipt.VerifyWithKey(tampered, pub); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+	if err := receipt.VerifyWithKey(tampered, pub, "receipt-key"); !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
 		t.Fatalf("VerifyWithKey tampered error = %v, want ErrPayloadInvalidEnum", err)
 	}
 }

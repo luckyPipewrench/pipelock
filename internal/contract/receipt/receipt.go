@@ -189,10 +189,17 @@ func ReceiptHash(r EvidenceReceipt) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// VerifyWithKey verifies the detached Ed25519 signature against pubKey.
-func VerifyWithKey(r EvidenceReceipt, pubKey ed25519.PublicKey) error {
+// VerifyWithKey verifies the detached Ed25519 signature against pubKey and
+// confirms that the receipt declares the expected signer key id.
+func VerifyWithKey(r EvidenceReceipt, pubKey ed25519.PublicKey, expectedSignerKeyID string) error {
 	if err := r.Validate(); err != nil {
 		return err
+	}
+	if expectedSignerKeyID == "" {
+		return fmt.Errorf("%w: expected signer_key_id", ErrPayloadMissingField)
+	}
+	if r.Signature.SignerKeyID != expectedSignerKeyID {
+		return fmt.Errorf("%w: signer_key_id", ErrPayloadInvalidEnum)
 	}
 	if len(pubKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("%w: signature public key length=%d", ErrPayloadInvalidEnum, len(pubKey))

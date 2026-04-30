@@ -68,7 +68,7 @@ func TestAggregate_GroupsWindowsAndSamples(t *testing.T) {
 	}
 }
 
-func TestAggregate_SortsTieBreakersAndZeroSamples(t *testing.T) {
+func TestAggregate_SortsTieBreakersAndSamples(t *testing.T) {
 	t.Parallel()
 	base := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
 	deltas := []Delta{
@@ -78,7 +78,7 @@ func TestAggregate_SortsTieBreakersAndZeroSamples(t *testing.T) {
 		{ContractHash: "sha256:a", RuleID: "rule-a", OriginalVerdict: "allow", CandidateVerdict: "warn", ExemplarID: "c", ObservedAt: base},
 		{ContractHash: "sha256:a", RuleID: "rule-a", OriginalVerdict: "allow", CandidateVerdict: "block", ExemplarID: "d", ObservedAt: base},
 	}
-	got, err := Aggregate(deltas, AggregateConfig{WindowDuration: time.Minute, SampleCount: 0})
+	got, err := Aggregate(deltas, AggregateConfig{WindowDuration: time.Minute, SampleCount: 1})
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
@@ -100,26 +100,26 @@ func TestAggregate_SortsTieBreakersAndZeroSamples(t *testing.T) {
 			t.Fatalf("batch samples = %d, want the one available exemplar", len(batch.ExemplarIDs))
 		}
 	}
-
-	got, err = Aggregate(deltas, AggregateConfig{WindowDuration: time.Minute, SampleCount: 1})
-	if err != nil {
-		t.Fatalf("Aggregate sample count 1: %v", err)
-	}
-	for _, batch := range got {
-		if len(batch.ExemplarIDs) != 1 {
-			t.Fatalf("sample count 1 batch samples = %d", len(batch.ExemplarIDs))
-		}
-	}
 }
 
 func TestAggregate_RejectsInvalidConfigAndDelta(t *testing.T) {
 	t.Parallel()
-	if _, err := Aggregate(nil, AggregateConfig{WindowDuration: -time.Second}); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("Aggregate invalid config error = %v, want ErrInvalidConfig", err)
+	for _, cfg := range []AggregateConfig{
+		{WindowDuration: -time.Second, SampleCount: 1},
+		{WindowDuration: 0, SampleCount: 1},
+		{WindowDuration: time.Minute, SampleCount: -1},
+		{WindowDuration: time.Minute, SampleCount: 0},
+	} {
+		if _, err := Aggregate(nil, cfg); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("Aggregate invalid config %#v error = %v, want ErrInvalidConfig", cfg, err)
+		}
 	}
-	if _, err := Aggregate(nil, AggregateConfig{SampleCount: -1}); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("Aggregate invalid sample count error = %v, want ErrInvalidConfig", err)
+
+	defaults := DefaultAggregateConfig()
+	if defaults.WindowDuration != defaultWindowDuration || defaults.SampleCount != defaultSampleCount {
+		t.Fatalf("DefaultAggregateConfig = %+v, want %s/%d", defaults, defaultWindowDuration, defaultSampleCount)
 	}
+
 	for _, tc := range []Delta{
 		{RuleID: "r", OriginalVerdict: "allow", CandidateVerdict: "block", ObservedAt: time.Now()},
 		{ContractHash: "sha256:c", OriginalVerdict: "allow", CandidateVerdict: "block", ObservedAt: time.Now()},
@@ -127,7 +127,7 @@ func TestAggregate_RejectsInvalidConfigAndDelta(t *testing.T) {
 		{ContractHash: "sha256:c", RuleID: "r", OriginalVerdict: "allow", ObservedAt: time.Now()},
 		{ContractHash: "sha256:c", RuleID: "r", OriginalVerdict: "allow", CandidateVerdict: "block"},
 	} {
-		_, err := Aggregate([]Delta{tc}, AggregateConfig{})
+		_, err := Aggregate([]Delta{tc}, defaults)
 		if !errors.Is(err, ErrInvalidDelta) {
 			t.Fatalf("Aggregate invalid delta %#v error = %v, want ErrInvalidDelta", tc, err)
 		}
@@ -142,7 +142,7 @@ func TestAggregate_OneHundredKEventsCollapsesToOneBatch(t *testing.T) {
 		deltas[i] = delta(base.Add(time.Duration(i%60)*time.Second), "rule-a", "allow", "block", "sample")
 	}
 
-	got, err := Aggregate(deltas, AggregateConfig{WindowDuration: time.Minute})
+	got, err := Aggregate(deltas, DefaultAggregateConfig())
 	if err != nil {
 		t.Fatalf("Aggregate: %v", err)
 	}
@@ -183,8 +183,8 @@ func TestEmitter_RecordsSignedShadowDeltaReceiptsInRecorderChain(t *testing.T) {
 			clockTicks++
 			return base.Add(time.Duration(clockTicks) * time.Second)
 		},
-		EventID: func() string {
-			return "01900000-0000-7000-8000-000000000001"
+		EventID: func() (string, error) {
+			return "01900000-0000-7000-8000-000000000001", nil
 		},
 	})
 
@@ -240,7 +240,7 @@ func TestEmitter_RecordsSignedShadowDeltaReceiptsInRecorderChain(t *testing.T) {
 		if err := json.Unmarshal(detail, &rcpt); err != nil {
 			t.Fatalf("unmarshal receipt: %v", err)
 		}
-		if err := contractreceipt.VerifyWithKey(rcpt, signer.priv.Public().(ed25519.PublicKey)); err != nil {
+		if err := contractreceipt.VerifyWithKey(rcpt, signer.priv.Public().(ed25519.PublicKey), signer.KeyID()); err != nil {
 			t.Fatalf("VerifyWithKey: %v", err)
 		}
 		receipts = append(receipts, rcpt)
@@ -289,7 +289,7 @@ func TestEmitter_NoOpAndDefaults(t *testing.T) {
 	if emitter.sessionID != recorderSessionID {
 		t.Fatalf("default sessionID = %q, want %q", emitter.sessionID, recorderSessionID)
 	}
-	if id := newEventID(); id == "" || id == fallbackEventID {
+	if id, err := newEventID(); err != nil || id == "" {
 		t.Fatalf("newEventID = %q, want generated UUID", id)
 	}
 }
@@ -351,12 +351,24 @@ func TestEmitter_SurfacesSignerValidateAndRecordErrors(t *testing.T) {
 	emitter = NewEmitter(EmitterConfig{
 		Recorder: &memoryRecorder{},
 		Signer:   newTestSigner(),
-		EventID: func() string {
-			return ""
+		EventID: func() (string, error) {
+			return "", nil
 		},
 	})
 	if err := emitter.EmitBatch(batch); err == nil || !strings.Contains(err.Error(), "event_id") {
 		t.Fatalf("EmitBatch validate error = %v, want event_id", err)
+	}
+
+	eventIDErr := errors.New("event id failed")
+	emitter = NewEmitter(EmitterConfig{
+		Recorder: &memoryRecorder{},
+		Signer:   newTestSigner(),
+		EventID: func() (string, error) {
+			return "", eventIDErr
+		},
+	})
+	if err := emitter.EmitBatch(batch); !errors.Is(err, eventIDErr) {
+		t.Fatalf("EmitBatch event id error = %v, want eventIDErr", err)
 	}
 
 	recordErr := errors.New("record failed")
@@ -418,8 +430,8 @@ func TestEmitter_ErrorSeams(t *testing.T) {
 	resetSeams()
 
 	newUUIDV7 = func() (uuid.UUID, error) { return uuid.Nil, boom }
-	if id := newEventID(); id != fallbackEventID {
-		t.Fatalf("newEventID fallback = %q", id)
+	if id, err := newEventID(); !errors.Is(err, boom) || id != "" {
+		t.Fatalf("newEventID error = id %q err %v, want boom", id, err)
 	}
 }
 

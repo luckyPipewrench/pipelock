@@ -211,6 +211,59 @@ func TestLatestAcceptedUsesImmutableManifestHistory(t *testing.T) {
 	}
 }
 
+func TestLatestAcceptedSkipsBrokenPriorChain(t *testing.T) {
+	st := New(t.TempDir())
+	cHash := putTestContract(t, st)
+	signer := newTestSigner(t, "act-1", "alice")
+	env1 := signedManifest(t, cHash, 1, "sha256:genesis", testEnv(), signer)
+	hash1, err := st.WriteActive(mustJSON(t, env1), testOptions(testRoster(signer), "", 0, 1))
+	if err != nil {
+		t.Fatalf("WriteActive gen1: %v", err)
+	}
+	if _, err := st.Reload(testOptions(testRoster(signer), "", 0, 1)); err != nil {
+		t.Fatalf("Reload gen1: %v", err)
+	}
+
+	missingPrior := "sha256:" + stringsOf("a", 64)
+	env3 := signedManifest(t, cHash, 3, missingPrior, testEnv(), signer)
+	hash3, err := ActiveManifestHash(env3.Body)
+	if err != nil {
+		t.Fatalf("ActiveManifestHash gen3: %v", err)
+	}
+	if err := os.WriteFile(mustManifestPath(t, st, hash3), mustJSON(t, env3), 0o600); err != nil {
+		t.Fatalf("write broken-chain manifest: %v", err)
+	}
+
+	latest, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1))
+	if err != nil {
+		t.Fatalf("LatestAccepted: %v", err)
+	}
+	if latest.ManifestHash != hash1 || latest.Envelope.Body.Generation != 1 {
+		t.Fatalf("latest = (%s, gen %d), want gen1 %s", latest.ManifestHash, latest.Envelope.Body.Generation, hash1)
+	}
+}
+
+func TestLatestAcceptedRejectsOnlyBrokenPriorChain(t *testing.T) {
+	st := New(t.TempDir())
+	cHash := putTestContract(t, st)
+	signer := newTestSigner(t, "act-1", "alice")
+	missingPrior := "sha256:" + stringsOf("b", 64)
+	env2 := signedManifest(t, cHash, 2, missingPrior, testEnv(), signer)
+	hash2, err := ActiveManifestHash(env2.Body)
+	if err != nil {
+		t.Fatalf("ActiveManifestHash gen2: %v", err)
+	}
+	if err := os.MkdirAll(st.manifestDir(), 0o700); err != nil {
+		t.Fatalf("mkdir manifests: %v", err)
+	}
+	if err := os.WriteFile(mustManifestPath(t, st, hash2), mustJSON(t, env2), 0o600); err != nil {
+		t.Fatalf("write broken-chain manifest: %v", err)
+	}
+	if _, err := st.LatestAccepted(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LatestAccepted err = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestWriteActiveChecksExpectedPrior(t *testing.T) {
 	st := New(t.TempDir())
 	cHash := putTestContract(t, st)
@@ -658,6 +711,9 @@ func TestReloadAcceptedManifestWriteConflict(t *testing.T) {
 	if _, err := st.Reload(testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrWriteOnceConflict) {
 		t.Fatalf("Reload err = %v, want ErrWriteOnceConflict", err)
 	}
+	if _, err := os.Stat(st.journalPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("journal err = %v, want not exist", err)
+	}
 }
 
 func TestReloadReturnsJournalAppendFailure(t *testing.T) {
@@ -695,7 +751,7 @@ func TestReloadReturnsJournalAppendFailure(t *testing.T) {
 	}
 }
 
-func TestReloadDoesNotPersistAcceptedWhenJournalFails(t *testing.T) {
+func TestReloadPersistsAcceptedBeforeJournalAppend(t *testing.T) {
 	st := New(t.TempDir())
 	cHash := putTestContract(t, st)
 	signer := newTestSigner(t, "act-1", "alice")
@@ -718,8 +774,8 @@ func TestReloadDoesNotPersistAcceptedWhenJournalFails(t *testing.T) {
 	if _, err := st.Reload(testOptions(testRoster(signer), "", 0, 1)); err == nil {
 		t.Fatal("Reload returned nil error with journal open failure")
 	}
-	if _, err := os.Stat(mustManifestPath(t, st, state.ManifestHash)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("accepted manifest err = %v, want not exist", err)
+	if _, err := os.Stat(mustManifestPath(t, st, state.ManifestHash)); err != nil {
+		t.Fatalf("accepted manifest missing after journal failure: %v", err)
 	}
 }
 

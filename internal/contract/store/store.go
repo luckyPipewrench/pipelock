@@ -142,6 +142,9 @@ func (s Store) Reload(opts Options) (State, error) {
 			if pathErr != nil {
 				return pathErr
 			}
+			if writeErr := writeOnce(path, encoded); writeErr != nil {
+				return writeErr
+			}
 			if journalErr := s.appendJournalLocked(JournalEntry{
 				Timestamp:         now(opts),
 				Outcome:           "accepted",
@@ -151,9 +154,6 @@ func (s Store) Reload(opts Options) (State, error) {
 				SignerKeyIDs:      signerKeyIDs(accepted.Envelope.Signatures),
 			}); journalErr != nil {
 				return journalErr
-			}
-			if writeErr := writeOnce(path, encoded); writeErr != nil {
-				return writeErr
 			}
 			acceptedPath = path
 		}
@@ -271,60 +271,133 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 	if err != nil {
 		return State{}, fmt.Errorf("read accepted manifests: %w", err)
 	}
-	var latest State
+	candidates := map[string]acceptedManifest{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), hashFilePrefix) || !strings.HasSuffix(entry.Name(), jsonExt) {
 			continue
 		}
-		raw, err := readFile(filepath.Join(s.manifestDir(), entry.Name()))
-		if err != nil {
-			return State{}, fmt.Errorf("read accepted manifest: %w", err)
-		}
-		var env contract.ActiveManifestEnvelope
-		if err := contract.DecodeStrictJSON(raw, &env); err != nil {
-			return State{}, fmt.Errorf("%w: accepted manifest: %w", ErrDecode, err)
-		}
-		if err := env.Body.Validate(); err != nil {
-			return State{}, fmt.Errorf("%w: accepted manifest: %w", ErrStructural, err)
-		}
-		hash, err := ActiveManifestHash(env.Body)
+		candidate, err := s.loadAcceptedManifestFile(filepath.Join(s.manifestDir(), entry.Name()), entry.Name(), opts)
 		if err != nil {
 			return State{}, err
 		}
-		expectedName, err := hashFilename(hash, jsonExt)
-		if err != nil {
-			return State{}, err
+		candidates[candidate.hash] = candidate
+	}
+	var latest acceptedManifest
+	for hash, candidate := range candidates {
+		if err := s.acceptedChainContinuous(hash, candidates, opts, map[string]struct{}{}); err != nil {
+			continue
 		}
-		if expectedName != entry.Name() {
-			return State{}, fmt.Errorf("%w: accepted manifest filename/hash mismatch", ErrContractHistory)
-		}
-		if err := verifyEnvironment(env.Body.Environment, opts.Environment); err != nil {
-			return State{}, err
-		}
-		if err := verifyManifestSignatures(env, opts); err != nil {
-			return State{}, err
-		}
-		contracts, err := s.loadContracts(env.Body.Selectors, opts)
-		if err != nil {
-			return State{}, err
-		}
-		acceptedPath, err := s.manifestPath(hash)
-		if err != nil {
-			return State{}, err
-		}
-		if env.Body.Generation > latest.Envelope.Body.Generation {
-			latest = State{
-				Envelope:     env,
-				ManifestHash: hash,
-				Contracts:    contracts,
-				AcceptedPath: acceptedPath,
-			}
+		if candidate.env.Body.Generation > latest.env.Body.Generation {
+			latest = candidate
 		}
 	}
-	if latest.ManifestHash == "" {
+	if latest.hash == "" {
 		return State{}, os.ErrNotExist
 	}
-	return latest, nil
+	contracts, err := s.loadContracts(latest.env.Body.Selectors, opts)
+	if err != nil {
+		return State{}, err
+	}
+	return State{
+		Envelope:     latest.env,
+		ManifestHash: latest.hash,
+		Contracts:    contracts,
+		AcceptedPath: latest.path,
+	}, nil
+}
+
+type acceptedManifest struct {
+	env  contract.ActiveManifestEnvelope
+	hash string
+	path string
+}
+
+func (s Store) loadAcceptedManifestFile(path, filename string, opts Options) (acceptedManifest, error) {
+	raw, err := readFile(path)
+	if err != nil {
+		return acceptedManifest{}, fmt.Errorf("read accepted manifest: %w", err)
+	}
+	var env contract.ActiveManifestEnvelope
+	if err := contract.DecodeStrictJSON(raw, &env); err != nil {
+		return acceptedManifest{}, fmt.Errorf("%w: accepted manifest: %w", ErrDecode, err)
+	}
+	if err := env.Body.Validate(); err != nil {
+		return acceptedManifest{}, fmt.Errorf("%w: accepted manifest: %w", ErrStructural, err)
+	}
+	hash, err := ActiveManifestHash(env.Body)
+	if err != nil {
+		return acceptedManifest{}, err
+	}
+	expectedName, err := hashFilename(hash, jsonExt)
+	if err != nil {
+		return acceptedManifest{}, err
+	}
+	if expectedName != filename {
+		return acceptedManifest{}, fmt.Errorf("%w: accepted manifest filename/hash mismatch", ErrContractHistory)
+	}
+	if err := verifyEnvironment(env.Body.Environment, opts.Environment); err != nil {
+		return acceptedManifest{}, err
+	}
+	if err := verifyManifestSignatures(env, opts); err != nil {
+		return acceptedManifest{}, err
+	}
+	acceptedPath, err := s.manifestPath(hash)
+	if err != nil {
+		return acceptedManifest{}, err
+	}
+	return acceptedManifest{env: env, hash: hash, path: acceptedPath}, nil
+}
+
+func (s Store) acceptedChainContinuous(hash string, candidates map[string]acceptedManifest, opts Options, visiting map[string]struct{}) error {
+	candidate, ok := candidates[hash]
+	if !ok {
+		loaded, err := s.loadAcceptedManifestByHash(hash, opts)
+		if err != nil {
+			return err
+		}
+		candidate = loaded
+		candidates[hash] = loaded
+	}
+	if _, ok := visiting[hash]; ok {
+		return fmt.Errorf("%w: accepted manifest prior chain cycle at %s", ErrContractHistory, hash)
+	}
+	visiting[hash] = struct{}{}
+	defer delete(visiting, hash)
+
+	if candidate.env.Body.Generation <= 1 {
+		return nil
+	}
+	prior := candidate.env.Body.PriorManifestHash
+	if err := validateHash(prior); err != nil {
+		return fmt.Errorf("%w: generation %d prior manifest %q is not an accepted hash",
+			ErrContractHistory, candidate.env.Body.Generation, prior)
+	}
+	priorCandidate, ok := candidates[prior]
+	if !ok {
+		loaded, err := s.loadAcceptedManifestByHash(prior, opts)
+		if err != nil {
+			return err
+		}
+		priorCandidate = loaded
+		candidates[prior] = loaded
+	}
+	if priorCandidate.env.Body.Generation >= candidate.env.Body.Generation {
+		return fmt.Errorf("%w: prior generation %d is not below %d",
+			ErrContractHistory, priorCandidate.env.Body.Generation, candidate.env.Body.Generation)
+	}
+	return s.acceptedChainContinuous(prior, candidates, opts, visiting)
+}
+
+func (s Store) loadAcceptedManifestByHash(hash string, opts Options) (acceptedManifest, error) {
+	path, err := s.manifestPath(hash)
+	if err != nil {
+		return acceptedManifest{}, err
+	}
+	name, err := hashFilename(hash, jsonExt)
+	if err != nil {
+		return acceptedManifest{}, err
+	}
+	return s.loadAcceptedManifestFile(path, name, opts)
 }
 
 // ActiveManifestHash returns sha256 over the manifest body's canonical preimage.

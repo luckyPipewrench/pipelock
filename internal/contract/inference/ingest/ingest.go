@@ -228,7 +228,7 @@ func (s streamState) verifyRecorderEntry(rec recorder.Entry, lineNo int, previou
 }
 
 func hashSupportedVersion(version int) bool {
-	return version == 1 || version == recorder.EntryVersion
+	return recorder.IsAcceptedEntryVersion(version)
 }
 
 func typedEntry(rec recorder.Entry) (Entry, error) {
@@ -238,7 +238,11 @@ func typedEntry(rec recorder.Entry) (Entry, error) {
 	}
 
 	var summary capture.CaptureSummary
-	if err := json.Unmarshal(asRawMessage(rec.Detail), &summary); err != nil {
+	raw, err := asRawMessage(rec.Detail)
+	if err != nil {
+		return Entry{}, fmt.Errorf("marshal capture detail: %w", err)
+	}
+	if err := json.Unmarshal(raw, &summary); err != nil {
 		return Entry{}, fmt.Errorf("unmarshal capture detail: %w", err)
 	}
 	if summary.CaptureSchemaVersion != capture.CaptureSchemaV1 {
@@ -253,16 +257,16 @@ func typedEntry(rec recorder.Entry) (Entry, error) {
 	return entry, nil
 }
 
-func asRawMessage(detail any) json.RawMessage {
+func asRawMessage(detail any) (json.RawMessage, error) {
 	raw, ok := detail.(json.RawMessage)
 	if ok {
-		return raw
+		return raw, nil
 	}
 	encoded, err := json.Marshal(detail)
 	if err != nil {
-		return json.RawMessage("null")
+		return nil, err
 	}
-	return encoded
+	return encoded, nil
 }
 
 func malformedError(lineNo, droppedLines int, context string, err error) error {

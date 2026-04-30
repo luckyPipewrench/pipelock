@@ -62,6 +62,7 @@ type Aggregates struct {
 	WindowEnd   time.Time
 
 	TotalEvents     int
+	SessionCount    int
 	DroppedEvents   int
 	MalformedEvents int
 
@@ -164,6 +165,7 @@ type aggregateState struct {
 	malformedEvents int
 	windowStart     time.Time
 	windowEnd       time.Time
+	sessions        map[string]struct{}
 
 	ruleObserved map[string]int
 	ruleScope    map[string]string
@@ -199,6 +201,7 @@ type normalizedEvent struct {
 func newAggregateState(windowDuration time.Duration) *aggregateState {
 	return &aggregateState{
 		windowDuration:   windowDuration,
+		sessions:         make(map[string]struct{}),
 		ruleObserved:     make(map[string]int),
 		ruleScope:        make(map[string]string),
 		ruleSessions:     make(map[string]map[string]struct{}),
@@ -241,6 +244,7 @@ func (s *aggregateState) add(event ingest.Entry) {
 
 	s.totalEvents++
 	s.totalHTTPEvents++
+	s.sessions[sessionKey(normalized.sessionID)] = struct{}{}
 	s.updateWindowRange(normalized.timestamp)
 	s.actionClasses[normalized.actionClass]++
 
@@ -300,6 +304,7 @@ func (s *aggregateState) finish() Aggregates {
 		WindowStart:          s.windowStart,
 		WindowEnd:            s.windowEnd,
 		TotalEvents:          s.totalEvents,
+		SessionCount:         len(s.sessions),
 		DroppedEvents:        s.droppedEvents,
 		MalformedEvents:      s.malformedEvents,
 		Rules:                rules,
@@ -313,16 +318,12 @@ func (s *aggregateState) observeRule(key, scope string, event normalizedEvent) {
 	s.ruleObserved[key]++
 	s.ruleScope[key] = scope
 
-	sessionID := event.sessionID
-	if sessionID == "" {
-		sessionID = "(empty)"
-	}
 	sessions := s.ruleSessions[key]
 	if sessions == nil {
 		sessions = make(map[string]struct{})
 		s.ruleSessions[key] = sessions
 	}
-	sessions[sessionID] = struct{}{}
+	sessions[sessionKey(event.sessionID)] = struct{}{}
 
 	window := event.timestamp.Truncate(s.windowDuration)
 	windows := s.ruleWindows[key]
@@ -331,6 +332,13 @@ func (s *aggregateState) observeRule(key, scope string, event normalizedEvent) {
 		s.ruleWindows[key] = windows
 	}
 	windows[window] = struct{}{}
+}
+
+func sessionKey(sessionID string) string {
+	if sessionID == "" {
+		return "(empty)"
+	}
+	return sessionID
 }
 
 func (s *aggregateState) opportunitiesFor(key string) int {
@@ -409,15 +417,55 @@ func normalizeEvent(event ingest.Entry) (normalizedEvent, bool) {
 }
 
 func captureDropCount(detail any) (int, bool) {
-	detailJSON, err := json.Marshal(detail)
-	if err != nil {
-		return 0, false
+	switch typed := detail.(type) {
+	case capture.CaptureDropDetail:
+		return nonNegative(typed.Count), true
+	case json.RawMessage:
+		return captureDropCountJSON(typed)
+	case []byte:
+		return captureDropCountJSON(typed)
+	case string:
+		return captureDropCountJSON([]byte(typed))
+	case map[string]any:
+		count, ok := typed["count"]
+		if !ok {
+			count = typed["Count"]
+		}
+		return captureDropCountValue(count)
+	default:
+		detailJSON, err := json.Marshal(detail)
+		if err != nil {
+			return 0, false
+		}
+		return captureDropCountJSON(detailJSON)
 	}
+}
+
+func captureDropCountJSON(detailJSON []byte) (int, bool) {
 	var drop capture.CaptureDropDetail
 	if err := json.Unmarshal(detailJSON, &drop); err != nil {
 		return 0, false
 	}
 	return nonNegative(drop.Count), true
+}
+
+func captureDropCountValue(value any) (int, bool) {
+	switch typed := value.(type) {
+	case int:
+		return nonNegative(typed), true
+	case int64:
+		return nonNegative(int(typed)), true
+	case float64:
+		return nonNegative(int(typed)), true
+	case json.Number:
+		out, err := typed.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return nonNegative(int(out)), true
+	default:
+		return 0, false
+	}
 }
 
 func nonNegative(v int) int {
@@ -448,19 +496,27 @@ func sortedCountSamples(counts map[time.Time]int) []CountSample {
 }
 
 func hostRuleKey(host string) string {
-	return "host=" + host
+	return "host=" + escapeRuleKeyComponent(host)
 }
 
 func pathRuleKey(host, path string) string {
-	return hostRuleKey(host) + ";path=" + path
+	return hostRuleKey(host) + ";path=" + escapeRuleKeyComponent(path)
 }
 
 func methodRuleKey(host, path, method string) string {
-	return pathRuleKey(host, path) + ";method=" + method
+	return pathRuleKey(host, path) + ";method=" + escapeRuleKeyComponent(method)
 }
 
 func actionRuleKey(host, path, method, action string) string {
-	return methodRuleKey(host, path, method) + ";action=" + action
+	return methodRuleKey(host, path, method) + ";action=" + escapeRuleKeyComponent(action)
+}
+
+func escapeRuleKeyComponent(value string) string {
+	return strings.NewReplacer(
+		"%", "%25",
+		";", "%3B",
+		"=", "%3D",
+	).Replace(value)
 }
 
 func cloneFloat64s(in []float64) []float64 {

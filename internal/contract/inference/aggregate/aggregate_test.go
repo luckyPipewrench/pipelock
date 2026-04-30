@@ -6,6 +6,7 @@ package aggregate
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,9 @@ func TestAggregate_CounterCorrectness(t *testing.T) {
 
 	if got.TotalEvents != 3 {
 		t.Fatalf("TotalEvents = %d, want 3", got.TotalEvents)
+	}
+	if got.SessionCount != 3 {
+		t.Fatalf("SessionCount = %d, want 3", got.SessionCount)
 	}
 
 	assertRule(t, got, "host=api.example.com", RuleCounts{
@@ -152,6 +156,26 @@ func TestAggregate_SortedAccessors(t *testing.T) {
 	}
 	if keys := got.BudgetKeys(); !sortStringsAlready(keys) {
 		t.Fatalf("BudgetKeys() not sorted: %v", keys)
+	}
+}
+
+func TestAggregate_RuleKeysEscapeDelimiters(t *testing.T) {
+	base := time.Date(2026, 4, 29, 12, 0, 0, 0, time.UTC)
+	events := entries(
+		entry(base, "s1", "GET", "https://example.com/v1/users;id=1", "read", "allow", 1, 10),
+	)
+
+	got, err := Aggregate(events, AggregateConfig{})
+	if err != nil {
+		t.Fatalf("Aggregate() error = %v", err)
+	}
+
+	key := pathRuleKey("example.com", "/v1/users;id=1")
+	if _, ok := got.Rules[key]; !ok {
+		t.Fatalf("missing escaped path rule %q; keys=%v", key, got.RuleKeys())
+	}
+	if !strings.Contains(key, "%3B") || !strings.Contains(key, "%3D") {
+		t.Fatalf("path key = %q, want escaped delimiters", key)
 	}
 }
 

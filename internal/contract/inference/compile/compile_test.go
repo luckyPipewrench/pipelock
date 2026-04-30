@@ -67,6 +67,9 @@ func TestCompile_DeterministicRecompile(t *testing.T) {
 	if first.Stats.RulesEmitted == 0 {
 		t.Fatal("expected rules")
 	}
+	if first.Contract.ObservationWindow.SessionCount != 3 {
+		t.Fatalf("SessionCount = %d, want 3", first.Contract.ObservationWindow.SessionCount)
+	}
 	if first.Contract.Rules[0].LifecycleState != "capture_only" {
 		t.Fatalf("LifecycleState = %q, want capture_only", first.Contract.Rules[0].LifecycleState)
 	}
@@ -112,6 +115,20 @@ func TestCompile_ObservationWindowRootMarshalError(t *testing.T) {
 	}, CompileOptions{Deterministic: true, Signer: newTestSigner()})
 	if !errors.Is(err, errMarshalBoom) {
 		t.Fatalf("Compile error = %v, want errMarshalBoom", err)
+	}
+}
+
+func TestCompile_InvalidAggregateConfigFailsBeforeIngest(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig()
+	cfg.WindowDuration = -time.Second
+
+	_, err := Compile(CompileInput{
+		Stream: strings.NewReader(fixtureJSONL(t)),
+		Config: cfg,
+	}, CompileOptions{Deterministic: true, Signer: newTestSigner()})
+	if !errors.Is(err, aggregate.ErrInvalidConfig) {
+		t.Fatalf("Compile error = %v, want ErrInvalidConfig", err)
 	}
 }
 
@@ -189,6 +206,10 @@ func TestHelpersCoverEdgeBranches(t *testing.T) {
 	}
 	if sanitizeNamePart("///") != "root" {
 		t.Fatal("empty sanitized part should use root")
+	}
+	parts := parseRuleKey("host=api.example.com;path=/v1%3Busers%3Did;method=GET;action=allow%3Bdebug%3Dtrue")
+	if parts["path"] != "/v1;users=id" || parts["action"] != "allow;debug=true" {
+		t.Fatalf("parseRuleKey decoded parts = %#v", parts)
 	}
 }
 

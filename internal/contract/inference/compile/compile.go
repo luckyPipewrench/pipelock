@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,6 +105,10 @@ func Compile(in CompileInput, opts CompileOptions) (CompileResult, error) {
 	if opts.Signer == nil {
 		return CompileResult{}, fmt.Errorf("%w: signer is nil", ErrInvalidInput)
 	}
+	aggCfg := aggregate.AggregateConfig{WindowDuration: in.Config.WindowDuration}
+	if err := aggCfg.Validate(); err != nil {
+		return CompileResult{}, fmt.Errorf("aggregate config: %w", err)
+	}
 	clock := opts.Clock
 	if clock == nil {
 		if opts.Deterministic {
@@ -131,10 +136,10 @@ func Compile(in CompileInput, opts CompileOptions) (CompileResult, error) {
 		}
 	}()
 
-	aggs, err := aggregate.Aggregate(entries, aggregate.AggregateConfig{WindowDuration: in.Config.WindowDuration})
+	aggs, err := aggregate.Aggregate(entries, aggCfg)
 	wg.Wait()
 	if err != nil {
-		return CompileResult{}, err
+		return CompileResult{}, fmt.Errorf("aggregate events: %w", err)
 	}
 	fatal := firstFatalIngestError(ingErrors)
 	if fatal != nil {
@@ -143,7 +148,7 @@ func Compile(in CompileInput, opts CompileOptions) (CompileResult, error) {
 
 	c, stats, err := inferContract(aggs, in.Config)
 	if err != nil {
-		return CompileResult{}, err
+		return CompileResult{}, fmt.Errorf("infer contract: %w", err)
 	}
 	stats.IngestErrors = len(ingErrors)
 	finished := clock().UTC()
@@ -155,7 +160,7 @@ func Compile(in CompileInput, opts CompileOptions) (CompileResult, error) {
 		Settings:          in.Config.Settings,
 	})
 	if err != nil {
-		return CompileResult{}, err
+		return CompileResult{}, fmt.Errorf("emit contract: %w", err)
 	}
 
 	review := ReviewMarkdown(emitted.Contract, aggs, in.Config)
@@ -212,7 +217,7 @@ func inferContract(aggs aggregate.Aggregates, cfg CompileConfig) (contract.Contr
 			Start:                 aggs.WindowStart,
 			End:                   aggs.WindowEnd,
 			EventCount:            IntToUint64(aggs.TotalEvents),
-			SessionCount:          IntToUint64(sessionCount(aggs)),
+			SessionCount:          IntToUint64(aggs.SessionCount),
 			ObservationWindowRoot: windowRoot,
 		},
 		Compile: contract.ContractCompile{
@@ -290,8 +295,10 @@ func buildRule(key string, counts aggregate.RuleCounts, confidence inference.Con
 			"sessions_with_opportunity": counts.Opportunities,
 			"sessions_observed":         counts.Sessions,
 			"events_observed":           counts.Observed,
-			"windows_with_opportunity":  counts.Windows,
-			"windows_observed":          counts.Windows,
+			// Aggregation currently records only windows where this rule had
+			// observations, so opportunity and observed windows are identical.
+			"windows_with_opportunity": counts.Windows,
+			"windows_observed":         counts.Windows,
 		},
 		Selector: selector,
 		Budgets:  budgets,
@@ -326,6 +333,10 @@ func parseRuleKey(key string) map[string]string {
 	for _, part := range strings.Split(key, ";") {
 		name, value, ok := strings.Cut(part, "=")
 		if ok {
+			decoded, err := url.PathUnescape(value)
+			if err == nil {
+				value = decoded
+			}
 			out[name] = value
 		}
 	}
@@ -360,16 +371,6 @@ func observationWindowRoot(aggs aggregate.Aggregates, override string) (string, 
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
-}
-
-func sessionCount(aggs aggregate.Aggregates) int {
-	maxSessions := 0
-	for _, counts := range aggs.Rules {
-		if counts.Sessions > maxSessions {
-			maxSessions = counts.Sessions
-		}
-	}
-	return maxSessions
 }
 
 func displayName(parts map[string]string) string {

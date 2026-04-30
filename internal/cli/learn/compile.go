@@ -78,6 +78,9 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 		ensureEnvDefault("TZ", "UTC")
 		ensureEnvDefault("LC_ALL", "C")
 	}
+	if err := validateCompileAgent(flags.agent); err != nil {
+		return err
+	}
 
 	cfg, err := loadConfig(flags.configPath)
 	if err != nil {
@@ -127,17 +130,19 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 	}
 
 	emitAuditEvent(cmd, auditEvent{
-		Event:          "learn_compile",
-		Agent:          flags.agent,
-		Since:          flags.since.String(),
-		Inputs:         inputs,
-		Output:         output,
-		Review:         reviewPath,
-		Manifest:       manifestPath,
-		EventsIngested: result.Stats.EventsIngested,
-		EventsDropped:  result.Stats.EventsDropped + result.Stats.EventsMalformed,
-		RulesEmitted:   result.Stats.RulesEmitted,
-		NoOp:           result.Stats.NoOp,
+		Event:             "learn_compile",
+		Agent:             flags.agent,
+		SignerKeyID:       signer.KeyID(),
+		CrossAgentSigning: flags.agent != signer.KeyID(),
+		Since:             flags.since.String(),
+		Inputs:            inputs,
+		Output:            output,
+		Review:            reviewPath,
+		Manifest:          manifestPath,
+		EventsIngested:    result.Stats.EventsIngested,
+		EventsDropped:     result.Stats.EventsDropped + result.Stats.EventsMalformed,
+		RulesEmitted:      result.Stats.RulesEmitted,
+		NoOp:              result.Stats.NoOp,
 	})
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "compile: %d events, %d rules, written to %s\n", result.Stats.EventsIngested, result.Stats.RulesEmitted, output)
 	return nil
@@ -145,6 +150,7 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 
 func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, error) {
 	var paths []string
+	var captureRoot string
 	var err error
 	if flags.inputGlob != "" {
 		paths, err = filepath.Glob(flags.inputGlob)
@@ -158,6 +164,10 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 		if !filepath.IsAbs(filepath.Clean(cfg.Learn.CaptureDir)) {
 			return nil, fmt.Errorf("%w: learn.capture_dir must be absolute", errCompileInput)
 		}
+		if err := validateCompileAgent(flags.agent); err != nil {
+			return nil, err
+		}
+		captureRoot = filepath.Clean(cfg.Learn.CaptureDir)
 		paths, err = filepath.Glob(filepath.Join(cfg.Learn.CaptureDir, flags.agent, "*.jsonl"))
 		if err != nil {
 			return nil, fmt.Errorf("%w: capture glob: %w", errCompileInput, err)
@@ -176,13 +186,74 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("%w: no recorder JSONL inputs matched", errCompileInput)
 	}
-	for _, path := range paths {
-		clean := filepath.Clean(path)
-		if !filepath.IsAbs(clean) {
-			return nil, fmt.Errorf("%w: input path must be absolute: %s", errCompileInput, path)
+	var captureRootReal string
+	if captureRoot != "" {
+		captureRootReal, err = filepath.EvalSymlinks(captureRoot)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve capture root: %w", errCompileInput, err)
 		}
+		captureRootReal = filepath.Clean(captureRootReal)
+	}
+	for i, path := range paths {
+		resolved, err := resolveCompileInputPath(path)
+		if err != nil {
+			return nil, err
+		}
+		if captureRootReal != "" {
+			if err := ensurePathWithinDir(captureRootReal, resolved); err != nil {
+				return nil, err
+			}
+		}
+		paths[i] = resolved
 	}
 	return paths, nil
+}
+
+func resolveCompileInputPath(path string) (string, error) {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return "", fmt.Errorf("%w: input path must be absolute: %s", errCompileInput, path)
+	}
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("%w: inspect input path: %w", errCompileInput, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: input path must not be a symlink: %s", errCompileInput, path)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%w: input path must be a regular file: %s", errCompileInput, path)
+	}
+	realPath, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve input path: %w", errCompileInput, err)
+	}
+	return filepath.Clean(realPath), nil
+}
+
+func ensurePathWithinDir(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("%w: compare input path to capture root: %w", errCompileInput, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%w: input path escapes learn.capture_dir: %s", errCompileInput, path)
+	}
+	return nil
+}
+
+func validateCompileAgent(agent string) error {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return fmt.Errorf("%w: --agent is required", errCompileInput)
+	}
+	if agent == "." || agent == ".." || strings.Contains(agent, "/") || strings.Contains(agent, `\`) {
+		return fmt.Errorf("%w: --agent must be a single path segment", errCompileInput)
+	}
+	if filepath.Base(agent) != agent {
+		return fmt.Errorf("%w: --agent must be a single path segment", errCompileInput)
+	}
+	return nil
 }
 
 func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, error) {
@@ -196,7 +267,9 @@ func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, erro
 		if _, err := buf.Write(data); err != nil {
 			return nil, nil, fmt.Errorf("buffer input: %w", err)
 		}
+		eventCount := bytes.Count(data, []byte("\n"))
 		if len(data) > 0 && data[len(data)-1] != '\n' {
+			eventCount++
 			if err := buf.WriteByte('\n'); err != nil {
 				return nil, nil, fmt.Errorf("buffer newline: %w", err)
 			}
@@ -205,7 +278,7 @@ func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, erro
 		refs = append(refs, contract.InputRef{
 			Path:       path,
 			SHA256:     "sha256:" + hex.EncodeToString(sum[:]),
-			EventCount: contractcompile.IntToUint64(bytes.Count(data, []byte("\n"))),
+			EventCount: contractcompile.IntToUint64(eventCount),
 		})
 	}
 	return bytes.NewReader(buf.Bytes()), refs, nil
@@ -214,6 +287,9 @@ func readCompileInputs(paths []string) (*bytes.Reader, []contract.InputRef, erro
 func resolveCompileOutputs(flags compileFlags) (string, string, string, error) {
 	output := flags.output
 	if output == "" {
+		if err := validateCompileAgent(flags.agent); err != nil {
+			return "", "", "", err
+		}
 		base, err := contractsCandidateDir()
 		if err != nil {
 			return "", "", "", err
@@ -240,7 +316,23 @@ func resolveCompileOutputs(flags compileFlags) (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
+	if err := ensureDistinctCompileOutputs(cleanOutput, cleanReview, cleanManifest); err != nil {
+		return "", "", "", err
+	}
 	return cleanOutput, cleanReview, cleanManifest, nil
+}
+
+func ensureDistinctCompileOutputs(output, review, manifest string) error {
+	if output == review {
+		return fmt.Errorf("%w: review path overlaps output path: %s", errCompileWrite, review)
+	}
+	if output == manifest {
+		return fmt.Errorf("%w: manifest path overlaps output path: %s", errCompileWrite, manifest)
+	}
+	if review == manifest {
+		return fmt.Errorf("%w: manifest path overlaps review path: %s", errCompileWrite, manifest)
+	}
+	return nil
 }
 
 func checkedWritePath(path string) (string, error) {

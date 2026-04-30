@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"os"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -218,11 +217,11 @@ func TestEmitContract_ContractHashPreimageErrorFeedsValidation(t *testing.T) {
 	c := baseContract()
 	c.Defaults.Confidence = map[string]any{"bad": make(chan int)}
 	_, err := EmitContract(c, signer, EmitOptions{})
-	if !errors.Is(err, ErrInvalidArtifact) {
-		t.Fatalf("got %v, want ErrInvalidArtifact", err)
+	if err == nil || !strings.Contains(err.Error(), "compute contract hash") {
+		t.Fatalf("got %v, want contract hash error", err)
 	}
-	if hash := hashContractWithEmptyHash(c); hash != "" {
-		t.Fatalf("hashContractWithEmptyHash = %q, want empty", hash)
+	if hash, err := hashContractWithEmptyHash(c); err == nil || hash != "" {
+		t.Fatalf("hashContractWithEmptyHash = %q, %v; want empty hash and error", hash, err)
 	}
 }
 
@@ -231,18 +230,15 @@ func TestHelpers(t *testing.T) {
 	if got := signatureString([]byte{0xab}); got != "ed25519:ab" {
 		t.Fatalf("signatureString = %q", got)
 	}
-	if got := digestFile("/definitely/not/present"); !strings.HasPrefix(got, "sha256:") {
-		t.Fatalf("digestFile missing = %q", got)
-	}
-	tmp := t.TempDir() + "/sum.txt"
-	if err := os.WriteFile(tmp, []byte("module sum"), 0o600); err != nil {
-		t.Fatalf("write temp digest file: %v", err)
-	}
-	if got := digestFile(tmp); !strings.HasPrefix(got, "sha256:") {
-		t.Fatalf("digestFile existing = %q", got)
-	}
 	if got := cloneSettings(nil); len(got) != 0 {
 		t.Fatalf("cloneSettings(nil) len = %d, want 0", len(got))
+	}
+	settings := map[string]any{"nested": map[string]any{"items": []any{map[string]any{"k": "v"}}}}
+	cloned := cloneSettings(settings)
+	settings["nested"].(map[string]any)["items"].([]any)[0].(map[string]any)["k"] = "mutated"
+	gotNested := cloned["nested"].(map[string]any)["items"].([]any)[0].(map[string]any)["k"]
+	if gotNested != "v" {
+		t.Fatalf("cloneSettings nested value = %q, want independent copy", gotNested)
 	}
 	if _, err := marshalDeterministicJSON(map[string]any{"bad": make(chan int)}); err == nil {
 		t.Fatal("marshalDeterministicJSON expected error")
@@ -271,7 +267,7 @@ func TestModuleDigestsFromBuildInfo(t *testing.T) {
 	}
 }
 
-func TestModuleDigestsFallbackUsesGoSum(t *testing.T) {
+func TestModuleDigestsFallbackUsesUnavailableMarker(t *testing.T) {
 	oldReadBuildInfo := readBuildInfo
 	t.Cleanup(func() {
 		readBuildInfo = oldReadBuildInfo
@@ -281,8 +277,8 @@ func TestModuleDigestsFallbackUsesGoSum(t *testing.T) {
 	}
 
 	got := moduleDigests()
-	if got["go.sum"] == "" {
-		t.Fatalf("moduleDigests fallback missing go.sum: %#v", got)
+	if got[moduleDigestUnavailableKey] == "" {
+		t.Fatalf("moduleDigests fallback missing unavailable marker: %#v", got)
 	}
 }
 

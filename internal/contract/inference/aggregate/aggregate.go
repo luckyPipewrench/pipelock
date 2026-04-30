@@ -496,19 +496,27 @@ func sortedCountSamples(counts map[time.Time]int) []CountSample {
 }
 
 func hostRuleKey(host string) string {
-	return "host=" + host
+	return "host=" + escapeRuleKeyComponent(host)
 }
 
 func pathRuleKey(host, path string) string {
-	return hostRuleKey(host) + ";path=" + path
+	return hostRuleKey(host) + ";path=" + escapeRuleKeyComponent(path)
 }
 
 func methodRuleKey(host, path, method string) string {
-	return pathRuleKey(host, path) + ";method=" + method
+	return pathRuleKey(host, path) + ";method=" + escapeRuleKeyComponent(method)
 }
 
 func actionRuleKey(host, path, method, action string) string {
-	return methodRuleKey(host, path, method) + ";action=" + action
+	return methodRuleKey(host, path, method) + ";action=" + escapeRuleKeyComponent(action)
+}
+
+func escapeRuleKeyComponent(value string) string {
+	return strings.NewReplacer(
+		"%", "%25",
+		";", "%3B",
+		"=", "%3D",
+	).Replace(value)
 }
 
 func cloneFloat64s(in []float64) []float64 {

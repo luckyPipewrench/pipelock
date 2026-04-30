@@ -150,6 +150,7 @@ func runCompile(cmd *cobra.Command, flags compileFlags) error {
 
 func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, error) {
 	var paths []string
+	var captureRoot string
 	var err error
 	if flags.inputGlob != "" {
 		paths, err = filepath.Glob(flags.inputGlob)
@@ -166,6 +167,7 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 		if err := validateCompileAgent(flags.agent); err != nil {
 			return nil, err
 		}
+		captureRoot = filepath.Clean(cfg.Learn.CaptureDir)
 		paths, err = filepath.Glob(filepath.Join(cfg.Learn.CaptureDir, flags.agent, "*.jsonl"))
 		if err != nil {
 			return nil, fmt.Errorf("%w: capture glob: %w", errCompileInput, err)
@@ -184,10 +186,23 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 	if len(paths) == 0 {
 		return nil, fmt.Errorf("%w: no recorder JSONL inputs matched", errCompileInput)
 	}
+	var captureRootReal string
+	if captureRoot != "" {
+		captureRootReal, err = filepath.EvalSymlinks(captureRoot)
+		if err != nil {
+			return nil, fmt.Errorf("%w: resolve capture root: %w", errCompileInput, err)
+		}
+		captureRootReal = filepath.Clean(captureRootReal)
+	}
 	for i, path := range paths {
 		resolved, err := resolveCompileInputPath(path)
 		if err != nil {
 			return nil, err
+		}
+		if captureRootReal != "" {
+			if err := ensurePathWithinDir(captureRootReal, resolved); err != nil {
+				return nil, err
+			}
 		}
 		paths[i] = resolved
 	}
@@ -214,6 +229,17 @@ func resolveCompileInputPath(path string) (string, error) {
 		return "", fmt.Errorf("%w: resolve input path: %w", errCompileInput, err)
 	}
 	return filepath.Clean(realPath), nil
+}
+
+func ensurePathWithinDir(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("%w: compare input path to capture root: %w", errCompileInput, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%w: input path escapes learn.capture_dir: %s", errCompileInput, path)
+	}
+	return nil
 }
 
 func validateCompileAgent(agent string) error {
@@ -290,7 +316,23 @@ func resolveCompileOutputs(flags compileFlags) (string, string, string, error) {
 	if err != nil {
 		return "", "", "", err
 	}
+	if err := ensureDistinctCompileOutputs(cleanOutput, cleanReview, cleanManifest); err != nil {
+		return "", "", "", err
+	}
 	return cleanOutput, cleanReview, cleanManifest, nil
+}
+
+func ensureDistinctCompileOutputs(output, review, manifest string) error {
+	if output == review {
+		return fmt.Errorf("%w: review path overlaps output path: %s", errCompileWrite, review)
+	}
+	if output == manifest {
+		return fmt.Errorf("%w: manifest path overlaps output path: %s", errCompileWrite, manifest)
+	}
+	if review == manifest {
+		return fmt.Errorf("%w: manifest path overlaps review path: %s", errCompileWrite, manifest)
+	}
+	return nil
 }
 
 func checkedWritePath(path string) (string, error) {

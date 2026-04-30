@@ -71,6 +71,32 @@ func TestResolveCompileInputsRejectsSymlinkInput(t *testing.T) {
 	}
 }
 
+func TestResolveCompileInputsRejectsSymlinkedCaptureRootEscape(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	captureRoot := filepath.Join(dir, "captures")
+	if err := os.MkdirAll(captureRoot, 0o750); err != nil {
+		t.Fatalf("MkdirAll captureRoot: %v", err)
+	}
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(outside, 0o750); err != nil {
+		t.Fatalf("MkdirAll outside: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "capture.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile outside capture: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(captureRoot, "agent-a")); err != nil {
+		t.Fatalf("Symlink agent dir: %v", err)
+	}
+	cfg := config.Defaults()
+	cfg.Learn.CaptureDir = captureRoot
+
+	_, err := resolveCompileInputs(cfg, compileFlags{agent: "agent-a", since: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), "escapes learn.capture_dir") {
+		t.Fatalf("resolveCompileInputs error = %v, want capture root escape rejection", err)
+	}
+}
+
 func TestReadCompileInputsCountsAppendedNewline(t *testing.T) {
 	t.Parallel()
 	input := filepath.Join(t.TempDir(), "capture.jsonl")
@@ -91,5 +117,22 @@ func TestReadCompileInputsCountsAppendedNewline(t *testing.T) {
 	}
 	if len(refs) != 1 || refs[0].EventCount != 2 {
 		t.Fatalf("refs = %#v, want event_count 2", refs)
+	}
+}
+
+func TestResolveCompileOutputsRejectsOverlappingPaths(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	output := filepath.Join(dir, "candidate.yaml")
+	manifest := filepath.Join(dir, "manifest.json")
+
+	_, _, _, err := resolveCompileOutputs(compileFlags{
+		agent:    "agent-a",
+		output:   output,
+		review:   output,
+		manifest: manifest,
+	})
+	if err == nil || !strings.Contains(err.Error(), "overlaps output") {
+		t.Fatalf("resolveCompileOutputs error = %v, want overlap rejection", err)
 	}
 }

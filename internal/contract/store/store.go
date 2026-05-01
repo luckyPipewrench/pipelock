@@ -306,6 +306,24 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 	}, nil
 }
 
+// Accepted returns an immutable accepted manifest by manifest hash.
+func (s Store) Accepted(hash string, opts Options) (State, error) {
+	accepted, err := s.loadAcceptedManifestByHash(hash, opts)
+	if err != nil {
+		return State{}, err
+	}
+	contracts, err := s.loadContracts(accepted.env.Body.Selectors, opts)
+	if err != nil {
+		return State{}, err
+	}
+	return State{
+		Envelope:     accepted.env,
+		ManifestHash: accepted.hash,
+		Contracts:    contracts,
+		AcceptedPath: accepted.path,
+	}, nil
+}
+
 type acceptedManifest struct {
 	env  contract.ActiveManifestEnvelope
 	hash string

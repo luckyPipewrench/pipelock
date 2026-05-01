@@ -173,6 +173,9 @@ func validateContractPromoteCommitted(raw json.RawMessage) error {
 		return fmt.Errorf("%w: validation_outcome=%q (must be %q or %q)",
 			ErrPayloadInvalidEnum, p.ValidationOutcome, outcomeAccepted, outcomeRejected)
 	}
+	if p.ValidationOutcome == outcomeRejected {
+		return requireNonEmpty("reject_reason", p.RejectReason)
+	}
 	return nil
 }
 
@@ -210,6 +213,9 @@ func validateContractRollbackCommitted(raw json.RawMessage) error {
 	if p.ValidationOutcome != outcomeAccepted && p.ValidationOutcome != outcomeRejected {
 		return fmt.Errorf("%w: validation_outcome=%q (must be %q or %q)",
 			ErrPayloadInvalidEnum, p.ValidationOutcome, outcomeAccepted, outcomeRejected)
+	}
+	if p.ValidationOutcome == outcomeRejected {
+		return requireNonEmpty("reject_reason", p.RejectReason)
 	}
 	return nil
 }

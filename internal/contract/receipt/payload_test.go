@@ -154,6 +154,19 @@ func TestValidateContractPromoteCommitted_AcceptsRejected(t *testing.T) {
 	}
 }
 
+func TestValidateContractPromoteCommitted_RejectsRejectedWithoutReason(t *testing.T) {
+	p := receipt.PayloadContractPromoteCommittedStruct{
+		TargetManifestHash: "sha256:target",
+		PriorManifestHash:  "sha256:prior",
+		IntentID:           "intent-1",
+		ValidationOutcome:  "rejected",
+	}
+	err := callValidator(t, receipt.PayloadContractPromoteCommitted, marshalPayload(t, p))
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
+	}
+}
+
 func TestValidateContractPromoteCommitted_RejectsBadValidationOutcome(t *testing.T) {
 	p := receipt.PayloadContractPromoteCommittedStruct{
 		TargetManifestHash: "sha256:target",
@@ -218,6 +231,19 @@ func TestValidateContractRollbackCommitted_RejectsBadOutcome(t *testing.T) {
 	err := callValidator(t, receipt.PayloadContractRollbackCommitted, marshalPayload(t, p))
 	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
 		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	}
+}
+
+func TestValidateContractRollbackCommitted_RejectsRejectedWithoutReason(t *testing.T) {
+	p := receipt.PayloadContractRollbackCommittedStruct{
+		RollbackTargetHash: "sha256:target",
+		PriorManifestHash:  "sha256:prior",
+		AuthorizationID:    "auth-1",
+		ValidationOutcome:  "rejected",
+	}
+	err := callValidator(t, receipt.PayloadContractRollbackCommitted, marshalPayload(t, p))
+	if !errors.Is(err, receipt.ErrPayloadMissingField) {
+		t.Fatalf("expected ErrPayloadMissingField, got: %v", err)
 	}
 }
 

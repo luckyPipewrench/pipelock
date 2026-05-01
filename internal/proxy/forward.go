@@ -870,6 +870,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Scanner:         sc,
 			AgentID:         agent,
 			Host:            r.URL.Hostname(),
+			Path:            r.URL.Path,
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)

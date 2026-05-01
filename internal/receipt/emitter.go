@@ -337,6 +337,8 @@ func redactionSummaryFromReport(profile string, report *redact.Report) *Redactio
 	}
 	return &RedactionSummary{
 		Profile:         profile,
+		Provider:        report.Provider,
+		Parser:          report.Parser,
 		TotalRedactions: report.TotalRedactions,
 		ByClass:         byClass,
 	}

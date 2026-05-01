@@ -54,6 +54,38 @@ func TestScanRequestBody_Redaction_BeforeDLPEarlyReturn(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_Redaction_AnnotatesProviderParser(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	registry, err := redact.NewProviderRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewProviderRegistry: %v", err)
+	}
+	body := `{"contents":[{"parts":[{"text":"use ` + redactionE2ESecret() + `"}]}]}`
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                   strings.NewReader(body),
+		ContentType:            contentTypeJSON,
+		MaxBytes:               1024,
+		Scanner:                sc,
+		RedactMatcher:          redact.NewDefaultMatcher(),
+		RedactProviderRegistry: registry,
+		Host:                   "generativelanguage.googleapis.com:443",
+		Path:                   "/v1beta/models/gemini-2.5-pro:generateContent",
+	})
+
+	if result.RedactionReport == nil {
+		t.Fatal("expected redaction report")
+	}
+	if result.RedactionReport.Provider != "gemini" {
+		t.Fatalf("provider = %q, want gemini", result.RedactionReport.Provider)
+	}
+	if result.RedactionReport.Parser != redact.ParserJSON {
+		t.Fatalf("parser = %q, want %q", result.RedactionReport.Parser, redact.ParserJSON)
+	}
+}
+
 // TestScanRequestBody_Redaction_NonJSONBlocked enforces fail-closed on
 // non-JSON bodies when redaction is enabled and the host is not on the
 // allowlist. Review §4.7 + round-1 #1.

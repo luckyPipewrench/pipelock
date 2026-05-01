@@ -45,6 +45,12 @@ type Config struct {
 	// parseable JSON. Bodies from hosts not in this list are blocked per
 	// the fail-closed invariant.
 	AllowlistUnparseable []string `yaml:"allowlist_unparseable"`
+
+	// Providers registers provider parser profiles. Built-ins for Anthropic,
+	// OpenAI, and Gemini are always present; entries here add or override
+	// profiles without code changes. Provider selection never exempts fields
+	// from scanning — v1 profiles map to the whole-body JSON parser.
+	Providers map[string]ProviderSpec `yaml:"providers" json:"providers,omitempty"`
 }
 
 // ProfileSpec describes a single redaction profile as YAML.
@@ -114,6 +120,9 @@ func (c *Config) Validate() error {
 		if d.Class != "" && !classNameRe.MatchString(d.Class) {
 			return fmt.Errorf("redact: dictionary %q class %q must match [a-z0-9][a-z0-9_-]*", name, d.Class)
 		}
+	}
+	if _, err := NewProviderRegistry(c.Providers); err != nil {
+		return err
 	}
 
 	if !c.Enabled {
@@ -242,6 +251,11 @@ func (c *Config) BuildMatcher(profileName string) (*Matcher, error) {
 	}
 
 	return m, nil
+}
+
+// BuildProviderRegistry returns the redaction provider parser registry for c.
+func (c *Config) BuildProviderRegistry() (*ProviderRegistry, error) {
+	return NewProviderRegistry(c.Providers)
 }
 
 // shippedClassNames returns the set of class string values known to the

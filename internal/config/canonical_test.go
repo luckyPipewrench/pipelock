@@ -5,6 +5,8 @@ package config
 
 import (
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 // Test-local constants for envelope signing field values that repeat
@@ -171,6 +173,27 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			},
 		},
 		{
+			name: "redaction provider profile changed",
+			mut: func(c *Config) {
+				c.RequestBodyScanning.Enabled = true
+				c.Redaction = redact.Config{
+					Enabled:        true,
+					DefaultProfile: "code",
+					Profiles: map[string]redact.ProfileSpec{
+						"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+					},
+					Providers: map[string]redact.ProviderSpec{
+						"custom": {
+							HostPatterns: []string{"api.custom-llm.example"},
+							PathPrefixes: []string{"/v1/messages"},
+							Parser:       redact.ParserJSON,
+						},
+					},
+					Limits: redact.DefaultLimits(),
+				}
+			},
+		},
+		{
 			// Transport timeouts are enforcement-relevant (DoS
 			// exposure bound, tunnel lifetime) so they must flip ph.
 			// Listen / Upstream addresses are separately excluded as
@@ -200,6 +223,57 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 					tc.name, base, got)
 			}
 		})
+	}
+}
+
+func TestCanonicalPolicyHash_RedactionProviderOrderCanonical(t *testing.T) {
+	t.Parallel()
+
+	first := canonicalHashOf(t, func(c *Config) {
+		c.RequestBodyScanning.Enabled = true
+		c.Redaction = canonicalProviderTestRedaction([]string{"b.example", "a.example"}, []string{"/v1/messages", "/v1/responses"})
+	})
+	second := canonicalHashOf(t, func(c *Config) {
+		c.RequestBodyScanning.Enabled = true
+		c.Redaction = canonicalProviderTestRedaction([]string{"a.example", "b.example"}, []string{"/v1/responses", "/v1/messages"})
+	})
+	if first != second {
+		t.Fatalf("redaction provider host/path order should canonicalize:\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
+func TestCanonicalPolicyHash_DisabledRedactionProviderIsInert(t *testing.T) {
+	t.Parallel()
+
+	base := canonicalHashOf(t, nil)
+	got := canonicalHashOf(t, func(c *Config) {
+		c.Redaction.Providers = map[string]redact.ProviderSpec{
+			"custom": {
+				HostPatterns: []string{"api.custom-llm.example"},
+				Parser:       redact.ParserJSON,
+			},
+		}
+	})
+	if got != base {
+		t.Fatalf("disabled redaction provider profile changed canonical hash:\nbase: %s\ngot:  %s", base, got)
+	}
+}
+
+func canonicalProviderTestRedaction(hosts, paths []string) redact.Config {
+	return redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+		},
+		Providers: map[string]redact.ProviderSpec{
+			"custom": {
+				HostPatterns: hosts,
+				PathPrefixes: paths,
+				Parser:       redact.ParserJSON,
+			},
+		},
+		Limits: redact.DefaultLimits(),
 	}
 }
 

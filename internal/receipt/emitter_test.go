@@ -270,6 +270,8 @@ func TestEmitter_Emit_RedactionSummary(t *testing.T) {
 		RedactionProfile: "code",
 		RedactionReport: &redact.Report{
 			Applied:         true,
+			Provider:        "gemini",
+			Parser:          redact.ParserJSON,
 			TotalRedactions: 2,
 			ByClass: map[redact.Class]int{
 				redact.ClassAWSAccessKey: 1,
@@ -290,6 +292,12 @@ func TestEmitter_Emit_RedactionSummary(t *testing.T) {
 	}
 	if got.ActionRecord.Redaction.Profile != "code" {
 		t.Fatalf("profile = %q, want %q", got.ActionRecord.Redaction.Profile, "code")
+	}
+	if got.ActionRecord.Redaction.Provider != "gemini" {
+		t.Fatalf("provider = %q, want gemini", got.ActionRecord.Redaction.Provider)
+	}
+	if got.ActionRecord.Redaction.Parser != redact.ParserJSON {
+		t.Fatalf("parser = %q, want %q", got.ActionRecord.Redaction.Parser, redact.ParserJSON)
 	}
 	if got.ActionRecord.Redaction.TotalRedactions != 2 {
 		t.Fatalf("total_redactions = %d, want 2", got.ActionRecord.Redaction.TotalRedactions)

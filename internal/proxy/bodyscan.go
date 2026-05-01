@@ -139,6 +139,9 @@ type BodyScanRequest struct {
 	// permitted through as-is. When the Host is not in this list and the
 	// body is not JSON, redaction fails closed. Nil/empty = strict.
 	RedactAllowlistUnparseable []string
+	// RedactProviderRegistry selects the provider parser profile for JSON
+	// redaction. Nil falls back to the generic JSON parser.
+	RedactProviderRegistry *redact.ProviderRegistry
 	// RedactionRequired indicates the request-scoped policy expects redaction
 	// to run. When the matching runtime is unavailable during a reload window,
 	// scanRequestBody fails closed instead of silently forwarding raw bytes.
@@ -146,6 +149,8 @@ type BodyScanRequest struct {
 	// Host is the upstream hostname being forwarded to, used for allowlist
 	// matching. Empty disables allowlist behavior (strict everywhere).
 	Host string
+	// Path is the upstream request path, used for provider parser selection.
+	Path string
 }
 
 // scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
@@ -315,7 +320,10 @@ func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, er
 		// receipt summary for a body that was never scanned.
 		return buf, nil, nil
 	}
-	rewritten, report, err := redact.RewriteJSON(buf, req.RedactMatcher, redact.NewRedactor(), req.RedactLimits)
+	rewritten, report, err := redact.RewriteRequestJSON(buf, req.RedactMatcher, redact.NewRedactor(), req.RedactLimits, redact.RequestMetadata{
+		Host: req.Host,
+		Path: req.Path,
+	}, req.RedactProviderRegistry)
 	if err != nil {
 		return nil, nil, err
 	}

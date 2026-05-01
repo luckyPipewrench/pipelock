@@ -48,6 +48,13 @@ redaction:
   allowlist_unparseable:
     - api.anthropic.com
     - api.openai.com
+  providers:
+    acme_llm:
+      host_patterns:
+        - api.acme-llm.example
+      path_prefixes:
+        - /v1/messages
+      parser: json
 ```
 
 Use a narrow `code` profile for developer traffic and add broader `business` profiles only where you intentionally want hostnames, emails, or customer literals rewritten before they reach upstream systems.
@@ -62,6 +69,12 @@ Use a narrow `code` profile for developer traffic and add broader `business` pro
 
 `allowlist_unparseable` accepts bare lowercase hostnames only. Do not include schemes, paths, or ports. Use it sparingly for trusted endpoints that legitimately require non-JSON request formats.
 
+## Provider Parsers
+
+Pipelock ships parser profiles for Anthropic, OpenAI, and Gemini. All three use the same `json` parser, which walks every string scalar in the request body. Provider matching is only for parser selection and receipt labeling; it does not exempt `system`, `tools`, `messages`, Gemini `contents`, or any other field from redaction.
+
+Third-party JSON providers can be added under `redaction.providers` with `host_patterns`, optional `path_prefixes`, and `parser: json`. Unknown JSON providers still fall back to the generic JSON parser, so a missing provider profile does not become a redaction bypass.
+
 ## Receipts
 
 Successful rewrites add a `redaction` block to the signed action receipt:
@@ -70,6 +83,8 @@ Successful rewrites add a `redaction` block to the signed action receipt:
 {
   "redaction": {
     "profile": "code",
+    "provider": "gemini",
+    "parser": "json",
     "total_redactions": 2,
     "by_class": {
       "aws-access-key": 1,

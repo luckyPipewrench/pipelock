@@ -249,6 +249,9 @@ func TestLatestAcceptedSkipsBrokenPriorChain(t *testing.T) {
 	if latest.ManifestHash != hash1 || latest.Envelope.Body.Generation != 1 {
 		t.Fatalf("latest = (%s, gen %d), want gen1 %s", latest.ManifestHash, latest.Envelope.Body.Generation, hash1)
 	}
+	if _, err := st.Accepted(hash3, testOptions(testRoster(signer), "", 0, 1)); !errors.Is(err, ErrContractHistory) {
+		t.Fatalf("Accepted(broken-chain) err = %v, want ErrContractHistory", err)
+	}
 }
 
 func TestLatestAcceptedRejectsOnlyBrokenPriorChain(t *testing.T) {

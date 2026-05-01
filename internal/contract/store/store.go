@@ -312,6 +312,9 @@ func (s Store) Accepted(hash string, opts Options) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	if err := s.acceptedChainContinuous(hash, map[string]acceptedManifest{hash: accepted}, opts, map[string]struct{}{}); err != nil {
+		return State{}, err
+	}
 	contracts, err := s.loadContracts(accepted.env.Body.Selectors, opts)
 	if err != nil {
 		return State{}, err
@@ -394,7 +397,7 @@ func (s Store) acceptedChainContinuous(hash string, candidates map[string]accept
 	if !ok {
 		loaded, err := s.loadAcceptedManifestByHash(prior, opts)
 		if err != nil {
-			return err
+			return fmt.Errorf("%w: prior manifest %s: %w", ErrContractHistory, prior, err)
 		}
 		priorCandidate = loaded
 		candidates[prior] = loaded

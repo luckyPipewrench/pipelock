@@ -4,11 +4,23 @@
 package learn
 
 import (
+	"bufio"
+	"bytes"
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestLearnCmdRegistersPromoteAndRollback(t *testing.T) {
@@ -118,4 +130,424 @@ func TestLifecycleIDDeterministicAndExplicit(t *testing.T) {
 	if got := lifecycleID("", false, "label"); got == "" {
 		t.Fatal("generated lifecycle id is empty")
 	}
+}
+
+func TestRunPromoteWritesReceiptsAndAcceptedManifest(t *testing.T) {
+	fixture := newLifecycleTestFixture(t)
+	contractHash := fixture.putContract(t, "agent-a")
+	receiptOut := filepath.Join(fixture.root, "promote-receipts.jsonl")
+	var stdout, stderr bytes.Buffer
+	cmd := lifecycleTestCmd(&stdout, &stderr)
+
+	err := runPromote(cmd, lifecycleFlags{
+		storeDir:              fixture.storeDir,
+		rosterPath:            fixture.rosterPath,
+		rosterRootFingerprint: fixture.rootFingerprint,
+		keystore:              fixture.keystoreDir,
+		activationKey:         "activation-primary",
+		dualControlFrom:       "activation-secondary",
+		receiptKey:            defaultReceiptKeyAgent,
+		receiptOut:            receiptOut,
+		environmentID:         fixture.env.ID,
+		tenant:                fixture.env.Tenant,
+		deploymentID:          fixture.env.DeploymentID,
+		production:            true,
+		deterministic:         true,
+		contractHash:          contractHash,
+		selector:              "agent-a",
+	})
+	if err != nil {
+		t.Fatalf("runPromote: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "generation 1 active") {
+		t.Fatalf("stdout = %q, want generation 1 active", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "learn_promote") {
+		t.Fatalf("stderr = %q, want audit event", stderr.String())
+	}
+
+	latest := fixture.latestAccepted(t)
+	receipts := readLifecycleReceipts(t, receiptOut)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want 2", len(receipts))
+	}
+	intent := receipts[0]
+	if intent.PayloadKind != contractreceipt.PayloadContractPromoteIntent {
+		t.Fatalf("intent payload kind = %q", intent.PayloadKind)
+	}
+	if intent.ActiveManifestHash != latest.ManifestHash || intent.ContractHash != contractHash || intent.SelectorID == "" {
+		t.Fatalf("intent receipt hashes = active %q contract %q selector %q, want active %q contract %q selector set",
+			intent.ActiveManifestHash, intent.ContractHash, intent.SelectorID, latest.ManifestHash, contractHash)
+	}
+	var intentPayload contractreceipt.PayloadContractPromoteIntentStruct
+	mustUnmarshalPayload(t, intent, &intentPayload)
+	if intentPayload.TargetGeneration != 1 || intentPayload.PriorManifestHash != genesisManifestHash || intentPayload.TargetManifestHash != latest.ManifestHash {
+		t.Fatalf("intent payload = %+v, latest=%s", intentPayload, latest.ManifestHash)
+	}
+	committed := receipts[1]
+	if committed.PayloadKind != contractreceipt.PayloadContractPromoteCommitted {
+		t.Fatalf("committed payload kind = %q", committed.PayloadKind)
+	}
+	var committedPayload contractreceipt.PayloadContractPromoteCommittedStruct
+	mustUnmarshalPayload(t, committed, &committedPayload)
+	if committedPayload.ValidationOutcome != lifecycleOutcomeAccepted || committedPayload.TargetManifestHash != latest.ManifestHash {
+		t.Fatalf("committed payload = %+v, latest=%s", committedPayload, latest.ManifestHash)
+	}
+}
+
+func TestRunRollbackWritesNewManifestHashReceipts(t *testing.T) {
+	fixture := newLifecycleTestFixture(t)
+	firstContract := fixture.putContract(t, "agent-a")
+	secondContract := fixture.putContract(t, "agent-b")
+	firstReceiptOut := filepath.Join(fixture.root, "first-promote.jsonl")
+	secondReceiptOut := filepath.Join(fixture.root, "second-promote.jsonl")
+	rollbackReceiptOut := filepath.Join(fixture.root, "rollback-receipts.jsonl")
+
+	if err := runPromote(lifecycleTestCmd(nil, nil), fixture.promoteFlags(firstContract, "agent-a", firstReceiptOut)); err != nil {
+		t.Fatalf("first runPromote: %v", err)
+	}
+	target := fixture.latestAccepted(t)
+	if err := runPromote(lifecycleTestCmd(nil, nil), fixture.promoteFlags(secondContract, "agent-b", secondReceiptOut)); err != nil {
+		t.Fatalf("second runPromote: %v", err)
+	}
+	currentBeforeRollback := fixture.latestAccepted(t)
+	var stdout, stderr bytes.Buffer
+	cmd := lifecycleTestCmd(&stdout, &stderr)
+
+	err := runRollback(cmd, lifecycleFlags{
+		storeDir:              fixture.storeDir,
+		rosterPath:            fixture.rosterPath,
+		rosterRootFingerprint: fixture.rootFingerprint,
+		keystore:              fixture.keystoreDir,
+		activationKey:         "activation-primary",
+		receiptKey:            defaultReceiptKeyAgent,
+		receiptOut:            rollbackReceiptOut,
+		environmentID:         fixture.env.ID,
+		tenant:                fixture.env.Tenant,
+		deploymentID:          fixture.env.DeploymentID,
+		deterministic:         true,
+		rollbackTarget:        target.ManifestHash,
+	})
+	if err != nil {
+		t.Fatalf("runRollback: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "generation 3") || !strings.Contains(stdout.String(), target.ManifestHash) {
+		t.Fatalf("stdout = %q, want target hash and generation 3", stdout.String())
+	}
+	latest := fixture.latestAccepted(t)
+	if latest.ManifestHash == target.ManifestHash || latest.ManifestHash == currentBeforeRollback.ManifestHash {
+		t.Fatalf("rollback latest hash = %q, want new rollback manifest hash distinct from target %q and current %q",
+			latest.ManifestHash, target.ManifestHash, currentBeforeRollback.ManifestHash)
+	}
+	if !strings.Contains(stderr.String(), latest.ManifestHash) {
+		t.Fatalf("audit stderr = %q, want rollback manifest hash %q", stderr.String(), latest.ManifestHash)
+	}
+
+	receipts := readLifecycleReceipts(t, rollbackReceiptOut)
+	if len(receipts) != 2 {
+		t.Fatalf("receipt count = %d, want 2", len(receipts))
+	}
+	for _, rcpt := range receipts {
+		if rcpt.ActiveManifestHash != latest.ManifestHash {
+			t.Fatalf("receipt active_manifest_hash = %q, want rollback manifest %q", rcpt.ActiveManifestHash, latest.ManifestHash)
+		}
+		if rcpt.ContractHash != "" {
+			t.Fatalf("receipt contract_hash = %q, want empty for rollback receipts", rcpt.ContractHash)
+		}
+		if rcpt.ContractGeneration != 3 {
+			t.Fatalf("receipt generation = %d, want 3", rcpt.ContractGeneration)
+		}
+	}
+	var authorizedPayload contractreceipt.PayloadContractRollbackAuthorizedStruct
+	mustUnmarshalPayload(t, receipts[0], &authorizedPayload)
+	if authorizedPayload.RollbackTargetHash != target.ManifestHash || authorizedPayload.CurrentGeneration != currentBeforeRollback.Envelope.Body.Generation {
+		t.Fatalf("authorized payload = %+v, target=%s currentGen=%d",
+			authorizedPayload, target.ManifestHash, currentBeforeRollback.Envelope.Body.Generation)
+	}
+	var committedPayload contractreceipt.PayloadContractRollbackCommittedStruct
+	mustUnmarshalPayload(t, receipts[1], &committedPayload)
+	if committedPayload.ValidationOutcome != lifecycleOutcomeAccepted || committedPayload.PriorManifestHash != currentBeforeRollback.ManifestHash {
+		t.Fatalf("committed payload = %+v, current=%s", committedPayload, currentBeforeRollback.ManifestHash)
+	}
+}
+
+func TestLifecycleErrorPaths(t *testing.T) {
+	fixture := newLifecycleTestFixture(t)
+	contractHash := fixture.putContract(t, "agent-a")
+	base := fixture.promoteFlags(contractHash, "agent-a", filepath.Join(fixture.root, "receipts.jsonl"))
+
+	missingEnv := base
+	missingEnv.environmentID = ""
+	missingEnv.tenant = ""
+	missingEnv.deploymentID = ""
+	if err := runPromote(lifecycleTestCmd(nil, nil), missingEnv); err == nil || !strings.Contains(err.Error(), "--environment-id") {
+		t.Fatalf("runPromote missing env err = %v, want environment flag error", err)
+	}
+
+	missingSelector := base
+	missingSelector.selector = ""
+	if err := runPromote(lifecycleTestCmd(nil, nil), missingSelector); err == nil || !strings.Contains(err.Error(), "--selector") {
+		t.Fatalf("runPromote missing selector err = %v, want selector error", err)
+	}
+
+	badSigner := base
+	badSigner.activationKey = ""
+	if err := runPromote(lifecycleTestCmd(nil, nil), badSigner); err == nil || !strings.Contains(err.Error(), "signer key id") {
+		t.Fatalf("runPromote bad signer err = %v, want signer key error", err)
+	}
+
+	noAcceptedRollback := lifecycleFlags{
+		storeDir:              fixture.storeDir,
+		rosterPath:            fixture.rosterPath,
+		rosterRootFingerprint: fixture.rootFingerprint,
+		keystore:              fixture.keystoreDir,
+		activationKey:         "activation-primary",
+		receiptKey:            defaultReceiptKeyAgent,
+		environmentID:         fixture.env.ID,
+		tenant:                fixture.env.Tenant,
+		deploymentID:          fixture.env.DeploymentID,
+		rollbackTarget:        "sha256:missing",
+	}
+	if err := runRollback(lifecycleTestCmd(nil, nil), noAcceptedRollback); err == nil || !strings.Contains(err.Error(), "no accepted manifest") {
+		t.Fatalf("runRollback no accepted err = %v, want no accepted manifest", err)
+	}
+
+	if err := runPromote(lifecycleTestCmd(nil, nil), base); err != nil {
+		t.Fatalf("seed runPromote: %v", err)
+	}
+	badTargetRollback := noAcceptedRollback
+	badTargetRollback.rollbackTarget = "sha256:missing"
+	if err := runRollback(lifecycleTestCmd(nil, nil), badTargetRollback); err == nil || !strings.Contains(err.Error(), "load target manifest") {
+		t.Fatalf("runRollback bad target err = %v, want target load error", err)
+	}
+
+	if err := appendLifecycleReceipts("relative.jsonl"); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("appendLifecycleReceipts relative err = %v, want absolute path error", err)
+	}
+}
+
+type lifecycleTestFixture struct {
+	root            string
+	storeDir        string
+	keystoreDir     string
+	rosterPath      string
+	rootFingerprint string
+	roster          *signing.LoadedRoster
+	env             contract.Environment
+	compileKey      ed25519.PrivateKey
+}
+
+func newLifecycleTestFixture(t *testing.T) lifecycleTestFixture {
+	t.Helper()
+	root := t.TempDir()
+	storeDir := filepath.Join(root, "store")
+	keystoreDir := filepath.Join(root, "keys")
+	ks := signing.NewKeystore(keystoreDir)
+	rootPub := mustGenerateAgent(t, ks, "roster-root")
+	activationPub := mustGenerateAgent(t, ks, "activation-primary")
+	secondaryActivationPub := mustGenerateAgent(t, ks, "activation-secondary")
+	thirdActivationPub := mustGenerateAgent(t, ks, "activation-third")
+	compilePub := mustGenerateAgent(t, ks, "compile-primary")
+	receiptPub := mustGenerateAgent(t, ks, defaultReceiptKeyAgent)
+	rootPriv := mustLoadPrivateKey(t, ks, "roster-root")
+	compilePriv := mustLoadPrivateKey(t, ks, "compile-primary")
+	rootFingerprint, err := signing.Fingerprint(rootPub)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	body := contract.KeyRoster{
+		SchemaVersion:  1,
+		RosterSignedBy: "roster-root",
+		DataClassRoot:  string(contract.DataClassInternal),
+		Keys: []contract.KeyInfo{
+			lifecycleTestRosterKey("roster-root", signing.PurposeRosterRoot, rootPub, contract.KeyStatusRoot, "root"),
+			lifecycleTestRosterKey("activation-primary", signing.PurposeContractActivationSigning, activationPub, contract.KeyStatusActive, "operator"),
+			lifecycleTestRosterKey("activation-secondary", signing.PurposeContractActivationSigning, secondaryActivationPub, contract.KeyStatusActive, "operator-secondary"),
+			lifecycleTestRosterKey("activation-third", signing.PurposeContractActivationSigning, thirdActivationPub, contract.KeyStatusActive, "operator-third"),
+			lifecycleTestRosterKey("compile-primary", signing.PurposeContractCompileSigning, compilePub, contract.KeyStatusActive, "compiler"),
+			lifecycleTestRosterKey(defaultReceiptKeyAgent, signing.PurposeReceiptSigning, receiptPub, contract.KeyStatusActive, "learn"),
+		},
+	}
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("roster SignablePreimage: %v", err)
+	}
+	envelope := contract.RosterEnvelope{
+		Body:      body,
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(rootPriv, preimage)),
+	}
+	rosterPath := filepath.Join(root, "roster.json")
+	if err := os.WriteFile(rosterPath, mustJSON(t, envelope), 0o600); err != nil {
+		t.Fatalf("write roster: %v", err)
+	}
+	loaded, err := signing.LoadRoster(rosterPath, rootFingerprint)
+	if err != nil {
+		t.Fatalf("LoadRoster: %v", err)
+	}
+	return lifecycleTestFixture{
+		root:            root,
+		storeDir:        storeDir,
+		keystoreDir:     keystoreDir,
+		rosterPath:      rosterPath,
+		rootFingerprint: rootFingerprint,
+		roster:          loaded,
+		env:             contract.Environment{ID: "prod", Tenant: "tenant-a", DeploymentID: "deploy-a"},
+		compileKey:      compilePriv,
+	}
+}
+
+func (f lifecycleTestFixture) promoteFlags(contractHash, selector, receiptOut string) lifecycleFlags {
+	return lifecycleFlags{
+		storeDir:              f.storeDir,
+		rosterPath:            f.rosterPath,
+		rosterRootFingerprint: f.rootFingerprint,
+		keystore:              f.keystoreDir,
+		activationKey:         "activation-primary",
+		receiptKey:            defaultReceiptKeyAgent,
+		receiptOut:            receiptOut,
+		environmentID:         f.env.ID,
+		tenant:                f.env.Tenant,
+		deploymentID:          f.env.DeploymentID,
+		deterministic:         true,
+		contractHash:          contractHash,
+		selector:              selector,
+	}
+}
+
+func (f lifecycleTestFixture) putContract(t *testing.T, agent string) string {
+	t.Helper()
+	st := contractstore.New(f.storeDir)
+	body := contract.Contract{
+		SchemaVersion:    contract.SchemaVersionContract,
+		ContractKind:     contract.ContractKind,
+		SignerKeyID:      "compile-primary",
+		KeyPurpose:       signing.PurposeContractCompileSigning.String(),
+		DataClassRoot:    string(contract.DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Selector:         contract.Selector{Agent: agent, SelectorID: "selector-" + agent},
+	}
+	hash, err := contractstore.ContractHash(body)
+	if err != nil {
+		t.Fatalf("ContractHash: %v", err)
+	}
+	body.ContractHash = hash
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("contract SignablePreimage: %v", err)
+	}
+	envelope := contract.ContractEnvelope{
+		Body:      body,
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(f.compileKey, preimage)),
+	}
+	got, err := st.PutHistoryContract(mustJSON(t, envelope), contractstore.Options{Roster: f.roster, Now: lifecycleTestNow})
+	if err != nil {
+		t.Fatalf("PutHistoryContract: %v", err)
+	}
+	if got != hash {
+		t.Fatalf("PutHistoryContract hash = %q, want %q", got, hash)
+	}
+	return hash
+}
+
+func (f lifecycleTestFixture) latestAccepted(t *testing.T) contractstore.State {
+	t.Helper()
+	state, err := contractstore.New(f.storeDir).LatestAccepted(contractstore.Options{
+		Environment:   f.env,
+		Roster:        f.roster,
+		MinSignatures: 1,
+		Now:           lifecycleTestNow,
+	})
+	if err != nil {
+		t.Fatalf("LatestAccepted: %v", err)
+	}
+	return state
+}
+
+func lifecycleTestRosterKey(keyID string, purpose signing.KeyPurpose, pub ed25519.PublicKey, status, principal string) contract.KeyInfo {
+	return contract.KeyInfo{
+		KeyID:        keyID,
+		KeyPurpose:   purpose.String(),
+		PublicKeyHex: hex.EncodeToString(pub),
+		ValidFrom:    time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
+		Status:       status,
+		Principal:    principal,
+	}
+}
+
+func lifecycleTestCmd(stdout, stderr *bytes.Buffer) *cobra.Command {
+	cmd := &cobra.Command{}
+	if stdout != nil {
+		cmd.SetOut(stdout)
+	}
+	if stderr != nil {
+		cmd.SetErr(stderr)
+	}
+	return cmd
+}
+
+func lifecycleTestNow() time.Time {
+	return time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+}
+
+func mustGenerateAgent(t *testing.T, ks *signing.Keystore, name string) ed25519.PublicKey {
+	t.Helper()
+	pub, err := ks.GenerateAgent(name)
+	if err != nil {
+		t.Fatalf("GenerateAgent(%s): %v", name, err)
+	}
+	return pub
+}
+
+func mustLoadPrivateKey(t *testing.T, ks *signing.Keystore, name string) ed25519.PrivateKey {
+	t.Helper()
+	priv, err := ks.LoadPrivateKey(name)
+	if err != nil {
+		t.Fatalf("LoadPrivateKey(%s): %v", name, err)
+	}
+	return priv
+}
+
+func readLifecycleReceipts(t *testing.T, path string) []contractreceipt.EvidenceReceipt {
+	t.Helper()
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("open receipts: %v", err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Fatalf("close receipts: %v", err)
+		}
+	}()
+	var receipts []contractreceipt.EvidenceReceipt
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var receipt contractreceipt.EvidenceReceipt
+		if err := json.Unmarshal(scanner.Bytes(), &receipt); err != nil {
+			t.Fatalf("decode receipt: %v", err)
+		}
+		if err := receipt.Validate(); err != nil {
+			t.Fatalf("receipt Validate: %v", err)
+		}
+		receipts = append(receipts, receipt)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan receipts: %v", err)
+	}
+	return receipts
+}
+
+func mustUnmarshalPayload(t *testing.T, receipt contractreceipt.EvidenceReceipt, out any) {
+	t.Helper()
+	if err := json.Unmarshal(receipt.Payload, out); err != nil {
+		t.Fatalf("unmarshal payload %s: %v", receipt.PayloadKind, err)
+	}
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	return append(raw, '\n')
 }

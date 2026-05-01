@@ -235,7 +235,11 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	if !hasCurrent {
 		return fmt.Errorf("learn rollback: no accepted manifest is available")
 	}
-	lc.opts.Environment = current.Envelope.Body.Environment
+	env, err := resolveLifecycleEnvironment(flags, current, hasCurrent)
+	if err != nil {
+		return err
+	}
+	lc.opts.Environment = env
 	target, err := lc.store.Accepted(flags.rollbackTarget, lc.opts)
 	if err != nil {
 		return fmt.Errorf("learn rollback: load target manifest: %w", err)
@@ -246,6 +250,10 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	body.PriorManifestHash = current.ManifestHash
 	body.RollbackTarget = target.ManifestHash
 	body.SignedAt = lc.now
+	rollbackManifestHash, err := contractstore.ActiveManifestHash(body)
+	if err != nil {
+		return err
+	}
 	envelope, err := signManifestEnvelope(body, lc)
 	if err != nil {
 		return err
@@ -261,7 +269,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	authReceipt, err := activation.SignReceipt(
 		contractreceipt.PayloadContractRollbackAuthorized,
 		authPayload,
-		lifecycleReceiptContext(authID, lc.now, current.ManifestHash, target.ManifestHash, "", generation, lc.activationKey.KeyID(), "learn rollback"),
+		lifecycleReceiptContext(authID, lc.now, rollbackManifestHash, "", "", generation, lc.activationKey.KeyID(), "learn rollback"),
 		lc.activationKey,
 		signing.PurposeContractActivationSigning,
 	)
@@ -285,7 +293,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	commitReceipt, err := activation.SignReceipt(
 		contractreceipt.PayloadContractRollbackCommitted,
 		commitPayload,
-		lifecycleReceiptContext(authID+"-committed", lc.now, current.ManifestHash, target.ManifestHash, "", generation, "learn", "learn rollback"),
+		lifecycleReceiptContext(authID+"-committed", lc.now, rollbackManifestHash, "", "", generation, "learn", "learn rollback"),
 		lc.receiptKey,
 		signing.PurposeReceiptSigning,
 	)
@@ -301,7 +309,7 @@ func runRollback(cmd *cobra.Command, flags lifecycleFlags) error {
 	emitAuditEvent(cmd, auditEvent{
 		Event:           "learn_rollback",
 		SignerKeyID:     lc.activationKey.KeyID(),
-		Manifest:        target.ManifestHash,
+		Manifest:        rollbackManifestHash,
 		Output:          lc.receiptOut,
 		ReceiptsEmitted: 2,
 	})

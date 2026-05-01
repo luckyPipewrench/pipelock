@@ -122,6 +122,15 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 
+	// Always remove any caller-supplied Mcp-Session-Id BEFORE the conditional
+	// Set below: on the first request c.sessionID is empty and Set is skipped,
+	// so without this Del a caller-supplied "Mcp-Session-Id: ..." in extras
+	// would reach the upstream and let an attacker pin session correlation
+	// to a value of their choice. The CLI's parseHeaderFlags rejects this
+	// header at parse time too; this Del is the defense-in-depth layer for
+	// programmatic callers that build *HTTPClient directly.
+	req.Header.Del("Mcp-Session-Id")
+
 	// Include session ID if established.
 	c.sessionMu.Lock()
 	if c.sessionID != "" {

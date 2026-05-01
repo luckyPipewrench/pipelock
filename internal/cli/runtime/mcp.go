@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -44,6 +45,58 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+// reservedTransportHeaders are header names operators must not override via
+// --header. The MCP HTTP transport manages framing (Content-Type, Accept,
+// Content-Length, Transfer-Encoding), session correlation (Mcp-Session-Id),
+// and host routing (Host). Letting --header clobber any of these would
+// either break the transport contract or — for Mcp-Session-Id specifically —
+// let an attacker pin the upstream's session correlation to a value of their
+// choice on the very first request, before HTTPClient has a session ID to
+// overwrite with. Lookup is canonical (textproto) so case variants like
+// "mcp-session-id" or "MCP-SESSION-ID" are also rejected.
+var reservedTransportHeaders = map[string]struct{}{
+	http.CanonicalHeaderKey("Content-Type"):      {},
+	http.CanonicalHeaderKey("Accept"):            {},
+	http.CanonicalHeaderKey("Mcp-Session-Id"):    {},
+	http.CanonicalHeaderKey("Content-Length"):    {},
+	http.CanonicalHeaderKey("Transfer-Encoding"): {},
+	http.CanonicalHeaderKey("Host"):              {},
+}
+
+// parseHeaderFlags converts repeatable --header "Key: Value" entries into an
+// http.Header. Returns nil for an empty input so callers can pass the result
+// straight to transports that interpret nil as "no extras". Both an empty
+// key and a missing colon are rejected with a descriptive error so a typo
+// (e.g. "Authorization Bearer xyz") can't silently drop the auth header.
+//
+// Reserved transport-managed headers are rejected with a descriptive error
+// so an operator does not accidentally poison transport framing or — in the
+// Mcp-Session-Id case — force the upstream onto an attacker-chosen session
+// correlation token on the first request. The transport also strips these
+// defensively (defense-in-depth), but rejecting at parse time gives a
+// clearer error than silent removal would.
+func parseHeaderFlags(raw []string) (http.Header, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	h := make(http.Header, len(raw))
+	for _, entry := range raw {
+		key, value, ok := strings.Cut(entry, ":")
+		if !ok {
+			return nil, fmt.Errorf("--header %q: expected 'Key: Value' format", entry)
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return nil, fmt.Errorf("--header %q: key is empty", entry)
+		}
+		if _, reserved := reservedTransportHeaders[http.CanonicalHeaderKey(key)]; reserved {
+			return nil, fmt.Errorf("--header %q: %q is managed by the MCP HTTP transport and cannot be overridden via --header", entry, key)
+		}
+		h.Add(key, strings.TrimSpace(value))
+	}
+	return h, nil
+}
 
 // handleProxyError classifies MCP proxy errors: subprocess exits get a
 // user-facing message and a specific exit code; other errors are reported
@@ -192,6 +245,7 @@ func mcpProxyCmd() *cobra.Command {
 	var upstreamURL string
 	var listenAddr string
 	var envVars []string
+	var rawHeaders []string
 	var agentName string
 	var sandboxEnabled bool
 	var sandboxStrict bool
@@ -591,6 +645,14 @@ signed action receipts for MCP decisions.`,
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
 				}
 
+				extraHeaders, headerErr := parseHeaderFlags(rawHeaders)
+				if headerErr != nil {
+					return headerErr
+				}
+				if len(extraHeaders) > 0 && (hasListen || isWSUpstream) {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --header is only honored in stdio-to-HTTP --upstream mode; ignored for --listen and ws/wss upstreams")
+				}
+
 				ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 				defer cancel()
 
@@ -693,7 +755,7 @@ signed action receipts for MCP decisions.`,
 					RedactProfile:   cfg.Redaction.DefaultProfile,
 					TaintCfg:        &cfg.Taint,
 				}
-				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, nil, httpOpts); err != nil {
+				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if sentryClient != nil {
 						sentryClient.CaptureError(err)
 					}
@@ -947,6 +1009,7 @@ signed action receipts for MCP decisions.`,
 	cmd.Flags().StringVar(&upstreamURL, "upstream", "", "upstream MCP server URL (Streamable HTTP transport)")
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
+	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")
 	cmd.Flags().BoolVar(&sandboxStrict, "sandbox-strict", false, "strict sandbox: error on missing layers, private /dev/shm, block clone3 (implies --sandbox)")

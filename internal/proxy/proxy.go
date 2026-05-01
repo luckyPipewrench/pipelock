@@ -1782,9 +1782,15 @@ func (p *Proxy) ShieldEngine() *shield.Engine {
 }
 
 // isShieldExempt checks whether a hostname is in the browser shield exempt list.
+// Uses scanner.MatchDomain so wildcard patterns ("*.example.com") work the same
+// way they do for the SSRF trusted-domain list, the response-scan exempt list,
+// the body-scan exempt list, and the adaptive-enforcement exempt list. Before
+// this, an operator who configured "*.cloudflare.com" silently got zero
+// matches because shield used exact-match while everything else used
+// MatchDomain — a parity gap, not a hardening gain.
 func isShieldExempt(hostname string, exempts []string) bool {
-	for _, d := range exempts {
-		if strings.EqualFold(hostname, d) {
+	for _, pattern := range exempts {
+		if scanner.MatchDomain(hostname, pattern) {
 			return true
 		}
 	}

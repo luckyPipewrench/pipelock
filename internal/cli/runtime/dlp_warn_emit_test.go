@@ -20,7 +20,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-const mcpToolsCallResource = "tools/call"
+const (
+	mcpInitializeResource = "initialize"
+	mcpToolsListResource  = "tools/list"
+	mcpToolsCallResource  = "tools/call"
+)
 
 func TestEmitDLPWarnWritesReceiptAndMetric(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)

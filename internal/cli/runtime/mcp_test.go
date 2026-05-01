@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -608,6 +609,259 @@ func TestMCPRuntimeHelperProcess(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("helper stdin scan: %v", err)
 	}
+}
+
+func TestParseHeaderFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   []string
+		want    http.Header
+		wantErr string
+	}{
+		{
+			name:  "nil input returns nil",
+			input: nil,
+			want:  nil,
+		},
+		{
+			name:  "empty input returns nil",
+			input: []string{},
+			want:  nil,
+		},
+		{
+			name:  "single header",
+			input: []string{"Authorization: Bearer abc123"},
+			want:  http.Header{"Authorization": []string{"Bearer abc123"}},
+		},
+		{
+			name: "repeatable headers accumulate",
+			input: []string{
+				"Authorization: Bearer abc123",
+				"X-MCP-Toolsets: default,git,code_security",
+			},
+			want: http.Header{
+				"Authorization":  []string{"Bearer abc123"},
+				"X-Mcp-Toolsets": []string{"default,git,code_security"},
+			},
+		},
+		{
+			name:  "value whitespace trimmed",
+			input: []string{"X-Foo:    bar   "},
+			want:  http.Header{"X-Foo": []string{"bar"}},
+		},
+		{
+			name:  "empty value allowed",
+			input: []string{"X-Empty:"},
+			want:  http.Header{"X-Empty": []string{""}},
+		},
+		{
+			name:  "same key repeats append",
+			input: []string{"X-Foo: a", "X-Foo: b"},
+			want:  http.Header{"X-Foo": []string{"a", "b"}},
+		},
+		{
+			name:    "missing colon rejected",
+			input:   []string{"Authorization Bearer abc"},
+			wantErr: `--header "Authorization Bearer abc": expected 'Key: Value' format`,
+		},
+		{
+			name:    "empty key rejected",
+			input:   []string{": value-only"},
+			wantErr: `--header ": value-only": key is empty`,
+		},
+		{
+			name:    "whitespace-only key rejected",
+			input:   []string{"   : value"},
+			wantErr: `--header "   : value": key is empty`,
+		},
+		{
+			name:    "reserved Mcp-Session-Id rejected",
+			input:   []string{"Mcp-Session-Id: attacker-pinned"},
+			wantErr: `--header "Mcp-Session-Id: attacker-pinned": "Mcp-Session-Id" is managed by the MCP HTTP transport and cannot be overridden via --header`,
+		},
+		{
+			name:    "reserved Mcp-Session-Id rejected case-insensitive",
+			input:   []string{"mcp-session-id: attacker-pinned"},
+			wantErr: `--header "mcp-session-id: attacker-pinned": "mcp-session-id" is managed by the MCP HTTP transport and cannot be overridden via --header`,
+		},
+		{
+			name:    "reserved Content-Type rejected",
+			input:   []string{"Content-Type: text/plain"},
+			wantErr: `--header "Content-Type: text/plain": "Content-Type" is managed by the MCP HTTP transport and cannot be overridden via --header`,
+		},
+		{
+			name:    "reserved Host rejected",
+			input:   []string{"Host: evil.example"},
+			wantErr: `--header "Host: evil.example": "Host" is managed by the MCP HTTP transport and cannot be overridden via --header`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseHeaderFlags(tt.input)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("parseHeaderFlags(%v) = nil error, want %q", tt.input, tt.wantErr)
+				}
+				if err.Error() != tt.wantErr {
+					t.Fatalf("parseHeaderFlags(%v) err = %q, want %q", tt.input, err.Error(), tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseHeaderFlags(%v) unexpected error: %v", tt.input, err)
+			}
+			if !headerEqual(got, tt.want) {
+				t.Errorf("parseHeaderFlags(%v) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMcpProxyCmd_HTTPUpstreamForwardsExtraHeaders confirms that --header
+// flags reach the upstream MCP server. This is the user-facing fix for
+// auth-required HTTP MCP endpoints (e.g., GitHub Copilot's MCP server, where
+// without this the agent had no way to send Authorization: Bearer ... through
+// pipelock's --upstream stdio bridge).
+func TestMcpProxyCmd_HTTPUpstreamForwardsExtraHeaders(t *testing.T) {
+	t.Parallel()
+
+	var (
+		captureOnce      sync.Once
+		capturedAuth     string
+		capturedToolsets string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture only the first request's headers via sync.Once so later
+		// requests in the same MCP session (initialize, tools/list, tools/call)
+		// can't race-overwrite the captured values relative to the test
+		// goroutine's later read.
+		captureOnce.Do(func() {
+			capturedAuth = r.Header.Get("Authorization")
+			capturedToolsets = r.Header.Get("X-MCP-Toolsets")
+		})
+		w.Header().Set("Content-Type", "application/json")
+
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result":  map[string]any{},
+		}
+		switch request.Method {
+		case mcpInitializeResource:
+			response["result"] = map[string]any{
+				"protocolVersion": "2024-11-05",
+				"capabilities":    map[string]any{"tools": map[string]any{}},
+				"serverInfo":      map[string]any{"name": "header-test", "version": "0.0.1"},
+			}
+		case mcpToolsListResource:
+			response["result"] = map[string]any{"tools": []map[string]any{}}
+		case mcpToolsCallResource:
+			response["result"] = map[string]any{"content": []map[string]any{{"type": "text", "text": "ok"}}}
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode(response): %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	_, keyPath := writeReceiptSigningKey(t)
+	evidenceDir := filepath.Join(t.TempDir(), "evidence")
+	configPath := writeMCPProxyConfig(t, evidenceDir, keyPath, false)
+
+	_, stderr, err := runMCPProxyCommandWithArgs(t, []string{
+		"proxy",
+		"--config", configPath,
+		"--upstream", srv.URL,
+		"--header", "Authorization: Bearer fake-pat",
+		"--header", "X-MCP-Toolsets: default,git",
+	})
+	if err != nil {
+		t.Fatalf("run mcp proxy http upstream with headers: %v\nstderr:\n%s", err, stderr)
+	}
+
+	if capturedAuth != "Bearer fake-pat" {
+		t.Errorf("upstream Authorization header = %q, want %q", capturedAuth, "Bearer fake-pat")
+	}
+	if capturedToolsets != "default,git" {
+		t.Errorf("upstream X-MCP-Toolsets header = %q, want %q", capturedToolsets, "default,git")
+	}
+}
+
+// TestMcpProxyCmd_MalformedHeaderFlagFails confirms typos surface to the user
+// instead of silently dropping the auth header. Any of these scenarios
+// without an error would mean an attacker (or a tired operator) can ship a
+// pipelock-wrapped MCP that thinks it's authenticated and isn't.
+func TestMcpProxyCmd_MalformedHeaderFlagFails(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	_, keyPath := writeReceiptSigningKey(t)
+	evidenceDir := filepath.Join(t.TempDir(), "evidence")
+	configPath := writeMCPProxyConfig(t, evidenceDir, keyPath, false)
+
+	cases := []struct {
+		name string
+		flag string
+	}{
+		{name: "missing colon", flag: "Authorization Bearer abc"},
+		{name: "empty key", flag: ": value-only"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := runMCPProxyCommandWithArgs(t, []string{
+				"proxy",
+				"--config", configPath,
+				"--upstream", srv.URL,
+				"--header", tc.flag,
+			})
+			if err == nil {
+				t.Fatalf("expected error for malformed --header %q, got nil", tc.flag)
+			}
+			if !strings.Contains(err.Error(), "--header") {
+				t.Errorf("error %q does not mention --header", err.Error())
+			}
+		})
+	}
+}
+
+// headerEqual is a deep equality helper for http.Header values. http.Header
+// canonicalises keys via textproto, so the comparison normalises both maps
+// before comparing length and per-key value slices.
+func headerEqual(a, b http.Header) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, vs := range a {
+		other, ok := b[http.CanonicalHeaderKey(k)]
+		if !ok || len(other) != len(vs) {
+			return false
+		}
+		for i, v := range vs {
+			if other[i] != v {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func runMCPProxyCommand(t *testing.T, configPath string) (string, string, error) {

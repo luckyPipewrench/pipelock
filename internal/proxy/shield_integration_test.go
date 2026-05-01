@@ -60,6 +60,39 @@ func TestIsShieldExempt(t *testing.T) {
 		{"no match", "other.com", []string{"hcaptcha.com"}, false},
 		{"empty host", "", []string{"hcaptcha.com"}, false},
 		{"multiple exempts", "hcaptcha.com", []string{"challenges.cloudflare.com", "hcaptcha.com"}, true},
+
+		// Wildcard parity with scanner.MatchDomain. Every other domain
+		// list in pipelock (SSRF trusted-domains, response-scan exempt,
+		// body-scan exempt, adaptive exempt) supports "*.example.com" —
+		// shield used to be the odd one out and silently produced zero
+		// matches when an operator wrote a wildcard.
+		{"wildcard subdomain match", "challenges.cloudflare.com", []string{"*.cloudflare.com"}, true},
+		{"wildcard nested subdomain match", "a.b.cloudflare.com", []string{"*.cloudflare.com"}, true},
+		{"wildcard base domain match", "cloudflare.com", []string{"*.cloudflare.com"}, true},
+		{"wildcard mismatch", "evil.com", []string{"*.cloudflare.com"}, false},
+
+		// Bypass defense: the wildcard must not match a sibling domain
+		// that merely shares a suffix with the wildcard tail. Without
+		// this property, "*.example.com" would also match
+		// "evilexample.com" via plain string suffix matching, and the
+		// exempt list would become a footgun rather than a feature.
+		{"sibling-domain bypass attempt rejected", "evilexample.com", []string{"*.example.com"}, false},
+		{"adjacent-tld bypass attempt rejected", "example.com.attacker.test", []string{"*.example.com"}, false},
+
+		// Double-star (**) is not a recognized wildcard in
+		// scanner.MatchDomain — only "*." is. Operators who type "**"
+		// expecting a different semantic should get a literal-prefix
+		// pattern that matches nothing real, not silent acceptance of
+		// every host. Test pins this so a future MatchDomain change
+		// that expanded "**" support would have to update this row
+		// rather than ship undetected.
+		{"double-star treated literally", "anything.example.com", []string{"**.example.com"}, false},
+
+		// IPs only support exact match per scanner.MatchDomain. A
+		// pattern like "*.168.1.1" must not bypass to "192.168.1.1"
+		// because dots in IPs are not subdomain separators.
+		{"ip exact match", "127.0.0.1", []string{"127.0.0.1"}, true},
+		{"ip wildcard rejected", "192.168.1.1", []string{"*.168.1.1"}, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

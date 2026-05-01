@@ -304,6 +304,44 @@ func TestHTTPClient_ExtraHeadersCannotOverrideTransport(t *testing.T) {
 	drain(t, reader)
 }
 
+// TestHTTPClient_ExtrasCannotInjectMcpSessionIdOnFirstRequest is the regression
+// for a defense-in-depth gap that survived the original
+// TestHTTPClient_ExtraHeadersCannotOverrideTransport: that test only checked
+// Content-Type / Accept, both of which are unconditionally Set after the
+// extras Add loop. Mcp-Session-Id was only Set when the client already had
+// a session ID — so on the very first request (empty session ID) a caller-
+// supplied "Mcp-Session-Id" in extras flowed through to the upstream and
+// let an attacker pin session correlation to a value of their choice.
+//
+// The fix unconditionally Dels Mcp-Session-Id from the request headers before
+// the conditional Set, so first-request extras cannot reach upstream. The
+// CLI parser rejects this header at parse time too (see
+// runtime.parseHeaderFlags), but this transport-level guard catches
+// programmatic callers that build a *HTTPClient directly.
+func TestHTTPClient_ExtrasCannotInjectMcpSessionIdOnFirstRequest(t *testing.T) {
+	var seen string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get("Mcp-Session-Id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer srv.Close()
+
+	headers := http.Header{}
+	headers.Set("Mcp-Session-Id", "attacker-pinned-session")
+	c := NewHTTPClient(srv.URL, headers)
+
+	reader, err := c.SendMessage(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	drain(t, reader)
+
+	if seen != "" {
+		t.Fatalf("upstream Mcp-Session-Id = %q, want empty (extras must not pin session correlation on the first request)", seen)
+	}
+}
+
 func TestHTTPClient_OpenGETStream_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

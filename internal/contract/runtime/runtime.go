@@ -71,6 +71,8 @@ var (
 	ErrUnsupportedLifecycle = errors.New("contract runtime: unsupported lifecycle state")
 	// ErrInvalidDecisionInput is returned for malformed request/evaluation input.
 	ErrInvalidDecisionInput = errors.New("contract runtime: invalid decision input")
+	// ErrInvalidSelector is returned when an active-set selector cannot be used safely.
+	ErrInvalidSelector = errors.New("contract runtime: invalid selector")
 )
 
 // ActiveSet is the immutable in-memory view derived from store.State.
@@ -95,6 +97,11 @@ func NewActiveSet(state store.State) (*ActiveSet, error) {
 		contracts[selectorID] = env
 	}
 	for _, selector := range selectors {
+		if selector.AgentGlob != "" {
+			if _, err := path.Match(selector.AgentGlob, ""); err != nil {
+				return nil, fmt.Errorf("%w: selector %q agent_glob: %w", ErrInvalidSelector, selector.SelectorID, err)
+			}
+		}
 		env, ok := contracts[selector.SelectorID]
 		if !ok {
 			return nil, fmt.Errorf("%w: selector %q missing contract", ErrNoResolvedContract, selector.SelectorID)
@@ -314,7 +321,13 @@ func EvaluateHTTP(opts EvaluateOptions) (Decision, error) {
 		}
 		hostHasEnforceRule = true
 		hostRuleIDs = appendRuleID(hostRuleIDs, seenRuleIDs, rule.RuleID)
-		matches, canCompare := ruleMatchesHTTP(rule, u, opts.Request)
+		if !usesDefaultHTTPPort(u) {
+			return contractBlockDecision(opts, sources, rule.RuleID, "contract_non_default_port"), nil
+		}
+		matches, canCompare, invalidPath := ruleMatchesHTTP(rule, u, opts.Request)
+		if invalidPath {
+			return contractBlockDecision(opts, sources, rule.RuleID, "contract_invalid_path"), nil
+		}
 		if !canCompare {
 			continue
 		}
@@ -329,38 +342,46 @@ func EvaluateHTTP(opts EvaluateOptions) (Decision, error) {
 		}
 	}
 	if hostHasEnforceRule && hasComparableEvidence {
-		ruleID := firstString(hostRuleIDs)
-		event := DriftEvent{
-			ContractHash: opts.Resolved.ContractHash,
-			RuleID:       ruleID,
-			Kind:         DriftKindPositive,
-			Mode:         effectiveMode(opts.Mode),
-			Action:       config.ActionBlock,
-		}
-		decision := Decision{
-			Verdict:       config.ActionBlock,
-			PolicySources: sources,
-			WinningSource: WinningSourceContract,
-			RuleID:        ruleID,
-			Drift:         &event,
-			Reason:        "contract_enforce_default",
-		}
-		decision.Signal = SignalForDrift(event)
-		return decision, nil
+		return contractBlockDecision(opts, sources, firstString(hostRuleIDs), "contract_enforce_default"), nil
 	}
 	return scannerDecision(opts.ScannerVerdict, sources), nil
 }
 
 func scannerDecision(scannerVerdict string, sources []string) Decision {
+	missing := scannerVerdict == ""
 	if scannerVerdict == "" {
-		scannerVerdict = config.ActionAllow
+		scannerVerdict = config.ActionBlock
 	}
 	sources = appendPolicySource(sources, PolicySourceScanner)
-	return Decision{
+	decision := Decision{
 		Verdict:       scannerVerdict,
 		PolicySources: sources,
 		WinningSource: WinningSourceScanner,
 	}
+	if missing {
+		decision.Reason = "scanner_decision_missing"
+	}
+	return decision
+}
+
+func contractBlockDecision(opts EvaluateOptions, sources []string, ruleID, reason string) Decision {
+	event := DriftEvent{
+		ContractHash: opts.Resolved.ContractHash,
+		RuleID:       ruleID,
+		Kind:         DriftKindPositive,
+		Mode:         effectiveMode(opts.Mode),
+		Action:       config.ActionBlock,
+	}
+	decision := Decision{
+		Verdict:       config.ActionBlock,
+		PolicySources: sources,
+		WinningSource: WinningSourceContract,
+		RuleID:        ruleID,
+		Drift:         &event,
+		Reason:        reason,
+	}
+	decision.Signal = SignalForDrift(event)
+	return decision
 }
 
 func isHTTPRule(rule contract.Rule) bool {
@@ -381,28 +402,31 @@ func ruleHostMatches(rule contract.Rule, host string) bool {
 	return ruleHost != "" && ruleHost == normalizeHost(host)
 }
 
-func ruleMatchesHTTP(rule contract.Rule, u *url.URL, req HTTPRequest) (bool, bool) {
+func ruleMatchesHTTP(rule contract.Rule, u *url.URL, req HTTPRequest) (bool, bool, bool) {
 	matchedConstraint := selectorString(rule.Selector, "host") != ""
 	if methods := selectorMethods(rule.Selector); len(methods) > 0 {
 		matchedConstraint = true
 		if !containsFolded(methods, req.Method) {
-			return false, true
+			return false, true, false
 		}
 	}
 	if paths := selectorPathValues(rule.Selector); len(paths) > 0 {
 		matchedConstraint = true
 		matches, canCompare := pathMatchesAny(u.EscapedPath(), paths)
-		if !canCompare || !matches {
-			return matches, canCompare
+		if !canCompare {
+			return false, false, true
+		}
+		if !matches {
+			return false, true, false
 		}
 	}
 	if action := selectorRawString(rule.Selector, "effective_action"); action != "" {
 		matchedConstraint = true
 		if action != req.EffectiveAction {
-			return false, true
+			return false, true, false
 		}
 	}
-	return matchedConstraint, true
+	return matchedConstraint, true, false
 }
 
 func selectorString(selector map[string]any, key string) string {
@@ -465,6 +489,17 @@ func containsFolded(values []string, target string) bool {
 
 func normalizeHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
+func usesDefaultHTTPPort(u *url.URL) bool {
+	switch strings.ToLower(strings.TrimSpace(u.Scheme)) {
+	case "https":
+		return u.Port() == "" || u.Port() == "443"
+	case "http":
+		return u.Port() == "" || u.Port() == "80"
+	default:
+		return false
+	}
 }
 
 func pathMatchesAny(escapedPath string, values []string) (bool, bool) {

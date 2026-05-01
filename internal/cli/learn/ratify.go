@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -111,9 +112,6 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := writeContractEnvelopeYAML(dest, env); err != nil {
-		return err
-	}
 	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "ratification-receipts.jsonl")
 	if err != nil {
 		return err
@@ -143,7 +141,17 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	if err != nil {
 		return err
 	}
+	stagedCandidate, err := stageContractEnvelopeYAML(dest, env)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(stagedCandidate)
+	}()
 	if err := appendLifecycleReceipts(receiptOut, receipt); err != nil {
+		return err
+	}
+	if err := commitStagedContract(stagedCandidate, dest); err != nil {
 		return err
 	}
 
@@ -247,7 +255,9 @@ func applyRatifyDecisions(c *contract.Contract, decisions []ratifyDecision) ([]s
 	kept := make([]contract.Rule, 0, len(c.Rules))
 	ratified := make([]string, 0, len(c.Rules))
 	decisionMap := make(map[string]string, len(c.Rules))
-	for _, rule := range c.Rules {
+	oldRules := c.Rules
+	oldFieldDataClasses := c.FieldDataClasses
+	for _, rule := range oldRules {
 		decision := byRule[rule.RuleID]
 		if decision == "" {
 			decision = ratifyDecisionEnforce
@@ -262,6 +272,7 @@ func applyRatifyDecisions(c *contract.Contract, decisions []ratifyDecision) ([]s
 	}
 	sort.Strings(ratified)
 	c.Rules = kept
+	remapRuleFieldDataClasses(c, oldRules, oldFieldDataClasses)
 	return ratified, decisionMap
 }
 
@@ -297,6 +308,55 @@ func writeContractEnvelopeYAML(dest string, env contract.ContractEnvelope) error
 		return fmt.Errorf("learn: write candidate envelope: %w", err)
 	}
 	return nil
+}
+
+func stageContractEnvelopeYAML(dest string, env contract.ContractEnvelope) (string, error) {
+	tmp, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".*.tmp")
+	if err != nil {
+		return "", fmt.Errorf("learn: create candidate staging file: %w", err)
+	}
+	staged := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(staged)
+		return "", fmt.Errorf("learn: close candidate staging file: %w", err)
+	}
+	if err := os.Remove(staged); err != nil {
+		return "", fmt.Errorf("learn: clear candidate staging file: %w", err)
+	}
+	if err := writeContractEnvelopeYAML(staged, env); err != nil {
+		_ = os.Remove(staged)
+		return "", err
+	}
+	return staged, nil
+}
+
+func commitStagedContract(staged, dest string) error {
+	if err := os.Rename(staged, dest); err != nil {
+		return fmt.Errorf("learn: commit candidate envelope: %w", err)
+	}
+	return nil
+}
+
+func remapRuleFieldDataClasses(c *contract.Contract, oldRules []contract.Rule, oldClasses map[string]string) {
+	if len(oldClasses) == 0 {
+		return
+	}
+	byRuleID := map[string]string{}
+	for i, rule := range oldRules {
+		if class := oldClasses[fmt.Sprintf("/rules/%d", i)]; class != "" {
+			byRuleID[rule.RuleID] = class
+		}
+	}
+	for key := range c.FieldDataClasses {
+		if strings.HasPrefix(key, "/rules/") {
+			delete(c.FieldDataClasses, key)
+		}
+	}
+	for i, rule := range c.Rules {
+		if class := byRuleID[rule.RuleID]; class != "" {
+			c.FieldDataClasses[fmt.Sprintf("/rules/%d", i)] = class
+		}
+	}
 }
 
 func marshalYAMLWithJSONTags(v any) ([]byte, error) {

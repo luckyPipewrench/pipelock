@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -108,9 +109,6 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	if err != nil {
 		return err
 	}
-	if err := writeContractEnvelopeYAML(dest, env); err != nil {
-		return err
-	}
 	now := ratifyNow(flags.deterministic)
 	authID := forgetAuthorizationID(flags.deterministic)
 	tombstone := contract.NewTombstone(priorHash, now.Format(timeFormatRFC3339Nano), authID, activationSigner.KeyID())
@@ -120,9 +118,6 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	}
 	tombstonePath, err := resolveTombstonePath(flags.tombstoneDir, clean, priorHash)
 	if err != nil {
-		return err
-	}
-	if err := writeTombstoneYAML(tombstonePath, tombstoneEnv); err != nil {
 		return err
 	}
 	receiptOut, err := resolveReceiptOut(flags.receiptOut, dest, "redaction-receipts.jsonl")
@@ -152,7 +147,20 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 	if err != nil {
 		return err
 	}
+	if err := writeTombstoneYAML(tombstonePath, tombstoneEnv); err != nil {
+		return err
+	}
+	stagedCandidate, err := stageContractEnvelopeYAML(dest, env)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = os.Remove(stagedCandidate)
+	}()
 	if err := appendLifecycleReceipts(receiptOut, receipt); err != nil {
+		return err
+	}
+	if err := commitStagedContract(stagedCandidate, dest); err != nil {
 		return err
 	}
 
@@ -172,6 +180,8 @@ func runForget(cmd *cobra.Command, flags forgetFlags) error {
 }
 
 func removeRule(c *contract.Contract, ruleID string) bool {
+	oldRules := c.Rules
+	oldFieldDataClasses := c.FieldDataClasses
 	rules := c.Rules[:0]
 	removed := false
 	for _, rule := range c.Rules {
@@ -182,6 +192,9 @@ func removeRule(c *contract.Contract, ruleID string) bool {
 		rules = append(rules, rule)
 	}
 	c.Rules = rules
+	if removed {
+		remapRuleFieldDataClasses(c, oldRules, oldFieldDataClasses)
+	}
 	return removed
 }
 

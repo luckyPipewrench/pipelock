@@ -40,7 +40,7 @@ func TestRatifyInteractiveRejectsOneRuleAndSignsReceipt(t *testing.T) {
 	candidate := writeCandidateEnvelope(t, dir, testRatifyContract())
 	out := filepath.Join(dir, "ratified.yaml")
 	receiptOut := filepath.Join(dir, "ratify.jsonl")
-	cmd, stdout := learnTestCmd("e\nr\n")
+	cmd, stdout := learnTestCmd("r\ne\n")
 
 	err := runRatify(cmd, ratifyFlags{
 		candidatePath: candidate,
@@ -59,11 +59,17 @@ func TestRatifyInteractiveRejectsOneRuleAndSignsReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load ratified candidate: %v", err)
 	}
-	if len(env.Body.Rules) != 1 || env.Body.Rules[0].RuleID != "r-enforce" {
+	if len(env.Body.Rules) != 1 || env.Body.Rules[0].RuleID != "r-reject" {
 		t.Fatalf("ratified rules = %#v", env.Body.Rules)
 	}
 	if env.Body.Rules[0].LifecycleState != ratifyDecisionEnforce {
 		t.Fatalf("lifecycle_state = %q", env.Body.Rules[0].LifecycleState)
+	}
+	if env.Body.FieldDataClasses["/rules/0"] != "internal" {
+		t.Fatalf("field_data_classes[/rules/0] = %q, want internal", env.Body.FieldDataClasses["/rules/0"])
+	}
+	if _, ok := env.Body.FieldDataClasses["/rules/1"]; ok {
+		t.Fatalf("stale field_data_classes[/rules/1] remains: %#v", env.Body.FieldDataClasses)
 	}
 	rcpt := readOneReceipt(t, receiptOut)
 	if rcpt.PayloadKind != contractreceipt.PayloadContractRatified {
@@ -73,7 +79,7 @@ func TestRatifyInteractiveRejectsOneRuleAndSignsReceipt(t *testing.T) {
 	if err := json.Unmarshal(rcpt.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
-	if payload.RatificationDecisionPerRule["r-reject"] != ratifyDecisionReject {
+	if payload.RatificationDecisionPerRule["r-enforce"] != ratifyDecisionReject {
 		t.Fatalf("decision map = %#v", payload.RatificationDecisionPerRule)
 	}
 }
@@ -88,7 +94,7 @@ func TestForgetRemovesRuleWritesTombstoneAndRedactionReceipt(t *testing.T) {
 
 	err := runForget(cmd, forgetFlags{
 		candidatePath: candidate,
-		ruleID:        "r-reject",
+		ruleID:        "r-enforce",
 		reason:        "legal-ticket-123",
 		outPath:       out,
 		tombstoneDir:  tombstoneDir,
@@ -105,8 +111,14 @@ func TestForgetRemovesRuleWritesTombstoneAndRedactionReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load forgotten candidate: %v", err)
 	}
-	if len(env.Body.Rules) != 1 || env.Body.Rules[0].RuleID != "r-enforce" {
+	if len(env.Body.Rules) != 1 || env.Body.Rules[0].RuleID != "r-reject" {
 		t.Fatalf("forgotten rules = %#v", env.Body.Rules)
+	}
+	if env.Body.FieldDataClasses["/rules/0"] != "internal" {
+		t.Fatalf("field_data_classes[/rules/0] = %q, want internal", env.Body.FieldDataClasses["/rules/0"])
+	}
+	if _, ok := env.Body.FieldDataClasses["/rules/1"]; ok {
+		t.Fatalf("stale field_data_classes[/rules/1] remains: %#v", env.Body.FieldDataClasses)
 	}
 	matches, err := filepath.Glob(filepath.Join(tombstoneDir, "*.tombstone.yaml"))
 	if err != nil || len(matches) != 1 {

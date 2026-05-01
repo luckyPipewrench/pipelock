@@ -89,7 +89,11 @@ func EmitMCPDecision(
 	}
 
 	if envelopeEmitter != nil && d.Envelope != nil && d.InboundMsg != nil {
-		outbound = injectMCPEnvelope(d.InboundMsg, envelopeEmitter, *d.Envelope)
+		var envelopeErr error
+		outbound, envelopeErr = injectMCPEnvelope(d.InboundMsg, envelopeEmitter, *d.Envelope)
+		if envelopeErr != nil {
+			return outbound, envelopeErr
+		}
 	}
 
 	return outbound, err

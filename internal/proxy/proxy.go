@@ -1596,6 +1596,7 @@ func bufferInboundEnvelopeBody(req *http.Request, maxBytes int) ([]byte, error) 
 		return nil, nil
 	}
 	if maxBytes > 0 && req.ContentLength > int64(maxBytes) {
+		_ = req.Body.Close()
 		return nil, fmt.Errorf("inbound envelope body exceeds mediation_envelope.max_body_bytes")
 	}
 

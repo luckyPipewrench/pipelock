@@ -536,7 +536,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if verdict.Method == methodToolsCall {
-			result.ForwardMessage = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
+			var decorateErr error
+			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
+			if decorateErr != nil {
+				result.Blocked = &BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     "mediation envelope injection failed",
+					ErrorCode:      -32002,
+					ErrorMessage:   "pipelock: mediation envelope injection failed",
+				}
+				return result
+			}
 			receiptVerdict = config.ActionAllow
 		}
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
@@ -781,7 +792,18 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			})
 		}
 		if verdict.Method == methodToolsCall {
-			result.ForwardMessage = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
+			var decorateErr error
+			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
+			if decorateErr != nil {
+				result.Blocked = &BlockedRequest{
+					ID:             verdict.ID,
+					IsNotification: isRPCNotification(verdict.ID),
+					LogMessage:     "mediation envelope injection failed",
+					ErrorCode:      -32002,
+					ErrorMessage:   "pipelock: mediation envelope injection failed",
+				}
+				return result
+			}
 			receiptVerdict = config.ActionWarn
 		}
 		return result // forward

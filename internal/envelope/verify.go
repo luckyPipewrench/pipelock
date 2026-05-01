@@ -306,13 +306,16 @@ func mediationSignature(h http.Header) (httpsfv.InnerList, []byte, error) {
 		return httpsfv.InnerList{}, nil, fmt.Errorf("parse Signature: %w", err)
 	}
 	for _, name := range input.Names() {
+		if !strings.HasPrefix(name, pipelockMemberPrefix) {
+			continue
+		}
 		member, _ := input.Get(name)
 		inner, ok := member.(httpsfv.InnerList)
 		if !ok {
 			continue
 		}
 		tag, _ := paramString(inner, "tag")
-		if tag != pipelockSigTag && !strings.HasPrefix(name, pipelockMemberPrefix) {
+		if tag != pipelockSigTag {
 			continue
 		}
 		sigMember, ok := sigs.Get(name)
@@ -408,5 +411,5 @@ func requestHasSignedBody(req *http.Request, body []byte) bool {
 	if req.ContentLength > 0 {
 		return true
 	}
-	return req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0
+	return false
 }

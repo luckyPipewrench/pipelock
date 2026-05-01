@@ -150,14 +150,16 @@ func TestEmitter_InjectMCPEnvelope(t *testing.T) {
 	})
 
 	meta := make(map[string]any)
-	em.InjectMCPEnvelope(meta, BuildOpts{
+	if err := em.InjectMCPEnvelope(meta, BuildOpts{
 		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
 		Action:     "read",
 		Verdict:    "allow",
 		SideEffect: "external_read",
 		Actor:      "test",
 		ActorAuth:  ActorAuthMatched,
-	})
+	}); err != nil {
+		t.Fatalf("InjectMCPEnvelope: %v", err)
+	}
 
 	if _, ok := meta[MCPMetaKey]; !ok {
 		t.Fatal("InjectMCPEnvelope() did not set meta key")
@@ -169,9 +171,25 @@ func TestEmitter_InjectMCPEnvelope_Nil(t *testing.T) {
 
 	var em *Emitter
 	meta := make(map[string]any)
-	em.InjectMCPEnvelope(meta, BuildOpts{})
+	if err := em.InjectMCPEnvelope(meta, BuildOpts{}); err != nil {
+		t.Fatalf("nil emitter should return nil, got: %v", err)
+	}
 	if _, ok := meta[MCPMetaKey]; ok {
 		t.Error("nil emitter should not inject meta")
+	}
+}
+
+func TestEmitter_InjectMCPEnvelopeActorFormatError(t *testing.T) {
+	t.Parallel()
+
+	em := NewEmitter(EmitterConfig{
+		ConfigHash:  "sha256:test",
+		ActorFormat: ActorFormatSPIFFE,
+		TrustDomain: "bad/domain",
+	})
+
+	if err := em.InjectMCPEnvelope(map[string]any{}, BuildOpts{Actor: "agent"}); err == nil {
+		t.Fatal("expected actor formatting error")
 	}
 }
 

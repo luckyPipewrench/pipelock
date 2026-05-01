@@ -342,6 +342,14 @@ func newInterceptHandler(
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
 
+		// URL reconstruction: origin-form to absolute. Do this before
+		// inbound envelope verification so signatures that cover
+		// @target-uri are checked against the same absolute URI that the
+		// upstream transport will see.
+		r.URL.Scheme = schemeHTTPS
+		r.URL.Host = target
+		r.RequestURI = "" // required for http.Transport
+
 		// Inbound envelope verification happens BEFORE strip so that
 		// federated peers' signed envelopes are accepted rather than
 		// silently dropped. Every other transport (CONNECT, fetch,
@@ -435,11 +443,6 @@ func newInterceptHandler(
 				}
 			}
 		}
-
-		// URL reconstruction: origin-form to absolute.
-		r.URL.Scheme = schemeHTTPS
-		r.URL.Host = target
-		r.RequestURI = "" // required for http.Transport
 
 		// Build shared audit context AFTER URL reconstruction so actx.URL
 		// contains the full intercepted URL, not just the origin-form path.

@@ -395,15 +395,16 @@ func overCapGetBody() (io.ReadCloser, error) {
 
 // InjectMCPEnvelope builds an envelope and injects it into an MCP _meta map.
 // No-op if the emitter is nil.
-func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) {
+func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) error {
 	if e == nil {
-		return
+		return nil
 	}
 	env, err := e.Build(opts)
 	if err != nil {
-		return
+		return fmt.Errorf("envelope emitter: build MCP envelope: %w", err)
 	}
 	InjectMCP(meta, env)
+	return nil
 }
 
 // PolicyHashFromHex is the exported form of policyHashTruncated. Callers

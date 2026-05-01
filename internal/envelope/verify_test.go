@@ -6,6 +6,7 @@ package envelope
 import (
 	"bytes"
 	"crypto/ed25519"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/dunglas/httpsfv"
 )
 
 func TestVerifier_VerifyRequestAcceptsSignedEnvelope(t *testing.T) {
@@ -139,8 +142,40 @@ func TestReplayCacheHonorsVerifierSkew(t *testing.T) {
 	}
 }
 
+func TestReplayCacheDefaultsAndNoopPaths(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	cache := newReplayCache(0, 0, nil)
+	if cache.window != 5*time.Minute {
+		t.Fatalf("default window = %s, want 5m", cache.window)
+	}
+	if cache.max != 10000 {
+		t.Fatalf("default max = %d, want 10000", cache.max)
+	}
+	if cache.nowFn == nil {
+		t.Fatal("default nowFn was not installed")
+	}
+	if err := ((*ReplayCache)(nil)).CheckAndStore("nonce", now); err != nil {
+		t.Fatalf("nil cache should be a noop: %v", err)
+	}
+
+	cache = newReplayCache(time.Minute, 2, func() time.Time { return now })
+	if err := cache.CheckAndStore("", now.Add(time.Minute)); err == nil {
+		t.Fatal("empty nonce should be rejected")
+	}
+	if err := cache.CheckAndStoreWithSkew("negative-skew", now.Add(time.Minute), -time.Minute); err != nil {
+		t.Fatalf("negative skew should clamp to zero: %v", err)
+	}
+	if err := cache.CheckAndStore("zero-expires", time.Time{}); err != nil {
+		t.Fatalf("zero expires should default to cache window: %v", err)
+	}
+}
+
 func TestParseAndFormatActor(t *testing.T) {
 	t.Parallel()
+
+	const anonymousActor = "anonymous"
 
 	legacy, err := ParseActor("agent:legacy")
 	if err != nil {
@@ -182,6 +217,21 @@ func TestParseAndFormatActor(t *testing.T) {
 	}
 	if _, err := ParseActor("spiffe:///missing-domain"); err == nil {
 		t.Fatal("malformed SPIFFE actor should fail")
+	}
+	if _, err := FormatActor("", ActorFormatLegacy, ""); err != nil {
+		t.Fatalf("empty legacy actor should default anonymous: %v", err)
+	}
+	if _, err := FormatActor("alpha", ActorFormatSPIFFE, ""); err == nil {
+		t.Fatal("SPIFFE format without trust_domain should fail")
+	}
+	if _, err := FormatActor("alpha", ActorFormatSPIFFE, "trust.example:8443"); err == nil {
+		t.Fatal("SPIFFE format with invalid trust_domain should fail")
+	}
+	if _, err := FormatActor("alpha", "unknown", "trust.example"); err == nil {
+		t.Fatal("unknown actor format should fail")
+	}
+	if got := escapeSPIFFEPathSegment(" / "); got != anonymousActor {
+		t.Fatalf("empty escaped actor = %q, want anonymous", got)
 	}
 }
 
@@ -226,6 +276,226 @@ func TestIsValidTrustDomain(t *testing.T) {
 		if IsValidTrustDomain(d) {
 			t.Errorf("IsValidTrustDomain(%q) = true; want false", d)
 		}
+	}
+}
+
+func TestVerifierConfigAndErrorHelpers(t *testing.T) {
+	t.Parallel()
+
+	pub, _ := testSignerKey(t)
+	if err := wrapVerificationError(VerificationFailureParse, nil); err != nil {
+		t.Fatalf("nil wrap error = %v, want nil", err)
+	}
+	if code, ok := VerificationFailureCodeOf(errors.New("plain")); ok || code != "" {
+		t.Fatalf("plain error code = %q, %v; want empty false", code, ok)
+	}
+	var nilVerifyErr *VerificationError
+	if nilVerifyErr.Error() != string(VerificationFailureFailed) {
+		t.Fatalf("nil VerificationError string = %q", nilVerifyErr.Error())
+	}
+	if nilVerifyErr.Unwrap() != nil {
+		t.Fatal("nil VerificationError unwrap should be nil")
+	}
+
+	cases := []struct {
+		name string
+		cfg  VerifierConfig
+	}{
+		{"no keys", VerifierConfig{}},
+		{"empty key id", VerifierConfig{TrustedKeys: []TrustedKey{{PublicKey: pub}}}},
+		{"bad public key", VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: []byte("short")}}}},
+		{"duplicate key id", VerifierConfig{TrustedKeys: []TrustedKey{
+			{KeyID: "k", PublicKey: pub},
+			{KeyID: "k", PublicKey: pub},
+		}}},
+		{"empty trust domain", VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub, TrustDomains: []string{" "}}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewVerifier(tc.cfg); err == nil {
+				t.Fatal("NewVerifier should fail")
+			}
+		})
+	}
+
+	verifier, err := NewVerifier(VerifierConfig{TrustedKeys: []TrustedKey{{KeyID: "k", PublicKey: pub}}})
+	if err != nil {
+		t.Fatalf("NewVerifier default nowFn: %v", err)
+	}
+	if verifier.nowFn == nil {
+		t.Fatal("default nowFn was not installed")
+	}
+}
+
+func TestVerifierRejectsMalformedRequestsWithCodes(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	checkCode := func(t *testing.T, err error, want VerificationFailureCode) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("error = nil, want %s", want)
+		}
+		got, ok := VerificationFailureCodeOf(err)
+		if !ok || got != want {
+			t.Fatalf("code = %q, %v; want %s", got, ok, want)
+		}
+	}
+
+	req := signedVerifierRequest(t, priv, now, "")
+	var nilVerifier *Verifier
+	_, err := nilVerifier.VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureFailed)
+
+	verifier := newTestVerifier(t, pub, now)
+	_, err = verifier.VerifyRequest(nil, nil)
+	checkCode(t, err, VerificationFailureFailed)
+
+	req = newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+	_, err = verifier.VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureMissing)
+
+	req = newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+	req.Header.Set(HeaderName, "not a structured envelope")
+	_, err = verifier.VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureParse)
+
+	req = signedVerifierRequest(t, priv, now, "body")
+	_, err = newTestVerifier(t, pub, now).VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureDigest)
+
+	req = signedVerifierRequest(t, priv, now, "body")
+	_, err = newTestVerifier(t, pub, now).VerifyRequest(req, []byte("tampered"))
+	checkCode(t, err, VerificationFailureDigest)
+
+	req = signedEmptyPostRequest(t, priv, now)
+	req.ContentLength = 4
+	_, err = newTestVerifier(t, pub, now).VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureDigest)
+
+	req = signedVerifierRequest(t, priv, now, "")
+	req.Header.Set("Signature-Input", strings.Replace(req.Header.Get("Signature-Input"), `alg="ed25519"`, `alg="rsa"`, 1))
+	_, err = newTestVerifier(t, pub, now).VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureSignature)
+
+	req = signedVerifierRequest(t, priv, now, "")
+	req.Header.Set("Signature-Input", strings.Replace(req.Header.Get("Signature-Input"), `tag="pipelock-mediation"`, `tag="other"`, 1))
+	_, err = newTestVerifier(t, pub, now).VerifyRequest(req, nil)
+	checkCode(t, err, VerificationFailureParse)
+}
+
+func TestVerifierValidateTimeBranches(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	verifier := &Verifier{
+		skew:                 time.Minute,
+		maxSignatureLifetime: 5 * time.Minute,
+		nowFn:                func() time.Time { return now },
+	}
+	cases := []struct {
+		name    string
+		created time.Time
+		expires time.Time
+	}{
+		{"future created", now.Add(2 * time.Minute), now.Add(3 * time.Minute)},
+		{"expired", now.Add(-10 * time.Minute), now.Add(-2 * time.Minute)},
+		{"expires before created", now, now},
+		{"lifetime exceeds max", now, now.Add(10 * time.Minute)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := verifier.validateTime(tc.created.Unix(), tc.expires.Unix()); err == nil {
+				t.Fatal("validateTime should fail")
+			}
+		})
+	}
+}
+
+func TestVerifierSignatureHelperErrors(t *testing.T) {
+	t.Parallel()
+
+	goodSigInput := `pipelock1=("@method");keyid="trusted-key";alg="ed25519";tag="pipelock-mediation";nonce="nonce";created=1;expires=2`
+	cases := []struct {
+		name string
+		h    http.Header
+	}{
+		{"bad signature input", http.Header{"Signature-Input": {`"`}}},
+		{"bad signature", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`"`}}},
+		{"non inner list", http.Header{"Signature-Input": {`pipelock1=1`}, "Signature": {`pipelock1=:AQI=:`}}},
+		{"wrong tag skipped", http.Header{"Signature-Input": {strings.Replace(goodSigInput, `tag="pipelock-mediation"`, `tag="other"`, 1)}, "Signature": {`pipelock1=:AQI=:`}}},
+		{"missing signature member", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`sig1=:AQI=:`}}},
+		{"unexpected signature item type", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`pipelock1=1`}}},
+		{"signature value not bytes", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`pipelock1="not-bytes"`}}},
+		{"wrong signature length", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`pipelock1=:AQI=:`}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := mediationSignature(tc.h); err == nil {
+				t.Fatal("mediationSignature should fail")
+			}
+		})
+	}
+}
+
+func TestVerifierParameterHelperErrors(t *testing.T) {
+	t.Parallel()
+
+	inner := buildSigParams([]string{derivedMethod}, 1, 2, "nonce", "key")
+	if got, err := innerComponents(inner); err != nil || len(got) != 1 || got[0] != derivedMethod {
+		t.Fatalf("innerComponents valid = %v, %v", got, err)
+	}
+	for _, inner := range []httpsfv.InnerList{
+		{},
+		{Items: []httpsfv.Item{httpsfv.NewItem(int64(1))}},
+		{Items: []httpsfv.Item{httpsfv.NewItem("unsupported")}},
+	} {
+		if _, err := innerComponents(inner); err == nil {
+			t.Fatal("innerComponents should fail")
+		}
+	}
+
+	emptyParams := httpsfv.InnerList{Params: httpsfv.NewParams()}
+	if _, err := paramString(emptyParams, "keyid"); err == nil {
+		t.Fatal("missing string param should fail")
+	}
+	badString := httpsfv.InnerList{Params: httpsfv.NewParams()}
+	badString.Params.Add("keyid", int64(1))
+	if _, err := paramString(badString, "keyid"); err == nil {
+		t.Fatal("non-string param should fail")
+	}
+	blankString := httpsfv.InnerList{Params: httpsfv.NewParams()}
+	blankString.Params.Add("keyid", " ")
+	if _, err := paramString(blankString, "keyid"); err == nil {
+		t.Fatal("blank string param should fail")
+	}
+	if _, err := paramInt64(emptyParams, "created"); err == nil {
+		t.Fatal("missing int param should fail")
+	}
+	badInt := httpsfv.InnerList{Params: httpsfv.NewParams()}
+	badInt.Params.Add("created", "now")
+	if _, err := paramInt64(badInt, "created"); err == nil {
+		t.Fatal("non-int param should fail")
+	}
+
+	if err := verifyContentDigest("", []byte("body")); err == nil {
+		t.Fatal("missing content digest should fail")
+	}
+	if err := verifyContentDigest("sha-256=:bad:", []byte("body")); err == nil {
+		t.Fatal("digest mismatch should fail")
+	}
+	if requestHasSignedBody(nil, []byte("body")) {
+		t.Fatal("nil request should not be body-bearing")
+	}
+	if !requestHasSignedBody(newTestRequest(t, http.MethodPost, "https://upstream.example/api", nil), []byte("body")) {
+		t.Fatal("non-empty body bytes should be body-bearing")
+	}
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", nil)
+	req.ContentLength = 1
+	if !requestHasSignedBody(req, nil) {
+		t.Fatal("positive content length should be body-bearing")
 	}
 }
 
@@ -374,6 +644,36 @@ func TestVerifier_EmptyPOSTBodyDoesNotRequireContentDigest(t *testing.T) {
 	verifier := newTestVerifier(t, pub, now)
 	if _, err := verifier.VerifyRequest(req, nil); err != nil {
 		t.Fatalf("empty POST should verify without content-digest: %v", err)
+	}
+}
+
+func TestVerifier_EmptyChunkedPOSTBodyDoesNotRequireContentDigest(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	req := signedEmptyPostRequest(t, priv, now)
+	req.Body = io.NopCloser(strings.NewReader(""))
+	req.ContentLength = -1
+
+	verifier := newTestVerifier(t, pub, now)
+	if _, err := verifier.VerifyRequest(req, nil); err != nil {
+		t.Fatalf("empty chunked POST should verify without content-digest: %v", err)
+	}
+}
+
+func TestVerifierRejectsTaggedNonPipelockSignatureMember(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	req := signedEmptyPostRequest(t, priv, now)
+	req.Header.Set("Signature-Input", strings.Replace(req.Header.Get("Signature-Input"), "pipelock1=", "sig1=", 1))
+	req.Header.Set("Signature", strings.Replace(req.Header.Get("Signature"), "pipelock1=", "sig1=", 1))
+
+	verifier := newTestVerifier(t, pub, now)
+	if _, err := verifier.VerifyRequest(req, nil); err == nil {
+		t.Fatal("expected non-pipelock signature member to be rejected")
 	}
 }
 

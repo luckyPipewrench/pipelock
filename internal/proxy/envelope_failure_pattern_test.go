@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -58,24 +59,29 @@ func TestInboundEnvelopeFailurePatternFallback(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
+		name string
 		err  error
 		want string
 	}{
-		{err: nil, want: "inbound_verify"},
-		{err: errors.New("signature replay detected"), want: "inbound_verify_replay"},
-		{err: errors.New("signature expired"), want: "inbound_verify_expired"},
-		{err: errors.New("trusted key not authorized"), want: "inbound_verify_not_trusted"},
-		{err: errors.New("missing header"), want: testInboundVerifyMissingPattern},
-		{err: errors.New("content-digest mismatch"), want: "inbound_verify_digest"},
-		{err: errors.New("signature verification failed"), want: "inbound_verify_signature"},
-		{err: errors.New("parse Signature-Input"), want: "inbound_verify_parse"},
-		{err: errors.New("unexpected verifier failure"), want: "inbound_verify_failed"},
+		{name: "nil", err: nil, want: "inbound_verify"},
+		{name: "replay", err: errors.New("signature replay detected"), want: "inbound_verify_replay"},
+		{name: "expired", err: errors.New("signature expired"), want: "inbound_verify_expired"},
+		{name: "not trusted", err: errors.New("trusted key not authorized"), want: "inbound_verify_not_trusted"},
+		{name: "missing", err: errors.New("missing header"), want: testInboundVerifyMissingPattern},
+		{name: "digest", err: errors.New("content-digest mismatch"), want: "inbound_verify_digest"},
+		{name: "signature", err: errors.New("signature verification failed"), want: "inbound_verify_signature"},
+		{name: "parse", err: errors.New("parse Signature-Input"), want: "inbound_verify_parse"},
+		{name: "failed", err: errors.New("unexpected verifier failure"), want: "inbound_verify_failed"},
 	}
 
 	for _, tt := range tests {
-		if got := inboundEnvelopeFailurePattern(tt.err); got != tt.want {
-			t.Fatalf("pattern for %v = %q, want %q", tt.err, got, tt.want)
-		}
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := inboundEnvelopeFailurePattern(tt.err); got != tt.want {
+				t.Fatalf("pattern for %v = %q, want %q", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -147,6 +153,32 @@ func TestVerifyInboundEnvelopeMissingHeaderSkipsBodyDrain(t *testing.T) {
 	if got := inboundEnvelopeFailurePattern(err); got != testInboundVerifyMissingPattern {
 		t.Fatalf("pattern = %q, want %s", got, testInboundVerifyMissingPattern)
 	}
+}
+
+func TestBufferInboundEnvelopeBodyClosesOverCapBody(t *testing.T) {
+	t.Parallel()
+
+	body := &closeTrackingReadCloser{Reader: strings.NewReader("abcdef")}
+	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/api", body)
+	req.Body = body
+	req.ContentLength = 6
+
+	if _, err := bufferInboundEnvelopeBody(req, 5); err == nil {
+		t.Fatal("expected over-cap body to fail")
+	}
+	if !body.closed {
+		t.Fatal("over-cap request body was not closed")
+	}
+}
+
+type closeTrackingReadCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTrackingReadCloser) Close() error {
+	c.closed = true
+	return nil
 }
 
 func testInboundEnvelopeKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {

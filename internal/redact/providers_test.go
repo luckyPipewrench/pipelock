@@ -131,3 +131,17 @@ func TestProviderRegistry_RejectsUnsupportedParser(t *testing.T) {
 		t.Fatalf("expected unsupported parser error, got %v", err)
 	}
 }
+
+func TestProviderRegistry_RejectsNestedWildcardHostPattern(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewProviderRegistry(map[string]ProviderSpec{
+		"bad_provider": {
+			HostPatterns: []string{"*.*.example.com"},
+			Parser:       ParserJSON,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "wildcard") {
+		t.Fatalf("expected wildcard host pattern error, got %v", err)
+	}
+}

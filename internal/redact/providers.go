@@ -196,7 +196,11 @@ func validateProviderHostPattern(pattern string) error {
 		return fmt.Errorf("empty")
 	}
 	if strings.HasPrefix(pattern, "*.") {
-		return validateHostEntry(strings.TrimPrefix(pattern, "*."))
+		trimmed := strings.TrimPrefix(pattern, "*.")
+		if strings.Contains(trimmed, "*") {
+			return fmt.Errorf("wildcard is only supported as a leading *. prefix")
+		}
+		return validateHostEntry(trimmed)
 	}
 	if strings.Contains(pattern, "*") {
 		return fmt.Errorf("wildcard is only supported as a leading *. prefix")

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -35,7 +36,7 @@ func (p *Proxy) buildRedactionRuntime(cfg *config.Config) (*redactionRuntime, er
 	}
 	providers, err := cfg.Redaction.BuildProviderRegistry()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build redaction provider registry: %w", err)
 	}
 	allowlist := append([]string(nil), cfg.Redaction.AllowlistUnparseable...)
 	return &redactionRuntime{

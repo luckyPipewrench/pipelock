@@ -242,7 +242,7 @@ func TestCheckRedirect_PreservesRequiresReauth(t *testing.T) {
 	ctx = context.WithValue(ctx, ctxKeyRequestID, "req-reauth")
 	req = req.WithContext(ctx)
 
-	prev := em.Build(envelope.BuildOpts{
+	prev, err := em.Build(envelope.BuildOpts{
 		ActionID:       "01961f3a-7b2c-7000-8000-000000000020",
 		Action:         "read",
 		Verdict:        config.ActionAllow,
@@ -250,6 +250,9 @@ func TestCheckRedirect_PreservesRequiresReauth(t *testing.T) {
 		ActorAuth:      envelope.ActorAuthBound,
 		RequiresReauth: true,
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 	if err := envelope.InjectHTTP(req.Header, prev); err != nil {
 		t.Fatalf("inject previous envelope: %v", err)
 	}
@@ -286,11 +289,14 @@ func TestCheckRedirect_ExplicitNilEmitterSnapshotDoesNotFallback(t *testing.T) {
 	ctx := context.WithValue(req.Context(), ctxKeyEnvelopeEmitter, envelopeEmitterSnapshot{})
 	req = req.WithContext(ctx)
 
-	prev := em.Build(envelope.BuildOpts{
+	prev, err := em.Build(envelope.BuildOpts{
 		ActionID: "01961f3a-7b2c-7000-8000-000000000021",
 		Action:   "read",
 		Verdict:  config.ActionAllow,
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 	if err := envelope.InjectHTTP(req.Header, prev); err != nil {
 		t.Fatalf("inject previous envelope: %v", err)
 	}

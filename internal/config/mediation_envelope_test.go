@@ -4,6 +4,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"path/filepath"
 	"testing"
 
@@ -122,6 +123,20 @@ func TestValidateMediationEnvelope_GoodKeyPopulatesDefaults(t *testing.T) {
 	if me.MaxBodyBytes != DefaultEnvelopeSignMaxBodyBytes {
 		t.Errorf("MaxBodyBytes default = %d, want %d", me.MaxBodyBytes, DefaultEnvelopeSignMaxBodyBytes)
 	}
+	if me.ActorFormat != DefaultEnvelopeActorFormat {
+		t.Errorf("ActorFormat default = %q, want %q", me.ActorFormat, DefaultEnvelopeActorFormat)
+	}
+	if me.TrustDomain != DefaultEnvelopeTrustDomain {
+		t.Errorf("TrustDomain default = %q, want %q", me.TrustDomain, DefaultEnvelopeTrustDomain)
+	}
+	if me.VerifyInbound.ReplayCache.Window != DefaultEnvelopeReplayWindow.String() {
+		t.Errorf("ReplayCache.Window default = %q, want %q",
+			me.VerifyInbound.ReplayCache.Window, DefaultEnvelopeReplayWindow)
+	}
+	if me.VerifyInbound.ReplayCache.MaxEntries != DefaultEnvelopeReplayMaxEntries {
+		t.Errorf("ReplayCache.MaxEntries default = %d, want %d",
+			me.VerifyInbound.ReplayCache.MaxEntries, DefaultEnvelopeReplayMaxEntries)
+	}
 
 	want := DefaultEnvelopeSignedComponents()
 	if len(me.SignedComponents) != len(want) {
@@ -131,6 +146,115 @@ func TestValidateMediationEnvelope_GoodKeyPopulatesDefaults(t *testing.T) {
 		if me.SignedComponents[i] != want[i] {
 			t.Errorf("SignedComponents[%d] = %q, want %q", i, me.SignedComponents[i], want[i])
 		}
+	}
+}
+
+func TestValidateMediationEnvelope_VerifyInboundTrustList(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	pubHex := hex.EncodeToString(pub)
+
+	c := Defaults()
+	c.MediationEnvelope.VerifyInbound.Enabled = true
+	if err := c.validateMediationEnvelope(); err == nil {
+		t.Fatal("expected enabled verify_inbound without trust_list to fail")
+	}
+
+	c = Defaults()
+	c.MediationEnvelope.VerifyInbound.Enabled = true
+	c.MediationEnvelope.VerifyInbound.TrustList = []MediationEnvelopeTrustedKey{{
+		KeyID:        "partner-key",
+		PublicKey:    pubHex,
+		WellKnownURL: "https://partner.example/.well-known/http-message-signatures-directory",
+	}}
+	c.MediationEnvelope.VerifyInbound.ReplayCache.Window = "2m"
+	c.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 16
+	if err := c.validateMediationEnvelope(); err != nil {
+		t.Fatalf("valid verify_inbound trust_list failed: %v", err)
+	}
+	if got := c.MediationEnvelope.VerifyInbound.ReplayCache.Window; got != "2m" {
+		t.Fatalf("ReplayCache.Window = %q", got)
+	}
+
+	c.MediationEnvelope.VerifyInbound.TrustList[0].WellKnownURL = "http://partner.example/keys"
+	if err := c.validateMediationEnvelope(); err == nil {
+		t.Fatal("expected non-https well_known_url to fail")
+	}
+}
+
+func TestValidateMediationEnvelope_ReplayCacheMaxEntriesDefaulted(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+
+	c := Defaults()
+	c.MediationEnvelope.VerifyInbound.Enabled = true
+	c.MediationEnvelope.VerifyInbound.TrustList = []MediationEnvelopeTrustedKey{{
+		KeyID:     "partner-key",
+		PublicKey: hex.EncodeToString(pub),
+	}}
+	c.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 0
+
+	if err := c.validateMediationEnvelope(); err != nil {
+		t.Fatalf("validateMediationEnvelope: %v", err)
+	}
+	if got := c.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries; got != DefaultEnvelopeReplayMaxEntries {
+		t.Fatalf("ReplayCache.MaxEntries = %d, want %d", got, DefaultEnvelopeReplayMaxEntries)
+	}
+}
+
+func TestValidateMediationEnvelope_TrimsFederationFields(t *testing.T) {
+	t.Parallel()
+
+	c := Defaults()
+	c.MediationEnvelope.Enabled = true
+	c.MediationEnvelope.Sign = true
+	c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
+	c.MediationEnvelope.ActorFormat = " SPIFFE "
+	c.MediationEnvelope.TrustDomain = " Example.Test "
+	c.MediationEnvelope.SignatureExpires = " 1m "
+	c.MediationEnvelope.VerifyInbound.ReplayCache.Window = " 2m "
+
+	if err := c.validateMediationEnvelope(); err != nil {
+		t.Fatalf("validateMediationEnvelope: %v", err)
+	}
+	if got := c.MediationEnvelope.ActorFormat; got != "spiffe" {
+		t.Fatalf("ActorFormat = %q", got)
+	}
+	if got := c.MediationEnvelope.TrustDomain; got != "example.test" {
+		t.Fatalf("TrustDomain = %q", got)
+	}
+	if got := c.MediationEnvelope.SignatureExpires; got != "1m" {
+		t.Fatalf("SignatureExpires = %q", got)
+	}
+	if got := c.MediationEnvelope.VerifyInbound.ReplayCache.Window; got != "2m" {
+		t.Fatalf("ReplayCache.Window = %q", got)
+	}
+}
+
+func TestValidateMediationEnvelope_SignatureExpiresValidatedWhenVerifyInboundOff(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"0s", "-1s", "not-a-duration"} {
+		t.Run(raw, func(t *testing.T) {
+			c := Defaults()
+			c.MediationEnvelope.Enabled = true
+			c.MediationEnvelope.Sign = true
+			c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
+			c.MediationEnvelope.VerifyInbound.Enabled = false
+			c.MediationEnvelope.SignatureExpires = raw
+
+			if err := c.validateMediationEnvelope(); err == nil {
+				t.Fatalf("expected signature_expires %q to fail", raw)
+			}
+		})
 	}
 }
 

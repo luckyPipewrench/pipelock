@@ -680,6 +680,27 @@ func mergeResponsePatterns(includeDefaults *bool, user, defaults []ResponseScanP
 // (one that was always sign=false, one that cycled through sign=true)
 // compare identically under ValidateReload.
 func normalizeMediationEnvelope(me *MediationEnvelope) error {
+	me.ActorFormat = strings.TrimSpace(me.ActorFormat)
+	if me.ActorFormat == "" {
+		me.ActorFormat = DefaultEnvelopeActorFormat
+	}
+	me.ActorFormat = strings.ToLower(me.ActorFormat)
+	switch me.ActorFormat {
+	case envelope.ActorFormatLegacy:
+	case envelope.ActorFormatSPIFFE:
+		me.TrustDomain = strings.TrimSpace(me.TrustDomain)
+		if me.TrustDomain == "" {
+			me.TrustDomain = DefaultEnvelopeTrustDomain
+		}
+		me.TrustDomain = strings.ToLower(me.TrustDomain)
+		if !envelope.IsValidTrustDomain(me.TrustDomain) {
+			return fmt.Errorf("mediation_envelope.trust_domain %q must be a DNS-shaped label with no scheme, slashes, userinfo, or port", me.TrustDomain)
+		}
+	default:
+		return fmt.Errorf("mediation_envelope.actor_format must be %q or %q", envelope.ActorFormatLegacy, envelope.ActorFormatSPIFFE)
+	}
+	me.SignatureExpires = strings.TrimSpace(me.SignatureExpires)
+	me.VerifyInbound.ReplayCache.Window = strings.TrimSpace(me.VerifyInbound.ReplayCache.Window)
 	if me.KeyID == "" {
 		me.KeyID = DefaultEnvelopeSignKeyID
 	}
@@ -703,6 +724,12 @@ func normalizeMediationEnvelope(me *MediationEnvelope) error {
 			return errors.New("mediation_envelope." + err.Error())
 		}
 		me.SignedComponents = normalized
+	}
+	if me.VerifyInbound.ReplayCache.Window == "" {
+		me.VerifyInbound.ReplayCache.Window = DefaultEnvelopeReplayWindow.String()
+	}
+	if me.VerifyInbound.ReplayCache.MaxEntries == 0 {
+		me.VerifyInbound.ReplayCache.MaxEntries = DefaultEnvelopeReplayMaxEntries
 	}
 	return nil
 }

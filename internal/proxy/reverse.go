@@ -68,6 +68,7 @@ type ReverseProxyHandler struct {
 	captureObs          capture.CaptureObserver
 	shieldEngine        *shield.Engine
 	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
+	envelopeVerifierPtr *atomic.Pointer[envelope.Verifier]
 	receiptEmitterPtr   *atomic.Pointer[receipt.Emitter]
 	reloadMu            *sync.RWMutex
 }
@@ -147,6 +148,11 @@ func (rp *ReverseProxyHandler) SetEnvelopeEmitter(ptr *atomic.Pointer[envelope.E
 	rp.envelopeEmitterPtr = ptr
 }
 
+// SetEnvelopeVerifier sets the atomic pointer to the inbound envelope verifier.
+func (rp *ReverseProxyHandler) SetEnvelopeVerifier(ptr *atomic.Pointer[envelope.Verifier]) {
+	rp.envelopeVerifierPtr = ptr
+}
+
 // SetReceiptEmitter sets the atomic pointer to the action-receipt emitter.
 // When unset (or pointing at nil), emitReceipt is a no-op so deployments
 // without flight-recorder signing keep their existing behavior. Wiring
@@ -200,6 +206,7 @@ type reverseRuntimeSnapshot struct {
 	cfg              *config.Config
 	sc               *scanner.Scanner
 	admissionEmitter *envelope.Emitter
+	inboundVerifier  *envelope.Verifier
 }
 
 func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
@@ -213,6 +220,9 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 	}
 	if rp.envelopeEmitterPtr != nil {
 		snap.admissionEmitter = rp.envelopeEmitterPtr.Load()
+	}
+	if rp.envelopeVerifierPtr != nil {
+		snap.inboundVerifier = rp.envelopeVerifierPtr.Load()
 	}
 	return snap
 }
@@ -242,9 +252,6 @@ func (rp *ReverseProxyHandler) snapshotAndAcquire() (reverseRuntimeSnapshot, fun
 // ServeHTTP handles incoming requests: scan the request body for DLP,
 // then forward to upstream via the reverse proxy.
 func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Strip inbound mediation envelope headers to prevent forgery.
-	envelope.StripInbound(r.Header)
-
 	snap, releaseScanner, scOK := rp.snapshotAndAcquire()
 	defer releaseScanner()
 	if !scOK {
@@ -284,6 +291,29 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
 	r = r.WithContext(ctx)
+
+	if err := verifyInboundEnvelope(r, cfg, snap.inboundVerifier); err != nil {
+		pattern := inboundEnvelopeFailurePattern(err)
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerMediationEnvelope)
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerMediationEnvelope,
+			Pattern:   pattern,
+			Transport: "reverse",
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			"inbound mediation envelope verification failed")
+		return
+	}
+	// Strip inbound mediation envelope headers after optional trust
+	// verification so forged mediation metadata cannot survive to upstreams.
+	envelope.StripInbound(r.Header)
 
 	// Kill switch: deny all traffic when active.
 	if rp.ks != nil && rp.ks.IsActive() {

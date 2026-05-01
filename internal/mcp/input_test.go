@@ -3644,9 +3644,19 @@ func TestScanRequest_HomoglyphCredPathBypass(t *testing.T) {
 
 // --- Envelope injection / strip helpers ---
 
+func mustInjectMCPEnvelope(t *testing.T, msg []byte, em *envelope.Emitter, opts envelope.BuildOpts) []byte {
+	t.Helper()
+
+	got, err := injectMCPEnvelope(msg, em, opts)
+	if err != nil {
+		t.Fatalf("injectMCPEnvelope: %v", err)
+	}
+	return got
+}
+
 func TestInjectMCPEnvelope_NilEmitter(t *testing.T) {
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`)
-	got := injectMCPEnvelope(msg, nil, envelope.BuildOpts{ActionID: "test-id"})
+	got := mustInjectMCPEnvelope(t, msg, nil, envelope.BuildOpts{ActionID: "test-id"})
 	if !bytes.Equal(got, msg) {
 		t.Error("nil emitter should return message unmodified")
 	}
@@ -3655,7 +3665,7 @@ func TestInjectMCPEnvelope_NilEmitter(t *testing.T) {
 func TestInjectMCPEnvelope_InjectsMetaKey(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read"}}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "aid-1",
 		Action:   "allow",
 		Verdict:  "clean",
@@ -3701,7 +3711,7 @@ func TestInjectMCPEnvelope_InjectsMetaKey(t *testing.T) {
 func TestInjectMCPEnvelope_PreservesExistingMeta(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"other":"value"}}}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "aid-2",
 		Action:   "allow",
 		Verdict:  "clean",
@@ -3732,7 +3742,7 @@ func TestInjectMCPEnvelope_PreservesExistingMeta(t *testing.T) {
 func TestInjectMCPEnvelope_InvalidJSON(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`not json`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x"})
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{ActionID: "x"})
 	if !bytes.Equal(got, msg) {
 		t.Error("invalid JSON should return message unmodified")
 	}
@@ -3741,7 +3751,7 @@ func TestInjectMCPEnvelope_InvalidJSON(t *testing.T) {
 func TestInjectMCPEnvelope_NoParams(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x"})
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{ActionID: "x"})
 	if !bytes.Equal(got, msg) {
 		t.Error("message without params should be returned unmodified")
 	}
@@ -3750,7 +3760,7 @@ func TestInjectMCPEnvelope_NoParams(t *testing.T) {
 func TestInjectMCPEnvelope_NullParamsCreatesMetaMap(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{ActionID: "x", Action: "read", Verdict: "allow"})
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{ActionID: "x", Action: "read", Verdict: "allow"})
 
 	if !bytes.Contains(got, []byte(`"_meta"`)) {
 		t.Fatalf("expected _meta to be created for null params, got: %s", got)
@@ -3760,7 +3770,7 @@ func TestInjectMCPEnvelope_NullParamsCreatesMetaMap(t *testing.T) {
 func TestInjectMCPEnvelope_StripsExistingSpoofedEnvelope(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"}}}}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "real-id",
 		Action:   "allow",
 		Verdict:  "clean",
@@ -3788,6 +3798,31 @@ func TestInjectMCPEnvelope_StripsExistingSpoofedEnvelope(t *testing.T) {
 	}
 	if med["rid"] != "real-id" {
 		t.Errorf("rid = %v, want real-id", med["rid"])
+	}
+}
+
+func TestInjectMCPEnvelope_BuildErrorStripsSpoofedEnvelope(t *testing.T) {
+	em := envelope.NewEmitter(envelope.EmitterConfig{
+		ConfigHash:  "test",
+		ActorFormat: envelope.ActorFormatSPIFFE,
+		TrustDomain: "bad/domain",
+	})
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"com.pipelock/mediation":{"act":"spoofed"},"other":"keep"}}}`)
+
+	got, err := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+		ActionID: "real-id",
+		Action:   "allow",
+		Verdict:  "clean",
+		Actor:    "agent",
+	})
+	if err == nil {
+		t.Fatal("expected build error")
+	}
+	if bytes.Contains(got, []byte(envelope.MCPMetaKey)) {
+		t.Fatalf("spoofed mediation key should stay stripped on build error, got: %s", got)
+	}
+	if !bytes.Contains(got, []byte(`"other":"keep"`)) {
+		t.Fatalf("non-mediation _meta should be preserved, got: %s", got)
 	}
 }
 
@@ -3868,7 +3903,7 @@ func TestInjectMCPEnvelope_PreservesLargeIntegerMeta(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	// _meta has a large integer that would lose precision with float64.
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":{"progressToken":9007199254740993}}}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "test-id", Action: "read", Verdict: "allow",
 	})
 
@@ -3888,7 +3923,7 @@ func TestInjectMCPEnvelope_MalformedMetaFailsOpen(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	// _meta is a string, not an object.
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":"not-an-object"}}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "test-id", Action: "read", Verdict: "allow",
 	})
 
@@ -3902,7 +3937,7 @@ func TestInjectMCPEnvelope_MalformedMetaFailsOpen(t *testing.T) {
 func TestInjectMCPEnvelope_ArrayMetaFailsOpen(t *testing.T) {
 	em := envelope.NewEmitter(envelope.EmitterConfig{ConfigHash: "test"})
 	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read","_meta":[1,2,3]}}`)
-	got := injectMCPEnvelope(msg, em, envelope.BuildOpts{
+	got := mustInjectMCPEnvelope(t, msg, em, envelope.BuildOpts{
 		ActionID: "test-id", Action: "read", Verdict: "allow",
 	})
 

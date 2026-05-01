@@ -115,9 +115,6 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
-	// Strip inbound mediation envelope headers to prevent forgery.
-	envelope.StripInbound(r.Header)
-
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
 	// and resolveAgent() could read different registries.
@@ -127,6 +124,26 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportWS, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerMediationEnvelope,
+			Pattern:   pattern,
+			Transport: TransportWS,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		http.Error(w, "inbound mediation envelope verification failed", http.StatusForbidden)
+		return
+	}
+	// Strip inbound mediation envelope headers after optional trust
+	// verification so forged mediation metadata cannot survive to upstreams.
+	envelope.StripInbound(r.Header)
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
 	if !scOK {

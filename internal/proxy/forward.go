@@ -83,6 +83,30 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	// Pre-generate a single ActionID for correlation between envelope and receipt.
+	actionID := receipt.NewActionID()
+
+	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportConnect, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerMediationEnvelope,
+			Pattern:   pattern,
+			Transport: TransportConnect,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		http.Error(w, "inbound mediation envelope verification failed", http.StatusForbidden)
+		return
+	}
+	// Strip inbound mediation envelope headers after optional trust
+	// verification so forged mediation metadata cannot survive to upstreams.
+	envelope.StripInbound(r.Header)
+
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()
@@ -106,12 +130,6 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, scannerPatternUnavailable, http.StatusServiceUnavailable)
 		return
 	}
-
-	// Strip inbound mediation envelope headers to prevent forgery.
-	envelope.StripInbound(r.Header)
-
-	// Pre-generate a single ActionID for correlation between envelope and receipt.
-	actionID := receipt.NewActionID()
 
 	target := r.Host
 	if target == "" {
@@ -567,9 +585,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
-	// Strip inbound mediation envelope headers to prevent forgery.
-	envelope.StripInbound(r.Header)
-
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
 
@@ -582,6 +597,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportForward, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerMediationEnvelope,
+			Pattern:   pattern,
+			Transport: TransportForward,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		http.Error(w, "inbound mediation envelope verification failed", http.StatusForbidden)
+		return
+	}
+	// Strip inbound mediation envelope headers after optional trust
+	// verification so forged mediation metadata cannot survive to upstreams.
+	envelope.StripInbound(r.Header)
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()

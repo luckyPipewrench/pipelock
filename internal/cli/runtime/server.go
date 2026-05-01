@@ -550,7 +550,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	if cfg.MediationEnvelope.Enabled {
 		s.envelopeEmitter = envelope.NewEmitter(envelope.EmitterConfig{
-			ConfigHash: cfg.CanonicalPolicyHash(),
+			ConfigHash:  cfg.CanonicalPolicyHash(),
+			ActorFormat: cfg.MediationEnvelope.ActorFormat,
+			TrustDomain: cfg.MediationEnvelope.TrustDomain,
 		})
 		proxyOpts = append(proxyOpts, proxy.WithEnvelopeEmitter(s.envelopeEmitter))
 		_, _ = fmt.Fprintf(opts.Stderr, "  Envelope: enabled (mediation envelopes injected)\n")
@@ -1007,6 +1009,7 @@ func (s *Server) Start(ctx context.Context) error {
 			s.logger, s.metrics, s.killswitch, rpCaptureObs, s.proxy.ShieldEngine(),
 		)
 		rpHandler.SetEnvelopeEmitter(s.proxy.EnvelopeEmitterPtr())
+		rpHandler.SetEnvelopeVerifier(s.proxy.EnvelopeVerifierPtr())
 		rpHandler.SetReceiptEmitter(s.proxy.ReceiptEmitterPtr())
 		rpHandler.SetReloadLock(s.proxy.ReloadLock())
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())

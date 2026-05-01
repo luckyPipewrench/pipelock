@@ -158,7 +158,48 @@ RFC 9421 HTTP Message Signatures for the mediation envelope ship in v2.2.0. The 
 
 **Body plumbing.** Transport inject sites hand the already-scanned request body bytes to the signer so `Content-Digest` is computed without a second drain. When request body scanning is disabled but signing is enabled, the envelope emitter drains `req.Body` itself (bounded by `max_body_bytes`) and installs a fresh `GetBody` closure so the stdlib can replay the body on 307/308 redirects.
 
-Deferred to a later release: SPIFFE actor format and well-known envelope-key discovery (`/.well-known/pipelock-envelope-keys`). Until those ship, key distribution is an out-of-band deployment concern — publish the envelope public key (hex or versioned format) alongside your receipt public key and rotate via `key_id` changes.
+**SPIFFE actors.** New outbound envelopes default to SPIFFE-formatted actors:
+`spiffe://<trust_domain>/agent/<agent-name>`. Set
+`mediation_envelope.actor_format: legacy` to preserve the older unstructured
+actor string during migration. Inbound parsing is permissive in v2.4: both
+legacy actor strings and SPIFFE IDs are accepted.
+
+**Inbound verification.** Set `mediation_envelope.verify_inbound.enabled: true`
+with a `trust_list` of accepted `key_id` / Ed25519 public-key pairs to require
+incoming mediation envelopes to verify before Pipelock strips and replaces
+them. Inbound signatures must carry `created`, `expires`, and `nonce`; nonces
+are stored in a bounded in-process replay cache.
+
+The verifier enforces three federation guards beyond signature validity:
+
+- **Lifetime cap.** Signatures whose declared `expires - created` exceeds
+  `replay_cache.window + created_skew_seconds` are rejected. Without this cap a
+  long-lived signature stays valid after its nonce is evicted from the cache,
+  defeating replay protection. The outbound signer's `signature_expires`
+  (defaults to `replay_cache.window`) cannot exceed the window — startup
+  validation rejects an inconsistent pair.
+- **Per-key actor binding.** Each `trust_list` entry may declare a
+  `trust_domains` allowlist. When set, the SPIFFE trust domain in the
+  envelope's `actor` must match — preventing a compromised partner key from
+  signing envelopes that claim a different peer's identity. Empty preserves
+  the v2.4 migration default (any trust domain). Production deployments
+  should pin every key.
+- **Strict SPIFFE parsing.** Inbound actors are validated against
+  SPIFFE-ID §2: no userinfo, no port in the trust domain, no `..` or empty
+  path segments. Allowlist comparisons on `actor.TrustDomain` or
+  `actor.Workload` cannot be bypassed via traversal or smuggled authority
+  components.
+
+Verification runs on every transport — `/fetch`, forward CONNECT, WebSocket,
+TLS-intercepted CONNECT inner requests, and the reverse proxy — before the
+inbound headers are stripped, so federated peers' signed envelopes are
+accepted while forged ones are rejected with a 403.
+
+**Well-known key directory.** A signing proxy exposes its current envelope
+public key at `/.well-known/http-message-signatures-directory` and emits an
+audit anomaly when the route is requested. Verifiers can fetch that JSON
+directory instead of sideloading a public-key pin. Unsigned envelope
+configurations return 404 for the well-known route.
 
 ## Example: reading the envelope in Go
 

@@ -2017,8 +2017,22 @@ mediation_envelope:
     - "@target-uri"
     - "pipelock-mediation"
     - "content-digest"
-  created_skew_seconds: 30
+  created_skew_seconds: 60
   max_body_bytes: 1048576
+  actor_format: spiffe
+  trust_domain: prod.example
+  signature_expires: 5m
+  verify_inbound:
+    enabled: true
+    trust_list:
+      - key_id: partner-pipelock-2026-04
+        public_key: "64-char-hex-encoded-ed25519-public-key"
+        well_known_url: "https://partner.example/.well-known/http-message-signatures-directory"
+        trust_domains:
+          - partner.example
+    replay_cache:
+      window: 5m
+      max_entries: 10000
 ```
 
 | Field | Default | Description |
@@ -2026,10 +2040,18 @@ mediation_envelope:
 | `enabled` | `false` | Enable envelope injection on proxied requests |
 | `sign` | `false` | Attach an RFC 9421 HTTP Message Signature alongside the envelope. Fail-closed at startup and on reload if the key is missing or unreadable. |
 | `signing_key_path` | (none) | Path to the versioned pipelock Ed25519 private key used to sign the envelope. Required when `sign: true`. |
-| `key_id` | (none) | Identifier emitted as `keyid` in the signature-input so verifiers can rotate keys. Required when `sign: true`. |
+| `key_id` | `pipelock-mediation-v1` | Identifier emitted as `keyid` in the signature-input so verifiers can rotate keys. |
 | `signed_components` | (see below) | Ordered list of RFC 9421 component identifiers covered by the signature. |
-| `created_skew_seconds` | `30` | Clock-drift tolerance (seconds) accepted between signer and verifier. |
+| `created_skew_seconds` | `60` | Clock-drift tolerance (seconds) accepted between signer and verifier. |
 | `max_body_bytes` | `1048576` | Upper bound on the body drained for Content-Digest when body scanning is disabled. |
+| `actor_format` | `spiffe` | Format for newly emitted `actor` values. `spiffe` maps agent names to `spiffe://<trust_domain>/agent/<name>`; `legacy` preserves the configured name. |
+| `trust_domain` | `pipelock.local` | SPIFFE trust domain used when `actor_format: spiffe`. Must be a DNS-shaped label with no scheme, slashes, userinfo, or port. |
+| `signature_expires` | `=replay_cache.window` | Per-signature lifetime emitted by the outbound signer (Go duration string). When `verify_inbound.enabled` is true, this must be `<= verify_inbound.replay_cache.window`; an explicit value larger than the window is rejected at startup so a captured signature can never outlive its replay-cache nonce. When inbound verification is disabled, any positive duration is accepted. Empty falls back to the configured replay-cache window. |
+| `verify_inbound.enabled` | `false` | Require inbound requests to carry a valid Pipelock mediation signature before the inbound envelope headers are stripped. |
+| `verify_inbound.trust_list` | `[]` | Trusted inbound signer keys. Each entry needs `key_id` and `public_key`; `well_known_url` documents the discovery source; optional `trust_domains` pins the key to one or more SPIFFE trust domains it is allowed to attest. |
+| `verify_inbound.trust_list[].trust_domains` | `[]` | When non-empty, restricts which actor trust domains the trusted key may attest. An envelope whose actor's trust domain is not in this list fails verification. Empty preserves v2.4 migration behavior (any trust domain). Production deployments should pin each key to the partner's trust domain so a compromised partner cannot impersonate another peer. |
+| `verify_inbound.replay_cache.window` | `5m` | Maximum nonce replay window for inbound signatures. The verifier rejects signatures whose declared lifetime (`expires - created`) exceeds `window + created_skew_seconds` so a captured signature cannot outlive its nonce in the cache. |
+| `verify_inbound.replay_cache.max_entries` | `10000` | Bound on the in-process replay cache. Zero uses the default; set a positive value to override. |
 
 Default `signed_components` covers `@method`, `@target-uri`, `pipelock-mediation`, and `content-digest`. Override only if your verifier requires a different component set.
 
@@ -2058,7 +2080,9 @@ When enabled, the envelope carries these wire fields:
 
 **Reverse-proxy signing:** Envelope signing runs in an `http.RoundTripper` wrapper installed on `httputil.ReverseProxy.Transport`, so `@target-uri` reflects the post-Director upstream URL rather than the inbound relative path.
 
-**Deferred for follow-up:** SPIFFE actor format and well-known envelope-key discovery (`/.well-known/pipelock-envelope-keys`). Until those ship, distribute the envelope public key out-of-band alongside the receipt public key and rotate via `key_id`.
+**Inbound verification:** When `verify_inbound.enabled` is true, Pipelock verifies the inbound `Pipelock-Mediation` header and matching RFC 9421 signature against `trust_list` before stripping those headers and forwarding the request. Signatures must include `created`, `expires`, and `nonce`; the nonce is stored in a bounded in-process replay cache. The verifier additionally enforces three federation guards: (1) the signature's declared lifetime is capped at `replay_cache.window + created_skew_seconds` so a captured signature cannot outlive its nonce in the cache, (2) when a trusted key declares `trust_domains`, the SPIFFE trust domain in the envelope's `actor` must match — preventing a compromised partner key from impersonating another peer, and (3) SPIFFE actors are parsed strictly (no userinfo, no port in trust domain, no `..` or empty path segments) so an actor allowlist comparison cannot be bypassed via traversal or smuggled authority components.
+
+**Well-known key directory:** A signing proxy exposes its current envelope public key at `/.well-known/http-message-signatures-directory` with short cache headers. Unsigned envelope configurations return 404.
 
 ## Media Policy (v2.1)
 

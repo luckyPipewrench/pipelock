@@ -274,9 +274,9 @@ func emitMCPToolReceipt(
 // warn-mode tools/call that is about to be forwarded upstream. Routed
 // through EmitMCPDecision so envelope injection shares the same
 // emission entry point as receipt emission.
-func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcpMethod, toolName, receiptVerdict string, decision taintDecision) []byte {
+func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcpMethod, toolName, receiptVerdict string, decision taintDecision) ([]byte, error) {
 	if actionID == "" {
-		return msg
+		return msg, nil
 	}
 	buildOpts := envelope.BuildOpts{
 		ActionID:       actionID,
@@ -287,9 +287,9 @@ func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcp
 		AuthorityKind:  decision.Authority.String(),
 		RequiresReauth: decision.RequiresReauth,
 	}
-	out, _ := EmitMCPDecision(nil, emitter, MCPDecision{
+	out, err := EmitMCPDecision(nil, emitter, MCPDecision{
 		Envelope:   &buildOpts,
 		InboundMsg: msg,
 	})
-	return out
+	return out, err
 }

@@ -585,10 +585,21 @@ func ForwardScannedInput(
 					AuthorityKind:  taintDecision.Authority.String(),
 					RequiresReauth: taintDecision.RequiresReauth,
 				}
-				fwdLine, _ = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
+				var emitErr error
+				fwdLine, emitErr = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
 					Envelope:   &buildOpts,
 					InboundMsg: line,
 				})
+				if emitErr != nil {
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     "mediation envelope injection failed",
+						ErrorCode:      -32002,
+						ErrorMessage:   "pipelock: mediation envelope injection failed",
+					}
+					continue
+				}
 			}
 			if err := writer.WriteMessage(fwdLine); err != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: input forward error: %v\n", err)
@@ -849,10 +860,21 @@ func ForwardScannedInput(
 					AuthorityKind:  taintDecision.Authority.String(),
 					RequiresReauth: taintDecision.RequiresReauth,
 				}
-				fwdLine, _ = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
+				var emitErr error
+				fwdLine, emitErr = EmitMCPDecision(nil, envelopeEmitter, MCPDecision{
 					Envelope:   &buildOpts,
 					InboundMsg: line,
 				})
+				if emitErr != nil {
+					blockedCh <- BlockedRequest{
+						ID:             verdict.ID,
+						IsNotification: isRPCNotification(verdict.ID),
+						LogMessage:     "mediation envelope injection failed",
+						ErrorCode:      -32002,
+						ErrorMessage:   "pipelock: mediation envelope injection failed",
+					}
+					continue
+				}
 			}
 			// Forward anyway (warn mode).
 			if err := writer.WriteMessage(fwdLine); err != nil {
@@ -956,26 +978,27 @@ func joinStrings(ss []string) string {
 
 // injectMCPEnvelope injects a mediation envelope into a JSON-RPC message's
 // params._meta field. Returns the modified message bytes, or the original
-// message unmodified if parsing fails (fail-open for envelope injection --
-// the message was already allowed).
-func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope.BuildOpts) []byte {
+// message unmodified if parsing fails before metadata can be safely rewritten.
+// Once _meta is parsed, spoofed mediation metadata is stripped even if envelope
+// construction fails.
+func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope.BuildOpts) ([]byte, error) {
 	if emitter == nil {
-		return msg
+		return msg, nil
 	}
 
 	var rpc map[string]json.RawMessage
 	if err := json.Unmarshal(msg, &rpc); err != nil {
-		return msg
+		return msg, nil
 	}
 
 	paramsRaw, ok := rpc["params"]
 	if !ok {
-		return msg
+		return msg, nil
 	}
 
 	var params map[string]json.RawMessage
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return msg
+		return msg, nil
 	}
 	if params == nil {
 		params = make(map[string]json.RawMessage)
@@ -987,7 +1010,7 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 	meta := make(map[string]json.RawMessage)
 	if metaRaw, exists := params["_meta"]; exists {
 		if err := json.Unmarshal(metaRaw, &meta); err != nil {
-			return msg // malformed _meta -- fail-open
+			return msg, nil // malformed _meta -- fail-open
 		}
 	}
 	if meta == nil {
@@ -996,28 +1019,42 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 
 	// Strip any existing mediation key, then inject.
 	delete(meta, envelope.MCPMetaKey)
-	envData := emitter.Build(buildOpts).ToMCPMeta()
+	env, err := emitter.Build(buildOpts)
+	if err != nil {
+		out := marshalMCPWithMeta(msg, rpc, params, meta)
+		return out, fmt.Errorf("inject MCP mediation envelope: %w", err)
+	}
+	envData := env.ToMCPMeta()
 	envBytes, err := json.Marshal(envData)
 	if err != nil {
-		return msg
+		out := marshalMCPWithMeta(msg, rpc, params, meta)
+		return out, fmt.Errorf("marshal MCP mediation envelope: %w", err)
 	}
 	meta[envelope.MCPMetaKey] = envBytes
 
+	out := marshalMCPWithMeta(msg, rpc, params, meta)
+	if bytes.Equal(out, msg) {
+		return out, fmt.Errorf("marshal MCP message with mediation envelope")
+	}
+	return out, nil
+}
+
+func marshalMCPWithMeta(original []byte, rpc, params map[string]json.RawMessage, meta map[string]json.RawMessage) []byte {
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
-		return msg
+		return original
 	}
 	params["_meta"] = metaBytes
 
 	paramsBytes, err := json.Marshal(params)
 	if err != nil {
-		return msg
+		return original
 	}
 	rpc["params"] = paramsBytes
 
 	out, err := json.Marshal(rpc)
 	if err != nil {
-		return msg
+		return original
 	}
 	return out
 }

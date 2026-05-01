@@ -58,7 +58,16 @@ const (
 	// drift hole: a YAML omitting learn.inference.floors and a YAML
 	// setting them explicitly to 5/20/3 now hash identically because
 	// they describe the same effective policy.
-	goldenHashDefaults = "3991ac9dbd84ba3683c0b855c979c4bd0bf422362a12ea85354ef90c58da3a31"
+	// Re-bumped for federation plumbing: mediation_envelope now carries
+	// actor_format/trust_domain and inbound verify/replay settings.
+	// These change the attested envelope trust contract, so ph must move.
+	// Re-bumped for federation hardening: mediation_envelope now carries
+	// signature_expires (operator-tunable signer lifetime, paired with
+	// the inbound replay window), and verify_inbound.trust_list[].
+	// trust_domains (per-key actor binding so a compromised partner key
+	// cannot impersonate another peer's trust domain). Both change the
+	// attested envelope trust contract.
+	goldenHashDefaults = "900c875010b9b2aea4ca20b1ef9b5f9d3383f33c6eb343417bb022dd7e4855af"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -81,7 +90,9 @@ const (
 	// effective defaults before hashing. See goldenHashDefaults note
 	// above. The rich fixture omits the inference substruct, so
 	// resolved-default values flow into ph identically to Defaults().
-	goldenHashRichConfig = "8584aecb9ff688cc0062249fa24581cda8fb8883d94d73a1aaa559ca13d494ce"
+	// Re-bumped for federation plumbing: see goldenHashDefaults note.
+	// Re-bumped for federation hardening: see goldenHashDefaults note.
+	goldenHashRichConfig = "84e565a39537756c063ca4bc8d7bc69a1a10dba8b3e750f909b163bd7f345dc3"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

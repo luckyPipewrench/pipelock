@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -1718,6 +1719,10 @@ const (
 	DefaultEnvelopeSignKeyID           = "pipelock-mediation-v1"
 	DefaultEnvelopeSignCreatedSkewSecs = 60
 	DefaultEnvelopeSignMaxBodyBytes    = 1 << 20 // 1 MiB
+	DefaultEnvelopeActorFormat         = envelope.ActorFormatSPIFFE
+	DefaultEnvelopeTrustDomain         = "pipelock.local"
+	DefaultEnvelopeReplayWindow        = 5 * time.Minute
+	DefaultEnvelopeReplayMaxEntries    = 10000
 )
 
 // DefaultEnvelopeSignedComponents returns the RFC 9421 component set
@@ -1750,10 +1755,16 @@ func (c *Config) validateMediationEnvelope() error {
 		return err
 	}
 
+	if me.Sign {
+		if _, err := mediationEnvelopeSignatureExpires(me.SignatureExpires, DefaultEnvelopeReplayWindow); err != nil {
+			return err
+		}
+	}
+
 	if !me.Sign {
 		// Signing disabled — normalization is enough; skip the
 		// keyfile load that's only meaningful when signing is on.
-		return nil
+		return c.validateInboundMediationEnvelopeTrust()
 	}
 
 	// Require a signing key path. Fail closed: a missing key path with
@@ -1771,7 +1782,100 @@ func (c *Config) validateMediationEnvelope() error {
 		return fmt.Errorf("mediation_envelope.signing_key_path %q: %w", me.SigningKeyPath, err)
 	}
 
+	return c.validateInboundMediationEnvelopeTrust()
+}
+
+func (c *Config) validateInboundMediationEnvelopeTrust() error {
+	verify := c.MediationEnvelope.VerifyInbound
+	if !verify.Enabled {
+		return nil
+	}
+	if len(verify.TrustList) == 0 {
+		return fmt.Errorf("mediation_envelope.verify_inbound.trust_list must contain at least one trusted key")
+	}
+	seen := make(map[string]int, len(verify.TrustList))
+	for i, key := range verify.TrustList {
+		keyID := strings.TrimSpace(key.KeyID)
+		if keyID == "" {
+			return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].key_id is required", i)
+		}
+		if prior, dup := seen[keyID]; dup {
+			return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].key_id %q duplicates trust_list[%d]", i, keyID, prior)
+		}
+		seen[keyID] = i
+		if strings.TrimSpace(key.PublicKey) == "" {
+			return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].public_key is required", i)
+		}
+		if _, err := signing.ParsePublicKey(key.PublicKey); err != nil {
+			return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].public_key: %w", i, err)
+		}
+		if key.WellKnownURL != "" {
+			u, err := url.Parse(key.WellKnownURL)
+			if err != nil || u.Scheme != schemeHTTPS || u.Host == "" {
+				return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].well_known_url must be an https URL", i)
+			}
+		}
+		for j, td := range key.TrustDomains {
+			normalized := strings.ToLower(strings.TrimSpace(td))
+			if normalized == "" {
+				return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].trust_domains[%d] must not be empty", i, j)
+			}
+			if !envelope.IsValidTrustDomain(normalized) {
+				return fmt.Errorf("mediation_envelope.verify_inbound.trust_list[%d].trust_domains[%d] %q must be a DNS-shaped label with no scheme, slashes, userinfo, or port", i, j, td)
+			}
+		}
+	}
+	window, err := mediationEnvelopeReplayWindow(verify.ReplayCache.Window)
+	if err != nil {
+		return err
+	}
+	if verify.ReplayCache.MaxEntries < 0 {
+		return fmt.Errorf("mediation_envelope.verify_inbound.replay_cache.max_entries must be >= 0")
+	}
+	// Signer expiry must not exceed the replay window — otherwise a
+	// captured signature stays valid after its nonce is evicted from
+	// the cache, defeating replay protection. When signature_expires
+	// is empty, the runtime defaults the signer's lifetime to window
+	// so the constraint holds by construction.
+	if expires, err := mediationEnvelopeSignatureExpires(c.MediationEnvelope.SignatureExpires, window); err != nil {
+		return err
+	} else if expires > window {
+		return fmt.Errorf("mediation_envelope.signature_expires (%s) must be <= mediation_envelope.verify_inbound.replay_cache.window (%s)", expires, window)
+	}
 	return nil
+}
+
+func mediationEnvelopeReplayWindow(raw string) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return DefaultEnvelopeReplayWindow, nil
+	}
+	window, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("mediation_envelope.verify_inbound.replay_cache.window: %w", err)
+	}
+	if window <= 0 {
+		return 0, fmt.Errorf("mediation_envelope.verify_inbound.replay_cache.window must be > 0")
+	}
+	return window, nil
+}
+
+// mediationEnvelopeSignatureExpires parses the operator-supplied signer
+// lifetime. Empty falls back to the supplied window so the signer and
+// verifier agree by default — the validator then accepts the value by
+// construction (window <= window). Operators who set an explicit value
+// must keep it <= window or validation rejects.
+func mediationEnvelopeSignatureExpires(raw string, window time.Duration) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return window, nil
+	}
+	expires, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("mediation_envelope.signature_expires: %w", err)
+	}
+	if expires <= 0 {
+		return 0, fmt.Errorf("mediation_envelope.signature_expires must be > 0")
+	}
+	return expires, nil
 }
 
 func (c *Config) validateDefaultAgentIdentity() error {

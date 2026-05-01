@@ -24,7 +24,7 @@ func TestEmitter_Build(t *testing.T) {
 		ConfigHash: "sha256:abcd1234",
 	})
 
-	env := em.Build(BuildOpts{
+	env, err := em.Build(BuildOpts{
 		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
 		Action:     "write",
 		Verdict:    "allow",
@@ -32,6 +32,9 @@ func TestEmitter_Build(t *testing.T) {
 		Actor:      "claude-code",
 		ActorAuth:  ActorAuthBound,
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 
 	if env.Version != 1 {
 		t.Errorf("Version = %d, want 1", env.Version)
@@ -54,14 +57,50 @@ func TestEmitter_Build_Nil(t *testing.T) {
 	t.Parallel()
 
 	var em *Emitter
-	env := em.Build(BuildOpts{
+	env, err := em.Build(BuildOpts{
 		ActionID: "test",
 		Action:   "read",
 		Verdict:  "allow",
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 
 	if env.Version != 0 {
 		t.Errorf("nil emitter Build() returned non-zero Version: %d", env.Version)
+	}
+}
+
+func TestEmitter_BuildActorFormatError(t *testing.T) {
+	t.Parallel()
+
+	em := NewEmitter(EmitterConfig{
+		ConfigHash:  "sha256:test",
+		ActorFormat: ActorFormatSPIFFE,
+		TrustDomain: "bad/domain",
+	})
+
+	if _, err := em.Build(BuildOpts{Actor: "agent"}); err == nil {
+		t.Fatal("expected actor formatting error")
+	}
+}
+
+func TestEmitter_InjectAndSignActorFormatErrorStripsHeaders(t *testing.T) {
+	t.Parallel()
+
+	em := NewEmitter(EmitterConfig{
+		ConfigHash:  "sha256:test",
+		ActorFormat: ActorFormatSPIFFE,
+		TrustDomain: "bad/domain",
+	})
+	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+	req.Header.Set(HeaderName, "stale")
+
+	if err := em.InjectAndSign(req, nil, BuildOpts{Actor: "agent"}); err == nil {
+		t.Fatal("expected actor formatting error")
+	}
+	if got := req.Header.Get(HeaderName); got != "" {
+		t.Fatalf("stale mediation header = %q, want stripped", got)
 	}
 }
 
@@ -111,14 +150,16 @@ func TestEmitter_InjectMCPEnvelope(t *testing.T) {
 	})
 
 	meta := make(map[string]any)
-	em.InjectMCPEnvelope(meta, BuildOpts{
+	if err := em.InjectMCPEnvelope(meta, BuildOpts{
 		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
 		Action:     "read",
 		Verdict:    "allow",
 		SideEffect: "external_read",
 		Actor:      "test",
 		ActorAuth:  ActorAuthMatched,
-	})
+	}); err != nil {
+		t.Fatalf("InjectMCPEnvelope: %v", err)
+	}
 
 	if _, ok := meta[MCPMetaKey]; !ok {
 		t.Fatal("InjectMCPEnvelope() did not set meta key")
@@ -130,9 +171,25 @@ func TestEmitter_InjectMCPEnvelope_Nil(t *testing.T) {
 
 	var em *Emitter
 	meta := make(map[string]any)
-	em.InjectMCPEnvelope(meta, BuildOpts{})
+	if err := em.InjectMCPEnvelope(meta, BuildOpts{}); err != nil {
+		t.Fatalf("nil emitter should return nil, got: %v", err)
+	}
 	if _, ok := meta[MCPMetaKey]; ok {
 		t.Error("nil emitter should not inject meta")
+	}
+}
+
+func TestEmitter_InjectMCPEnvelopeActorFormatError(t *testing.T) {
+	t.Parallel()
+
+	em := NewEmitter(EmitterConfig{
+		ConfigHash:  "sha256:test",
+		ActorFormat: ActorFormatSPIFFE,
+		TrustDomain: "bad/domain",
+	})
+
+	if err := em.InjectMCPEnvelope(map[string]any{}, BuildOpts{Actor: "agent"}); err == nil {
+		t.Fatal("expected actor formatting error")
 	}
 }
 
@@ -141,12 +198,18 @@ func TestEmitter_UpdateConfigHash(t *testing.T) {
 
 	em := NewEmitter(EmitterConfig{ConfigHash: "v1"})
 
-	env1 := em.Build(BuildOpts{Action: "read", Verdict: "allow", ActorAuth: ActorAuthBound})
+	env1, err := em.Build(BuildOpts{Action: "read", Verdict: "allow", ActorAuth: ActorAuthBound})
+	if err != nil {
+		t.Fatalf("Build env1: %v", err)
+	}
 	hash1 := env1.PolicyHash
 
 	em.UpdateConfigHash("v2")
 
-	env2 := em.Build(BuildOpts{Action: "read", Verdict: "allow", ActorAuth: ActorAuthBound})
+	env2, err := em.Build(BuildOpts{Action: "read", Verdict: "allow", ActorAuth: ActorAuthBound})
+	if err != nil {
+		t.Fatalf("Build env2: %v", err)
+	}
 	hash2 := env2.PolicyHash
 
 	// Different config hashes must produce different policy hashes.
@@ -173,13 +236,16 @@ func TestEmitter_Build_PolicyHashOverride(t *testing.T) {
 	})
 	perAgent := PolicyHashFromHex("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100")
 
-	env := em.Build(BuildOpts{
+	env, err := em.Build(BuildOpts{
 		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
 		Action:     "write",
 		Verdict:    "allow",
 		ActorAuth:  ActorAuthBound,
 		PolicyHash: perAgent,
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 
 	if len(env.PolicyHash) != 16 {
 		t.Fatalf("PolicyHash length = %d, want 16", len(env.PolicyHash))
@@ -200,12 +266,15 @@ func TestEmitter_Build_PolicyHashFallback(t *testing.T) {
 	const globalHex = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
 	em := NewEmitter(EmitterConfig{ConfigHash: globalHex})
 
-	env := em.Build(BuildOpts{
+	env, err := em.Build(BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000002",
 		Action:    "read",
 		Verdict:   "allow",
 		ActorAuth: ActorAuthMatched,
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 
 	want := PolicyHashFromHex(globalHex)
 	if string(env.PolicyHash) != string(want) {

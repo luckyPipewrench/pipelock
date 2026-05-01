@@ -22,8 +22,10 @@ import (
 // when either the config hash or the signing key material changes, so
 // the runtime swap is a single atomic pointer store.
 type Emitter struct {
-	configHash atomic.Value // stores string
-	signer     *Signer
+	configHash  atomic.Value // stores string
+	signer      *Signer
+	actorFormat string
+	trustDomain string
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -41,11 +43,21 @@ type EmitterConfig struct {
 	// held for the lifetime of this Emitter; swapping the key
 	// requires installing a new Emitter.
 	Signer *Signer
+
+	// ActorFormat controls newly emitted actor values. Empty keeps the
+	// caller-supplied legacy value; "spiffe" formats legacy agent names
+	// as spiffe://<trust-domain>/agent/<name>.
+	ActorFormat string
+	TrustDomain string
 }
 
 // NewEmitter creates an envelope emitter.
 func NewEmitter(cfg EmitterConfig) *Emitter {
-	e := &Emitter{signer: cfg.Signer}
+	e := &Emitter{
+		signer:      cfg.Signer,
+		actorFormat: cfg.ActorFormat,
+		trustDomain: cfg.TrustDomain,
+	}
 	e.configHash.Store(cfg.ConfigHash)
 	return e
 }
@@ -67,6 +79,16 @@ func (e *Emitter) Signer() *Signer {
 		return nil
 	}
 	return e.signer
+}
+
+// Directory returns the well-known HTTP message signatures key directory for
+// this emitter's installed signer. A nil emitter or unsigned emitter returns an
+// empty directory.
+func (e *Emitter) Directory() Directory {
+	if e == nil || e.signer == nil {
+		return Directory{}
+	}
+	return e.signer.Directory()
 }
 
 // UpdateConfigHash atomically updates the policy hash used in envelopes.
@@ -106,9 +128,9 @@ type BuildOpts struct {
 
 // Build creates an Envelope from the scan decision context.
 // Returns a zero Envelope if the emitter is nil.
-func (e *Emitter) Build(opts BuildOpts) Envelope {
+func (e *Emitter) Build(opts BuildOpts) (Envelope, error) {
 	if e == nil {
-		return Envelope{}
+		return Envelope{}, nil
 	}
 
 	var hash []byte
@@ -118,12 +140,17 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 		hash = policyHashTruncated(configHashString(e.configHash.Load()))
 	}
 
+	actor, err := FormatActor(opts.Actor, e.actorFormat, e.trustDomain)
+	if err != nil {
+		return Envelope{}, fmt.Errorf("envelope emitter: format actor: %w", err)
+	}
+
 	return Envelope{
 		Version:        1,
 		Action:         opts.Action,
 		Verdict:        opts.Verdict,
 		SideEffect:     opts.SideEffect,
-		Actor:          opts.Actor,
+		Actor:          actor,
 		ActorAuth:      opts.ActorAuth,
 		PolicyHash:     hash,
 		ReceiptID:      opts.ActionID,
@@ -133,7 +160,7 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 		AuthorityKind:  opts.AuthorityKind,
 		AuthorityRef:   opts.AuthorityRef,
 		RequiresReauth: opts.RequiresReauth,
-	}
+	}, nil
 }
 
 // InjectHTTPEnvelope builds an envelope and injects it as an HTTP header.
@@ -146,7 +173,10 @@ func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 	if e == nil {
 		return nil
 	}
-	env := e.Build(opts)
+	env, err := e.Build(opts)
+	if err != nil {
+		return err
+	}
 	return InjectHTTP(h, env)
 }
 
@@ -190,7 +220,11 @@ func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) 
 	if req == nil {
 		return fmt.Errorf("envelope emitter: nil *http.Request")
 	}
-	env := e.Build(opts)
+	env, err := e.Build(opts)
+	if err != nil {
+		stripEnvelopeHeaders(req)
+		return err
+	}
 	if err := InjectHTTP(req.Header, env); err != nil {
 		stripEnvelopeHeaders(req)
 		return fmt.Errorf("envelope emitter: inject header: %w", err)
@@ -361,12 +395,16 @@ func overCapGetBody() (io.ReadCloser, error) {
 
 // InjectMCPEnvelope builds an envelope and injects it into an MCP _meta map.
 // No-op if the emitter is nil.
-func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) {
+func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) error {
 	if e == nil {
-		return
+		return nil
 	}
-	env := e.Build(opts)
+	env, err := e.Build(opts)
+	if err != nil {
+		return fmt.Errorf("envelope emitter: build MCP envelope: %w", err)
+	}
 	InjectMCP(meta, env)
+	return nil
 }
 
 // PolicyHashFromHex is the exported form of policyHashTruncated. Callers

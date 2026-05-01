@@ -748,6 +748,9 @@ type auditEvent struct {
 	RulesEmitted      int      `json:"rules_emitted,omitempty"`
 	Quarantines       int      `json:"quarantines,omitempty"`
 	ReceiptsEmitted   int      `json:"receipts_emitted,omitempty"`
+	RulesRatified     int      `json:"rules_ratified,omitempty"`
+	RulesRejected     int      `json:"rules_rejected,omitempty"`
+	Tombstone         string   `json:"tombstone,omitempty"`
 	CrossAgentSigning bool     `json:"cross_agent_signing,omitempty"`
 	NoOp              bool     `json:"noop"`
 }

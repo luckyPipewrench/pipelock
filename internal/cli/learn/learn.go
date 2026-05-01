@@ -43,8 +43,10 @@ Compile and review:
   pipelock learn review <candidate.yaml>
   pipelock learn shadow --contract <candidate.yaml> --sessions <dir>
   pipelock learn diff <shadow-a.json> <shadow-b.json>
+  pipelock learn ratify --candidate <candidate.yaml> --interactive
   pipelock learn promote --contract <hash> --selector <agent|glob|default>
   pipelock learn rollback --to <manifest-hash>
+  pipelock learn forget --candidate <candidate.yaml> --rule-id <id> --reason <legal>
 
 Operator affordances (mutate candidate YAML before ratification):
   pipelock learn split --candidate <path> --rule <rule_id> [--index N] [--out <path>]
@@ -55,8 +57,10 @@ Operator affordances (mutate candidate YAML before ratification):
 	cmd.AddCommand(reviewCmd())
 	cmd.AddCommand(shadowCmd())
 	cmd.AddCommand(diffCmd())
+	cmd.AddCommand(ratifyCmd())
 	cmd.AddCommand(promoteCmd())
 	cmd.AddCommand(rollbackCmd())
+	cmd.AddCommand(forgetCmd())
 	cmd.AddCommand(splitCmd())
 	cmd.AddCommand(pinCmd())
 	return cmd

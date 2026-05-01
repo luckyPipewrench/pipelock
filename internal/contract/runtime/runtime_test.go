@@ -148,7 +148,7 @@ func TestActiveSetAccessorsAndInvalidState(t *testing.T) {
 	}
 }
 
-func TestResolveNilNoMatchAndBadGlob(t *testing.T) {
+func TestResolveNilNoMatchAndRejectsBadGlob(t *testing.T) {
 	if resolved, ok := (*ActiveSet)(nil).Resolve("agent"); ok || resolved != nil {
 		t.Fatalf("nil Resolve = (%v, %v), want no match", resolved, ok)
 	}
@@ -168,9 +168,14 @@ func TestResolveNilNoMatchAndBadGlob(t *testing.T) {
 			"other":    {Body: contract.Contract{ContractHash: testContractHash}},
 		},
 	}
+	if _, err := NewActiveSet(state); !errors.Is(err, ErrInvalidSelector) {
+		t.Fatalf("NewActiveSet bad glob err = %v, want ErrInvalidSelector", err)
+	}
+
+	state.Envelope.Body.Selectors[0].AgentGlob = "no-match-*"
 	active, err := NewActiveSet(state)
 	if err != nil {
-		t.Fatalf("NewActiveSet: %v", err)
+		t.Fatalf("NewActiveSet valid glob: %v", err)
 	}
 	if resolved, ok := active.Resolve("agent"); ok || resolved != nil {
 		t.Fatalf("Resolve = (%v, %v), want no match", resolved, ok)
@@ -221,6 +226,33 @@ func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
 		t.Fatalf("allowed decision = %+v", allowed)
 	}
 
+	explicitDefaultPort, err := EvaluateHTTP(EvaluateOptions{
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://api.example.com:443/v1/chat", Method: "POST"},
+		Mode:           ModeLive,
+		ScannerVerdict: config.ActionAllow,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP explicit default port: %v", err)
+	}
+	if explicitDefaultPort.Verdict != config.ActionAllow || explicitDefaultPort.RuleID != "r-chat" {
+		t.Fatalf("explicit default port decision = %+v", explicitDefaultPort)
+	}
+
+	alternatePort, err := EvaluateHTTP(EvaluateOptions{
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://api.example.com:8443/v1/chat", Method: "POST"},
+		Mode:           ModeLive,
+		ScannerVerdict: config.ActionAllow,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP alternate port: %v", err)
+	}
+	if alternatePort.Verdict != config.ActionBlock || alternatePort.WinningSource != WinningSourceContract ||
+		alternatePort.Reason != "contract_non_default_port" {
+		t.Fatalf("alternate port decision = %+v, want contract non-default-port block", alternatePort)
+	}
+
 	denied, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
 		Request:        HTTPRequest{URL: "https://api.example.com/v1/completions", Method: "POST"},
@@ -263,11 +295,19 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateHTTP nil resolved: %v", err)
 	}
-	if decision.Verdict != config.ActionAllow || decision.WinningSource != WinningSourceScanner {
-		t.Fatalf("default scanner decision = %+v", decision)
+	if decision.Verdict != config.ActionBlock || decision.WinningSource != WinningSourceScanner ||
+		decision.Reason != "scanner_decision_missing" {
+		t.Fatalf("missing scanner decision = %+v", decision)
 	}
 	if !contains(decision.PolicySources, PolicySourceScanner) {
 		t.Fatalf("policy_sources = %v, want scanner", decision.PolicySources)
+	}
+	decision, err = EvaluateHTTP(EvaluateOptions{ScannerVerdict: config.ActionAllow})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP explicit scanner allow: %v", err)
+	}
+	if decision.Verdict != config.ActionAllow || decision.Reason != "" {
+		t.Fatalf("explicit scanner decision = %+v", decision)
 	}
 
 	resolved := resolvedContractWithRules(enforceRule("r1", "api.example.com", "/v1/chat", "POST"))
@@ -325,7 +365,7 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 
 	badPathRule := enforceRule("r-badpath", "api.example.com", "/v1/chat", "POST")
 	resolved = resolvedContractWithRules(badPathRule)
-	fallback, err := EvaluateHTTP(EvaluateOptions{
+	blocked, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
 		Request:        HTTPRequest{URL: "https://api.example.com/v1%2Fchat", Method: "POST"},
 		ScannerVerdict: config.ActionWarn,
@@ -333,8 +373,9 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateHTTP bad path: %v", err)
 	}
-	if fallback.Verdict != config.ActionWarn || fallback.WinningSource != WinningSourceScanner {
-		t.Fatalf("bad path decision = %+v, want scanner fallback", fallback)
+	if blocked.Verdict != config.ActionBlock || blocked.WinningSource != WinningSourceContract ||
+		blocked.Reason != "contract_invalid_path" {
+		t.Fatalf("bad path decision = %+v, want contract invalid-path block", blocked)
 	}
 }
 
@@ -587,11 +628,17 @@ func TestHelperBranches(t *testing.T) {
 	if containsFolded([]string{"GET"}, "POST") {
 		t.Fatal("containsFolded unexpectedly matched")
 	}
-	if matches, canCompare := ruleMatchesHTTP(contract.Rule{}, mustURL(t, "https://api.example.com/"), HTTPRequest{}); matches || !canCompare {
-		t.Fatalf("empty rule match = (%v, %v), want false,true", matches, canCompare)
+	if matches, canCompare, invalidPath := ruleMatchesHTTP(contract.Rule{}, mustURL(t, "https://api.example.com/"), HTTPRequest{}); matches || !canCompare || invalidPath {
+		t.Fatalf("empty rule match = (%v, %v, %v), want false,true,false", matches, canCompare, invalidPath)
 	}
 	if priority, ok := selectorPriority(contract.ManifestSelector{}, "agent"); priority != 0 || ok {
 		t.Fatalf("selectorPriority empty = (%d, %v)", priority, ok)
+	}
+	if !usesDefaultHTTPPort(mustURL(t, "http://api.example.com:80/")) {
+		t.Fatal("http explicit default port should compare")
+	}
+	if usesDefaultHTTPPort(mustURL(t, "ftp://api.example.com/")) {
+		t.Fatal("non-http scheme should not compare")
 	}
 	alt := enforceRule("r-alt", "api.example.com", "/v2/chat", "GET")
 	if got := selectorPathValues(alt.Selector); len(got) != 1 || got[0] != "/v2/chat" {

@@ -125,12 +125,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		agent = agentAnonymous
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
-		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, "inbound_verify", TransportWS, requestID)
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportWS, requestID)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
-			Pattern:   "inbound_verify",
+			Pattern:   pattern,
 			Transport: TransportWS,
 			Method:    r.Method,
 			Target:    r.URL.String(),

@@ -952,6 +952,13 @@ func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, 
 				return envelopeEmitterStage{}, fmt.Errorf("parse mediation_envelope.signature_expires: %w", perr)
 			}
 			expires = d
+		} else if raw := strings.TrimSpace(cfg.MediationEnvelope.VerifyInbound.ReplayCache.Window); raw != "" {
+			d, perr := time.ParseDuration(raw)
+			if perr != nil {
+				expires = envelope.DefaultSignerExpires
+			} else {
+				expires = d
+			}
 		}
 		signer, err := envelope.NewSigner(envelope.SignerConfig{
 			PrivKey:          privKey,
@@ -1501,6 +1508,31 @@ func (p *Proxy) currentEnvelopeEmitter() *envelope.Emitter {
 
 func (p *Proxy) verifyInboundEnvelope(r *http.Request, cfg *config.Config) error {
 	return verifyInboundEnvelope(r, cfg, p.envelopeVerifierPtr.Load())
+}
+
+func inboundEnvelopeFailurePattern(err error) string {
+	if err == nil {
+		return "inbound_verify"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "replay"):
+		return "inbound_verify_replay"
+	case strings.Contains(msg, "expired"), strings.Contains(msg, "created in the future"), strings.Contains(msg, "expires before created"), strings.Contains(msg, "lifetime exceeds"):
+		return "inbound_verify_expired"
+	case strings.Contains(msg, "untrusted"), strings.Contains(msg, "trusted key"), strings.Contains(msg, "trust domain"):
+		return "inbound_verify_not_trusted"
+	case strings.Contains(msg, "missing"):
+		return "inbound_verify_missing"
+	case strings.Contains(msg, "content-digest"), strings.Contains(msg, "body"):
+		return "inbound_verify_digest"
+	case strings.Contains(msg, "signature verification"):
+		return "inbound_verify_signature"
+	case strings.Contains(msg, "parse"):
+		return "inbound_verify_parse"
+	default:
+		return "inbound_verify_failed"
+	}
 }
 
 func verifyInboundEnvelope(r *http.Request, cfg *config.Config, verifier *envelope.Verifier) error {
@@ -2234,12 +2266,13 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		agent = agentAnonymous
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
-		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, "inbound_verify", TransportFetch, requestID)
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportFetch, requestID)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
-			Pattern:   "inbound_verify",
+			Pattern:   pattern,
 			Transport: TransportFetch,
 			Method:    r.Method,
 			Target:    r.URL.String(),

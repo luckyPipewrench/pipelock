@@ -6,6 +6,7 @@ package envelope
 import (
 	"bytes"
 	"crypto/ed25519"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -121,6 +122,23 @@ func TestReplayCacheConcurrentAndEviction(t *testing.T) {
 	}
 }
 
+func TestReplayCacheHonorsVerifierSkew(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	cache := newReplayCache(time.Minute, 10, func() time.Time { return now })
+
+	if err := cache.CheckAndStoreWithSkew("near-expired", now.Add(-30*time.Second), time.Minute); err != nil {
+		t.Fatalf("near-expired signature should be accepted within skew: %v", err)
+	}
+	if err := cache.CheckAndStoreWithSkew("near-expired", now.Add(-30*time.Second), time.Minute); err == nil {
+		t.Fatal("nonce accepted within skew must still be replay-protected")
+	}
+	if err := cache.CheckAndStoreWithSkew("too-old", now.Add(-2*time.Minute), time.Minute); err == nil {
+		t.Fatal("signature older than skew should be rejected")
+	}
+}
+
 func TestParseAndFormatActor(t *testing.T) {
 	t.Parallel()
 
@@ -140,12 +158,27 @@ func TestParseAndFormatActor(t *testing.T) {
 		t.Fatalf("unexpected parsed SPIFFE actor: %+v", spiffe)
 	}
 
+	upper, err := ParseActor("SPIFFE://Example.Test/agent/alpha")
+	if err != nil {
+		t.Fatalf("ParseActor uppercase scheme: %v", err)
+	}
+	if !upper.IsSPIFFE || upper.TrustDomain != "example.test" {
+		t.Fatalf("uppercase scheme parsed as %+v", upper)
+	}
+
 	formatted, err := FormatActor("Alpha Agent", ActorFormatSPIFFE, "Example.Test")
 	if err != nil {
 		t.Fatalf("FormatActor: %v", err)
 	}
 	if formatted != "spiffe://example.test/agent/Alpha-Agent" {
 		t.Fatalf("FormatActor = %q", formatted)
+	}
+	preserved, err := FormatActor("SPIFFE://Example.Test/agent/alpha", ActorFormatSPIFFE, "example.test")
+	if err != nil {
+		t.Fatalf("FormatActor uppercase SPIFFE actor: %v", err)
+	}
+	if preserved != "SPIFFE://Example.Test/agent/alpha" {
+		t.Fatalf("FormatActor preserved = %q", preserved)
 	}
 	if _, err := ParseActor("spiffe:///missing-domain"); err == nil {
 		t.Fatal("malformed SPIFFE actor should fail")
@@ -302,6 +335,107 @@ func TestVerifier_RejectsActorTrustDomainMismatch(t *testing.T) {
 	if _, err := verifier2.VerifyRequest(req2, nil); err != nil {
 		t.Fatalf("matching trust domain should verify: %v", err)
 	}
+}
+
+func TestVerifier_TrustDomainPinRequiresSPIFFEActor(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+
+	req := signedLegacyActorRequest(t, priv, now)
+	verifier, err := NewVerifier(VerifierConfig{
+		TrustedKeys: []TrustedKey{{
+			KeyID:        "trusted-key",
+			PublicKey:    pub,
+			TrustDomains: []string{"example.test"},
+		}},
+		ReplayCache: newReplayCache(5*time.Minute, 1000, func() time.Time { return now }),
+		Skew:        time.Minute,
+		NowFn:       func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	if _, err := verifier.VerifyRequest(req, nil); err == nil {
+		t.Fatal("trust-domain-pinned key should reject legacy actor")
+	}
+}
+
+func TestVerifier_EmptyPOSTBodyDoesNotRequireContentDigest(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	req := signedEmptyPostRequest(t, priv, now)
+	req.Body = io.NopCloser(strings.NewReader(""))
+	req.ContentLength = 0
+
+	verifier := newTestVerifier(t, pub, now)
+	if _, err := verifier.VerifyRequest(req, nil); err != nil {
+		t.Fatalf("empty POST should verify without content-digest: %v", err)
+	}
+}
+
+func signedEmptyPostRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time) *http.Request {
+	t.Helper()
+	signer, err := NewSigner(SignerConfig{
+		PrivKey:          priv,
+		KeyID:            "trusted-key",
+		SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
+		MaxBodyBytes:     1 << 20,
+		NowFn:            func() time.Time { return now },
+		RandReader:       bytes.NewReader([]byte("0123456789abcdef")),
+	})
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	em := NewEmitter(EmitterConfig{
+		ConfigHash:  strings.Repeat("a", 64),
+		Signer:      signer,
+		ActorFormat: ActorFormatSPIFFE,
+		TrustDomain: "example.test",
+	})
+	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", nil)
+	if err := em.InjectAndSign(req, nil, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000005",
+		Action:    "read",
+		Verdict:   "allow",
+		Actor:     "alpha",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+	return req
+}
+
+func signedLegacyActorRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time) *http.Request {
+	t.Helper()
+	signer, err := NewSigner(SignerConfig{
+		PrivKey:          priv,
+		KeyID:            "trusted-key",
+		SignedComponents: []string{derivedMethod, derivedTargetURI, headerPipelockMediation},
+		NowFn:            func() time.Time { return now },
+		RandReader:       bytes.NewReader([]byte("0123456789abcdef")),
+	})
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	em := NewEmitter(EmitterConfig{
+		ConfigHash: strings.Repeat("a", 64),
+		Signer:     signer,
+	})
+	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+	if err := em.InjectAndSign(req, nil, BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000004",
+		Action:    "read",
+		Verdict:   "allow",
+		Actor:     "legacy-agent",
+		ActorAuth: ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+	return req
 }
 
 func signedVerifierRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time, bodyText string) *http.Request {

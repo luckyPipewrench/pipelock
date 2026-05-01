@@ -42,22 +42,31 @@ func newReplayCache(window time.Duration, maxEntries int, nowFn func() time.Time
 }
 
 func (c *ReplayCache) CheckAndStore(nonce string, expires time.Time) error {
+	return c.CheckAndStoreWithSkew(nonce, expires, 0)
+}
+
+func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, skew time.Duration) error {
 	if c == nil {
 		return nil
 	}
 	if nonce == "" {
 		return fmt.Errorf("signature nonce is required")
 	}
+	if skew < 0 {
+		skew = 0
+	}
 
 	now := c.nowFn().UTC()
 	if expires.IsZero() {
 		expires = now.Add(c.window)
 	}
-	if expires.After(now.Add(c.window)) {
-		expires = now.Add(c.window)
-	}
-	if !expires.After(now) {
+	if !expires.After(now.Add(-skew)) {
 		return fmt.Errorf("signature expired")
+	}
+	storedUntil := expires.Add(skew)
+	maxStoredUntil := now.Add(c.window).Add(skew)
+	if storedUntil.After(maxStoredUntil) {
+		storedUntil = maxStoredUntil
 	}
 
 	c.mu.Lock()
@@ -83,6 +92,6 @@ func (c *ReplayCache) CheckAndStore(nonce string, expires time.Time) error {
 		delete(c.entries, oldestNonce)
 	}
 
-	c.entries[nonce] = expires
+	c.entries[nonce] = storedUntil
 	return nil
 }

@@ -165,6 +165,39 @@ func TestProxy_NewInitializesSigningEmitterAtStartup(t *testing.T) {
 	}
 }
 
+func TestProxy_BuildEnvelopeEmitterDefaultsExpiresToReplayWindow(t *testing.T) {
+	t.Parallel()
+
+	p := envelopeReloadProxy(t)
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.Window = "2m"
+	enableEnvelopeSigning(t, cfg, writeEnvelopeKey(t))
+
+	stage, err := p.buildEnvelopeEmitter(cfg)
+	if err != nil {
+		t.Fatalf("buildEnvelopeEmitter: %v", err)
+	}
+	if !stage.enabled || stage.emitter == nil {
+		t.Fatal("expected enabled emitter")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://upstream.example/api", nil)
+	if err := stage.emitter.InjectAndSign(req, nil, envelope.BuildOpts{
+		ActionID:  "01961f3a-7b2c-7000-8000-000000000040",
+		Action:    "read",
+		Verdict:   config.ActionAllow,
+		Actor:     "test-agent",
+		ActorAuth: envelope.ActorAuthBound,
+	}); err != nil {
+		t.Fatalf("InjectAndSign: %v", err)
+	}
+
+	if got := signedLifetime(t, req.Header); got != 2*time.Minute {
+		t.Fatalf("signed lifetime = %s, want 2m", got)
+	}
+}
+
 // TestProxy_ReloadEnvelopeEmitter_DisablesSigning reloads a proxy that
 // was signing back to sign:false and verifies the signer is dropped.
 func TestProxy_ReloadEnvelopeEmitter_DisablesSigning(t *testing.T) {
@@ -478,6 +511,39 @@ func TestProxy_ReloadEnvelopeEmitter_InPlaceKeyRotation(t *testing.T) {
 type capturedSignature struct {
 	base     string
 	sigBytes []byte
+}
+
+func signedLifetime(t *testing.T, h http.Header) time.Duration {
+	t.Helper()
+	sigInputDict, err := httpsfv.UnmarshalDictionary(h.Values("Signature-Input"))
+	if err != nil {
+		t.Fatalf("parse Signature-Input: %v", err)
+	}
+	member, ok := sigInputDict.Get("pipelock1")
+	if !ok {
+		t.Fatal("pipelock1 missing from Signature-Input")
+	}
+	inner, ok := member.(httpsfv.InnerList)
+	if !ok {
+		t.Fatalf("pipelock1 is %T, not InnerList", member)
+	}
+	createdRaw, ok := inner.Params.Get("created")
+	if !ok {
+		t.Fatal("created missing from Signature-Input")
+	}
+	expiresRaw, ok := inner.Params.Get("expires")
+	if !ok {
+		t.Fatal("expires missing from Signature-Input")
+	}
+	created, ok := createdRaw.(int64)
+	if !ok {
+		t.Fatalf("created is %T, not int64", createdRaw)
+	}
+	expires, ok := expiresRaw.(int64)
+	if !ok {
+		t.Fatalf("expires is %T, not int64", expiresRaw)
+	}
+	return time.Duration(expires-created) * time.Second
 }
 
 // signAndCaptureForTest signs a canned GET request through the

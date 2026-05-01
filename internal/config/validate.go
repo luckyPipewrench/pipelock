@@ -1755,6 +1755,12 @@ func (c *Config) validateMediationEnvelope() error {
 		return err
 	}
 
+	if me.Sign {
+		if _, err := mediationEnvelopeSignatureExpires(me.SignatureExpires, DefaultEnvelopeReplayWindow); err != nil {
+			return err
+		}
+	}
+
 	if !me.Sign {
 		// Signing disabled — normalization is enough; skip the
 		// keyfile load that's only meaningful when signing is on.

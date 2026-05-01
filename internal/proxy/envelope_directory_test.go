@@ -29,6 +29,7 @@ func TestEnvelopeWellKnownDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	req := httptest.NewRequest(http.MethodGet, envelope.WellKnownPath, nil)
 	rec := httptest.NewRecorder()
@@ -70,6 +71,7 @@ func TestEnvelopeWellKnownDirectoryUnsignedNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(p.Close)
 
 	req := httptest.NewRequest(http.MethodGet, envelope.WellKnownPath, nil)
 	rec := httptest.NewRecorder()

@@ -2017,7 +2017,7 @@ mediation_envelope:
     - "@target-uri"
     - "pipelock-mediation"
     - "content-digest"
-  created_skew_seconds: 30
+  created_skew_seconds: 60
   max_body_bytes: 1048576
   actor_format: spiffe
   trust_domain: prod.example

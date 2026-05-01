@@ -293,13 +293,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	r = r.WithContext(ctx)
 
 	if err := verifyInboundEnvelope(r, cfg, snap.inboundVerifier); err != nil {
+		pattern := inboundEnvelopeFailurePattern(err)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerMediationEnvelope)
 		rp.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
-			Pattern:   "inbound_verify",
+			Pattern:   pattern,
 			Transport: "reverse",
 			Method:    r.Method,
 			Target:    r.URL.String(),

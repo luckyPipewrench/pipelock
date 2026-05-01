@@ -65,6 +65,10 @@ func (k trustedKey) allowsTrustDomain(domain string) bool {
 	return ok
 }
 
+func (k trustedKey) pinsTrustDomain() bool {
+	return len(k.trustDomains) > 0
+}
+
 func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if len(cfg.TrustedKeys) == 0 {
 		return nil, fmt.Errorf("inbound envelope verifier requires at least one trusted key")
@@ -145,8 +149,13 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 	if !ok {
 		return Envelope{}, fmt.Errorf("untrusted key_id %q", keyID)
 	}
-	if parsedActor.IsSPIFFE && !tk.allowsTrustDomain(parsedActor.TrustDomain) {
-		return Envelope{}, fmt.Errorf("trusted key not authorized for actor trust domain")
+	if tk.pinsTrustDomain() {
+		if !parsedActor.IsSPIFFE {
+			return Envelope{}, fmt.Errorf("trusted key requires SPIFFE actor trust domain")
+		}
+		if !tk.allowsTrustDomain(parsedActor.TrustDomain) {
+			return Envelope{}, fmt.Errorf("trusted key not authorized for actor trust domain")
+		}
 	}
 	alg, err := paramString(inner, "alg")
 	if err != nil {
@@ -200,7 +209,7 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 	if !ed25519.Verify(tk.publicKey, []byte(base), sigBytes) {
 		return Envelope{}, fmt.Errorf("signature verification failed")
 	}
-	if err := v.replayCache.CheckAndStore(nonce, time.Unix(expires, 0).UTC()); err != nil {
+	if err := v.replayCache.CheckAndStoreWithSkew(nonce, time.Unix(expires, 0).UTC(), v.skew); err != nil {
 		return Envelope{}, err
 	}
 	return env, nil
@@ -343,5 +352,5 @@ func requestHasSignedBody(req *http.Request, body []byte) bool {
 	if req.ContentLength > 0 {
 		return true
 	}
-	return req.Body != nil && req.Body != http.NoBody
+	return req.Body != nil && req.Body != http.NoBody && req.ContentLength != 0
 }

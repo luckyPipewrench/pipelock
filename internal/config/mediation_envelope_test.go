@@ -186,6 +186,54 @@ func TestValidateMediationEnvelope_VerifyInboundTrustList(t *testing.T) {
 	}
 }
 
+func TestValidateMediationEnvelope_TrimsFederationFields(t *testing.T) {
+	t.Parallel()
+
+	c := Defaults()
+	c.MediationEnvelope.Enabled = true
+	c.MediationEnvelope.Sign = true
+	c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
+	c.MediationEnvelope.ActorFormat = " SPIFFE "
+	c.MediationEnvelope.TrustDomain = " Example.Test "
+	c.MediationEnvelope.SignatureExpires = " 1m "
+	c.MediationEnvelope.VerifyInbound.ReplayCache.Window = " 2m "
+
+	if err := c.validateMediationEnvelope(); err != nil {
+		t.Fatalf("validateMediationEnvelope: %v", err)
+	}
+	if got := c.MediationEnvelope.ActorFormat; got != "spiffe" {
+		t.Fatalf("ActorFormat = %q", got)
+	}
+	if got := c.MediationEnvelope.TrustDomain; got != "example.test" {
+		t.Fatalf("TrustDomain = %q", got)
+	}
+	if got := c.MediationEnvelope.SignatureExpires; got != "1m" {
+		t.Fatalf("SignatureExpires = %q", got)
+	}
+	if got := c.MediationEnvelope.VerifyInbound.ReplayCache.Window; got != "2m" {
+		t.Fatalf("ReplayCache.Window = %q", got)
+	}
+}
+
+func TestValidateMediationEnvelope_SignatureExpiresValidatedWhenVerifyInboundOff(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"0s", "-1s", "not-a-duration"} {
+		t.Run(raw, func(t *testing.T) {
+			c := Defaults()
+			c.MediationEnvelope.Enabled = true
+			c.MediationEnvelope.Sign = true
+			c.MediationEnvelope.SigningKeyPath = writeEnvelopeSigningKey(t)
+			c.MediationEnvelope.VerifyInbound.Enabled = false
+			c.MediationEnvelope.SignatureExpires = raw
+
+			if err := c.validateMediationEnvelope(); err == nil {
+				t.Fatalf("expected signature_expires %q to fail", raw)
+			}
+		})
+	}
+}
+
 func TestValidateMediationEnvelope_CustomValuesPreserved(t *testing.T) {
 	t.Parallel()
 

@@ -351,14 +351,15 @@ func newInterceptHandler(
 		// envelopes unchecked when verify_inbound is enabled.
 		if ic.Proxy != nil {
 			if err := ic.Proxy.verifyInboundEnvelope(r, ic.Config); err != nil {
+				pattern := inboundEnvelopeFailurePattern(err)
 				ic.Logger.LogBlocked(newHTTPAuditContext(ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent),
-					blockLayerMediationEnvelope, "inbound_verify")
+					blockLayerMediationEnvelope, pattern)
 				ic.Metrics.RecordTLSRequestBlocked(blockLayerMediationEnvelope)
 				interceptEmitReceipt(ic, receipt.EmitOpts{
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     blockLayerMediationEnvelope,
-					Pattern:   "inbound_verify",
+					Pattern:   pattern,
 					Transport: "intercept",
 					Method:    r.Method,
 					Target:    r.Host + r.URL.Path,

@@ -87,12 +87,13 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	actionID := receipt.NewActionID()
 
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
-		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, "inbound_verify", TransportConnect, requestID)
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportConnect, requestID)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
-			Pattern:   "inbound_verify",
+			Pattern:   pattern,
 			Transport: TransportConnect,
 			Method:    r.Method,
 			Target:    r.URL.String(),
@@ -597,12 +598,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		agent = agentAnonymous
 	}
 	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
-		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, "inbound_verify", TransportForward, requestID)
+		pattern := inboundEnvelopeFailurePattern(err)
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, pattern, TransportForward, requestID)
 		p.emitReceipt(receipt.EmitOpts{
 			ActionID:  actionID,
 			Verdict:   config.ActionBlock,
 			Layer:     blockLayerMediationEnvelope,
-			Pattern:   "inbound_verify",
+			Pattern:   pattern,
 			Transport: TransportForward,
 			Method:    r.Method,
 			Target:    r.URL.String(),

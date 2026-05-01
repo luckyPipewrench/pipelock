@@ -37,7 +37,7 @@ func ParseActor(raw string) (ParsedActor, error) {
 	if trimmed == "" {
 		return ParsedActor{}, fmt.Errorf("actor must not be empty")
 	}
-	if !strings.HasPrefix(trimmed, "spiffe://") {
+	if !strings.HasPrefix(strings.ToLower(trimmed), "spiffe://") {
 		return ParsedActor{Raw: trimmed}, nil
 	}
 
@@ -129,7 +129,7 @@ func FormatActor(actor, actorFormat, trustDomain string) (string, error) {
 	case "", ActorFormatLegacy:
 		return trimmed, nil
 	case ActorFormatSPIFFE:
-		if strings.HasPrefix(trimmed, "spiffe://") {
+		if strings.HasPrefix(strings.ToLower(trimmed), "spiffe://") {
 			if _, err := ParseActor(trimmed); err != nil {
 				return "", err
 			}

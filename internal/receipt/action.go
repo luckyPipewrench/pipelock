@@ -170,6 +170,8 @@ type ActionRecord struct {
 // action. Present only when redaction actually replaced one or more values.
 type RedactionSummary struct {
 	Profile           string         `json:"profile,omitempty"`
+	Provider          string         `json:"provider,omitempty"`
+	Parser            string         `json:"parser,omitempty"`
 	TotalRedactions   int            `json:"total_redactions,omitempty"`
 	ByClass           map[string]int `json:"by_class,omitempty"`
 	CacheBoundaryKept bool           `json:"cache_boundary_kept,omitempty"`

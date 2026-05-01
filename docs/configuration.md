@@ -291,6 +291,13 @@ redaction:
   allowlist_unparseable:
     - api.anthropic.com
     - api.openai.com
+  providers:
+    acme_llm:
+      host_patterns:
+        - api.acme-llm.example
+      path_prefixes:
+        - /v1/messages
+      parser: json
   limits:
     max_body_bytes: 10485760
     max_redactions_per_request: 10000
@@ -311,6 +318,10 @@ redaction:
 | `dictionaries.<name>.case_insensitive` | `false` | Case-insensitive dictionary matching |
 | `dictionaries.<name>.word_boundary` | `false` | Require word boundaries around dictionary entries |
 | `dictionaries.<name>.priority` | `0` | Overlap priority versus built-in classes |
+| `providers` | Anthropic/OpenAI/Gemini built-ins | Provider parser profiles for host/path matching |
+| `providers.<name>.host_patterns` | required when used | Bare hostnames or leading-wildcard host patterns |
+| `providers.<name>.path_prefixes` | `[]` | Optional path prefixes that select the provider profile |
+| `providers.<name>.parser` | `json` | Parser implementation. v1 supports `json` |
 | `limits.max_body_bytes` | `10485760` | Max JSON body size the redactor will rewrite |
 | `limits.max_redactions_per_request` | `10000` | Fail-closed cap on unique placeholders per request |
 | `limits.max_depth` | `64` | Max JSON nesting depth the redactor will traverse |

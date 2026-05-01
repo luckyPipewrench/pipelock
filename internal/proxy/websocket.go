@@ -62,6 +62,7 @@ type wsRelay struct {
 	requestID    string
 	targetURL    string
 	hostname     string
+	path         string
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
@@ -576,6 +577,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		requestID:    requestID,
 		targetURL:    targetURL,
 		hostname:     strings.ToLower(parsed.Hostname()),
+		path:         parsed.Path,
 		maxMsg:       cfg.WebSocketProxy.MaxMessageBytes,
 		scanText:     scanTextFrames,
 		allowBinary:  cfg.WebSocketProxy.AllowBinaryFrames,
@@ -796,6 +798,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		Scanner:     r.scanner,
 		AgentID:     r.agent,
 		Host:        r.hostname,
+		Path:        r.path,
 	}
 	applyBodyScanRedaction(&bodyReq, r.redaction)
 	return scanRequestBody(ctx, bodyReq)

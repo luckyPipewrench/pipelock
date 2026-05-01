@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"sort"
 	"sync/atomic"
+
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 // CanonicalPolicyHash returns a stable SHA-256 digest (hex-encoded) of the
@@ -174,6 +176,7 @@ func (c *Config) policySemanticView() Config {
 	view.APIAllowlist = sortedCopy(view.APIAllowlist)
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = sortedCopy(view.TrustedDomains)
+	view.Redaction.Providers = canonicalRedactionProviders(view.Redaction.Enabled, view.Redaction.Providers)
 
 	// Resolve omitted-or-zero learn-inference fields to their effective
 	// defaults so the policy hash reflects the runtime-effective policy,
@@ -186,6 +189,20 @@ func (c *Config) policySemanticView() Config {
 	view.Learn.Inference.Normalization = view.Learn.Inference.Normalization.Resolved()
 
 	return view
+}
+
+func canonicalRedactionProviders(enabled bool, providers map[string]redact.ProviderSpec) map[string]redact.ProviderSpec {
+	if !enabled || len(providers) == 0 {
+		return nil
+	}
+	out := make(map[string]redact.ProviderSpec, len(providers))
+	for name, spec := range providers {
+		cpy := spec
+		cpy.HostPatterns = sortedCopy(cpy.HostPatterns)
+		cpy.PathPrefixes = sortedCopy(cpy.PathPrefixes)
+		out[name] = cpy
+	}
+	return out
 }
 
 // sortedCopy returns a sorted copy of s. Nil in, nil out so that an

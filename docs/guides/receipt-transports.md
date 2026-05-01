@@ -69,7 +69,7 @@ Every receipt contains these fields:
 | `layer` | Scanner layer name | Which scanning layer triggered |
 | `pattern` | Reason string | What was matched |
 | `request_id` | Per-request UUID | Request correlation |
-| `redaction` | Request redaction summary | Present only when request-side redaction replaced one or more values; includes `profile`, `total_redactions`, and `by_class` |
+| `redaction` | Request redaction summary | Present only when request-side redaction replaced one or more values; includes `profile`, `provider`, `parser`, `total_redactions`, and `by_class` |
 | `agent` | Agent identity | Which agent made the request |
 | `chain_prev_hash` | SHA-256 of previous receipt | Hash chain linkage |
 | `chain_seq` | Monotonic counter | Position in chain |

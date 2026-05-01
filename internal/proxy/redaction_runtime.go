@@ -20,6 +20,7 @@ type redactionRuntime struct {
 	matcher              *redact.Matcher
 	limits               redact.Limits
 	allowlistUnparseable []string
+	providers            *redact.ProviderRegistry
 	configKey            string
 	required             bool
 }
@@ -32,11 +33,16 @@ func (p *Proxy) buildRedactionRuntime(cfg *config.Config) (*redactionRuntime, er
 	if matcher == nil {
 		return nil, nil
 	}
+	providers, err := cfg.Redaction.BuildProviderRegistry()
+	if err != nil {
+		return nil, err
+	}
 	allowlist := append([]string(nil), cfg.Redaction.AllowlistUnparseable...)
 	return &redactionRuntime{
 		matcher:              matcher,
 		limits:               cfg.Redaction.Limits.ToLimits(),
 		allowlistUnparseable: allowlist,
+		providers:            providers,
 		configKey:            redactionConfigKey(cfg),
 		required:             cfg.Redaction.Enabled,
 	}, nil
@@ -96,6 +102,7 @@ func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[re
 	return &redactionRuntime{
 		limits:               cfg.Redaction.Limits.ToLimits(),
 		allowlistUnparseable: append([]string(nil), cfg.Redaction.AllowlistUnparseable...),
+		providers:            nil,
 		configKey:            redactionConfigKey(cfg),
 		required:             true,
 	}
@@ -121,4 +128,5 @@ func applyBodyScanRedaction(req *BodyScanRequest, rt *redactionRuntime) {
 	req.RedactMatcher = rt.matcher
 	req.RedactLimits = rt.limits
 	req.RedactAllowlistUnparseable = rt.allowlistUnparseable
+	req.RedactProviderRegistry = rt.providers
 }

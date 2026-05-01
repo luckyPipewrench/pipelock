@@ -486,6 +486,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		MaxBytes:        maxBytes,
 		Scanner:         sc,
 		Host:            rp.upstream.Hostname(),
+		Path:            r.URL.Path,
 	}
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)

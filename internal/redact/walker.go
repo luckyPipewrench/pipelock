@@ -14,6 +14,14 @@ type Report struct {
 	// request was blocked; in that case the accompanying error is a
 	// *BlockError and Body is nil.
 	Applied bool
+	// Provider is the matched provider parser profile. Built-in profiles
+	// include "anthropic", "openai", and "gemini"; unmatched JSON bodies
+	// use "generic-json".
+	Provider string
+	// Parser is the parser implementation used for this request. v1 parsers
+	// all use "json" because security depends on walking every JSON scalar,
+	// not on provider-specific field exemptions.
+	Parser string
 	// TotalRedactions is the count of unique redactions applied.
 	TotalRedactions int
 	// ByClass is the per-class count of unique redactions.

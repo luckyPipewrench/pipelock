@@ -283,6 +283,18 @@ func TestConfig_ValidateStructureWhenDisabled(t *testing.T) {
 		!strings.Contains(err.Error(), "must match") {
 		t.Fatalf("disabled-with-bad-dict-class should still fail, got %v", err)
 	}
+
+	// Malformed provider profile, feature disabled — must still reject.
+	c = Config{
+		Enabled: false,
+		Providers: map[string]ProviderSpec{
+			"bad_provider": {HostPatterns: []string{"api.example.com"}, Parser: "form"},
+		},
+	}
+	if err := c.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "parser") {
+		t.Fatalf("disabled-with-bad-provider should still fail, got %v", err)
+	}
 }
 
 func TestConfig_ValidateAllowlistUnparseable(t *testing.T) {

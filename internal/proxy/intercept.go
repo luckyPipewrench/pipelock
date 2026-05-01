@@ -631,6 +631,7 @@ func newInterceptHandler(
 				Scanner:         ic.Scanner,
 				AgentID:         ic.Agent,
 				Host:            r.URL.Hostname(),
+				Path:            r.URL.Path,
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)

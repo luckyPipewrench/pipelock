@@ -22,8 +22,10 @@ import (
 // when either the config hash or the signing key material changes, so
 // the runtime swap is a single atomic pointer store.
 type Emitter struct {
-	configHash atomic.Value // stores string
-	signer     *Signer
+	configHash  atomic.Value // stores string
+	signer      *Signer
+	actorFormat string
+	trustDomain string
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -41,11 +43,21 @@ type EmitterConfig struct {
 	// held for the lifetime of this Emitter; swapping the key
 	// requires installing a new Emitter.
 	Signer *Signer
+
+	// ActorFormat controls newly emitted actor values. Empty keeps the
+	// caller-supplied legacy value; "spiffe" formats legacy agent names
+	// as spiffe://<trust-domain>/agent/<name>.
+	ActorFormat string
+	TrustDomain string
 }
 
 // NewEmitter creates an envelope emitter.
 func NewEmitter(cfg EmitterConfig) *Emitter {
-	e := &Emitter{signer: cfg.Signer}
+	e := &Emitter{
+		signer:      cfg.Signer,
+		actorFormat: cfg.ActorFormat,
+		trustDomain: cfg.TrustDomain,
+	}
 	e.configHash.Store(cfg.ConfigHash)
 	return e
 }
@@ -67,6 +79,16 @@ func (e *Emitter) Signer() *Signer {
 		return nil
 	}
 	return e.signer
+}
+
+// Directory returns the well-known HTTP message signatures key directory for
+// this emitter's installed signer. A nil emitter or unsigned emitter returns an
+// empty directory.
+func (e *Emitter) Directory() Directory {
+	if e == nil || e.signer == nil {
+		return Directory{}
+	}
+	return e.signer.Directory()
 }
 
 // UpdateConfigHash atomically updates the policy hash used in envelopes.
@@ -118,12 +140,17 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 		hash = policyHashTruncated(configHashString(e.configHash.Load()))
 	}
 
+	actor, err := FormatActor(opts.Actor, e.actorFormat, e.trustDomain)
+	if err != nil {
+		actor = opts.Actor
+	}
+
 	return Envelope{
 		Version:        1,
 		Action:         opts.Action,
 		Verdict:        opts.Verdict,
 		SideEffect:     opts.SideEffect,
-		Actor:          opts.Actor,
+		Actor:          actor,
 		ActorAuth:      opts.ActorAuth,
 		PolicyHash:     hash,
 		ReceiptID:      opts.ActionID,

@@ -339,11 +339,42 @@ func newInterceptHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reqStart := time.Now()
 
-		// Strip inbound mediation envelope headers to prevent forgery.
-		envelope.StripInbound(r.Header)
-
 		// Pre-generate a single ActionID for correlation between envelope and receipt.
 		actionID := receipt.NewActionID()
+
+		// Inbound envelope verification happens BEFORE strip so that
+		// federated peers' signed envelopes are accepted rather than
+		// silently dropped. Every other transport (CONNECT, fetch,
+		// WebSocket, reverse proxy) verifies-then-strips; the TLS-MITM
+		// inner request path is the only one that previously stripped
+		// without verifying — leaving forged or replayed inner-request
+		// envelopes unchecked when verify_inbound is enabled.
+		if ic.Proxy != nil {
+			if err := ic.Proxy.verifyInboundEnvelope(r, ic.Config); err != nil {
+				ic.Logger.LogBlocked(newHTTPAuditContext(ic.Logger, r.Method, r.URL.String(), ic.ClientIP, ic.RequestID, ic.Agent),
+					blockLayerMediationEnvelope, "inbound_verify")
+				ic.Metrics.RecordTLSRequestBlocked(blockLayerMediationEnvelope)
+				interceptEmitReceipt(ic, receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     blockLayerMediationEnvelope,
+					Pattern:   "inbound_verify",
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    r.Host + r.URL.Path,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				})
+				http.Error(w, "inbound mediation envelope verification failed", http.StatusForbidden)
+				return
+			}
+		}
+		// Strip inbound mediation envelope headers to prevent forgery.
+		// Runs after verification so verified envelopes from trusted
+		// peers do not survive to upstreams either — strip is
+		// unconditional; the verifier decides whether the envelope was
+		// trusted before we drop it.
+		envelope.StripInbound(r.Header)
 
 		// Kill switch re-check for intercepted CONNECT tunnels.
 		// Raw relay (relay.go) polls this per copy iteration. Intercepted

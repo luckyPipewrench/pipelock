@@ -574,7 +574,9 @@ signed action receipts for MCP decisions.`,
 			var envEmitter *envelope.Emitter
 			if cfg.MediationEnvelope.Enabled {
 				envEmitter = envelope.NewEmitter(envelope.EmitterConfig{
-					ConfigHash: cfg.CanonicalPolicyHash(),
+					ConfigHash:  cfg.CanonicalPolicyHash(),
+					ActorFormat: cfg.MediationEnvelope.ActorFormat,
+					TrustDomain: cfg.MediationEnvelope.TrustDomain,
 				})
 			}
 

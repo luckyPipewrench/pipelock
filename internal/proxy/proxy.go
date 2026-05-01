@@ -8,6 +8,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -295,12 +296,13 @@ type Proxy struct {
 	approver            *hitl.Approver
 	a2aCardBaseline     *mcp.CardBaseline // Agent Card drift detection across requests
 	captureObs          capture.CaptureObserver
-	recorder            *recorder.Recorder               // flight recorder for tamper-evident evidence (nil = disabled)
-	receiptEmitterPtr   atomic.Pointer[receipt.Emitter]  // action receipt emitter (nil = disabled)
-	receiptKeyPath      string                           // active signing key path, for reload comparison
-	envelopeEmitterPtr  atomic.Pointer[envelope.Emitter] // mediation envelope emitter (nil = disabled)
-	shieldEngine        *shield.Engine                   // browser shield HTML/JS rewriter (nil = not initialized)
-	frozenTools         *FrozenToolRegistry              // frozen tool inventories for airlock hard tier
+	recorder            *recorder.Recorder                // flight recorder for tamper-evident evidence (nil = disabled)
+	receiptEmitterPtr   atomic.Pointer[receipt.Emitter]   // action receipt emitter (nil = disabled)
+	receiptKeyPath      string                            // active signing key path, for reload comparison
+	envelopeEmitterPtr  atomic.Pointer[envelope.Emitter]  // mediation envelope emitter (nil = disabled)
+	envelopeVerifierPtr atomic.Pointer[envelope.Verifier] // inbound mediation envelope verifier (nil = disabled)
+	shieldEngine        *shield.Engine                    // browser shield HTML/JS rewriter (nil = not initialized)
+	frozenTools         *FrozenToolRegistry               // frozen tool inventories for airlock hard tier
 }
 
 // Option configures optional Proxy behavior.
@@ -407,6 +409,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			em.UpdateConfigHash(cfg.CanonicalPolicyHash())
 		}
 	}
+	verifier, err := buildInboundEnvelopeVerifier(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("inbound envelope verifier init: %w", err)
+	}
+	p.envelopeVerifierPtr.Store(verifier)
 
 	// Build edition (agent registry in enterprise, noop in OSS).
 	ed, edErr := edition.NewEditionFunc(cfg, sc)
@@ -923,7 +930,9 @@ func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, 
 	}
 
 	emCfg := envelope.EmitterConfig{
-		ConfigHash: cfg.CanonicalPolicyHash(),
+		ConfigHash:  cfg.CanonicalPolicyHash(),
+		ActorFormat: cfg.MediationEnvelope.ActorFormat,
+		TrustDomain: cfg.MediationEnvelope.TrustDomain,
 	}
 
 	// Load the signing key fresh on every reload so the file rotation
@@ -936,11 +945,20 @@ func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, 
 			return envelopeEmitterStage{}, fmt.Errorf("loading envelope signing key %q: %w",
 				cfg.MediationEnvelope.SigningKeyPath, err)
 		}
+		var expires time.Duration
+		if raw := strings.TrimSpace(cfg.MediationEnvelope.SignatureExpires); raw != "" {
+			d, perr := time.ParseDuration(raw)
+			if perr != nil {
+				return envelopeEmitterStage{}, fmt.Errorf("parse mediation_envelope.signature_expires: %w", perr)
+			}
+			expires = d
+		}
 		signer, err := envelope.NewSigner(envelope.SignerConfig{
 			PrivKey:          privKey,
 			KeyID:            cfg.MediationEnvelope.KeyID,
 			SignedComponents: cfg.MediationEnvelope.SignedComponents,
 			MaxBodyBytes:     cfg.MediationEnvelope.MaxBodyBytes,
+			Expires:          expires,
 		})
 		if err != nil {
 			return envelopeEmitterStage{}, fmt.Errorf("constructing envelope signer: %w", err)
@@ -952,6 +970,42 @@ func (p *Proxy) buildEnvelopeEmitter(cfg *config.Config) (envelopeEmitterStage, 
 		enabled: true,
 		emitter: envelope.NewEmitter(emCfg),
 	}, nil
+}
+
+func buildInboundEnvelopeVerifier(cfg *config.Config) (*envelope.Verifier, error) {
+	if cfg == nil || !cfg.MediationEnvelope.VerifyInbound.Enabled {
+		return nil, nil
+	}
+
+	verify := cfg.MediationEnvelope.VerifyInbound
+	keys := make([]envelope.TrustedKey, 0, len(verify.TrustList))
+	for _, trusted := range verify.TrustList {
+		pub, err := signing.ParsePublicKey(trusted.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("parse trusted key %q: %w", trusted.KeyID, err)
+		}
+		keys = append(keys, envelope.TrustedKey{
+			KeyID:        trusted.KeyID,
+			PublicKey:    pub,
+			TrustDomains: append([]string(nil), trusted.TrustDomains...),
+		})
+	}
+
+	window, err := time.ParseDuration(verify.ReplayCache.Window)
+	if err != nil {
+		return nil, fmt.Errorf("parse inbound envelope replay window: %w", err)
+	}
+	skew := time.Duration(cfg.MediationEnvelope.CreatedSkewSeconds) * time.Second
+	// MaxSignatureLifetime caps signature lifetime to the replay
+	// window plus skew so a captured signature cannot outlive its
+	// nonce in the cache. The config validator already enforces the
+	// matching constraint on the signer side.
+	return envelope.NewVerifier(envelope.VerifierConfig{
+		TrustedKeys:          keys,
+		ReplayCache:          envelope.NewReplayCache(window, verify.ReplayCache.MaxEntries),
+		Skew:                 skew,
+		MaxSignatureLifetime: window + skew,
+	})
 }
 
 // CurrentConfig returns the currently active config. Used for reload comparison.
@@ -1009,6 +1063,12 @@ func (p *Proxy) SessionAPI() *SessionAPIHandler {
 // hot-reload updates.
 func (p *Proxy) EnvelopeEmitterPtr() *atomic.Pointer[envelope.Emitter] {
 	return &p.envelopeEmitterPtr
+}
+
+// EnvelopeVerifierPtr returns the atomic pointer to the inbound envelope
+// verifier. Used by the reverse proxy handler to share hot-reload updates.
+func (p *Proxy) EnvelopeVerifierPtr() *atomic.Pointer[envelope.Verifier] {
+	return &p.envelopeVerifierPtr
 }
 
 // ReceiptEmitterPtr returns the atomic pointer to the receipt emitter.
@@ -1073,6 +1133,16 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		return false
 	}
+	envelopeVerifier, envVerifyErr := buildInboundEnvelopeVerifier(cfg)
+	if envVerifyErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("inbound envelope verifier reload failed, keeping old config: %w", envVerifyErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return false
+	}
 	receiptStage, rcptErr := p.buildReceiptEmitter(cfg)
 	if rcptErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
@@ -1108,6 +1178,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	} else {
 		p.envelopeEmitterPtr.Store(nil)
 	}
+	p.envelopeVerifierPtr.Store(envelopeVerifier)
 	// Receipt publish: Store the staged emitter (may be nil) and
 	// mirror the receiptKeyPath field. When the recorder is missing
 	// we leave p.receiptKeyPath untouched so the startup-time invariant
@@ -1426,6 +1497,87 @@ func (p *Proxy) pinResolvedScanner(resolved *edition.ResolvedAgent) (*scanner.Sc
 
 func (p *Proxy) currentEnvelopeEmitter() *envelope.Emitter {
 	return p.envelopeEmitterPtr.Load()
+}
+
+func (p *Proxy) verifyInboundEnvelope(r *http.Request, cfg *config.Config) error {
+	return verifyInboundEnvelope(r, cfg, p.envelopeVerifierPtr.Load())
+}
+
+func verifyInboundEnvelope(r *http.Request, cfg *config.Config, verifier *envelope.Verifier) error {
+	// nil cfg is a programming error in callers — there is no path
+	// where verify-inbound is honored against an absent config. Fail
+	// closed instead of silently skipping verification.
+	if cfg == nil {
+		return fmt.Errorf("inbound envelope verify called with nil config")
+	}
+	if !cfg.MediationEnvelope.VerifyInbound.Enabled {
+		return nil
+	}
+	if verifier == nil {
+		return fmt.Errorf("inbound envelope verifier is not available")
+	}
+	// Cheap header check before draining the body. Without this, every
+	// inbound body-bearing request — including ones with no envelope
+	// header that would be rejected on the first line of VerifyRequest
+	// — gets fully buffered up to max_body_bytes. That is a free
+	// amplification surface for unauthenticated callers.
+	if r != nil && r.Header.Get(envelope.HeaderName) == "" {
+		return fmt.Errorf("missing %s header", envelope.HeaderName)
+	}
+	body, err := bufferInboundEnvelopeBody(r, cfg.MediationEnvelope.MaxBodyBytes)
+	if err != nil {
+		return err
+	}
+	if _, err := verifier.VerifyRequest(r, body); err != nil {
+		return err
+	}
+	return nil
+}
+
+func bufferInboundEnvelopeBody(req *http.Request, maxBytes int) ([]byte, error) {
+	if req == nil || req.Body == nil || req.Body == http.NoBody {
+		return nil, nil
+	}
+	if req.ContentLength == 0 {
+		return nil, nil
+	}
+	if maxBytes > 0 && req.ContentLength > int64(maxBytes) {
+		return nil, fmt.Errorf("inbound envelope body exceeds mediation_envelope.max_body_bytes")
+	}
+
+	origBody := req.Body
+	limit := int64(maxBytes) + 1
+	if maxBytes <= 0 {
+		limit = 0
+	}
+	var (
+		body []byte
+		err  error
+	)
+	if limit > 0 {
+		body, err = io.ReadAll(io.LimitReader(origBody, limit))
+	} else {
+		body, err = io.ReadAll(origBody)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading inbound envelope body: %w", err)
+	}
+	if maxBytes > 0 && len(body) > maxBytes {
+		// Body exceeded the cap. The caller (verifyInboundEnvelope)
+		// returns this error and the request is rejected with 403; no
+		// upstream will read the body. Closing the original body
+		// releases the connection rather than leaving it pinned to a
+		// reader that will never be drained.
+		_ = origBody.Close()
+		return nil, fmt.Errorf("inbound envelope body exceeds mediation_envelope.max_body_bytes")
+	}
+	_ = origBody.Close()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	req.ContentLength = int64(len(body))
+	return body, nil
 }
 
 // Edition returns the current active Edition.
@@ -1927,6 +2079,7 @@ func (p *Proxy) buildMux() *http.ServeMux {
 	mux.HandleFunc("/fetch", p.handleFetch)
 	mux.HandleFunc("/ws", p.handleWebSocket)
 	mux.HandleFunc("/health", p.handleHealth)
+	mux.HandleFunc(envelope.WellKnownPath, p.handleEnvelopeDirectory)
 	// Register metrics/stats only when NOT running on a separate port.
 	if cfg.MetricsListen == "" {
 		mux.Handle("/metrics", p.metrics.PrometheusHandler())
@@ -1944,6 +2097,32 @@ func (p *Proxy) buildMux() *http.ServeMux {
 		mux.HandleFunc("/api/v1/sessions/", p.sessionAPIRouter)
 	}
 	return mux
+}
+
+func (p *Proxy) handleEnvelopeDirectory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	em := p.currentEnvelopeEmitter()
+	if em == nil || !em.HasSigner() {
+		http.NotFound(w, r)
+		return
+	}
+	dir := em.Directory()
+	if len(dir.Keys) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if err := json.NewEncoder(w).Encode(dir); err != nil {
+		p.logger.LogError(audit.NewMethodLogContext(http.MethodGet), err)
+	}
 }
 
 // Handler returns the composed HTTP handler for the proxy, including
@@ -2042,9 +2221,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	clientIP, requestID := requestMeta(r)
 
-	// Strip inbound mediation envelope headers to prevent forgery.
-	envelope.StripInbound(r.Header)
-
 	// Pre-generate a single ActionID for correlation between envelope and receipt.
 	actionID := receipt.NewActionID()
 
@@ -2057,6 +2233,37 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	if err := p.verifyInboundEnvelope(r, cfg); err != nil {
+		p.recordDecision(config.ActionBlock, blockLayerMediationEnvelope, "inbound_verify", TransportFetch, requestID)
+		p.emitReceipt(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerMediationEnvelope,
+			Pattern:   "inbound_verify",
+			Transport: TransportFetch,
+			Method:    r.Method,
+			Target:    r.URL.String(),
+			RequestID: requestID,
+			Agent:     agent,
+		})
+		// Log the verifier-side detail server-side; never include it
+		// in the response. err.Error() can carry "untrusted key_id
+		// %q", "signature expired", "trusted key not authorized for
+		// actor trust domain", etc., which would let an unauthenticated
+		// caller probe the trust list. Match the generic message used
+		// by the CONNECT, WebSocket, and reverse-proxy paths.
+		p.logger.LogError(audit.NewMethodLogContext(r.Method),
+			fmt.Errorf("inbound envelope verify rejected fetch: %w", err))
+		writeJSON(w, http.StatusForbidden, FetchResponse{
+			Blocked:    true,
+			Error:      "inbound mediation envelope verification failed",
+			StatusCode: http.StatusForbidden,
+		})
+		return
+	}
+	// Strip inbound mediation envelope headers after optional trust
+	// verification so forged mediation metadata cannot survive to upstreams.
+	envelope.StripInbound(r.Header)
 	agentLabel := id.Profile // bounded cardinality for Prometheus labels
 	sc, releaseScanner, scOK := p.pinResolvedScanner(resolved)
 	defer releaseScanner()

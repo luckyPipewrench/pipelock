@@ -33,10 +33,11 @@ func InjectHTTP(h http.Header, env Envelope) error {
 // mediation metadata or pre-populates a pipelock* signature slot that
 // would otherwise survive into the outbound request.
 //
-// TODO(v2.2.x): inbound RFC 9421 verification + replay cache. Today we
-// only strip on the assumption that any inbound pipelock* signature is
-// either forged or stale. Future work will verify upstream pipelock
-// signatures against a trust list before deciding to strip vs accept.
+// When mediation_envelope.verify_inbound is enabled, the proxy calls
+// (*Verifier).VerifyRequest before invoking StripInbound so that
+// envelopes signed by trusted federation peers are accepted rather
+// than discarded. StripInbound itself is unconditional — verification
+// runs in the request handler, not here.
 func StripInbound(h http.Header) {
 	h.Del(HeaderName)
 	stripPipelockSignatureMembers(h, "Signature-Input")

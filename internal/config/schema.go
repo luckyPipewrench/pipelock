@@ -849,6 +849,50 @@ type MediationEnvelope struct {
 	// without content-digest (the component is dropped from the
 	// declared list for that request) rather than failing.
 	MaxBodyBytes int `yaml:"max_body_bytes"`
+
+	// SignatureExpires is the per-signature lifetime emitted by the
+	// outbound signer (Go duration string, e.g. "5m"). Empty falls
+	// back to the verifier's replay-cache window so the cache always
+	// outlives the signature. The validator rejects values larger
+	// than verify_inbound.replay_cache.window because a longer-lived
+	// signature would be replayable after its nonce was evicted from
+	// the cache.
+	SignatureExpires string `yaml:"signature_expires"`
+
+	// ActorFormat controls new outbound envelope actor values. v2.4
+	// defaults to SPIFFE format while inbound parsing remains permissive
+	// for legacy actor strings.
+	ActorFormat string `yaml:"actor_format"`
+	TrustDomain string `yaml:"trust_domain"`
+
+	// VerifyInbound requires incoming requests to carry a valid signed
+	// mediation envelope from a trusted signer before pipelock strips and
+	// replaces its own outbound envelope.
+	VerifyInbound MediationEnvelopeVerifyInbound `yaml:"verify_inbound"`
+}
+
+type MediationEnvelopeVerifyInbound struct {
+	Enabled     bool                          `yaml:"enabled"`
+	TrustList   []MediationEnvelopeTrustedKey `yaml:"trust_list"`
+	ReplayCache MediationEnvelopeReplayCache  `yaml:"replay_cache"`
+}
+
+type MediationEnvelopeTrustedKey struct {
+	KeyID        string `yaml:"key_id"`
+	PublicKey    string `yaml:"public_key"`
+	WellKnownURL string `yaml:"well_known_url"`
+	// TrustDomains, when non-empty, restricts which actor trust
+	// domains a signed envelope may claim under this key_id. Empty
+	// means "any trust domain" — the v2.4 migration default that lets
+	// a single partner key sign for any actor. Production deployments
+	// should pin each key to the specific federation peer's trust
+	// domain(s) so a compromised partner cannot impersonate another.
+	TrustDomains []string `yaml:"trust_domains"`
+}
+
+type MediationEnvelopeReplayCache struct {
+	Window     string `yaml:"window"`
+	MaxEntries int    `yaml:"max_entries"`
 }
 
 // TaintConfig configures exposure-based policy escalation for sessions that

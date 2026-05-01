@@ -5,10 +5,13 @@ package envelope
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -75,6 +78,15 @@ var ErrSignerDisabled = errors.New("envelope signer disabled")
 // in by value (ed25519.PrivateKey is a []byte) so the Signer is self
 // contained and cheap to swap atomically on hot reload.
 //
+// DefaultSignerExpires is the per-signature lifetime used when
+// SignerConfig.Expires is zero. Five minutes matches the inbound
+// verifier's default replay window so the cache always outlives the
+// signature; pairing this default with the verifier's
+// MaxSignatureLifetime cap prevents the signer/verifier pair from
+// silently disagreeing about how long a captured signature stays
+// replayable.
+const DefaultSignerExpires = 5 * time.Minute
+
 // Signer is safe for concurrent use. The key, keyID, and component
 // list are immutable after construction; the optional nowFn hook is
 // only replaced in tests via the SignerConfig field.
@@ -83,7 +95,9 @@ type Signer struct {
 	keyID        string
 	components   []string // maximal declared set — subset used per request
 	maxBodyBytes int
+	expires      time.Duration
 	nowFn        func() time.Time
+	randReader   io.Reader
 }
 
 // SignerConfig holds the inputs for constructing a Signer.
@@ -116,10 +130,21 @@ type SignerConfig struct {
 	// directly can still pass MaxBodyBytes=0 to opt out of the cap.
 	MaxBodyBytes int
 
+	// Expires is the per-signature lifetime emitted as
+	// (created + Expires). Zero falls back to DefaultSignerExpires.
+	// Operators must keep this <= the inbound verifier's replay window
+	// so a captured signature can never outlive the nonce in the
+	// cache; the runtime config validator enforces that relationship.
+	Expires time.Duration
+
 	// NowFn returns the current time. Defaults to time.Now. Tests
 	// inject a fixed clock so signature base strings are reproducible
 	// and the ;created= parameter is deterministic.
 	NowFn func() time.Time
+
+	// RandReader produces nonce bytes for the ;nonce= parameter.
+	// Defaults to crypto/rand.Reader.
+	RandReader io.Reader
 }
 
 // NormalizeSignedComponents validates and canonicalizes the configured RFC 9421
@@ -172,13 +197,23 @@ func NewSigner(cfg SignerConfig) (*Signer, error) {
 	if now == nil {
 		now = time.Now
 	}
+	randReader := cfg.RandReader
+	if randReader == nil {
+		randReader = rand.Reader
+	}
+	expires := cfg.Expires
+	if expires <= 0 {
+		expires = DefaultSignerExpires
+	}
 
 	return &Signer{
 		privKey:      cfg.PrivKey,
 		keyID:        cfg.KeyID,
 		components:   comps,
 		maxBodyBytes: cfg.MaxBodyBytes,
+		expires:      expires,
 		nowFn:        now,
+		randReader:   randReader,
 	}, nil
 }
 
@@ -249,7 +284,12 @@ func (s *Signer) SignRequest(req *http.Request, body []byte) error {
 	}
 
 	created := s.nowFn().UTC().Unix()
-	sigParams := buildSigParams(effective, created, s.keyID)
+	nonce, err := s.signatureNonce()
+	if err != nil {
+		req.Header.Set("Content-Digest", prevDigest)
+		return fmt.Errorf("envelope signer: nonce: %w", err)
+	}
+	sigParams := buildSigParams(effective, created, created+int64(s.expires/time.Second), nonce, s.keyID)
 
 	base, err := buildSignatureBase(req, body, effective, sigParams)
 	if err != nil {
@@ -330,9 +370,8 @@ func contentDigestHeaderValue(body []byte) string {
 // the RFC 9421 metadata (;created, ;keyid, ;tag). The function cannot
 // fail today — Params.Add is infallible for the bare-item types we
 // hand it — but the shape is still a constructor so new parameters
-// (e.g. ;expires for inbound-verify compatibility) can be added
 // without altering the calling convention.
-func buildSigParams(components []string, created int64, keyID string) httpsfv.InnerList {
+func buildSigParams(components []string, created, expires int64, nonce, keyID string) httpsfv.InnerList {
 	items := make([]httpsfv.Item, 0, len(components))
 	for _, c := range components {
 		items = append(items, httpsfv.NewItem(c))
@@ -349,8 +388,18 @@ func buildSigParams(components []string, created int64, keyID string) httpsfv.In
 	params.Add("keyid", keyID)
 	params.Add("alg", pipelockSigAlg)
 	params.Add("tag", pipelockSigTag)
+	params.Add("nonce", nonce)
 	params.Add("created", created)
+	params.Add("expires", expires)
 	return httpsfv.InnerList{Items: items, Params: params}
+}
+
+func (s *Signer) signatureNonce() (string, error) {
+	var b [16]byte
+	if _, err := io.ReadFull(s.randReader, b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // buildSignatureBase constructs the RFC 9421 §2.5 signature base

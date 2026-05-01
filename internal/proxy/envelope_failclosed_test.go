@@ -205,7 +205,7 @@ func TestCheckRedirect_RefreshFailureBlocks(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	prev := p.envelopeEmitterPtr.Load().Build(envelope.BuildOpts{
+	prev, err := p.envelopeEmitterPtr.Load().Build(envelope.BuildOpts{
 		ActionID:  receipt.NewActionID(),
 		Action:    string(receipt.ActionRead),
 		Verdict:   config.ActionAllow,
@@ -215,6 +215,9 @@ func TestCheckRedirect_RefreshFailureBlocks(t *testing.T) {
 			p.cfgPtr.Load().CanonicalPolicyHash(),
 		),
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 	if err := envelope.InjectHTTP(req.Header, prev); err != nil {
 		t.Fatalf("InjectHTTP: %v", err)
 	}

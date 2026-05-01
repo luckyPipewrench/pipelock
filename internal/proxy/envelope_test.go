@@ -581,12 +581,15 @@ func TestEnvelope_ReloadInstallsFreshEmitter(t *testing.T) {
 	// And the fresh emitter should reflect the reloaded config — its
 	// build produces a different policy hash than the pre-reload one.
 	wantPH := envelope.PolicyHashFromHex(reloadCfg.CanonicalPolicyHash())
-	got := newEmitter.Build(envelope.BuildOpts{
+	got, err := newEmitter.Build(envelope.BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000099",
 		Action:    "read",
 		Verdict:   "allow",
 		ActorAuth: envelope.ActorAuthBound,
 	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
 	if string(got.PolicyHash) != string(wantPH) {
 		t.Errorf("post-reload ph = %x, want %x", got.PolicyHash, wantPH)
 	}

@@ -186,6 +186,30 @@ func TestValidateMediationEnvelope_VerifyInboundTrustList(t *testing.T) {
 	}
 }
 
+func TestValidateMediationEnvelope_ReplayCacheMaxEntriesDefaulted(t *testing.T) {
+	t.Parallel()
+
+	pub, _, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+
+	c := Defaults()
+	c.MediationEnvelope.VerifyInbound.Enabled = true
+	c.MediationEnvelope.VerifyInbound.TrustList = []MediationEnvelopeTrustedKey{{
+		KeyID:     "partner-key",
+		PublicKey: hex.EncodeToString(pub),
+	}}
+	c.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 0
+
+	if err := c.validateMediationEnvelope(); err != nil {
+		t.Fatalf("validateMediationEnvelope: %v", err)
+	}
+	if got := c.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries; got != DefaultEnvelopeReplayMaxEntries {
+		t.Fatalf("ReplayCache.MaxEntries = %d, want %d", got, DefaultEnvelopeReplayMaxEntries)
+	}
+}
+
 func TestValidateMediationEnvelope_TrimsFederationFields(t *testing.T) {
 	t.Parallel()
 

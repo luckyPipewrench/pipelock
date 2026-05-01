@@ -2051,7 +2051,7 @@ mediation_envelope:
 | `verify_inbound.trust_list` | `[]` | Trusted inbound signer keys. Each entry needs `key_id` and `public_key`; `well_known_url` documents the discovery source; optional `trust_domains` pins the key to one or more SPIFFE trust domains it is allowed to attest. |
 | `verify_inbound.trust_list[].trust_domains` | `[]` | When non-empty, restricts which actor trust domains the trusted key may attest. An envelope whose actor's trust domain is not in this list fails verification. Empty preserves v2.4 migration behavior (any trust domain). Production deployments should pin each key to the partner's trust domain so a compromised partner cannot impersonate another peer. |
 | `verify_inbound.replay_cache.window` | `5m` | Maximum nonce replay window for inbound signatures. The verifier rejects signatures whose declared lifetime (`expires - created`) exceeds `window + created_skew_seconds` so a captured signature cannot outlive its nonce in the cache. |
-| `verify_inbound.replay_cache.max_entries` | `10000` | Bound on the in-process replay cache. |
+| `verify_inbound.replay_cache.max_entries` | `10000` | Bound on the in-process replay cache. Zero uses the default; set a positive value to override. |
 
 Default `signed_components` covers `@method`, `@target-uri`, `pipelock-mediation`, and `content-digest`. Override only if your verifier requires a different component set.
 

@@ -128,9 +128,9 @@ type BuildOpts struct {
 
 // Build creates an Envelope from the scan decision context.
 // Returns a zero Envelope if the emitter is nil.
-func (e *Emitter) Build(opts BuildOpts) Envelope {
+func (e *Emitter) Build(opts BuildOpts) (Envelope, error) {
 	if e == nil {
-		return Envelope{}
+		return Envelope{}, nil
 	}
 
 	var hash []byte
@@ -142,7 +142,7 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 
 	actor, err := FormatActor(opts.Actor, e.actorFormat, e.trustDomain)
 	if err != nil {
-		actor = opts.Actor
+		return Envelope{}, fmt.Errorf("envelope emitter: format actor: %w", err)
 	}
 
 	return Envelope{
@@ -160,7 +160,7 @@ func (e *Emitter) Build(opts BuildOpts) Envelope {
 		AuthorityKind:  opts.AuthorityKind,
 		AuthorityRef:   opts.AuthorityRef,
 		RequiresReauth: opts.RequiresReauth,
-	}
+	}, nil
 }
 
 // InjectHTTPEnvelope builds an envelope and injects it as an HTTP header.
@@ -173,7 +173,10 @@ func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 	if e == nil {
 		return nil
 	}
-	env := e.Build(opts)
+	env, err := e.Build(opts)
+	if err != nil {
+		return err
+	}
 	return InjectHTTP(h, env)
 }
 
@@ -217,7 +220,11 @@ func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) 
 	if req == nil {
 		return fmt.Errorf("envelope emitter: nil *http.Request")
 	}
-	env := e.Build(opts)
+	env, err := e.Build(opts)
+	if err != nil {
+		stripEnvelopeHeaders(req)
+		return err
+	}
 	if err := InjectHTTP(req.Header, env); err != nil {
 		stripEnvelopeHeaders(req)
 		return fmt.Errorf("envelope emitter: inject header: %w", err)
@@ -392,7 +399,10 @@ func (e *Emitter) InjectMCPEnvelope(meta map[string]any, opts BuildOpts) {
 	if e == nil {
 		return
 	}
-	env := e.Build(opts)
+	env, err := e.Build(opts)
+	if err != nil {
+		return
+	}
 	InjectMCP(meta, env)
 }
 

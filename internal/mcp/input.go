@@ -996,7 +996,11 @@ func injectMCPEnvelope(msg []byte, emitter *envelope.Emitter, buildOpts envelope
 
 	// Strip any existing mediation key, then inject.
 	delete(meta, envelope.MCPMetaKey)
-	envData := emitter.Build(buildOpts).ToMCPMeta()
+	env, err := emitter.Build(buildOpts)
+	if err != nil {
+		return msg
+	}
+	envData := env.ToMCPMeta()
 	envBytes, err := json.Marshal(envData)
 	if err != nil {
 		return msg

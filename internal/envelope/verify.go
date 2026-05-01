@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -55,6 +56,57 @@ type Verifier struct {
 type trustedKey struct {
 	publicKey    ed25519.PublicKey
 	trustDomains map[string]struct{}
+}
+
+type VerificationFailureCode string
+
+const (
+	VerificationFailureReplay     VerificationFailureCode = "replay"
+	VerificationFailureExpired    VerificationFailureCode = "expired"
+	VerificationFailureNotTrusted VerificationFailureCode = "not_trusted"
+	VerificationFailureMissing    VerificationFailureCode = "missing"
+	VerificationFailureDigest     VerificationFailureCode = "digest"
+	VerificationFailureSignature  VerificationFailureCode = "signature"
+	VerificationFailureParse      VerificationFailureCode = "parse"
+	VerificationFailureFailed     VerificationFailureCode = "failed"
+)
+
+type VerificationError struct {
+	Code VerificationFailureCode
+	Err  error
+}
+
+func (e *VerificationError) Error() string {
+	if e == nil || e.Err == nil {
+		return string(VerificationFailureFailed)
+	}
+	return e.Err.Error()
+}
+
+func (e *VerificationError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func verificationError(code VerificationFailureCode, format string, args ...any) error {
+	return &VerificationError{Code: code, Err: fmt.Errorf(format, args...)}
+}
+
+func wrapVerificationError(code VerificationFailureCode, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &VerificationError{Code: code, Err: err}
+}
+
+func VerificationFailureCodeOf(err error) (VerificationFailureCode, bool) {
+	var verifyErr *VerificationError
+	if errors.As(err, &verifyErr) && verifyErr != nil && verifyErr.Code != "" {
+		return verifyErr.Code, true
+	}
+	return "", false
 }
 
 func (k trustedKey) allowsTrustDomain(domain string) bool {
@@ -119,69 +171,69 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 // digest is checked against body before signature verification succeeds.
 func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, error) {
 	if v == nil {
-		return Envelope{}, fmt.Errorf("inbound envelope verifier is nil")
+		return Envelope{}, verificationError(VerificationFailureFailed, "inbound envelope verifier is nil")
 	}
 	if req == nil {
-		return Envelope{}, fmt.Errorf("inbound envelope verifier: nil request")
+		return Envelope{}, verificationError(VerificationFailureFailed, "inbound envelope verifier: nil request")
 	}
 	rawEnv := req.Header.Get(HeaderName)
 	if rawEnv == "" {
-		return Envelope{}, fmt.Errorf("missing %s header", HeaderName)
+		return Envelope{}, verificationError(VerificationFailureMissing, "missing %s header", HeaderName)
 	}
 	env, err := Parse(rawEnv)
 	if err != nil {
-		return Envelope{}, fmt.Errorf("parse %s: %w", HeaderName, err)
+		return Envelope{}, verificationError(VerificationFailureParse, "parse %s: %w", HeaderName, err)
 	}
 	parsedActor, err := ParseActor(env.Actor)
 	if err != nil {
-		return Envelope{}, fmt.Errorf("parse actor: %w", err)
+		return Envelope{}, verificationError(VerificationFailureParse, "parse actor: %w", err)
 	}
 
 	inner, sigBytes, err := mediationSignature(req.Header)
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	keyID, err := paramString(inner, "keyid")
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	tk, ok := v.keys[keyID]
 	if !ok {
-		return Envelope{}, fmt.Errorf("untrusted key_id %q", keyID)
+		return Envelope{}, verificationError(VerificationFailureNotTrusted, "untrusted key_id %q", keyID)
 	}
 	if tk.pinsTrustDomain() {
 		if !parsedActor.IsSPIFFE {
-			return Envelope{}, fmt.Errorf("trusted key requires SPIFFE actor trust domain")
+			return Envelope{}, verificationError(VerificationFailureNotTrusted, "trusted key requires SPIFFE actor trust domain")
 		}
 		if !tk.allowsTrustDomain(parsedActor.TrustDomain) {
-			return Envelope{}, fmt.Errorf("trusted key not authorized for actor trust domain")
+			return Envelope{}, verificationError(VerificationFailureNotTrusted, "trusted key not authorized for actor trust domain")
 		}
 	}
 	alg, err := paramString(inner, "alg")
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	if alg != pipelockSigAlg {
-		return Envelope{}, fmt.Errorf("unsupported signature alg %q", alg)
+		return Envelope{}, verificationError(VerificationFailureSignature, "unsupported signature alg %q", alg)
 	}
 	tag, err := paramString(inner, "tag")
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	if tag != pipelockSigTag {
-		return Envelope{}, fmt.Errorf("unexpected signature tag %q", tag)
+		return Envelope{}, verificationError(VerificationFailureSignature, "unexpected signature tag %q", tag)
 	}
 	created, err := paramInt64(inner, "created")
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	expires, err := paramInt64(inner, "expires")
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	nonce, err := paramString(inner, "nonce")
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	if err := v.validateTime(created, expires); err != nil {
 		return Envelope{}, err
@@ -189,28 +241,32 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 
 	components, err := innerComponents(inner)
 	if err != nil {
-		return Envelope{}, err
+		return Envelope{}, wrapVerificationError(VerificationFailureParse, err)
 	}
 	if containsComponent(components, headerContentDigest) {
 		if body == nil {
-			return Envelope{}, fmt.Errorf("content-digest covered but body was not provided")
+			return Envelope{}, verificationError(VerificationFailureDigest, "content-digest covered but body was not provided")
 		}
 		if err := verifyContentDigest(req.Header.Get("Content-Digest"), body); err != nil {
-			return Envelope{}, err
+			return Envelope{}, wrapVerificationError(VerificationFailureDigest, err)
 		}
 	} else if requestHasSignedBody(req, body) {
-		return Envelope{}, fmt.Errorf("body-bearing request signature must cover content-digest")
+		return Envelope{}, verificationError(VerificationFailureDigest, "body-bearing request signature must cover content-digest")
 	}
 
 	base, err := buildSignatureBase(req, body, components, inner)
 	if err != nil {
-		return Envelope{}, fmt.Errorf("build signature base: %w", err)
+		return Envelope{}, verificationError(VerificationFailureParse, "build signature base: %w", err)
 	}
 	if !ed25519.Verify(tk.publicKey, []byte(base), sigBytes) {
-		return Envelope{}, fmt.Errorf("signature verification failed")
+		return Envelope{}, verificationError(VerificationFailureSignature, "signature verification failed")
 	}
 	if err := v.replayCache.CheckAndStoreWithSkew(nonce, time.Unix(expires, 0).UTC(), v.skew); err != nil {
-		return Envelope{}, err
+		code := VerificationFailureReplay
+		if strings.Contains(strings.ToLower(err.Error()), "expired") {
+			code = VerificationFailureExpired
+		}
+		return Envelope{}, wrapVerificationError(code, err)
 	}
 	return env, nil
 }
@@ -220,13 +276,13 @@ func (v *Verifier) validateTime(created, expires int64) error {
 	createdAt := time.Unix(created, 0).UTC()
 	expiresAt := time.Unix(expires, 0).UTC()
 	if v.skew > 0 && createdAt.After(now.Add(v.skew)) {
-		return fmt.Errorf("signature created in the future")
+		return verificationError(VerificationFailureExpired, "signature created in the future")
 	}
 	if !expiresAt.After(now.Add(-v.skew)) {
-		return fmt.Errorf("signature expired")
+		return verificationError(VerificationFailureExpired, "signature expired")
 	}
 	if !expiresAt.After(createdAt) {
-		return fmt.Errorf("signature expires before created")
+		return verificationError(VerificationFailureExpired, "signature expires before created")
 	}
 	if v.maxSignatureLifetime > 0 {
 		// Cap declared signature lifetime so the replay cache (which
@@ -234,7 +290,7 @@ func (v *Verifier) validateTime(created, expires int64) error {
 		// this, an attacker can capture a long-lived signature and
 		// replay it after the nonce has been forgotten.
 		if expiresAt.Sub(createdAt) > v.maxSignatureLifetime {
-			return fmt.Errorf("signature lifetime exceeds maximum")
+			return verificationError(VerificationFailureExpired, "signature lifetime exceeds maximum")
 		}
 	}
 	return nil

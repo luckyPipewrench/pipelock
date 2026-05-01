@@ -196,9 +196,10 @@ inbound headers are stripped, so federated peers' signed envelopes are
 accepted while forged ones are rejected with a 403.
 
 **Well-known key directory.** A signing proxy exposes its current envelope
-public key at `/.well-known/http-message-signatures-directory`. Verifiers can
-fetch that JSON directory instead of sideloading a public-key pin. Unsigned
-envelope configurations return 404 for the well-known route.
+public key at `/.well-known/http-message-signatures-directory` and emits an
+audit anomaly when the route is requested. Verifiers can fetch that JSON
+directory instead of sideloading a public-key pin. Unsigned envelope
+configurations return 404 for the well-known route.
 
 ## Example: reading the envelope in Go
 

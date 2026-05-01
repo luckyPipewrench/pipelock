@@ -744,7 +744,10 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	// overwrite its Hop before serializing. We do this by calling
 	// Emitter.Build directly and serializing by hand rather than
 	// going through InjectAndSign, which would reset Hop to zero.
-	env := em.Build(opts)
+	env, err := em.Build(opts)
+	if err != nil {
+		return newRedirectEnvelopeBlockedRequest(err)
+	}
 	env.Hop = prev.Hop
 	if err := envelope.InjectHTTP(req.Header, env); err != nil {
 		return newRedirectEnvelopeBlockedRequest(
@@ -1514,6 +1517,25 @@ func inboundEnvelopeFailurePattern(err error) string {
 	if err == nil {
 		return "inbound_verify"
 	}
+	if code, ok := envelope.VerificationFailureCodeOf(err); ok {
+		switch code {
+		case envelope.VerificationFailureReplay:
+			return "inbound_verify_replay"
+		case envelope.VerificationFailureExpired:
+			return "inbound_verify_expired"
+		case envelope.VerificationFailureNotTrusted:
+			return "inbound_verify_not_trusted"
+		case envelope.VerificationFailureMissing:
+			return "inbound_verify_missing"
+		case envelope.VerificationFailureDigest:
+			return "inbound_verify_digest"
+		case envelope.VerificationFailureSignature:
+			return "inbound_verify_signature"
+		case envelope.VerificationFailureParse:
+			return "inbound_verify_parse"
+		}
+		return "inbound_verify_failed"
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "replay"):
@@ -2136,6 +2158,8 @@ func (p *Proxy) handleEnvelopeDirectory(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	p.logger.LogAnomaly(audit.NewResourceLogContext(r.Method, envelope.WellKnownPath),
+		"mediation_envelope_directory", "well-known signature directory requested", 0)
 	em := p.currentEnvelopeEmitter()
 	if em == nil || !em.HasSigner() {
 		http.NotFound(w, r)

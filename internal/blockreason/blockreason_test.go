@@ -5,14 +5,21 @@ package blockreason
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 )
 
-func TestNew_RequiredTriple(t *testing.T) {
+// validULID is a 26-char Crockford-base32 string (no I, L, O, U).
+const validULID = "01J0GNYZ7XSQRTQ8FPYM5BHX2K"
+
+func TestNew_AcceptsValidTriple(t *testing.T) {
 	t.Parallel()
-	info := New(DLPMatch, SeverityCritical, RetryNone)
+	info, err := New(DLPMatch, SeverityCritical, RetryNone)
+	if err != nil {
+		t.Fatalf("New returned error for valid input: %v", err)
+	}
 	if info.Reason != DLPMatch {
 		t.Errorf("Reason = %q, want %q", info.Reason, DLPMatch)
 	}
@@ -24,49 +31,154 @@ func TestNew_RequiredTriple(t *testing.T) {
 	}
 }
 
-func TestNew_PanicsOnEmptyRequiredField(t *testing.T) {
+func TestNew_RejectsInvalidVocabulary(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name     string
 		reason   Reason
 		severity Severity
 		retry    Retry
+		wantErr  error
 	}{
-		{"empty reason", "", SeverityCritical, RetryNone},
-		{"empty severity", DLPMatch, "", RetryNone},
-		{"empty retry", DLPMatch, SeverityCritical, ""},
+		{"unknown reason", "made_up_reason", SeverityCritical, RetryNone, ErrInvalidReason},
+		{"empty reason", "", SeverityCritical, RetryNone, ErrInvalidReason},
+		{"unknown severity", DLPMatch, "boom", RetryNone, ErrInvalidSeverity},
+		{"empty severity", DLPMatch, "", RetryNone, ErrInvalidSeverity},
+		{"unknown retry", DLPMatch, SeverityCritical, "later", ErrInvalidRetry},
+		{"empty retry", DLPMatch, SeverityCritical, "", ErrInvalidRetry},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer func() {
-				if r := recover(); r == nil {
-					t.Errorf("expected panic for %s, got none", tc.name)
-				}
-			}()
-			_ = New(tc.reason, tc.severity, tc.retry)
+			_, err := New(tc.reason, tc.severity, tc.retry)
+			if err == nil {
+				t.Errorf("expected error for %s, got nil", tc.name)
+			}
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("error = %v, want wrap of %v", err, tc.wantErr)
+			}
 		})
 	}
 }
 
-func TestWithLayer_AndWithReceipt(t *testing.T) {
+func TestMustNew_PanicsOnInvalid(t *testing.T) {
 	t.Parallel()
-	info := New(DLPMatch, SeverityCritical, RetryNone).
-		WithLayer("dlp").
-		WithReceipt("01HZ8EXAMPLE")
-	if info.Layer != "dlp" {
-		t.Errorf("Layer = %q, want %q", info.Layer, "dlp")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("expected panic for invalid MustNew")
+		}
+	}()
+	_ = MustNew("nope", SeverityCritical, RetryNone)
+}
+
+func TestMustNew_OkOnValid(t *testing.T) {
+	t.Parallel()
+	info := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	if info.Reason != DLPMatch {
+		t.Errorf("Reason = %q", info.Reason)
 	}
-	if info.Receipt != "01HZ8EXAMPLE" {
-		t.Errorf("Receipt = %q, want %q", info.Receipt, "01HZ8EXAMPLE")
+}
+
+func TestWithLayer_AcceptsValidScannerLabel(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	got, err := base.WithLayer("dlp")
+	if err != nil {
+		t.Fatalf("WithLayer error: %v", err)
+	}
+	if got.Layer != "dlp" {
+		t.Errorf("Layer = %q, want dlp", got.Layer)
+	}
+}
+
+func TestWithLayer_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	cases := []struct {
+		name  string
+		layer string
+	}{
+		{"control char", "dlp\n"},
+		{"slash", "dl/p"},
+		{"space", "dl p"},
+		{"too long", strings.Repeat("a", layerMaxLen+1)},
+		{"non-ascii", "dlp" + "\xc3\xa9"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := base.WithLayer(tc.layer)
+			if !errors.Is(err, ErrInvalidLayer) {
+				t.Errorf("error = %v, want wrap of ErrInvalidLayer", err)
+			}
+		})
+	}
+}
+
+func TestWithLayer_EmptyAllowed(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	got, err := base.WithLayer("")
+	if err != nil {
+		t.Fatalf("empty layer rejected: %v", err)
+	}
+	if got.Layer != "" {
+		t.Errorf("Layer = %q, want empty", got.Layer)
+	}
+}
+
+func TestWithReceipt_AcceptsValidULID(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	got, err := base.WithReceipt(validULID)
+	if err != nil {
+		t.Fatalf("WithReceipt error: %v", err)
+	}
+	if got.Receipt != validULID {
+		t.Errorf("Receipt = %q, want %q", got.Receipt, validULID)
+	}
+}
+
+func TestWithReceipt_RejectsNonULIDShapes(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	cases := []struct {
+		name    string
+		receipt string
+	}{
+		{"too short", "01HZ8"},
+		{"too long", validULID + "EXTRA"},
+		{"contains lowercase", strings.ToLower(validULID)},
+		{"contains forbidden I", "I1HZ8EXAMPLERECEIPTID00000"},
+		{"contains forbidden L", "L1HZ8EXAMPLERECEIPTID00000"},
+		{"contains forbidden O", "O1HZ8EXAMPLERECEIPTID00000"},
+		{"contains forbidden U", "U1HZ8EXAMPLERECEIPTID00000"},
+		{"contains punctuation", "01HZ8-XAMPLERECEIPTID00000"},
+		{"contains control", "01HZ8\nXAMPLERECEIPTID00000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := base.WithReceipt(tc.receipt)
+			if !errors.Is(err, ErrInvalidReceipt) {
+				t.Errorf("error = %v, want wrap of ErrInvalidReceipt", err)
+			}
+		})
+	}
+}
+
+func TestWithReceipt_EmptyAllowed(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	got, err := base.WithReceipt("")
+	if err != nil {
+		t.Fatalf("empty receipt rejected: %v", err)
+	}
+	if got.Receipt != "" {
+		t.Errorf("Receipt = %q, want empty", got.Receipt)
 	}
 }
 
 func TestSetHeaders_AlwaysEmitsRequiredFour(t *testing.T) {
 	t.Parallel()
-	// Required headers must always emit. Empty values still surface so a
-	// downstream consumer can detect a malformed block from a misconstructed
-	// Info — the only way to get an empty required header is bypassing New().
-	info := New(SSRFPrivateIP, SeverityCritical, RetryNone)
+	info := MustNew(SSRFPrivateIP, SeverityCritical, RetryNone)
 	h := make(http.Header)
 	info.SetHeaders(h)
 
@@ -85,23 +197,29 @@ func TestSetHeaders_AlwaysEmitsRequiredFour(t *testing.T) {
 
 func TestSetHeaders_OptionalFieldsSurfaceWhenSet(t *testing.T) {
 	t.Parallel()
-	info := New(DLPMatch, SeverityCritical, RetryNone).
-		WithLayer("dlp").
-		WithReceipt("01HZ8EXAMPLE")
+	info := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	info, err := info.WithLayer("dlp")
+	if err != nil {
+		t.Fatalf("WithLayer: %v", err)
+	}
+	info, err = info.WithReceipt(validULID)
+	if err != nil {
+		t.Fatalf("WithReceipt: %v", err)
+	}
 	h := make(http.Header)
 	info.SetHeaders(h)
 
 	if got := h.Get(HeaderLayer); got != "dlp" {
-		t.Errorf("HeaderLayer = %q, want %q", got, "dlp")
+		t.Errorf("HeaderLayer = %q, want dlp", got)
 	}
-	if got := h.Get(HeaderReceipt); got != "01HZ8EXAMPLE" {
-		t.Errorf("HeaderReceipt = %q, want %q", got, "01HZ8EXAMPLE")
+	if got := h.Get(HeaderReceipt); got != validULID {
+		t.Errorf("HeaderReceipt = %q, want %q", got, validULID)
 	}
 }
 
 func TestSetHeaders_OmitsOptionalFieldsWhenUnset(t *testing.T) {
 	t.Parallel()
-	info := New(PromptInjection, SeverityCritical, RetryNone)
+	info := MustNew(PromptInjection, SeverityCritical, RetryNone)
 	h := make(http.Header)
 	info.SetHeaders(h)
 
@@ -113,11 +231,14 @@ func TestSetHeaders_OmitsOptionalFieldsWhenUnset(t *testing.T) {
 	}
 }
 
-func TestCloseFramePayload_FullShape(t *testing.T) {
+func TestCloseFramePayload_FullShapeWithoutReceipt(t *testing.T) {
 	t.Parallel()
-	info := New(DLPMatch, SeverityCritical, RetryNone).
-		WithLayer("dlp").
-		WithReceipt("rcpt1")
+	// Without the optional receipt the document fits with all other fields
+	// present. The full Reason+Severity+Retry+Layer+Receipt combination
+	// runs over the 123-byte ceiling; receipt dropping is exercised in the
+	// truncation tests.
+	info := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	info, _ = info.WithLayer("dlp")
 	got := info.CloseFramePayload()
 
 	if len(got) > closeFrameMaxBytes {
@@ -133,12 +254,36 @@ func TestCloseFramePayload_FullShape(t *testing.T) {
 		"severity":     "critical",
 		"retry":        "none",
 		"layer":        "dlp",
-		"receipt":      "rcpt1",
 	}
 	for k, v := range want {
 		if parsed[k] != v {
 			t.Errorf("payload[%q] = %q, want %q", k, parsed[k], v)
 		}
+	}
+}
+
+func TestCloseFramePayload_ReceiptDropsToFitLimit(t *testing.T) {
+	t.Parallel()
+	// With every optional field populated the full document exceeds 123
+	// bytes. Receipt is the first field documented to drop, so it should
+	// be absent while the required fields remain.
+	info := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	info, _ = info.WithLayer("dlp")
+	info, _ = info.WithReceipt(validULID)
+	got := info.CloseFramePayload()
+
+	if len(got) > closeFrameMaxBytes {
+		t.Errorf("payload %d bytes exceeds RFC 6455 limit %d", len(got), closeFrameMaxBytes)
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("payload not valid JSON: %v (%q)", err, got)
+	}
+	if parsed["receipt"] != "" {
+		t.Errorf("receipt should drop first to fit limit, got %q", parsed["receipt"])
+	}
+	if parsed["block_reason"] != "dlp_match" {
+		t.Errorf("block_reason missing: got %q", parsed["block_reason"])
 	}
 }
 
@@ -152,25 +297,29 @@ func TestCloseFramePayload_ZeroInfoSentinel(t *testing.T) {
 
 func TestCloseFramePayload_AlwaysFitsRFC6455Limit(t *testing.T) {
 	t.Parallel()
-	// Invariant: the helper owns RFC 6455 framing semantics. Every output
-	// must fit within closeFrameMaxBytes regardless of input. This test
-	// covers normal, optional-field-truncated, and overlong-Reason cases.
+	hugeReceipt := MustNew(ToolPolicyDeny, SeverityCritical, RetryPolicy)
 	cases := []struct {
 		name string
 		info Info
 	}{
-		{"normal", New(DLPMatch, SeverityCritical, RetryNone)},
-		{"with optional fields", New(DLPMatch, SeverityCritical, RetryNone).
-			WithLayer("dlp").WithReceipt("01HZ8EXAMPLE")},
-		{"large receipt forces drop", New(ToolPolicyDeny, SeverityCritical, RetryPolicy).
-			WithLayer(strings.Repeat("L", 50)).
-			WithReceipt(strings.Repeat("R", 90))},
+		{"normal", MustNew(DLPMatch, SeverityCritical, RetryNone)},
+		// Direct struct-literal Info bypassing validators on purpose, to
+		// exercise the truncation algorithm with synthetic oversize values
+		// that the public API would refuse.
+		{"large receipt forces drop", Info{
+			Reason:   ToolPolicyDeny,
+			Severity: SeverityCritical,
+			Retry:    RetryPolicy,
+			Layer:    strings.Repeat("L", 50),
+			Receipt:  strings.Repeat("R", 90),
+		}},
 		{"overlong reason forces fallback", Info{
 			Reason: Reason(strings.Repeat("X", 200)),
 		}},
 		{"barely-fitting reason at floor", Info{
 			Reason: Reason(strings.Repeat("X", 100)),
 		}},
+		{"valid info with no optional", hugeReceipt},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -190,11 +339,13 @@ func TestCloseFramePayload_AlwaysFitsRFC6455Limit(t *testing.T) {
 	}
 }
 
-func TestCloseFramePayload_OverlongReasonReturnsFallback(t *testing.T) {
+func TestCloseFramePayload_OverlongReasonReturnsOverflowSignal(t *testing.T) {
 	t.Parallel()
-	// When the Reason itself exceeds what can fit in a bare
-	// {"block_reason":"..."} document, CloseFramePayload returns a fixed
-	// fallback rather than a malformed close frame.
+	// Direct struct literal with an oversize Reason. The public API rejects
+	// this at construction (New), but CloseFramePayload must still defend
+	// against it because Info is a value type Go cannot prevent direct
+	// construction of. The fallback uses BlockReasonOverflow, NOT
+	// ParseError, so audit fidelity is preserved.
 	info := Info{Reason: Reason(strings.Repeat("X", 200))}
 	got := info.CloseFramePayload()
 	if got != closeFrameOverflowFallback {
@@ -204,50 +355,14 @@ func TestCloseFramePayload_OverlongReasonReturnsFallback(t *testing.T) {
 	if len(got) > closeFrameMaxBytes {
 		t.Errorf("fallback %d bytes exceeds RFC 6455 limit %d", len(got), closeFrameMaxBytes)
 	}
-}
-
-func TestCloseFramePayload_ProgressiveTruncation(t *testing.T) {
-	t.Parallel()
-	// Force each truncation step to fire so the fall-through algorithm is
-	// fully exercised. The receipt drops first, then layer, then retry,
-	// then severity, then version. block_reason always remains.
-	info := New(ToolPolicyDeny, SeverityCritical, RetryPolicy).
-		WithLayer(strings.Repeat("L", 50)).
-		WithReceipt(strings.Repeat("R", 90))
-	got := info.CloseFramePayload()
-
-	if len(got) > closeFrameMaxBytes {
-		t.Errorf("progressive truncation failed: %d bytes > %d (%q)",
-			len(got), closeFrameMaxBytes, got)
-	}
-	var parsed map[string]string
-	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
-		t.Fatalf("not JSON after truncation: %v (%q)", err, got)
-	}
-	if parsed["block_reason"] != "tool_policy_deny" {
-		t.Errorf("block_reason missing after truncation: %q", got)
+	if !strings.Contains(got, string(BlockReasonOverflow)) {
+		t.Errorf("overflow payload does not carry BlockReasonOverflow signal: %q", got)
 	}
 }
 
 func TestReasonConstants_AllSnakeCase(t *testing.T) {
 	t.Parallel()
-	// Privacy and contract: every constant is a code consumers will
-	// permanently see in the wild. Renaming is a breaking change. This
-	// test snapshots the v1 vocabulary so silent renames trip CI.
-	codes := []Reason{
-		// Egress / network
-		SchemeBlocked, DomainBlocklist, SSRFPrivateIP, SSRFMetadata, SSRFDNSRebind,
-		PathEntropy, SubdomainEntropy, URLLength, RateLimit, DataBudget,
-		// Content
-		DLPMatch, PromptInjection, RedactionFailure, MediaPolicy,
-		// MCP
-		ToolPolicyDeny, ToolChainBlocked, ToolPoisoning, SessionBinding,
-		// Posture
-		AirlockActive, KillSwitchActive, EnvelopeVerifyFailed, AuthorityMismatch, EscalationLevel,
-		// Generic
-		ParseError, Timeout, PatternUnavailable, NotEnabled, BadRequest,
-	}
-	for _, r := range codes {
+	for r := range validReasons {
 		s := string(r)
 		if s == "" {
 			t.Errorf("Reason constant has empty value")
@@ -260,9 +375,6 @@ func TestReasonConstants_AllSnakeCase(t *testing.T) {
 
 func TestSeverityConstants_MatchExistingVocabulary(t *testing.T) {
 	t.Parallel()
-	// Severity values must match internal/config/schema.go vocabulary
-	// (info / warn / critical) so operators can correlate header-driven
-	// agent behavior with their existing emit / receipt streams.
 	cases := map[Severity]string{
 		SeverityInfo:     "info",
 		SeverityWarn:     "warn",
@@ -291,12 +403,11 @@ func TestRetryConstants_v1Vocabulary(t *testing.T) {
 
 func TestSetHeaders_DoesNotLeakSecretContent(t *testing.T) {
 	t.Parallel()
-	// Privacy invariant: the Info struct deliberately exposes only
-	// {Reason, Severity, Retry, Layer, Receipt}. None of those fields
-	// can carry matched content, pattern names, or agent identifiers
-	// without an explicit (and reviewable) call-site decision. This test
-	// pins the surface so a future field addition trips review.
-	info := New(DLPMatch, SeverityCritical, RetryNone)
+	// Privacy: Info exposes only {Reason, Severity, Retry, Layer, Receipt},
+	// each of which is constructor-validated against the v1 vocabulary or
+	// opaque-ID format. No path through the public API can put attacker-
+	// controlled or secret content into a header.
+	info := MustNew(DLPMatch, SeverityCritical, RetryNone)
 	h := make(http.Header)
 	info.SetHeaders(h)
 

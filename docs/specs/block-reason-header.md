@@ -15,7 +15,7 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 | `X-Pipelock-Block-Reason-Severity` | yes (on every block) | `critical` | Matches pipelock's existing severity vocabulary: `info`, `warn`, `critical`. |
 | `X-Pipelock-Block-Reason-Retry` | yes (on every block) | `none` | Retry hint: `none` (permanent), `transient` (retry with backoff), `policy` (retry only after policy change). |
 | `X-Pipelock-Block-Reason-Layer` | optional | `dlp` | Scanner pipeline layer label. Uses `internal/scanner/` `Scanner*` constants verbatim so operators can correlate header-driven agent behavior with their existing audit logs and Prometheus labels. See the layer-label vocabulary below. |
-| `X-Pipelock-Block-Reason-Receipt` | optional | `01HZ8...` | Receipt ID. Lets the agent fetch the matching receipt (via the receipt-transports endpoint) for additional context. |
+| `X-Pipelock-Block-Reason-Receipt` | optional | `01J0GNYZ7XSQRTQ8FPYM5BHX2K` | Receipt ID. Exactly 26 characters, Crockford-base32 (ULID alphabet: `0-9` plus `A-Z` minus `I`, `L`, `O`, `U`). Lets the agent fetch the matching receipt (via the receipt-transports endpoint) for additional context. The strict format keeps the slot opaque so attacker-controlled metadata cannot reach agent-visible response headers. |
 
 Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
 
@@ -94,6 +94,7 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `pattern_unavailable` | Scanner pattern set unavailable at startup; fail-closed until ready. | `warn` | `transient` |
 | `not_enabled` | Endpoint exists but the feature is disabled in config. | `info` | `policy` |
 | `bad_request` | Malformed client request (missing parameter, invalid URL, etc.). | `info` | `none` |
+| `block_reason_overflow` | Internal sentinel: the block-emit metadata itself was malformed (oversized Reason value, etc.). Pipelock falls back to this rather than silently downgrading to `parse_error` so audit fidelity is preserved. Agents should treat this as a malformed-block signal worth logging. | `warn` | `transient` |
 
 ## Severity
 
@@ -116,11 +117,13 @@ The `info` / `warn` / `critical` values match pipelock's existing emit pipeline 
 The header is **operational metadata only**. The following must never appear in any header value:
 
 - Matched secret content. The reason `dlp_match` is fine; the matched substring is not.
-- DLP pattern names that would identify the regex (e.g. `aws_access_key_id`). Pattern fingerprints are too tight a signal — they invite probing.
+- DLP pattern names that would identify the regex (e.g. `aws_access_key_id`). Pattern fingerprints are too tight a signal because they invite probing.
 - Agent identifiers, session IDs, or any user-attributable data.
 - Internal IPs, private hostnames, or cluster-internal details.
 
-The optional `X-Pipelock-Block-Reason-Receipt` header carries a UUID. The receipt itself (fetched separately) may contain richer context, but the header value is just the opaque ID.
+The optional `X-Pipelock-Block-Reason-Receipt` header carries an opaque ULID. The 26-character Crockford-base32 format is enforced by the emit package's `WithReceipt` validator; non-conforming receipts are rejected at construction so call sites cannot smuggle arbitrary strings into the slot. The receipt itself (fetched separately via the receipt-transports endpoint) may contain richer context, but the header value is just the opaque ID.
+
+The required header values (`Reason`, `Severity`, `Retry`) are validated against fixed allowlists at construction. The `Layer` value is restricted to ASCII alphanumeric and underscore (the shape of `internal/scanner/Scanner*` constants). Any value that does not match its validator is rejected before the header reaches the wire.
 
 ## Versioning
 

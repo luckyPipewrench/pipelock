@@ -8,20 +8,24 @@
 //
 // The schema is locked at v1. See docs/specs/block-reason-header.md for the
 // canonical reason vocabulary, severity values, retry hints, layer-label
-// mapping, and privacy rules.
+// mapping, receipt format, and privacy rules.
 //
-// Construction: callers MUST use New(reason, severity, retry) — the required
-// triple is enforced at construction time. Optional fields use the fluent
-// WithLayer / WithReceipt helpers. Direct struct literals (Info{...}) bypass
-// the invariant and should not be used outside tests of the helper itself.
+// Construction: callers MUST use New(reason, severity, retry) which validates
+// every required field against the fixed v1 vocabulary. Optional fields use
+// the WithLayer / WithReceipt builders, both of which validate before
+// returning. Direct struct literals (Info{...}) bypass validation; use them
+// only inside this package's tests.
 //
-// Privacy: header values must never carry matched secret content, DLP pattern
-// names, agent identifiers, session IDs, or any user-attributable data. The
-// header is operational metadata only.
+// Privacy: the validators reject any value that is not in the fixed vocabulary
+// or the documented opaque-ID format. Headers and close-frame payloads emitted
+// by this package therefore cannot carry matched secret content, DLP pattern
+// names, agent identifiers, or session IDs even if a future caller mistakenly
+// tries.
 package blockreason
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -38,6 +42,13 @@ const (
 	// SchemaVersion increments only on breaking changes. Additive changes
 	// (new reason codes, new optional headers) keep v1.
 	SchemaVersion = "1"
+
+	// layerMaxLen bounds the layer header value. The longest scanner label
+	// at v1 is "subdomain_entropy" (17 chars); 32 leaves headroom.
+	layerMaxLen = 32
+	// receiptLen is the fixed Crockford-base32 ULID length. Receipts that
+	// don't match this length are rejected at WithReceipt time.
+	receiptLen = 26
 )
 
 // Reason is a machine-readable block-reason code. The full vocabulary is
@@ -82,7 +93,48 @@ const (
 	PatternUnavailable Reason = "pattern_unavailable"
 	NotEnabled         Reason = "not_enabled"
 	BadRequest         Reason = "bad_request"
+
+	// BlockReasonOverflow is the dedicated sentinel CloseFramePayload uses
+	// when an Info has somehow accumulated a Reason value too long to fit
+	// the bare {block_reason: <code>} payload within RFC 6455's 123-byte
+	// close-frame limit. Distinct from ParseError because it preserves the
+	// signal that the block emit metadata itself was malformed, rather than
+	// silently re-classifying the block as a parser failure.
+	BlockReasonOverflow Reason = "block_reason_overflow"
 )
+
+// validReasons is the fixed v1 allowlist enforced at construction.
+var validReasons = map[Reason]struct{}{
+	SchemeBlocked:        {},
+	DomainBlocklist:      {},
+	SSRFPrivateIP:        {},
+	SSRFMetadata:         {},
+	SSRFDNSRebind:        {},
+	PathEntropy:          {},
+	SubdomainEntropy:     {},
+	URLLength:            {},
+	RateLimit:            {},
+	DataBudget:           {},
+	DLPMatch:             {},
+	PromptInjection:      {},
+	RedactionFailure:     {},
+	MediaPolicy:          {},
+	ToolPolicyDeny:       {},
+	ToolChainBlocked:     {},
+	ToolPoisoning:        {},
+	SessionBinding:       {},
+	AirlockActive:        {},
+	KillSwitchActive:     {},
+	EnvelopeVerifyFailed: {},
+	AuthorityMismatch:    {},
+	EscalationLevel:      {},
+	ParseError:           {},
+	Timeout:              {},
+	PatternUnavailable:   {},
+	NotEnabled:           {},
+	BadRequest:           {},
+	BlockReasonOverflow:  {},
+}
 
 // Severity matches pipelock's existing severity vocabulary in
 // internal/config/schema.go (SeverityInfo / SeverityWarn / SeverityCritical).
@@ -94,82 +146,170 @@ const (
 	SeverityCritical Severity = "critical"
 )
 
+var validSeverities = map[Severity]struct{}{
+	SeverityInfo:     {},
+	SeverityWarn:     {},
+	SeverityCritical: {},
+}
+
 // Retry hints tell the agent whether and how to retry.
 type Retry string
 
 const (
 	// RetryNone means the block is permanent for this request as-is.
-	// Retrying without changing the input produces the same block.
 	RetryNone Retry = "none"
-
-	// RetryTransient means the condition is time-bound. Retry with backoff
-	// may succeed (rate limits, airlock cooldown, kill switch deactivation).
+	// RetryTransient means the condition is time-bound; backoff may help.
 	RetryTransient Retry = "transient"
-
 	// RetryPolicy means the agent should only retry after an operator
-	// changes pipelock policy (domain blocklist, tool policy, data budget).
+	// changes pipelock policy.
 	RetryPolicy Retry = "policy"
 )
 
-// Info is the operational metadata for a block. Privacy: never populate
-// Layer or Receipt with anything that could identify matched content,
-// session, or agent.
+var validRetries = map[Retry]struct{}{
+	RetryNone:      {},
+	RetryTransient: {},
+	RetryPolicy:    {},
+}
+
+// Construction errors. Use errors.Is to pattern-match.
+var (
+	ErrInvalidReason   = errors.New("blockreason: reason is not in the v1 vocabulary")
+	ErrInvalidSeverity = errors.New("blockreason: severity is not in the v1 vocabulary")
+	ErrInvalidRetry    = errors.New("blockreason: retry is not in the v1 vocabulary")
+	ErrInvalidLayer    = errors.New("blockreason: layer must be ASCII alphanumeric/underscore and within length bound")
+	ErrInvalidReceipt  = errors.New("blockreason: receipt must be ULID-shaped (Crockford base32, 26 chars) or empty")
+)
+
+// Info is the operational metadata for a block.
 //
-// Construct via New() so the required triple (reason, severity, retry) is
-// enforced. Use WithLayer / WithReceipt for optional fields.
+// Info instances should always come from New() + WithLayer() / WithReceipt().
+// The fields are exported because the surrounding codebase prefers exported
+// fields for tests; do not rely on direct struct construction outside this
+// package's tests.
 type Info struct {
 	Reason   Reason
 	Severity Severity
 	Retry    Retry
-
-	// Layer is the scanner pipeline layer label, e.g. "dlp", "ssrf",
-	// "ratelimit". Optional. Aligns with internal/scanner/ Scanner*
-	// constants so operators can correlate header-driven agent behavior
-	// with their existing audit / metrics streams.
-	Layer string
-
-	// Receipt is the receipt UUID for this block, if a receipt was emitted.
-	// Lets the agent fetch richer context via the receipt-transports
-	// endpoint. Optional.
-	Receipt string
+	Layer    string
+	Receipt  string
 }
 
-// New constructs a complete Info. Reason, severity, and retry are required;
-// New panics if any is empty. The panic surfaces a programming error in the
-// call site — every documented reason has a fixed severity and retry hint
-// per docs/specs/block-reason-header.md.
+// New constructs an Info, validating reason / severity / retry against the
+// fixed v1 vocabulary. Returns ErrInvalidReason / ErrInvalidSeverity /
+// ErrInvalidRetry on a vocabulary miss.
 //
-// This is consistent with the codebase's panic policy: panics flag
-// post-validation programming errors, not runtime input.
-func New(reason Reason, severity Severity, retry Retry) Info {
-	if reason == "" || severity == "" || retry == "" {
-		panic(fmt.Sprintf("blockreason.New: required field empty (reason=%q severity=%q retry=%q)",
-			reason, severity, retry))
+// Designed for the enforcement hot path: never panics. Call sites should
+// propagate the error to a fail-closed branch — typically by treating an
+// invalid Info as a programming bug while still emitting the underlying
+// 4xx without the reason headers.
+func New(reason Reason, severity Severity, retry Retry) (Info, error) {
+	if _, ok := validReasons[reason]; !ok {
+		return Info{}, fmt.Errorf("%w: %q", ErrInvalidReason, reason)
 	}
-	return Info{Reason: reason, Severity: severity, Retry: retry}
+	if _, ok := validSeverities[severity]; !ok {
+		return Info{}, fmt.Errorf("%w: %q", ErrInvalidSeverity, severity)
+	}
+	if _, ok := validRetries[retry]; !ok {
+		return Info{}, fmt.Errorf("%w: %q", ErrInvalidRetry, retry)
+	}
+	return Info{Reason: reason, Severity: severity, Retry: retry}, nil
+}
+
+// MustNew is the panicking variant of New. Reserved for compile-time-known
+// constants and tests; never use it on the request hot path.
+func MustNew(reason Reason, severity Severity, retry Retry) Info {
+	info, err := New(reason, severity, retry)
+	if err != nil {
+		panic(fmt.Sprintf("blockreason.MustNew: %v", err))
+	}
+	return info
 }
 
 // WithLayer returns a copy of i with the Layer label set. Layer should be
 // one of the internal/scanner/ Scanner* constants for operator correlation.
-func (i Info) WithLayer(layer string) Info {
+// Returns ErrInvalidLayer if layer contains any non-ASCII-alphanumeric/underscore
+// byte or exceeds layerMaxLen. Empty layer is allowed (clears the optional field).
+func (i Info) WithLayer(layer string) (Info, error) {
+	if !validLayer(layer) {
+		return Info{}, fmt.Errorf("%w: %q", ErrInvalidLayer, layer)
+	}
 	i.Layer = layer
-	return i
+	return i, nil
 }
 
-// WithReceipt returns a copy of i with the Receipt UUID set.
-func (i Info) WithReceipt(receipt string) Info {
+// WithReceipt returns a copy of i with the Receipt set. Receipt MUST be
+// either empty or a 26-character Crockford-base32 ULID (the format the
+// receipt subsystem emits). The strict validation prevents arbitrary
+// strings — and therefore arbitrary attacker-controlled metadata — from
+// reaching agent-visible response headers via the Receipt slot.
+func (i Info) WithReceipt(receipt string) (Info, error) {
+	if !validReceipt(receipt) {
+		return Info{}, fmt.Errorf("%w: %q", ErrInvalidReceipt, receipt)
+	}
 	i.Receipt = receipt
-	return i
+	return i, nil
+}
+
+// isLayerByte returns true for the byte alphabet that internal/scanner/
+// Scanner* constants use: ASCII alphanumeric and underscore.
+func isLayerByte(c byte) bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_'
+}
+
+// validLayer permits only the layer byte alphabet, bounded by layerMaxLen.
+// Empty is allowed (clears the optional Layer field).
+func validLayer(s string) bool {
+	if len(s) > layerMaxLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isLayerByte(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// isReceiptByte returns true for the Crockford-base32 ULID alphabet:
+// 0-9 plus A-Z minus I, L, O, U (excluded to avoid ambiguity).
+func isReceiptByte(c byte) bool {
+	switch {
+	case c >= '0' && c <= '9':
+		return true
+	case c >= 'A' && c <= 'Z' && c != 'I' && c != 'L' && c != 'O' && c != 'U':
+		return true
+	}
+	return false
+}
+
+// validReceipt permits only the receipt byte alphabet at the fixed
+// receiptLen, or empty (clears the optional Receipt field).
+func validReceipt(s string) bool {
+	if s == "" {
+		return true
+	}
+	if len(s) != receiptLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isReceiptByte(s[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // SetHeaders writes all four required headers (reason, version, severity,
 // retry) and any populated optional headers onto h. Call BEFORE the
 // response's WriteHeader; net/http only honors headers set before status.
 //
-// SetHeaders unconditionally emits the four required headers. Empty values
-// in the required slots indicate the Info was not constructed via New(),
-// which is a contract violation — the headers will still emit (with empty
-// values) but downstream consumers may treat that as a malformed block.
+// SetHeaders trusts the Info to be well-formed (constructed via New +
+// WithLayer + WithReceipt). Empty required slots indicate a contract
+// violation; the headers still emit but downstream consumers may treat
+// the block as malformed.
 func (i Info) SetHeaders(h http.Header) {
 	h.Set(HeaderReason, string(i.Reason))
 	h.Set(HeaderVersion, SchemaVersion)
@@ -198,22 +338,23 @@ type closeFramePayload struct {
 // total, minus 2 bytes for the close-status code = 123 bytes for UTF-8 reason).
 const closeFrameMaxBytes = 123
 
-// closeFrameOverflowFallback is a fixed sentinel that is guaranteed to fit
-// within closeFrameMaxBytes. Used when even the bare {"block_reason":"..."}
-// would overflow because the Reason value is unusually long. The fallback
-// preserves a useful signal (parse_error severity warn / retry none, by
-// schema convention) while honoring the byte ceiling.
-const closeFrameOverflowFallback = `{"block_reason":"parse_error","version":"1"}`
+// closeFrameOverflowFallback preserves the operational signal that the block
+// metadata was malformed (BlockReasonOverflow) rather than silently
+// reclassifying the block as a parser failure. Always fits within
+// closeFrameMaxBytes (44 bytes).
+const closeFrameOverflowFallback = `{"block_reason":"block_reason_overflow","version":"1"}`
 
 // CloseFramePayload returns a JSON document for the WebSocket close-frame
 // Reason field. The result is GUARANTEED to be at most closeFrameMaxBytes
 // bytes (RFC 6455's 123-byte ceiling). To honor the ceiling, optional
 // fields drop in this order: receipt, layer, retry, severity, version.
-// If even the bare {"block_reason":"<code>"} would overflow (extremely
-// long Reason values), CloseFramePayload returns the fixed fallback
-// closeFrameOverflowFallback rather than a malformed close frame.
+// If even the bare {"block_reason":"<code>"} would overflow because the
+// Reason value is unusually long, CloseFramePayload returns
+// closeFrameOverflowFallback (block_reason_overflow). The fallback
+// preserves the security signal that the block metadata is malformed,
+// rather than silently downgrading to parse_error.
 //
-// CloseFramePayload assumes Info was constructed via New(); a zero Info
+// CloseFramePayload trusts the Info was constructed via New(); a zero Info
 // returns an empty-object sentinel.
 func (i Info) CloseFramePayload() string {
 	if i.Reason == "" {
@@ -231,8 +372,6 @@ func (i Info) CloseFramePayload() string {
 	if len(out) <= closeFrameMaxBytes {
 		return out
 	}
-
-	// Drop optional fields in order until the payload fits.
 	dropFields := []func(*closeFramePayload){
 		func(p *closeFramePayload) { p.Receipt = "" },
 		func(p *closeFramePayload) { p.Layer = "" },
@@ -247,21 +386,17 @@ func (i Info) CloseFramePayload() string {
 			return out
 		}
 	}
-	// Even the bare {"block_reason":"<code>"} doesn't fit: the Reason value
-	// is so long that we can't honor the byte ceiling without dropping the
-	// only required field. Return the fixed fallback so the close frame is
-	// always RFC 6455-compliant.
 	return closeFrameOverflowFallback
 }
 
 // mustMarshal is json.Marshal with a known-good fixed-shape struct. The
 // struct has only string fields (no interface{}, no time.Time) so
-// json.Marshal cannot fail. The error fallback is defensive code; if it
-// ever fires, treat it as a programming bug, not a runtime condition.
+// json.Marshal cannot fail on real input. The error fallback is defensive
+// code; it would surface the BlockReasonOverflow sentinel rather than a
+// silent zero value.
 func mustMarshal(p closeFramePayload) string {
 	b, err := json.Marshal(p)
 	if err != nil {
-		// Defensive: closeFramePayload only contains strings.
 		return closeFrameOverflowFallback
 	}
 	return string(b)

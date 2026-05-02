@@ -81,11 +81,17 @@ const (
 	SessionBinding   Reason = "session_binding"
 
 	// Posture / runtime layer.
-	AirlockActive        Reason = "airlock_active"
-	KillSwitchActive     Reason = "kill_switch_active"
-	EnvelopeVerifyFailed Reason = "envelope_verify_failed"
-	AuthorityMismatch    Reason = "authority_mismatch"
-	EscalationLevel      Reason = "escalation_level"
+	AirlockActive          Reason = "airlock_active"
+	KillSwitchActive       Reason = "kill_switch_active"
+	EnvelopeVerifyFailed   Reason = "envelope_verify_failed"
+	OutboundEnvelopeFailed Reason = "outbound_envelope_failed"
+	RedirectScanDenied     Reason = "redirect_scan_denied"
+	AuthorityMismatch      Reason = "authority_mismatch"
+	EscalationLevel        Reason = "escalation_level"
+	SessionAnomaly         Reason = "session_anomaly"
+	CrossRequestDeny       Reason = "cross_request_deny"
+	CompressedResponse     Reason = "compressed_response"
+	BrowserShieldOversize  Reason = "browser_shield_oversize"
 
 	// Generic.
 	ParseError         Reason = "parse_error"
@@ -105,35 +111,41 @@ const (
 
 // validReasons is the fixed v1 allowlist enforced at construction.
 var validReasons = map[Reason]struct{}{
-	SchemeBlocked:        {},
-	DomainBlocklist:      {},
-	SSRFPrivateIP:        {},
-	SSRFMetadata:         {},
-	SSRFDNSRebind:        {},
-	PathEntropy:          {},
-	SubdomainEntropy:     {},
-	URLLength:            {},
-	RateLimit:            {},
-	DataBudget:           {},
-	DLPMatch:             {},
-	PromptInjection:      {},
-	RedactionFailure:     {},
-	MediaPolicy:          {},
-	ToolPolicyDeny:       {},
-	ToolChainBlocked:     {},
-	ToolPoisoning:        {},
-	SessionBinding:       {},
-	AirlockActive:        {},
-	KillSwitchActive:     {},
-	EnvelopeVerifyFailed: {},
-	AuthorityMismatch:    {},
-	EscalationLevel:      {},
-	ParseError:           {},
-	Timeout:              {},
-	PatternUnavailable:   {},
-	NotEnabled:           {},
-	BadRequest:           {},
-	BlockReasonOverflow:  {},
+	SchemeBlocked:          {},
+	DomainBlocklist:        {},
+	SSRFPrivateIP:          {},
+	SSRFMetadata:           {},
+	SSRFDNSRebind:          {},
+	PathEntropy:            {},
+	SubdomainEntropy:       {},
+	URLLength:              {},
+	RateLimit:              {},
+	DataBudget:             {},
+	DLPMatch:               {},
+	PromptInjection:        {},
+	RedactionFailure:       {},
+	MediaPolicy:            {},
+	ToolPolicyDeny:         {},
+	ToolChainBlocked:       {},
+	ToolPoisoning:          {},
+	SessionBinding:         {},
+	AirlockActive:          {},
+	KillSwitchActive:       {},
+	EnvelopeVerifyFailed:   {},
+	OutboundEnvelopeFailed: {},
+	RedirectScanDenied:     {},
+	AuthorityMismatch:      {},
+	EscalationLevel:        {},
+	SessionAnomaly:         {},
+	CrossRequestDeny:       {},
+	CompressedResponse:     {},
+	BrowserShieldOversize:  {},
+	ParseError:             {},
+	Timeout:                {},
+	PatternUnavailable:     {},
+	NotEnabled:             {},
+	BadRequest:             {},
+	BlockReasonOverflow:    {},
 }
 
 // Severity matches pipelock's existing severity vocabulary in

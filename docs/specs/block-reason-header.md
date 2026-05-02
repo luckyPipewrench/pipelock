@@ -82,8 +82,12 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `airlock_active` | Adaptive enforcement escalated this session into the airlock tier. | `critical` | `transient` |
 | `kill_switch_active` | One of the four kill-switch sources is active. | `critical` | `transient` |
 | `envelope_verify_failed` | Inbound mediation envelope did not verify (signature / replay / trust). | `critical` | `none` |
+| `outbound_envelope_failed` | Outbound envelope injection / refresh / signing failed before the request left pipelock. Distinct from `envelope_verify_failed` so agents can tell inbound verification from outbound emission. | `critical` | `transient` |
+| `redirect_scan_denied` | A followed redirect target was denied by the scanner pipeline (SSRF, blocklist, etc.). Distinct from the same scanner firing pre-redirect so clients can detect open-redirect probes. | `critical` | `none` |
 | `authority_mismatch` | Posture-capsule authority did not match the request's claimed authority. | `critical` | `policy` |
 | `escalation_level` | Per-session escalation level exceeded the configured ceiling. | `critical` | `transient` |
+| `session_anomaly` | Session profiling marked the session as anomalous (`session_profiling.anomaly_action=block`). Distinct from `airlock_active` so receipts and headers agree on the enforcement source. | `critical` | `transient` |
+| `cross_request_deny` | Cross-request entropy / fragment-reassembly (CEE) denied the request because a multi-request payload was reconstructed. Distinct from `dlp_match` so clients can tell single-request DLP from cross-request reconstruction. | `critical` | `none` |
 
 ### Generic
 
@@ -94,6 +98,8 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `pattern_unavailable` | Scanner pattern set unavailable at startup; fail-closed until ready. | `warn` | `transient` |
 | `not_enabled` | Endpoint exists but the feature is disabled in config. | `info` | `policy` |
 | `bad_request` | Malformed client request (missing parameter, invalid URL, etc.). | `info` | `none` |
+| `compressed_response` | Compressed (gzip/br/zstd) response cannot be scanned safely. Operator must enable upstream decompression in pipelock or change the upstream's `Accept-Encoding` policy to clear the block. | `warn` | `policy` |
+| `browser_shield_oversize` | Response body exceeded the configured Browser Shield size limit. Operator must raise the limit or exempt the host to clear the block. | `warn` | `policy` |
 | `block_reason_overflow` | Internal sentinel: the block-emit metadata itself was malformed (oversized Reason value, etc.). Pipelock falls back to this rather than silently downgrading to `parse_error` so audit fidelity is preserved. Agents should treat this as a malformed-block signal worth logging. | `warn` | `transient` |
 
 ## Severity

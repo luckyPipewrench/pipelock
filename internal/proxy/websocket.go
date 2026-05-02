@@ -920,7 +920,7 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-			blockInfoFor(blockreason.RedactionFailure, scanner.ScannerDLP).CloseFramePayload())
+			blockInfoFor(blockreason.RedactionFailure, scannerLabelRedaction).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-message secret cannot be redacted")
 		return true
 	}
@@ -1038,7 +1038,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).CloseFramePayload())
+				blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 			return true
 		}
@@ -1058,7 +1058,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).CloseFramePayload())
+				blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
 			return true
 		}
@@ -1232,7 +1232,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 			RedactionReport:  result.RedactionReport,
 		})
-		closePayload := blockInfoFor(closeBlockReason, scanner.ScannerDLP).CloseFramePayload()
+		closePayload := blockInfoFor(closeBlockReason, receiptLayer).CloseFramePayload()
 		_ = closeReason // free-text closeReason kept for receipt logging above
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
@@ -1290,7 +1290,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 			RedactionReport:  result.RedactionReport,
 		})
-		closePayload := blockInfoFor(closeBlockReason, scanner.ScannerDLP).CloseFramePayload()
+		closePayload := blockInfoFor(closeBlockReason, receiptLayer).CloseFramePayload()
 		_ = closeReason // free-text closeReason kept for receipt logging above
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)

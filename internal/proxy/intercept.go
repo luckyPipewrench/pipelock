@@ -1120,7 +1120,9 @@ func newInterceptHandler(
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
 			}))
-			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.CompressedResponse, "tls_response_blocked"),
+				"blocked: compressed response cannot be scanned", http.StatusForbidden)
 			return
 		}
 
@@ -1191,7 +1193,9 @@ func newInterceptHandler(
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				}))
-				http.Error(w, "blocked: "+msg, http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.CompressedResponse, sseLayer),
+					"blocked: "+msg, http.StatusForbidden)
 				return
 			}
 
@@ -1265,7 +1269,9 @@ func newInterceptHandler(
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
 			}))
-			http.Error(w, "blocked: response read error", http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ParseError, "tls_response_blocked"),
+				"blocked: response read error", http.StatusForbidden)
 			return
 		}
 		if int64(len(respBody)) > maxResp {
@@ -1282,7 +1288,9 @@ func newInterceptHandler(
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
 			}))
-			http.Error(w, "blocked: response too large for scanning", http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.DataBudget, "tls_response_blocked"),
+				"blocked: response too large for scanning", http.StatusForbidden)
 			return
 		}
 
@@ -1293,7 +1301,9 @@ func newInterceptHandler(
 			respBody, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect)
 			if shieldBlocked {
 				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
-				http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
+					"blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 				return
 			}
 			// If shield modified the body, update Content-Length to prevent
@@ -1330,7 +1340,9 @@ func newInterceptHandler(
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
 			}))
-			http.Error(w, "blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.MediaPolicy, "media_policy"),
+				"blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
 			return
 		}
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
@@ -1408,7 +1420,9 @@ func newInterceptHandler(
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
 					}))
-					http.Error(w, "blocked: "+reason, http.StatusForbidden)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.PromptInjection, scannerLabelA2A),
+						"blocked: "+reason, http.StatusForbidden)
 					return
 				}
 				// Audit/warn mode: log finding but forward response.
@@ -1512,7 +1526,9 @@ func newInterceptHandler(
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
 					}))
-					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.PromptInjection, "response_scan"),
+						"blocked: response contains injection", http.StatusForbidden)
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.

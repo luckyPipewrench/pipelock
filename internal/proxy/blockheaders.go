@@ -36,8 +36,12 @@ func reasonFromScanner(label string) blockreason.Reason {
 		return blockreason.RateLimit
 	case scanner.ScannerDataBudget:
 		return blockreason.DataBudget
-	case scanner.ScannerDLP:
+	case scanner.ScannerDLP, scannerLabelBodyDLP, scannerLabelAddressProtection:
 		return blockreason.DLPMatch
+	case scannerLabelRedaction:
+		return blockreason.RedactionFailure
+	case scannerLabelUnavailable:
+		return blockreason.PatternUnavailable
 	case scanner.ScannerParser:
 		return blockreason.ParseError
 	default:
@@ -67,7 +71,9 @@ func severityFromReason(r blockreason.Reason) blockreason.Severity {
 		blockreason.MediaPolicy,
 		blockreason.ParseError,
 		blockreason.Timeout,
-		blockreason.PatternUnavailable:
+		blockreason.PatternUnavailable,
+		blockreason.CompressedResponse,
+		blockreason.BrowserShieldOversize:
 		return blockreason.SeverityWarn
 	// critical: real security events.
 	default:
@@ -88,7 +94,9 @@ func retryFromReason(r blockreason.Reason) blockreason.Retry {
 		blockreason.EscalationLevel,
 		blockreason.RedactionFailure,
 		blockreason.Timeout,
-		blockreason.PatternUnavailable:
+		blockreason.PatternUnavailable,
+		blockreason.SessionAnomaly,
+		blockreason.OutboundEnvelopeFailed:
 		return blockreason.RetryTransient
 	// policy: only retry after operator changes pipelock policy.
 	case blockreason.DomainBlocklist,
@@ -100,7 +108,9 @@ func retryFromReason(r blockreason.Reason) blockreason.Retry {
 		blockreason.ToolPolicyDeny,
 		blockreason.SessionBinding,
 		blockreason.AuthorityMismatch,
-		blockreason.NotEnabled:
+		blockreason.NotEnabled,
+		blockreason.CompressedResponse,
+		blockreason.BrowserShieldOversize:
 		return blockreason.RetryPolicy
 	// none: permanent for the request as-is.
 	default:

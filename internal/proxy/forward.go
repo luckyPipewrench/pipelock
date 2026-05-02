@@ -296,7 +296,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if sr.Blocked {
 		writeBlockedError(w,
-			blockInfoFor(blockreason.AirlockActive, ""),
+			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
 			sr.Detail, http.StatusForbidden)
 		return
 	}
@@ -360,7 +360,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				if ceeAction == config.ActionBlock {
 					p.logger.LogBlocked(targetCtx, "cross_request_entropy", detail)
 					p.metrics.RecordTunnelBlocked(agentLabel)
-					http.Error(w, "CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.CrossRequestDeny, "cross_request_entropy"),
+						"CONNECT blocked: cross-request entropy budget exceeded", http.StatusForbidden)
 					return
 				}
 				p.logger.LogAnomaly(targetCtx, "cross_request_entropy", detail, 0)
@@ -378,7 +380,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAdaptiveUpgrade(connectSessionKey, session.EscalationLabel(connectRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
 				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(connectRec.EscalationLevel()))
 				p.metrics.RecordTunnelBlocked(agentLabel)
-				http.Error(w, "CONNECT blocked: session escalation level "+session.EscalationLabel(connectRec.EscalationLevel()), http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					"CONNECT blocked: session escalation level "+session.EscalationLabel(connectRec.EscalationLevel()), http.StatusForbidden)
 				return
 			}
 		}
@@ -403,7 +407,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Check tunnel capacity
 	sem := getTunnelSemaphore()
 	if !sem.TryAcquire() {
-		http.Error(w, "too many active tunnels", http.StatusServiceUnavailable)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.RateLimit, "tunnel_capacity"),
+			"too many active tunnels", http.StatusServiceUnavailable)
 		return
 	}
 	defer sem.Release()
@@ -419,7 +425,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAirlockDeny(connectSess.key, tier, TransportConnect, http.MethodConnect, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportConnect, http.MethodConnect)
 				p.metrics.RecordTunnelBlocked(agentLabel)
-				http.Error(w, "airlock: CONNECT blocked during quarantine", http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.AirlockActive, ""),
+					"airlock: CONNECT blocked during quarantine", http.StatusForbidden)
 				return
 			}
 		}
@@ -653,7 +661,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		})
-		http.Error(w, scannerPatternUnavailable, http.StatusServiceUnavailable)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable),
+			scannerPatternUnavailable, http.StatusServiceUnavailable)
 		return
 	}
 	var forwardRedactionReport *redact.Report
@@ -704,7 +714,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					RequestID: requestID,
 					Agent:     agent,
 				})
-				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.DLPMatch, "a2a_header"),
+					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
 		}
@@ -752,7 +764,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if !allowed {
 				p.logger.LogAirlockDeny(forwardSess.key, tier, TransportForward, r.Method, clientIP, requestID)
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
-				http.Error(w, "airlock: "+reason, http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.AirlockActive, ""),
+					"airlock: "+reason, http.StatusForbidden)
 				return
 			}
 		}
@@ -782,7 +796,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			http.Error(w, "blocked: "+result.Reason, status)
+			writeBlockedError(w,
+				blockInfo(result.Scanner),
+				"blocked: "+result.Reason, status)
 			return
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
@@ -797,7 +813,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			p.logger.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
-			http.Error(w, "blocked: "+result.Reason+" (escalated)", status)
+			writeBlockedError(w,
+				blockInfo(result.Scanner),
+				"blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
 		p.logger.LogAnomaly(actx, result.Scanner,
@@ -806,7 +824,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if sr.Blocked {
 		writeBlockedError(w,
-			blockInfoFor(blockreason.AirlockActive, ""),
+			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
 			sr.Detail, http.StatusForbidden)
 		return
 	}
@@ -821,7 +839,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
-		http.Error(w, "blocked: session escalation level "+session.EscalationLabel(sr.Level), http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+			"blocked: session escalation level "+session.EscalationLabel(sr.Level), http.StatusForbidden)
 		return
 	}
 
@@ -861,7 +881,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		})
 		p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
-		http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.AuthorityMismatch, "taint_policy"),
+			"blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
 		return
 	case session.PolicyAsk:
 		forwardRequiresReauth = true
@@ -896,7 +918,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			})
 			p.metrics.RecordBlocked(r.URL.Hostname(), "taint_policy", time.Since(start), agentLabel)
-			http.Error(w, "blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.AuthorityMismatch, "taint_policy"),
+				"blocked: "+forwardTaint.Result.Reason, http.StatusForbidden)
 			return
 		}
 		forwardTaint.Authority = session.AuthorityOperatorOverride
@@ -907,7 +931,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		reason := err.Error()
 		p.logger.LogBlocked(actx, "budget", reason)
 		p.metrics.RecordBlocked(r.URL.Hostname(), "budget", time.Since(start), agentLabel)
-		http.Error(w, "blocked: "+reason, http.StatusTooManyRequests)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.DataBudget, "budget"),
+			"blocked: "+reason, http.StatusTooManyRequests)
 		return
 	}
 
@@ -1024,7 +1050,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
-				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfo(scannerLabel),
+					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
 
@@ -1070,7 +1098,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
-				http.Error(w, "blocked: "+reason, http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfo(scannerLabel),
+					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
 			// Escalation can upgrade to block even in audit mode.
@@ -1096,7 +1126,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
-				http.Error(w, "blocked: "+reason+" (escalated)", http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfo(scannerLabel),
+					"blocked: "+reason+" (escalated)", http.StatusForbidden)
 				return
 			}
 		}
@@ -1159,7 +1191,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if forwardHeaderBlocked {
-		http.Error(w, "blocked: request header contains secret", http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.DLPMatch, "header_dlp"),
+			"blocked: request header contains secret", http.StatusForbidden)
 		return
 	}
 
@@ -1169,7 +1203,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if decide.UpgradeAction("", forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
 				p.logger.LogAdaptiveUpgrade(forwardSessionKey, session.EscalationLabel(forwardRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
 				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(forwardRec.EscalationLevel()))
-				http.Error(w, "blocked: session escalation level critical", http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					"blocked: session escalation level critical", http.StatusForbidden)
 				return
 			}
 		}
@@ -1222,14 +1258,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(fwdRec.EscalationLevel()), "", config.ActionBlock, "session_deny", clientIP, requestID)
 				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(fwdRec.EscalationLevel()))
 				p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
-				http.Error(w, "blocked: session escalation level "+session.EscalationLabel(fwdRec.EscalationLevel()), http.StatusForbidden)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					"blocked: session escalation level "+session.EscalationLabel(fwdRec.EscalationLevel()), http.StatusForbidden)
 				return
 			}
 		}
 
 		if ceeRes.Blocked {
 			p.metrics.RecordBlocked(r.URL.Hostname(), "cross_request", time.Since(start), agentLabel)
-			http.Error(w, "blocked: "+ceeRes.Reason, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
+				"blocked: "+ceeRes.Reason, http.StatusForbidden)
 			return
 		}
 	}
@@ -1297,7 +1337,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			}))
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)
-			http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
 	}
@@ -1334,7 +1376,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if strings.HasPrefix(blockedErr.reason, "redirect blocked:") && cfg.ExplainBlocksEnabled() {
 				w.Header().Set("X-Pipelock-Hint", "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks.")
 			}
-			http.Error(w, "blocked: "+blockedErr.reason, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.RedirectScanDenied, blockedErr.layer),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}
 		p.logger.LogError(actx, err)
@@ -1434,7 +1478,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				TaintDecisionReason: forwardTaint.Result.Reason,
 				TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 			}))
-			http.Error(w, "blocked: "+msg, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.CompressedResponse, sseLayer),
+				"blocked: "+msg, http.StatusForbidden)
 			return
 		}
 		copyResponseHeaders(w.Header(), resp.Header)
@@ -1525,14 +1571,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
-			http.Error(w, "blocked: compressed response cannot be scanned", http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.CompressedResponse, "response_scan"),
+				"blocked: compressed response cannot be scanned", http.StatusForbidden)
 			return
 		}
 
 		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 		if readErr != nil {
 			p.logger.LogError(actx, readErr)
-			http.Error(w, "blocked: response read error", http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ParseError, "response_scan"),
+				"blocked: response read error", http.StatusForbidden)
 			return
 		}
 
@@ -1542,7 +1592,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		respBody, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward)
 		if shieldBlocked {
 			p.metrics.RecordBlocked(fwdRespHost, "shield_oversize", time.Since(start), agentLabel)
-			http.Error(w, "blocked: response body exceeds browser shield size limit", http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
+				"blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 			return
 		}
 
@@ -1555,7 +1607,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if mediaVerdict.Blocked {
 			p.logger.LogBlocked(actx, "media_policy", mediaVerdict.BlockReason)
 			p.metrics.RecordBlocked(fwdRespHost, "media_policy", time.Since(start), agentLabel)
-			http.Error(w, "blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.MediaPolicy, "media_policy"),
+				"blocked: "+mediaVerdict.BlockReason, http.StatusForbidden)
 			return
 		}
 		if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
@@ -1627,7 +1681,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						TaintDecisionReason: forwardTaint.Result.Reason,
 						TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 					}))
-					http.Error(w, "blocked: "+a2aReason, http.StatusForbidden)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.PromptInjection, "a2a_response"),
+						"blocked: "+a2aReason, http.StatusForbidden)
 					return
 				}
 			}
@@ -1716,7 +1772,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				case config.ActionBlock, config.ActionAsk:
 					p.logger.LogBlocked(actx, "response_scan", reason)
 					p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
-					http.Error(w, "blocked: response contains injection", http.StatusForbidden)
+					writeBlockedError(w,
+						blockInfoFor(blockreason.PromptInjection, "response_scan"),
+						"blocked: response contains injection", http.StatusForbidden)
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
@@ -1747,7 +1805,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					} else {
 						p.logger.LogBlocked(actx, "response_scan", reason+" (strip failed)")
 						p.metrics.RecordBlocked(r.URL.Hostname(), "response_scan", time.Since(start), agentLabel)
-						http.Error(w, "blocked: response contains injection", http.StatusForbidden)
+						writeBlockedError(w,
+							blockInfoFor(blockreason.PromptInjection, "response_scan"),
+							"blocked: response contains injection", http.StatusForbidden)
 						return
 					}
 					p.logger.LogResponseScan(actx, config.ActionStrip, len(scanResult.Matches), patternNames, bundleRules)

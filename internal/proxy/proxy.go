@@ -3526,7 +3526,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.PromptInjection, ""),
+				blockInfoFor(blockreason.PromptInjection, "response_scan"),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true
@@ -3564,7 +3564,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.PromptInjection, ""),
+				blockInfoFor(blockreason.PromptInjection, "response_scan"),
 				http.StatusForbidden,
 				FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 			return true, "", true

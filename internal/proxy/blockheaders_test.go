@@ -21,6 +21,7 @@ func TestReasonFromScanner_AllMappedLayers(t *testing.T) {
 		scanner.ScannerScheme:           blockreason.SchemeBlocked,
 		scanner.ScannerBlocklist:        blockreason.DomainBlocklist,
 		scanner.ScannerSSRF:             blockreason.SSRFPrivateIP,
+		scanner.ScannerSSRFMetadata:     blockreason.SSRFMetadata,
 		scanner.ScannerEntropy:          blockreason.PathEntropy,
 		scanner.ScannerSubdomainEntropy: blockreason.SubdomainEntropy,
 		scanner.ScannerLength:           blockreason.URLLength,

@@ -314,7 +314,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Agent:     agent,
 		})
 		writeBlockedError(w,
-			blockInfoFor(blockreason.AirlockActive, ""),
+			blockInfoFor(blockreason.SessionAnomaly, "session_profiling"),
 			sr.Detail, http.StatusForbidden)
 		return
 	}
@@ -544,7 +544,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer).CloseFramePayload())
+				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
 			return
 		}
 		synthReq := &http.Request{
@@ -577,7 +577,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer).CloseFramePayload())
+				blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer).CloseFramePayload())
 			return
 		}
 	}

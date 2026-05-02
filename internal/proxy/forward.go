@@ -312,7 +312,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
-			blockInfoFor(blockreason.EscalationLevel, ""),
+			blockInfoFor(blockreason.EscalationLevel, "session_deny"),
 			"CONNECT blocked: session escalation level "+session.EscalationLabel(sr.Level),
 			http.StatusForbidden)
 		return
@@ -1205,7 +1205,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(forwardRec.EscalationLevel()))
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"blocked: session escalation level critical", http.StatusForbidden)
+					"blocked: session escalation level "+session.EscalationLabel(forwardRec.EscalationLevel()), http.StatusForbidden)
 				return
 			}
 		}

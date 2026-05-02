@@ -41,6 +41,7 @@ const (
 	ScannerScheme           = "scheme"
 	ScannerLength           = "length"
 	ScannerSSRF             = "ssrf"
+	ScannerSSRFMetadata     = "ssrf_metadata"
 	ScannerAllowlist        = "allowlist"
 	ScannerBlocklist        = "blocklist"
 	ScannerRateLimit        = "ratelimit"
@@ -888,6 +889,38 @@ func parseAlternativeIP(hostname string) net.IP {
 	return net.IPv4(byte(val>>24), byte(val>>16&0xFF), byte(val>>8&0xFF), byte(val&0xFF))
 }
 
+// metadataIPv4s lists the well-known cloud-provider instance-metadata IPv4
+// endpoints that are operationally distinct from generic private-network
+// blocks. AWS / Azure / GCP IMDS all share 169.254.169.254. Azure also exposes
+// the WireServer at 168.63.129.16. Hits on these addresses are reported with
+// ScannerSSRFMetadata so the block-reason header carries the dedicated
+// `ssrf_metadata` code (vs. the generic `ssrf_private_ip`).
+var metadataIPv4s = map[string]struct{}{
+	"169.254.169.254": {}, // AWS / Azure / GCP IMDS
+	"168.63.129.16":   {}, // Azure WireServer
+}
+
+// metadataIPv6 lists the canonical IPv6 instance-metadata endpoints.
+var metadataIPv6 = map[string]struct{}{
+	"fd00:ec2::254": {}, // AWS IMDSv6
+}
+
+// isCloudMetadataIP returns true when the resolved IP belongs to a recognised
+// cloud-provider metadata service. The caller uses this to upgrade a generic
+// SSRF block into the more specific metadata classification, matching the
+// dedicated blockreason.SSRFMetadata code.
+func isCloudMetadataIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		_, ok := metadataIPv4s[v4.String()]
+		return ok
+	}
+	_, ok := metadataIPv6[ip.String()]
+	return ok
+}
+
 // checkSSRF blocks requests to internal/private IP ranges.
 // When no internal CIDRs are configured (nil slice), SSRF protection is disabled.
 // To block loopback, link-local, etc., include those CIDRs in config.Internal.
@@ -921,10 +954,16 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		}
 		for _, cidr := range allCIDRs {
 			if cidr.Contains(altIP) {
+				scannerLabel := ScannerSSRF
+				blockReason := fmt.Sprintf("SSRF blocked: %s decodes to internal IP %s", hostname, altIP)
+				if isCloudMetadataIP(altIP) {
+					scannerLabel = ScannerSSRFMetadata
+					blockReason = fmt.Sprintf("SSRF blocked: %s decodes to cloud metadata endpoint %s", hostname, altIP)
+				}
 				return Result{
 					Allowed: false,
-					Reason:  fmt.Sprintf("SSRF blocked: %s decodes to internal IP %s", hostname, altIP),
-					Scanner: ScannerSSRF,
+					Reason:  blockReason,
+					Scanner: scannerLabel,
 					Score:   1.0,
 				}
 			}
@@ -1001,10 +1040,16 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 				if s.IsIPAllowlisted(ip) {
 					continue
 				}
+				scannerLabel := ScannerSSRF
+				blockReason := fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, ipStr)
+				if isCloudMetadataIP(ip) {
+					scannerLabel = ScannerSSRFMetadata
+					blockReason = fmt.Sprintf("SSRF blocked: %s resolves to cloud metadata endpoint %s", hostname, ipStr)
+				}
 				r := Result{
 					Allowed: false,
-					Reason:  fmt.Sprintf("SSRF blocked: %s resolves to internal IP %s", hostname, ipStr),
-					Scanner: ScannerSSRF,
+					Reason:  blockReason,
+					Scanner: scannerLabel,
 					Score:   1.0,
 				}
 				// If the domain is in api_allowlist, this is a config

@@ -24,6 +24,8 @@ func reasonFromScanner(label string) blockreason.Reason {
 		return blockreason.SchemeBlocked
 	case scanner.ScannerBlocklist:
 		return blockreason.DomainBlocklist
+	case scanner.ScannerSSRFMetadata:
+		return blockreason.SSRFMetadata
 	case scanner.ScannerSSRF:
 		return blockreason.SSRFPrivateIP
 	case scanner.ScannerEntropy:
@@ -121,16 +123,20 @@ func retryFromReason(r blockreason.Reason) blockreason.Retry {
 // blockInfo builds a complete blockreason.Info from a scanner label.
 // Used by transports whose block decision came from the URL/header pipeline.
 //
-// Uses blockreason.MustNew because every reason returned by reasonFromScanner
-// is in the fixed v1 vocabulary, so construction cannot fail. WithLayer's
-// validation is honored: a label that fails the layer-byte validator (a
-// future scanner label with characters outside the alphabet) leaves the
-// optional Layer slot unset rather than fail-closing the block emit.
+// Uses the non-panicking blockreason.New so a missing reason-vocabulary
+// update fails closed (returning a fallback ParseError Info) instead of
+// panicking on the request hot path. Per CLAUDE.md: "Never panic on runtime
+// input." WithLayer's validation is honored: a label that fails the
+// layer-byte validator (a future scanner label with characters outside the
+// alphabet) leaves the optional Layer slot unset.
 func blockInfo(scannerLabel string) blockreason.Info {
 	r := reasonFromScanner(scannerLabel)
-	info := blockreason.MustNew(r, severityFromReason(r), retryFromReason(r))
-	out, err := info.WithLayer(scannerLabel)
+	info, err := blockreason.New(r, severityFromReason(r), retryFromReason(r))
 	if err != nil {
+		info = parseErrorFallback()
+	}
+	out, layerErr := info.WithLayer(scannerLabel)
+	if layerErr != nil {
 		return info
 	}
 	return out
@@ -140,16 +146,34 @@ func blockInfo(scannerLabel string) blockreason.Info {
 // for non-scanner block sources (envelope verify, kill switch, airlock,
 // budget admission, MCP tool policy). Severity and retry are derived from
 // the reason per the spec; layer is set when supplied and validates.
+//
+// Uses blockreason.New rather than MustNew so a missing reason-vocabulary
+// update fails closed instead of panicking on the request path.
 func blockInfoFor(reason blockreason.Reason, layer string) blockreason.Info {
-	info := blockreason.MustNew(reason, severityFromReason(reason), retryFromReason(reason))
+	info, err := blockreason.New(reason, severityFromReason(reason), retryFromReason(reason))
+	if err != nil {
+		info = parseErrorFallback()
+	}
 	if layer == "" {
 		return info
 	}
-	out, err := info.WithLayer(layer)
-	if err != nil {
+	out, layerErr := info.WithLayer(layer)
+	if layerErr != nil {
 		return info
 	}
 	return out
+}
+
+// parseErrorFallback is the safe fail-closed Info returned when a reason
+// triple cannot be constructed (would only happen on a future vocab gap).
+// ParseError is the documented unknown-vocabulary sentinel; it preserves
+// fail-closed semantics while still emitting a valid header set.
+func parseErrorFallback() blockreason.Info {
+	// blockreason.ParseError + SeverityWarn + RetryNone is in the v1
+	// vocabulary, so MustNew here is provably safe and never reached on
+	// the New() error path. This is package-internal init-time use, not
+	// hot-path runtime input.
+	return blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
 }
 
 // writeBlockedError is a drop-in replacement for http.Error that first sets

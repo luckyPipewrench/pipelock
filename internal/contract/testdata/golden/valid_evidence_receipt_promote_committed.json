@@ -1,0 +1,21 @@
+{
+  "record_type": "evidence_receipt_v2",
+  "receipt_version": 2,
+  "payload_kind": "contract_promote_committed",
+  "event_id": "01F8MECHZX3TBDSZ7XRADM79XX",
+  "timestamp": "2026-04-25T22:00:00Z",
+  "signature": {
+    "signer_key_id": "receipt-signing-test",
+    "key_purpose": "receipt-signing",
+    "algorithm": "ed25519",
+    "signature": "ed25519:9d9e7b554fe9176cd05730caab3dd9f5dac0b88821f44ab5e16855cc1f3a178c7d21987db28deb876af65048eef8e74488000125c6604deb6b245c8c44780f0a"
+  },
+  "chain_seq": 1,
+  "chain_prev_hash": "sha256:0",
+  "payload": {
+    "target_manifest_hash": "sha256:tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt",
+    "prior_manifest_hash": "sha256:pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp",
+    "intent_id": "01F8MECHZX3TBDSZ7XRADM79XW",
+    "validation_outcome": "accepted"
+  }
+}

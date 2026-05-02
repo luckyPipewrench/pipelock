@@ -440,3 +440,121 @@ func TestMustMarshal_FixedShapeProducesValidJSON(t *testing.T) {
 		t.Errorf("block_reason round-trip failed: got %q", parsed["block_reason"])
 	}
 }
+
+func TestSeverityFor_AllVocabulary(t *testing.T) {
+	t.Parallel()
+	cases := map[Reason]Severity{
+		// info: malformed client request, feature gate.
+		NotEnabled: SeverityInfo, BadRequest: SeverityInfo,
+		// warn: scanner ceilings, parser fails, transient unavailability.
+		SchemeBlocked: SeverityWarn, PathEntropy: SeverityWarn,
+		SubdomainEntropy: SeverityWarn, URLLength: SeverityWarn,
+		RateLimit: SeverityWarn, DataBudget: SeverityWarn,
+		MediaPolicy: SeverityWarn, ParseError: SeverityWarn,
+		Timeout: SeverityWarn, PatternUnavailable: SeverityWarn,
+		// critical: real security events.
+		DomainBlocklist: SeverityCritical, SSRFPrivateIP: SeverityCritical,
+		SSRFMetadata: SeverityCritical, SSRFDNSRebind: SeverityCritical,
+		DLPMatch: SeverityCritical, PromptInjection: SeverityCritical,
+		RedactionFailure: SeverityCritical, ToolPolicyDeny: SeverityCritical,
+		ToolChainBlocked: SeverityCritical, ToolPoisoning: SeverityCritical,
+		SessionBinding: SeverityCritical, AirlockActive: SeverityCritical,
+		KillSwitchActive: SeverityCritical, EnvelopeVerifyFailed: SeverityCritical,
+		AuthorityMismatch: SeverityCritical, EscalationLevel: SeverityCritical,
+	}
+	for reason, want := range cases {
+		t.Run(string(reason), func(t *testing.T) {
+			got := SeverityFor(reason)
+			if got != want {
+				t.Fatalf("SeverityFor(%q) = %q, want %q", reason, got, want)
+			}
+		})
+	}
+	// Unknown reason fails closed to critical.
+	if got := SeverityFor(Reason("not_a_real_reason")); got != SeverityCritical {
+		t.Fatalf("SeverityFor unknown = %q, want SeverityCritical (fail-closed)", got)
+	}
+}
+
+func TestRetryFor_AllVocabulary(t *testing.T) {
+	t.Parallel()
+	cases := map[Reason]Retry{
+		// transient: time-bound conditions.
+		SSRFDNSRebind: RetryTransient, RateLimit: RetryTransient,
+		AirlockActive: RetryTransient, KillSwitchActive: RetryTransient,
+		EscalationLevel: RetryTransient, RedactionFailure: RetryTransient,
+		Timeout: RetryTransient, PatternUnavailable: RetryTransient,
+		// policy: only retry after operator changes pipelock policy.
+		DomainBlocklist: RetryPolicy, PathEntropy: RetryPolicy,
+		SubdomainEntropy: RetryPolicy, URLLength: RetryPolicy,
+		DataBudget: RetryPolicy, MediaPolicy: RetryPolicy,
+		ToolPolicyDeny: RetryPolicy, SessionBinding: RetryPolicy,
+		AuthorityMismatch: RetryPolicy, NotEnabled: RetryPolicy,
+		// none: permanent for the request as-is.
+		SchemeBlocked: RetryNone, SSRFPrivateIP: RetryNone,
+		SSRFMetadata: RetryNone, DLPMatch: RetryNone,
+		PromptInjection: RetryNone, ToolChainBlocked: RetryNone,
+		ToolPoisoning: RetryNone, EnvelopeVerifyFailed: RetryNone,
+		ParseError: RetryNone, BadRequest: RetryNone,
+	}
+	for reason, want := range cases {
+		t.Run(string(reason), func(t *testing.T) {
+			got := RetryFor(reason)
+			if got != want {
+				t.Fatalf("RetryFor(%q) = %q, want %q", reason, got, want)
+			}
+		})
+	}
+	// Unknown reason fails closed to none.
+	if got := RetryFor(Reason("not_a_real_reason")); got != RetryNone {
+		t.Fatalf("RetryFor unknown = %q, want RetryNone (fail-closed)", got)
+	}
+}
+
+func TestNewForReason_BuildsValidInfoForEveryReason(t *testing.T) {
+	t.Parallel()
+	for reason := range validReasons {
+		t.Run(string(reason), func(t *testing.T) {
+			info, err := NewForReason(reason)
+			if err != nil {
+				t.Fatalf("NewForReason(%q): %v", reason, err)
+			}
+			if info.Reason != reason {
+				t.Fatalf("info.Reason = %q, want %q", info.Reason, reason)
+			}
+			if info.Severity != SeverityFor(reason) {
+				t.Fatalf("info.Severity = %q, want SeverityFor(%q) = %q",
+					info.Severity, reason, SeverityFor(reason))
+			}
+			if info.Retry != RetryFor(reason) {
+				t.Fatalf("info.Retry = %q, want RetryFor(%q) = %q",
+					info.Retry, reason, RetryFor(reason))
+			}
+		})
+	}
+}
+
+func TestNewForReason_InvalidReasonRejects(t *testing.T) {
+	t.Parallel()
+	if _, err := NewForReason(Reason("not_a_real_reason")); err == nil {
+		t.Fatal("NewForReason on unknown reason expected error, got nil")
+	}
+}
+
+func TestMustNewForReason_PanicsOnInvalid(t *testing.T) {
+	t.Parallel()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("MustNewForReason on unknown reason expected panic, got nil")
+		}
+	}()
+	_ = MustNewForReason(Reason("not_a_real_reason"))
+}
+
+func TestMustNewForReason_HappyPath(t *testing.T) {
+	t.Parallel()
+	info := MustNewForReason(DLPMatch)
+	if info.Reason != DLPMatch {
+		t.Fatalf("info.Reason = %q, want %q", info.Reason, DLPMatch)
+	}
+}

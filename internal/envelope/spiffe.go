@@ -5,6 +5,7 @@ package envelope
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"path"
 	"strings"
@@ -57,6 +58,12 @@ func ParseActor(raw string) (ParsedActor, error) {
 	if u.Port() != "" {
 		return ParsedActor{}, fmt.Errorf("SPIFFE actor trust domain must not include a port")
 	}
+	// u.Host normalises IPv6 hosts to bracketed form ("[2001:db8::1]");
+	// u.Hostname() strips the brackets so net.ParseIP can recognise the
+	// literal. Reject either form.
+	if net.ParseIP(u.Hostname()) != nil {
+		return ParsedActor{}, fmt.Errorf("SPIFFE actor trust domain must be a DNS name, not an IP address")
+	}
 	if u.Path == "" || u.Path == "/" {
 		return ParsedActor{}, fmt.Errorf("SPIFFE actor workload path must not be empty")
 	}
@@ -96,9 +103,11 @@ func isCanonicalSPIFFEPath(p string) bool {
 
 // IsValidTrustDomain reports whether s is a syntactically valid SPIFFE
 // trust domain — a non-empty DNS-shaped label with no scheme, slashes,
-// userinfo, or port. Used by both spiffe.go (when parsing actor URIs)
-// and config validation (when checking the operator-supplied
-// trust_domain field).
+// userinfo, or port. Per SPIFFE-ID §2 the trust domain MUST be a DNS
+// name; raw IP addresses (IPv4 or IPv6) are explicitly forbidden so a
+// partner cannot impersonate a domain by claiming a numeric host. Used
+// by both spiffe.go (when parsing actor URIs) and config validation
+// (when checking the operator-supplied trust_domain field).
 func IsValidTrustDomain(s string) bool {
 	if s == "" {
 		return false
@@ -116,7 +125,14 @@ func IsValidTrustDomain(s string) bool {
 	if u.Host == "" || u.User != nil || u.Port() != "" {
 		return false
 	}
-	return strings.EqualFold(u.Host, s)
+	if !strings.EqualFold(u.Host, s) {
+		return false
+	}
+	// SPIFFE-ID §2 forbids IP-address trust domains.
+	if net.ParseIP(s) != nil {
+		return false
+	}
+	return true
 }
 
 // FormatActor returns the wire actor for a newly emitted envelope.

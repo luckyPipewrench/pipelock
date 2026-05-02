@@ -253,6 +253,11 @@ func TestParseActor_StrictSPIFFE(t *testing.T) {
 		{"empty segment", "spiffe://trust.example/agent//x"},
 		{"dot segment", "spiffe://trust.example/./agent/x"},
 		{"trailing slash", "spiffe://trust.example/agent/x/"},
+		// SPIFFE-ID §2 prohibits IP-address trust domains. A partner
+		// claiming a numeric host could otherwise impersonate any
+		// allowlist that compares trust domains as opaque strings.
+		{"ipv4 trust domain", "spiffe://192.0.2.1/agent/x"},
+		{"ipv6 trust domain", "spiffe://[2001:db8::1]/agent/x"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,7 +276,12 @@ func TestIsValidTrustDomain(t *testing.T) {
 			t.Errorf("IsValidTrustDomain(%q) = false; want true", d)
 		}
 	}
-	bad := []string{"", "trust.example/agent/x", "trust.example:8443", "u@trust.example", "scheme://trust", "with spaces", "trailing/"}
+	bad := []string{
+		"", "trust.example/agent/x", "trust.example:8443", "u@trust.example",
+		"scheme://trust", "with spaces", "trailing/",
+		// SPIFFE-ID §2 forbids IP-address trust domains.
+		"192.0.2.1", "10.0.0.1", "::1", "2001:db8::1",
+	}
 	for _, d := range bad {
 		if IsValidTrustDomain(d) {
 			t.Errorf("IsValidTrustDomain(%q) = true; want false", d)

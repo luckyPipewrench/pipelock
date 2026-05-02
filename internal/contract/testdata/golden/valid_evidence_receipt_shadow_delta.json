@@ -1,0 +1,31 @@
+{
+  "record_type": "evidence_receipt_v2",
+  "receipt_version": 2,
+  "payload_kind": "shadow_delta",
+  "event_id": "01F8MECHZX3TBDSZ7XRADM79YC",
+  "timestamp": "2026-04-25T22:00:00Z",
+  "signature": {
+    "signer_key_id": "receipt-signing-test",
+    "key_purpose": "receipt-signing",
+    "algorithm": "ed25519",
+    "signature": "ed25519:bc5722516ff6370565f961a70d4b4616a346e3739f563bd0a67b50e6cbba0b29db9be7ccafbc6805b2f2b4aee286133e373ac5e3dbe942d691b22d4968d7890a"
+  },
+  "chain_seq": 1,
+  "chain_prev_hash": "sha256:0",
+  "payload": {
+    "contract_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "rule_id": "r-deadbeef0000-aaaa00",
+    "original_verdict": "allow",
+    "candidate_verdict": "block",
+    "aggregation": {
+      "window_start": "2026-04-25T20:00:00Z",
+      "window_end": "2026-04-25T21:00:00Z",
+      "lossless_count": 42,
+      "delta_sample_count": 7,
+      "exemplar_ids": [
+        "01F8MECHZX3TBDSZ7XRADM79YA",
+        "01F8MECHZX3TBDSZ7XRADM79YB"
+      ]
+    }
+  }
+}

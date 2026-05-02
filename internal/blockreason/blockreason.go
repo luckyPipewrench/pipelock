@@ -413,3 +413,85 @@ func mustMarshal(p closeFramePayload) string {
 	}
 	return string(b)
 }
+
+// SeverityFor returns the canonical severity for a block-reason code per
+// docs/specs/block-reason-header.md. The mapping is locked at v1; new
+// reasons must add a case here at the same time the constant is added.
+// Unknown reasons return SeverityCritical so a missing-mapping bug
+// fails closed (the reason is real enough to constructor-validate, but
+// the operator gets the strictest severity until the table is updated).
+func SeverityFor(reason Reason) Severity {
+	switch reason {
+	case NotEnabled, BadRequest:
+		return SeverityInfo
+	case SchemeBlocked,
+		PathEntropy,
+		SubdomainEntropy,
+		URLLength,
+		RateLimit,
+		DataBudget,
+		MediaPolicy,
+		ParseError,
+		Timeout,
+		PatternUnavailable:
+		return SeverityWarn
+	default:
+		return SeverityCritical
+	}
+}
+
+// RetryFor returns the canonical retry hint for a block-reason code per
+// docs/specs/block-reason-header.md. As with SeverityFor, the mapping is
+// locked at v1 and unknown reasons fail closed: an unrecognised reason
+// returns RetryNone so the agent does not retry blindly.
+func RetryFor(reason Reason) Retry {
+	switch reason {
+	case SSRFDNSRebind,
+		RateLimit,
+		AirlockActive,
+		KillSwitchActive,
+		EscalationLevel,
+		RedactionFailure,
+		Timeout,
+		PatternUnavailable:
+		return RetryTransient
+	case DomainBlocklist,
+		PathEntropy,
+		SubdomainEntropy,
+		URLLength,
+		DataBudget,
+		MediaPolicy,
+		ToolPolicyDeny,
+		SessionBinding,
+		AuthorityMismatch,
+		NotEnabled:
+		return RetryPolicy
+	default:
+		return RetryNone
+	}
+}
+
+// NewForReason is the recommended constructor for production block paths.
+// It looks up the canonical severity + retry pair from the v1 spec
+// (SeverityFor / RetryFor) so call sites cannot accidentally emit a
+// mismatched pair such as `dlp_match` + `info` + `policy`. Equivalent to
+// New(reason, SeverityFor(reason), RetryFor(reason)).
+//
+// The lower-level New constructor remains available for tests and edge
+// cases that legitimately need to assemble an Info with a non-canonical
+// pair (e.g. the redteam suite proving the validators reject every axis).
+// Production callers should default to NewForReason.
+func NewForReason(reason Reason) (Info, error) {
+	return New(reason, SeverityFor(reason), RetryFor(reason))
+}
+
+// MustNewForReason is NewForReason that panics on construction error.
+// Use only at startup or in test setup; production paths should use
+// NewForReason and route an error to a parse_error fallback.
+func MustNewForReason(reason Reason) Info {
+	info, err := NewForReason(reason)
+	if err != nil {
+		panic(err)
+	}
+	return info
+}

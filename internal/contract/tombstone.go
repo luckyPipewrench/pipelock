@@ -28,7 +28,19 @@ const keyPurposeTombstone = "contract-activation-signing"
 const dataClassRootTombstoneDefault = "internal"
 
 // Tombstone is the typed signable body of a contract tombstone record.
-// A tombstone marks a prior contract as redacted and prevents its reactivation.
+//
+// In v2.4 a tombstone is a signed evidence marker that a prior contract
+// hash was withdrawn. It is NOT enforced at activation time: the active
+// contract store does not cross-check tombstones during
+// ValidateEnvelope, so a prior contract hash CAN be re-promoted under
+// v2.4 semantics. The tombstone exists so external auditors can prove
+// the operator declared the prior contract redacted; activation
+// enforcement is a v2.5 follow-up tracked under v2.4 known gaps in the
+// release spec.
+//
+// Operators who need enforcement today must not re-promote a hash they
+// have already tombstoned. Future versions will add a hard cross-check
+// in the activation pipeline.
 type Tombstone struct {
 	SchemaVersion            int    `json:"schema_version"`
 	Tombstone                bool   `json:"tombstone"`

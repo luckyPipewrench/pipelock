@@ -1,0 +1,962 @@
+body:
+    compile:
+        compile_config_hash: sha256:harness-original-config
+        go_version: harness-go-version
+        inference_algorithm: wilson_lb_v1
+        module_digest_root: sha256:harness-module-digest-root
+        normalization_algorithm: frequency_weighted_entropy_v1
+        pipelock_build_sha: harness-pipelock-sha
+        pipelock_version: harness-pipelock-version
+    contract_hash: sha256:85f31ee0b7f306773f68dbb648d9240aee86b09a0ca1f30cc1561025c7fcf533
+    contract_kind: behavioral_contract
+    data_class_root: internal
+    defaults:
+        confidence:
+            min_events: 1
+            min_sessions: 1
+            min_windows: 1
+        fidelity: medium
+        privacy:
+            default_data_class: internal
+            forbid_classes:
+                - regulated
+            salt_epoch: 0
+    field_data_classes: {}
+    key_purpose: contract-compile-signing
+    observation_window:
+        end: "2026-04-29T13:00:00Z"
+        event_count: 33
+        observation_window_root: sha256:31e0dfe2271b5c55d12dbb17001e0e09104980d5b6d8feb585d2df150397a42d
+        session_count: 3
+        start: "2026-04-29T12:00:00Z"
+    rules:
+        - confidence: brittle
+          display_name: api_example_com
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 23
+            sessions_observed: 3
+            sessions_with_opportunity: 33
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 23 events across 3 sessions; Wilson lower bound 0.526619 classified as brittle.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-cccd1d2707b0f9d1031e
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+          wilson_lower: "0.526619"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_orgs
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 2
+            sessions_observed: 2
+            sessions_with_opportunity: 23
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 2 events across 2 sessions; Wilson lower bound 0.024180 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-56af4994c47c39b1990c
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            paths:
+                - data_class: public
+                  value: /v1/orgs
+          wilson_lower: "0.024180"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 2
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 2
+          confidence: never_confirmed
+          display_name: api_example_com_v1_orgs_GET
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 2
+            sessions_observed: 2
+            sessions_with_opportunity: 2
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 2 events across 2 sessions; Wilson lower bound 0.342380 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-ec620ec09d5208b7be8e
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /v1/orgs
+          wilson_lower: "0.342380"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_orgs_GET_allow
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 2
+            sessions_observed: 2
+            sessions_with_opportunity: 2
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 2 events across 2 sessions; Wilson lower bound 0.342380 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-6e9fc023b38e8105a56f
+          rule_kind: http_action
+          selector:
+            effective_action: allow
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /v1/orgs
+          wilson_lower: "0.342380"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_repos
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 8
+            sessions_observed: 3
+            sessions_with_opportunity: 23
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 8 events across 3 sessions; Wilson lower bound 0.188113 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-d1df048d6ca34612ed22
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            paths:
+                - data_class: public
+                  value: /v1/repos
+          wilson_lower: "0.188113"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 2
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 2
+          confidence: never_confirmed
+          display_name: api_example_com_v1_repos_GET
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 2
+            sessions_observed: 2
+            sessions_with_opportunity: 8
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 2 events across 2 sessions; Wilson lower bound 0.071479 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-51efb786ef3fa113a494
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /v1/repos
+          wilson_lower: "0.071479"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_repos_GET_allow
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 2
+            sessions_observed: 2
+            sessions_with_opportunity: 2
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 2 events across 2 sessions; Wilson lower bound 0.342380 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-8c9cd64cb8fcd5a761ef
+          rule_kind: http_action
+          selector:
+            effective_action: allow
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /v1/repos
+          wilson_lower: "0.342380"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 6
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 6
+          confidence: never_confirmed
+          display_name: api_example_com_v1_repos_POST
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 6
+            sessions_observed: 3
+            sessions_with_opportunity: 8
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 6 events across 3 sessions; Wilson lower bound 0.409275 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-e626dfa0825c5572eaa8
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /v1/repos
+          wilson_lower: "0.409275"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_repos_POST_allow
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 6
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.187616 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-d8472b747dd9b0799cf4
+          rule_kind: http_action
+          selector:
+            effective_action: allow
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /v1/repos
+          wilson_lower: "0.187616"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_repos_POST_warn
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 6
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.187616 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-37ecf4e492676c4ba893
+          rule_kind: http_action
+          selector:
+            effective_action: warn
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /v1/repos
+          wilson_lower: "0.187616"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_users
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 13
+            sessions_observed: 3
+            sessions_with_opportunity: 23
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 13 events across 3 sessions; Wilson lower bound 0.368114 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-2acede6493b8237e535d
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            paths:
+                - data_class: public
+                  value: /v1/users
+          wilson_lower: "0.368114"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 10
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 10
+          confidence: never_confirmed
+          display_name: api_example_com_v1_users_GET
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 10
+            sessions_observed: 3
+            sessions_with_opportunity: 13
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 10 events across 3 sessions; Wilson lower bound 0.497436 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-430d5ea93e21b1354e5d
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /v1/users
+          wilson_lower: "0.497436"
+        - confidence: brittle
+          display_name: api_example_com_v1_users_GET_allow
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 10
+            sessions_observed: 3
+            sessions_with_opportunity: 10
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 10 events across 3 sessions; Wilson lower bound 0.722467 classified as brittle.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-1409c0074edf66125ba2
+          rule_kind: http_action
+          selector:
+            effective_action: allow
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /v1/users
+          wilson_lower: "0.722467"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 3
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 3
+          confidence: never_confirmed
+          display_name: api_example_com_v1_users_POST
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 13
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.081795 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-66f6e081c72f8b0c092a
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /v1/users
+          wilson_lower: "0.081795"
+        - confidence: never_confirmed
+          display_name: api_example_com_v1_users_POST_allow
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 3
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.438503 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-0c57a971bcf727a3459b
+          rule_kind: http_action
+          selector:
+            effective_action: allow
+            host:
+                data_class: public
+                value: api.example.com
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /v1/users
+          wilson_lower: "0.438503"
+        - confidence: never_confirmed
+          display_name: docs_example_com
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 6
+            sessions_observed: 3
+            sessions_with_opportunity: 33
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 6 events across 3 sessions; Wilson lower bound 0.086108 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-2cbe85f0c1c4c4181b93
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: docs.example.com
+          wilson_lower: "0.086108"
+        - confidence: brittle
+          display_name: docs_example_com_guide
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 6
+            sessions_observed: 3
+            sessions_with_opportunity: 6
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 6 events across 3 sessions; Wilson lower bound 0.609666 classified as brittle.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-84798b2f2ad296f04b60
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: docs.example.com
+            paths:
+                - data_class: public
+                  value: /guide
+          wilson_lower: "0.609666"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 6
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 6
+          confidence: brittle
+          display_name: docs_example_com_guide_GET
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 6
+            sessions_observed: 3
+            sessions_with_opportunity: 6
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 6 events across 3 sessions; Wilson lower bound 0.609666 classified as brittle.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-0fa1e3fd1838a65fba96
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: docs.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /guide
+          wilson_lower: "0.609666"
+        - confidence: brittle
+          display_name: docs_example_com_guide_GET_allow
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 6
+            sessions_observed: 3
+            sessions_with_opportunity: 6
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 6 events across 3 sessions; Wilson lower bound 0.609666 classified as brittle.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-771a9996eb2e61d124e1
+          rule_kind: http_action
+          selector:
+            effective_action: allow
+            host:
+                data_class: public
+                value: docs.example.com
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /guide
+          wilson_lower: "0.609666"
+        - confidence: never_confirmed
+          display_name: exfil_example_net
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 4
+            sessions_observed: 3
+            sessions_with_opportunity: 33
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 4 events across 3 sessions; Wilson lower bound 0.048162 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-a29f7411ccfed646c5d2
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: exfil.example.net
+          wilson_lower: "0.048162"
+        - confidence: never_confirmed
+          display_name: exfil_example_net_sink
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 4
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.300642 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-61c806aeb7c620f7e8e2
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: exfil.example.net
+            paths:
+                - data_class: public
+                  value: /sink
+          wilson_lower: "0.300642"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 3
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 3
+          confidence: never_confirmed
+          display_name: exfil_example_net_sink_GET
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 3
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.438503 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-fbe6f3653d4737f3fb68
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: exfil.example.net
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /sink
+          wilson_lower: "0.438503"
+        - confidence: never_confirmed
+          display_name: exfil_example_net_sink_GET_block
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 3
+            sessions_observed: 3
+            sessions_with_opportunity: 3
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 3 events across 3 sessions; Wilson lower bound 0.438503 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-e7f8fb0b1b581bf096b6
+          rule_kind: http_action
+          selector:
+            effective_action: block
+            host:
+                data_class: public
+                value: exfil.example.net
+            methods:
+                - GET
+            paths:
+                - data_class: public
+                  value: /sink
+          wilson_lower: "0.438503"
+        - confidence: never_confirmed
+          display_name: exfil_example_net_upload
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 1
+            sessions_observed: 1
+            sessions_with_opportunity: 4
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 1 events across 1 sessions; Wilson lower bound 0.045587 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-a63fde2f1757b2be8c40
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: exfil.example.net
+            paths:
+                - data_class: public
+                  value: /upload
+          wilson_lower: "0.045587"
+        - budgets:
+            payload_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 1
+            scanner_size_bytes:
+                data_class: public
+                enforced: "0"
+                max: 0
+                median: "0"
+                p95: "0"
+                p99: "0"
+                sample_count: 1
+          confidence: never_confirmed
+          display_name: exfil_example_net_upload_POST
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 1
+            sessions_observed: 1
+            sessions_with_opportunity: 1
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 1 events across 1 sessions; Wilson lower bound 0.206549 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-928178875cbefb98e7b6
+          rule_kind: http_destination
+          selector:
+            host:
+                data_class: public
+                value: exfil.example.net
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /upload
+          wilson_lower: "0.206549"
+        - confidence: never_confirmed
+          display_name: exfil_example_net_upload_POST_block
+          lifecycle_state: capture_only
+          observation:
+            events_observed: 1
+            sessions_observed: 1
+            sessions_with_opportunity: 1
+            windows_observed: 1
+            windows_with_opportunity: 1
+          observed_capture_grade: full
+          opportunity_health:
+            missing_alert_threshold: "0.50"
+          rationale:
+            data_class: internal
+            summary: Observed 1 events across 1 sessions; Wilson lower bound 0.206549 classified as never_confirmed.
+          recurring_support:
+            windows_floor: 1
+            windows_seen_in_last_n: 1
+          required_capture_grade: full
+          rule_id: r-4f0f6390997193577c7b
+          rule_kind: http_action
+          selector:
+            effective_action: block
+            host:
+                data_class: public
+                value: exfil.example.net
+            methods:
+                - POST
+            paths:
+                - data_class: public
+                  value: /upload
+          wilson_lower: "0.206549"
+    schema_version: 1
+    selector:
+        agent: harness-agent
+        selector_id: sha256:8a84d67d26714ae2faf746dd8c90076f0351a48b5dc411c3ba650dbf74b0269d
+    signer_key_id: harness-contract-compile
+signature: ed25519:37c99795146920791aafb2ba0af264b41c8c13bf5217607fa8efacc985926d89f48268b5ac8c3094c46bb5d3f9fc2ea3df8210b67c7e56b46ae36a73e82fbf0c

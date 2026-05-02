@@ -1,0 +1,33 @@
+{
+  "body": {
+    "compile_config_hash": "sha256:harness-original-config",
+    "compile_finished_at": "2026-04-29T22:00:00Z",
+    "compile_started_at": "2026-04-29T22:00:00Z",
+    "contract_hash": "sha256:85f31ee0b7f306773f68dbb648d9240aee86b09a0ca1f30cc1561025c7fcf533",
+    "go_version": "harness-go-version",
+    "inputs": [
+      {
+        "event_count": 37,
+        "path": "testdata/replay-corpus/observations/corpus.jsonl",
+        "sha256": "sha256:c863f6bdefee95ae75994f3bc0dacc30b3de4e2965d4db16828b031b5db5e6b9"
+      }
+    ],
+    "key_purpose": "contract-compile-signing",
+    "module_digest_root": "sha256:HARNESS-PLACEHOLDER",
+    "module_digests": {
+      "harness-stable-placeholder": "sha256:HARNESS-PLACEHOLDER"
+    },
+    "observation_window_root": "sha256:31e0dfe2271b5c55d12dbb17001e0e09104980d5b6d8feb585d2df150397a42d",
+    "pipelock_build_sha": "harness-pipelock-sha",
+    "pipelock_version": "harness-pipelock-version",
+    "schema_version": 1,
+    "settings": {
+      "confidence": {
+        "min_events": 1
+      },
+      "normalization": {}
+    },
+    "signer_key_id": "harness-contract-compile"
+  },
+  "signature": "ed25519:dd6281f8b602793ae43e389bc21a52ec504ee942db966ed5cffe710e80b0afa4f17f2a70df274c38274b8b514b91bc1e14a87799bda095f3e45c5a69de28f907"
+}

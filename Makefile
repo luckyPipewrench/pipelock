@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
 
 .PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check \
-	test-runtime-critical release-audit runtime-policy-audit debt-check release-check
+	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check
 
 build:
 	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
@@ -28,6 +28,13 @@ test:
 
 test-runtime-critical:
 	go test -race -count=1 ./internal/config ./internal/cli ./internal/mcp ./internal/proxy
+
+# test-replay-harness exercises the synthetic replay regression suite:
+# deterministic compile + per-session replay + golden snapshot comparison.
+# Refresh goldens after intentional logic changes:
+#   go test ./internal/capture -run TestReplayHarness -update
+test-replay-harness:
+	go test -race -count=1 -run TestReplayHarness ./internal/capture
 
 test-cover:
 	go test -race -coverprofile=coverage.out ./...

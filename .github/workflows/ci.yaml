@@ -91,6 +91,9 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Replay harness (deterministic regression)
+        run: make test-replay-harness
+
       - name: Run tests (OSS)
         run: go test -race -count=1 ./...
 

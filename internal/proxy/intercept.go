@@ -922,7 +922,7 @@ func newInterceptHandler(
 						Agent:     ic.Agent,
 					}))
 					writeBlockedError(w,
-						blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+						blockInfoFor(blockreason.DLPMatch, "header_dlp"),
 						"blocked: request header contains secret", http.StatusForbidden)
 					return
 				}
@@ -992,7 +992,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
 					"blocked: "+ceeRes.Reason, http.StatusForbidden)
 				return
 			}
@@ -1037,7 +1037,7 @@ func newInterceptHandler(
 				Agent:     ic.Agent,
 			}))
 			writeBlockedError(w,
-				blockInfoFor(blockreason.EscalationLevel, ""),
+				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
 				"blocked: session escalation level "+session.EscalationLabel(recEscalationLevel(ic.Recorder)),
 				http.StatusForbidden)
 			return
@@ -1089,7 +1089,7 @@ func newInterceptHandler(
 					Agent:     ic.Agent,
 				}))
 				writeBlockedError(w,
-					blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer),
+					blockInfoFor(blockreason.OutboundEnvelopeFailed, blockedErr.layer),
 					"blocked: "+blockedErr.reason, http.StatusForbidden)
 				return
 			}

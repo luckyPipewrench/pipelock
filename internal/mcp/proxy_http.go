@@ -1394,7 +1394,14 @@ func RunHTTPListenerProxy(
 		// parity for compressed responses on the MCP HTTP listener.
 		if hasNonIdentityEncoding(upResp.Header.Get("Content-Encoding")) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", upResp.Header.Get("Content-Encoding"))
-			info := blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
+			info, err := blockreason.New(blockreason.CompressedResponse, blockreason.SeverityWarn, blockreason.RetryPolicy)
+			if err == nil {
+				if withLayer, layerErr := info.WithLayer("response_scan"); layerErr == nil {
+					info = withLayer
+				}
+			} else {
+				info = blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
+			}
 			info.SetHeaders(w.Header())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)

@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -100,7 +101,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		})
-		http.Error(w, "inbound mediation envelope verification failed", http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
+			"inbound mediation envelope verification failed", http.StatusForbidden)
 		return
 	}
 	// Strip inbound mediation envelope headers after optional trust
@@ -127,13 +130,17 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		})
-		http.Error(w, scannerPatternUnavailable, http.StatusServiceUnavailable)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable),
+			scannerPatternUnavailable, http.StatusServiceUnavailable)
 		return
 	}
 
 	target := r.Host
 	if target == "" {
-		http.Error(w, "missing target host", http.StatusBadRequest)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.BadRequest, ""),
+			"missing target host", http.StatusBadRequest)
 		return
 	}
 
@@ -224,7 +231,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.recordSessionActivity(clientIP, agent, host, requestID, scanner.Result{Allowed: false, Score: 0.9}, cfg, p.logger, false)
 		}
 		p.metrics.RecordTunnelBlocked(agentLabel)
-		http.Error(w, "CONNECT blocked: header DLP match", http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+			"CONNECT blocked: header DLP match", http.StatusForbidden)
 		return
 	}
 
@@ -261,7 +270,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			if cfg.ExplainBlocksEnabled() && result.Hint != "" {
 				w.Header().Set("X-Pipelock-Hint", result.Hint)
 			}
-			http.Error(w, "CONNECT blocked: "+result.Reason, status)
+			writeBlockedError(w, blockInfo(result.Scanner),
+				"CONNECT blocked: "+result.Reason, status)
 			return
 		}
 		// Audit mode: base action is "warn". Adaptive escalation may upgrade to block.
@@ -276,7 +286,8 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason+" (escalated)")
 			p.metrics.RecordTunnelBlocked(agentLabel)
-			http.Error(w, "CONNECT blocked: "+result.Reason+" (escalated)", status)
+			writeBlockedError(w, blockInfo(result.Scanner),
+				"CONNECT blocked: "+result.Reason+" (escalated)", status)
 			return
 		}
 		p.logger.LogAnomaly(targetCtx, result.Scanner,
@@ -284,7 +295,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
-		http.Error(w, sr.Detail, http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.AirlockActive, ""),
+			sr.Detail, http.StatusForbidden)
 		return
 	}
 
@@ -298,7 +311,10 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.metrics.RecordTunnelBlocked(agentLabel)
-		http.Error(w, "CONNECT blocked: session escalation level "+session.EscalationLabel(sr.Level), http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.EscalationLevel, ""),
+			"CONNECT blocked: session escalation level "+session.EscalationLabel(sr.Level),
+			http.StatusForbidden)
 		return
 	}
 
@@ -307,7 +323,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		reason := err.Error()
 		p.logger.LogBlocked(targetCtx, "budget", reason)
 		p.metrics.RecordTunnelBlocked(agentLabel)
-		http.Error(w, "CONNECT blocked: "+reason, http.StatusTooManyRequests)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.DataBudget, scanner.ScannerDataBudget),
+			"CONNECT blocked: "+reason, http.StatusTooManyRequests)
 		return
 	}
 
@@ -611,7 +629,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		})
-		http.Error(w, "inbound mediation envelope verification failed", http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
+			"inbound mediation envelope verification failed", http.StatusForbidden)
 		return
 	}
 	// Strip inbound mediation envelope headers after optional trust
@@ -785,7 +805,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sr.Blocked {
-		http.Error(w, sr.Detail, http.StatusForbidden)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.AirlockActive, ""),
+			sr.Detail, http.StatusForbidden)
 		return
 	}
 

@@ -110,22 +110,36 @@ func retryFromReason(r blockreason.Reason) blockreason.Retry {
 
 // blockInfo builds a complete blockreason.Info from a scanner label.
 // Used by transports whose block decision came from the URL/header pipeline.
+//
+// Uses blockreason.MustNew because every reason returned by reasonFromScanner
+// is in the fixed v1 vocabulary, so construction cannot fail. WithLayer's
+// validation is honored: a label that fails the layer-byte validator (a
+// future scanner label with characters outside the alphabet) leaves the
+// optional Layer slot unset rather than fail-closing the block emit.
 func blockInfo(scannerLabel string) blockreason.Info {
 	r := reasonFromScanner(scannerLabel)
-	return blockreason.New(r, severityFromReason(r), retryFromReason(r)).
-		WithLayer(scannerLabel)
+	info := blockreason.MustNew(r, severityFromReason(r), retryFromReason(r))
+	out, err := info.WithLayer(scannerLabel)
+	if err != nil {
+		return info
+	}
+	return out
 }
 
 // blockInfoFor builds a blockreason.Info from an explicit reason code, e.g.
 // for non-scanner block sources (envelope verify, kill switch, airlock,
 // budget admission, MCP tool policy). Severity and retry are derived from
-// the reason per the spec; layer is set when known.
+// the reason per the spec; layer is set when supplied and validates.
 func blockInfoFor(reason blockreason.Reason, layer string) blockreason.Info {
-	info := blockreason.New(reason, severityFromReason(reason), retryFromReason(reason))
-	if layer != "" {
-		info = info.WithLayer(layer)
+	info := blockreason.MustNew(reason, severityFromReason(reason), retryFromReason(reason))
+	if layer == "" {
+		return info
 	}
-	return info
+	out, err := info.WithLayer(layer)
+	if err != nil {
+		return info
+	}
+	return out
 }
 
 // writeBlockedError is a drop-in replacement for http.Error that first sets

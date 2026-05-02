@@ -585,19 +585,20 @@ func (h *SessionAPIHandler) HandleAirlock(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Accept "normal" as a human-friendly alias for "none".
+	// Accept "normal" as a human-friendly alias for the bare-"none" tier.
+	const tierNone = "none"
 	tier := req.Tier
 	if tier == "normal" {
-		tier = "none"
+		tier = tierNone
 	}
 
 	// Validate tier value.
 	validTiers := map[string]bool{
-		"none": true, "soft": true, "hard": true, "drain": true,
+		tierNone: true, "soft": true, "hard": true, "drain": true,
 	}
 	if !validTiers[tier] {
 		h.logSessionAdmin("airlock_bad_tier", clientIP, key, "invalid tier: "+tier, http.StatusBadRequest)
-		http.Error(w, "invalid tier: must be none|soft|hard|drain|normal", http.StatusBadRequest)
+		http.Error(w, "invalid tier: must be "+tierNone+"|soft|hard|drain|normal", http.StatusBadRequest)
 		return
 	}
 

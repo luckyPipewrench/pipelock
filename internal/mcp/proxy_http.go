@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -1107,6 +1108,8 @@ func RunHTTPListenerProxy(
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
+			info := blockreason.MustNew(blockreason.BadRequest, blockreason.SeverityInfo, blockreason.RetryNone)
+			info.SetHeaders(w.Header())
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
@@ -1391,6 +1394,8 @@ func RunHTTPListenerProxy(
 		// parity for compressed responses on the MCP HTTP listener.
 		if hasNonIdentityEncoding(upResp.Header.Get("Content-Encoding")) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: blocking compressed upstream response (Content-Encoding=%q)\n", upResp.Header.Get("Content-Encoding"))
+			info := blockreason.MustNew(blockreason.ParseError, blockreason.SeverityWarn, blockreason.RetryNone)
+			info.SetHeaders(w.Header())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("compressed response cannot be scanned")))

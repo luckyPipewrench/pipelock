@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -274,6 +275,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:     agent,
 		})
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
+			blockInfoFor(blockreason.PatternUnavailable, scannerLabelUnavailable),
 			scannerPatternUnavailable)
 		return
 	}
@@ -308,6 +310,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:     agent,
 		})
 		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockLayerMediationEnvelope),
 			"inbound mediation envelope verification failed")
 		return
 	}
@@ -320,6 +323,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 		rp.metrics.RecordKillSwitchDenial("reverse_proxy", r.URL.Path)
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
+			blockInfoFor(blockreason.KillSwitchActive, ""),
 			"kill switch active")
 		return
 	}
@@ -368,7 +372,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")
 				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
-				writeReverseProxyBlock(w, http.StatusForbidden, reason)
+				writeReverseProxyBlock(w, http.StatusForbidden,
+					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+					reason)
 				return
 			}
 		}
@@ -390,7 +396,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
 				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
-				writeReverseProxyBlock(w, http.StatusForbidden, reason)
+				writeReverseProxyBlock(w, http.StatusForbidden,
+					blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+					reason)
 				return
 			}
 		}
@@ -587,17 +595,25 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if result.RedactionBlockReason != "" {
 		layer = scannerLabelRedaction
 	}
+	bodyBlockReason := blockreason.DLPMatch
+	if result.RedactionBlockReason != "" {
+		bodyBlockReason = blockreason.RedactionFailure
+	}
 	if isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
-		writeReverseProxyBlock(w, http.StatusForbidden, reason)
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(bodyBlockReason, scanner.ScannerDLP),
+			reason)
 		return true, config.ActionBlock, nil
 	}
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
-		writeReverseProxyBlock(w, http.StatusForbidden, reason)
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(bodyBlockReason, scanner.ScannerDLP),
+			reason)
 		return true, config.ActionBlock, nil
 	}
 
@@ -1070,7 +1086,9 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockedErr.layer)
 		rp.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
-		writeReverseProxyBlock(w, http.StatusForbidden, blockedErr.reason)
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(blockreason.EnvelopeVerifyFailed, blockedErr.layer),
+			blockedErr.reason)
 		return
 	}
 
@@ -1087,7 +1105,11 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 
 // writeReverseProxyBlock writes a JSON block response for request-side blocks
 // (DLP, kill switch, fail-closed). Response-side blocks use replaceWithBlockResponse.
-func writeReverseProxyBlock(w http.ResponseWriter, status int, reason string) {
+//
+// Sets the X-Pipelock-Block-Reason header set from info BEFORE WriteHeader so
+// agents can react intelligently. Every caller MUST supply a non-zero info.
+func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.Info, reason string) {
+	info.SetHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	resp := ReverseProxyBlockResponse{

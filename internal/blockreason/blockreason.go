@@ -7,7 +7,13 @@
 // instead of treating every 403 as opaque.
 //
 // The schema is locked at v1. See docs/specs/block-reason-header.md for the
-// canonical reason vocabulary, severity values, retry hints, and privacy rules.
+// canonical reason vocabulary, severity values, retry hints, layer-label
+// mapping, and privacy rules.
+//
+// Construction: callers MUST use New(reason, severity, retry) — the required
+// triple is enforced at construction time. Optional fields use the fluent
+// WithLayer / WithReceipt helpers. Direct struct literals (Info{...}) bypass
+// the invariant and should not be used outside tests of the helper itself.
 //
 // Privacy: header values must never carry matched secret content, DLP pattern
 // names, agent identifiers, session IDs, or any user-attributable data. The
@@ -16,6 +22,7 @@ package blockreason
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -107,13 +114,18 @@ const (
 // Info is the operational metadata for a block. Privacy: never populate
 // Layer or Receipt with anything that could identify matched content,
 // session, or agent.
+//
+// Construct via New() so the required triple (reason, severity, retry) is
+// enforced. Use WithLayer / WithReceipt for optional fields.
 type Info struct {
 	Reason   Reason
 	Severity Severity
 	Retry    Retry
 
 	// Layer is the scanner pipeline layer label, e.g. "dlp", "ssrf",
-	// "rate_limit". Optional. Aligns with internal/scanner/ layer names.
+	// "ratelimit". Optional. Aligns with internal/scanner/ Scanner*
+	// constants so operators can correlate header-driven agent behavior
+	// with their existing audit / metrics streams.
 	Layer string
 
 	// Receipt is the receipt UUID for this block, if a receipt was emitted.
@@ -122,26 +134,47 @@ type Info struct {
 	Receipt string
 }
 
-// SetHeaders writes the required headers and any populated optional headers
-// onto h. Call BEFORE the response's WriteHeader; the headers are only
-// honored by net/http when set before status is written.
-func (i Info) SetHeaders(h http.Header) {
-	if i.Reason == "" {
-		// A block with no reason is a programming error in the call site.
-		// We still emit the version header so consumers can detect the
-		// schema; the reason header is omitted to preserve the invariant
-		// that an emitted reason code is always one we documented.
-		h.Set(HeaderVersion, SchemaVersion)
-		return
+// New constructs a complete Info. Reason, severity, and retry are required;
+// New panics if any is empty. The panic surfaces a programming error in the
+// call site — every documented reason has a fixed severity and retry hint
+// per docs/specs/block-reason-header.md.
+//
+// This is consistent with the codebase's panic policy: panics flag
+// post-validation programming errors, not runtime input.
+func New(reason Reason, severity Severity, retry Retry) Info {
+	if reason == "" || severity == "" || retry == "" {
+		panic(fmt.Sprintf("blockreason.New: required field empty (reason=%q severity=%q retry=%q)",
+			reason, severity, retry))
 	}
+	return Info{Reason: reason, Severity: severity, Retry: retry}
+}
+
+// WithLayer returns a copy of i with the Layer label set. Layer should be
+// one of the internal/scanner/ Scanner* constants for operator correlation.
+func (i Info) WithLayer(layer string) Info {
+	i.Layer = layer
+	return i
+}
+
+// WithReceipt returns a copy of i with the Receipt UUID set.
+func (i Info) WithReceipt(receipt string) Info {
+	i.Receipt = receipt
+	return i
+}
+
+// SetHeaders writes all four required headers (reason, version, severity,
+// retry) and any populated optional headers onto h. Call BEFORE the
+// response's WriteHeader; net/http only honors headers set before status.
+//
+// SetHeaders unconditionally emits the four required headers. Empty values
+// in the required slots indicate the Info was not constructed via New(),
+// which is a contract violation — the headers will still emit (with empty
+// values) but downstream consumers may treat that as a malformed block.
+func (i Info) SetHeaders(h http.Header) {
 	h.Set(HeaderReason, string(i.Reason))
 	h.Set(HeaderVersion, SchemaVersion)
-	if i.Severity != "" {
-		h.Set(HeaderSeverity, string(i.Severity))
-	}
-	if i.Retry != "" {
-		h.Set(HeaderRetry, string(i.Retry))
-	}
+	h.Set(HeaderSeverity, string(i.Severity))
+	h.Set(HeaderRetry, string(i.Retry))
 	if i.Layer != "" {
 		h.Set(HeaderLayer, i.Layer)
 	}
@@ -154,7 +187,7 @@ func (i Info) SetHeaders(h http.Header) {
 // fields. Field names mirror the header set without the X-Pipelock prefix.
 type closeFramePayload struct {
 	BlockReason string `json:"block_reason"`
-	Version     string `json:"version"`
+	Version     string `json:"version,omitempty"`
 	Severity    string `json:"severity,omitempty"`
 	Retry       string `json:"retry,omitempty"`
 	Layer       string `json:"layer,omitempty"`
@@ -165,10 +198,23 @@ type closeFramePayload struct {
 // total, minus 2 bytes for the close-status code = 123 bytes for UTF-8 reason).
 const closeFrameMaxBytes = 123
 
+// closeFrameOverflowFallback is a fixed sentinel that is guaranteed to fit
+// within closeFrameMaxBytes. Used when even the bare {"block_reason":"..."}
+// would overflow because the Reason value is unusually long. The fallback
+// preserves a useful signal (parse_error severity warn / retry none, by
+// schema convention) while honoring the byte ceiling.
+const closeFrameOverflowFallback = `{"block_reason":"parse_error","version":"1"}`
+
 // CloseFramePayload returns a JSON document for the WebSocket close-frame
-// Reason field. If the full document would exceed RFC 6455's 123-byte limit,
-// optional fields drop in this order: receipt, layer, retry, severity, version.
-// The block_reason field is always present (or the result is "{}").
+// Reason field. The result is GUARANTEED to be at most closeFrameMaxBytes
+// bytes (RFC 6455's 123-byte ceiling). To honor the ceiling, optional
+// fields drop in this order: receipt, layer, retry, severity, version.
+// If even the bare {"block_reason":"<code>"} would overflow (extremely
+// long Reason values), CloseFramePayload returns the fixed fallback
+// closeFrameOverflowFallback rather than a malformed close frame.
+//
+// CloseFramePayload assumes Info was constructed via New(); a zero Info
+// returns an empty-object sentinel.
 func (i Info) CloseFramePayload() string {
 	if i.Reason == "" {
 		return "{}"
@@ -201,21 +247,22 @@ func (i Info) CloseFramePayload() string {
 			return out
 		}
 	}
-	// Even the bare {block_reason} can in principle exceed the limit if a
-	// future code is unusually long. Return what we have; the WebSocket
-	// caller is responsible for the final truncation policy.
-	return out
+	// Even the bare {"block_reason":"<code>"} doesn't fit: the Reason value
+	// is so long that we can't honor the byte ceiling without dropping the
+	// only required field. Return the fixed fallback so the close frame is
+	// always RFC 6455-compliant.
+	return closeFrameOverflowFallback
 }
 
 // mustMarshal is json.Marshal with a known-good fixed-shape struct. The
-// struct has no funky types (no interface{}, no time.Time, no big.Int) so
-// json.Marshal cannot fail. We treat any error as a programming bug.
+// struct has only string fields (no interface{}, no time.Time) so
+// json.Marshal cannot fail. The error fallback is defensive code; if it
+// ever fires, treat it as a programming bug, not a runtime condition.
 func mustMarshal(p closeFramePayload) string {
 	b, err := json.Marshal(p)
 	if err != nil {
-		// Programmer error: closeFramePayload only contains strings.
-		// Surface a stable sentinel rather than panic in a server path.
-		return `{"block_reason":"parse_error","version":"1"}`
+		// Defensive: closeFramePayload only contains strings.
+		return closeFrameOverflowFallback
 	}
 	return string(b)
 }

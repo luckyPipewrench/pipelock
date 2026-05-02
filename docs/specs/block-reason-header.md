@@ -4,6 +4,8 @@ When pipelock blocks an outbound request, the response carries a small set of HT
 
 This document is the canonical schema. Once an agent in production reads `dlp_match`, the vocabulary is locked. Renaming a code in v2 breaks every consumer.
 
+> **Status:** the schema and emit package land first (this PR). The transport refactor that wires every block path to call `Info.SetHeaders` lands in a follow-up PR. Until that PR merges, the vocabulary below is the *target* — it is not currently emitted on production blocks. The split is intentional: locking the operator-facing vocabulary before any block site commits to it.
+
 ## Header set
 
 | Header | Required | Example | Meaning |
@@ -12,14 +14,33 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 | `X-Pipelock-Block-Reason-Version` | yes (on every block) | `1` | Schema version. Increment for breaking changes. |
 | `X-Pipelock-Block-Reason-Severity` | yes (on every block) | `critical` | Matches pipelock's existing severity vocabulary: `info`, `warn`, `critical`. |
 | `X-Pipelock-Block-Reason-Retry` | yes (on every block) | `none` | Retry hint: `none` (permanent), `transient` (retry with backoff), `policy` (retry only after policy change). |
-| `X-Pipelock-Block-Reason-Layer` | optional | `dlp` | Scanner pipeline layer label. Aligns with `internal/scanner/` layer names: `scheme`, `domain_blocklist`, `dlp`, `path_entropy`, `subdomain_entropy`, `ssrf`, `rate_limit`, `url_length`, `data_budget`. |
+| `X-Pipelock-Block-Reason-Layer` | optional | `dlp` | Scanner pipeline layer label. Uses `internal/scanner/` `Scanner*` constants verbatim so operators can correlate header-driven agent behavior with their existing audit logs and Prometheus labels. See the layer-label vocabulary below. |
 | `X-Pipelock-Block-Reason-Receipt` | optional | `01HZ8...` | Receipt ID. Lets the agent fetch the matching receipt (via the receipt-transports endpoint) for additional context. |
 
 Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
 
+## Layer-label vocabulary
+
+The optional `X-Pipelock-Block-Reason-Layer` header reuses `internal/scanner/` `Scanner*` constants verbatim. These are intentionally short — they exist to correlate with audit logs and Prometheus labels, not to be human-friendly. The reason code (the main `X-Pipelock-Block-Reason` header) carries the human-friendlier vocabulary.
+
+| Layer label (header) | Source constant | Approximate reason mapping |
+|---|---|---|
+| `scheme` | `scanner.ScannerScheme` | `scheme_blocked` |
+| `blocklist` | `scanner.ScannerBlocklist` | `domain_blocklist` |
+| `dlp` | `scanner.ScannerDLP` | `dlp_match`, `redaction_failure` |
+| `entropy` | `scanner.ScannerEntropy` | `path_entropy` |
+| `subdomain_entropy` | `scanner.ScannerSubdomainEntropy` | `subdomain_entropy` |
+| `ssrf` | `scanner.ScannerSSRF` | `ssrf_private_ip`, `ssrf_metadata`, `ssrf_dns_rebind` |
+| `ratelimit` | `scanner.ScannerRateLimit` | `rate_limit` |
+| `length` | `scanner.ScannerLength` | `url_length` |
+| `databudget` | `scanner.ScannerDataBudget` | `data_budget` |
+| `parser` | `scanner.ScannerParser` | `parse_error` |
+
+Layers without a `Scanner*` constant (MCP layer, posture layer) leave the layer header unset; the reason code already conveys the layer at the granularity agents need.
+
 ## Reason vocabulary (v1)
 
-Reason codes are lowercase snake_case. The v1 set is derived from existing pipelock block paths — every code below has a real production emit site.
+Reason codes are lowercase snake_case. The v1 set is derived from existing pipelock block paths — every code below maps to an existing block path that the follow-up transport PR will wire to emit this header.
 
 ### Egress / network layer
 
@@ -109,7 +130,7 @@ Agents should treat unknown reason codes as a generic block at the declared seve
 
 ## Transport coverage
 
-The header is emitted on every pipelock block path. There is no transport split.
+The follow-up transport PR wires the header onto every pipelock block path. There is no transport split — the schema is the same on every surface; only the framing differs (HTTP headers vs WebSocket close-frame JSON).
 
 | Transport | Mechanism |
 |---|---|

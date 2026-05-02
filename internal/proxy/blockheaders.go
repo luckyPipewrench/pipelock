@@ -153,3 +153,19 @@ func writeBlockedError(w http.ResponseWriter, info blockreason.Info, body string
 	info.SetHeaders(w.Header())
 	http.Error(w, body, status)
 }
+
+// writeBlockedJSON is the fetch-handler analogue of writeBlockedError. The
+// fetch endpoint emits a JSON FetchResponse on every block via writeJSON;
+// this helper sets the X-Pipelock-Block-Reason header set first so the
+// JSON body and the response headers carry consistent block metadata.
+//
+// Status is parameterized for forward compatibility even though every
+// current fetch block path passes 403. The unparam linter exception is
+// tagged below; future block paths may want 5xx (e.g., service-unavailable
+// for kill-switch active when fetch surface gains kill-switch parity).
+//
+//nolint:unparam // status arg kept for forward compat with non-403 block paths
+func writeBlockedJSON(w http.ResponseWriter, info blockreason.Info, status int, resp FetchResponse) {
+	info.SetHeaders(w.Header())
+	writeJSON(w, status, resp)
+}

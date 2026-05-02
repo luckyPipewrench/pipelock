@@ -654,6 +654,7 @@ var scannerHints = map[string]string{
 	ScannerEntropy:          "High-entropy content detected. Review the URL for data exfiltration attempts.",
 	ScannerSubdomainEntropy: "High-entropy content detected in subdomain. Review for data exfiltration via DNS.",
 	ScannerSSRF:             "SSRF protection blocked this URL. It may resolve to a private IP or DNS resolution failed.",
+	ScannerSSRFMetadata:     "SSRF protection blocked this URL. It resolves to a cloud-provider instance metadata endpoint (AWS / Azure / GCP IMDS).",
 	ScannerRateLimit:        "Rate limit exceeded. Retry later or adjust fetch_proxy.monitoring.max_requests_per_minute.",
 	ScannerLength:           "URL exceeds maximum length. Check for data stuffing in query parameters.",
 	ScannerDataBudget:       "Session data budget exceeded.",

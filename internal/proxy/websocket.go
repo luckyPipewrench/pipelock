@@ -415,7 +415,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedError(w,
-				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP),
+				blockInfoFor(blockreason.DLPMatch, "dlp_header"),
 				"WebSocket blocked: "+reason, http.StatusForbidden)
 			return
 		}

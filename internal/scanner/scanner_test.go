@@ -4256,6 +4256,41 @@ func TestScan_NilContext(t *testing.T) {
 	}
 }
 
+// TestScan_HeartbeatFiresOnEarlyReturn covers the deferred heartbeat
+// added so the wedge-detection watchdog sees activity even when Scan
+// returns through the fail-closed nil/cancelled-context branch. Before
+// the deferred form, the early return left the heartbeat unfired and a
+// flood of cancelled-context probes (or any short-circuit path that
+// might be added later) could let the watchdog falsely conclude the
+// scanner was wedged while it was actually rejecting cleanly.
+func TestScan_HeartbeatFiresOnEarlyReturn(t *testing.T) {
+	sc := New(testConfig())
+	defer sc.Close()
+
+	var beats int
+	sc.SetHeartbeat(func() { beats++ })
+
+	// Cancelled context: hits the early-return branch before s.scan.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = sc.Scan(ctx, "https://example.com/test")
+	if beats != 1 {
+		t.Errorf("heartbeat after cancelled-context early return = %d, want 1", beats)
+	}
+
+	// Nil context: also hits the early-return branch.
+	_ = sc.Scan(nil, "https://example.com/test") //nolint:staticcheck // intentional nil context test
+	if beats != 2 {
+		t.Errorf("heartbeat after nil-context early return = %d, want 2", beats)
+	}
+
+	// Normal scan path: still fires once per scan.
+	_ = sc.Scan(context.Background(), "https://example.com/test")
+	if beats != 3 {
+		t.Errorf("heartbeat after normal scan = %d, want 3", beats)
+	}
+}
+
 func TestScan_CanceledContextWithSSRFDisabled(t *testing.T) {
 	cfg := testConfig() // cfg.Internal = nil disables SSRF
 	sc := New(cfg)

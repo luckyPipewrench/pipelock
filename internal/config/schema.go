@@ -663,6 +663,18 @@ type KillSwitch struct {
 type HealthWatchdog struct {
 	Enabled         bool `yaml:"enabled"`
 	IntervalSeconds int  `yaml:"interval_seconds"` // tick rate; staleness threshold is 3 × this. Defaults to 2.
+	// ExposeSubsystems controls whether /health includes the per-subsystem
+	// boolean breakdown (scanner / config / session / killswitch / watchdog)
+	// alongside the overall status. The breakdown is operationally useful
+	// for diagnosing wedges but lets unauthenticated callers distinguish
+	// scanner failure from config failure from killswitch wiring, which is
+	// material reconnaissance against a security boundary product. Defaults
+	// to false: /health still returns 503 when any subsystem is unhealthy
+	// so external supervisors keep a clean liveness signal, but the response
+	// body omits the subsystem map. Operators who want the breakdown on a
+	// trusted network set this to true; a future change can move the detail
+	// to the authenticated kill-switch API listener.
+	ExposeSubsystems bool `yaml:"expose_subsystems"`
 }
 
 // IntervalDuration returns the watchdog tick interval. Defaults to 2s when

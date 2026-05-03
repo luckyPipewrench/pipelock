@@ -20,6 +20,13 @@ func TestHealthWatchdog_DefaultsEnabled(t *testing.T) {
 	if cfg.HealthWatchdog.IntervalSeconds != 2 {
 		t.Errorf("expected IntervalSeconds=2, got %d", cfg.HealthWatchdog.IntervalSeconds)
 	}
+	// ExposeSubsystems defaults to false: the per-subsystem map on /health
+	// is opt-in because exposing scanner / config / killswitch breakdown
+	// to unauthenticated callers helps attacker reconnaissance against a
+	// security boundary product.
+	if cfg.HealthWatchdog.ExposeSubsystems {
+		t.Errorf("expected ExposeSubsystems=false (default-secure), got true")
+	}
 }
 
 // TestHealthWatchdog_IntervalDuration covers the helper's positive, zero, and

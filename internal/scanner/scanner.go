@@ -701,7 +701,18 @@ func HintForBlock(r *Result) string {
 // Scan checks a URL against all scanners and returns the result.
 // Blocked results include a Hint field with actionable guidance.
 // Fail-closed: nil or already-cancelled contexts are rejected before scanning.
+//
+// Heartbeat fires on EVERY return (including the early fail-closed path
+// for nil/cancelled contexts) via defer. The watchdog interprets the
+// heartbeat as "Scan is making progress, not wedged in a regex"; a fast
+// reject is still progress and must register so a flood of cancelled-
+// context probes does not falsely trip the wedge detector.
 func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
+	defer func() {
+		if h := s.heartbeat.Load(); h != nil {
+			h.fn()
+		}
+	}()
 	if ctx == nil || ctx.Err() != nil {
 		return Result{
 			Allowed: false,
@@ -714,9 +725,6 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 	r := s.scan(ctx, rawURL)
 	if !r.Allowed && r.Hint == "" {
 		r.Hint = HintForBlock(&r)
-	}
-	if h := s.heartbeat.Load(); h != nil {
-		h.fn()
 	}
 	return r
 }

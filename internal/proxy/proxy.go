@@ -306,6 +306,7 @@ type Proxy struct {
 	shieldEngine        *shield.Engine                    // browser shield HTML/JS rewriter (nil = not initialized)
 	frozenTools         *FrozenToolRegistry               // frozen tool inventories for airlock hard tier
 	wd                  *health.Watchdog                  // wedge-detection watchdog (nil = disabled)
+	probeInflight       atomic.Bool                       // singleflight guard for scannerProbe (prevents goroutine leak when scanner wedges)
 }
 
 // Option configures optional Proxy behavior.
@@ -1482,21 +1483,36 @@ func (p *Proxy) Close() {
 // did not complete within ctx's deadline (i.e. scanner is wedged) or if
 // scanner / config pointers are unavailable.
 //
-// The probe runs Scan in a goroutine because Scanner has internal
-// regex-matching paths that do not yield to context. If a regex pinpoints
-// the wedge, the probe goroutine leaks until the scan eventually returns;
-// that leak is bounded by /health call frequency and is the lesser harm
-// against a true deadlock blocking probe completion.
+// Singleflight: at most one probe goroutine exists at any time. The
+// scanner has internal regex-matching paths that do not yield to context,
+// so a wedge inside Scan cannot be cancelled and the goroutine outlives
+// the probe call. /health is unauthenticated and commonly polled by
+// external supervisors, so without this guard a stuck scanner would let
+// every poll spawn a fresh leaked goroutine and turn the health endpoint
+// into a denial-of-service amplifier exactly when the proxy is already
+// degraded. Concurrent callers while a probe is in flight return an
+// immediate error so the watchdog still reports the wedge without
+// queueing more work behind it.
 func (p *Proxy) scannerProbe(ctx context.Context) error {
+	if !p.probeInflight.CompareAndSwap(false, true) {
+		return errors.New("scanner probe already in flight (wedge suspected)")
+	}
 	sc := p.scannerPtr.Load()
 	if sc == nil {
+		p.probeInflight.Store(false)
 		return errors.New("scanner unavailable")
 	}
 	if cfg := p.cfgPtr.Load(); cfg == nil {
+		p.probeInflight.Store(false)
 		return errors.New("config unavailable")
 	}
 	done := make(chan struct{})
 	go func() {
+		// Clear the inflight flag only when Scan actually returns. If the
+		// scanner is wedged this goroutine outlives the caller; future
+		// /health calls will short-circuit on CompareAndSwap above and
+		// return the wedge error without spawning more goroutines.
+		defer p.probeInflight.Store(false)
 		defer close(done)
 		_ = sc.Scan(ctx, "ftp://wedge-probe.invalid/")
 	}()
@@ -3803,7 +3819,15 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 			KillSwitchEnabled: killSwitchEnabled,
 			KillSwitchPresent: p.ks != nil,
 		})
-		resp.Subsystems = snap.Subsystems
+		// Always honor the overall liveness signal (status code + status
+		// string) so external supervisors get a clean 503 when any
+		// subsystem is unhealthy. Only attach the per-subsystem map when
+		// the operator has explicitly opted in via expose_subsystems; the
+		// breakdown is recon material for an unauthenticated caller and
+		// defaults off.
+		if cfg != nil && cfg.HealthWatchdog.ExposeSubsystems {
+			resp.Subsystems = snap.Subsystems
+		}
 		if !snap.Healthy {
 			resp.Status = healthStatusUnhealthy
 			status = http.StatusServiceUnavailable

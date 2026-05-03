@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +52,8 @@ func newWatchdogProxy(t *testing.T, probe health.Probe) (*Proxy, func()) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
-	cfg.HealthWatchdog.IntervalSeconds = 1 // 1s interval, 3s threshold
+	cfg.HealthWatchdog.IntervalSeconds = 1     // 1s interval, 3s threshold
+	cfg.HealthWatchdog.ExposeSubsystems = true // tests assert against subsystems map
 
 	wd, err := health.New(health.Config{
 		Interval: 50 * time.Millisecond,
@@ -91,6 +94,7 @@ func TestHealth_DefaultProbeReportsHealthy(t *testing.T) {
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
 	cfg.HealthWatchdog.IntervalSeconds = 1
+	cfg.HealthWatchdog.ExposeSubsystems = true // assert against subsystems map
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -244,6 +248,121 @@ func TestScannerProbe_NilPointers_ReturnsError(t *testing.T) {
 			t.Fatalf("expected nil error from live scanner probe, got %v", err)
 		}
 	})
+}
+
+// TestScannerProbe_SingleflightPreventsGoroutineLeak covers the singleflight
+// guard that stops /health from spawning a fresh probe goroutine on every
+// poll while the scanner is wedged. Without the guard an attacker (or a
+// noisy monitor) hitting unauthenticated /health repeatedly during a wedge
+// would accumulate unbounded leaked goroutines, turning the health endpoint
+// into a denial-of-service amplifier exactly when enforcement is already
+// degraded. After the fix, concurrent probes during a wedge return an
+// immediate error without launching a second scan goroutine.
+func TestScannerProbe_SingleflightPreventsGoroutineLeak(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Simulate a wedged scan by pinning the inflight flag to true. The next
+	// scannerProbe call must short-circuit without spawning a goroutine.
+	if !p.probeInflight.CompareAndSwap(false, true) {
+		t.Fatal("probeInflight should start false")
+	}
+	t.Cleanup(func() { p.probeInflight.Store(false) })
+
+	gBefore := runtime.NumGoroutine()
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		err := p.scannerProbe(ctx)
+		cancel()
+		if err == nil {
+			t.Fatalf("expected error while inflight, got nil")
+		}
+		if !strings.Contains(err.Error(), "in flight") {
+			t.Fatalf("expected 'in flight' error, got %v", err)
+		}
+	}
+	gAfter := runtime.NumGoroutine()
+	if gAfter > gBefore+2 {
+		t.Errorf("goroutines leaked under inflight contention: before=%d after=%d (want growth <= 2 for goroutine GC slack)", gBefore, gAfter)
+	}
+}
+
+// TestHealth_ExposeSubsystemsDefault_HidesMap covers the default-secure
+// behavior of /health: with HealthWatchdog.ExposeSubsystems left at its
+// false default, the per-subsystem boolean map MUST be omitted from the
+// response so unauthenticated callers cannot distinguish scanner-wedge
+// from config-failure from kill-switch wiring. The 503 status on wedge
+// is preserved unconditionally so external supervisors keep a clean
+// liveness signal.
+func TestHealth_ExposeSubsystemsDefault_HidesMap(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.HealthWatchdog.IntervalSeconds = 1
+	// ExposeSubsystems default is false; do not set it.
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.wd.Start(ctx)
+
+	code, body := callHealth(t, p)
+	if code != http.StatusOK {
+		t.Errorf("status = %d, want 200", code)
+	}
+	if len(body.Subsystems) != 0 {
+		t.Errorf("Subsystems must be omitted by default, got %+v", body.Subsystems)
+	}
+}
+
+// TestHealth_ExposeSubsystemsTrue_IncludesMapAnd503OnWedge confirms the
+// opt-in path still works: when the operator sets ExposeSubsystems=true
+// the per-subsystem map is present, AND a wedge still flips status to
+// 503 so the breakdown remains accurate diagnostic data on the trusted
+// network the operator chose to expose it on.
+func TestHealth_ExposeSubsystemsTrue_IncludesMapAnd503OnWedge(t *testing.T) {
+	t.Parallel()
+
+	hang := func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	p, cleanup := newWatchdogProxy(t, hang)
+	defer cleanup()
+
+	// Force the scanner heartbeat to look stale; the wedged probe will
+	// fail and flip scanner unhealthy.
+	p.wd.AgeScannerForTest(time.Hour)
+	code, body := callHealth(t, p)
+	if code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503 (subsystem unhealthy)", code)
+	}
+	if len(body.Subsystems) == 0 {
+		t.Fatalf("Subsystems must be present when ExposeSubsystems=true")
+	}
+	if body.Subsystems["scanner"] {
+		t.Errorf("expected scanner=false on wedge probe, got %+v", body.Subsystems)
+	}
 }
 
 func TestHealth_ConfigPointerNil_Returns503NotPanic(t *testing.T) {

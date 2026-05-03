@@ -356,7 +356,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if toolResult.IsToolsList {
 				toolCaptureAction := config.ActionAllow
 				if !toolResult.Clean {
-					toolCaptureAction = toolCfg.Action
+					if toolCfg.Action != "" {
+						toolCaptureAction = toolCfg.Action
+					} else {
+						toolCaptureAction = config.ActionBlock
+					}
 				}
 				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
 					Subsurface:      "mcp_tools_list",

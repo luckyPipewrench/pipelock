@@ -228,7 +228,11 @@ func resolveShadowSessions(cfg *config.Config, flags shadowFlags) (string, error
 	if err != nil {
 		return "", err
 	}
-	if !hasMatchingCaptureSession(root, flags.agent) {
+	matched, err := hasMatchingCaptureSession(root, flags.agent)
+	if err != nil {
+		return "", fmt.Errorf("%w: scan capture sessions: %w", ErrInvalidCandidate, err)
+	}
+	if !matched {
 		return "", fmt.Errorf("%w: no capture sessions matched agent %q", ErrInvalidCandidate, flags.agent)
 	}
 	return root, nil
@@ -243,17 +247,17 @@ func shadowSessionFilter(flags shadowFlags) func(string) bool {
 	}
 }
 
-func hasMatchingCaptureSession(root, agent string) bool {
+func hasMatchingCaptureSession(root, agent string) (bool, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, entry := range entries {
 		if entry.IsDir() && captureSessionNameMatchesAgent(entry.Name(), agent) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 func checkedReadDir(path string) (string, error) {

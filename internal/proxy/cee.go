@@ -31,15 +31,21 @@ func CeeSessionKey(agent, clientIP string) string {
 	return clientIP
 }
 
+// maxCaptureSessionKeyLen bounds the on-disk session directory name length.
+// Most filesystems cap a single path component at 255 bytes (NAME_MAX); pick a
+// conservative ceiling so the writer never bumps that limit.
+const maxCaptureSessionKeyLen = 200
+
 // captureSessionKey returns the CEE session identity when it is safe to use as
 // a recorder directory name. Self-declared agent names are untrusted, so unsafe
-// keys are mapped to a bounded hash instead of being dropped by the writer.
+// or overlength keys are mapped to a bounded hash instead of being dropped by
+// the writer.
 func captureSessionKey(agent, clientIP string) string {
 	key := CeeSessionKey(agent, clientIP)
 	if key == "" {
 		key = agentAnonymous
 	}
-	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") {
+	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") || len(key) > maxCaptureSessionKeyLen {
 		sum := sha256.Sum256([]byte(key))
 		return "capture-" + hex.EncodeToString(sum[:])
 	}

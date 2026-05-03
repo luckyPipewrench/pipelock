@@ -168,14 +168,18 @@ func (o MCPProxyOpts) captureObserver() capture.CaptureObserver {
 
 func (o MCPProxyOpts) captureConfigHash() string {
 	if o.ConfigHashFn != nil {
-		return o.ConfigHashFn()
+		if v := o.ConfigHashFn(); v != "" {
+			return v
+		}
 	}
 	return o.ConfigHash
 }
 
 func (o MCPProxyOpts) captureProfile() string {
 	if o.ProfileFn != nil {
-		return o.ProfileFn()
+		if v := o.ProfileFn(); v != "" {
+			return v
+		}
 	}
 	return o.Profile
 }

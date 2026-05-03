@@ -82,7 +82,11 @@ func TestResolveCompileInputsAcceptsAgentSessionKeyDirs(t *testing.T) {
 		t.Fatalf("paths = %#v, want 2 agent-a captures", got)
 	}
 	for _, path := range got {
-		if !strings.Contains(path, "agent-a") || strings.Contains(path, "agent-ab") {
+		sessionDir := filepath.Base(filepath.Dir(path))
+		if sessionDir != "agent-a" && !strings.HasPrefix(sessionDir, "agent-a|") {
+			t.Fatalf("unexpected session dir %q in %#v", sessionDir, got)
+		}
+		if sessionDir == "agent-ab" || strings.HasPrefix(sessionDir, "agent-ab|") {
 			t.Fatalf("unexpected path %q in %#v", path, got)
 		}
 	}

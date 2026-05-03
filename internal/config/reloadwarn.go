@@ -424,6 +424,16 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Health watchdog settings are startup-only: the goroutine interval and
+	// enabled/disabled wiring are established when the proxy is constructed.
+	if old.HealthWatchdog.Enabled != updated.HealthWatchdog.Enabled ||
+		old.HealthWatchdog.IntervalSeconds != updated.HealthWatchdog.IntervalSeconds {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "health_watchdog",
+			Message: "health_watchdog config changes require restart — ignored on reload",
+		})
+	}
+
 	// Secrets file changed or removed (security-relevant)
 	if old.DLP.SecretsFile != updated.DLP.SecretsFile {
 		if updated.DLP.SecretsFile == "" {

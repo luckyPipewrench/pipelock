@@ -57,6 +57,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.ScanAPI.Kinds.ToolCall = true
 		cfg.Taint.Enabled = true
 		cfg.Learn.Privacy.PublicAllowlistDefault = true
+		cfg.HealthWatchdog.Enabled = true
 		return
 	}
 
@@ -143,6 +144,12 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		privacy, _ = learn["privacy"].(map[string]interface{})
 	}
 	setBoolDefault(privacy, "public_allowlist_default", &cfg.Learn.Privacy.PublicAllowlistDefault)
+
+	// Health watchdog: enabled defaults to true so wedge detection runs out of
+	// the box. An operator who omits health_watchdog (or sets it to ~) still
+	// gets the watchdog; explicit `enabled: false` is required to opt out.
+	hw, _ := raw["health_watchdog"].(map[string]interface{})
+	setBoolDefault(hw, "enabled", &cfg.HealthWatchdog.Enabled)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.
@@ -616,6 +623,12 @@ func (c *Config) ApplyDefaults() {
 		}
 	}
 	// PoisonResistance defaults to true via applySecurityDefaults.
+
+	// Health watchdog: interval defaults to 2s when omitted or non-positive.
+	// Enabled is handled by applySecurityDefaults (defaults to true).
+	if c.HealthWatchdog.IntervalSeconds <= 0 {
+		c.HealthWatchdog.IntervalSeconds = 2
+	}
 }
 
 // mergeDLPPatterns merges default DLP patterns with user-defined patterns.

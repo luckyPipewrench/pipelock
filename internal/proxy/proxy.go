@@ -36,6 +36,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/health"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -304,6 +305,7 @@ type Proxy struct {
 	envelopeVerifierPtr atomic.Pointer[envelope.Verifier] // inbound mediation envelope verifier (nil = disabled)
 	shieldEngine        *shield.Engine                    // browser shield HTML/JS rewriter (nil = not initialized)
 	frozenTools         *FrozenToolRegistry               // frozen tool inventories for airlock hard tier
+	wd                  *health.Watchdog                  // wedge-detection watchdog (nil = disabled)
 }
 
 // Option configures optional Proxy behavior.
@@ -359,6 +361,15 @@ func WithEnvelopeEmitter(e *envelope.Emitter) Option {
 	return func(p *Proxy) { p.envelopeEmitterPtr.Store(e) }
 }
 
+// WithHealthWatchdog overrides the wedge-detection watchdog the proxy would
+// otherwise build from cfg.HealthWatchdog. Used by tests to inject a watchdog
+// with a controllable probe (e.g. one that hangs to simulate scanner
+// deadlock). Setting this implicitly opts in to watchdog wiring even if
+// cfg.HealthWatchdog.Enabled is false.
+func WithHealthWatchdog(wd *health.Watchdog) Option {
+	return func(p *Proxy) { p.wd = wd }
+}
+
 // FetchResponse is the JSON response returned by the /fetch endpoint.
 type FetchResponse struct {
 	URL         string `json:"url"`
@@ -389,6 +400,26 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
+
+	// Wedge-detection watchdog. Constructed when health_watchdog.enabled is
+	// true (the documented default), unless WithHealthWatchdog already
+	// installed a test override. The probe scans a synthetic fail-fast
+	// scheme through the live scanner with an Interval/2 budget; any
+	// non-nil error (including timeout) is treated as a wedge. Heartbeats
+	// from Scan() come via Scanner.SetHeartbeat below.
+	if cfg.HealthWatchdog.Enabled || p.wd != nil {
+		if p.wd == nil {
+			wd, wdErr := health.New(health.Config{
+				Interval: cfg.HealthWatchdog.IntervalDuration(),
+				Probe:    p.scannerProbe,
+			})
+			if wdErr != nil {
+				return nil, fmt.Errorf("health watchdog init: %w", wdErr)
+			}
+			p.wd = wd
+		}
+		p.installScannerHeartbeat(sc)
+	}
 
 	// Startup envelope wiring mirrors the reload lane: ensure an
 	// enabled envelope always has the canonical policy hash installed,
@@ -1215,6 +1246,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
+	if p.wd != nil {
+		p.wd.BeatConfig()
+		p.installScannerHeartbeat(sc)
+	}
 
 	// Hot-reload the admin API bearer token so operators can rotate
 	// kill_switch.api_token (or the env override) without restarting.
@@ -1288,6 +1323,13 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// No separate UpdateConfigHash needed — emitter is always (re)created
 	// with the current cfg.Hash() when a signing key is configured.
 	return true
+}
+
+func (p *Proxy) installScannerHeartbeat(sc *scanner.Scanner) {
+	if p.wd == nil || sc == nil {
+		return
+	}
+	sc.SetHeartbeat(p.wd.BeatScanner)
 }
 
 // LoadCertCache creates or replaces the cert cache based on current config.
@@ -1411,6 +1453,9 @@ func (p *Proxy) updateCEEStats() {
 }
 
 func (p *Proxy) Close() {
+	if p.wd != nil {
+		p.wd.Stop()
+	}
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		sm.Close()
 	}
@@ -1428,6 +1473,38 @@ func (p *Proxy) Close() {
 	}
 	if p.tlsTransport != nil {
 		p.tlsTransport.CloseIdleConnections()
+	}
+}
+
+// scannerProbe is the synthetic scanner check the watchdog runs when the
+// scanner heartbeat is stale. It uses a fail-fast scheme that the scanner
+// rejects without DNS resolution. Returns a non-nil error if the scan
+// did not complete within ctx's deadline (i.e. scanner is wedged) or if
+// scanner / config pointers are unavailable.
+//
+// The probe runs Scan in a goroutine because Scanner has internal
+// regex-matching paths that do not yield to context. If a regex pinpoints
+// the wedge, the probe goroutine leaks until the scan eventually returns;
+// that leak is bounded by /health call frequency and is the lesser harm
+// against a true deadlock blocking probe completion.
+func (p *Proxy) scannerProbe(ctx context.Context) error {
+	sc := p.scannerPtr.Load()
+	if sc == nil {
+		return errors.New("scanner unavailable")
+	}
+	if cfg := p.cfgPtr.Load(); cfg == nil {
+		return errors.New("config unavailable")
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = sc.Scan(ctx, "ftp://wedge-probe.invalid/")
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -2200,6 +2277,10 @@ func (p *Proxy) Handler() http.Handler {
 // is cancelled or the server encounters a fatal error.
 func (p *Proxy) Start(ctx context.Context) error {
 	cfg := p.cfgPtr.Load()
+
+	if p.wd != nil {
+		p.wd.Start(ctx)
+	}
 
 	handler := p.buildHandler(p.buildMux())
 
@@ -3645,38 +3726,55 @@ func extractRawURLParam(rawQuery string) string {
 }
 
 // healthResponse is the JSON response returned by the /health endpoint.
+//
+// Status is "healthy" (HTTP 200) or "unhealthy" (HTTP 503). When the wedge
+// detection watchdog is enabled, Subsystems carries a per-subsystem boolean
+// map; when disabled, Subsystems is omitted and Status is always "healthy"
+// (preserving the legacy shape).
 type healthResponse struct {
-	Status                 string  `json:"status"`
-	Version                string  `json:"version"`
-	Mode                   string  `json:"mode"`
-	UptimeSeconds          float64 `json:"uptime_seconds"`
-	DLPPatterns            int     `json:"dlp_patterns"`
-	ResponseScanEnabled    bool    `json:"response_scan_enabled"`
-	GitProtectionEnabled   bool    `json:"git_protection_enabled"`
-	RateLimitEnabled       bool    `json:"rate_limit_enabled"`
-	ForwardProxyEnabled    bool    `json:"forward_proxy_enabled"`
-	WebSocketProxyEnabled  bool    `json:"websocket_proxy_enabled"`
-	RequestBodyScanEnabled bool    `json:"request_body_scan_enabled"`
-	TLSInterceptionEnabled bool    `json:"tls_interception_enabled"`
-	KillSwitchActive       bool    `json:"kill_switch_active"`
+	Status                 string          `json:"status"`
+	Version                string          `json:"version"`
+	Mode                   string          `json:"mode"`
+	UptimeSeconds          float64         `json:"uptime_seconds"`
+	DLPPatterns            int             `json:"dlp_patterns"`
+	ResponseScanEnabled    bool            `json:"response_scan_enabled"`
+	GitProtectionEnabled   bool            `json:"git_protection_enabled"`
+	RateLimitEnabled       bool            `json:"rate_limit_enabled"`
+	ForwardProxyEnabled    bool            `json:"forward_proxy_enabled"`
+	WebSocketProxyEnabled  bool            `json:"websocket_proxy_enabled"`
+	RequestBodyScanEnabled bool            `json:"request_body_scan_enabled"`
+	TLSInterceptionEnabled bool            `json:"tls_interception_enabled"`
+	KillSwitchActive       bool            `json:"kill_switch_active"`
+	Subsystems             map[string]bool `json:"subsystems,omitempty"`
 }
 
-// handleHealth returns proxy health status including uptime and feature flags.
-func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
+const (
+	healthStatusHealthy   = "healthy"
+	healthStatusUnhealthy = "unhealthy"
+)
+
+// handleHealth returns proxy health status including uptime, feature flags,
+// and (when the watchdog is enabled) a per-subsystem liveness map. Returns
+// HTTP 503 Service Unavailable when any subsystem is unhealthy so external
+// supervisors (k8s readiness probes, KiloClaw controller, etc.) get a clean
+// signal even if the HTTP handler itself is fine.
+func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 	cfg := p.cfgPtr.Load()
 	resp := healthResponse{
-		Status:                 "healthy",
-		Version:                Version,
-		Mode:                   cfg.Mode,
-		UptimeSeconds:          time.Since(p.startTime).Seconds(),
-		DLPPatterns:            len(cfg.DLP.Patterns),
-		ResponseScanEnabled:    cfg.ResponseScanning.Enabled,
-		GitProtectionEnabled:   cfg.GitProtection.Enabled,
-		RateLimitEnabled:       cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0,
-		ForwardProxyEnabled:    cfg.ForwardProxy.Enabled,
-		WebSocketProxyEnabled:  cfg.WebSocketProxy.Enabled,
-		RequestBodyScanEnabled: cfg.RequestBodyScanning.Enabled,
-		TLSInterceptionEnabled: cfg.TLSInterception.Enabled,
+		Status:        healthStatusHealthy,
+		Version:       Version,
+		UptimeSeconds: time.Since(p.startTime).Seconds(),
+	}
+	if cfg != nil {
+		resp.Mode = cfg.Mode
+		resp.DLPPatterns = len(cfg.DLP.Patterns)
+		resp.ResponseScanEnabled = cfg.ResponseScanning.Enabled
+		resp.GitProtectionEnabled = cfg.GitProtection.Enabled
+		resp.RateLimitEnabled = cfg.FetchProxy.Monitoring.MaxReqPerMinute > 0
+		resp.ForwardProxyEnabled = cfg.ForwardProxy.Enabled
+		resp.WebSocketProxyEnabled = cfg.WebSocketProxy.Enabled
+		resp.RequestBodyScanEnabled = cfg.RequestBodyScanning.Enabled
+		resp.TLSInterceptionEnabled = cfg.TLSInterception.Enabled
 	}
 	if p.ks != nil {
 		// Read-only kill switch status — no auth needed. Lets operators
@@ -3689,7 +3787,29 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+
+	status := http.StatusOK
+	if p.wd != nil {
+		var sessionEnabled, killSwitchEnabled bool
+		if cfg != nil {
+			sessionEnabled = cfg.SessionProfiling.Enabled
+			killSwitchEnabled = cfg.KillSwitch.Enabled
+		}
+		snap := p.wd.Snapshot(r.Context(), health.SnapshotInput{
+			ScannerPtrAlive:   p.scannerPtr.Load() != nil,
+			ConfigPtrAlive:    cfg != nil,
+			SessionEnabled:    sessionEnabled,
+			SessionPtrAlive:   p.sessionMgrPtr.Load() != nil,
+			KillSwitchEnabled: killSwitchEnabled,
+			KillSwitchPresent: p.ks != nil,
+		})
+		resp.Subsystems = snap.Subsystems
+		if !snap.Healthy {
+			resp.Status = healthStatusUnhealthy
+			status = http.StatusServiceUnavailable
+		}
+	}
+	writeJSON(w, status, resp)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

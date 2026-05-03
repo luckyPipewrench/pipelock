@@ -456,6 +456,10 @@ func Defaults() *Config {
 			// strip metadata, log exposure). AllowedImageTypes and
 			// MaxImageBytes also fall through to defaults via their getters.
 		},
+		HealthWatchdog: HealthWatchdog{
+			Enabled:         true,
+			IntervalSeconds: 2,
+		},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source
 	// selector can distinguish them from user-supplied patterns. Set at

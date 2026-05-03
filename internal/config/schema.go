@@ -223,6 +223,7 @@ type Config struct {
 	MCPSessionBinding        MCPSessionBinding       `yaml:"mcp_session_binding"`
 	RequestBodyScanning      RequestBodyScanning     `yaml:"request_body_scanning"`
 	KillSwitch               KillSwitch              `yaml:"kill_switch"`
+	HealthWatchdog           HealthWatchdog          `yaml:"health_watchdog" json:"-"` // operational liveness, excluded from canonical policy hash
 	Sentry                   SentryConfig            `yaml:"sentry"`
 	MetricsListen            string                  `yaml:"metrics_listen"` // separate listen address for /metrics and /stats
 	Emit                     EmitConfig              `yaml:"emit"`
@@ -644,6 +645,33 @@ type KillSwitch struct {
 	APIToken      string   `yaml:"api_token"`
 	APIListen     string   `yaml:"api_listen"` // separate listen address for kill switch API (e.g. "0.0.0.0:9090")
 	AllowlistIPs  []string `yaml:"allowlist_ips"`
+}
+
+// HealthWatchdog configures the wedge-detection watchdog.
+//
+// The watchdog tracks scanner and self heartbeats plus proxy-supplied
+// structural checks for config, session, and killswitch wiring. The /health
+// endpoint reports a nested subsystems map and returns 503 Service Unavailable
+// when any subsystem is unhealthy. Detection is hybrid for the scanner:
+// passive heartbeats are the normal-path signal, and a bounded synthetic
+// scanner probe runs only when the scanner heartbeat is stale.
+//
+// Settings are immutable across hot reload for v1 — changes require a process
+// restart. Reload logs a warning if values differ from startup. Enabled
+// defaults to true (fail-open for the watchdog: detection on by default so an
+// operator who omits the section still gets wedge protection).
+type HealthWatchdog struct {
+	Enabled         bool `yaml:"enabled"`
+	IntervalSeconds int  `yaml:"interval_seconds"` // tick rate; staleness threshold is 3 × this. Defaults to 2.
+}
+
+// IntervalDuration returns the watchdog tick interval. Defaults to 2s when
+// IntervalSeconds is zero or negative.
+func (h HealthWatchdog) IntervalDuration() time.Duration {
+	if h.IntervalSeconds <= 0 {
+		return 2 * time.Second
+	}
+	return time.Duration(h.IntervalSeconds) * time.Second
 }
 
 // EmitConfig configures external event emission (webhook, syslog, and OTLP).

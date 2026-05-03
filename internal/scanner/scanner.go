@@ -184,6 +184,26 @@ type Scanner struct {
 	closed  bool
 	inUse   sync.WaitGroup
 	drained atomic.Bool
+
+	// heartbeat is invoked at the end of every Scan() to feed the
+	// wedge-detection watchdog. atomic.Pointer keeps SetHeartbeat
+	// race-safe even though production wires it before Start.
+	heartbeat atomic.Pointer[heartbeatFn]
+}
+
+// heartbeatFn wraps a func() so it can live behind atomic.Pointer (which
+// requires a concrete pointer-to-struct, not a pointer-to-function).
+type heartbeatFn struct{ fn func() }
+
+// SetHeartbeat installs a callback invoked after every successful Scan.
+// Pass nil to detach. Cheap; safe to call concurrently with Scan because
+// the holder is read via atomic.Pointer.
+func (s *Scanner) SetHeartbeat(fn func()) {
+	if fn == nil {
+		s.heartbeat.Store(nil)
+		return
+	}
+	s.heartbeat.Store(&heartbeatFn{fn: fn})
 }
 
 // scannerCloseDrainTimeout caps how long Close() waits for in-flight scans
@@ -694,6 +714,9 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 	r := s.scan(ctx, rawURL)
 	if !r.Allowed && r.Hint == "" {
 		r.Hint = HintForBlock(&r)
+	}
+	if h := s.heartbeat.Load(); h != nil {
+		h.fn()
 	}
 	return r
 }

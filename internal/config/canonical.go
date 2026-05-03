@@ -163,6 +163,12 @@ func (c *Config) policySemanticView() Config {
 	// max_body_bytes DO affect the envelope contract and stay in view.
 	view.MediationEnvelope.SigningKeyPath = ""
 
+	// HealthWatchdog is excluded from the canonical hash via the `json:"-"`
+	// tag on the Config field — operational liveness, not policy. Whether
+	// the watchdog is enabled or what tick interval it uses does not change
+	// what pipelock would decide about a scanned request; it only changes
+	// whether /health flips to 503 when internal state is wedged.
+
 	// Agents map — handled via per-agent resolved configs. See the
 	// CanonicalPolicyHash doc comment.
 	view.Agents = nil

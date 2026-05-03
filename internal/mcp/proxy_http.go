@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,63 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// isSSEContentType reports whether contentType announces a Server-Sent
+// Events response. The check is case-insensitive and tolerant of leading
+// whitespace plus the optional charset parameter
+// ("text/event-stream; charset=utf-8") so headers that vary by upstream
+// implementation still route correctly. Mirrors proxy.IsSSEContentType,
+// duplicated here because internal/proxy imports internal/mcp.
+func isSSEContentType(contentType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/event-stream")
+}
+
+// sseMessageWriter writes each scanned JSON-RPC message as one SSE event.
+// It is used by the HTTP listener when the upstream POST response is
+// text/event-stream so clean messages reach the downstream client as soon as
+// ForwardScanned accepts them, instead of buffering the whole stream to EOF.
+type sseMessageWriter struct {
+	mu      sync.Mutex
+	w       io.Writer
+	flusher http.Flusher
+	wrote   bool
+}
+
+var _ transport.MessageWriter = (*sseMessageWriter)(nil)
+
+func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if len(msg) > transport.MaxLineSize {
+		return fmt.Errorf("message too large: %d bytes", len(msg))
+	}
+	lines := bytes.Split(msg, []byte("\n"))
+	for _, line := range lines {
+		if _, err := sw.w.Write([]byte("data: ")); err != nil {
+			return fmt.Errorf("writing sse data prefix: %w", err)
+		}
+		if _, err := sw.w.Write(line); err != nil {
+			return fmt.Errorf("writing sse data: %w", err)
+		}
+		if _, err := sw.w.Write([]byte("\n")); err != nil {
+			return fmt.Errorf("writing sse line terminator: %w", err)
+		}
+	}
+	if _, err := sw.w.Write([]byte("\n")); err != nil {
+		return fmt.Errorf("writing sse event terminator: %w", err)
+	}
+	sw.wrote = true
+	if sw.flusher != nil {
+		sw.flusher.Flush()
+	}
+	return nil
+}
+
+func (sw *sseMessageWriter) Wrote() bool {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.wrote
+}
 
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
 // bidirectional scanning. Reads JSON-RPC from clientIn, POSTs to upstreamURL,
@@ -1409,26 +1467,64 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		// Read upstream response body and scan it.
+		// Route the upstream body reader by Content-Type. The MCP Streamable
+		// HTTP spec lets servers respond with either application/json (single
+		// JSON-RPC message in body) or text/event-stream (one or more
+		// JSON-RPC messages framed as SSE data: events). Without the SSE
+		// branch, ForwardScanned feeds raw `data: ...\n\n` bytes to the
+		// JSON-RPC parser and emits "upstream response is not parseable
+		// JSON-RPC" on every SSE upstream. The stdio-to-HTTP path
+		// (transport.HTTPClient.SendMessage) already does this routing at
+		// internal/mcp/transport/httpclient.go; this listener has its own
+		// hand-rolled HTTP request loop and so has to do it inline.
+		//
 		// nil tracker: HTTP reverse proxy pairs each request/response via HTTP
 		// semantics, so confused deputy tracking is handled at the transport level.
-		reader := &transport.SingleMessageReader{Body: upResp.Body}
+		upstreamCT := upResp.Header.Get("Content-Type")
+		upstreamIsSSE := isSSEContentType(upstreamCT)
+		var reader transport.MessageReader
+		if upstreamIsSSE {
+			reader = transport.NewSSEReader(upResp.Body)
+		} else {
+			reader = &transport.SingleMessageReader{Body: upResp.Body}
+		}
 		var buf bytes.Buffer
 		bufWriter := &syncWriter{w: &buf}
 		reqOpts := baseOpts
 		reqOpts.Rec = reqRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
 		reqOpts.AdaptiveCfgFn = nil
-		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
-		if scanErr != nil {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
-		}
 
 		// Pass Mcp-Session-Id from upstream back to client.
 		if sid := upResp.Header.Get("Mcp-Session-Id"); sid != "" {
 			w.Header().Set("Mcp-Session-Id", sid)
 		}
 
+		// Re-frame the response to match the upstream wire format. When the
+		// upstream emitted SSE, write each scanned message as an SSE data event
+		// immediately so streaming notifications reach the agent without
+		// waiting for upstream EOF. When the upstream emitted application/json
+		// the buffer holds a single message and is forwarded verbatim below.
+		if upstreamIsSSE {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			streamWriter := &sseMessageWriter{w: w}
+			if flusher, ok := w.(http.Flusher); ok {
+				streamWriter.flusher = flusher
+			}
+			_, scanErr := ForwardScanned(reader, streamWriter, safeLogW, nil, reqOpts)
+			if scanErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+			}
+			if !streamWriter.Wrote() {
+				w.WriteHeader(http.StatusAccepted)
+			}
+			return
+		}
+		_, scanErr := ForwardScanned(reader, bufWriter, safeLogW, nil, reqOpts)
+		if scanErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		output := bytes.TrimSpace(buf.Bytes())
 		if len(output) == 0 {

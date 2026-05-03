@@ -9,11 +9,18 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 )
+
+// blockreasonImportPath is the canonical import path the matrix anchors on.
+// Matching by import path (not by selector identifier name) means the gate
+// stays correct under aliased imports and ignores unrelated locals named
+// `blockreason`.
+const blockreasonImportPath = "github.com/luckyPipewrench/pipelock/internal/blockreason"
 
 // TestProductionPathMatrix walks the in-tree Go source for every canonical
 // blockreason.Reason and asserts each one is referenced from at least one
@@ -204,13 +211,41 @@ func collectBlockReasonReferences(root string) (map[string][]string, error) {
 			// just be skipped.
 			return nil
 		}
+		// Build the per-file alias set keyed on the import PATH, not the
+		// identifier name. This is the bug class CodeRabbit flagged: a
+		// looser `pkg.Name == "blockreason"` selector match would (a)
+		// count unrelated selectors on a local identifier shadowing the
+		// package name, and (b) miss valid references when the import is
+		// aliased. Dot/blank imports do not carry a usable selector
+		// identifier, so they are excluded from the alias set.
+		aliases := map[string]struct{}{}
+		for _, imp := range f.Imports {
+			p, unquoteErr := strconv.Unquote(imp.Path.Value)
+			if unquoteErr != nil || p != blockreasonImportPath {
+				continue
+			}
+			alias := "blockreason"
+			if imp.Name != nil {
+				if imp.Name.Name == "." || imp.Name.Name == "_" {
+					continue
+				}
+				alias = imp.Name.Name
+			}
+			aliases[alias] = struct{}{}
+		}
+		if len(aliases) == 0 {
+			return nil
+		}
 		ast.Inspect(f, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok {
 				return true
 			}
 			pkg, ok := sel.X.(*ast.Ident)
-			if !ok || pkg.Name != "blockreason" {
+			if !ok {
+				return true
+			}
+			if _, ok := aliases[pkg.Name]; !ok {
 				return true
 			}
 			rel, _ := filepath.Rel(root, path)

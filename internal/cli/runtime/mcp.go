@@ -94,10 +94,16 @@ func parseHeaderFlags(raw []string) (http.Header, error) {
 		if !validHeaderName(key) {
 			return nil, fmt.Errorf("--header %q: key contains invalid characters", entry)
 		}
-		value = strings.TrimSpace(value)
+		// Validate the raw value before trimming so leading/trailing CRLF,
+		// control chars, or unicode whitespace are rejected rather than
+		// silently stripped by TrimSpace and then accepted.
 		if !validHeaderValue(value) {
 			return nil, fmt.Errorf("--header %q: value contains invalid characters", entry)
 		}
+		// Trim ASCII space/tab only after validation; full TrimSpace would
+		// strip unicode whitespace that the validator just rejected, leaving
+		// the bypass available through the header value's edges.
+		value = strings.Trim(value, " \t")
 		if _, reserved := reservedTransportHeaders[http.CanonicalHeaderKey(key)]; reserved {
 			return nil, fmt.Errorf("--header %q: %q is managed by the MCP HTTP transport and cannot be overridden via --header", entry, key)
 		}

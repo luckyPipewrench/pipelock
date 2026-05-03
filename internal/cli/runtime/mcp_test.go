@@ -702,6 +702,26 @@ func TestParseHeaderFlags(t *testing.T) {
 			wantErr: `--header "X-Test: ok\u2003hidden": value contains invalid characters`,
 		},
 		{
+			// Boundary case: TrimSpace previously stripped a trailing CRLF
+			// before validation ran. Catches that regression.
+			name:    "value ending with crlf rejected",
+			input:   []string{"X-Test: ok\r\n"},
+			wantErr: "--header \"X-Test: ok\\r\\n\": value contains invalid characters",
+		},
+		{
+			// Boundary case: leading unicode whitespace would be stripped by
+			// strings.TrimSpace, bypassing validHeaderValue.
+			name:    "value starting with unicode whitespace rejected",
+			input:   []string{"X-Test: \u2003ok"},
+			wantErr: `--header "X-Test: \u2003ok": value contains invalid characters`,
+		},
+		{
+			// Boundary case: trailing unicode whitespace, same reasoning.
+			name:    "value ending with unicode whitespace rejected",
+			input:   []string{"X-Test: ok\u2003"},
+			wantErr: `--header "X-Test: ok\u2003": value contains invalid characters`,
+		},
+		{
 			name:    "reserved Mcp-Session-Id rejected",
 			input:   []string{"Mcp-Session-Id: attacker-pinned"},
 			wantErr: `--header "Mcp-Session-Id: attacker-pinned": "Mcp-Session-Id" is managed by the MCP HTTP transport and cannot be overridden via --header`,

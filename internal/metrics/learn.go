@@ -98,6 +98,18 @@ func (m *Metrics) registerLearnMetrics(reg *prometheus.Registry) {
 		Help:      "Total floor failures across all inference classifications, labeled by which floor caused the rule to fall back to never_confirmed (sessions, events, windows). Diagnostic for which floor is the bottleneck on a deployment's data volume.",
 	}, []string{"floor"})
 
+	m.learnCaptureRecords = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: learnNamespace,
+		Name:      "capture_records_total",
+		Help:      "Total capture records durably written by the learn-and-lock capture writer.",
+	})
+
+	m.learnCaptureDropped = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: learnNamespace,
+		Name:      "capture_dropped_total",
+		Help:      "Total capture records dropped before durable write by the learn-and-lock capture writer.",
+	})
+
 	reg.MustRegister(
 		m.learnObservationEvents,
 		m.learnRegulatedDataBlocked,
@@ -105,6 +117,8 @@ func (m *Metrics) registerLearnMetrics(reg *prometheus.Registry) {
 		m.learnUnclassifiedRate,
 		m.learnInferenceClassifications,
 		m.learnInferenceFloorFailures,
+		m.learnCaptureRecords,
+		m.learnCaptureDropped,
 	)
 }
 
@@ -247,4 +261,20 @@ func (m *Metrics) RecordInferenceFloorFailure(floor FloorFailure) {
 	default:
 		// Drop non-canonical (see RecordInferenceClassification).
 	}
+}
+
+// RecordLearnCaptureRecord increments the learn capture durable-write counter.
+func (m *Metrics) RecordLearnCaptureRecord() {
+	if m == nil {
+		return
+	}
+	m.learnCaptureRecords.Inc()
+}
+
+// RecordLearnCaptureDrop increments the learn capture drop counter.
+func (m *Metrics) RecordLearnCaptureDrop() {
+	if m == nil {
+		return
+	}
+	m.learnCaptureDropped.Inc()
 }

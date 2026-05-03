@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -52,6 +53,40 @@ func TestInboundEnvelopeFailurePatternUsesVerifierCodes(t *testing.T) {
 				t.Fatalf("pattern = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRecordInboundEnvelopeVerifyMetricMapping(t *testing.T) {
+	t.Parallel()
+
+	cfgDisabled := config.Defaults()
+	cfgEnabled := config.Defaults()
+	cfgEnabled.MediationEnvelope.VerifyInbound.Enabled = true
+
+	m := metrics.New()
+	recordInboundEnvelopeVerify(m, cfgDisabled, nil)
+	recordInboundEnvelopeVerify(m, cfgEnabled, nil)
+	recordInboundEnvelopeVerify(m, cfgEnabled, &envelope.VerificationError{
+		Code: envelope.VerificationFailureMissing,
+		Err:  errors.New("missing envelope"),
+	})
+	recordInboundEnvelopeVerify(m, cfgEnabled, errors.New("signature verification failed"))
+
+	cases := map[string]float64{
+		"disabled": 1,
+		"verified": 1,
+		"missing":  1,
+		"failed":   1,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	for result, want := range cases {
+		line := fmt.Sprintf(`pipelock_envelope_verify_total{result="%s"} %g`, result, want)
+		if !strings.Contains(body, line) {
+			t.Fatalf("metrics output missing %q\n%s", line, body)
+		}
 	}
 }
 

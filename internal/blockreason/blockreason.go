@@ -148,6 +148,17 @@ var validReasons = map[Reason]struct{}{
 	BlockReasonOverflow:    {},
 }
 
+// AllReasons returns every Reason in the canonical allowlist. The returned
+// slice is freshly allocated on each call so callers can sort or filter
+// without affecting the package state. Order is not guaranteed.
+func AllReasons() []Reason {
+	out := make([]Reason, 0, len(validReasons))
+	for r := range validReasons {
+		out = append(out, r)
+	}
+	return out
+}
+
 // Severity matches pipelock's existing severity vocabulary in
 // internal/config/schema.go (SeverityInfo / SeverityWarn / SeverityCritical).
 type Severity string

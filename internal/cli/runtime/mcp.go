@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -90,12 +91,63 @@ func parseHeaderFlags(raw []string) (http.Header, error) {
 		if key == "" {
 			return nil, fmt.Errorf("--header %q: key is empty", entry)
 		}
+		if !validHeaderName(key) {
+			return nil, fmt.Errorf("--header %q: key contains invalid characters", entry)
+		}
+		value = strings.TrimSpace(value)
+		if !validHeaderValue(value) {
+			return nil, fmt.Errorf("--header %q: value contains invalid characters", entry)
+		}
 		if _, reserved := reservedTransportHeaders[http.CanonicalHeaderKey(key)]; reserved {
 			return nil, fmt.Errorf("--header %q: %q is managed by the MCP HTTP transport and cannot be overridden via --header", entry, key)
 		}
-		h.Add(key, strings.TrimSpace(value))
+		h.Add(key, value)
 	}
 	return h, nil
+}
+
+func validHeaderName(key string) bool {
+	if key == "" {
+		return false
+	}
+	for _, r := range key {
+		if r > 127 || !isHTTPTokenChar(byte(r)) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHTTPTokenChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	}
+	switch c {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	default:
+		return false
+	}
+}
+
+func validHeaderValue(value string) bool {
+	for _, r := range value {
+		if r == '\t' || r == ' ' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		if r > 127 && unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // handleProxyError classifies MCP proxy errors: subprocess exits get a

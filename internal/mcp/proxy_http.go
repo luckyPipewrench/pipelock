@@ -680,6 +680,26 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}
 
+	// Capture: record DLP/injection input verdict before action dispatch so
+	// block/ask/redirect/warn all preserve the same replay metadata.
+	if !verdict.Clean {
+		var rawFindings []capture.Finding
+		rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
+		rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+		obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+			Subsurface:        "dlp_mcp_input",
+			Transport:         opts.Transport,
+			SessionID:         captureSessionID(opts.Transport),
+			SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+			ConfigHash:        opts.captureConfigHash(),
+			Profile:           opts.captureProfile(),
+			TransformKind:     capture.TransformJoinedFields,
+			RawFindings:       rawFindings,
+			EffectiveAction:   effectiveAction,
+			Outcome:           captureOutcome(effectiveAction, false),
+		})
+	}
+
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
@@ -843,24 +863,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				ErrorMessage:   fmt.Sprintf("pipelock: %s", reason),
 			}
 			return result
-		}
-		// Capture: record DLP/injection input verdict when not clean.
-		if !verdict.Clean {
-			var rawFindings []capture.Finding
-			rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
-			rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
-			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
-				Subsurface:        "dlp_mcp_input",
-				Transport:         opts.Transport,
-				SessionID:         captureSessionID(opts.Transport),
-				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
-				ConfigHash:        opts.captureConfigHash(),
-				Profile:           opts.captureProfile(),
-				TransformKind:     capture.TransformJoinedFields,
-				RawFindings:       rawFindings,
-				EffectiveAction:   effectiveAction,
-				Outcome:           captureOutcome(effectiveAction, false),
-			})
 		}
 		if verdict.Method == methodToolsCall {
 			var decorateErr error

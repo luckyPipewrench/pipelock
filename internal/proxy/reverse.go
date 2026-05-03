@@ -296,6 +296,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	r = r.WithContext(ctx)
 
 	if err := verifyInboundEnvelope(r, cfg, snap.inboundVerifier); err != nil {
+		recordInboundEnvelopeVerify(rp.metrics, cfg, err)
 		pattern := inboundEnvelopeFailurePattern(err)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerMediationEnvelope)
@@ -315,6 +316,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			"inbound mediation envelope verification failed")
 		return
 	}
+	recordInboundEnvelopeVerify(rp.metrics, cfg, nil)
 	// Strip inbound mediation envelope headers after optional trust
 	// verification so forged mediation metadata cannot survive to upstreams.
 	envelope.StripInbound(r.Header)
@@ -354,6 +356,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				SessionID:         captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
 				SessionIDOriginal: captureSessionKeyOriginal(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
 				ConfigHash:        cfg.CanonicalPolicyHash(),
+				Agent:             r.Header.Get("X-Pipelock-Agent"),
 				Profile:           edition.ProfileDefault,
 				Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
 				TransformKind:     capture.TransformRaw,
@@ -552,6 +555,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			SessionID:         captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
 			SessionIDOriginal: captureSessionKeyOriginal(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
 			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Agent:             r.Header.Get("X-Pipelock-Agent"),
 			Profile:           edition.ProfileDefault,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
 			TransformKind:     capture.TransformJoinedFields,
@@ -1012,6 +1016,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			SessionID:         captureSessionKey(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
 			SessionIDOriginal: captureSessionKeyOriginal(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
 			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Agent:             resp.Request.Header.Get("X-Pipelock-Agent"),
 			Profile:           edition.ProfileDefault,
 			Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
 			TransformKind:     capture.TransformRaw,

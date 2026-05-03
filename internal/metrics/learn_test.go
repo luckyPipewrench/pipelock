@@ -19,9 +19,11 @@ var expectedLearnMetricNames = []string{
 	"pipelock_learn_unclassified_rate",
 	"pipelock_learn_inference_classify_total",
 	"pipelock_learn_inference_floor_failures_total",
+	"pipelock_learn_capture_records_total",
+	"pipelock_learn_capture_dropped_total",
 }
 
-func TestRegisterLearnMetrics_RegistersAllSix(t *testing.T) {
+func TestRegisterLearnMetrics_RegistersAll(t *testing.T) {
 	t.Parallel()
 	m := New()
 
@@ -38,6 +40,8 @@ func TestRegisterLearnMetrics_RegistersAllSix(t *testing.T) {
 	m.RecordRegulatedDataBlocked(BlockReasonFieldClassRegulated)
 	m.RecordInferenceClassification(OutcomeStable)
 	m.RecordInferenceFloorFailure(FloorSessions)
+	m.RecordLearnCaptureRecord()
+	m.RecordLearnCaptureDrop()
 
 	families, err := m.Registry().Gather()
 	if err != nil {
@@ -54,6 +58,29 @@ func TestRegisterLearnMetrics_RegistersAllSix(t *testing.T) {
 			t.Errorf("expected metric %q in registry, not found", want)
 		}
 	}
+}
+
+func TestRecordLearnCaptureCounters(t *testing.T) {
+	t.Parallel()
+	m := New()
+
+	m.RecordLearnCaptureRecord()
+	m.RecordLearnCaptureRecord()
+	m.RecordLearnCaptureDrop()
+
+	if got := testutil.ToFloat64(m.learnCaptureRecords); got != 2 {
+		t.Errorf("learn capture records = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(m.learnCaptureDropped); got != 1 {
+		t.Errorf("learn capture dropped = %v, want 1", got)
+	}
+}
+
+func TestRecordLearnCaptureCounters_NilSafe(t *testing.T) {
+	t.Parallel()
+	var m *Metrics
+	m.RecordLearnCaptureRecord()
+	m.RecordLearnCaptureDrop()
 }
 
 func TestRecordObservationEvent_IncrementsByActionClass(t *testing.T) {

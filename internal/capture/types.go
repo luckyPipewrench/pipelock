@@ -13,6 +13,18 @@ import "context"
 // Replay engines must reject summaries with unknown versions.
 const CaptureSchemaV1 = 1
 
+// MaxSessionKeyLen bounds the length of an on-disk session directory name.
+// Most filesystems cap a single path component at 255 bytes (NAME_MAX); the
+// ceiling here is conservative so the writer never bumps that limit.
+//
+// This is the SHARED contract between the proxy-side session-key construction
+// helpers (which decide whether to hash an unsafe or overlength logical key
+// for filesystem safety) and the writer-side reverse-engineering of the
+// sanitization reason for the capture_session_id_sanitized_total metric.
+// Both sides must agree on the threshold or the metric label silently
+// misclassifies; defining it once here keeps them in lockstep.
+const MaxSessionKeyLen = 200
+
 // Surface constants identify which proxy layer produced a capture entry.
 const (
 	ActionAllow       = "allow"
@@ -235,6 +247,15 @@ type CaptureDropDetail struct {
 // the evidence chain aware of the loss.
 type DropSink interface {
 	RecordCaptureDrop()
+}
+
+// MetricsSink receives capture-specific observability events. It is separate
+// from DropSink so existing drop-only test sinks do not need to implement the
+// broader learn-and-lock soak metric surface.
+type MetricsSink interface {
+	RecordCaptureSessionIDSanitized(reason string)
+	RecordLearnCaptureRecord()
+	RecordLearnCaptureDrop()
 }
 
 // CaptureObserver is called by proxy and MCP scanner hooks with the verdict for

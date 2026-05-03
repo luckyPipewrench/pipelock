@@ -99,7 +99,8 @@ type Metrics struct {
 	responseScanExemptTotal *prometheus.CounterVec
 
 	// Capture (capture.go).
-	CaptureDropped prometheus.Counter
+	CaptureDropped            prometheus.Counter
+	captureSessionIDSanitized *prometheus.CounterVec
 
 	// Learn-and-lock observation pipeline (learn.go).
 	learnObservationEvents        *prometheus.CounterVec
@@ -108,6 +109,11 @@ type Metrics struct {
 	learnUnclassifiedRate         prometheus.Gauge
 	learnInferenceClassifications *prometheus.CounterVec
 	learnInferenceFloorFailures   *prometheus.CounterVec
+	learnCaptureRecords           prometheus.Counter
+	learnCaptureDropped           prometheus.Counter
+
+	// Mediation envelope verification (envelope.go).
+	envelopeVerifyTotal *prometheus.CounterVec
 
 	// Stats endpoint state (stats_handler.go).
 	mu                     sync.Mutex
@@ -168,6 +174,7 @@ func New() *Metrics {
 	m.registerShieldMetrics(reg)
 	m.registerCaptureMetrics(reg)
 	m.registerLearnMetrics(reg)
+	m.registerEnvelopeMetrics(reg)
 
 	return m
 }

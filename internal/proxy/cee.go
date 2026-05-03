@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -31,10 +32,10 @@ func CeeSessionKey(agent, clientIP string) string {
 	return clientIP
 }
 
-// maxCaptureSessionKeyLen bounds the on-disk session directory name length.
-// Most filesystems cap a single path component at 255 bytes (NAME_MAX); pick a
-// conservative ceiling so the writer never bumps that limit.
-const maxCaptureSessionKeyLen = 200
+// maxCaptureSessionKeyLen aliases the writer-side ceiling so the
+// proxy-side sanitization decision and the writer-side reason metric stay
+// in lockstep. Source of truth: capture.MaxSessionKeyLen.
+const maxCaptureSessionKeyLen = capture.MaxSessionKeyLen
 
 // captureSessionKey returns the CEE session identity when it is safe to use as
 // a recorder directory name. Self-declared agent names are untrusted, so unsafe

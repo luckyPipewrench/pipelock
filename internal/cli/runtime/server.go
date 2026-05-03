@@ -469,6 +469,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			},
 			EscrowPublicKey: escrowPub,
 			DropSink:        m,
+			MetricsSink:     m,
 			QueueSize:       4096, // bounded channel capacity
 			BuildVersion:    cliutil.Version,
 			BuildSHA:        cliutil.GitCommit,

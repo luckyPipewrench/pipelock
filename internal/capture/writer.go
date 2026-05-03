@@ -55,6 +55,9 @@ type WriterConfig struct {
 	EscrowPublicKey *[32]byte
 	// DropSink receives notifications when captures are dropped.
 	DropSink DropSink
+	// MetricsSink receives broader capture observability events for soak
+	// dashboards. Optional; nil disables these counters.
+	MetricsSink MetricsSink
 	// QueueSize is the bounded channel capacity. Zero uses a default of 4096.
 	QueueSize int
 	// BuildVersion is the pipelock version string baked into every summary.
@@ -74,6 +77,7 @@ type Writer struct {
 	privKey      ed25519.PrivateKey
 	escrowPub    *[32]byte
 	dropSink     DropSink
+	metricsSink  MetricsSink
 	recorders    map[string]*recorder.Recorder
 	payloadSeq   map[string]uint64
 	metaRec      *recorder.Recorder
@@ -119,6 +123,7 @@ func NewWriter(cfg WriterConfig) (*Writer, error) {
 		privKey:      cfg.PrivKey,
 		escrowPub:    cfg.EscrowPublicKey,
 		dropSink:     cfg.DropSink,
+		metricsSink:  cfg.MetricsSink,
 		recorders:    make(map[string]*recorder.Recorder),
 		payloadSeq:   make(map[string]uint64),
 		metaRec:      metaRec,
@@ -236,6 +241,14 @@ func (w *Writer) worker() {
 		ce.entry.Detail = ce.summary
 		if err := rec.Record(ce.entry); err != nil {
 			w.recordDrop()
+			continue
+		}
+		if w.metricsSink != nil {
+			if ce.summary.SessionIDOriginal != "" {
+				w.metricsSink.RecordCaptureSessionIDSanitized(
+					captureSessionIDSanitizationReason(ce.summary.SessionIDOriginal))
+			}
+			w.metricsSink.RecordLearnCaptureRecord()
 		}
 	}
 
@@ -267,8 +280,24 @@ func (w *Writer) recordDrop() {
 	if w.dropSink != nil {
 		w.dropSink.RecordCaptureDrop()
 	}
+	if w.metricsSink != nil {
+		w.metricsSink.RecordLearnCaptureDrop()
+	}
 	if n == 1 || n%dropSentinelInterval == 0 {
 		w.writeDropSentinel(n)
+	}
+}
+
+func captureSessionIDSanitizationReason(original string) string {
+	switch {
+	case original == "":
+		return "unknown"
+	case len(original) > MaxSessionKeyLen:
+		return "overlength"
+	case strings.ContainsAny(original, `/\`) || strings.Contains(original, ".."):
+		return "unsafe_path"
+	default:
+		return "unknown"
 	}
 }
 

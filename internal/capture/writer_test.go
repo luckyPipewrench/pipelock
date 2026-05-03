@@ -46,6 +46,33 @@ func (s *testDropSink) RecordCaptureDrop() {
 	s.drops.Add(1)
 }
 
+type testMetricsSink struct {
+	sanitizedUnsafe atomic.Int64
+	sanitizedLong   atomic.Int64
+	sanitizedOther  atomic.Int64
+	records         atomic.Int64
+	drops           atomic.Int64
+}
+
+func (s *testMetricsSink) RecordCaptureSessionIDSanitized(reason string) {
+	switch reason {
+	case "unsafe_path":
+		s.sanitizedUnsafe.Add(1)
+	case "overlength":
+		s.sanitizedLong.Add(1)
+	default:
+		s.sanitizedOther.Add(1)
+	}
+}
+
+func (s *testMetricsSink) RecordLearnCaptureRecord() {
+	s.records.Add(1)
+}
+
+func (s *testMetricsSink) RecordLearnCaptureDrop() {
+	s.drops.Add(1)
+}
+
 // newTestWriter creates a Writer with sensible test defaults.
 func newTestWriter(t *testing.T, opts ...func(*capture.WriterConfig)) *capture.Writer {
 	t.Helper()
@@ -316,6 +343,7 @@ func TestWriterRecordsURLVerdictWithEscrow(t *testing.T) {
 func TestWriterDropSentinel(t *testing.T) {
 	dir := t.TempDir()
 	sink := &testDropSink{}
+	metricsSink := &testMetricsSink{}
 
 	w, err := capture.NewWriter(capture.WriterConfig{
 		RecorderConfig: recorder.Config{
@@ -324,6 +352,7 @@ func TestWriterDropSentinel(t *testing.T) {
 			CheckpointInterval: 1000,
 		},
 		DropSink:     sink,
+		MetricsSink:  metricsSink,
 		QueueSize:    1,
 		BuildVersion: testVersion,
 		BuildSHA:     testSHA,
@@ -357,6 +386,12 @@ func TestWriterDropSentinel(t *testing.T) {
 	if drops == 0 {
 		t.Fatal("expected drops > 0 with queue size 1 and 500 sends")
 	}
+	if got := metricsSink.drops.Load(); got != drops {
+		t.Fatalf("metrics drop count = %d, want drop sink count %d", got, drops)
+	}
+	if got := metricsSink.records.Load(); got == 0 {
+		t.Fatal("expected learn capture records metric to count durable writes")
+	}
 	t.Logf("total drops: %d out of %d sends", drops, floodCount)
 
 	// Check for drop sentinel entries in the capture-meta subdirectory.
@@ -371,6 +406,9 @@ func TestWriterDropSentinel(t *testing.T) {
 
 	if len(dropEntries) == 0 {
 		t.Fatal("expected at least one capture_drop sentinel in capture-meta")
+	}
+	if err := recorder.VerifyChain(metaEntries); err != nil {
+		t.Fatalf("capture-meta drop sentinel chain is not continuous: %v", err)
 	}
 
 	// Verify the drop detail.
@@ -389,6 +427,52 @@ func TestWriterDropSentinel(t *testing.T) {
 	}
 	if dropDetail.Reason != "backpressure" {
 		t.Errorf("drop sentinel Reason: got %q, want %q", dropDetail.Reason, "backpressure")
+	}
+}
+
+func TestWriterMetricsSinkRecordsSanitizedSessionID(t *testing.T) {
+	dir := t.TempDir()
+	metricsSink := &testMetricsSink{}
+
+	w, err := capture.NewWriter(capture.WriterConfig{
+		RecorderConfig: recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+		},
+		MetricsSink:  metricsSink,
+		QueueSize:    testQueueSize,
+		BuildVersion: testVersion,
+		BuildSHA:     testSHA,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
+		Subsurface:        testSubsurface,
+		Transport:         testTransport,
+		SessionID:         "capture-abc123",
+		SessionIDOriginal: "../unsafe-agent|127.0.0.1",
+		RequestID:         "req-sanitized",
+		ConfigHash:        testConfigHash,
+		Request:           capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		EffectiveAction:   "allow",
+		Outcome:           capture.OutcomeClean,
+	})
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := metricsSink.records.Load(); got != 1 {
+		t.Fatalf("learn capture records = %d, want 1", got)
+	}
+	if got := metricsSink.sanitizedUnsafe.Load(); got != 1 {
+		t.Fatalf("sanitized unsafe count = %d, want 1", got)
+	}
+	if got := metricsSink.sanitizedLong.Load(); got != 0 {
+		t.Fatalf("sanitized overlength count = %d, want 0", got)
 	}
 }
 

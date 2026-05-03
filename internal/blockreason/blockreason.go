@@ -433,7 +433,10 @@ func SeverityFor(reason Reason) Severity {
 		MediaPolicy,
 		ParseError,
 		Timeout,
-		PatternUnavailable:
+		PatternUnavailable,
+		CompressedResponse,
+		BrowserShieldOversize,
+		BlockReasonOverflow:
 		return SeverityWarn
 	default:
 		return SeverityCritical
@@ -453,7 +456,10 @@ func RetryFor(reason Reason) Retry {
 		EscalationLevel,
 		RedactionFailure,
 		Timeout,
-		PatternUnavailable:
+		PatternUnavailable,
+		OutboundEnvelopeFailed,
+		SessionAnomaly,
+		BlockReasonOverflow:
 		return RetryTransient
 	case DomainBlocklist,
 		PathEntropy,
@@ -464,7 +470,9 @@ func RetryFor(reason Reason) Retry {
 		ToolPolicyDeny,
 		SessionBinding,
 		AuthorityMismatch,
-		NotEnabled:
+		NotEnabled,
+		CompressedResponse,
+		BrowserShieldOversize:
 		return RetryPolicy
 	default:
 		return RetryNone

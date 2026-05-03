@@ -441,32 +441,88 @@ func TestMustMarshal_FixedShapeProducesValidJSON(t *testing.T) {
 	}
 }
 
+// specCanonicalPairs is the ground truth from docs/specs/block-reason-header.md.
+// Every Reason in validReasons MUST appear here with its spec-canonical
+// (Severity, Retry) pair. The vocabulary-coverage test below enforces that
+// adding a Reason without updating this table is a build break, so the spec
+// table and the helper functions cannot drift apart in either direction.
+var specCanonicalPairs = map[Reason]struct {
+	severity Severity
+	retry    Retry
+}{
+	// Egress / network layer.
+	SchemeBlocked:    {SeverityWarn, RetryNone},
+	DomainBlocklist:  {SeverityCritical, RetryPolicy},
+	SSRFPrivateIP:    {SeverityCritical, RetryNone},
+	SSRFMetadata:     {SeverityCritical, RetryNone},
+	SSRFDNSRebind:    {SeverityCritical, RetryTransient},
+	PathEntropy:      {SeverityWarn, RetryPolicy},
+	SubdomainEntropy: {SeverityWarn, RetryPolicy},
+	URLLength:        {SeverityWarn, RetryPolicy},
+	RateLimit:        {SeverityWarn, RetryTransient},
+	DataBudget:       {SeverityWarn, RetryPolicy},
+
+	// Content / payload layer.
+	DLPMatch:         {SeverityCritical, RetryNone},
+	PromptInjection:  {SeverityCritical, RetryNone},
+	RedactionFailure: {SeverityCritical, RetryTransient},
+	MediaPolicy:      {SeverityWarn, RetryPolicy},
+
+	// MCP / tool layer.
+	ToolPolicyDeny:   {SeverityCritical, RetryPolicy},
+	ToolChainBlocked: {SeverityCritical, RetryNone},
+	ToolPoisoning:    {SeverityCritical, RetryNone},
+	SessionBinding:   {SeverityCritical, RetryPolicy},
+
+	// Posture / runtime layer.
+	AirlockActive:          {SeverityCritical, RetryTransient},
+	KillSwitchActive:       {SeverityCritical, RetryTransient},
+	EnvelopeVerifyFailed:   {SeverityCritical, RetryNone},
+	OutboundEnvelopeFailed: {SeverityCritical, RetryTransient},
+	RedirectScanDenied:     {SeverityCritical, RetryNone},
+	AuthorityMismatch:      {SeverityCritical, RetryPolicy},
+	EscalationLevel:        {SeverityCritical, RetryTransient},
+	SessionAnomaly:         {SeverityCritical, RetryTransient},
+	CrossRequestDeny:       {SeverityCritical, RetryNone},
+	CompressedResponse:     {SeverityWarn, RetryPolicy},
+	BrowserShieldOversize:  {SeverityWarn, RetryPolicy},
+
+	// Generic.
+	ParseError:         {SeverityWarn, RetryNone},
+	Timeout:            {SeverityWarn, RetryTransient},
+	PatternUnavailable: {SeverityWarn, RetryTransient},
+	NotEnabled:         {SeverityInfo, RetryPolicy},
+	BadRequest:         {SeverityInfo, RetryNone},
+
+	// Internal sentinel.
+	BlockReasonOverflow: {SeverityWarn, RetryTransient},
+}
+
+// TestSpecCanonicalPairs_VocabularyCoverage asserts the test ground-truth
+// table is exhaustive: every Reason in validReasons has an entry, and the
+// table has no entries that are not in validReasons. This guarantees adding
+// a new Reason cannot silently bypass the spec-conformance test below.
+func TestSpecCanonicalPairs_VocabularyCoverage(t *testing.T) {
+	t.Parallel()
+	for reason := range validReasons {
+		if _, ok := specCanonicalPairs[reason]; !ok {
+			t.Errorf("Reason %q is in validReasons but missing from specCanonicalPairs (update docs/specs/block-reason-header.md and the test table together)", reason)
+		}
+	}
+	for reason := range specCanonicalPairs {
+		if _, ok := validReasons[reason]; !ok {
+			t.Errorf("Reason %q is in specCanonicalPairs but not in validReasons (stale test entry?)", reason)
+		}
+	}
+}
+
 func TestSeverityFor_AllVocabulary(t *testing.T) {
 	t.Parallel()
-	cases := map[Reason]Severity{
-		// info: malformed client request, feature gate.
-		NotEnabled: SeverityInfo, BadRequest: SeverityInfo,
-		// warn: scanner ceilings, parser fails, transient unavailability.
-		SchemeBlocked: SeverityWarn, PathEntropy: SeverityWarn,
-		SubdomainEntropy: SeverityWarn, URLLength: SeverityWarn,
-		RateLimit: SeverityWarn, DataBudget: SeverityWarn,
-		MediaPolicy: SeverityWarn, ParseError: SeverityWarn,
-		Timeout: SeverityWarn, PatternUnavailable: SeverityWarn,
-		// critical: real security events.
-		DomainBlocklist: SeverityCritical, SSRFPrivateIP: SeverityCritical,
-		SSRFMetadata: SeverityCritical, SSRFDNSRebind: SeverityCritical,
-		DLPMatch: SeverityCritical, PromptInjection: SeverityCritical,
-		RedactionFailure: SeverityCritical, ToolPolicyDeny: SeverityCritical,
-		ToolChainBlocked: SeverityCritical, ToolPoisoning: SeverityCritical,
-		SessionBinding: SeverityCritical, AirlockActive: SeverityCritical,
-		KillSwitchActive: SeverityCritical, EnvelopeVerifyFailed: SeverityCritical,
-		AuthorityMismatch: SeverityCritical, EscalationLevel: SeverityCritical,
-	}
-	for reason, want := range cases {
+	for reason, want := range specCanonicalPairs {
 		t.Run(string(reason), func(t *testing.T) {
 			got := SeverityFor(reason)
-			if got != want {
-				t.Fatalf("SeverityFor(%q) = %q, want %q", reason, got, want)
+			if got != want.severity {
+				t.Fatalf("SeverityFor(%q) = %q, want %q (spec)", reason, got, want.severity)
 			}
 		})
 	}
@@ -478,30 +534,11 @@ func TestSeverityFor_AllVocabulary(t *testing.T) {
 
 func TestRetryFor_AllVocabulary(t *testing.T) {
 	t.Parallel()
-	cases := map[Reason]Retry{
-		// transient: time-bound conditions.
-		SSRFDNSRebind: RetryTransient, RateLimit: RetryTransient,
-		AirlockActive: RetryTransient, KillSwitchActive: RetryTransient,
-		EscalationLevel: RetryTransient, RedactionFailure: RetryTransient,
-		Timeout: RetryTransient, PatternUnavailable: RetryTransient,
-		// policy: only retry after operator changes pipelock policy.
-		DomainBlocklist: RetryPolicy, PathEntropy: RetryPolicy,
-		SubdomainEntropy: RetryPolicy, URLLength: RetryPolicy,
-		DataBudget: RetryPolicy, MediaPolicy: RetryPolicy,
-		ToolPolicyDeny: RetryPolicy, SessionBinding: RetryPolicy,
-		AuthorityMismatch: RetryPolicy, NotEnabled: RetryPolicy,
-		// none: permanent for the request as-is.
-		SchemeBlocked: RetryNone, SSRFPrivateIP: RetryNone,
-		SSRFMetadata: RetryNone, DLPMatch: RetryNone,
-		PromptInjection: RetryNone, ToolChainBlocked: RetryNone,
-		ToolPoisoning: RetryNone, EnvelopeVerifyFailed: RetryNone,
-		ParseError: RetryNone, BadRequest: RetryNone,
-	}
-	for reason, want := range cases {
+	for reason, want := range specCanonicalPairs {
 		t.Run(string(reason), func(t *testing.T) {
 			got := RetryFor(reason)
-			if got != want {
-				t.Fatalf("RetryFor(%q) = %q, want %q", reason, got, want)
+			if got != want.retry {
+				t.Fatalf("RetryFor(%q) = %q, want %q (spec)", reason, got, want.retry)
 			}
 		})
 	}

@@ -225,6 +225,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 			Subsurface:        "ws_url",
 			Transport:         "websocket",
+			SessionID:         CeeSessionKey(agent, clientIP),
 			RequestID:         requestID,
 			Agent:             agent,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -389,6 +390,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:      "dlp_ws_header",
 			Transport:       "websocket",
+			SessionID:       CeeSessionKey(agent, clientIP),
 			RequestID:       requestID,
 			Agent:           agent,
 			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},

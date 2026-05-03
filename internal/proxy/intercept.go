@@ -490,6 +490,7 @@ func newInterceptHandler(
 			ic.Proxy.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 				Subsurface:        "intercept_url",
 				Transport:         "connect",
+				SessionID:         CeeSessionKey(ic.Agent, ic.ClientIP),
 				RequestID:         ic.RequestID,
 				Agent:             ic.Agent,
 				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -696,6 +697,7 @@ func newInterceptHandler(
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 					Subsurface:      "dlp_body_intercept",
 					Transport:       "connect",
+					SessionID:       CeeSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:       ic.RequestID,
 					Agent:           ic.Agent,
 					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -894,6 +896,7 @@ func newInterceptHandler(
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 					Subsurface:      "dlp_header_intercept",
 					Transport:       "connect",
+					SessionID:       CeeSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:       ic.RequestID,
 					Agent:           ic.Agent,
 					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -963,6 +966,7 @@ func newInterceptHandler(
 				ic.Proxy.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
 					Subsurface:        "cee_intercept",
 					Transport:         "connect",
+					SessionID:         CeeSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:         ic.RequestID,
 					Agent:             ic.Agent,
 					Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
@@ -1452,6 +1456,7 @@ func newInterceptHandler(
 				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_intercept",
 					Transport:         "connect",
+					SessionID:         CeeSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:         ic.RequestID,
 					Agent:             ic.Agent,
 					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},

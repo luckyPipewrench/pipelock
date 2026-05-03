@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -350,6 +351,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:      "dlp_reverse_url",
 				Transport:       "reverse",
+				SessionID:       CeeSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
 				Request:         capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
 				TransformKind:   capture.TransformRaw,
 				RawFindings:     dlpMatchesToFindings(pathDLP.Matches),
@@ -544,6 +546,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:      "dlp_reverse_request",
 			Transport:       "reverse",
+			SessionID:       CeeSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
 			Request:         capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
 			TransformKind:   capture.TransformJoinedFields,
 			RawFindings:     bodyScanToFindings(result),
@@ -986,6 +989,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		rp.captureObs.ObserveResponseVerdict(resp.Request.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_reverse",
 			Transport:         "reverse",
+			SessionID:         CeeSessionKey(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
 			Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},
 			TransformKind:     capture.TransformRaw,
 			RawFindings:       responseMatchesToFindings(result.Matches, revAction),
@@ -1183,4 +1187,14 @@ func isBinaryMIME(ct string) bool {
 	return strings.HasPrefix(mediaType, "image/") ||
 		strings.HasPrefix(mediaType, "audio/") ||
 		strings.HasPrefix(mediaType, "video/")
+}
+
+// reverseClientIP extracts a client IP for capture session keying. Falls
+// back to RemoteAddr when SplitHostPort fails (e.g., raw IP without port
+// from a unix socket or test fixture).
+func reverseClientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }

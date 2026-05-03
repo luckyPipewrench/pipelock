@@ -349,6 +349,7 @@ func ForwardScannedInput(
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 				Subsurface: "session_binding",
 				Transport:  opts.Transport,
+				SessionID:  "mcp-" + opts.Transport,
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
@@ -378,6 +379,7 @@ func ForwardScannedInput(
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 				Subsurface: "chain_detection",
 				Transport:  opts.Transport,
+				SessionID:  "mcp-" + opts.Transport,
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
@@ -554,6 +556,7 @@ func ForwardScannedInput(
 				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 					Subsurface: "cee_mcp_stdio",
 					Transport:  opts.Transport,
+					SessionID:  "mcp-" + opts.Transport,
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -755,6 +758,7 @@ func ForwardScannedInput(
 				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 					Subsurface:      "response_redirect_output",
 					Transport:       opts.Transport,
+					SessionID:       "mcp-" + opts.Transport,
 					TransformKind:   capture.TransformRedirectOutput,
 					WirePayload:     result.Response,
 					RawFindings:     responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
@@ -830,6 +834,7 @@ func ForwardScannedInput(
 				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 					Subsurface: "cee_mcp_stdio",
 					Transport:  opts.Transport,
+					SessionID:  "mcp-" + opts.Transport,
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -910,6 +915,7 @@ func ForwardScannedInput(
 			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
 				Subsurface:      "dlp_mcp_input",
 				Transport:       opts.Transport,
+				SessionID:       "mcp-" + opts.Transport,
 				TransformKind:   capture.TransformJoinedFields,
 				RawFindings:     rawFindings,
 				EffectiveAction: effectiveAction,
@@ -929,6 +935,7 @@ func ForwardScannedInput(
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
 				Subsurface: "mcp_tool_policy",
 				Transport:  opts.Transport,
+				SessionID:  "mcp-" + opts.Transport,
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: verdict.Method,

@@ -15,6 +15,7 @@ const CaptureSchemaV1 = 1
 
 // Surface constants identify which proxy layer produced a capture entry.
 const (
+	ActionAllow       = "allow"
 	SurfaceURL        = "url"
 	SurfaceResponse   = "response"
 	SurfaceDLP        = "dlp"

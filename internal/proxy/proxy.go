@@ -2509,13 +2509,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Capture observer: record URL verdict for policy replay.
 	urlFindings := urlResultToFindings(result)
 	urlOutcome := captureOutcome(config.ActionBlock, result.Allowed)
-	urlAction := ""
+	urlAction := config.ActionAllow
 	if !result.Allowed {
 		urlAction = config.ActionBlock
 	}
 	p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 		Subsurface:        "fetch_url",
 		Transport:         "fetch",
+		SessionID:         CeeSessionKey(agent, clientIP),
 		RequestID:         requestID,
 		Agent:             agent,
 		Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
@@ -2765,6 +2766,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:      "dlp_fetch_header",
 			Transport:       "fetch",
+			SessionID:       CeeSessionKey(agent, clientIP),
 			RequestID:       requestID,
 			Agent:           agent,
 			Request:         capture.CaptureRequest{Method: r.Method, URL: displayURL},
@@ -2920,6 +2922,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
 			Subsurface:        "cee_fetch",
 			Transport:         "fetch",
+			SessionID:         CeeSessionKey(agent, clientIP),
 			RequestID:         requestID,
 			Agent:             agent,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
@@ -3422,6 +3425,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 			Subsurface:        "response_fetch",
 			Transport:         "fetch",
+			SessionID:         CeeSessionKey(agent, clientIP),
 			RequestID:         requestID,
 			Agent:             agent,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},

@@ -181,6 +181,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 			Subsurface:        "connect_url",
 			Transport:         "connect",
+			SessionID:         CeeSessionKey(agent, clientIP),
 			RequestID:         requestID,
 			Agent:             agent,
 			Request:           capture.CaptureRequest{Method: http.MethodConnect, URL: syntheticURL},
@@ -732,6 +733,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 			Subsurface:        "forward_url",
 			Transport:         "forward",
+			SessionID:         CeeSessionKey(agent, clientIP),
 			RequestID:         requestID,
 			Agent:             agent,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -970,6 +972,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:      "dlp_body_forward",
 				Transport:       "forward",
+				SessionID:       CeeSessionKey(agent, clientIP),
 				RequestID:       requestID,
 				Agent:           agent,
 				Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -1160,6 +1163,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:      "dlp_header_forward",
 			Transport:       "forward",
+			SessionID:       CeeSessionKey(agent, clientIP),
 			RequestID:       requestID,
 			Agent:           agent,
 			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -1234,6 +1238,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
 			Subsurface:        "cee_forward",
 			Transport:         "forward",
+			SessionID:         CeeSessionKey(agent, clientIP),
 			RequestID:         requestID,
 			Agent:             agent,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
@@ -1729,6 +1734,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_forward",
 					Transport:         "forward",
+					SessionID:         CeeSessionKey(agent, clientIP),
 					RequestID:         requestID,
 					Agent:             agent,
 					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},

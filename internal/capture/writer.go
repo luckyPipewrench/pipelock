@@ -318,6 +318,14 @@ func (w *Writer) buildSummary(
 	rawFindings, effectiveFindings []Finding,
 	effectiveAction, outcome, skipReason string,
 ) CaptureSummary {
+	// Default effectiveAction to "allow" when empty so shadow replay can
+	// compute a non-empty original_verdict. Capture call sites that leave
+	// EffectiveAction empty for clean traffic should be migrated to set
+	// config.ActionAllow explicitly; this defensive default keeps the
+	// shadow pipeline functional in the meantime.
+	if effectiveAction == "" {
+		effectiveAction = ActionAllow
+	}
 	s := CaptureSummary{
 		CaptureSchemaVersion: CaptureSchemaV1,
 		Surface:              surface,

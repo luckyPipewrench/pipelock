@@ -357,6 +357,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
 					Subsurface:      "mcp_tools_list",
 					Transport:       opts.Transport,
+					SessionID:       "mcp-" + opts.Transport,
 					RawFindings:     toolScanMatchesToFindings(toolResult.Matches),
 					EffectiveAction: toolCfg.Action,
 					Outcome:         captureOutcome(toolCfg.Action, toolResult.Clean),
@@ -590,6 +591,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 			Subsurface:      "response_mcp",
 			Transport:       opts.Transport,
+			SessionID:       "mcp-" + opts.Transport,
 			RawFindings:     responseMatchesToFindings(verdict.Matches, effectiveAction),
 			EffectiveAction: effectiveAction,
 			Outcome:         captureOutcome(effectiveAction, false),

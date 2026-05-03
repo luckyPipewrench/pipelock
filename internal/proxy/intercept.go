@@ -492,6 +492,7 @@ func newInterceptHandler(
 				Subsurface:        "intercept_url",
 				Transport:         "connect",
 				SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+				SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
 				RequestID:         ic.RequestID,
 				ConfigHash:        ic.Config.CanonicalPolicyHash(),
 				Agent:             ic.Agent,
@@ -698,18 +699,19 @@ func newInterceptHandler(
 					}
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-					Subsurface:      "dlp_body_intercept",
-					Transport:       "connect",
-					SessionID:       captureSessionKey(ic.Agent, ic.ClientIP),
-					RequestID:       ic.RequestID,
-					ConfigHash:      ic.Config.CanonicalPolicyHash(),
-					Agent:           ic.Agent,
-					Profile:         ic.Profile,
-					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
-					TransformKind:   capture.TransformJoinedFields,
-					RawFindings:     bodyScanToFindings(result),
-					EffectiveAction: bodyAction,
-					Outcome:         captureOutcome(bodyAction, result.Clean),
+					Subsurface:        "dlp_body_intercept",
+					Transport:         "connect",
+					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+					RequestID:         ic.RequestID,
+					ConfigHash:        ic.Config.CanonicalPolicyHash(),
+					Agent:             ic.Agent,
+					Profile:           ic.Profile,
+					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:     capture.TransformJoinedFields,
+					RawFindings:       bodyScanToFindings(result),
+					EffectiveAction:   bodyAction,
+					Outcome:           captureOutcome(bodyAction, result.Clean),
 				})
 			}
 			interceptRedactionReport = result.RedactionReport
@@ -899,17 +901,18 @@ func newInterceptHandler(
 					hdrAction = ic.Config.RequestBodyScanning.Action
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-					Subsurface:      "dlp_header_intercept",
-					Transport:       "connect",
-					SessionID:       captureSessionKey(ic.Agent, ic.ClientIP),
-					RequestID:       ic.RequestID,
-					ConfigHash:      ic.Config.CanonicalPolicyHash(),
-					Agent:           ic.Agent,
-					Profile:         ic.Profile,
-					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
-					TransformKind:   capture.TransformHeaderValue,
-					EffectiveAction: hdrAction,
-					Outcome:         captureOutcome(hdrAction, !hdrHasFinding),
+					Subsurface:        "dlp_header_intercept",
+					Transport:         "connect",
+					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+					RequestID:         ic.RequestID,
+					ConfigHash:        ic.Config.CanonicalPolicyHash(),
+					Agent:             ic.Agent,
+					Profile:           ic.Profile,
+					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:     capture.TransformHeaderValue,
+					EffectiveAction:   hdrAction,
+					Outcome:           captureOutcome(hdrAction, !hdrHasFinding),
 				})
 			}
 
@@ -974,6 +977,7 @@ func newInterceptHandler(
 					Subsurface:        "cee_intercept",
 					Transport:         "connect",
 					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
 					RequestID:         ic.RequestID,
 					ConfigHash:        ic.Config.CanonicalPolicyHash(),
 					Agent:             ic.Agent,
@@ -1480,6 +1484,7 @@ func newInterceptHandler(
 					Subsurface:        "response_intercept",
 					Transport:         "connect",
 					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
 					RequestID:         ic.RequestID,
 					ConfigHash:        ic.Config.CanonicalPolicyHash(),
 					Agent:             ic.Agent,

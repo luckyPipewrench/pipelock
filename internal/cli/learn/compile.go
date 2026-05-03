@@ -4,10 +4,12 @@
 package learn
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
@@ -210,13 +213,22 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 }
 
 func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
-	paths, err := filepath.Glob(filepath.Join(captureRoot, agent, "*.jsonl"))
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		seen[path] = struct{}{}
+	var paths []string
+	seen := make(map[string]struct{})
+
+	exactDir := filepath.Join(captureRoot, agent)
+	if validateCaptureSessionDir(exactDir, agent) {
+		matches, err := filepath.Glob(filepath.Join(exactDir, "*.jsonl"))
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range matches {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			paths = append(paths, path)
+		}
 	}
 
 	entries, err := os.ReadDir(captureRoot)
@@ -227,7 +239,15 @@ func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
 		if !entry.IsDir() || !captureSessionNameMatchesAgent(entry.Name(), agent) || entry.Name() == agent {
 			continue
 		}
-		matches, globErr := filepath.Glob(filepath.Join(captureRoot, entry.Name(), "*.jsonl"))
+		sessionDir := filepath.Join(captureRoot, entry.Name())
+		// Defense in depth: a name-prefix match is not enough. Require the
+		// first capture entry's self-attested agent to match the requested
+		// agent so a planted sibling like "agent-a|poison/" cannot silently
+		// contribute training inputs without producing forged recorder JSONL.
+		if !validateCaptureSessionDir(sessionDir, agent) {
+			continue
+		}
+		matches, globErr := filepath.Glob(filepath.Join(sessionDir, "*.jsonl"))
 		if globErr != nil {
 			return nil, globErr
 		}
@@ -245,6 +265,67 @@ func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
 
 func captureSessionNameMatchesAgent(sessionName, agent string) bool {
 	return sessionName == agent || strings.HasPrefix(sessionName, agent+"|")
+}
+
+// validateCaptureSessionDir returns true when the session directory contains
+// at least one JSONL file whose first line decodes as a recorder envelope and
+// whose embedded capture summary attributes the entry to the requested agent.
+//
+// This is defense in depth, not a trust anchor. An attacker with write access
+// to the capture root can still forge the envelope and the agent field. The
+// purpose is to reject the obvious case (a sibling directory whose name shares
+// the agent prefix but whose contents declare a different agent), so the
+// learn/shadow pipelines do not silently absorb poisoned inputs from a name
+// collision alone.
+func validateCaptureSessionDir(sessionDir, agent string) bool {
+	matches, err := filepath.Glob(filepath.Join(sessionDir, "*.jsonl"))
+	if err != nil {
+		return false
+	}
+	// Empty session directories are safe to match (the recorder may have
+	// created the dir before it received traffic, or the session was
+	// drained). They contribute zero JSONL inputs either way; the validator
+	// only needs to reject directories whose contents actively misattribute
+	// to a different agent.
+	if len(matches) == 0 {
+		return true
+	}
+	sort.Strings(matches)
+	f, err := os.Open(filepath.Clean(matches[0]))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	if !sc.Scan() {
+		return false
+	}
+	var envelope struct {
+		Type   string `json:"type"`
+		Hash   string `json:"hash"`
+		Detail struct {
+			Agent string `json:"agent"`
+		} `json:"detail"`
+	}
+	if err := json.Unmarshal(sc.Bytes(), &envelope); err != nil {
+		return false
+	}
+	// Loose schema check: a recorder entry always carries a chain hash and a
+	// type. Reject anything that does not look like recorder JSONL.
+	if envelope.Type == "" || envelope.Hash == "" {
+		return false
+	}
+	// Capture entries stamp the requested agent into the summary. Reject
+	// directories whose first entry attributes its traffic to a different
+	// agent (or omits the field entirely on a capture entry, which is the
+	// observable signature of a hand-crafted forgery).
+	if envelope.Type == capture.EntryTypeCapture {
+		return envelope.Detail.Agent == agent
+	}
+	// Non-capture entries (checkpoint, drop sentinel) leave the agent field
+	// unstamped; defer to name-prefix matching for those.
+	return true
 }
 
 func resolveCompileInputPath(path string) (string, error) {

@@ -2517,6 +2517,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Subsurface:        "fetch_url",
 		Transport:         "fetch",
 		SessionID:         captureSessionKey(agent, clientIP),
+		SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 		RequestID:         requestID,
 		ConfigHash:        cfg.CanonicalPolicyHash(),
 		Agent:             agent,
@@ -2766,17 +2767,18 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			hdrAction = config.ActionWarn
 		}
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-			Subsurface:      "dlp_fetch_header",
-			Transport:       "fetch",
-			SessionID:       captureSessionKey(agent, clientIP),
-			RequestID:       requestID,
-			ConfigHash:      cfg.CanonicalPolicyHash(),
-			Agent:           agent,
-			Profile:         id.Profile,
-			Request:         capture.CaptureRequest{Method: r.Method, URL: displayURL},
-			TransformKind:   capture.TransformHeaderValue,
-			EffectiveAction: hdrAction,
-			Outcome:         captureOutcome(hdrAction, !headerHadFinding),
+			Subsurface:        "dlp_fetch_header",
+			Transport:         "fetch",
+			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Agent:             agent,
+			Profile:           id.Profile,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: displayURL},
+			TransformKind:     capture.TransformHeaderValue,
+			EffectiveAction:   hdrAction,
+			Outcome:           captureOutcome(hdrAction, !headerHadFinding),
 		})
 	}
 
@@ -2927,6 +2929,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Subsurface:        "cee_fetch",
 			Transport:         "fetch",
 			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
@@ -3432,6 +3435,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Subsurface:        "response_fetch",
 			Transport:         "fetch",
 			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,

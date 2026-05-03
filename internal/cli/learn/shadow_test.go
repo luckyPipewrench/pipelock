@@ -566,7 +566,18 @@ func TestResolveShadowSessionsAgentConfigBranches(t *testing.T) {
 		t.Fatalf("agent sessions root = %q, want %q", got, root)
 	}
 	filter := shadowSessionFilter(shadowFlags{agent: "agent-a"})
-	if !filter("agent-a") || !filter("agent-a|10.0.0.1") || filter("agent-ab|10.0.0.2") {
+	// Empty session dirs satisfy the validator (no contents to misattribute),
+	// so name-prefix-matching is the effective check for these cases.
+	emptyA := filepath.Join(root, "agent-a")
+	emptyAIP := filepath.Join(root, "agent-a|10.0.0.1")
+	emptyABIP := filepath.Join(root, "agent-ab|10.0.0.2")
+	if err := os.MkdirAll(emptyAIP, 0o750); err != nil {
+		t.Fatalf("MkdirAll emptyAIP: %v", err)
+	}
+	if err := os.MkdirAll(emptyABIP, 0o750); err != nil {
+		t.Fatalf("MkdirAll emptyABIP: %v", err)
+	}
+	if !filter("agent-a", emptyA) || !filter("agent-a|10.0.0.1", emptyAIP) || filter("agent-ab|10.0.0.2", emptyABIP) {
 		t.Fatalf("shadow session filter did not match only agent-a sessions")
 	}
 	if shadowSessionFilter(shadowFlags{sessionsDir: agentDir}) != nil {

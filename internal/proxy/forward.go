@@ -182,6 +182,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			Subsurface:        "connect_url",
 			Transport:         "connect",
 			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
@@ -737,6 +738,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Subsurface:        "forward_url",
 			Transport:         "forward",
 			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
@@ -975,18 +977,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-				Subsurface:      "dlp_body_forward",
-				Transport:       "forward",
-				SessionID:       captureSessionKey(agent, clientIP),
-				RequestID:       requestID,
-				ConfigHash:      cfg.CanonicalPolicyHash(),
-				Agent:           agent,
-				Profile:         id.Profile,
-				Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
-				TransformKind:   capture.TransformJoinedFields,
-				RawFindings:     bodyScanToFindings(bodyResult),
-				EffectiveAction: bodyAction,
-				Outcome:         captureOutcome(bodyAction, bodyResult.Clean),
+				Subsurface:        "dlp_body_forward",
+				Transport:         "forward",
+				SessionID:         captureSessionKey(agent, clientIP),
+				SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+				RequestID:         requestID,
+				ConfigHash:        cfg.CanonicalPolicyHash(),
+				Agent:             agent,
+				Profile:           id.Profile,
+				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+				TransformKind:     capture.TransformJoinedFields,
+				RawFindings:       bodyScanToFindings(bodyResult),
+				EffectiveAction:   bodyAction,
+				Outcome:           captureOutcome(bodyAction, bodyResult.Clean),
 			})
 		}
 		forwardRedactionReport = bodyResult.RedactionReport
@@ -1168,17 +1171,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			hdrAction = config.ActionWarn
 		}
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-			Subsurface:      "dlp_header_forward",
-			Transport:       "forward",
-			SessionID:       captureSessionKey(agent, clientIP),
-			RequestID:       requestID,
-			ConfigHash:      cfg.CanonicalPolicyHash(),
-			Agent:           agent,
-			Profile:         id.Profile,
-			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
-			TransformKind:   capture.TransformHeaderValue,
-			EffectiveAction: hdrAction,
-			Outcome:         captureOutcome(hdrAction, !forwardHeaderHadFinding),
+			Subsurface:        "dlp_header_forward",
+			Transport:         "forward",
+			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Agent:             agent,
+			Profile:           id.Profile,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:     capture.TransformHeaderValue,
+			EffectiveAction:   hdrAction,
+			Outcome:           captureOutcome(hdrAction, !forwardHeaderHadFinding),
 		})
 	}
 
@@ -1248,6 +1252,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Subsurface:        "cee_forward",
 			Transport:         "forward",
 			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
@@ -1746,6 +1751,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					Subsurface:        "response_forward",
 					Transport:         "forward",
 					SessionID:         captureSessionKey(agent, clientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 					RequestID:         requestID,
 					ConfigHash:        cfg.CanonicalPolicyHash(),
 					Agent:             agent,

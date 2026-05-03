@@ -16,15 +16,38 @@ import (
 )
 
 func captureSessionID(transport string) string {
+	safe, _ := captureSessionIDAndOriginal(transport)
+	return safe
+}
+
+// captureSessionIDAndOriginal returns the safe session key and the original
+// logical key. When the two differ, the safe value was hashed to escape an
+// unsafe input. Capture call sites stamp the original into the record so
+// downstream audit can map opaque "mcp-<hex>" directories back to the raw
+// transport identity.
+func captureSessionIDAndOriginal(transport string) (safe, original string) {
 	key := "mcp-" + transport
 	if key == "mcp-" {
 		key = "mcp"
 	}
 	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") {
 		sum := sha256.Sum256([]byte(key))
-		return "mcp-" + hex.EncodeToString(sum[:])
+		return "mcp-" + hex.EncodeToString(sum[:]), key
 	}
-	return key
+	return key, key
+}
+
+// captureSessionIDOriginal returns the unsanitized logical session key when
+// the safe directory-name key was derived via hashing, and the empty string
+// otherwise. Capture call sites assign the result to record.SessionIDOriginal
+// (omitempty), so the field appears only when a sanitized "mcp-<hex>"
+// directory needs an audit trail back to its raw logical transport identity.
+func captureSessionIDOriginal(transport string) string {
+	safe, original := captureSessionIDAndOriginal(transport)
+	if safe == original {
+		return ""
+	}
+	return original
 }
 
 // dlpMatchesToFindings converts scanner.TextDLPMatch slice to capture findings.

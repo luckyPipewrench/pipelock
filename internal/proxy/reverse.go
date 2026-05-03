@@ -349,16 +349,17 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				}
 			}
 			rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-				Subsurface:      "dlp_reverse_url",
-				Transport:       "reverse",
-				SessionID:       captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
-				ConfigHash:      cfg.CanonicalPolicyHash(),
-				Profile:         edition.ProfileDefault,
-				Request:         capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
-				TransformKind:   capture.TransformRaw,
-				RawFindings:     dlpMatchesToFindings(pathDLP.Matches),
-				EffectiveAction: urlDLPAction,
-				Outcome:         captureOutcome(urlDLPAction, pathDLP.Clean),
+				Subsurface:        "dlp_reverse_url",
+				Transport:         "reverse",
+				SessionID:         captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
+				SessionIDOriginal: captureSessionKeyOriginal(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
+				ConfigHash:        cfg.CanonicalPolicyHash(),
+				Profile:           edition.ProfileDefault,
+				Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
+				TransformKind:     capture.TransformRaw,
+				RawFindings:       dlpMatchesToFindings(pathDLP.Matches),
+				EffectiveAction:   urlDLPAction,
+				Outcome:           captureOutcome(urlDLPAction, pathDLP.Clean),
 			})
 		}
 
@@ -546,16 +547,17 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		rp.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-			Subsurface:      "dlp_reverse_request",
-			Transport:       "reverse",
-			SessionID:       captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
-			ConfigHash:      cfg.CanonicalPolicyHash(),
-			Profile:         edition.ProfileDefault,
-			Request:         capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
-			TransformKind:   capture.TransformJoinedFields,
-			RawFindings:     bodyScanToFindings(result),
-			EffectiveAction: bodyAction,
-			Outcome:         captureOutcome(bodyAction, result.Clean),
+			Subsurface:        "dlp_reverse_request",
+			Transport:         "reverse",
+			SessionID:         captureSessionKey(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
+			SessionIDOriginal: captureSessionKeyOriginal(r.Header.Get("X-Pipelock-Agent"), reverseClientIP(r)),
+			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Profile:           edition.ProfileDefault,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
+			TransformKind:     capture.TransformJoinedFields,
+			RawFindings:       bodyScanToFindings(result),
+			EffectiveAction:   bodyAction,
+			Outcome:           captureOutcome(bodyAction, result.Clean),
 		})
 	}
 
@@ -1008,6 +1010,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			Subsurface:        "response_reverse",
 			Transport:         "reverse",
 			SessionID:         captureSessionKey(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
+			SessionIDOriginal: captureSessionKeyOriginal(resp.Request.Header.Get("X-Pipelock-Agent"), reverseClientIP(resp.Request)),
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Profile:           edition.ProfileDefault,
 			Request:           capture.CaptureRequest{Method: resp.Request.Method, URL: resp.Request.URL.String()},

@@ -575,11 +575,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
 			// Capture: record CEE verdict.
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
-				Subsurface: "cee_mcp_http",
-				Transport:  opts.Transport,
-				SessionID:  captureSessionID(opts.Transport),
-				ConfigHash: opts.captureConfigHash(),
-				Profile:    opts.captureProfile(),
+				Subsurface:        "cee_mcp_http",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -820,11 +821,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if reason := ceeRecordMCP(ceeKey, msg, cee, sc, logW, auditLogger); reason != "" {
 			// Capture: record CEE verdict (warn-path).
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
-				Subsurface: "cee_mcp_http",
-				Transport:  opts.Transport,
-				SessionID:  captureSessionID(opts.Transport),
-				ConfigHash: opts.captureConfigHash(),
-				Profile:    opts.captureProfile(),
+				Subsurface:        "cee_mcp_http",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -848,15 +850,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
 			rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
 			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
-				Subsurface:      "dlp_mcp_input",
-				Transport:       opts.Transport,
-				SessionID:       captureSessionID(opts.Transport),
-				ConfigHash:      opts.captureConfigHash(),
-				Profile:         opts.captureProfile(),
-				TransformKind:   capture.TransformJoinedFields,
-				RawFindings:     rawFindings,
-				EffectiveAction: effectiveAction,
-				Outcome:         captureOutcome(effectiveAction, false),
+				Subsurface:        "dlp_mcp_input",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
+				TransformKind:     capture.TransformJoinedFields,
+				RawFindings:       rawFindings,
+				EffectiveAction:   effectiveAction,
+				Outcome:           captureOutcome(effectiveAction, false),
 			})
 		}
 		if verdict.Method == methodToolsCall {

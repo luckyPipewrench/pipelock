@@ -310,6 +310,7 @@ func captureEventKind(surface string) string {
 func (w *Writer) buildSummary(
 	surface, subsurface, configHash, agent, profile string,
 	actionClass string,
+	sessionIDOriginal string,
 	scannerInput string,
 	payloadComplete bool,
 	transformKind, wirePayload string,
@@ -337,6 +338,7 @@ func (w *Writer) buildSummary(
 		Agent:                agent,
 		Profile:              profile,
 		ActionClass:          actionClass,
+		SessionIDOriginal:    sessionIDOriginal,
 		PayloadComplete:      payloadComplete,
 		TransformKind:        transformKind,
 		Request:              req,
@@ -416,6 +418,7 @@ func (w *Writer) ObserveURLVerdict(_ context.Context, rec *URLVerdictRecord) {
 		summary: w.buildSummary(
 			SurfaceURL, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
 			rec.ActionClass,
+			rec.SessionIDOriginal,
 			scannerInput, true, TransformRaw, "", nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
@@ -439,6 +442,7 @@ func (w *Writer) ObserveResponseVerdict(_ context.Context, rec *ResponseVerdictR
 		summary: w.buildSummary(
 			SurfaceResponse, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
 			rec.ActionClass,
+			rec.SessionIDOriginal,
 			"", false, rec.TransformKind, wire, nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
@@ -461,6 +465,7 @@ func (w *Writer) ObserveDLPVerdict(_ context.Context, rec *DLPVerdictRecord) {
 		summary: w.buildSummary(
 			SurfaceDLP, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
 			rec.ActionClass,
+			rec.SessionIDOriginal,
 			rec.ScannerInput, false, rec.TransformKind, "", nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
@@ -483,6 +488,7 @@ func (w *Writer) ObserveCEEVerdict(_ context.Context, rec *CEERecord) {
 		summary: w.buildSummary(
 			SurfaceCEE, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
 			rec.ActionClass,
+			rec.SessionIDOriginal,
 			rec.ScannerInput, false, rec.TransformKind, "", nil,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
@@ -505,6 +511,7 @@ func (w *Writer) ObserveToolPolicyVerdict(_ context.Context, rec *ToolPolicyReco
 		summary: w.buildSummary(
 			SurfaceToolPolicy, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
 			rec.ActionClass,
+			rec.SessionIDOriginal,
 			"", rec.Request.ToolArgsJSON != "", TransformRaw, "", rec.BatchIndex,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
@@ -526,6 +533,7 @@ func (w *Writer) ObserveToolScanVerdict(_ context.Context, rec *ToolScanRecord) 
 		summary: w.buildSummary(
 			SurfaceToolScan, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
 			rec.ActionClass,
+			rec.SessionIDOriginal,
 			rec.ScannerInput, false, rec.TransformKind, "", rec.BatchIndex,
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,

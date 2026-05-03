@@ -363,14 +363,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 				}
 				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
-					Subsurface:      "mcp_tools_list",
-					Transport:       opts.Transport,
-					SessionID:       captureSessionID(opts.Transport),
-					ConfigHash:      opts.captureConfigHash(),
-					Profile:         opts.captureProfile(),
-					RawFindings:     toolScanMatchesToFindings(toolResult.Matches),
-					EffectiveAction: toolCaptureAction,
-					Outcome:         captureOutcome(toolCaptureAction, toolResult.Clean),
+					Subsurface:        "mcp_tools_list",
+					Transport:         opts.Transport,
+					SessionID:         captureSessionID(opts.Transport),
+					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+					ConfigHash:        opts.captureConfigHash(),
+					Profile:           opts.captureProfile(),
+					RawFindings:       toolScanMatchesToFindings(toolResult.Matches),
+					EffectiveAction:   toolCaptureAction,
+					Outcome:           captureOutcome(toolCaptureAction, toolResult.Clean),
 				})
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
@@ -599,14 +600,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		// Capture: record response injection verdict.
 		obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
-			Subsurface:      "response_mcp",
-			Transport:       opts.Transport,
-			SessionID:       captureSessionID(opts.Transport),
-			ConfigHash:      opts.captureConfigHash(),
-			Profile:         opts.captureProfile(),
-			RawFindings:     responseMatchesToFindings(verdict.Matches, effectiveAction),
-			EffectiveAction: effectiveAction,
-			Outcome:         captureOutcome(effectiveAction, false),
+			Subsurface:        "response_mcp",
+			Transport:         opts.Transport,
+			SessionID:         captureSessionID(opts.Transport),
+			SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+			ConfigHash:        opts.captureConfigHash(),
+			Profile:           opts.captureProfile(),
+			RawFindings:       responseMatchesToFindings(verdict.Matches, effectiveAction),
+			EffectiveAction:   effectiveAction,
+			Outcome:           captureOutcome(effectiveAction, false),
 		})
 	}
 

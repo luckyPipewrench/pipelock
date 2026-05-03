@@ -112,6 +112,12 @@ type CaptureSummary struct {
 
 	// Agent is the agent profile name, if agents are enabled.
 	Agent string `json:"agent,omitempty"`
+	// SessionIDOriginal preserves the unsanitized logical session identity
+	// when the on-disk session directory name had to be hashed (path-unsafe
+	// characters or overlength). Empty when the directory name equals the
+	// logical key. Lets audit trace an opaque "capture-<hex>" or
+	// "mcp-<hex>" session back to its self-attested agent identity.
+	SessionIDOriginal string `json:"session_id_original,omitempty"`
 	// Profile is the resolved config profile name.
 	Profile string `json:"profile,omitempty"`
 	// ActionClass is the session-level action verb (read, browse, summarize,
@@ -253,10 +259,14 @@ type URLVerdictRecord struct {
 	Subsurface string
 	Transport  string
 	SessionID  string
-	RequestID  string
-	ConfigHash string
-	Agent      string
-	Profile    string
+	// SessionIDOriginal preserves the unsanitized logical session key when
+	// SessionID was hashed for filesystem safety. Equal to SessionID when no
+	// hashing happened. Stamped into CaptureSummary so audit can correlate.
+	SessionIDOriginal string
+	RequestID         string
+	ConfigHash        string
+	Agent             string
+	Profile           string
 	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
 	// String() == "read") at scan time, populated by callers that classify
 	// inline. Empty string means the call site did not classify; the writer
@@ -277,10 +287,14 @@ type ResponseVerdictRecord struct {
 	Subsurface string
 	Transport  string
 	SessionID  string
-	RequestID  string
-	ConfigHash string
-	Agent      string
-	Profile    string
+	// SessionIDOriginal preserves the unsanitized logical session key when
+	// SessionID was hashed for filesystem safety. Equal to SessionID when no
+	// hashing happened. Stamped into CaptureSummary so audit can correlate.
+	SessionIDOriginal string
+	RequestID         string
+	ConfigHash        string
+	Agent             string
+	Profile           string
 	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
 	// String() == "read") at scan time, populated by callers that classify
 	// inline. Empty string means the call site did not classify; the writer
@@ -303,10 +317,14 @@ type DLPVerdictRecord struct {
 	Subsurface string
 	Transport  string
 	SessionID  string
-	RequestID  string
-	ConfigHash string
-	Agent      string
-	Profile    string
+	// SessionIDOriginal preserves the unsanitized logical session key when
+	// SessionID was hashed for filesystem safety. Equal to SessionID when no
+	// hashing happened. Stamped into CaptureSummary so audit can correlate.
+	SessionIDOriginal string
+	RequestID         string
+	ConfigHash        string
+	Agent             string
+	Profile           string
 	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
 	// String() == "read") at scan time, populated by callers that classify
 	// inline. Empty string means the call site did not classify; the writer
@@ -329,10 +347,14 @@ type CEERecord struct {
 	Subsurface string
 	Transport  string
 	SessionID  string
-	RequestID  string
-	ConfigHash string
-	Agent      string
-	Profile    string
+	// SessionIDOriginal preserves the unsanitized logical session key when
+	// SessionID was hashed for filesystem safety. Equal to SessionID when no
+	// hashing happened. Stamped into CaptureSummary so audit can correlate.
+	SessionIDOriginal string
+	RequestID         string
+	ConfigHash        string
+	Agent             string
+	Profile           string
 	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
 	// String() == "read") at scan time, populated by callers that classify
 	// inline. Empty string means the call site did not classify; the writer
@@ -355,10 +377,14 @@ type ToolPolicyRecord struct {
 	Subsurface string
 	Transport  string
 	SessionID  string
-	RequestID  string
-	ConfigHash string
-	Agent      string
-	Profile    string
+	// SessionIDOriginal preserves the unsanitized logical session key when
+	// SessionID was hashed for filesystem safety. Equal to SessionID when no
+	// hashing happened. Stamped into CaptureSummary so audit can correlate.
+	SessionIDOriginal string
+	RequestID         string
+	ConfigHash        string
+	Agent             string
+	Profile           string
 	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
 	// String() == "read") at scan time, populated by callers that classify
 	// inline. Empty string means the call site did not classify; the writer
@@ -381,10 +407,14 @@ type ToolScanRecord struct {
 	Subsurface string
 	Transport  string
 	SessionID  string
-	RequestID  string
-	ConfigHash string
-	Agent      string
-	Profile    string
+	// SessionIDOriginal preserves the unsanitized logical session key when
+	// SessionID was hashed for filesystem safety. Equal to SessionID when no
+	// hashing happened. Stamped into CaptureSummary so audit can correlate.
+	SessionIDOriginal string
+	RequestID         string
+	ConfigHash        string
+	Agent             string
+	Profile           string
 	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
 	// String() == "read") at scan time, populated by callers that classify
 	// inline. Empty string means the call site did not classify; the writer

@@ -226,6 +226,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Subsurface:        "ws_url",
 			Transport:         "websocket",
 			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
 			RequestID:         requestID,
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
@@ -390,18 +391,19 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if blocked, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc); blocked {
 		// Capture observer: record WS header DLP verdict for policy replay.
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-			Subsurface:      "dlp_ws_header",
-			Transport:       "websocket",
-			SessionID:       captureSessionKey(agent, clientIP),
-			RequestID:       requestID,
-			ConfigHash:      cfg.CanonicalPolicyHash(),
-			Agent:           agent,
-			Profile:         id.Profile,
-			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
-			TransformKind:   capture.TransformHeaderValue,
-			EffectiveAction: config.ActionBlock,
-			Outcome:         capture.OutcomeBlocked,
-			SkipReason:      reason,
+			Subsurface:        "dlp_ws_header",
+			Transport:         "websocket",
+			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Agent:             agent,
+			Profile:           id.Profile,
+			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:     capture.TransformHeaderValue,
+			EffectiveAction:   config.ActionBlock,
+			Outcome:           capture.OutcomeBlocked,
+			SkipReason:        reason,
 		})
 		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.

@@ -41,15 +41,39 @@ const maxCaptureSessionKeyLen = 200
 // or overlength keys are mapped to a bounded hash instead of being dropped by
 // the writer.
 func captureSessionKey(agent, clientIP string) string {
+	safe, _ := captureSessionKeyAndOriginal(agent, clientIP)
+	return safe
+}
+
+// captureSessionKeyAndOriginal returns the safe directory-name session key and
+// the original logical key. When the two differ, the safe value was derived
+// via SHA-256 to escape an unsafe or overlength input. Capture call sites
+// stamp the original into the record so audit/incident response can map an
+// opaque "capture-<hex>" directory back to its self-attested agent identity.
+func captureSessionKeyAndOriginal(agent, clientIP string) (safe, original string) {
 	key := CeeSessionKey(agent, clientIP)
 	if key == "" {
 		key = agentAnonymous
 	}
 	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") || len(key) > maxCaptureSessionKeyLen {
 		sum := sha256.Sum256([]byte(key))
-		return "capture-" + hex.EncodeToString(sum[:])
+		return "capture-" + hex.EncodeToString(sum[:]), key
 	}
-	return key
+	return key, key
+}
+
+// captureSessionKeyOriginal returns the unsanitized logical session key when
+// the safe directory-name key was derived via hashing, and the empty string
+// otherwise. Capture call sites assign the result to record.SessionIDOriginal
+// (omitempty), so on the clean path no IP-bearing identity leaks into every
+// capture record; the field appears only when a sanitized "capture-<hex>"
+// directory needs an audit trail back to its raw logical key.
+func captureSessionKeyOriginal(agent, clientIP string) string {
+	safe, original := captureSessionKeyAndOriginal(agent, clientIP)
+	if safe == original {
+		return ""
+	}
+	return original
 }
 
 // ResetCEEState clears entropy and fragment state for a session identity.

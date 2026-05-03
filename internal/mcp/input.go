@@ -347,11 +347,12 @@ func ForwardScannedInput(
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: tools/call %q not in session baseline\n", lineNum, toolCallName)
 			}
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
-				Subsurface: "session_binding",
-				Transport:  opts.Transport,
-				SessionID:  captureSessionID(opts.Transport),
-				ConfigHash: opts.captureConfigHash(),
-				Profile:    opts.captureProfile(),
+				Subsurface:        "session_binding",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
@@ -379,11 +380,12 @@ func ForwardScannedInput(
 				auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, toolCallName, "default")
 			}
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
-				Subsurface: "chain_detection",
-				Transport:  opts.Transport,
-				SessionID:  captureSessionID(opts.Transport),
-				ConfigHash: opts.captureConfigHash(),
-				Profile:    opts.captureProfile(),
+				Subsurface:        "chain_detection",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
@@ -558,11 +560,12 @@ func ForwardScannedInput(
 			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
 				// Capture: record CEE verdict.
 				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
-					Subsurface: "cee_mcp_stdio",
-					Transport:  opts.Transport,
-					SessionID:  captureSessionID(opts.Transport),
-					ConfigHash: opts.captureConfigHash(),
-					Profile:    opts.captureProfile(),
+					Subsurface:        "cee_mcp_stdio",
+					Transport:         opts.Transport,
+					SessionID:         captureSessionID(opts.Transport),
+					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+					ConfigHash:        opts.captureConfigHash(),
+					Profile:           opts.captureProfile(),
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -762,16 +765,17 @@ func ForwardScannedInput(
 				dlpResult := sc.ScanTextForDLP(stdioWarnCtx, string(result.Response))
 				// Capture: record redirect output scan verdict.
 				obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
-					Subsurface:      "response_redirect_output",
-					Transport:       opts.Transport,
-					SessionID:       captureSessionID(opts.Transport),
-					ConfigHash:      opts.captureConfigHash(),
-					Profile:         opts.captureProfile(),
-					TransformKind:   capture.TransformRedirectOutput,
-					WirePayload:     result.Response,
-					RawFindings:     responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
-					EffectiveAction: config.ActionBlock,
-					Outcome:         captureOutcome(config.ActionBlock, scanVerdict.Clean),
+					Subsurface:        "response_redirect_output",
+					Transport:         opts.Transport,
+					SessionID:         captureSessionID(opts.Transport),
+					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+					ConfigHash:        opts.captureConfigHash(),
+					Profile:           opts.captureProfile(),
+					TransformKind:     capture.TransformRedirectOutput,
+					WirePayload:       result.Response,
+					RawFindings:       responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
+					EffectiveAction:   config.ActionBlock,
+					Outcome:           captureOutcome(config.ActionBlock, scanVerdict.Clean),
 				})
 				if !scanVerdict.Clean {
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (injection detected in handler output)\n", lineNum)
@@ -840,11 +844,12 @@ func ForwardScannedInput(
 			if reason := ceeRecordMCP(ceeStdioKey, line, cee, sc, logW, auditLogger); reason != "" {
 				// Capture: record CEE verdict (warn-path).
 				obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
-					Subsurface: "cee_mcp_stdio",
-					Transport:  opts.Transport,
-					SessionID:  captureSessionID(opts.Transport),
-					ConfigHash: opts.captureConfigHash(),
-					Profile:    opts.captureProfile(),
+					Subsurface:        "cee_mcp_stdio",
+					Transport:         opts.Transport,
+					SessionID:         captureSessionID(opts.Transport),
+					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+					ConfigHash:        opts.captureConfigHash(),
+					Profile:           opts.captureProfile(),
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -923,15 +928,16 @@ func ForwardScannedInput(
 			rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
 			rawFindings = append(rawFindings, addressFindingsToCapture(verdict.AddressFindings)...)
 			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
-				Subsurface:      "dlp_mcp_input",
-				Transport:       opts.Transport,
-				SessionID:       captureSessionID(opts.Transport),
-				ConfigHash:      opts.captureConfigHash(),
-				Profile:         opts.captureProfile(),
-				TransformKind:   capture.TransformJoinedFields,
-				RawFindings:     rawFindings,
-				EffectiveAction: effectiveAction,
-				Outcome:         captureOutcome(effectiveAction, false),
+				Subsurface:        "dlp_mcp_input",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
+				TransformKind:     capture.TransformJoinedFields,
+				RawFindings:       rawFindings,
+				EffectiveAction:   effectiveAction,
+				Outcome:           captureOutcome(effectiveAction, false),
 			})
 		}
 		// Capture: record tool policy verdict when policy matched.
@@ -945,11 +951,12 @@ func ForwardScannedInput(
 				})
 			}
 			obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
-				Subsurface: "mcp_tool_policy",
-				Transport:  opts.Transport,
-				SessionID:  captureSessionID(opts.Transport),
-				ConfigHash: opts.captureConfigHash(),
-				Profile:    opts.captureProfile(),
+				Subsurface:        "mcp_tool_policy",
+				Transport:         opts.Transport,
+				SessionID:         captureSessionID(opts.Transport),
+				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+				ConfigHash:        opts.captureConfigHash(),
+				Profile:           opts.captureProfile(),
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: verdict.Method,

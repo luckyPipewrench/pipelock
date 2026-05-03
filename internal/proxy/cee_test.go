@@ -62,6 +62,31 @@ func TestCaptureSessionKey_SafeForRecorderDirectory(t *testing.T) {
 	}
 }
 
+func TestCaptureSessionKeyAndOriginal_PreservesUnsafeIdentity(t *testing.T) {
+	// Safe input: original equals safe (no hashing happened, audit needs no
+	// extra provenance).
+	safe, original := captureSessionKeyAndOriginal(testCEEAgent, testCEEClientIP)
+	if safe != testCEEAgent+"|"+testCEEClientIP || original != safe {
+		t.Fatalf("safe identity: got (%q, %q), want both = %q", safe, original, testCEEAgent+"|"+testCEEClientIP)
+	}
+
+	// Unsafe input: safe is hashed, but original retains the raw key so audit
+	// can map an opaque "capture-<hex>" directory back to the agent identity
+	// that triggered sanitization.
+	rawAgent := "../bad/agent"
+	rawKey := rawAgent + "|" + testCEEClientIP
+	safe, original = captureSessionKeyAndOriginal(rawAgent, testCEEClientIP)
+	if !strings.HasPrefix(safe, "capture-") {
+		t.Fatalf("unsafe safe key = %q, want capture- prefix", safe)
+	}
+	if original != rawKey {
+		t.Fatalf("unsafe original = %q, want %q (raw logical key for audit correlation)", original, rawKey)
+	}
+	if safe == original {
+		t.Fatalf("safe and original must differ when sanitization triggered: %q", safe)
+	}
+}
+
 func TestExtractOutboundPayload_QueryParams(t *testing.T) {
 	// Keys are intentionally out of alphabetical order to prove wire-order extraction.
 	r := &http.Request{

@@ -14,6 +14,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// captureJSONL returns a minimal recorder envelope JSONL line that passes
+// validateCaptureSessionDir's schema + agent-attribution check.
+func captureJSONL(agent string) []byte {
+	return []byte(`{"v":1,"seq":1,"ts":"2026-05-03T17:00:00Z","session_id":"` + agent + `","type":"capture","transport":"fetch","summary":"x","detail":{"agent":"` + agent + `"},"prev_hash":"","hash":"abc"}` + "\n")
+}
+
 func TestResolveCompileInputsRejectsAgentPathSegments(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
@@ -37,7 +43,7 @@ func TestResolveCompileInputsAcceptsSingleSegmentAgent(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	input := filepath.Join(agentDir, "capture.jsonl")
-	if err := os.WriteFile(input, []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(input, captureJSONL("agent-a"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	cfg := config.Defaults()
@@ -60,7 +66,7 @@ func TestResolveCompileInputsAcceptsAgentSessionKeyDirs(t *testing.T) {
 		if err := os.MkdirAll(fullDir, 0o750); err != nil {
 			t.Fatalf("MkdirAll %s: %v", sessionDir, err)
 		}
-		if err := os.WriteFile(filepath.Join(fullDir, "capture.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(fullDir, "capture.jsonl"), captureJSONL("agent-a"), 0o600); err != nil {
 			t.Fatalf("WriteFile %s: %v", sessionDir, err)
 		}
 	}
@@ -68,7 +74,7 @@ func TestResolveCompileInputsAcceptsAgentSessionKeyDirs(t *testing.T) {
 	if err := os.MkdirAll(otherDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll other: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(otherDir, "capture.jsonl"), []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(otherDir, "capture.jsonl"), captureJSONL("agent-ab"), 0o600); err != nil {
 		t.Fatalf("WriteFile other: %v", err)
 	}
 	cfg := config.Defaults()
@@ -89,6 +95,45 @@ func TestResolveCompileInputsAcceptsAgentSessionKeyDirs(t *testing.T) {
 		if sessionDir == "agent-ab" || strings.HasPrefix(sessionDir, "agent-ab|") {
 			t.Fatalf("unexpected path %q in %#v", path, got)
 		}
+	}
+}
+
+func TestResolveCompileInputsRejectsPoisonedSiblingSession(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Legitimate agent-a session with matching attribution.
+	goodDir := filepath.Join(dir, "agent-a|10.0.0.1")
+	if err := os.MkdirAll(goodDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll good: %v", err)
+	}
+	good := filepath.Join(goodDir, "capture.jsonl")
+	if err := os.WriteFile(good, captureJSONL("agent-a"), 0o600); err != nil {
+		t.Fatalf("WriteFile good: %v", err)
+	}
+
+	// Planted sibling whose name passes the agent-a prefix match but whose
+	// content attributes the traffic to a different agent. Must be skipped:
+	// otherwise an attacker who can write to the capture root could silently
+	// poison agent-a's compile inputs simply by naming a directory with the
+	// agent prefix.
+	poisonDir := filepath.Join(dir, "agent-a|poison")
+	if err := os.MkdirAll(poisonDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll poison: %v", err)
+	}
+	poison := filepath.Join(poisonDir, "capture.jsonl")
+	if err := os.WriteFile(poison, captureJSONL("evil-agent"), 0o600); err != nil {
+		t.Fatalf("WriteFile poison: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Learn.CaptureDir = dir
+	got, err := resolveCompileInputs(cfg, compileFlags{agent: "agent-a", since: time.Hour})
+	if err != nil {
+		t.Fatalf("resolveCompileInputs: %v", err)
+	}
+	if len(got) != 1 || got[0] != good {
+		t.Fatalf("paths = %#v, want only [%q] (poison must be filtered)", got, good)
 	}
 }
 
@@ -122,7 +167,7 @@ func TestResolveCompileInputsRejectsSymlinkedCaptureRootEscape(t *testing.T) {
 	if err := os.MkdirAll(outside, 0o750); err != nil {
 		t.Fatalf("MkdirAll outside: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(outside, "capture.jsonl"), []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "capture.jsonl"), captureJSONL("agent-a"), 0o600); err != nil {
 		t.Fatalf("WriteFile outside capture: %v", err)
 	}
 	if err := os.Symlink(outside, filepath.Join(captureRoot, "agent-a")); err != nil {

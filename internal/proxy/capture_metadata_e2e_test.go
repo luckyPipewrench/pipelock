@@ -179,4 +179,16 @@ func TestCaptureMetadata_FetchPath_RoundTrip(t *testing.T) {
 	requireString("config_hash")
 	requireString("profile")
 	requireString("agent")
+
+	// session_id_original is omitted on the clean path (path-safe agent + IP).
+	// It only appears when the writer had to hash an unsafe or overlength key
+	// for the on-disk directory name, in which case it preserves the raw
+	// logical key for incident-response correlation. The fetch path uses the
+	// anonymous agent + 127.0.0.1, which is path-safe, so the field must be
+	// absent from this entry.
+	if v, ok := envelope.Detail["session_id_original"]; ok {
+		if s, _ := v.(string); s != "" {
+			t.Errorf("session_id_original = %q, want absent on path-safe key (would leak client IP into every record otherwise)", s)
+		}
+	}
 }

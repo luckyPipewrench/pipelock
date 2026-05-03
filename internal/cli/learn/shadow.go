@@ -238,12 +238,19 @@ func resolveShadowSessions(cfg *config.Config, flags shadowFlags) (string, error
 	return root, nil
 }
 
-func shadowSessionFilter(flags shadowFlags) func(string) bool {
+func shadowSessionFilter(flags shadowFlags) func(name, sessionDir string) bool {
 	if flags.sessionsDir != "" {
 		return nil
 	}
-	return func(sessionName string) bool {
-		return captureSessionNameMatchesAgent(sessionName, flags.agent)
+	return func(sessionName, sessionDir string) bool {
+		if !captureSessionNameMatchesAgent(sessionName, flags.agent) {
+			return false
+		}
+		// Defense in depth: name-prefix match alone lets a planted sibling
+		// directory poison shadow replay. Require the first capture entry's
+		// self-attested agent to match before the session is replayed against
+		// the candidate contract.
+		return validateCaptureSessionDir(sessionDir, flags.agent)
 	}
 }
 
@@ -253,9 +260,13 @@ func hasMatchingCaptureSession(root, agent string) (bool, error) {
 		return false, err
 	}
 	for _, entry := range entries {
-		if entry.IsDir() && captureSessionNameMatchesAgent(entry.Name(), agent) {
-			return true, nil
+		if !entry.IsDir() || !captureSessionNameMatchesAgent(entry.Name(), agent) {
+			continue
 		}
+		if !validateCaptureSessionDir(filepath.Join(root, entry.Name()), agent) {
+			continue
+		}
+		return true, nil
 	}
 	return false, nil
 }

@@ -2626,6 +2626,62 @@ func TestHTTPListener_SSEUpstream_BlocksInjection(t *testing.T) {
 	}
 }
 
+// TestHTTPListener_SSEUpstream_ScanErrorReturns502 covers the fail-closed
+// branch added after CodeRabbit flagged that scan failures on SSE upstreams
+// were silently turning into 202 Accepted (looks like a successful
+// notification ack to the client). The reproducer here is a single SSE
+// data line larger than transport.MaxLineSize so the bufio.Scanner inside
+// transport.SSEReader returns ErrTooLong. ForwardScanned propagates the
+// error, sseMessageWriter never writes, and the listener must surface a
+// 502 Bad Gateway with the standard upstream-error envelope rather than
+// a 202 + empty body.
+func TestHTTPListener_SSEUpstream_ScanErrorReturns502(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// Write a single data line one byte over the cap so the SSE
+		// reader's scanner errors before the first event completes.
+		_, _ = w.Write([]byte("data: "))
+		chunk := bytes.Repeat([]byte("x"), 64*1024)
+		written := len("data: ")
+		for written <= transport.MaxLineSize {
+			_, _ = w.Write(chunk)
+			written += len(chunk)
+		}
+		_, _ = w.Write([]byte("\n\n"))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
+
+	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(jsonToolsCallEcho)) //nolint:gosec,noctx // test
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 BadGateway", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json (SSE header must be overridden on fail-closed)", ct)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "" {
+		t.Errorf("Cache-Control = %q, want unset (was no-cache from SSE branch)", cc)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var rpc struct {
+		Error struct{ Code int } `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpc); err != nil {
+		t.Fatalf("response not JSON: %v\nbody: %s", err, body)
+	}
+	if rpc.Error.Code == 0 {
+		t.Errorf("expected JSON-RPC error envelope, got: %s", body)
+	}
+}
+
 // TestSSEMessageWriter_RejectsOversize covers the MaxLineSize cap on the
 // per-message writer. The cap is defensive against a misbehaving upstream
 // that emits a single SSE event larger than the transport-level ceiling

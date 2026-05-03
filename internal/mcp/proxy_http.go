@@ -1516,6 +1516,20 @@ func RunHTTPListenerProxy(
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
+			// Fail closed when the SSE pipeline errored before the first
+			// event was written. Returning 202 here would let an oversized
+			// or malformed upstream stream look like a successful
+			// notification ack to the client. Headers are still mutable
+			// because sseMessageWriter never wrote, so override the SSE
+			// content-type set above with the standard application/json
+			// upstream-error envelope.
+			if scanErr != nil && !streamWriter.Wrote() {
+				w.Header().Del("Cache-Control")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream SSE response failed validation")))
+				return
+			}
 			if !streamWriter.Wrote() {
 				w.WriteHeader(http.StatusAccepted)
 			}

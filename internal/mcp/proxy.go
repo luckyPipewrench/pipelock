@@ -354,13 +354,19 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			// Capture: record tools/list scan verdict.
 			if toolResult.IsToolsList {
+				toolCaptureAction := config.ActionAllow
+				if !toolResult.Clean {
+					toolCaptureAction = toolCfg.Action
+				}
 				obs.ObserveToolScanVerdict(context.Background(), &capture.ToolScanRecord{
 					Subsurface:      "mcp_tools_list",
 					Transport:       opts.Transport,
-					SessionID:       "mcp-" + opts.Transport,
+					SessionID:       captureSessionID(opts.Transport),
+					ConfigHash:      opts.captureConfigHash(),
+					Profile:         opts.captureProfile(),
 					RawFindings:     toolScanMatchesToFindings(toolResult.Matches),
-					EffectiveAction: toolCfg.Action,
-					Outcome:         captureOutcome(toolCfg.Action, toolResult.Clean),
+					EffectiveAction: toolCaptureAction,
+					Outcome:         captureOutcome(toolCaptureAction, toolResult.Clean),
 				})
 			}
 			if toolResult.IsToolsList && !toolResult.Clean {
@@ -591,7 +597,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		obs.ObserveResponseVerdict(context.Background(), &capture.ResponseVerdictRecord{
 			Subsurface:      "response_mcp",
 			Transport:       opts.Transport,
-			SessionID:       "mcp-" + opts.Transport,
+			SessionID:       captureSessionID(opts.Transport),
+			ConfigHash:      opts.captureConfigHash(),
+			Profile:         opts.captureProfile(),
 			RawFindings:     responseMatchesToFindings(verdict.Matches, effectiveAction),
 			EffectiveAction: effectiveAction,
 			Outcome:         captureOutcome(effectiveAction, false),

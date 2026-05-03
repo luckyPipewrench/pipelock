@@ -4,6 +4,7 @@
 package config
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -60,6 +61,25 @@ func TestCanonicalPolicyHash_Cached(t *testing.T) {
 	if want := cfg.computeCanonicalPolicyHash(); h1 != want {
 		t.Errorf("cached = %s, uncached = %s; should match", h1, want)
 	}
+}
+
+func TestCanonicalPolicyHash_ConcurrentFirstTouch(t *testing.T) {
+	cfg := Defaults()
+	want := cfg.computeCanonicalPolicyHash()
+
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 64 {
+				if got := cfg.CanonicalPolicyHash(); got != want {
+					t.Errorf("CanonicalPolicyHash() = %s, want %s", got, want)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {

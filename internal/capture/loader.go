@@ -32,6 +32,8 @@ type ReplayOptions struct {
 	EscrowPrivateKey []byte
 	// Contract enables contract-aware replay for supported surfaces.
 	Contract *contract.Contract
+	// SessionFilter optionally limits replay to matching session directory names.
+	SessionFilter func(string) bool
 }
 
 type replayEscrowKey struct {
@@ -98,9 +100,13 @@ func LoadAndReplayWithOptions(cfg *config.Config, sessionsDir string, opts Repla
 	// sessions are processed in alphabetical order by session ID.
 	var sessionNames []string
 	for _, de := range dirEntries {
-		if de.IsDir() && de.Name() != metaSessionID {
-			sessionNames = append(sessionNames, de.Name())
+		if !de.IsDir() || de.Name() == metaSessionID {
+			continue
 		}
+		if opts.SessionFilter != nil && !opts.SessionFilter(de.Name()) {
+			continue
+		}
+		sessionNames = append(sessionNames, de.Name())
 	}
 	sort.Strings(sessionNames)
 

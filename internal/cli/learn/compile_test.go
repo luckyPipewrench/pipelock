@@ -52,6 +52,42 @@ func TestResolveCompileInputsAcceptsSingleSegmentAgent(t *testing.T) {
 	}
 }
 
+func TestResolveCompileInputsAcceptsAgentSessionKeyDirs(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	for _, sessionDir := range []string{"agent-a", "agent-a|10.0.0.1"} {
+		fullDir := filepath.Join(dir, sessionDir)
+		if err := os.MkdirAll(fullDir, 0o750); err != nil {
+			t.Fatalf("MkdirAll %s: %v", sessionDir, err)
+		}
+		if err := os.WriteFile(filepath.Join(fullDir, "capture.jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile %s: %v", sessionDir, err)
+		}
+	}
+	otherDir := filepath.Join(dir, "agent-ab|10.0.0.2")
+	if err := os.MkdirAll(otherDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll other: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(otherDir, "capture.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile other: %v", err)
+	}
+	cfg := config.Defaults()
+	cfg.Learn.CaptureDir = dir
+
+	got, err := resolveCompileInputs(cfg, compileFlags{agent: "agent-a", since: time.Hour})
+	if err != nil {
+		t.Fatalf("resolveCompileInputs: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("paths = %#v, want 2 agent-a captures", got)
+	}
+	for _, path := range got {
+		if !strings.Contains(path, "agent-a") || strings.Contains(path, "agent-ab") {
+			t.Fatalf("unexpected path %q in %#v", path, got)
+		}
+	}
+}
+
 func TestResolveCompileInputsRejectsSymlinkInput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

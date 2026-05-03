@@ -168,7 +168,7 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 			return nil, err
 		}
 		captureRoot = filepath.Clean(cfg.Learn.CaptureDir)
-		paths, err = filepath.Glob(filepath.Join(cfg.Learn.CaptureDir, flags.agent, "*.jsonl"))
+		paths, err = resolveAgentCaptureInputs(captureRoot, flags.agent)
 		if err != nil {
 			return nil, fmt.Errorf("%w: capture glob: %w", errCompileInput, err)
 		}
@@ -207,6 +207,44 @@ func resolveCompileInputs(cfg *config.Config, flags compileFlags) ([]string, err
 		paths[i] = resolved
 	}
 	return paths, nil
+}
+
+func resolveAgentCaptureInputs(captureRoot, agent string) ([]string, error) {
+	paths, err := filepath.Glob(filepath.Join(captureRoot, agent, "*.jsonl"))
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		seen[path] = struct{}{}
+	}
+
+	entries, err := os.ReadDir(captureRoot)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !captureSessionNameMatchesAgent(entry.Name(), agent) || entry.Name() == agent {
+			continue
+		}
+		matches, globErr := filepath.Glob(filepath.Join(captureRoot, entry.Name(), "*.jsonl"))
+		if globErr != nil {
+			return nil, globErr
+		}
+		for _, path := range matches {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+func captureSessionNameMatchesAgent(sessionName, agent string) bool {
+	return sessionName == agent || strings.HasPrefix(sessionName, agent+"|")
 }
 
 func resolveCompileInputPath(path string) (string, error) {

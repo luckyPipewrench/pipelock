@@ -218,16 +218,18 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Capture observer: record WebSocket URL verdict for policy replay.
 	{
 		findings := urlResultToFindings(result)
-		action := ""
+		action := config.ActionAllow
 		if !result.Allowed {
 			action = config.ActionBlock
 		}
 		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 			Subsurface:        "ws_url",
 			Transport:         "websocket",
-			SessionID:         CeeSessionKey(agent, clientIP),
+			SessionID:         captureSessionKey(agent, clientIP),
 			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
+			Profile:           id.Profile,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			RawFindings:       findings,
 			EffectiveFindings: findings,
@@ -390,9 +392,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:      "dlp_ws_header",
 			Transport:       "websocket",
-			SessionID:       CeeSessionKey(agent, clientIP),
+			SessionID:       captureSessionKey(agent, clientIP),
 			RequestID:       requestID,
+			ConfigHash:      cfg.CanonicalPolicyHash(),
 			Agent:           agent,
+			Profile:         id.Profile,
 			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			TransformKind:   capture.TransformHeaderValue,
 			EffectiveAction: config.ActionBlock,

@@ -6,6 +6,8 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,6 +29,21 @@ func CeeSessionKey(agent, clientIP string) string {
 		return agent + "|" + clientIP
 	}
 	return clientIP
+}
+
+// captureSessionKey returns the CEE session identity when it is safe to use as
+// a recorder directory name. Self-declared agent names are untrusted, so unsafe
+// keys are mapped to a bounded hash instead of being dropped by the writer.
+func captureSessionKey(agent, clientIP string) string {
+	key := CeeSessionKey(agent, clientIP)
+	if key == "" {
+		key = agentAnonymous
+	}
+	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") {
+		sum := sha256.Sum256([]byte(key))
+		return "capture-" + hex.EncodeToString(sum[:])
+	}
+	return key
 }
 
 // ResetCEEState clears entropy and fragment state for a session identity.

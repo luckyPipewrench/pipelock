@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -958,6 +959,13 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			return nil
 		})
+		mcpConfigHashFn := func() string {
+			c := s.proxy.CurrentConfig()
+			if c == nil {
+				return ""
+			}
+			return c.CanonicalPolicyHash()
+		}
 
 		mcpErr = make(chan error, 1)
 		go func() {
@@ -980,6 +988,8 @@ func (s *Server) Start(ctx context.Context) error {
 				Metrics:             s.metrics,
 				RedirectRTFn:        mcpRedirectRTFn,
 				CaptureObs:          mcpCaptureObs,
+				ConfigHashFn:        mcpConfigHashFn,
+				Profile:             edition.ProfileDefault,
 				ProvenanceCfgFn:     mcpProvenanceCfgFn,
 				ReceiptEmitterFn:    s.liveReceiptEmitter,
 				EnvelopeEmitterFn:   s.liveEnvelopeEmitter,

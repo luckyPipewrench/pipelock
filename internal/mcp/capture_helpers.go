@@ -4,12 +4,28 @@
 package mcp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func captureSessionID(transport string) string {
+	key := "mcp-" + transport
+	if key == "mcp-" {
+		key = "mcp"
+	}
+	if strings.ContainsAny(key, `/\`) || strings.Contains(key, "..") {
+		sum := sha256.Sum256([]byte(key))
+		return "mcp-" + hex.EncodeToString(sum[:])
+	}
+	return key
+}
 
 // dlpMatchesToFindings converts scanner.TextDLPMatch slice to capture findings.
 func dlpMatchesToFindings(matches []scanner.TextDLPMatch) []capture.Finding {

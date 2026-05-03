@@ -13,8 +13,9 @@ import (
 // Defaults returns a Config with sensible defaults for balanced mode.
 func Defaults() *Config {
 	cfg := &Config{
-		Version: 1,
-		Mode:    ModeBalanced,
+		Version:            1,
+		Mode:               ModeBalanced,
+		canonicalHashCache: &canonicalHashCacheHolder{},
 		APIAllowlist: []string{
 			"*.anthropic.com",
 			"*.openai.com",

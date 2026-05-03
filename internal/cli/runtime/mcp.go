@@ -633,6 +633,11 @@ signed action receipts for MCP decisions.`,
 					TrustDomain: cfg.MediationEnvelope.TrustDomain,
 				})
 			}
+			captureConfigHash := cfg.CanonicalPolicyHash()
+			captureProfile := resolved.Name
+			if captureProfile == "" {
+				captureProfile = edition.ProfileDefault
+			}
 
 			toolAction := "disabled"
 			if toolCfg != nil {
@@ -687,6 +692,7 @@ signed action receipts for MCP decisions.`,
 						InputCfg: inputCfg, ToolCfg: toolCfg, PolicyCfg: policyCfg,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store, AdaptiveCfgFn: adaptiveFn, Metrics: mcpMetrics,
+						ConfigHash: captureConfigHash, Profile: captureProfile,
 						RedirectRT:      buildRedirectRT(cfg),
 						ProvenanceCfg:   &cfg.MCPToolProvenance,
 						EnvelopeEmitter: envEmitter,
@@ -716,6 +722,8 @@ signed action receipts for MCP decisions.`,
 						KillSwitch: ks, ChainMatcher: chainMatcher,
 						CEE: cee, Store: store,
 						AdaptiveCfg:     adaptiveCfg,
+						ConfigHash:      captureConfigHash,
+						Profile:         captureProfile,
 						Metrics:         mcpMetrics,
 						ReceiptEmitter:  receiptEmitter,
 						RedirectRT:      buildRedirectRT(cfg),
@@ -745,6 +753,7 @@ signed action receipts for MCP decisions.`,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					ConfigHash: captureConfigHash, Profile: captureProfile,
 					RedirectRT:      buildRedirectRT(cfg),
 					EnvelopeEmitter: envEmitter,
 					DoWCheck:        dowCheck,
@@ -880,6 +889,7 @@ signed action receipts for MCP decisions.`,
 					KillSwitch: ks, ChainMatcher: chainMatcher,
 					CEE: cee, Store: store,
 					AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+					ConfigHash: captureConfigHash, Profile: captureProfile,
 					RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 					EnvelopeEmitter: envEmitter,
 					ReceiptEmitter:  receiptEmitter,
@@ -988,6 +998,7 @@ signed action receipts for MCP decisions.`,
 				KillSwitch: ks, ChainMatcher: chainMatcher,
 				CEE: cee, Store: store,
 				AdaptiveCfg: adaptiveCfg, Metrics: mcpMetrics,
+				ConfigHash: captureConfigHash, Profile: captureProfile,
 				RedirectRT: buildRedirectRT(cfg), DoWCheck: dowCheck,
 				EnvelopeEmitter: envEmitter,
 				ReceiptEmitter:  receiptEmitter,

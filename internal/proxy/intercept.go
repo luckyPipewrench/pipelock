@@ -58,6 +58,7 @@ type InterceptContext struct {
 	ClientIP  string
 	RequestID string
 	Agent     string
+	Profile   string
 	ActorAuth envelope.ActorAuth
 
 	UpstreamRT http.RoundTripper
@@ -483,16 +484,18 @@ func newInterceptHandler(
 		// Capture observer: record intercept URL verdict for policy replay.
 		if ic.Proxy != nil {
 			findings := urlResultToFindings(urlResult)
-			action := ""
+			action := config.ActionAllow
 			if !urlResult.Allowed {
 				action = config.ActionBlock
 			}
 			ic.Proxy.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 				Subsurface:        "intercept_url",
 				Transport:         "connect",
-				SessionID:         CeeSessionKey(ic.Agent, ic.ClientIP),
+				SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
 				RequestID:         ic.RequestID,
+				ConfigHash:        ic.Config.CanonicalPolicyHash(),
 				Agent:             ic.Agent,
+				Profile:           ic.Profile,
 				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 				RawFindings:       findings,
 				EffectiveFindings: findings,
@@ -687,7 +690,7 @@ func newInterceptHandler(
 
 			// Capture observer: record intercept body DLP verdict for policy replay.
 			if ic.Proxy != nil {
-				bodyAction := ""
+				bodyAction := config.ActionAllow
 				if !result.Clean {
 					bodyAction = result.Action
 					if bodyAction == "" {
@@ -697,9 +700,11 @@ func newInterceptHandler(
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 					Subsurface:      "dlp_body_intercept",
 					Transport:       "connect",
-					SessionID:       CeeSessionKey(ic.Agent, ic.ClientIP),
+					SessionID:       captureSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:       ic.RequestID,
+					ConfigHash:      ic.Config.CanonicalPolicyHash(),
 					Agent:           ic.Agent,
+					Profile:         ic.Profile,
 					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
 					TransformKind:   capture.TransformJoinedFields,
 					RawFindings:     bodyScanToFindings(result),
@@ -889,16 +894,18 @@ func newInterceptHandler(
 			// Capture observer: record intercept header DLP verdict for policy replay.
 			if ic.Proxy != nil {
 				hdrHasFinding := headerResult != nil && !headerResult.Clean
-				hdrAction := ""
+				hdrAction := config.ActionAllow
 				if hdrHasFinding {
 					hdrAction = ic.Config.RequestBodyScanning.Action
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 					Subsurface:      "dlp_header_intercept",
 					Transport:       "connect",
-					SessionID:       CeeSessionKey(ic.Agent, ic.ClientIP),
+					SessionID:       captureSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:       ic.RequestID,
+					ConfigHash:      ic.Config.CanonicalPolicyHash(),
 					Agent:           ic.Agent,
+					Profile:         ic.Profile,
 					Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
 					TransformKind:   capture.TransformHeaderValue,
 					EffectiveAction: hdrAction,
@@ -957,7 +964,7 @@ func newInterceptHandler(
 			// Capture observer: record intercept CEE verdict for policy replay.
 			if ic.Proxy != nil {
 				ceeFindings := ceeResultToFindings(ceeRes)
-				ceeAction := ""
+				ceeAction := config.ActionAllow
 				if ceeRes.Blocked {
 					ceeAction = config.ActionBlock
 				} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
@@ -966,9 +973,11 @@ func newInterceptHandler(
 				ic.Proxy.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
 					Subsurface:        "cee_intercept",
 					Transport:         "connect",
-					SessionID:         CeeSessionKey(ic.Agent, ic.ClientIP),
+					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
 					RequestID:         ic.RequestID,
+					ConfigHash:        ic.Config.CanonicalPolicyHash(),
 					Agent:             ic.Agent,
+					Profile:           ic.Profile,
 					Request:           capture.CaptureRequest{Method: r.Method, URL: r.URL.String()},
 					TransformKind:     capture.TransformCEEWindow,
 					RawFindings:       ceeFindings,
@@ -1443,31 +1452,6 @@ func newInterceptHandler(
 		if ic.Scanner.ResponseScanningEnabled() {
 			scanResult := ic.Scanner.ScanResponse(r.Context(), string(respBody))
 
-			// Capture observer: record intercept response scan verdict for policy replay.
-			// Apply exempt override before capture so the recorded action matches runtime.
-			if ic.Proxy != nil {
-				iRespAction := ic.Scanner.ResponseAction()
-				if interceptRespExempt {
-					iRespAction = config.ActionWarn
-				}
-				if scanResult.Clean {
-					iRespAction = ""
-				}
-				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
-					Subsurface:        "response_intercept",
-					Transport:         "connect",
-					SessionID:         CeeSessionKey(ic.Agent, ic.ClientIP),
-					RequestID:         ic.RequestID,
-					Agent:             ic.Agent,
-					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
-					TransformKind:     capture.TransformRaw,
-					RawFindings:       responseMatchesToFindings(scanResult.Matches, iRespAction),
-					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, iRespAction),
-					EffectiveAction:   iRespAction,
-					Outcome:           captureOutcome(iRespAction, scanResult.Clean),
-				})
-			}
-
 			// Filter out suppressed findings (parity with fetch proxy).
 			if !scanResult.Clean && len(ic.Config.Suppress) > 0 {
 				var kept []scanner.ResponseMatch
@@ -1480,6 +1464,33 @@ func newInterceptHandler(
 				}
 				scanResult.Matches = kept
 				scanResult.Clean = len(kept) == 0
+			}
+
+			// Capture observer: record intercept response scan verdict for policy replay.
+			// Runs after suppression so the recorded action matches runtime.
+			if ic.Proxy != nil {
+				iRespAction := ic.Scanner.ResponseAction()
+				if interceptRespExempt {
+					iRespAction = config.ActionWarn
+				}
+				if scanResult.Clean {
+					iRespAction = config.ActionAllow
+				}
+				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+					Subsurface:        "response_intercept",
+					Transport:         "connect",
+					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					RequestID:         ic.RequestID,
+					ConfigHash:        ic.Config.CanonicalPolicyHash(),
+					Agent:             ic.Agent,
+					Profile:           ic.Profile,
+					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:     capture.TransformRaw,
+					RawFindings:       responseMatchesToFindings(scanResult.Matches, iRespAction),
+					EffectiveFindings: responseMatchesToFindings(scanResult.Matches, iRespAction),
+					EffectiveAction:   iRespAction,
+					Outcome:           captureOutcome(iRespAction, scanResult.Clean),
+				})
 			}
 			if !scanResult.Clean {
 				hasFinding = true

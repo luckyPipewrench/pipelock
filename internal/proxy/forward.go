@@ -174,16 +174,18 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Capture observer: record CONNECT URL verdict for policy replay.
 	{
 		findings := urlResultToFindings(result)
-		action := ""
+		action := config.ActionAllow
 		if !result.Allowed {
 			action = config.ActionBlock
 		}
 		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 			Subsurface:        "connect_url",
 			Transport:         "connect",
-			SessionID:         CeeSessionKey(agent, clientIP),
+			SessionID:         captureSessionKey(agent, clientIP),
 			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
+			Profile:           id.Profile,
 			Request:           capture.CaptureRequest{Method: http.MethodConnect, URL: syntheticURL},
 			RawFindings:       findings,
 			EffectiveFindings: findings,
@@ -538,6 +540,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			ClientIP:           clientIP,
 			RequestID:          requestID,
 			Agent:              agent,
+			Profile:            id.Profile,
 			ActorAuth:          id.Auth,
 			UpstreamRT:         p.tlsTransport,
 			SafeDial:           p.ssrfSafeDialContext,
@@ -726,16 +729,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Capture observer: record forward URL verdict for policy replay.
 	{
 		findings := urlResultToFindings(result)
-		action := ""
+		action := config.ActionAllow
 		if !result.Allowed {
 			action = config.ActionBlock
 		}
 		p.captureObs.ObserveURLVerdict(r.Context(), &capture.URLVerdictRecord{
 			Subsurface:        "forward_url",
 			Transport:         "forward",
-			SessionID:         CeeSessionKey(agent, clientIP),
+			SessionID:         captureSessionKey(agent, clientIP),
 			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
+			Profile:           id.Profile,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			RawFindings:       findings,
 			EffectiveFindings: findings,
@@ -962,7 +967,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Capture observer: record forward body DLP verdict for policy replay.
 		{
-			bodyAction := ""
+			bodyAction := config.ActionAllow
 			if !bodyResult.Clean {
 				bodyAction = bodyResult.Action
 				if bodyAction == "" {
@@ -972,9 +977,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:      "dlp_body_forward",
 				Transport:       "forward",
-				SessionID:       CeeSessionKey(agent, clientIP),
+				SessionID:       captureSessionKey(agent, clientIP),
 				RequestID:       requestID,
+				ConfigHash:      cfg.CanonicalPolicyHash(),
 				Agent:           agent,
+				Profile:         id.Profile,
 				Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
 				TransformKind:   capture.TransformJoinedFields,
 				RawFindings:     bodyScanToFindings(bodyResult),
@@ -1154,7 +1161,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Capture observer: record forward header DLP verdict for policy replay.
 	{
-		hdrAction := ""
+		hdrAction := config.ActionAllow
 		if forwardHeaderBlocked {
 			hdrAction = config.ActionBlock
 		} else if forwardHeaderHadFinding {
@@ -1163,9 +1170,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:      "dlp_header_forward",
 			Transport:       "forward",
-			SessionID:       CeeSessionKey(agent, clientIP),
+			SessionID:       captureSessionKey(agent, clientIP),
 			RequestID:       requestID,
+			ConfigHash:      cfg.CanonicalPolicyHash(),
 			Agent:           agent,
+			Profile:         id.Profile,
 			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			TransformKind:   capture.TransformHeaderValue,
 			EffectiveAction: hdrAction,
@@ -1229,7 +1238,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Capture observer: record forward CEE verdict for policy replay.
 		ceeFindings := ceeResultToFindings(ceeRes)
-		ceeAction := ""
+		ceeAction := config.ActionAllow
 		if ceeRes.Blocked {
 			ceeAction = config.ActionBlock
 		} else if ceeRes.EntropyHit || ceeRes.FragmentHit {
@@ -1238,9 +1247,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.captureObs.ObserveCEEVerdict(r.Context(), &capture.CEERecord{
 			Subsurface:        "cee_forward",
 			Transport:         "forward",
-			SessionID:         CeeSessionKey(agent, clientIP),
+			SessionID:         captureSessionKey(agent, clientIP),
 			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
+			Profile:           id.Profile,
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			TransformKind:     capture.TransformCEEWindow,
 			RawFindings:       ceeFindings,
@@ -1729,14 +1740,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					fwdRespAction = config.ActionWarn
 				}
 				if scanResult.Clean {
-					fwdRespAction = ""
+					fwdRespAction = config.ActionAllow
 				}
 				p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_forward",
 					Transport:         "forward",
-					SessionID:         CeeSessionKey(agent, clientIP),
+					SessionID:         captureSessionKey(agent, clientIP),
 					RequestID:         requestID,
+					ConfigHash:        cfg.CanonicalPolicyHash(),
 					Agent:             agent,
+					Profile:           id.Profile,
 					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 					TransformKind:     capture.TransformRaw,
 					RawFindings:       responseMatchesToFindings(scanResult.Matches, fwdRespAction),

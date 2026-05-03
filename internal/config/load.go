@@ -112,6 +112,7 @@ func Load(path string) (*Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
+	cfg.canonicalHashCache = &canonicalHashCacheHolder{}
 
 	// Eagerly warm the canonical policy hash cache so the hash is
 	// computed once against the post-Validate / post-ApplyDefaults

@@ -123,6 +123,12 @@ type MCPProxyOpts struct {
 	// Defaults to capture.NopObserver{} when nil.
 	CaptureObs capture.CaptureObserver
 
+	// Capture metadata stamped onto recorded MCP scan verdicts.
+	ConfigHash   string
+	ConfigHashFn func() string
+	Profile      string
+	ProfileFn    func() string
+
 	// Transport identifies the MCP transport for capture records.
 	// Set by each proxy surface, for example "mcp_stdio", "mcp_http_upstream",
 	// "mcp_http_listener", or "mcp_ws".
@@ -158,6 +164,20 @@ func (o MCPProxyOpts) captureObserver() capture.CaptureObserver {
 		return o.CaptureObs
 	}
 	return capture.NopObserver{}
+}
+
+func (o MCPProxyOpts) captureConfigHash() string {
+	if o.ConfigHashFn != nil {
+		return o.ConfigHashFn()
+	}
+	return o.ConfigHash
+}
+
+func (o MCPProxyOpts) captureProfile() string {
+	if o.ProfileFn != nil {
+		return o.ProfileFn()
+	}
+	return o.Profile
 }
 
 func (o MCPProxyOpts) warnContext() context.Context {

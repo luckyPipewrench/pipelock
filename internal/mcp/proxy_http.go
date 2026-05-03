@@ -577,7 +577,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 				Subsurface: "cee_mcp_http",
 				Transport:  opts.Transport,
-				SessionID:  "mcp-" + opts.Transport,
+				SessionID:  captureSessionID(opts.Transport),
+				ConfigHash: opts.captureConfigHash(),
+				Profile:    opts.captureProfile(),
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -820,7 +822,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			obs.ObserveCEEVerdict(context.Background(), &capture.CEERecord{
 				Subsurface: "cee_mcp_http",
 				Transport:  opts.Transport,
-				SessionID:  "mcp-" + opts.Transport,
+				SessionID:  captureSessionID(opts.Transport),
+				ConfigHash: opts.captureConfigHash(),
+				Profile:    opts.captureProfile(),
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -846,7 +850,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
 				Subsurface:      "dlp_mcp_input",
 				Transport:       opts.Transport,
-				SessionID:       "mcp-" + opts.Transport,
+				SessionID:       captureSessionID(opts.Transport),
+				ConfigHash:      opts.captureConfigHash(),
+				Profile:         opts.captureProfile(),
 				TransformKind:   capture.TransformJoinedFields,
 				RawFindings:     rawFindings,
 				EffectiveAction: effectiveAction,
@@ -1111,6 +1117,10 @@ func RunHTTPListenerProxy(
 		ReceiptEmitter:      opts.receiptEmitter(),
 		ReceiptEmitterFn:    opts.ReceiptEmitterFn,
 		CaptureObs:          opts.captureObserver(),
+		ConfigHash:          opts.captureConfigHash(),
+		ConfigHashFn:        opts.ConfigHashFn,
+		Profile:             opts.captureProfile(),
+		ProfileFn:           opts.ProfileFn,
 		ProvenanceCfg:       opts.provenanceCfg(),
 		ProvenanceCfgFn:     opts.ProvenanceCfgFn,
 		RedactMatcher:       baseRedactionCfg.Matcher,

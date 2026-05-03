@@ -562,8 +562,15 @@ func TestResolveShadowSessionsAgentConfigBranches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve by agent: %v", err)
 	}
-	if got != agentDir {
-		t.Fatalf("agent sessions = %q, want %q", got, agentDir)
+	if got != root {
+		t.Fatalf("agent sessions root = %q, want %q", got, root)
+	}
+	filter := shadowSessionFilter(shadowFlags{agent: "agent-a"})
+	if !filter("agent-a") || !filter("agent-a|10.0.0.1") || filter("agent-ab|10.0.0.2") {
+		t.Fatalf("shadow session filter did not match only agent-a sessions")
+	}
+	if shadowSessionFilter(shadowFlags{sessionsDir: agentDir}) != nil {
+		t.Fatalf("explicit sessions dir should not install an agent filter")
 	}
 	if _, err := resolveShadowSessions(cfg, shadowFlags{}); err == nil {
 		t.Fatal("resolve empty agent succeeded, want validation error")

@@ -110,6 +110,7 @@ func runShadow(cmd *cobra.Command, flags shadowFlags) error {
 	records, _, _, _, err := capture.LoadAndReplayWithOptions(cfg, sessionsDir, capture.ReplayOptions{
 		EscrowPrivateKey: escrow,
 		Contract:         &env.Body,
+		SessionFilter:    shadowSessionFilter(flags),
 	})
 	if err != nil {
 		return fmt.Errorf("learn shadow: replay captures: %w", err)
@@ -223,7 +224,36 @@ func resolveShadowSessions(cfg *config.Config, flags shadowFlags) (string, error
 	if !filepath.IsAbs(filepath.Clean(cfg.Learn.CaptureDir)) {
 		return "", errRelativeCaptureDir
 	}
-	return checkedReadDir(filepath.Join(cfg.Learn.CaptureDir, flags.agent))
+	root, err := checkedReadDir(cfg.Learn.CaptureDir)
+	if err != nil {
+		return "", err
+	}
+	if !hasMatchingCaptureSession(root, flags.agent) {
+		return "", fmt.Errorf("%w: no capture sessions matched agent %q", ErrInvalidCandidate, flags.agent)
+	}
+	return root, nil
+}
+
+func shadowSessionFilter(flags shadowFlags) func(string) bool {
+	if flags.sessionsDir != "" {
+		return nil
+	}
+	return func(sessionName string) bool {
+		return captureSessionNameMatchesAgent(sessionName, flags.agent)
+	}
+}
+
+func hasMatchingCaptureSession(root, agent string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && captureSessionNameMatchesAgent(entry.Name(), agent) {
+			return true
+		}
+	}
+	return false
 }
 
 func checkedReadDir(path string) (string, error) {

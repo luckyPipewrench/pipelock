@@ -49,6 +49,19 @@ func TestCeeSessionKey_AnonymousAgent(t *testing.T) {
 	}
 }
 
+func TestCaptureSessionKey_SafeForRecorderDirectory(t *testing.T) {
+	if got := captureSessionKey(testCEEAgent, testCEEClientIP); got != testCEEAgent+"|"+testCEEClientIP {
+		t.Fatalf("safe captureSessionKey = %q, want %q", got, testCEEAgent+"|"+testCEEClientIP)
+	}
+	got := captureSessionKey("../bad/agent", testCEEClientIP)
+	if !strings.HasPrefix(got, "capture-") {
+		t.Fatalf("unsafe captureSessionKey = %q, want hashed capture prefix", got)
+	}
+	if strings.ContainsAny(got, `/\`) || strings.Contains(got, "..") {
+		t.Fatalf("unsafe captureSessionKey produced invalid directory segment %q", got)
+	}
+}
+
 func TestExtractOutboundPayload_QueryParams(t *testing.T) {
 	// Keys are intentionally out of alphabetical order to prove wire-order extraction.
 	r := &http.Request{

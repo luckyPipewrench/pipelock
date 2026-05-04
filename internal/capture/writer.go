@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/crypto/nacl/box"
 
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -41,6 +42,12 @@ const metaSessionID = "capture-meta"
 
 // dropReason is the reason string used in drop sentinel entries.
 const dropReason = "backpressure"
+
+const (
+	actionClassSanitizedMissing      = "missing"
+	actionClassSanitizedNormalized   = "normalized"
+	actionClassSanitizedNonCanonical = "non_canonical"
+)
 
 // WriterConfig configures a capture Writer.
 type WriterConfig struct {
@@ -97,6 +104,7 @@ type captureEntry struct {
 	summary      CaptureSummary
 	scannerInput string
 	wirePayload  string
+	actionClass  string
 }
 
 // NewWriter creates a Writer and starts its background worker goroutine.
@@ -249,6 +257,10 @@ func (w *Writer) worker() {
 					captureSessionIDSanitizationReason(ce.summary.SessionIDOriginal))
 			}
 			w.metricsSink.RecordLearnCaptureRecord()
+			w.recordLearnObservationMetrics(ce.summary.ActionClass)
+			if reason, ok := actionClassSanitizationReason(ce.actionClass); ok {
+				w.metricsSink.RecordCaptureActionClassSanitized(reason)
+			}
 		}
 	}
 
@@ -316,26 +328,17 @@ func (w *Writer) writeDropSentinel(count int64) {
 }
 
 // captureEventKind returns the event_kind string to stamp on a capture
-// recorder.Entry. The current PR uses the surface name (url, response, dlp,
-// cee, tool_policy, tool_scan) unconditionally — proxy and MCP call sites do
-// not yet populate Verdict.ActionClass, so switching on the zero value would
-// silently mark every observation as "read" and mask the unclassified state.
-//
-// The follow-up task that wires ActionClass through the proxy/mcp layers will
-// swap this helper to prefer the classified verb when set, falling back to
-// the surface only for pre-classification callers. Until then, surface names
-// preserve attributability without inventing a classification.
+// recorder.Entry. Event kind identifies the scanned surface; action_class in
+// CaptureSummary carries the learn-and-lock action taxonomy.
 func captureEventKind(surface string) string {
 	return surface
 }
 
 // buildSummary constructs a CaptureSummary, truncating scanner and wire
 // payload samples to maxScannerSample bytes. actionClass carries the
-// session-level action verb when the call site classified inline (e.g.
-// session.ActionClassWrite.String() == "write"); empty means unclassified
-// and the field is omitted from the wire so the unclassified-rate metric
-// in a downstream commit can count missing classifications honestly
-// instead of having every observation render as "read" by default.
+// canonical learn-and-lock action verb when the call site classified inline.
+// Empty or non-canonical values are omitted from the wire so compile review can
+// count missing classifications honestly instead of inventing a default.
 func (w *Writer) buildSummary(
 	surface, subsurface, configHash, agent, profile string,
 	actionClass string,
@@ -366,7 +369,7 @@ func (w *Writer) buildSummary(
 		BuildSHA:             w.buildSHA,
 		Agent:                agent,
 		Profile:              profile,
-		ActionClass:          actionClass,
+		ActionClass:          summaryActionClass(actionClass),
 		SessionIDOriginal:    sessionIDOriginal,
 		PayloadComplete:      payloadComplete,
 		TransformKind:        transformKind,
@@ -420,6 +423,42 @@ func (w *Writer) buildSummary(
 	return s
 }
 
+func summaryActionClass(actionClass string) string {
+	actionClass = strings.ToLower(strings.TrimSpace(actionClass))
+	if receipt.ValidActionType(receipt.ActionType(actionClass)) {
+		return actionClass
+	}
+	return ""
+}
+
+func metricActionClass(actionClass string) string {
+	actionClass = summaryActionClass(actionClass)
+	if actionClass == "" {
+		return string(receipt.ActionUnclassified)
+	}
+	return actionClass
+}
+
+func actionClassSanitizationReason(actionClass string) (string, bool) {
+	trimmed := strings.TrimSpace(actionClass)
+	normalized := strings.ToLower(trimmed)
+	if trimmed == "" {
+		return actionClassSanitizedMissing, true
+	}
+	if !receipt.ValidActionType(receipt.ActionType(normalized)) {
+		return actionClassSanitizedNonCanonical, true
+	}
+	if normalized != actionClass {
+		return actionClassSanitizedNormalized, true
+	}
+	return "", false
+}
+
+func (w *Writer) recordLearnObservationMetrics(actionClass string) {
+	actionClass = metricActionClass(actionClass)
+	w.metricsSink.RecordLearnObservationEvent(actionClass)
+}
+
 // normalizeEffectiveAction returns ActionAllow when the input is empty,
 // matching the writer's defensive default. Observe* call sites use this
 // before constructing recorder.Entry.Summary so the Summary tail and the
@@ -453,6 +492,7 @@ func (w *Writer) ObserveURLVerdict(_ context.Context, rec *URLVerdictRecord) {
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
 		),
 		scannerInput: scannerInput,
+		actionClass:  rec.ActionClass,
 	})
 }
 
@@ -477,6 +517,7 @@ func (w *Writer) ObserveResponseVerdict(_ context.Context, rec *ResponseVerdictR
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
 		),
 		wirePayload: wire,
+		actionClass: rec.ActionClass,
 	})
 }
 
@@ -500,6 +541,7 @@ func (w *Writer) ObserveDLPVerdict(_ context.Context, rec *DLPVerdictRecord) {
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
 		),
 		scannerInput: rec.ScannerInput,
+		actionClass:  rec.ActionClass,
 	})
 }
 
@@ -523,6 +565,7 @@ func (w *Writer) ObserveCEEVerdict(_ context.Context, rec *CEERecord) {
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
 		),
 		scannerInput: rec.ScannerInput,
+		actionClass:  rec.ActionClass,
 	})
 }
 
@@ -545,6 +588,7 @@ func (w *Writer) ObserveToolPolicyVerdict(_ context.Context, rec *ToolPolicyReco
 			rec.Request, rec.RawFindings, rec.EffectiveFindings,
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
 		),
+		actionClass: rec.ActionClass,
 	})
 }
 
@@ -568,6 +612,7 @@ func (w *Writer) ObserveToolScanVerdict(_ context.Context, rec *ToolScanRecord) 
 			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
 		),
 		scannerInput: rec.ScannerInput,
+		actionClass:  rec.ActionClass,
 	})
 }
 

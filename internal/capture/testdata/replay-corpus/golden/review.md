@@ -19,9 +19,8 @@
 ## Classification Debt
 
 - Unclassified action_class events 0.00% (0/33)
-- network: 4
-- read: 23
-- write: 6
+- read: 26
+- write: 7
 
 ## Capture Fidelity
 

@@ -3,7 +3,11 @@
 
 package metrics
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+)
 
 // learnNamespace is the Prometheus namespace for the contract-compile
 // observation-pipeline metrics. The pipeline emits under
@@ -19,25 +23,24 @@ const learnNamespace = "pipelock_learn"
 // Any value outside the canonical set is dropped at record time to
 // prevent label-cardinality drift on a security-relevant counter.
 //
-// The metrics package owns the enum locally to avoid a layering import
-// on internal/contract/inference (or any other domain package).
-// Cross-package alignment is asserted by the metrics test pack.
-type ActionClass string
+// The metrics package aliases the receipt action type so the action taxonomy
+// has a single source of truth.
+type ActionClass = receipt.ActionType
 
 // Canonical ActionClass values per the action-class taxonomy.
 // Wire form (snake_case lowercase verb) — must agree with the recorder
 // emitter's wire output byte-for-byte. Add a new constant here when
 // the taxonomy gains a verb; never widen the closed set silently.
 const (
-	ActionRead         ActionClass = "read"
-	ActionDerive       ActionClass = "derive"
-	ActionWrite        ActionClass = "write"
-	ActionDelegate     ActionClass = "delegate"
-	ActionAuthorize    ActionClass = "authorize"
-	ActionSpend        ActionClass = "spend"
-	ActionCommit       ActionClass = "commit"
-	ActionActuate      ActionClass = "actuate"
-	ActionUnclassified ActionClass = "unclassified"
+	ActionRead         ActionClass = receipt.ActionRead
+	ActionDerive       ActionClass = receipt.ActionDerive
+	ActionWrite        ActionClass = receipt.ActionWrite
+	ActionDelegate     ActionClass = receipt.ActionDelegate
+	ActionAuthorize    ActionClass = receipt.ActionAuthorize
+	ActionSpend        ActionClass = receipt.ActionSpend
+	ActionCommit       ActionClass = receipt.ActionCommit
+	ActionActuate      ActionClass = receipt.ActionActuate
+	ActionUnclassified ActionClass = receipt.ActionUnclassified
 )
 
 // BlockReason is the closed wire-form domain for the
@@ -158,6 +161,12 @@ func (m *Metrics) RecordObservationEvent(actionClass ActionClass) {
 	}
 }
 
+// RecordLearnObservationEvent adapts the capture writer's string wire form to
+// the closed ActionClass metric domain.
+func (m *Metrics) RecordLearnObservationEvent(actionClass string) {
+	m.RecordObservationEvent(receipt.ActionType(actionClass))
+}
+
 // RecordRegulatedDataBlocked increments the regulated_data_blocked_total
 // counter with the given reason label. The privacy enforcer calls this
 // when an observation event's data class resolves to regulated and is
@@ -191,6 +200,12 @@ func (m *Metrics) SetUnclassifiedRate(rate float64) {
 		return
 	}
 	m.learnUnclassifiedRate.Set(rate)
+}
+
+// SetLearnUnclassifiedRate adapts the capture writer's computed rate to the
+// learn metric gauge.
+func (m *Metrics) SetLearnUnclassifiedRate(rate float64) {
+	m.SetUnclassifiedRate(rate)
 }
 
 // InferenceOutcome is the closed wire-form domain for the

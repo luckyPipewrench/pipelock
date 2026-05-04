@@ -12,7 +12,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 func captureSessionID(transport string) string {
@@ -99,6 +101,22 @@ func addressFindingsToCapture(findings []addressprotect.Finding) []capture.Findi
 		}
 	}
 	return out
+}
+
+func captureMCPActionClass(toolName, mcpMethod string) string {
+	return string(receipt.ClassifyMCPTool(toolName, mcpMethod))
+}
+
+func captureMCPFrameActionClass(toolName, mcpMethod, argsJSON string) string {
+	if mcpMethod == methodToolsCall {
+		actionClass, _, _ := session.ClassifyMCPToolCall(toolName, argsJSON, nil, nil)
+		fromArgs := receipt.ClassifySessionAction(actionClass)
+		if fromArgs != receipt.ActionUnclassified {
+			return string(fromArgs)
+		}
+		return captureMCPActionClass(toolName, mcpMethod)
+	}
+	return captureMCPActionClass(toolName, mcpMethod)
 }
 
 // toolScanMatchesToFindings converts tools.ToolScanMatch slice to capture findings.

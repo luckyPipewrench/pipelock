@@ -50,8 +50,13 @@ type testMetricsSink struct {
 	sanitizedUnsafe atomic.Int64
 	sanitizedLong   atomic.Int64
 	sanitizedOther  atomic.Int64
+	actionMissing   atomic.Int64
+	actionNorm      atomic.Int64
+	actionOther     atomic.Int64
 	records         atomic.Int64
 	drops           atomic.Int64
+	observations    atomic.Int64
+	unclassified    atomic.Int64
 }
 
 func (s *testMetricsSink) RecordCaptureSessionIDSanitized(reason string) {
@@ -65,12 +70,30 @@ func (s *testMetricsSink) RecordCaptureSessionIDSanitized(reason string) {
 	}
 }
 
+func (s *testMetricsSink) RecordCaptureActionClassSanitized(reason string) {
+	switch reason {
+	case "missing":
+		s.actionMissing.Add(1)
+	case "normalized":
+		s.actionNorm.Add(1)
+	default:
+		s.actionOther.Add(1)
+	}
+}
+
 func (s *testMetricsSink) RecordLearnCaptureRecord() {
 	s.records.Add(1)
 }
 
 func (s *testMetricsSink) RecordLearnCaptureDrop() {
 	s.drops.Add(1)
+}
+
+func (s *testMetricsSink) RecordLearnObservationEvent(actionClass string) {
+	s.observations.Add(1)
+	if actionClass == "unclassified" {
+		s.unclassified.Add(1)
+	}
 }
 
 // newTestWriter creates a Writer with sensible test defaults.
@@ -473,6 +496,70 @@ func TestWriterMetricsSinkRecordsSanitizedSessionID(t *testing.T) {
 	}
 	if got := metricsSink.sanitizedLong.Load(); got != 0 {
 		t.Fatalf("sanitized overlength count = %d, want 0", got)
+	}
+}
+
+func TestWriterMetricsSinkRecordsObservationClasses(t *testing.T) {
+	dir := t.TempDir()
+	metricsSink := &testMetricsSink{}
+
+	w, err := capture.NewWriter(capture.WriterConfig{
+		RecorderConfig: recorder.Config{
+			Enabled:            true,
+			Dir:                dir,
+			CheckpointInterval: 1000,
+		},
+		MetricsSink:  metricsSink,
+		QueueSize:    testQueueSize,
+		BuildVersion: testVersion,
+		BuildSHA:     testSHA,
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+
+	for _, tc := range []struct {
+		requestID   string
+		actionClass string
+		method      string
+	}{
+		{requestID: "req-classified", actionClass: "write", method: "POST"},
+		{requestID: "req-explicit-unclassified", actionClass: "unclassified", method: "CUSTOM"},
+		{requestID: "req-normalized", actionClass: " Read ", method: "GET"},
+		{requestID: "req-non-canonical", actionClass: "exec", method: "POST"},
+		{requestID: "req-missing", actionClass: "", method: "CUSTOM"},
+	} {
+		w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
+			Subsurface:      testSubsurface,
+			Transport:       testTransport,
+			SessionID:       testSessionID,
+			RequestID:       tc.requestID,
+			ConfigHash:      testConfigHash,
+			ActionClass:     tc.actionClass,
+			Request:         capture.CaptureRequest{Method: tc.method, URL: testURLVerdict},
+			EffectiveAction: "allow",
+			Outcome:         capture.OutcomeClean,
+		})
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := metricsSink.observations.Load(); got != 5 {
+		t.Fatalf("learn observation events = %d, want 5", got)
+	}
+	if got := metricsSink.unclassified.Load(); got != 3 {
+		t.Fatalf("unclassified observation events = %d, want 3", got)
+	}
+	if got := metricsSink.actionMissing.Load(); got != 1 {
+		t.Fatalf("missing action-class sanitizations = %d, want 1", got)
+	}
+	if got := metricsSink.actionNorm.Load(); got != 1 {
+		t.Fatalf("normalized action-class sanitizations = %d, want 1", got)
+	}
+	if got := metricsSink.actionOther.Load(); got != 1 {
+		t.Fatalf("other action-class sanitizations = %d, want 1", got)
 	}
 }
 

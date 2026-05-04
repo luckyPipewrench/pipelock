@@ -99,8 +99,9 @@ type Metrics struct {
 	responseScanExemptTotal *prometheus.CounterVec
 
 	// Capture (capture.go).
-	CaptureDropped            prometheus.Counter
-	captureSessionIDSanitized *prometheus.CounterVec
+	CaptureDropped              prometheus.Counter
+	captureSessionIDSanitized   *prometheus.CounterVec
+	captureActionClassSanitized *prometheus.CounterVec
 
 	// Learn-and-lock observation pipeline (learn.go).
 	learnObservationEvents        *prometheus.CounterVec

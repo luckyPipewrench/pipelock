@@ -231,6 +231,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
 			Profile:           id.Profile,
+			// WebSocket captures here describe the HTTP upgrade handshake,
+			// not later frame semantics.
+			ActionClass:       captureHTTPActionClass(r.Method),
 			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
 			RawFindings:       findings,
 			EffectiveFindings: findings,
@@ -399,11 +402,14 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			ConfigHash:        cfg.CanonicalPolicyHash(),
 			Agent:             agent,
 			Profile:           id.Profile,
-			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
-			TransformKind:     capture.TransformHeaderValue,
-			EffectiveAction:   config.ActionBlock,
-			Outcome:           capture.OutcomeBlocked,
-			SkipReason:        reason,
+			// Header DLP captures describe the HTTP upgrade handshake, not
+			// later bidirectional frame semantics.
+			ActionClass:     captureHTTPActionClass(r.Method),
+			Request:         capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:   capture.TransformHeaderValue,
+			EffectiveAction: config.ActionBlock,
+			Outcome:         capture.OutcomeBlocked,
+			SkipReason:      reason,
 		})
 		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.

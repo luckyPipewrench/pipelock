@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/inference"
 	contractcompile "github.com/luckyPipewrench/pipelock/internal/contract/inference/compile"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -185,7 +186,7 @@ func blockedURLSpec(method, url string) recordSpec {
 		surface:         capture.SurfaceURL,
 		subsurface:      transport,
 		transport:       transport,
-		actionClass:     "network",
+		actionClass:     string(receipt.ClassifyHTTP(method)),
 		request:         capture.CaptureRequest{Method: method, URL: url},
 		rawFindings:     []capture.Finding{finding},
 		effectiveAction: config.ActionBlock,
@@ -244,12 +245,10 @@ func responseSpec(transport, method, url string) recordSpec {
 // always-the-same parameters.
 func toolPolicyBaseSpec(toolName, argsJSON string) recordSpec {
 	return recordSpec{
-		surface:    capture.SurfaceToolPolicy,
-		subsurface: "mcp_stdio",
-		transport:  "mcp_stdio",
-		// Tool calls map to the "exec" action class — they trigger a
-		// side-effecting tool invocation regardless of the underlying verb.
-		actionClass: "exec",
+		surface:     capture.SurfaceToolPolicy,
+		subsurface:  "mcp_stdio",
+		transport:   "mcp_stdio",
+		actionClass: string(receipt.ClassifyMCPTool(toolName, "tools/call")),
 		request: capture.CaptureRequest{
 			ToolName:     toolName,
 			ToolArgsJSON: argsJSON,
@@ -689,6 +688,19 @@ func TestReplayHarness_CompileMatchesGolden(t *testing.T) {
 	assertGolden(t, harnessGoldenContract, result.YAML)
 	assertGolden(t, harnessGoldenManifest, stabilizeManifest(t, result.ManifestJSON))
 	assertGolden(t, harnessGoldenReview, []byte(result.Review))
+}
+
+func TestReplayHarness_ClassificationDebtGate(t *testing.T) {
+	t.Parallel()
+	entries := buildContinuousEntries(t)
+	result, _ := runHarnessCompile(t, entries)
+
+	if !strings.Contains(result.Review, "Unclassified action_class events 0.00% (0/") {
+		t.Fatalf("review classification debt is not at zero:\n%s", result.Review)
+	}
+	if strings.Contains(result.Review, "Warning: unclassified action_class") {
+		t.Fatalf("review emitted classification-debt warning:\n%s", result.Review)
+	}
 }
 
 // TestReplayHarness_ReplayDiffMatchesGolden writes the corpus to a temp

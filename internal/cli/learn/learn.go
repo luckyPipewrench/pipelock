@@ -4,7 +4,7 @@
 // Package learn provides the `pipelock learn` command tree for the
 // contract-compile observation pipeline. The `observe` subverb runs the
 // proxy in capture mode and writes a hash-chained recorder JSONL stream
-// to the configured capture directory; entries carry an event_kind
+// to the configured capture directory; entries carry an action_class
 // classifier that the downstream compile stage consumes. The privacy
 // enforcer surface lives in internal/contract/privacy and is structural
 // plumbing for the next phase, not active enforcement at observe time.

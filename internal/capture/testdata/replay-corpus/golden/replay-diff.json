@@ -411,7 +411,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "network",
+        "action_class": "read",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -488,7 +488,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "exec",
+        "action_class": "read",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -520,7 +520,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "exec",
+        "action_class": "write",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -851,7 +851,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "network",
+        "action_class": "read",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -900,7 +900,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "network",
+        "action_class": "write",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -949,7 +949,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "exec",
+        "action_class": "read",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -1273,7 +1273,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "network",
+        "action_class": "read",
         "payload_complete": false,
         "transform_kind": "",
         "request": {
@@ -1350,7 +1350,7 @@
         "build_sha": "harness",
         "agent": "harness-agent",
         "profile": "harness",
-        "action_class": "exec",
+        "action_class": "read",
         "payload_complete": false,
         "transform_kind": "",
         "request": {

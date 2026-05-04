@@ -72,6 +72,9 @@ func TestCaptureMetadata_MCPHTTPInputTransport(t *testing.T) {
 		if rec.Profile != "mcp-profile" {
 			t.Fatalf("profile = %q", rec.Profile)
 		}
+		if rec.ActionClass != "read" {
+			t.Fatalf("action_class = %q, want read", rec.ActionClass)
+		}
 		if rec.EffectiveAction != config.ActionBlock {
 			t.Fatalf("effective_action = %q, want block", rec.EffectiveAction)
 		}
@@ -145,6 +148,9 @@ func TestCaptureMetadata_MCPStdioInputTransport(t *testing.T) {
 		}
 		if rec.Profile != "stdio-profile" {
 			t.Fatalf("profile = %q, want stdio-profile", rec.Profile)
+		}
+		if rec.ActionClass != "read" {
+			t.Fatalf("action_class = %q, want read", rec.ActionClass)
 		}
 		if rec.EffectiveAction != config.ActionBlock {
 			t.Fatalf("effective_action = %q, want block", rec.EffectiveAction)

@@ -9,7 +9,7 @@
       {
         "event_count": 37,
         "path": "testdata/replay-corpus/observations/corpus.jsonl",
-        "sha256": "sha256:c863f6bdefee95ae75994f3bc0dacc30b3de4e2965d4db16828b031b5db5e6b9"
+        "sha256": "sha256:bfbf08d62c66f963ea65006d60ab65a33b3faef56d6551caa31dbb6c9d2674a4"
       }
     ],
     "key_purpose": "contract-compile-signing",
@@ -29,5 +29,5 @@
     },
     "signer_key_id": "harness-contract-compile"
   },
-  "signature": "ed25519:dd6281f8b602793ae43e389bc21a52ec504ee942db966ed5cffe710e80b0afa4f17f2a70df274c38274b8b514b91bc1e14a87799bda095f3e45c5a69de28f907"
+  "signature": "ed25519:1e816b769b6d58b4dec3b6cfbc9bac582e8a6a98bc19ad7d400d065e29b959398826688dcb3f66c7ca46e9a0fc052005c30acd8347fff31cdf9d36654c01bd01"
 }

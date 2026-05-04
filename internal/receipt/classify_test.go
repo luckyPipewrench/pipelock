@@ -6,6 +6,8 @@ package receipt
 import (
 	"net/http"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 func TestClassifyHTTP(t *testing.T) {
@@ -169,6 +171,35 @@ func TestClassifyMCPTool(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("ClassifyMCPTool(%q, %q) = %q, want %q",
 					tc.toolName, tc.mcpMethod, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifySessionAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		action session.ActionClass
+		want   ActionType
+	}{
+		{name: "read", action: session.ActionClassRead, want: ActionRead},
+		{name: "browse", action: session.ActionClassBrowse, want: ActionRead},
+		{name: "summarize", action: session.ActionClassSummarize, want: ActionDerive},
+		{name: "write", action: session.ActionClassWrite, want: ActionWrite},
+		{name: "publish", action: session.ActionClassPublish, want: ActionWrite},
+		{name: "exec", action: session.ActionClassExec, want: ActionDelegate},
+		{name: "secret", action: session.ActionClassSecret, want: ActionUnclassified},
+		{name: "network", action: session.ActionClassNetwork, want: ActionUnclassified},
+		{name: "unknown", action: session.ActionClass(255), want: ActionUnclassified},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ClassifySessionAction(tc.action); got != tc.want {
+				t.Errorf("ClassifySessionAction(%v) = %q, want %q", tc.action, got, tc.want)
 			}
 		})
 	}

@@ -329,6 +329,7 @@ func ForwardScannedInput(
 		if verdict.Method == methodToolsCall {
 			toolCallName = frame.ToolCallName
 		}
+		captureActionClass := captureMCPFrameActionClass(toolCallName, verdict.Method, string(frame.Args))
 
 		// Session binding side effects. Fire the diagnostic log and
 		// capture observe for every binding violation regardless of
@@ -353,6 +354,7 @@ func ForwardScannedInput(
 				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
+				ActionClass:       captureActionClass,
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
@@ -386,6 +388,7 @@ func ForwardScannedInput(
 				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
+				ActionClass:       captureActionClass,
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: methodToolsCall,
@@ -566,6 +569,7 @@ func ForwardScannedInput(
 					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
+					ActionClass:       captureActionClass,
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -771,6 +775,7 @@ func ForwardScannedInput(
 					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
+					ActionClass:       captureActionClass,
 					TransformKind:     capture.TransformRedirectOutput,
 					WirePayload:       result.Response,
 					RawFindings:       responseMatchesToFindings(scanVerdict.Matches, config.ActionBlock),
@@ -850,6 +855,7 @@ func ForwardScannedInput(
 					SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 					ConfigHash:        opts.captureConfigHash(),
 					Profile:           opts.captureProfile(),
+					ActionClass:       captureActionClass,
 					RawFindings: []capture.Finding{{
 						Kind:   capture.KindCEE,
 						Action: config.ActionBlock,
@@ -934,6 +940,7 @@ func ForwardScannedInput(
 				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
+				ActionClass:       captureActionClass,
 				TransformKind:     capture.TransformJoinedFields,
 				RawFindings:       rawFindings,
 				EffectiveAction:   effectiveAction,
@@ -957,6 +964,7 @@ func ForwardScannedInput(
 				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
+				ActionClass:       captureActionClass,
 				Request: capture.CaptureRequest{
 					ToolName:  toolCallName,
 					MCPMethod: verdict.Method,

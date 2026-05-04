@@ -3,7 +3,11 @@
 
 package receipt
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/luckyPipewrench/pipelock/internal/session"
+)
 
 // ClassifyHTTP infers an action type from an HTTP method.
 // GET/HEAD/OPTIONS → read, POST/PUT/PATCH/DELETE → write.
@@ -75,6 +79,27 @@ func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
 	}
 
 	return ActionUnclassified
+}
+
+// ClassifySessionAction maps taint-policy action classes into the canonical
+// action-receipt taxonomy used by learn-and-lock capture summaries. Secret and
+// network classes carry sensitivity/transport uncertainty rather than a clear
+// verb, so they intentionally fall back to unclassified.
+func ClassifySessionAction(action session.ActionClass) ActionType {
+	switch action {
+	case session.ActionClassRead, session.ActionClassBrowse:
+		return ActionRead
+	case session.ActionClassSummarize:
+		return ActionDerive
+	case session.ActionClassWrite, session.ActionClassPublish:
+		return ActionWrite
+	case session.ActionClassExec:
+		return ActionDelegate
+	case session.ActionClassNetwork, session.ActionClassSecret:
+		return ActionUnclassified
+	default:
+		return ActionUnclassified
+	}
 }
 
 // classifyToolName attempts to classify an MCP tool call by name.

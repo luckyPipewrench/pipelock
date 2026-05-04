@@ -6,6 +6,7 @@ package proxy
 import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -101,6 +102,10 @@ func bodyScanToFindings(r BodyScanResult) []capture.Finding {
 		})
 	}
 	return findings
+}
+
+func captureHTTPActionClass(method string) string {
+	return string(receipt.ClassifyHTTP(method))
 }
 
 // captureOutcome maps an effective action to a capture outcome constant.

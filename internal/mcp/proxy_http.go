@@ -416,6 +416,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		toolName = frame.ToolCallName
 	}
+	captureActionClass := captureMCPFrameActionClass(toolName, verdict.Method, string(frame.Args))
 	logTaintDecision := func() {
 		if auditLogger == nil {
 			return
@@ -581,6 +582,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
+				ActionClass:       captureActionClass,
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,
@@ -693,6 +695,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 			ConfigHash:        opts.captureConfigHash(),
 			Profile:           opts.captureProfile(),
+			ActionClass:       captureActionClass,
 			TransformKind:     capture.TransformJoinedFields,
 			RawFindings:       rawFindings,
 			EffectiveAction:   effectiveAction,
@@ -847,6 +850,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
 				ConfigHash:        opts.captureConfigHash(),
 				Profile:           opts.captureProfile(),
+				ActionClass:       captureActionClass,
 				RawFindings: []capture.Finding{{
 					Kind:   capture.KindCEE,
 					Action: config.ActionBlock,

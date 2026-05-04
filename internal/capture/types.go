@@ -254,8 +254,10 @@ type DropSink interface {
 // broader learn-and-lock soak metric surface.
 type MetricsSink interface {
 	RecordCaptureSessionIDSanitized(reason string)
+	RecordCaptureActionClassSanitized(reason string)
 	RecordLearnCaptureRecord()
 	RecordLearnCaptureDrop()
+	RecordLearnObservationEvent(actionClass string)
 }
 
 // CaptureObserver is called by proxy and MCP scanner hooks with the verdict for
@@ -288,12 +290,12 @@ type URLVerdictRecord struct {
 	ConfigHash        string
 	Agent             string
 	Profile           string
-	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
-	// String() == "read") at scan time, populated by callers that classify
-	// inline. Empty string means the call site did not classify; the writer
-	// falls back to the surface name when stamping recorder.Entry.EventKind
-	// and leaves CaptureSummary.action_class absent so the unclassified-rate
-	// metric does not undercount.
+	// ActionClass is the canonical learn-and-lock action verb (read, derive,
+	// write, delegate, authorize, spend, commit, actuate, unclassified) at scan
+	// time, populated by callers that classify inline. Empty string means the
+	// call site did not classify; the writer records it as unclassified for
+	// learn metrics and leaves CaptureSummary.action_class absent so compile
+	// review can report classification debt explicitly.
 	ActionClass       string
 	Request           CaptureRequest
 	RawFindings       []Finding
@@ -316,12 +318,12 @@ type ResponseVerdictRecord struct {
 	ConfigHash        string
 	Agent             string
 	Profile           string
-	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
-	// String() == "read") at scan time, populated by callers that classify
-	// inline. Empty string means the call site did not classify; the writer
-	// falls back to the surface name when stamping recorder.Entry.EventKind
-	// and leaves CaptureSummary.action_class absent so the unclassified-rate
-	// metric does not undercount.
+	// ActionClass is the canonical learn-and-lock action verb (read, derive,
+	// write, delegate, authorize, spend, commit, actuate, unclassified) at scan
+	// time, populated by callers that classify inline. Empty string means the
+	// call site did not classify; the writer records it as unclassified for
+	// learn metrics and leaves CaptureSummary.action_class absent so compile
+	// review can report classification debt explicitly.
 	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
@@ -346,12 +348,12 @@ type DLPVerdictRecord struct {
 	ConfigHash        string
 	Agent             string
 	Profile           string
-	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
-	// String() == "read") at scan time, populated by callers that classify
-	// inline. Empty string means the call site did not classify; the writer
-	// falls back to the surface name when stamping recorder.Entry.EventKind
-	// and leaves CaptureSummary.action_class absent so the unclassified-rate
-	// metric does not undercount.
+	// ActionClass is the canonical learn-and-lock action verb (read, derive,
+	// write, delegate, authorize, spend, commit, actuate, unclassified) at scan
+	// time, populated by callers that classify inline. Empty string means the
+	// call site did not classify; the writer records it as unclassified for
+	// learn metrics and leaves CaptureSummary.action_class absent so compile
+	// review can report classification debt explicitly.
 	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
@@ -376,12 +378,12 @@ type CEERecord struct {
 	ConfigHash        string
 	Agent             string
 	Profile           string
-	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
-	// String() == "read") at scan time, populated by callers that classify
-	// inline. Empty string means the call site did not classify; the writer
-	// falls back to the surface name when stamping recorder.Entry.EventKind
-	// and leaves CaptureSummary.action_class absent so the unclassified-rate
-	// metric does not undercount.
+	// ActionClass is the canonical learn-and-lock action verb (read, derive,
+	// write, delegate, authorize, spend, commit, actuate, unclassified) at scan
+	// time, populated by callers that classify inline. Empty string means the
+	// call site did not classify; the writer records it as unclassified for
+	// learn metrics and leaves CaptureSummary.action_class absent so compile
+	// review can report classification debt explicitly.
 	ActionClass       string
 	Request           CaptureRequest
 	TransformKind     string
@@ -406,12 +408,12 @@ type ToolPolicyRecord struct {
 	ConfigHash        string
 	Agent             string
 	Profile           string
-	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
-	// String() == "read") at scan time, populated by callers that classify
-	// inline. Empty string means the call site did not classify; the writer
-	// falls back to the surface name when stamping recorder.Entry.EventKind
-	// and leaves CaptureSummary.action_class absent so the unclassified-rate
-	// metric does not undercount.
+	// ActionClass is the canonical learn-and-lock action verb (read, derive,
+	// write, delegate, authorize, spend, commit, actuate, unclassified) at scan
+	// time, populated by callers that classify inline. Empty string means the
+	// call site did not classify; the writer records it as unclassified for
+	// learn metrics and leaves CaptureSummary.action_class absent so compile
+	// review can report classification debt explicitly.
 	ActionClass       string
 	BatchIndex        *int
 	Request           CaptureRequest
@@ -436,12 +438,12 @@ type ToolScanRecord struct {
 	ConfigHash        string
 	Agent             string
 	Profile           string
-	// ActionClass is the session-level action verb (e.g. session.ActionClassRead.
-	// String() == "read") at scan time, populated by callers that classify
-	// inline. Empty string means the call site did not classify; the writer
-	// falls back to the surface name when stamping recorder.Entry.EventKind
-	// and leaves CaptureSummary.action_class absent so the unclassified-rate
-	// metric does not undercount.
+	// ActionClass is the canonical learn-and-lock action verb (read, derive,
+	// write, delegate, authorize, spend, commit, actuate, unclassified) at scan
+	// time, populated by callers that classify inline. Empty string means the
+	// call site did not classify; the writer records it as unclassified for
+	// learn metrics and leaves CaptureSummary.action_class absent so compile
+	// review can report classification debt explicitly.
 	ActionClass       string
 	BatchIndex        *int
 	Request           CaptureRequest

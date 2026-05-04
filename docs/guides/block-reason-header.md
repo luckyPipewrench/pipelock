@@ -1,6 +1,6 @@
 # X-Pipelock-Block-Reason Header
 
-When Pipelock blocks a request, it sets a small set of response headers naming the rule class that fired, the severity, and an optional retry hint. The headers let an agent react to a block intelligently. Without them, every 403 is opaque and the agent's only option is generic backoff or human escalation.
+When Pipelock blocks a request on an HTTP-capable path, it sets a small set of response headers naming the rule class that fired, the severity, and an optional retry hint. The headers let an agent react to a block intelligently. Without structured block metadata, HTTP clients see only a generic denial and must fall back to generic backoff or human escalation.
 
 The schema is locked at v1. Additive changes (new reason codes, new optional headers) keep v1.
 

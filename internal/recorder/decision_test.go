@@ -1315,3 +1315,48 @@ func TestEnsureFile_FirstSeqInSpan(t *testing.T) {
 		t.Fatalf("VerifyChain: %v", err)
 	}
 }
+
+func TestEnsureFile_StatErrorFailsClosedWithOpenFile(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(Config{
+		Enabled: true,
+		Dir:     dir,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := rec.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+
+	if err := rec.Record(Entry{
+		SessionID: "stat-error",
+		Type:      "request",
+		Transport: "fetch",
+		Summary:   "open file",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if rec.file == nil {
+		t.Fatal("expected recorder file to be open")
+	}
+
+	notDir := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(notDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	rec.cfg.Dir = filepath.Join(notDir, "child")
+
+	err = rec.ensureFile("stat-error", rec.seq+1)
+	if err == nil {
+		t.Fatal("expected non-NotExist stat error to fail closed")
+	}
+	if !strings.Contains(err.Error(), "stat evidence directory") {
+		t.Fatalf("expected stat evidence directory error, got %v", err)
+	}
+	if rec.file == nil {
+		t.Fatal("non-NotExist stat error should not close the existing file")
+	}
+}

@@ -53,8 +53,12 @@ func canonicalSSEEventText(eventData []byte, reader *transport.SSEReader) string
 		}
 	}
 	if len(eventData) > 0 {
-		b.WriteString("data: ")
-		b.Write(eventData)
+		for line := range strings.SplitSeq(string(eventData), "\n") {
+			b.WriteString("data: ")
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
 	}
 	return b.String()
 }

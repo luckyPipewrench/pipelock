@@ -225,6 +225,24 @@ func ScanGenericSSEStreamWithOptions(
 				dlpResult.Matches = kept
 				dlpResult.Clean = len(kept) == 0
 			}
+			if dlpResult.Clean {
+				// Keep scanning the joined data payload too. The canonical
+				// wire-shaped text preserves per-line data: prefixes for
+				// metadata visibility, while the joined payload catches
+				// split-secret patterns that are easier to recognize before
+				// those prefixes are reintroduced.
+				dlpResult = sc.ScanTextForDLP(ctx, string(event))
+				if !dlpResult.Clean && len(opts.Suppress) > 0 {
+					var kept []scanner.TextDLPMatch
+					for _, match := range dlpResult.Matches {
+						if !config.IsSuppressed(match.PatternName, opts.Target, opts.Suppress) {
+							kept = append(kept, match)
+						}
+					}
+					dlpResult.Matches = kept
+					dlpResult.Clean = len(kept) == 0
+				}
+			}
 			if !dlpResult.Clean {
 				findingErr := fmt.Errorf("%w: dlp: %s",
 					ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))

@@ -622,6 +622,14 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	// the disappearance while r.file is still the stale fd.
 	dir := filepath.Clean(r.cfg.Dir)
 	_, statErr := os.Stat(dir)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		// Fail-closed: a non-NotExist stat error (permission denied,
+		// transient I/O failure, mount unmapped) means we cannot trust
+		// the directory's state. Returning the error here prevents the
+		// short-circuit below from silently continuing to write to a
+		// stale fd while the underlying directory may have been replaced.
+		return fmt.Errorf("stat evidence directory %s: %w", r.cfg.Dir, statErr)
+	}
 	dirMissing := os.IsNotExist(statErr)
 	if dirMissing {
 		if mkErr := os.MkdirAll(dir, dirPermissions); mkErr != nil {

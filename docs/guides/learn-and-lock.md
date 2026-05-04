@@ -80,7 +80,7 @@ Promotion is a two-phase commit. The CLI emits a signed `contract_promote_intent
 
 ## Storage layout
 
-```
+```text
 ~/.pipelock/contracts/
 ├── active.json                              # signed monotonic active manifest
 ├── manifests/

@@ -151,7 +151,7 @@ Proxies a remote MCP server over HTTP with the same scanning as stdio mode.
 
 ```bash
 pipelock mcp proxy --upstream https://mcp.example.com/v1 \
-  --header 'Authorization: Bearer $UPSTREAM_TOKEN'
+  --header "Authorization: Bearer $UPSTREAM_TOKEN"
 ```
 
 The flag is repeatable. Pipelock validates header names as RFC 7230 tokens and rejects ASCII control bytes, DEL, CRLF, and Unicode whitespace in values. The transport-managed and connection-critical headers `Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Transfer-Encoding`, and `Host` are blocked case-insensitively at both the CLI flag-parser and the transport layer so an attacker-controlled extra header cannot shadow Pipelock's session correlation or smuggle a request via header injection.

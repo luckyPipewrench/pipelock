@@ -93,7 +93,7 @@ Pipelock rejects malformed SPIFFE IDs at envelope verification time. Legacy free
 
 Pipelock serves a directory of its current signing keys at the standard well-known path:
 
-```
+```http
 GET https://<pipelock-host>/.well-known/http-message-signatures-directory
 ```
 

@@ -26,7 +26,7 @@ agents via 'pipelock trust'.
 
 Examples:
   pipelock keygen claude-code
-  pipelock keygen buster --force`,
+  pipelock keygen research-agent --force`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]

@@ -62,7 +62,7 @@ runtime-policy-audit:
 debt-check:
 	golangci-lint run --enable-only dupl,gocyclo,gocognit,maintidx ./...
 
-release-check: test lint test-runtime-critical release-audit runtime-policy-audit
+release-check: test lint test-runtime-critical test-replay-harness release-audit runtime-policy-audit
 
 tidy-check:
 	go mod tidy

@@ -27,7 +27,7 @@ Agent resolution order: --agent flag, PIPELOCK_AGENT env var.
 
 Examples:
   pipelock sign manifest.json --agent claude-code
-  PIPELOCK_AGENT=buster pipelock sign handoff.md`,
+  PIPELOCK_AGENT=research-agent pipelock sign handoff.md`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]
@@ -87,7 +87,7 @@ Exit 0 = valid signature, exit 1 = invalid or missing.
 
 Examples:
   pipelock verify manifest.json --agent claude-code
-  pipelock verify handoff.md --agent buster --sig handoff.md.sig`,
+  pipelock verify handoff.md --agent research-agent --sig handoff.md.sig`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := args[0]

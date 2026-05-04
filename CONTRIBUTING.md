@@ -113,7 +113,7 @@ generated from it must be strict. Loose `>=`, `<=`, `~=`, `>`, `<`, and
    range pins. A `>=46.0.7,<47.0.0` cryptography line has triggered
    six-CVE Scorecard alerts on main even though the floor was clean.
 2. Pinned hashes give reproducible installs across developer machines,
-   CI runners, and Buster's pod.
+   CI runners, and downstream agent containers.
 3. `pip install --require-hashes` rejects unpinned or hash-missing
    inputs at install time, so a tampered wheel can not silently
    substitute.

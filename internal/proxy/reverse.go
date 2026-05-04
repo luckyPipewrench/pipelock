@@ -136,8 +136,8 @@ func NewReverseProxy(
 	// transparent-decompression stripping. Without this, the
 	// compressed-response guard in modifyResponse cannot fail-closed
 	// on gzip — Go auto-decompresses and removes the header before
-	// pipelock sees it. (Codex C-2; same root cause as the forward
-	// transport fix in rc.2.)
+	// pipelock sees it. (external review C-2; same root cause as the forward
+	// transport fix in an earlier prerelease build.)
 	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
 	baseTransport.DisableCompression = true
 	proxy.Transport = &reverseSigningRoundTripper{

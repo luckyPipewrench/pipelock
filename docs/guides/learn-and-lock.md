@@ -1,0 +1,209 @@
+# Learn-and-Lock: Per-Agent Behavioral Contracts
+
+Pipelock can watch an agent's real traffic, compile a behavioral envelope from what it observed, replay that envelope in shadow against captured traffic, and record operator-ratified signed contracts in a content-addressed active manifest. The contract binds the agent to what it actually did; lifecycle and shadow receipts emitted by the workflow are independently verifiable.
+
+> **v2.4 status:** v2.4 ships the policy compiler, candidate signing, shadow replay, ratification, and the signed active-manifest workflow. **Live proxy enforcement of a promoted contract is wired progressively after the activation surface** — the contract evaluator package and `EvidenceReceipt v2` `proxy_decision` payload are present for runtime contract-aware decisions, but the proxy request path consumes them as the runtime integration lands. Until then, the load-bearing surface is the activation lifecycle and the shadow-evidence stream.
+
+This is the v2.4 headline feature. It is **opt-in** and **default-off**. A new agent runs without a contract until you choose to compile, ratify, and promote one for it.
+
+## Why a behavioral contract
+
+Pipelock's network policy is rule-based: blocklist these domains, allow these MCP tools, redact these patterns. That rule set is necessarily generic. It does not know that *this particular agent* never POSTs to `repos.example.com` or that *that particular agent* always speaks JSON-RPC, never JSON-LD.
+
+A behavioral contract is the missing per-agent layer. It distills observed behaviour into a typed, signed envelope. The v2.4 surface produces the signed contract, shadow evidence, and signed active-manifest activation state that the proxy enforcement path consumes as runtime integration lands. Lifecycle and shadow evidence use the new `EvidenceReceipt v2` envelope with the active manifest hash, contract hash, selector ID, and contract generation bound under signature, so an external auditor can prove which contract the operator ratified and promoted.
+
+## Four-phase pipeline
+
+| Phase | Subcommand | What it does |
+|---|---|---|
+| 1 — observe | `pipelock learn observe` | Run the proxy in capture mode. Flight-recorder evidence accumulates in a hash-chained JSONL log per session under `learn.capture_dir`. |
+| 2 — compile | `pipelock learn compile` | Read recorder JSONL, infer rule shapes, emit a signed candidate contract YAML and a Markdown review report for the operator. |
+| 3 — shadow | `pipelock learn shadow` | Replay captured evidence through the candidate contract without enforcing. Emits would-have-blocked deltas and a signed `shadow_delta` receipt stream. Lets you see what the contract *would* have done before you ratify it. |
+| 4 — activate | `pipelock learn ratify` + `pipelock learn promote` | Two-phase activation: operator ratification per rule, then signed active-manifest swap with monotonic generation + `prior_manifest_hash` CAS. Lifecycle receipts are emitted during ratify / promote / rollback. The proxy-decision receipt kind is reserved for progressive runtime emission as live enforcement is wired. |
+
+Operator-facing supporting commands:
+
+- `pipelock learn review <candidate.yaml>` — render the human-readable review.
+- `pipelock learn diff <shadow-a.json> <shadow-b.json>` — diff two shadow runs.
+- `pipelock learn split --candidate <path> --rule <rule_id>` — demote a collapsed normalisation segment back into its literal values.
+- `pipelock learn pin --candidate <path> --rule <rule_id> --segment <value>` — pin a literal so future recompiles cannot collapse it.
+- `pipelock learn rollback --to <manifest-hash>` — withdraw the active manifest back to a previous accepted hash (requires signed authorisation).
+- `pipelock learn forget --candidate <path> --rule-id <id> --reason <legal>` — remove a single rule from the candidate before ratification.
+
+The full source-of-truth command surface is in `pipelock learn --help`.
+
+## Quickstart
+
+The example below assumes `agent-a` is a configured agent in `pipelock.yaml`.
+
+```bash
+# Phase 1 — observe for a few days.
+pipelock learn observe --capture-dir /var/lib/pipelock/learn
+
+# Phase 2 — compile the captured evidence into a candidate.
+pipelock learn compile --agent agent-a
+# Outputs (under ~/.pipelock/contracts/candidates/):
+#   agent-a.candidate.yaml
+#   agent-a.candidate.review.md
+#   agent-a.candidate.manifest.json
+
+# Read the review. Adjust thresholds in pipelock.yaml under
+# `learn.inference.{floors,normalization}` if rules look off.
+pipelock learn review ~/.pipelock/contracts/candidates/agent-a.candidate.yaml
+
+# Phase 3 — shadow-replay against captured sessions to see what the
+# candidate would block. Use `pipelock learn diff` to compare two runs.
+pipelock learn shadow --contract ~/.pipelock/contracts/candidates/agent-a.candidate.yaml \
+                      --sessions /var/lib/pipelock/learn
+
+# Phase 4a — operator ratifies the candidate (interactive per-rule approval).
+pipelock learn ratify --candidate ~/.pipelock/contracts/candidates/agent-a.candidate.yaml \
+                      --interactive
+
+# Phase 4b — promote the ratified contract. Promotion is a signed, dual-
+# control lifecycle operation. Required flags:
+pipelock learn promote \
+    --contract <ratified-contract-hash> \
+    --selector agent-a \
+    --contract-store /etc/pipelock/contracts \
+    --roster /etc/pipelock/roster.signed.yaml \
+    --roster-root-fingerprint sha256:<roster-root-fingerprint> \
+    --activation-key <keystore-key-id-for-primary-signature>
+# Production deployments add --production (enforces dual-control) and
+# --dual-control-from <secondary-keystore-key-id> for the second
+# operator's signature.
+```
+
+Run `pipelock learn promote --help` for the full flag list and the rollback / authorisation flow.
+
+Promotion is a two-phase commit. The CLI emits a signed `contract_promote_intent` receipt, swaps the active manifest atomically (compare-and-swap on `prior_manifest_hash`, monotonic generation counter), validates the new manifest, and emits a signed `contract_promote_committed` receipt. Failure at any point keeps the previous manifest active.
+
+## Storage layout
+
+```
+~/.pipelock/contracts/
+├── active.json                              # signed monotonic active manifest
+├── manifests/
+│   └── sha256-<hex>.json                    # immutable per-manifest blobs
+├── history/
+│   └── sha256-<hex>.yaml                    # write-once contract bodies
+├── tombstones/
+│   └── sha256-<hex>.tombstone.yaml          # withdrawal markers (no overwrites)
+├── candidates/
+│   └── <agent>.candidate.yaml               # output of `learn compile`
+└── .activation_journal.jsonl                # append-only local journal
+```
+
+No symlinks. No plain pointers. Every active swap is signed; every accepted manifest is immutable.
+
+## Capture metadata hardening
+
+Every capture record carries a fixed metadata header so an offline `pipelock learn compile` or `pipelock learn shadow` run reproduces the live decision exactly: `session_id`, `event_kind`, `type: capture`, `surface`, `subsurface`, `config_hash`, `profile`, `agent`, `effective_action`, and `outcome`. The capture pipeline stamps these at every observer call site (forward, intercept, reverse, fetch, MCP HTTP, MCP stdio) so a record's policy provenance is unambiguous regardless of which transport produced it.
+
+When the logical session key is path-safe (printable ASCII, no traversal, fits within `captureSessionKeyMaxLen`), the on-disk session directory uses the raw key and `session_id_original` is omitted from the record — keeping it would leak the raw key (often a client IP) into every capture line for path-safe traffic. When the raw key is unsafe or overlength, the on-disk directory is hashed and `session_id_original` preserves the raw logical key inline so offline replay binds to the correct session even though the directory name is a hash.
+
+A poisoned-capture defence runs whenever the compile / shadow / replay paths walk a capture root: `validateCaptureSessionDir` reads the first JSONL entry of each candidate session directory and rejects siblings whose first record attributes traffic to a different agent. An attacker who can write a session directory under a known agent's capture root cannot trick the discovery path into ingesting it as that agent's traffic.
+
+### Operator metrics
+
+Watch these counters during soak and after each policy reload:
+
+| Metric | What it means |
+|---|---|
+| `pipelock_capture_dropped_total` | A capture record was constructed but could not be written to disk (queue full, fsync failed, sanitizer rejected). Should stay at zero in steady state. |
+| `pipelock_capture_session_id_sanitized_total{reason}` | A session ID needed sanitisation before becoming a directory name. `reason` is one of `unsafe_path` (the raw key contained characters that aren't safe as a directory segment), `overlength` (the raw key exceeded `captureSessionKeyMaxLen`), or `unknown` (sanitisation triggered for an uncategorised reason). The label domain is closed — non-canonical reasons are dropped silently to bound cardinality. Non-zero is fine; a sudden spike on `unsafe_path` after a config change is worth investigating. |
+| `pipelock_learn_capture_records_total` | Total capture records successfully written. Should rise with traffic. |
+| `pipelock_learn_capture_dropped_total` | Total capture records dropped (any reason). Should stay at zero in steady state. |
+
+Reload bumps `pipelock_envelope_verify_total{result}` if you have inbound mediation envelope verification enabled — see [`federation.md`](federation.md) for that observability surface.
+
+## Configuration
+
+The `learn` config block (top-level in `pipelock.yaml`) controls capture, privacy, and the inference engine. All defaults are tuned for production; tighten only after observing real traffic.
+
+```yaml
+learn:
+  enabled: false                             # opt-in
+  capture_dir: /var/lib/pipelock/learn       # recorder JSONL output
+  privacy:
+    salt_source: "${PIPELOCK_LEARN_SALT}"    # env / file:/abs / literal (fail-closed when empty)
+    public_allowlist_default: true           # ship canonical seed allowlist when explicit list is empty
+  inference:
+    floors:
+      min_sessions: 5                        # conditional-on-opportunity floor
+      min_events: 20
+      min_windows: 3
+    normalization:
+      min_events: 10
+      min_distinct_values: 5
+      entropy_threshold_bits: 3.0
+      cardinality_cap_per_host: 1000
+      tail_promotion_block_pct: 5.0
+```
+
+The fixed thresholds (Wilson alpha, `tau_brittle`, `tau_stable`, headroom) are part of the statistical contract and are hardcoded in the inference package; they are not exposed in YAML. Floors and normalisation parameters ARE deployment-configurable because traffic volumes differ across deployments and floors function as exposure gates.
+
+The schema lives at `internal/config/schema.go` (`type Learn struct`); a dedicated configuration-reference section in `docs/configuration.md` is a v2.5 follow-up.
+
+## Confidence model
+
+Every inferred rule carries:
+
+- **Wilson lower bound at 95% confidence** with conditional-on-opportunity denominators at every level (a rule isn't "stable" because *all* requests fit it; it's stable because *requests where this opportunity existed* mostly fit it).
+- **Floors as hard gates.** A rule cannot be classified `stable` unless it clears Wilson AND the configured `min_sessions` / `min_events` / `min_windows`.
+- **Lifecycle states:** `proposed` → `capture_only` → `enforce` → `expired` (or `demoted`).
+- **Lifecycle transitions are operator-driven in v2.4.** Auto-demotion with hysteresis, paging, and cooldown is part of the locked design (see `learn-and-lock-design.md`) but the wiring lands in a follow-up. v2.4 ships the rule states and `contract_demoted` payload kind in the receipt schema; the runtime logic that drives state transitions is not yet wired end-to-end.
+
+## Path normalisation
+
+Per-bucket frequency-weighted entropy. Buckets are `(host, method, parent-prefix, segment-position)` — never global. The normaliser collapses high-cardinality segments (`/users/123` → `/users/<id>`) but never merges across high-risk siblings (`/admin/*` and `/users/*` stay separate). A reserved-segment blocklist keeps sensitive nouns (`admin`, `auth`, `oauth`, `token`, `billing`, `vault`, etc.) from being merged.
+
+A per-host cardinality cap (default 1000) bounds memory. Tail coverage is explicit: when the `_other` bucket exceeds 5% of total events on a host, promotion is **blocked** unless the operator annotates `accept_tail: true`. No silent tail.
+
+## Receipts
+
+The v2.4 receipt schema defines an `EvidenceReceipt v2` envelope for contract-aware proxy decisions (`proxy_decision`) and contract-lifecycle events (`contract_ratified`, `contract_promote_intent`, `contract_promote_committed`, `contract_rollback_authorized`, `contract_rollback_committed`, `contract_demoted`, `contract_expired`, `contract_drift` with `drift_kind`, `shadow_delta`, `opportunity_missing`, `key_rotation`, `contract_redaction_request`). The lifecycle kinds emit from the activation CLI today; the proxy-decision kind for in-flight contract-aware traffic is wired progressively as runtime evaluation lands. Pin the actual emit-site coverage to your release: in v2.4 the lifecycle path is the load-bearing surface.
+
+v2 envelopes are distinguished from legacy v1 by the top-level `record_type` field. v1 verifiers reject v2 with `unsupported version 2 (expected 1)`; the existing audit pipeline keeps working unchanged for non-contract-aware deployments.
+
+External verification is via `pipelock-verify-python` 0.2.0 or later. See [`docs/guides/receipt-transports.md`](receipt-transports.md) for the verification recipe.
+
+## Signing keys
+
+Four product key purposes; verifiers reject signatures from the wrong purpose:
+
+- `receipt-signing` — hot, 90-day rotation, signs every individual receipt.
+- `contract-compile-signing` — warm, ~yearly rotation, signs candidate contracts and compile manifests.
+- `contract-activation-signing` — cold/operator key, irregular ceremony, signs the active manifest. Production deployments require **two** distinct operator signatures (dual control).
+- `rules-official-signing` — release key, project-controlled, signs official rules bundles.
+
+Deployment-level keys:
+
+- `roster-root` — signs the deployment's key roster (which keys the deployment trusts for which purpose).
+- `recovery-root` — separate, pinned, used only for break-glass recovery if the roster-root is compromised.
+
+`pipelock signing` subcommands manage the keystore (run `pipelock signing --help` for the current surface).
+
+## Soak window
+
+A new contract is not enforced the moment you ratify it. Pipelock's recommended workflow is:
+
+1. **Observe ≥7 days of representative traffic** before compiling. Short windows produce thin-sample rules.
+2. **Run the candidate in shadow ≥3 days.** Watch the shadow-delta report for `would_have_blocked` events that match real legitimate traffic. Adjust `learn.inference.floors` or `accept_tail` annotations as needed.
+3. **Ratify per rule.** Sign each rule individually. The operator-facing review tells you which rules cleared the confidence floor and which are thin-sample.
+4. **Promote.** The active manifest swap is atomic with a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. v2.4 records the promoted manifest, the `contract_promote_intent` / `contract_promote_committed` lifecycle receipts, and the activation journal entry. Production request-time enforcement against the promoted manifest is wired progressively after the activation surface.
+5. **Watch the receipt stream.** A spike in `contract_drift` receipts means the contract is over-fit. A spike in `opportunity_missing` health alerts means parent opportunity dropped (the agent stopped doing the thing the rule covers); auto-demotion is BLOCKED in this case so a benign change doesn't silently weaken the contract.
+
+## Anti-patterns
+
+- **Ratifying without reviewing.** The review markdown lists thin-sample rules and opportunity-health flags. Skipping the review means promoting rules backed by 5 events.
+- **Compiling on a trivial workload.** A two-day capture against an idle agent produces a contract that blocks every novel request the agent ever makes. Capture across the agent's full operational range.
+- **Reusing one contract across agents.** The whole point is per-agent. Contracts are scoped by the `selector_set_hash`; a contract for `agent-a` does not apply to `agent-b`.
+- **Disabling drift firing on the active contract.** If you don't want to know when the agent strays, you don't need a contract. Run pipelock without one.
+
+## See also
+
+- [`internal/config/schema.go`](../../internal/config/schema.go) — the `Learn` struct is the schema source of truth (a dedicated configuration-reference section is a v2.5 follow-up).
+- [`docs/guides/receipt-transports.md`](receipt-transports.md) — verifying receipts externally.
+- [`docs/guides/federation.md`](federation.md) — cross-org envelope verification (independent of contracts).
+- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; v0.2.0+ verifies EvidenceReceipt v2.

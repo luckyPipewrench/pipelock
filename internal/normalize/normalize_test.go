@@ -337,7 +337,7 @@ func TestConfusableToASCII_IPASmallCaps(t *testing.T) {
 }
 
 // TestForToolText_IPASmallCaps_IMPORTANT verifies the full pipeline catches
-// "IMPORTANT" spelled with IPA Small Caps — Buster's pen test finding.
+// "IMPORTANT" spelled with IPA Small Caps — external pen test finding.
 func TestForToolText_IPASmallCaps_IMPORTANT(t *testing.T) {
 	// "IᴍᴘORᴛAɴᴛ" — IPA small caps M, P, T, N, T
 	input := "I\u1D0D\u1D18OR\u1D1BA\u0274\u1D1B"
@@ -377,7 +377,7 @@ func TestConfusableToASCII_NegativeSquared(t *testing.T) {
 }
 
 // TestForToolText_NegativeSquared_IGNORE verifies the full pipeline catches
-// "IGNORE" spelled with negative squared letters — Buster's pen test finding.
+// "IGNORE" spelled with negative squared letters — external pen test finding.
 func TestForToolText_NegativeSquared_IGNORE(t *testing.T) {
 	// 🅸🅶🅽🅾🆁🅴 = IGNORE
 	input := "\U0001F178\U0001F176\U0001F17D\U0001F17E\U0001F181\U0001F174"

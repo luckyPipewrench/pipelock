@@ -25,7 +25,7 @@ func TrustCmd() *cobra.Command {
 After trusting, you can verify that agent's signatures with 'pipelock verify'.
 
 Examples:
-  pipelock trust buster /path/to/buster.pub
+  pipelock trust research-agent /path/to/research-agent.pub
   pipelock trust claude-code ~/.pipelock/agents/claude-code/id_ed25519.pub`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

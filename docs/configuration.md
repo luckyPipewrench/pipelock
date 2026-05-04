@@ -1314,7 +1314,7 @@ agents:
       max_unique_domains_per_session: 50
       window_minutes: 60
 
-  rook:
+  research-agent:
     listeners: [":8890"]
     mode: balanced
     enforce: false

@@ -2528,7 +2528,7 @@ func TestScan_DLP_EncodedQueryNoFalsePositives(t *testing.T) {
 	}
 }
 
-// --- Hex/base64 encoded DLP in URL path segments (Rook bypass #1) ---
+// --- Hex/base64 encoded DLP in URL path segments (external review bypass #1) ---
 
 func TestScan_DLP_HexEncodedAPIKeyInPath(t *testing.T) {
 	cfg := testConfig()

@@ -188,7 +188,7 @@ func ScanGenericSSEStreamWithOptions(
 			// alongside the data: payload so scanning sees the full event
 			// the client would observe. Without this, DLP content or
 			// prompt-injection content placed in the metadata fields
-			// rides through unscanned (Rook finding #2).
+			// rides through unscanned (external review finding #2).
 			text := canonicalSSEEventText(event, reader)
 
 			injectResult := sc.ScanResponse(ctx, text)

@@ -44,7 +44,7 @@ func applyMCPToolCallRedactionWithConfig(line []byte, cfg MCPRedactionConfig) ([
 	// silently collapse them. A duplicate `method` lets an attacker hide
 	// a tools/call with secret-bearing arguments behind a benign sibling
 	// (or vice versa) — Go last-wins vs upstream first-wins parser
-	// differential. Codex C-1. Only block on actual duplicate-key
+	// differential. external review C-1. Only block on actual duplicate-key
 	// matches; let malformed-JSON errors flow through to the existing
 	// parse-error path so the BlockError reason stays attributable.
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {

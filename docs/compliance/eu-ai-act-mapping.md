@@ -6,7 +6,7 @@ How Pipelock's runtime security controls map to the [EU AI Act (Regulation 2024/
 
 **Disclaimer:** This document maps Pipelock's security features to EU AI Act requirements for informational purposes. It does not constitute legal advice or guarantee regulatory compliance. Organizations should consult qualified legal counsel for compliance obligations specific to their AI systems.
 
-**Last updated:** April 2026 (reviewed against v2.3.0 feature set; v2.3.0 adds class-preserving request redaction across HTTP/WebSocket/MCP transports contributing to Art. 10 Data Governance and generic SSE streaming with per-event body scanning contributing to Art. 15 Robustness on top of the v2.2.0 baseline: mediation envelope, signed action receipts across all transports, taint-aware policy escalation, posture verify CLI, companion-proxy deployment, session operator CLI)
+**Last updated:** May 2026 (reviewed against v2.4 feature set; v2.4 adds learn-and-lock per-agent behavioral contracts contributing to Art. 12 Record-Keeping and Art. 14 Human Oversight (operator-ratified per-agent envelopes with signed `EvidenceReceipt v2` lifecycle and shadow evidence), inbound mediation envelope verification + replay protection contributing to Art. 13 Transparency (cross-deployment audit chain), SPIFFE actor format with RFC 9421 well-known signing-key directory contributing to Art. 14 Identification of Deployers, the `X-Pipelock-Block-Reason` header strengthening Art. 13 Transparency on every HTTP-capable block path (with the same fixed reason vocabulary on JSON-RPC error metadata for MCP-internal blocks), and Gemini provider redaction extending Art. 10 Data Governance to a third upstream provider. Builds on the v2.3.0 baseline (class-preserving request redaction across HTTP / WebSocket / MCP transports, generic SSE streaming with per-event body scanning) and the v2.2.0 baseline (mediation envelope, signed action receipts across all transports, taint-aware policy escalation, posture verify CLI, companion-proxy deployment, session operator CLI).
 
 ---
 
@@ -106,7 +106,7 @@ Note: Art. 15(5) uses "adversarial examples" and "model evasion," not "prompt in
 | **Adversarial examples / model evasion** (Art. 15(5)) | Content scanning on responses and MCP tool results; zero-width char stripping; NFKC normalization; case-insensitive matching; null byte stripping. Covers text-based injection patterns, not model-level evasion. | Partial |
 | **Confidentiality attacks** (Art. 15(5)) | DLP scanning (48 built-in credential patterns, extensible via config), env leak detection (raw + base64 + hex), Shannon entropy analysis, DNS subdomain exfiltration detection, split-key concatenation scanning | Full |
 | **Data poisoning** (Art. 15(5)) | File integrity monitoring (SHA256 manifests), Ed25519 signing and verification, response scanning on fetched content | Partial |
-| **Resilient against unauthorized alteration** (Art. 15(5)) | Capability separation prevents agent from being manipulated into exfiltrating data; SSRF blocks access to internal infrastructure | Full |
+| **Resilient against unauthorized alteration** (Art. 15(5)) | Pipelock blocks mediated exfiltration attempts and SSRF probes by inspecting traffic at the network and tool boundary; capability separation reduces risk further when deployment topology or sandboxing forces agent traffic through Pipelock. The binary scans every request that reaches it; the topology that forces traffic through Pipelock is deployment-enforced, not binary-enforced. | Partial |
 | **Technical redundancy / fail-safe** (Art. 15(4)) | Fail-closed architecture: scan error, HITL timeout, parse failure, DNS error, context cancellation all default to block | Full |
 | **Resilient to errors and faults** (Art. 15(4)) | DNS rebinding protection (resolve-validate-dial); IPv4-mapped IPv6 normalization; CRLF normalization in diff parsing | Full |
 | **Accuracy metrics declared** (Art. 15(1-3)) | Prometheus counters per scanner layer; false positive tuning via audit mode | Partial |
@@ -143,7 +143,7 @@ These require other tools or organizational processes:
 | EU database registration | Art. 71 | Administrative requirement |
 | Incident reporting timelines | Art. 73 | Audit logs provide incident data; reporting process is organizational |
 | Bias and fairness evaluation | Art. 10(2) | Pipelock applies rules uniformly but doesn't evaluate model fairness |
-| Code execution sandboxing | Art. 15(4) | Pipelock controls egress, not process isolation. See [srt](https://github.com/anthropic-experimental/sandbox-runtime) or [agentsh](https://github.com/canyonroad/agentsh). |
+| Full process isolation for the agent runtime | Art. 15(4) | Pipelock ships best-effort sandbox primitives (Landlock, seccomp, network namespace isolation on Linux) but full process isolation for the agent itself depends on OS/container support and deployment policy. For a stricter agent-runtime sandbox see [srt](https://github.com/anthropic-experimental/sandbox-runtime) or [agentsh](https://github.com/canyonroad/agentsh). |
 
 ---
 

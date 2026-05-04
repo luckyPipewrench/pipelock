@@ -118,7 +118,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 	// hide a tools/call behind a benign sibling that wins last-wins,
 	// while upstream first-wins parsers still see the real attack.
 	// ParseMCPFrame is the single entry point for HTTP + stdio input
-	// gates, so blocking here covers the gate-evaluation path. Codex C-1.
+	// gates, so blocking here covers the gate-evaluation path. external review C-1.
 	// Only fail-closed on actual duplicate-key matches; let malformed-
 	// JSON errors flow through to the existing structural parse path.
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {

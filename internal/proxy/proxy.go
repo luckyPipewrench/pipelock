@@ -548,7 +548,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		// transparently decompresses the response, stripping the header
 		// before pipelock's scanner sees it. That let gzip'd SSE
 		// streams slip past fail-closed while br/zstd correctly blocked
-		// (Rook finding #3). Matches the pattern at
+		// (external review finding #3). Matches the pattern at
 		// newTLSInterceptTransport and intercept.go.
 		DisableCompression: true,
 	}

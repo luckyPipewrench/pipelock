@@ -14,7 +14,7 @@ import (
 // AWS Access Key DLP pattern.
 const fakeAWSKey = "AKIA" + "IOSFODNN7EXAMPLE"
 
-// TestCheckNoDuplicateKeys_FlatObject catches the Rook finding #1 attack:
+// TestCheckNoDuplicateKeys_FlatObject catches the external review finding #1 attack:
 // a duplicate key at the top object level hides a secret from redaction.
 func TestCheckNoDuplicateKeys_FlatObject(t *testing.T) {
 	body := []byte(fmt.Sprintf(`{"x":%q,"x":"benign"}`, fakeAWSKey))
@@ -140,7 +140,7 @@ func TestCheckNoDuplicateKeys_MalformedJSON(t *testing.T) {
 }
 
 // TestRewriteJSON_DuplicateKeyBlocks wires the dup-key check into the
-// public Rewrite entry point and confirms the Rook finding #1 curl repro
+// public Rewrite entry point and confirms the external review finding #1 curl repro
 // pattern fails closed, not collapses silently.
 func TestRewriteJSON_DuplicateKeyBlocks(t *testing.T) {
 	m := NewDefaultMatcher()

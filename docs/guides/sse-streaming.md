@@ -80,7 +80,8 @@ response_scanning:
   single injection payload across sequential SSE events can evade the
   current detector. A2A's rolling-tail detector covers this case for
   the A2A protocol. Generalizing cross-event detection to any SSE
-  stream is tracked as a follow-up.
+  stream is tracked as a follow-up. Verified by
+  `TestScanGenericSSEStream_CrossEventSplit_NotDetected`.
 - **Per-account proxy overrides in clients can bypass pipelock.** If an
   upstream client sets its own proxy (not through `HTTPS_PROXY`), it
   may route around pipelock entirely. Configure clients to honor the

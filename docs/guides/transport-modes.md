@@ -147,6 +147,15 @@ Proxies a remote MCP server over HTTP with the same scanning as stdio mode.
 
 **Use when:** Connecting to remote MCP servers over HTTP and you want the same scanning coverage as local stdio servers.
 
+**Authenticated upstreams (`--header`):** When the upstream MCP server requires a static auth header (Bearer token, API key), pass it via `--header`:
+
+```bash
+pipelock mcp proxy --upstream https://mcp.example.com/v1 \
+  --header 'Authorization: Bearer $UPSTREAM_TOKEN'
+```
+
+The flag is repeatable. Pipelock validates header names as RFC 7230 tokens and rejects ASCII control bytes, DEL, CRLF, and Unicode whitespace in values. The transport-managed and connection-critical headers `Mcp-Session-Id`, `Content-Type`, `Accept`, `Content-Length`, `Transfer-Encoding`, and `Host` are blocked case-insensitively at both the CLI flag-parser and the transport layer so an attacker-controlled extra header cannot shadow Pipelock's session correlation or smuggle a request via header injection.
+
 ### MCP WebSocket Proxy (`pipelock mcp proxy --upstream ws://...`)
 
 Proxies a remote MCP server over WebSocket with the same scanning as stdio mode.

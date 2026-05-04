@@ -2205,7 +2205,7 @@ func TestForwardScannedInput_EmptyMethodFallback(t *testing.T) {
 	}
 }
 
-// --- Codex Creative Security Round Tests ---
+// --- External Creative Security Round Tests ---
 
 func TestScanRequest_KeyValueSplitSecret(t *testing.T) {
 	// Secret split across JSON key and value: key=testSecretPrefix, value="api03-AAAA..."
@@ -2239,7 +2239,7 @@ func TestScanRequest_ZeroWidthPromptInjection(t *testing.T) {
 	}
 }
 
-// --- Per-string injection scanning (Rook bypass #3) ---
+// --- Per-string injection scanning (external review bypass #3) ---
 // When injection is base64-encoded in a single tool argument, the joined-text
 // scan can't decode it (concatenated with other fields). Per-string scanning
 // decodes each field individually.
@@ -2298,7 +2298,7 @@ func TestScanRequest_HexInjectionInSingleField(t *testing.T) {
 	}
 }
 
-// --- Hex-encoded secret in URL within MCP tool arg (Rook bypass #1, MCP path) ---
+// --- Hex-encoded secret in URL within MCP tool arg (external review bypass #1, MCP path) ---
 // When a hex-encoded API key is embedded in a URL path within a tool argument,
 // ScanTextForDLP must split the text on URL delimiters and try decoding each
 // segment individually, since whole-string hex decode fails on mixed content.
@@ -2360,7 +2360,7 @@ func TestScanRequest_HexInURLPath_NoFalsePositives(t *testing.T) {
 	}
 }
 
-// --- Vowel-fold injection in MCP input (Rook bypass #4) ---
+// --- Vowel-fold injection in MCP input (external review bypass #4) ---
 
 func TestScanRequest_VowelFoldInjectionBypass(t *testing.T) {
 	sc := testInputScanner(t)

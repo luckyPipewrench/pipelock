@@ -3351,7 +3351,7 @@ func TestForwardHTTP_ShieldOversizeTransportParity(t *testing.T) {
 }
 
 // TestForwardHTTP_CompressedSSE_GzipFailsClosed locks down the fix for
-// Rook finding #3 / CC-3: before the forward transport had
+// external review finding #3 / CC-3: before the forward transport had
 // DisableCompression: true, Go's default http.Transport auto-sent
 // Accept-Encoding: gzip and transparently decompressed gzip responses,
 // stripping the Content-Encoding header before IsSSECompressed could see

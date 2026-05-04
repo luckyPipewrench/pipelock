@@ -614,7 +614,7 @@ func (r *Recorder) sessionFiles(sessionID string) ([]string, error) {
 func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	// Detect evidence directory disappearance mid-run BEFORE the short-
 	// circuit on an already-open r.file. Linux keeps the inode alive
-	// through rm -rf as long as the fd is open; previous rc.4/rc.5
+	// through rm -rf as long as the fd is open; previous prerelease builds
 	// guards only triggered when r.file was nil, so writes kept
 	// succeeding against an unlinked file and the operator saw nothing
 	// (the pre-tag gate rounds 3/4/5 — especially round 5's "recreation still

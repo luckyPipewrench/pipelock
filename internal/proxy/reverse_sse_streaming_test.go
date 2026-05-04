@@ -295,7 +295,7 @@ func readNextSSEData(t *testing.T, scanner *bufio.Scanner) string {
 	return ""
 }
 
-// TestReverseProxy_SSE_GzipFailsClosed locks down Codex finding C-2 on
+// TestReverseProxy_SSE_GzipFailsClosed locks down external review finding C-2 on
 // the reverse proxy: before the reverse base transport was given
 // DisableCompression: true, Go's default transport stripped
 // Content-Encoding: gzip via transparent decompression and the

@@ -3138,7 +3138,7 @@ func TestInterceptTunnel_A2ARequestBodyAskFailsClosed(t *testing.T) {
 // TestInterceptTunnel_AgentHeaderStripped pins the TLS-intercept path's
 // handling of X-Pipelock-Agent: when a caller supplies the internal
 // identity header, the intercepted outbound request must not carry it.
-// Regression anchor for the rc.8 gate (round 8 of the pre-tag gate row 1) where a
+// Regression anchor for the pre-tag gate (round 8 of the pre-tag gate row 1) where a
 // missing tls_interception config surfaced as an apparent header leak.
 func TestInterceptTunnel_AgentHeaderStripped(t *testing.T) {
 	var mu sync.Mutex
@@ -3179,7 +3179,7 @@ func TestInterceptTunnel_AgentHeaderStripped(t *testing.T) {
 // path's handling of caller-supplied client-IP attribution headers
 // (X-Forwarded-For, X-Real-IP, Forwarded, Via, plus the X-Forwarded-*
 // family). Pipelock must not pass attacker-supplied origin hints
-// through to the upstream. Regression anchor for the rc.8 gate
+// through to the upstream. Regression anchor for the pre-tag gate
 // (round 8 of the pre-tag gate row 3).
 func TestInterceptTunnel_ForwardedHeadersScrubbed(t *testing.T) {
 	var mu sync.Mutex
@@ -3227,7 +3227,7 @@ func TestInterceptTunnel_ForwardedHeadersScrubbed(t *testing.T) {
 // TestInterceptTunnel_CanaryBodyBlocked pins the TLS-intercept path's
 // handling of canary tokens in POST bodies: when the caller submits a
 // synthetic secret configured as a canary, the request must be blocked
-// (403) before reaching upstream. Regression anchor for the rc.8 gate
+// (403) before reaching upstream. Regression anchor for the pre-tag gate
 // (round 8 of the pre-tag gate row 13) where a missing tls_interception config made
 // the CONNECT tunnel opaque and the canary appeared to pass through.
 func TestInterceptTunnel_CanaryBodyBlocked(t *testing.T) {

@@ -562,7 +562,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// data: payload). scanA2ABody only inspects the JSON data payload,
 		// so metadata-field injection (prompt-injection in id:, DLP in
 		// event:) would otherwise slip through — same class of bypass as
-		// Rook finding #2 on the generic SSE path.
+		// external review finding #2 on the generic SSE path.
 		canonical := canonicalSSEEventText(event, reader)
 		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
 			return fmt.Errorf("%w: injection in sse metadata: %s",

@@ -89,7 +89,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 	// silently collapse them. A duplicate `method` or `params` lets an
 	// attacker hide a tools/call with secret-bearing arguments behind a
 	// benign sibling that wins last-wins, while upstream first-wins
-	// parsers still see the real attack. Codex C-1.
+	// parsers still see the real attack. external review C-1.
 	//
 	// Only block on actual duplicate-key matches; let malformed-JSON
 	// errors flow through to the existing parse-error path below so

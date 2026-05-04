@@ -54,9 +54,11 @@ Unhealthy response (HTTP 503):
 }
 ```
 
-The top-level fields (`version`, `mode`, `uptime_seconds`, the feature-enabled booleans, `kill_switch_active`) keep their pre-v2.4 shape so existing consumers parse cleanly. The new field is `subsystems` — a map of subsystem name to liveness boolean. When the watchdog is disabled the `subsystems` field is omitted entirely (legacy shape).
+The top-level fields (`version`, `mode`, `uptime_seconds`, the feature-enabled booleans, `kill_switch_active`) keep their pre-v2.4 shape so existing consumers parse cleanly.
 
-`status` is `"healthy"` (HTTP 200) when every value in `subsystems` is `true`; `"unhealthy"` (HTTP 503) otherwise.
+The `subsystems` map — a per-subsystem liveness boolean — is **only included when `health_watchdog.expose_subsystems: true`**. The default is `false`: the per-subsystem breakdown is recon material for unauthenticated callers and stays off unless an operator explicitly opts in. The endpoint still returns HTTP 503 with `"status": "unhealthy"` on a wedge when the map is hidden — only the per-subsystem breakdown is gated, not the overall liveness signal.
+
+`status` is `"healthy"` (HTTP 200) when every internal subsystem reports healthy; `"unhealthy"` (HTTP 503) otherwise. The status code and top-level `status` string both reflect wedges regardless of `expose_subsystems`. When the watchdog is disabled entirely, the `subsystems` field is omitted and `/health` returns HTTP 200 unconditionally (legacy pre-v2.4 shape).
 
 ## The Subsystems
 
@@ -86,12 +88,14 @@ The watchdog goroutine itself is intentionally minimal: a ticker that stores `ti
 health_watchdog:
   enabled: true            # default: true
   interval_seconds: 2      # default: 2; staleness threshold = 3 × interval
+  expose_subsystems: false # default: false; opt-in to publish the per-subsystem map
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `true` | Turn the watchdog off to restore pre-v2.4 `/health` behavior (no `subsystems` map, always 200). Operators rarely want this off. |
 | `interval_seconds` | `2` | Self-beat tick rate. The staleness threshold (when the watchdog declares a heartbeat stale) is derived as 3 × interval, so the default 2s gives a 6s window. |
+| `expose_subsystems` | `false` | Include the per-subsystem map in `/health` responses. Default off because the map is recon material for unauthenticated callers. The HTTP status code and top-level `status` field still reflect wedges (503 on wedge) regardless of this setting; only the `subsystems` breakdown is gated. |
 
 If `health_watchdog` is omitted entirely from the YAML, the section defaults to `enabled: true, interval_seconds: 2` (fail-open for the watchdog: an operator who omits the section still gets wedge protection). YAML `null`/blank for the section or for `enabled` is treated as omitted.
 

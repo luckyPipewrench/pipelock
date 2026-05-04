@@ -2570,7 +2570,7 @@ func newDefaultConfig() *Config {
 	})
 }
 
-// --- Codex Creative Security Round Tests ---
+// --- External Creative Security Round Tests ---
 
 func TestCheckToolCall_FullwidthCommandObfuscation(t *testing.T) {
 	// Fullwidth Latin ｒｍ (U+FF52 U+FF4D) used to evade "rm -rf" detection.

@@ -6,6 +6,7 @@ package envelope
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net/http"
@@ -32,6 +33,100 @@ func TestVerifier_VerifyRequestAcceptsSignedEnvelope(t *testing.T) {
 	}
 	if env.Actor != "spiffe://example.test/agent/alpha" {
 		t.Fatalf("actor = %q", env.Actor)
+	}
+}
+
+func TestVerifier_VerifyRequestAcceptsServerOriginFormTargetURI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		targetURL string
+		tls       bool
+	}{
+		{
+			name:      "http path",
+			targetURL: "http://upstream.example/api",
+		},
+		{
+			name:      "http path and query",
+			targetURL: "http://upstream.example/api?x=1&next=%2Fok",
+		},
+		{
+			name:      "https path",
+			targetURL: "https://upstream.example/api",
+			tls:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pub, priv := testSignerKey(t)
+			now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+			body := strings.Repeat("a", 16)
+			signed := signedVerifierRequestWithURL(t, priv, now, tt.targetURL, body)
+
+			serverReq := newTestRequest(t, signed.Method, signed.URL.RequestURI(), strings.NewReader(body))
+			serverReq.Host = signed.URL.Host
+			serverReq.Header = signed.Header.Clone()
+			if tt.tls {
+				serverReq.TLS = &tls.ConnectionState{}
+			}
+
+			verifier := newTestVerifier(t, pub, now)
+			if _, err := verifier.VerifyRequest(serverReq, []byte(body)); err != nil {
+				t.Fatalf("VerifyRequest with origin-form target URI: %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifier_RejectsOriginFormTargetURIMismatch(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	body := strings.Repeat("a", 16)
+	signed := signedVerifierRequestWithURL(t, priv, now, "https://upstream.example/api", body)
+
+	t.Run("host mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		serverReq := newTestRequest(t, signed.Method, signed.URL.RequestURI(), strings.NewReader(body))
+		serverReq.Host = "attacker.example"
+		serverReq.TLS = &tls.ConnectionState{}
+		serverReq.Header = signed.Header.Clone()
+
+		verifier := newTestVerifier(t, pub, now)
+		if _, err := verifier.VerifyRequest(serverReq, []byte(body)); err == nil {
+			t.Fatal("host mismatch should fail verification")
+		}
+	})
+
+	t.Run("scheme mismatch", func(t *testing.T) {
+		t.Parallel()
+
+		serverReq := newTestRequest(t, signed.Method, signed.URL.RequestURI(), strings.NewReader(body))
+		serverReq.Host = signed.URL.Host
+		serverReq.Header = signed.Header.Clone()
+
+		verifier := newTestVerifier(t, pub, now)
+		if _, err := verifier.VerifyRequest(serverReq, []byte(body)); err == nil {
+			t.Fatal("scheme mismatch should fail verification")
+		}
+	})
+}
+
+func TestTargetURIComponentRequiresAuthorityForOriginForm(t *testing.T) {
+	t.Parallel()
+
+	req := newTestRequest(t, http.MethodGet, "/", nil)
+	req.Host = ""
+	if _, err := targetURIComponent(req); err == nil {
+		t.Fatal("origin-form request without Host should fail")
 	}
 }
 
@@ -750,6 +845,11 @@ func signedLegacyActorRequest(t *testing.T, priv ed25519.PrivateKey, now time.Ti
 
 func signedVerifierRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time, bodyText string) *http.Request {
 	t.Helper()
+	return signedVerifierRequestWithURL(t, priv, now, "https://upstream.example/api", bodyText)
+}
+
+func signedVerifierRequestWithURL(t *testing.T, priv ed25519.PrivateKey, now time.Time, targetURL, bodyText string) *http.Request {
+	t.Helper()
 	var bodyBytes []byte
 	var body *strings.Reader
 	if bodyText != "" {
@@ -773,9 +873,9 @@ func signedVerifierRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time,
 		ActorFormat: ActorFormatSPIFFE,
 		TrustDomain: "example.test",
 	})
-	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", body)
+	req := newTestRequest(t, http.MethodPost, targetURL, body)
 	if body == nil {
-		req = newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+		req = newTestRequest(t, http.MethodGet, targetURL, nil)
 	}
 	err = em.InjectAndSign(req, bodyBytes, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000001",

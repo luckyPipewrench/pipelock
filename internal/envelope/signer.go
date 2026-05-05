@@ -442,16 +442,7 @@ func buildComponentValue(req *http.Request, body []byte, comp string) (string, e
 		// RFC 9421 §2.2.1: no case transformation on the method value.
 		return req.Method, nil
 	case derivedTargetURI:
-		if req.URL == nil {
-			return "", errors.New("request has nil URL")
-		}
-		// RFC 9421 §2.2.2: @target-uri is the target URI of the request
-		// excluding any fragment component. Go never sends fragments on
-		// the wire, so a verifier reconstructing from the wire would not
-		// see them. Including fragments would cause verification failure.
-		u := *req.URL
-		u.Fragment = ""
-		return u.String(), nil
+		return targetURIComponent(req)
 	case derivedAuthority:
 		// RFC 9421 §2.2.3: @authority is the on-wire authority the
 		// request is sent to, not the URL's host. When a caller
@@ -493,6 +484,44 @@ func buildComponentValue(req *http.Request, body []byte, comp string) (string, e
 	default:
 		return "", fmt.Errorf("unsupported signed component %q", comp)
 	}
+}
+
+func targetURIComponent(req *http.Request) (string, error) {
+	if req.URL == nil {
+		return "", errors.New("request has nil URL")
+	}
+	// RFC 9421 §2.2.2: @target-uri is the absolute target URI of the
+	// request, excluding any fragment component. Client-side requests
+	// already carry an absolute URL. Server-side handlers usually see
+	// origin-form URLs such as "/" instead, so reconstruct the absolute
+	// target from the request scheme, Host authority, and RequestURI.
+	u := *req.URL
+	u.Fragment = ""
+	if u.Scheme != "" && u.Host != "" {
+		return u.String(), nil
+	}
+
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "http"
+		if req.TLS != nil {
+			scheme = "https"
+		}
+	}
+
+	authority := req.Host
+	if authority == "" {
+		authority = u.Host
+	}
+	if authority == "" {
+		return "", errors.New("request has no authority")
+	}
+
+	target := u.RequestURI()
+	if target == "" {
+		target = "/"
+	}
+	return scheme + "://" + authority + target, nil
 }
 
 // mergeSignatureInput adds (or replaces) the pipelock1 member on the

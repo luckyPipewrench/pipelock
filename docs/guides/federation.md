@@ -146,13 +146,13 @@ Reverse-proxy operators in particular **must not** trust caller-supplied `X-Pipe
 
 ## Observability
 
-Inbound mediation envelope verification increments `pipelock_envelope_verify_total{result}` on every body-bearing inbound request when `verify_inbound.enabled: true`. The closed result set is:
+Inbound mediation envelope verification increments `pipelock_envelope_verify_total{result}` on every inbound request when `verify_inbound.enabled: true`. The closed result set is:
 
 | Result | Meaning |
 |---|---|
 | `disabled` | `verify_inbound.enabled: false`. The counter still increments so an operator can see the configured-off state from metrics alone. |
 | `verified` | Signature verified, actor in trust list, nonce not in replay cache. The request proceeded. |
-| `missing` | Inbound `Pipelock-Mediation` header was missing on a body-bearing request while verification was enabled. The request was rejected 403 / `inbound_verify_failed`. |
+| `missing` | Inbound `Pipelock-Mediation` header was missing while verification was enabled. The request was rejected 403 / `inbound_verify_failed`. |
 | `failed` | Signature invalid, actor not trusted, replay detected, or any other verification failure. The request was rejected 403 / `inbound_verify_failed`. |
 
 Watch this counter alongside the capture observability counters in [`learn-and-lock.md`](learn-and-lock.md#operator-metrics) during soak.
@@ -195,10 +195,21 @@ All failures reject the request with HTTP 403 and increment `pipelock_envelope_v
 | Inbound signature missing while `verify_inbound.enabled: true` | `inbound_verify_missing` |
 | Other / uncategorised verification failure | `inbound_verify_failed` |
 
-Pipelock requires the `Pipelock-Mediation` header on every body-bearing inbound request when verification is enabled (cheap header check before body buffering avoids amplification). To accept unsigned mediator-less traffic, leave `verify_inbound.enabled` false.
+Pipelock requires the `Pipelock-Mediation` header on every inbound request when verification is enabled. The missing-header check runs before any body buffering, so unsigned callers fail cheaply. To accept unsigned mediator-less traffic, leave `verify_inbound.enabled` false.
+
+Do not enable `verify_inbound` on a listener that ordinary agents, browsers,
+CI jobs, or package managers call directly unless those clients are wrapped by
+a component that signs Pipelock mediation envelopes. `verify_inbound` verifies
+the caller-to-Pipelock hop; it is meant for Pipelock-to-Pipelock federation or
+other explicitly signed clients. On a normal forward-proxy or fetch-proxy
+deployment, enabling it before clients sign envelopes will fail closed with
+`inbound_verify_missing`.
 
 ## Anti-patterns
 
+- **Turning on `verify_inbound` for unsigned proxy clients.** This is not a
+  stricter version of the normal agent egress proxy. It requires the immediate
+  caller to present a signed mediation envelope, so unsigned clients fail.
 - **Listing a `trust_list` entry without a `public_key`.** The `key_id` field alone is not authentication; `public_key` is required and is the source of truth for verification.
 - **Treating `well_known_url` as a key fetcher.** It is metadata. Inbound verification does not fetch from it. Edit `public_key` to rotate.
 - **Setting `replay_cache.window` smaller than your network RTT.** Legitimate retries fail.

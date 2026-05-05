@@ -104,6 +104,13 @@ When the logical session key is path-safe (printable ASCII, no traversal, fits w
 
 A poisoned-capture defence runs whenever the compile / shadow / replay paths walk a capture root: `validateCaptureSessionDir` reads the first JSONL entry of each candidate session directory and rejects siblings whose first record attributes traffic to a different agent. An attacker who can write a session directory under a known agent's capture root cannot trick the discovery path into ingesting it as that agent's traffic.
 
+For a real soak, put `learn.capture_dir` on persistent storage. Kubernetes
+`emptyDir`, container scratch space, and other pod-lifetime volumes are fine
+for smoke tests, but they are not durable evidence: a restart can erase the
+JSONL corpus that `compile` and `shadow` need. Treat Prometheus counters as
+liveness signals only; a release gate or policy promotion should preserve
+sample capture files and prove they can be replayed from disk.
+
 ### Operator metrics
 
 Watch these counters during soak and after each policy reload:

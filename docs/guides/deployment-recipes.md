@@ -246,6 +246,13 @@ spec:
           emptyDir: {}
 ```
 
+If you enable learn-and-lock capture in Kubernetes, mount the capture directory
+on durable storage. `emptyDir` is acceptable for a smoke test, but it is
+pod-lifetime storage and will not preserve replayable soak evidence across a
+restart. Use a PVC, hostPath managed by your operator policy, or another
+durable volume for the path passed to `--capture-output` or configured as
+`learn.capture_dir`.
+
 ### NetworkPolicy (Required)
 
 A NetworkPolicy restricts pod-level egress. In the sidecar pattern, this limits what the entire pod (both containers) can reach, but does not prevent the agent container from making direct connections that bypass pipelock. For true network-level enforcement, use a separate proxy pod (see note above).

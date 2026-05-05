@@ -259,8 +259,6 @@ func TestScannerProbe_NilPointers_ReturnsError(t *testing.T) {
 // degraded. After the fix, concurrent probes during a wedge return an
 // immediate error without launching a second scan goroutine.
 func TestScannerProbe_SingleflightPreventsGoroutineLeak(t *testing.T) {
-	t.Parallel()
-
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil

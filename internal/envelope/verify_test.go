@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,6 +128,32 @@ func TestTargetURIComponentRequiresAuthorityForOriginForm(t *testing.T) {
 	req.Host = ""
 	if _, err := targetURIComponent(req); err == nil {
 		t.Fatal("origin-form request without Host should fail")
+	}
+}
+
+func TestTargetURIComponentRejectsNilURL(t *testing.T) {
+	t.Parallel()
+
+	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+	req.URL = nil
+	if _, err := targetURIComponent(req); err == nil {
+		t.Fatal("request with nil URL should fail")
+	}
+}
+
+func TestTargetURIComponentDefaultsEmptyRequestURIToSlash(t *testing.T) {
+	t.Parallel()
+
+	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
+	req.URL = &url.URL{}
+	req.Host = "upstream.example"
+
+	target, err := targetURIComponent(req)
+	if err != nil {
+		t.Fatalf("targetURIComponent: %v", err)
+	}
+	if target != "http://upstream.example/" {
+		t.Fatalf("target URI = %q, want %q", target, "http://upstream.example/")
 	}
 }
 

@@ -143,13 +143,12 @@ not up for attacker manipulation. The attacker cannot inject text
 into the stream that changes what these fields say. The stream is
 signed and chain-linked, so injection is detectable.
 
-This is the architecture Zack Korman gestures at in his April 2026
-video on AI agent threat detection: a funnel of cheaper LLMs
-filtering events, stronger LLMs confirming, and an agentic layer
-trying to disprove the finding. Whether that funnel works is its
-own question. But if it does, it only works on inputs the attacker
-cannot massage. Structured receipts are that kind of input. Raw
-reasoning tokens are not.
+This is the architecture behind long-window AI agent threat detection:
+a funnel of cheaper LLMs filtering events, stronger LLMs confirming,
+and an agentic layer trying to disprove the finding. Whether that
+funnel works is its own question. But if it does, it only works on
+inputs the attacker cannot massage. Structured receipts are that kind
+of input. Raw reasoning tokens are not.
 
 ## Worked example
 

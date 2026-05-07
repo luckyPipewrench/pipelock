@@ -278,16 +278,13 @@ func validateLockRootFingerprint(fp string) error {
 	if fp == "" {
 		return fmt.Errorf("learn_lock.pinned_root_fingerprint required when learn_lock.enabled is true")
 	}
-	if len(fp) != 64 {
-		return fmt.Errorf("learn_lock.pinned_root_fingerprint must be 64 hex characters (sha256), got %d", len(fp))
+	algorithm, digest, err := signing.ParseFingerprint(fp)
+	if err != nil {
+		return fmt.Errorf("learn_lock.pinned_root_fingerprint must be sha256:<64 lowercase hex>: %w", err)
 	}
-	for _, r := range fp {
-		switch {
-		case r >= '0' && r <= '9':
-		case r >= 'a' && r <= 'f':
-		default:
-			return fmt.Errorf("learn_lock.pinned_root_fingerprint must be lowercase hex sha256, found %q", r)
-		}
+	canonical := algorithm + ":" + digest
+	if fp != canonical {
+		return fmt.Errorf("learn_lock.pinned_root_fingerprint must be lowercase canonical fingerprint %q, got %q", canonical, fp)
 	}
 	return nil
 }

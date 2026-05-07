@@ -76,7 +76,7 @@ func TestValidate_LearnLockDisabledIgnoresOtherFields(t *testing.T) {
 
 func TestValidate_LearnLockEnabledRequiresEveryField(t *testing.T) {
 	t.Parallel()
-	const validFP = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const validFP = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	cases := []struct {
 		name string
 		mut  func(*LearnLock)
@@ -114,23 +114,30 @@ func TestValidate_LearnLockEnabledRequiresEveryField(t *testing.T) {
 		},
 		{
 			name: "wrong-length fingerprint",
-			mut:  func(l *LearnLock) { l.PinnedRootFingerprint = "abc" },
-			want: "64 hex characters",
+			mut:  func(l *LearnLock) { l.PinnedRootFingerprint = "sha256:abc" },
+			want: "sha256:<64 lowercase hex>",
+		},
+		{
+			name: "missing fingerprint prefix",
+			mut: func(l *LearnLock) {
+				l.PinnedRootFingerprint = strings.TrimPrefix(validFP, "sha256:")
+			},
+			want: "sha256:<64 lowercase hex>",
 		},
 		{
 			name: "uppercase fingerprint rejected",
 			mut: func(l *LearnLock) {
 				l.PinnedRootFingerprint = strings.ToUpper(validFP)
 			},
-			want: "lowercase hex",
+			want: "sha256:<64 lowercase hex>",
 		},
 		{
 			name: "non-hex fingerprint rejected",
 			mut: func(l *LearnLock) {
-				// 64 chars but contains 'g'
-				l.PinnedRootFingerprint = "g" + validFP[1:]
+				// Correct prefix/length but contains 'g'.
+				l.PinnedRootFingerprint = "sha256:g" + strings.TrimPrefix(validFP, "sha256:")[1:]
 			},
-			want: "lowercase hex",
+			want: "sha256:<64 lowercase hex>",
 		},
 		{
 			name: "unknown mode rejected",
@@ -177,7 +184,7 @@ func TestValidate_LearnLockEnabledHappyPath(t *testing.T) {
 		StoreDir:              "/var/lib/pipelock/contracts",
 		RosterPath:            "/etc/pipelock/roster.json",
 		Environment:           "production",
-		PinnedRootFingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		PinnedRootFingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		MinimumSignatures:     2,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -196,7 +203,7 @@ func TestValidate_LearnLockEnabledEmptyModeAccepted(t *testing.T) {
 		StoreDir:              "/var/lib/pipelock/contracts",
 		RosterPath:            "/etc/pipelock/roster.json",
 		Environment:           "production",
-		PinnedRootFingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		PinnedRootFingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("empty Mode at validation time: %v", err)

@@ -1425,10 +1425,11 @@ type LearnLock struct {
 	// contract. Required when Enabled is true.
 	Environment string `yaml:"environment"`
 
-	// PinnedRootFingerprint is the hex-encoded sha256 of the trust
-	// roster root key. Active manifests must chain to a roster signed
-	// by this root; mismatch fails-closed at load. Required when
-	// Enabled is true; must be 64 lowercase hex characters.
+	// PinnedRootFingerprint is the canonical sha256 fingerprint of the
+	// trust roster root key: "sha256:" followed by 64 lowercase hex
+	// characters. Active manifests must chain to a roster signed by
+	// this root; mismatch fails-closed at load. Required when Enabled
+	// is true.
 	PinnedRootFingerprint string `yaml:"pinned_root_fingerprint"`
 
 	// MinimumSignatures is the minimum number of valid manifest

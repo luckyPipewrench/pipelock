@@ -17,12 +17,17 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -118,6 +123,331 @@ func setupForwardProxyWithInstance(t *testing.T, cfgMod func(*config.Config)) (s
 	return proxyAddr, p, func() {
 		cancel()
 		p.Close() // closes scanner, registry, session manager
+	}
+}
+
+func testContractLoader(t *testing.T, mode contractruntime.Mode, rules ...contract.Rule) *contractruntime.Loader {
+	t.Helper()
+	fixture := contractruntimetest.NewFixture(t)
+	storeDir := t.TempDir()
+	env := contractruntimetest.Env()
+	contractruntimetest.WriteSignedActiveStore(t, fixture, storeDir, contractruntimetest.ActiveStoreOptions{
+		Agent:       "agent-a",
+		Rules:       rules,
+		Generation:  1,
+		PriorHash:   "sha256:genesis",
+		Environment: env,
+	})
+	loader, err := contractruntime.NewLoader(contractruntime.LoaderOptions{
+		StoreDir:              storeDir,
+		RosterPath:            fixture.RosterPath(),
+		PinnedRootFingerprint: fixture.RootFingerprint(),
+		Environment:           env,
+		MinSignatures:         1,
+		Mode:                  mode,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	return loader
+}
+
+func installForwardTestDialer(p *Proxy, upstreamAddr string) {
+	p.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			switch addr {
+			case "api.example.com:80", "evil.example.com:80":
+				return (&net.Dialer{}).DialContext(ctx, network, upstreamAddr)
+			default:
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			}
+		},
+		DisableCompression: true,
+	}
+}
+
+func forwardHTTPClient(t *testing.T, proxyAddr string) *http.Client {
+	t.Helper()
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		t.Fatalf("parse proxy URL: %v", err)
+	}
+	return &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)},
+		Timeout:   5 * time.Second,
+	}
+}
+
+func emptyContractLoader(t *testing.T, mode contractruntime.Mode) *contractruntime.Loader {
+	t.Helper()
+	fixture := contractruntimetest.NewFixture(t)
+	storeDir := t.TempDir()
+	loader, err := contractruntime.NewLoader(contractruntime.LoaderOptions{
+		StoreDir:              storeDir,
+		RosterPath:            fixture.RosterPath(),
+		PinnedRootFingerprint: fixture.RootFingerprint(),
+		Environment:           contractruntimetest.Env(),
+		MinSignatures:         1,
+		Mode:                  mode,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	return loader
+}
+
+func TestForwardLiveLock_NoActiveContractPassThrough(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	defer cleanup()
+	p.contractLoaderPtr.Store(emptyContractLoader(t, contractruntime.ModeLive))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://evil.example.com/v1/chat", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != "" {
+		t.Fatalf("block reason = %q, want empty", got)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestForwardLiveLock_AllowRulePasses(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	defer cleanup()
+	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://api.example.com/v1/chat", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestForwardLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer backend.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	defer cleanup()
+	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://evil.example.com/v1/chat", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != contractDefaultDenyReason {
+		t.Fatalf("block reason = %q, want %s", got, contractDefaultDenyReason)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer backend.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+	})
+	defer cleanup()
+	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	// Split fake credential at the DLP pattern boundary so the
+	// pipelock self-scan in CI does not flag this test fixture as a
+	// real secret. The runtime DLP scanner sees the assembled string
+	// at request time, which is what this test exercises.
+	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://api.example.com/v1/chat", strings.NewReader(`{"token":"`+fakeToken+`"}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestForwardLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	defer cleanup()
+	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeShadow, rule))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://evil.example.com/v1/chat", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestForwardLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	defer cleanup()
+	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeCapture, rule))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://evil.example.com/v1/chat", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestForwardLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer backend.Close()
+
+	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
+	defer cleanup()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
+	installForwardTestDialer(p, backend.Listener.Addr().String())
+
+	ks := killswitch.New(p.CurrentConfig())
+	ks.SetAPI(true)
+	p.ks = ks
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://api.example.com/v1/chat", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	resp, err := forwardHTTPClient(t, proxyAddr).Do(req)
+	if err != nil {
+		t.Fatalf("forward request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.KillSwitchActive) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.KillSwitchActive)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
 	}
 }
 
@@ -1433,7 +1763,7 @@ func TestForwardHTTPSessionBlocked(t *testing.T) {
 	// Trigger domain burst by hitting many different hosts via forward proxy.
 	for i := 0; i < 4; i++ {
 		reqURL := fmt.Sprintf("http://domain%d.com/path", i)
-		req, _ := http.NewRequest(http.MethodGet, reqURL, nil) //nolint:noctx // test
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
 		resp, err := client.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()

@@ -118,8 +118,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries.
-	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
+	// and resolveAgent() could read different registries. WebSocket does
+	// not invoke the HTTP contract gate today; the loader handle is
+	// discarded.
+	resolved, id, envEmitter, _ := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {

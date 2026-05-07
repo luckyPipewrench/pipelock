@@ -79,27 +79,35 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
-	ActionID            string
-	Verdict             string
-	Layer               string
-	Pattern             string
-	Severity            string
-	RedactionProfile    string
-	RedactionReport     *redact.Report
-	Transport           string
-	Method              string
-	Target              string
-	RequestID           string
-	Agent               string
-	SessionTaintLevel   string
-	SessionContaminated bool
-	RecentTaintSources  []session.TaintSourceRef
-	SessionTaskID       string
-	SessionTaskLabel    string
-	AuthorityKind       string
-	TaintDecision       string
-	TaintDecisionReason string
-	TaskOverrideApplied bool
+	ActionID              string
+	Verdict               string
+	Layer                 string
+	Pattern               string
+	Severity              string
+	RedactionProfile      string
+	RedactionReport       *redact.Report
+	Transport             string
+	Method                string
+	Target                string
+	RequestID             string
+	Agent                 string
+	SessionTaintLevel     string
+	SessionContaminated   bool
+	RecentTaintSources    []session.TaintSourceRef
+	SessionTaskID         string
+	SessionTaskLabel      string
+	AuthorityKind         string
+	TaintDecision         string
+	TaintDecisionReason   string
+	TaskOverrideApplied   bool
+	ContractWinningSource string
+	ContractLiveVerdict   string
+	ContractPolicySources []string
+	ContractRuleID        string
+	ActiveManifestHash    string
+	ContractHash          string
+	ContractSelectorID    string
+	ContractGeneration    uint64
 
 	// MCP-specific fields
 	ToolName  string
@@ -141,36 +149,44 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	}
 
 	ar := ActionRecord{
-		Version:             ActionRecordVersion,
-		ActionID:            opts.ActionID,
-		ActionType:          actionType,
-		Timestamp:           time.Now().UTC(),
-		Principal:           e.principal,
-		Actor:               e.actorLabel(opts),
-		DelegationChain:     nil, // Populated when delegation tracking ships
-		Target:              opts.Target,
-		SideEffectClass:     sideEffect,
-		Reversibility:       reversibility,
-		PolicyHash:          configHashString(e.configHash.Load()),
-		Verdict:             NormalizeVerdict(opts.Verdict),
-		SessionTaintLevel:   opts.SessionTaintLevel,
-		SessionContaminated: opts.SessionContaminated,
-		RecentTaintSources:  append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),
-		SessionTaskID:       opts.SessionTaskID,
-		SessionTaskLabel:    opts.SessionTaskLabel,
-		AuthorityKind:       opts.AuthorityKind,
-		TaintDecision:       opts.TaintDecision,
-		TaintDecisionReason: opts.TaintDecisionReason,
-		TaskOverrideApplied: opts.TaskOverrideApplied,
-		Transport:           opts.Transport,
-		Method:              opts.Method,
-		Layer:               opts.Layer,
-		Pattern:             opts.Pattern,
-		Severity:            opts.Severity,
-		Redaction:           redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
-		RequestID:           opts.RequestID,
-		ChainPrevHash:       e.chainPrevHash,
-		ChainSeq:            e.chainSeq,
+		Version:               ActionRecordVersion,
+		ActionID:              opts.ActionID,
+		ActionType:            actionType,
+		Timestamp:             time.Now().UTC(),
+		Principal:             e.principal,
+		Actor:                 e.actorLabel(opts),
+		DelegationChain:       nil, // Populated when delegation tracking ships
+		Target:                opts.Target,
+		SideEffectClass:       sideEffect,
+		Reversibility:         reversibility,
+		PolicyHash:            configHashString(e.configHash.Load()),
+		Verdict:               NormalizeVerdict(opts.Verdict),
+		SessionTaintLevel:     opts.SessionTaintLevel,
+		SessionContaminated:   opts.SessionContaminated,
+		RecentTaintSources:    append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),
+		SessionTaskID:         opts.SessionTaskID,
+		SessionTaskLabel:      opts.SessionTaskLabel,
+		AuthorityKind:         opts.AuthorityKind,
+		TaintDecision:         opts.TaintDecision,
+		TaintDecisionReason:   opts.TaintDecisionReason,
+		TaskOverrideApplied:   opts.TaskOverrideApplied,
+		ContractWinningSource: opts.ContractWinningSource,
+		ContractLiveVerdict:   opts.ContractLiveVerdict,
+		ContractPolicySources: append([]string(nil), opts.ContractPolicySources...),
+		ContractRuleID:        opts.ContractRuleID,
+		ActiveManifestHash:    opts.ActiveManifestHash,
+		ContractHash:          opts.ContractHash,
+		ContractSelectorID:    opts.ContractSelectorID,
+		ContractGeneration:    opts.ContractGeneration,
+		Transport:             opts.Transport,
+		Method:                opts.Method,
+		Layer:                 opts.Layer,
+		Pattern:               opts.Pattern,
+		Severity:              opts.Severity,
+		Redaction:             redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
+		RequestID:             opts.RequestID,
+		ChainPrevHash:         e.chainPrevHash,
+		ChainSeq:              e.chainSeq,
 	}
 
 	rcpt, err := Sign(ar, e.privKey)

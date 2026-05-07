@@ -77,8 +77,12 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries.
-	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
+	// and resolveAgent() could read different registries. CONNECT is
+	// opaque to the HTTP contract gate (no URL/method to evaluate against
+	// http_destination/http_action rules) so the loader handle is
+	// discarded here; handleForwardHTTP captures it for absolute-URI
+	// requests.
+	resolved, id, envEmitter, _ := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -622,8 +626,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries.
-	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
+	// and resolveAgent() could read different registries. The contract
+	// loader is captured here too so the request scans, taint-evaluates,
+	// and gates under one policy revision; a reload between scan and gate
+	// would otherwise let a poisoned policy slip through.
+	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -673,9 +680,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var forwardRedactionReport *redact.Report
+	var forwardGate ContractGateOutput
 	withForwardRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
 		opts.RedactionProfile = cfg.Redaction.DefaultProfile
 		opts.RedactionReport = forwardRedactionReport
+		if forwardGate.HasContractContext() {
+			opts = withContractReceipt(forwardGate, opts)
+		}
 		return opts
 	}
 
@@ -1298,6 +1309,65 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				"blocked: "+ceeRes.Reason, http.StatusForbidden)
 			return
 		}
+	}
+
+	killSwitchActive := false
+	if p.ks != nil {
+		killSwitchActive = p.ks.IsActiveHTTP(r).Active
+	}
+	gate, gateErr := EvaluateGate(ContractGateInput{
+		Loader:           snapshotContractLoader,
+		Agent:            agent,
+		URL:              targetURL,
+		Method:           r.Method,
+		EffectiveAction:  scannerVerdictForGate(hasFinding),
+		ScannerVerdict:   scannerVerdictForGate(hasFinding),
+		ScannerMatched:   hasFinding,
+		KillSwitchActive: killSwitchActive,
+		Transport:        TransportForward,
+	})
+	if gateErr != nil {
+		p.logger.LogBlocked(actx, blockLayerContract, gateErr.Error())
+		// Emit a block receipt so the contract eval failure shows up
+		// in the evidence chain. Without this, a fail-closed contract
+		// runtime error is the one terminal deny in this handler that
+		// disappears from the audit trail.
+		p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID:  actionID,
+			RequestID: requestID,
+			Agent:     agent,
+			Method:    r.Method,
+			Target:    targetURL,
+			Layer:     blockLayerContract,
+			Pattern:   "contract evaluation failed",
+			Taint:     forwardTaint,
+		})))
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerContract, time.Since(start), agentLabel)
+		writeBlockedError(w,
+			blockInfoFor(blockreason.ParseError, blockLayerContract),
+			"blocked: contract evaluation failed", http.StatusForbidden)
+		return
+	}
+	forwardGate = gate
+	if gate.Verdict == config.ActionBlock {
+		reason := gate.Reason
+		if reason == "" {
+			reason = gate.WinningSource
+		}
+		p.logger.LogBlocked(actx, blockLayerContract, reason)
+		p.emitReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID:  actionID,
+			RequestID: requestID,
+			Agent:     agent,
+			Method:    r.Method,
+			Target:    targetURL,
+			Layer:     blockLayerContract,
+			Pattern:   reason,
+			Taint:     forwardTaint,
+		})))
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerContract, time.Since(start), agentLabel)
+		writeGateBlockedError(w, gate, "blocked: "+reason, http.StatusForbidden)
+		return
 	}
 
 	// Clone request with context keys so CheckRedirect uses the per-agent

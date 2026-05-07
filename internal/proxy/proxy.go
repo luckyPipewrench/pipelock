@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -283,6 +284,7 @@ type Proxy struct {
 	fragmentBufferPtr   atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
 	redactionRuntimePtr atomic.Pointer[redactionRuntime]       // nil when redaction disabled
 	redactMatcherPtr    atomic.Pointer[redact.Matcher]         // nil when redaction disabled
+	contractLoaderPtr   atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
 	logger              *audit.Logger
 	metrics             *metrics.Metrics
 	ks                  *killswitch.Controller
@@ -355,6 +357,12 @@ func WithReceiptKeyPath(path string) Option {
 	return func(p *Proxy) { p.receiptKeyPath = path }
 }
 
+// WithContractLoader sets the lock-runtime loader. Tests use this to install
+// a real loader without routing through YAML config.
+func WithContractLoader(loader *contractruntime.Loader) Option {
+	return func(p *Proxy) { p.contractLoaderPtr.Store(loader) }
+}
+
 // WithEnvelopeEmitter sets the mediation envelope emitter. When non-nil, the
 // proxy injects signed mediation envelopes into proxied requests. Pass nil to
 // disable (default).
@@ -401,6 +409,14 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 	}
 	p.cfgPtr.Store(cfg)
 	p.scannerPtr.Store(sc)
+
+	if p.currentContractLoader() == nil {
+		loader, loaderErr := buildContractLoader(cfg)
+		if loaderErr != nil {
+			return nil, loaderErr
+		}
+		p.contractLoaderPtr.Store(loader)
+	}
 
 	// Wedge-detection watchdog. Constructed when health_watchdog.enabled is
 	// true (the documented default), unless WithHealthWatchdog already
@@ -1196,6 +1212,16 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		return false
 	}
+	contractLoader, contractErr := buildContractLoader(cfg)
+	if contractErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("contract loader reload failed, keeping old config: %w", contractErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return false
+	}
 	// Stage the full redaction runtime BEFORE publication so a failed
 	// matcher build aborts the whole reload instead of mixing matcher,
 	// limits, and allowlist from different policy revisions.
@@ -1247,6 +1273,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 
 	oldCfg := p.cfgPtr.Load()
 	p.cfgPtr.Store(cfg)
+	p.contractLoaderPtr.Store(contractLoader)
 	if p.wd != nil {
 		p.wd.BeatConfig()
 		p.installScannerHeartbeat(sc)
@@ -1556,11 +1583,11 @@ func (p *Proxy) resolveAgentFromRequest(r *http.Request) (*edition.ResolvedAgent
 // and envelope emitter under the reload lock. The request then keeps that
 // emitter for its forwarding and redirect path so a reload cannot pair the
 // old config with a newly disabled or rotated emitter.
-func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity, *envelope.Emitter) {
+func (p *Proxy) resolveAgentRuntimeFromRequest(r *http.Request) (*edition.ResolvedAgent, edition.AgentIdentity, *envelope.Emitter, *contractruntime.Loader) {
 	p.reloadMu.RLock()
 	defer p.reloadMu.RUnlock()
 	resolved, id := p.resolveAgentFromRequest(r)
-	return resolved, id, p.envelopeEmitterPtr.Load()
+	return resolved, id, p.envelopeEmitterPtr.Load(), p.contractLoaderPtr.Load()
 }
 
 // pinResolvedScanner registers in-flight scanner use on a resolved-agent
@@ -2197,6 +2224,23 @@ func (p *Proxy) buildHandler(mux *http.ServeMux) http.Handler {
 				clientIP, _ := requestMeta(r)
 				p.logger.LogKillSwitchDeny(schemeHTTP, r.URL.Path, d.Source, d.Message, clientIP)
 				p.metrics.RecordKillSwitchDenial(schemeHTTP, r.URL.Path)
+				if r.URL.IsAbs() && r.URL.Host != "" {
+					// Absolute-URI forward proxy requests bypass
+					// handleForwardHTTP entirely under kill switch,
+					// so emit a forward receipt here to keep the
+					// audit chain unbroken.
+					requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
+					p.emitReceipt(forwardKillSwitchReceiptOpts(
+						receipt.NewActionID(),
+						requestID,
+						r.Method,
+						r.URL.String(),
+					))
+					writeBlockedError(w,
+						blockInfoFor(blockreason.KillSwitchActive, "kill_switch"),
+						"blocked: kill_switch_active", http.StatusForbidden)
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusServiceUnavailable)
 				_ = json.NewEncoder(w).Encode(map[string]string{
@@ -2414,8 +2458,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries.
-	resolved, id, envEmitter := p.resolveAgentRuntimeFromRequest(r)
+	// and resolveAgent() could read different registries. The fetch path
+	// does not invoke the HTTP contract gate today; the loader handle is
+	// discarded here and re-snapshotted by handleForwardHTTP for the
+	// forward path.
+	resolved, id, envEmitter, _ := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {

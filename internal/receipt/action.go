@@ -142,6 +142,16 @@ type ActionRecord struct {
 	TaintDecisionReason string                   `json:"taint_decision_reason,omitempty"`
 	TaskOverrideApplied bool                     `json:"task_override_applied,omitempty"`
 
+	// Contract context, populated when live lock evaluates this action.
+	ContractWinningSource string   `json:"contract_winning_source,omitempty"`
+	ContractLiveVerdict   string   `json:"contract_live_verdict,omitempty"`
+	ContractPolicySources []string `json:"contract_policy_sources,omitempty"`
+	ContractRuleID        string   `json:"contract_rule_id,omitempty"`
+	ActiveManifestHash    string   `json:"active_manifest_hash,omitempty"`
+	ContractHash          string   `json:"contract_hash,omitempty"`
+	ContractSelectorID    string   `json:"contract_selector_id,omitempty"`
+	ContractGeneration    uint64   `json:"contract_generation,omitempty"`
+
 	// Transport context
 	Transport string            `json:"transport"`
 	Method    string            `json:"method,omitempty"`

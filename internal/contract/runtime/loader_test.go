@@ -5,9 +5,6 @@ package runtime
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -17,8 +14,8 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
-	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestNewLoader_RejectsMissingFields(t *testing.T) {
@@ -106,7 +103,7 @@ func TestNewLoader_RejectsMissingRosterFile(t *testing.T) {
 func TestNewLoader_NoActiveManifest_ReturnsNilCurrent(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	if err := os.MkdirAll(storeDir, 0o750); err != nil {
 		t.Fatalf("mkdir store: %v", err)
 	}
@@ -114,8 +111,8 @@ func TestNewLoader_NoActiveManifest_ReturnsNilCurrent(t *testing.T) {
 	metrics := &captureMetrics{}
 	loader, err := NewLoader(LoaderOptions{
 		StoreDir:              storeDir,
-		RosterPath:            fixture.rosterPath,
-		PinnedRootFingerprint: fixture.rootFingerprint,
+		RosterPath:            fixture.RosterPath(),
+		PinnedRootFingerprint: fixture.RootFingerprint(),
 		Environment:           testLoaderEnv(),
 		MinSignatures:         1,
 		Mode:                  ModeShadow,
@@ -142,7 +139,7 @@ func TestNewLoader_NoActiveManifest_ReturnsNilCurrent(t *testing.T) {
 func TestLoader_ReloadAcceptsSameHashWithoutError(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", testLoaderEnv())
 
 	metrics := &captureMetrics{}
@@ -169,7 +166,7 @@ func TestLoader_ReloadAcceptsSameHashWithoutError(t *testing.T) {
 func TestLoader_ReloadRejectsMissingActiveAfterCurrent(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", testLoaderEnv())
 
 	metrics := &captureMetrics{}
@@ -199,7 +196,7 @@ func TestLoader_ReloadRejectsMissingActiveAfterCurrent(t *testing.T) {
 func TestLoader_ReloadRejectsEnvironmentMismatchAndKeepsCurrent(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -226,7 +223,7 @@ func TestLoader_ReloadRejectsEnvironmentMismatchAndKeepsCurrent(t *testing.T) {
 func TestLoader_ReloadRejectsGenerationDowngradeAndKeepsCurrent(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 2, "sha256:genesis", env)
 
@@ -273,7 +270,7 @@ func TestLoader_NilMetricsExercisesNoopImpl(t *testing.T) {
 	// real method receivers. Coverage proves no panic and no nil-deref
 	// from production code paths that assume metrics is always set.
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	if err := os.MkdirAll(storeDir, 0o750); err != nil {
 		t.Fatalf("mkdir store: %v", err)
 	}
@@ -294,7 +291,7 @@ func TestLoader_NilMetricsExercisesNoopImpl(t *testing.T) {
 func TestLoader_ReloadAdoptsAcceptedActiveAfterMissedIntermediate(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -338,7 +335,7 @@ func TestLoader_ReloadAdoptsAcceptedActiveAfterMissedIntermediate(t *testing.T) 
 func TestLoader_ReloadRejectsSkippedActiveWithoutAcceptedHistory(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -369,7 +366,7 @@ func TestLoader_ReloadRejectsSkippedActiveWithoutAcceptedHistory(t *testing.T) {
 func TestLoader_Watch_CancelExitsCleanly(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	if err := os.MkdirAll(storeDir, 0o750); err != nil {
 		t.Fatalf("mkdir store: %v", err)
 	}
@@ -400,7 +397,7 @@ func TestLoader_Watch_CancelExitsCleanly(t *testing.T) {
 func TestLoader_Watch_FileReplacementTriggersReload(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -437,7 +434,7 @@ func TestLoader_Watch_FileReplacementTriggersReload(t *testing.T) {
 func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -504,7 +501,7 @@ func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 func TestLoader_Watch_RejectedReloadKeepsWatcherAlive(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 2, "sha256:genesis", env)
 
@@ -565,7 +562,7 @@ func TestLoader_Watch_NilReceiverReturnsError(t *testing.T) {
 func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -640,7 +637,7 @@ func TestLoader_Watch_RemoveEventTriggersReload(t *testing.T) {
 	// an explicit operator unlink fires Remove cleanly. Without Remove
 	// in the trigger predicate the loader would sit on stale state.
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -688,7 +685,7 @@ func TestLoader_ReloadRejectsRecoveryChainBreak(t *testing.T) {
 	// missing from accepted history, the walk fails and the rejection
 	// stands. This exercises acceptedChainReachesCurrent's break path.
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -768,7 +765,7 @@ func TestNewLoader_FailsOnMalformedActiveManifest(t *testing.T) {
 	// fire, so this exercises the initial-reload error path that maps to
 	// the wrapped initial reload error.
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	if err := os.MkdirAll(storeDir, 0o750); err != nil {
 		t.Fatalf("mkdir store: %v", err)
 	}
@@ -789,7 +786,7 @@ func TestLoader_Watch_FailsOnMissingStoreDir(t *testing.T) {
 	// caller so the supervisor knows the lock runtime is unhealthy
 	// instead of silently looping.
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", testLoaderEnv())
 	loader, err := NewLoader(loaderOptions(fixture, storeDir, testLoaderEnv()), nil)
 	if err != nil {
@@ -814,7 +811,7 @@ func TestRecoverAcceptedActiveRejectsNilPrev(t *testing.T) {
 	// not crash. Reload always passes a non-nil prev when invoking
 	// recovery, so this test exists to keep the guard wired.
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", testLoaderEnv())
 	loader, err := NewLoader(loaderOptions(fixture, storeDir, testLoaderEnv()), nil)
 	if err != nil {
@@ -828,7 +825,7 @@ func TestRecoverAcceptedActiveRejectsNilPrev(t *testing.T) {
 func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
-	storeDir := filepath.Join(fixture.root, "store")
+	storeDir := filepath.Join(fixture.Root(), "store")
 	env := testLoaderEnv()
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
 
@@ -897,105 +894,23 @@ func snapshotOutcomes(m *captureMetrics) map[string]int {
 	return out
 }
 
-// rosterFixture is the minimum fixture the Loader needs at construction
-// time: a real Ed25519 root key, a real activation-signing key, and a
-// roster file on disk that signing.LoadRoster can verify. Tests that
-// build a real signed active.json reuse this fixture and add the
-// manifest-side scaffolding on top in F3c.
-type rosterFixture struct {
-	root            string
-	rosterPath      string
-	rootFingerprint string
-	rootPriv        ed25519.PrivateKey
-	activationPub   ed25519.PublicKey
-	activationPriv  ed25519.PrivateKey
-	compilePub      ed25519.PublicKey
-	compilePriv     ed25519.PrivateKey
-}
+// rosterFixture aliases the shared contractruntimetest.Fixture so the
+// existing test helpers in this file continue to compile. The fixture
+// was extracted into a reusable package so the forward-proxy contract
+// gate tests can build the same signed-roster shape without copying
+// 100+ lines of signing scaffolding.
+type rosterFixture = contractruntimetest.Fixture
 
 func newRosterFixture(t *testing.T) rosterFixture {
 	t.Helper()
-	root := t.TempDir()
-	keystoreDir := filepath.Join(root, "keys")
-	ks := signing.NewKeystore(keystoreDir)
-
-	rootPub, err := ks.GenerateAgent("roster-root")
-	if err != nil {
-		t.Fatalf("generate root: %v", err)
-	}
-	rootPriv, err := ks.LoadPrivateKey("roster-root")
-	if err != nil {
-		t.Fatalf("load root priv: %v", err)
-	}
-	activationPub, err := ks.GenerateAgent("activation-primary")
-	if err != nil {
-		t.Fatalf("generate activation: %v", err)
-	}
-	activationPriv, err := ks.LoadPrivateKey("activation-primary")
-	if err != nil {
-		t.Fatalf("load activation priv: %v", err)
-	}
-	compilePub, err := ks.GenerateAgent("compile-primary")
-	if err != nil {
-		t.Fatalf("generate compile: %v", err)
-	}
-	compilePriv, err := ks.LoadPrivateKey("compile-primary")
-	if err != nil {
-		t.Fatalf("load compile priv: %v", err)
-	}
-
-	rootFingerprint, err := signing.Fingerprint(rootPub)
-	if err != nil {
-		t.Fatalf("Fingerprint: %v", err)
-	}
-
-	body := contract.KeyRoster{
-		SchemaVersion:  1,
-		RosterSignedBy: "roster-root",
-		DataClassRoot:  string(contract.DataClassInternal),
-		Keys: []contract.KeyInfo{
-			rosterKey("roster-root", signing.PurposeRosterRoot, rootPub, contract.KeyStatusRoot, "root"),
-			rosterKey("activation-primary", signing.PurposeContractActivationSigning, activationPub, contract.KeyStatusActive, "operator"),
-			rosterKey("compile-primary", signing.PurposeContractCompileSigning, compilePub, contract.KeyStatusActive, "compiler"),
-		},
-	}
-	preimage, err := body.SignablePreimage()
-	if err != nil {
-		t.Fatalf("roster preimage: %v", err)
-	}
-	envelope := contract.RosterEnvelope{
-		Body:      body,
-		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(rootPriv, preimage)),
-	}
-	rosterPath := filepath.Join(root, "roster.json")
-	rosterBytes, err := json.Marshal(envelope)
-	if err != nil {
-		t.Fatalf("marshal roster: %v", err)
-	}
-	if err := os.WriteFile(rosterPath, append(rosterBytes, '\n'), 0o600); err != nil {
-		t.Fatalf("write roster: %v", err)
-	}
-	if _, err := signing.LoadRoster(rosterPath, rootFingerprint); err != nil {
-		t.Fatalf("verify roster fixture: %v", err)
-	}
-
-	return rosterFixture{
-		root:            root,
-		rosterPath:      rosterPath,
-		rootFingerprint: rootFingerprint,
-		rootPriv:        rootPriv,
-		activationPub:   activationPub,
-		activationPriv:  activationPriv,
-		compilePub:      compilePub,
-		compilePriv:     compilePriv,
-	}
+	return contractruntimetest.NewFixture(t)
 }
 
 func loaderOptions(fixture rosterFixture, storeDir string, env contract.Environment) LoaderOptions {
 	return LoaderOptions{
 		StoreDir:              storeDir,
-		RosterPath:            fixture.rosterPath,
-		PinnedRootFingerprint: fixture.rootFingerprint,
+		RosterPath:            fixture.RosterPath(),
+		PinnedRootFingerprint: fixture.RootFingerprint(),
 		Environment:           env,
 		MinSignatures:         1,
 		Mode:                  ModeShadow,
@@ -1004,149 +919,29 @@ func loaderOptions(fixture rosterFixture, storeDir string, env contract.Environm
 }
 
 func testLoaderEnv() contract.Environment {
-	return contract.Environment{ID: "prod", Tenant: "tenant-a", DeploymentID: "deploy-a"}
+	return contractruntimetest.Env()
 }
 
 func writeSignedActiveStore(t *testing.T, fixture rosterFixture, storeDir string, generation uint64, prior string, env contract.Environment) {
 	t.Helper()
-	st := contractstore.New(storeDir)
-	contractHash := putSignedLoaderContract(t, st, fixture)
-	active := signedLoaderManifest(t, contractHash, generation, prior, env, fixture)
-	raw, err := json.Marshal(active)
-	if err != nil {
-		t.Fatalf("marshal active manifest: %v", err)
-	}
-	if err := os.MkdirAll(storeDir, 0o750); err != nil {
-		t.Fatalf("mkdir store: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(storeDir, "active.json"), append(raw, '\n'), 0o600); err != nil {
-		t.Fatalf("write active.json: %v", err)
-	}
+	contractruntimetest.WriteSignedActiveStore(t, fixture, storeDir, contractruntimetest.ActiveStoreOptions{
+		Generation:  generation,
+		PriorHash:   prior,
+		Environment: env,
+	})
 }
 
+// writeAcceptedActiveStore funnels the missed-intermediate recovery
+// tests through the shared helper so the store-CAS path stays in one
+// place. Returns the manifest hash so callers can chain prior hashes.
 func writeAcceptedActiveStore(t *testing.T, fixture rosterFixture, storeDir string, generation uint64, prior string, previousGeneration uint64, env contract.Environment) string {
 	t.Helper()
-	st := contractstore.New(storeDir)
-	contractHash := putSignedLoaderContract(t, st, fixture)
-	active := signedLoaderManifest(t, contractHash, generation, prior, env, fixture)
-	raw, err := json.Marshal(active)
-	if err != nil {
-		t.Fatalf("marshal active manifest: %v", err)
-	}
-	loadedRoster, err := signing.LoadRoster(fixture.rosterPath, fixture.rootFingerprint)
-	if err != nil {
-		t.Fatalf("load roster: %v", err)
-	}
-	opts := contractstore.Options{
-		Environment:        env,
-		Roster:             loadedRoster,
-		PreviousHash:       prior,
+	return contractruntimetest.WriteAcceptedActiveStore(t, fixture, storeDir, contractruntimetest.ActiveStoreOptions{
+		Generation:         generation,
+		PriorHash:          prior,
 		PreviousGeneration: previousGeneration,
-		MinSignatures:      1,
-		Now:                func() time.Time { return time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) },
-	}
-	hash, err := st.WriteActive(raw, opts)
-	if err != nil {
-		t.Fatalf("WriteActive generation %d: %v", generation, err)
-	}
-	if _, err := st.Reload(opts); err != nil {
-		t.Fatalf("Reload generation %d: %v", generation, err)
-	}
-	return hash
-}
-
-func putSignedLoaderContract(t *testing.T, st contractstore.Store, fixture rosterFixture) string {
-	t.Helper()
-	body := contract.Contract{
-		SchemaVersion:    contract.SchemaVersionContract,
-		ContractKind:     contract.ContractKind,
-		SignerKeyID:      "compile-primary",
-		KeyPurpose:       signing.PurposeContractCompileSigning.String(),
-		DataClassRoot:    string(contract.DataClassInternal),
-		FieldDataClasses: map[string]string{},
-		Selector:         contract.Selector{Agent: "agent-a", SelectorID: "sha256:selector"},
-	}
-	hash, err := contractstore.ContractHash(body)
-	if err != nil {
-		t.Fatalf("contract hash: %v", err)
-	}
-	body.ContractHash = hash
-	preimage, err := body.SignablePreimage()
-	if err != nil {
-		t.Fatalf("contract preimage: %v", err)
-	}
-	env := contract.ContractEnvelope{
-		Body:      body,
-		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(fixture.compilePriv, preimage)),
-	}
-	raw, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("marshal contract: %v", err)
-	}
-	loadedRoster, err := signing.LoadRoster(fixture.rosterPath, fixture.rootFingerprint)
-	if err != nil {
-		t.Fatalf("load roster: %v", err)
-	}
-	if got, err := st.PutHistoryContract(raw, contractstore.Options{
-		Roster:        loadedRoster,
-		MinSignatures: 1,
-		Now:           func() time.Time { return time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) },
-	}); err != nil {
-		t.Fatalf("PutHistoryContract: %v", err)
-	} else if got != hash {
-		t.Fatalf("PutHistoryContract hash = %q, want %q", got, hash)
-	}
-	return hash
-}
-
-func signedLoaderManifest(t *testing.T, contractHash string, generation uint64, prior string, env contract.Environment, fixture rosterFixture) contract.ActiveManifestEnvelope {
-	t.Helper()
-	selector := contract.ManifestSelector{Agent: "agent-a", ContractHash: contractHash}
-	selectorID, err := selector.ComputeSelectorID()
-	if err != nil {
-		t.Fatalf("ComputeSelectorID: %v", err)
-	}
-	selector.SelectorID = selectorID
-	selectorSetHash, err := contract.ComputeSelectorSetHash([]contract.ManifestSelector{selector})
-	if err != nil {
-		t.Fatalf("ComputeSelectorSetHash: %v", err)
-	}
-	body := contract.ActiveManifest{
-		SchemaVersion:     1,
-		ManifestKind:      contract.ManifestKindActivation,
-		Generation:        generation,
-		PriorManifestHash: prior,
-		SelectorSetHash:   selectorSetHash,
-		Environment:       env,
-		Selectors:         []contract.ManifestSelector{selector},
-		HistoryRoot:       "contracts/history/",
-		SignedAt:          time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC),
-	}
-	preimage, err := body.SignablePreimage()
-	if err != nil {
-		t.Fatalf("manifest preimage: %v", err)
-	}
-	return contract.ActiveManifestEnvelope{
-		Body: body,
-		Signatures: []contract.ManifestSignature{{
-			KeyID:      "activation-primary",
-			Principal:  "operator",
-			KeyPurpose: signing.PurposeContractActivationSigning.String(),
-			Algorithm:  "ed25519",
-			Signature:  "ed25519:" + hex.EncodeToString(ed25519.Sign(fixture.activationPriv, preimage)),
-		}},
-	}
-}
-
-func rosterKey(keyID string, purpose signing.KeyPurpose, pub ed25519.PublicKey, status, principal string) contract.KeyInfo {
-	return contract.KeyInfo{
-		KeyID:        keyID,
-		KeyPurpose:   purpose.String(),
-		PublicKeyHex: hex.EncodeToString(pub),
-		ValidFrom:    time.Date(2026, 4, 29, 0, 0, 0, 0, time.UTC).Format(time.RFC3339),
-		Status:       status,
-		Principal:    principal,
-	}
+		Environment:        env,
+	})
 }
 
 // captureMetrics records LoaderMetrics calls for assertion in tests. The

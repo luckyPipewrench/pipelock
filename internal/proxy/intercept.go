@@ -469,6 +469,24 @@ func newInterceptHandler(
 		// scans the synthetic host URL; inside the intercepted tunnel we have
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
+		emitKillSwitchBlock := func() {
+			ic.Logger.LogBlocked(actx, "kill_switch", killSwitchActiveReason)
+			ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
+			interceptEmitReceipt(ic, receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "kill_switch",
+				Pattern:   killSwitchActiveReason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.KillSwitchActive, ""),
+				"kill switch active", http.StatusServiceUnavailable)
+		}
 
 		// Kill switch re-check for intercepted CONNECT tunnels.
 		// Raw relay (relay.go) polls this per copy iteration. Intercepted
@@ -489,11 +507,7 @@ func newInterceptHandler(
 					Transport:        "intercept",
 				})
 				if gateErr != nil {
-					ic.Logger.LogBlocked(actx, "contract", gateErr.Error())
-					ic.Metrics.RecordTLSRequestBlocked("contract")
-					writeBlockedError(w,
-						blockInfoFor(blockreason.ParseError, "contract"),
-						"blocked: contract evaluation failed", http.StatusForbidden)
+					emitKillSwitchBlock()
 					return
 				}
 				if gate.Verdict == config.ActionBlock {
@@ -501,6 +515,10 @@ func newInterceptHandler(
 					reason := gate.Reason
 					if reason == "" {
 						reason = gate.WinningSource
+					}
+					if reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
+						emitKillSwitchBlock()
+						return
 					}
 					ic.Logger.LogBlocked(actx, "contract", reason)
 					ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
@@ -518,10 +536,7 @@ func newInterceptHandler(
 					writeGateBlockedError(w, gate, "blocked: "+reason)
 					return
 				}
-				ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
-				writeBlockedError(w,
-					blockInfoFor(blockreason.KillSwitchActive, ""),
-					"kill switch active", http.StatusServiceUnavailable)
+				emitKillSwitchBlock()
 				return
 			}
 		}

@@ -144,6 +144,7 @@ func interceptLiveLockRequest(
 	tlsConn := tls.Client(clientConn, &tls.Config{
 		RootCAs:    pool,
 		ServerName: targetHost,
+		MinVersion: tls.VersionTLS13,
 	})
 	t.Cleanup(func() { _ = tlsConn.Close() })
 	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
@@ -339,8 +340,8 @@ func TestInterceptLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
 		"api.example.com", newInterceptLiveLockRequest(t, "api.example.com", "{}"), proxy)
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
 	}
 	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.KillSwitchActive) {
 		t.Fatalf("block reason = %q, want %s", got, blockreason.KillSwitchActive)

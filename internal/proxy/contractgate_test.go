@@ -310,7 +310,7 @@ func TestWriteGateBlockedError_RoutesByGateShape(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			writeGateBlockedError(rec, tc.gate, "blocked", http.StatusForbidden)
+			writeGateBlockedError(rec, tc.gate, "blocked")
 			if got := rec.Header().Get(blockreason.HeaderReason); got != string(tc.want) {
 				t.Fatalf("header reason = %q, want %q", got, string(tc.want))
 			}

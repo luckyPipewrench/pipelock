@@ -1366,7 +1366,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Taint:     forwardTaint,
 		})))
 		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerContract, time.Since(start), agentLabel)
-		writeGateBlockedError(w, gate, "blocked: "+reason, http.StatusForbidden)
+		writeGateBlockedError(w, gate, "blocked: "+reason)
 		return
 	}
 

@@ -21,9 +21,13 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -71,6 +75,311 @@ func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {
 	p.redactionRuntimePtr.Store(rt)
 	p.redactMatcherPtr.Store(rt.matcher)
 	return p
+}
+
+type interceptRewriteRoundTripper struct {
+	base http.RoundTripper
+	addr string
+}
+
+func (rt interceptRewriteRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	u := *req.URL
+	u.Host = rt.addr
+	clone.URL = &u
+	return rt.base.RoundTrip(clone)
+}
+
+func interceptLiveLockProxy(loader *contractruntime.Loader, ks *killswitch.Controller, m *metrics.Metrics) *Proxy {
+	p := &Proxy{captureObs: capture.NopObserver{}, metrics: m, ks: ks}
+	if loader != nil {
+		p.contractLoaderPtr.Store(loader)
+	}
+	return p
+}
+
+func interceptLiveLockRequest(
+	t *testing.T,
+	upstream *httptest.Server,
+	cache *certgen.CertCache,
+	pool *x509.CertPool,
+	cfg *config.Config,
+	sc *scanner.Scanner,
+	logger *audit.Logger,
+	m *metrics.Metrics,
+	targetHost string,
+	req *http.Request,
+	proxy *Proxy,
+) (*http.Response, tls.ConnectionState) {
+	t.Helper()
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: targetHost,
+			TargetPort: "443",
+			Config:     cfg,
+			Scanner:    sc,
+			CertCache:  cache,
+			Logger:     logger,
+			Metrics:    m,
+			ClientIP:   "10.0.0.1",
+			RequestID:  "test-req-1",
+			Agent:      "agent-a",
+			Profile:    "agent-a",
+			UpstreamRT: interceptRewriteRoundTripper{
+				base: upstream.Client().Transport,
+				addr: upstream.Listener.Addr().String(),
+			},
+			Proxy:      proxy,
+			KillSwitch: proxy.ks,
+		})
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{
+		RootCAs:    pool,
+		ServerName: targetHost,
+	})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	state := tlsConn.ConnectionState()
+
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	return resp, state
+}
+
+func newInterceptLiveLockRequest(t *testing.T, host, body string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://"+host+"/v1/chat", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "agent-a")
+	return req
+}
+
+func TestInterceptLiveLock_NoActiveContractPassThrough(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	proxy := interceptLiveLockProxy(emptyContractLoader(t, contractruntime.ModeLive), nil, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"evil.example.com", newInterceptLiveLockRequest(t, "evil.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != "" {
+		t.Fatalf("block reason = %q, want empty", got)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_AllowRulePasses(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeLive, rule), nil, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"api.example.com", newInterceptLiveLockRequest(t, "api.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeLive, rule), nil, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"evil.example.com", newInterceptLiveLockRequest(t, "evil.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != contractDefaultDenyReason {
+		t.Fatalf("block reason = %q, want %s", got, contractDefaultDenyReason)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeLive, rule), nil, m)
+	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"api.example.com", newInterceptLiveLockRequest(t, "api.example.com", `{"token":"`+fakeToken+`"}`), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeShadow, rule), nil, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"evil.example.com", newInterceptLiveLockRequest(t, "evil.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeCapture, rule), nil, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"evil.example.com", newInterceptLiveLockRequest(t, "evil.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	ks := killswitch.New(cfg)
+	ks.SetAPI(true)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeLive, rule), ks, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"api.example.com", newInterceptLiveLockRequest(t, "api.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.KillSwitchActive) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.KillSwitchActive)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestInterceptLiveLock_CertForgeCompletesBeforeContractBlock(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := interceptLiveLockProxy(testContractLoader(t, contractruntime.ModeLive, rule), nil, m)
+	resp, state := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"evil.example.com", newInterceptLiveLockRequest(t, "evil.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if len(state.PeerCertificates) == 0 {
+		t.Fatal("peer certificates len = 0, want forged leaf")
+	}
+	if got := state.PeerCertificates[0].DNSNames; len(got) != 1 || got[0] != "evil.example.com" {
+		t.Fatalf("forged DNSNames = %v, want [evil.example.com]", got)
+	}
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != contractDefaultDenyReason {
+		t.Fatalf("block reason = %q, want %s", got, contractDefaultDenyReason)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
 }
 
 // interceptAndRequest performs a TLS MITM test: runs interceptTunnel in a

@@ -190,20 +190,20 @@ func contractBlockInfo(reason string) (blockreason.Info, bool) {
 	}
 }
 
-func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string, status int) {
+func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
 	if gate.Reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
-		writeBlockedError(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), body, status)
+		writeBlockedError(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), body, http.StatusForbidden)
 		return
 	}
 	if gate.WinningSource == contractruntime.WinningSourceScanner {
-		writeBlockedError(w, blockInfoFor(blockreason.ParseError, "scanner"), body, status)
+		writeBlockedError(w, blockInfoFor(blockreason.ParseError, "scanner"), body, http.StatusForbidden)
 		return
 	}
 	if info, ok := contractBlockInfo(gate.Reason); ok {
-		writeBlockedError(w, info, body, status)
+		writeBlockedError(w, info, body, http.StatusForbidden)
 		return
 	}
-	writeBlockedError(w, blockInfoFor(blockreason.ParseError, blockLayerContract), body, status)
+	writeBlockedError(w, blockInfoFor(blockreason.ParseError, blockLayerContract), body, http.StatusForbidden)
 }
 
 func scannerVerdictForGate(hasFinding bool) string {

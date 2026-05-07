@@ -22,17 +22,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// Lifecycle constants alias the canonical schema-package values so the
+// runtime and the contract validator share one source of truth. Adding
+// a new lifecycle state must happen in the contract package.
 const (
-	// LifecycleProposed means the rule is visible to operators but not active.
-	LifecycleProposed = "proposed"
-	// LifecycleCaptureOnly records telemetry without changing live enforcement.
-	LifecycleCaptureOnly = "capture_only"
-	// LifecycleEnforce allows the rule to affect live decisions.
-	LifecycleEnforce = "enforce"
-	// LifecycleExpired marks a rule as no longer active.
-	LifecycleExpired = "expired"
-	// LifecycleDemoted marks a rule removed from enforcement by drift handling.
-	LifecycleDemoted = "demoted"
+	LifecycleProposed    = contract.LifecycleProposed
+	LifecycleCaptureOnly = contract.LifecycleCaptureOnly
+	LifecycleEnforce     = contract.LifecycleEnforce
+	LifecycleExpired     = contract.LifecycleExpired
+	LifecycleDemoted     = contract.LifecycleDemoted
 )
 
 const (
@@ -55,9 +53,14 @@ const (
 	WinningSourceKillSwitch = PolicySourceKillSwitch
 )
 
+// Rule-kind aliases keep the runtime in lock-step with the validator's
+// EnforceableRuleKinds() registry. Adding a new kind requires updating
+// both the contract package's enforceable list AND the runtime evaluator
+// dispatch in the same change; otherwise validation rejects enforced
+// rules of that kind.
 const (
-	ruleKindHTTPDestination = "http_destination"
-	ruleKindHTTPAction      = "http_action"
+	ruleKindHTTPDestination = contract.RuleKindHTTPDestination
+	ruleKindHTTPAction      = contract.RuleKindHTTPAction
 
 	DriftKindPositive = "positive"
 	DriftKindNegative = "negative"

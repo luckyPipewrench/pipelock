@@ -123,9 +123,9 @@ func TestContract_Validate_RejectsEnforceWithInsufficientCaptureGrade(t *testing
 		DataClassRoot:    string(DataClassInternal),
 		FieldDataClasses: map[string]string{},
 		Rules: []Rule{{
-			RuleID:               "r-response",
-			RuleKind:             "response_injection",
-			LifecycleState:       "enforce",
+			RuleID:               "r-http-action",
+			RuleKind:             RuleKindHTTPAction,
+			LifecycleState:       LifecycleEnforce,
 			RequiredCaptureGrade: CaptureGradeFull,
 			ObservedCaptureGrade: CaptureGradePartial,
 			Confidence:           "stable",
@@ -241,6 +241,88 @@ func TestContract_Validate_RejectsMissingRuleKind(t *testing.T) {
 	}
 	if err := c.Validate(); !errors.Is(err, ErrCaptureGrade) {
 		t.Errorf("got %v, want ErrCaptureGrade", err)
+	}
+}
+
+func TestContract_Validate_RejectsEnforceWithUnenforceableRuleKind(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-mcp",
+			RuleKind:             "mcp_tool_call",
+			LifecycleState:       LifecycleEnforce,
+			RequiredCaptureGrade: CaptureGradeFull,
+			ObservedCaptureGrade: CaptureGradeFull,
+			Confidence:           "stable",
+			WilsonLower:          "0.99",
+			Observation:          map[string]any{},
+			Selector:             map[string]any{},
+			Rationale:            map[string]any{},
+			RecurringSupport:     map[string]any{},
+			OpportunityHealth:    map[string]any{},
+		}},
+	}
+	err := c.Validate()
+	if !errors.Is(err, ErrUnenforceableRuleKind) {
+		t.Fatalf("got %v, want ErrUnenforceableRuleKind", err)
+	}
+}
+
+func TestContract_Validate_AcceptsCaptureOnlyWithUnenforceableRuleKind(t *testing.T) {
+	t.Parallel()
+	// Forward compat: non-enforce rules can carry kinds the runtime
+	// does not yet evaluate. They are observation-only and never gate
+	// live decisions, so they cannot bypass the floor.
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:         "r-future",
+			RuleKind:       "mcp_tool_call",
+			LifecycleState: LifecycleCaptureOnly,
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("got %v, want nil", err)
+	}
+}
+
+func TestContract_Validate_AcceptsEnforceForEveryEnforceableRuleKind(t *testing.T) {
+	t.Parallel()
+	for _, kind := range EnforceableRuleKinds() {
+		kind := kind
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			c := Contract{
+				SchemaVersion:    SchemaVersionContract,
+				ContractKind:     ContractKind,
+				DataClassRoot:    string(DataClassInternal),
+				FieldDataClasses: map[string]string{},
+				Rules: []Rule{{
+					RuleID:               "r-" + kind,
+					RuleKind:             kind,
+					LifecycleState:       LifecycleEnforce,
+					RequiredCaptureGrade: CaptureGradeFull,
+					ObservedCaptureGrade: CaptureGradeFull,
+					Confidence:           "stable",
+					WilsonLower:          "0.99",
+					Observation:          map[string]any{},
+					Selector:             map[string]any{},
+					Rationale:            map[string]any{},
+					RecurringSupport:     map[string]any{},
+					OpportunityHealth:    map[string]any{},
+				}},
+			}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("kind %q: got %v, want nil", kind, err)
+			}
+		})
 	}
 }
 

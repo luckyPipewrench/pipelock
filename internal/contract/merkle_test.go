@@ -36,8 +36,8 @@ func TestMerkleRoot_Single(t *testing.T) {
 func TestMerkleRoot_Deterministic(t *testing.T) {
 	t.Parallel()
 	r := []Rule{
-		{RuleID: "r-1", RuleKind: "http_destination"},
-		{RuleID: "r-2", RuleKind: "mcp_tool"},
+		{RuleID: "r-1", RuleKind: RuleKindHTTPDestination},
+		{RuleID: "r-2", RuleKind: RuleKindHTTPAction},
 	}
 	a, err := MerkleRoot(r)
 	if err != nil {

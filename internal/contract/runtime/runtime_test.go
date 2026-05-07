@@ -273,8 +273,44 @@ func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
 	}
 }
 
-func TestEvaluateHTTP_HostScopedDenyDefaultFallsBackToScanner(t *testing.T) {
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "blocked.example.com", "/v1/chat", "POST"))
+func TestEvaluateHTTP_DefaultDenyOnceContractHasEnforceRule(t *testing.T) {
+	// A contract with at least one enforce rule claims jurisdiction. Traffic
+	// to a host the contract does not enumerate is denied by default in live
+	// mode — without this the "lock" is just per-host policy refinement and
+	// any new domain (including exfil) falls through to the scanner.
+	resolved := resolvedContractWithRules(enforceRule("r-chat", "chat.example.com", "/v1/chat", "POST"))
+
+	decision, err := EvaluateHTTP(EvaluateOptions{
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		Mode:           ModeLive,
+		ScannerVerdict: config.ActionAllow,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP default-deny: %v", err)
+	}
+	if decision.Verdict != config.ActionBlock || decision.WinningSource != WinningSourceContract {
+		t.Fatalf("decision = %+v, want contract default-deny block", decision)
+	}
+	if decision.Reason != "contract_default_deny" {
+		t.Fatalf("reason = %q, want contract_default_deny", decision.Reason)
+	}
+	if decision.LiveVerdict != config.ActionBlock {
+		t.Fatalf("live_verdict = %q, want block", decision.LiveVerdict)
+	}
+	if decision.Drift == nil || decision.Drift.Kind != DriftKindPositive {
+		t.Fatalf("drift = %+v, want positive", decision.Drift)
+	}
+}
+
+func TestEvaluateHTTP_ObservationOnlyContractFallsThroughToScanner(t *testing.T) {
+	// A contract with zero enforce rules anywhere is observation-only and
+	// claims no jurisdiction. Traffic falls through to the scanner verdict
+	// regardless of host. This lets operators promote a fresh contract
+	// without immediately locking out every request.
+	rule := enforceRule("r-chat", "api.example.com", "/v1/chat", "POST")
+	rule.LifecycleState = LifecycleProposed
+	resolved := resolvedContractWithRules(rule)
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
@@ -283,7 +319,7 @@ func TestEvaluateHTTP_HostScopedDenyDefaultFallsBackToScanner(t *testing.T) {
 		ScannerVerdict: config.ActionWarn,
 	})
 	if err != nil {
-		t.Fatalf("EvaluateHTTP: %v", err)
+		t.Fatalf("EvaluateHTTP observation-only: %v", err)
 	}
 	if decision.Verdict != config.ActionWarn || decision.WinningSource != WinningSourceScanner {
 		t.Fatalf("decision = %+v, want scanner fallback", decision)
@@ -291,7 +327,7 @@ func TestEvaluateHTTP_HostScopedDenyDefaultFallsBackToScanner(t *testing.T) {
 }
 
 func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
-	decision, err := EvaluateHTTP(EvaluateOptions{})
+	decision, err := EvaluateHTTP(EvaluateOptions{Mode: ModeLive})
 	if err != nil {
 		t.Fatalf("EvaluateHTTP nil resolved: %v", err)
 	}
@@ -302,7 +338,10 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 	if !contains(decision.PolicySources, PolicySourceScanner) {
 		t.Fatalf("policy_sources = %v, want scanner", decision.PolicySources)
 	}
-	decision, err = EvaluateHTTP(EvaluateOptions{ScannerVerdict: config.ActionAllow})
+	decision, err = EvaluateHTTP(EvaluateOptions{
+		Mode:           ModeLive,
+		ScannerVerdict: config.ActionAllow,
+	})
 	if err != nil {
 		t.Fatalf("EvaluateHTTP explicit scanner allow: %v", err)
 	}
@@ -312,8 +351,10 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 
 	resolved := resolvedContractWithRules(enforceRule("r1", "api.example.com", "/v1/chat", "POST"))
 	if _, err := EvaluateHTTP(EvaluateOptions{
-		Resolved: &resolved,
-		Request:  HTTPRequest{URL: "://bad"},
+		Mode:           ModeLive,
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "://bad"},
+		ScannerVerdict: config.ActionAllow,
 	}); !errors.Is(err, ErrInvalidDecisionInput) {
 		t.Fatalf("invalid URL err = %v", err)
 	}
@@ -322,10 +363,103 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 	badLifecycle.LifecycleState = "surprise"
 	resolved = resolvedContractWithRules(badLifecycle)
 	if _, err := EvaluateHTTP(EvaluateOptions{
-		Resolved: &resolved,
-		Request:  HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		Mode:           ModeLive,
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		ScannerVerdict: config.ActionAllow,
 	}); !errors.Is(err, ErrUnsupportedLifecycle) {
 		t.Fatalf("lifecycle err = %v", err)
+	}
+}
+
+func TestEvaluateHTTP_RejectsEmptyAndUnknownMode(t *testing.T) {
+	if _, err := EvaluateHTTP(EvaluateOptions{ScannerVerdict: config.ActionAllow}); !errors.Is(err, ErrInvalidDecisionInput) {
+		t.Fatalf("empty mode err = %v, want ErrInvalidDecisionInput", err)
+	}
+	if _, err := EvaluateHTTP(EvaluateOptions{
+		Mode:           Mode("preview"),
+		ScannerVerdict: config.ActionAllow,
+	}); !errors.Is(err, ErrInvalidDecisionInput) {
+		t.Fatalf("unknown mode err = %v, want ErrInvalidDecisionInput", err)
+	}
+}
+
+func TestEvaluateHTTP_ScannerBlockBeatsContractAllow(t *testing.T) {
+	// The scanner-floor invariant: a signed contract that allows
+	// https://api.example.com/v1/chat must NOT resurrect a request the
+	// scanner blocked (DLP / SSRF / blocklist all flow through scanner).
+	// Without this, the contract becomes a signed bypass.
+	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+
+	decision, err := EvaluateHTTP(EvaluateOptions{
+		Mode:           ModeLive,
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		ScannerVerdict: config.ActionBlock,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP scanner-block-floor: %v", err)
+	}
+	if decision.Verdict != config.ActionBlock || decision.LiveVerdict != config.ActionBlock {
+		t.Fatalf("verdict = %q live = %q, want both block", decision.Verdict, decision.LiveVerdict)
+	}
+	if decision.WinningSource != WinningSourceScanner {
+		t.Fatalf("winning_source = %q, want scanner (floor)", decision.WinningSource)
+	}
+	if decision.Drift != nil {
+		t.Fatalf("drift should not fire when scanner is the winning source: %+v", decision.Drift)
+	}
+}
+
+func TestEvaluateHTTP_ShadowModeObservesContractBlockButLetsScannerVerdictStand(t *testing.T) {
+	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+
+	decision, err := EvaluateHTTP(EvaluateOptions{
+		Mode:           ModeShadow,
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		ScannerVerdict: config.ActionAllow,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP shadow: %v", err)
+	}
+	if decision.Verdict != config.ActionAllow {
+		t.Fatalf("verdict = %q, want scanner allow (shadow does not enforce)", decision.Verdict)
+	}
+	if decision.LiveVerdict != config.ActionBlock {
+		t.Fatalf("live_verdict = %q, want block (live mode would have denied)", decision.LiveVerdict)
+	}
+	if decision.WinningSource != WinningSourceScanner {
+		t.Fatalf("winning_source = %q, want scanner (shadow mode never lets contract decide Verdict)", decision.WinningSource)
+	}
+	if decision.Drift == nil || decision.Drift.Mode != ModeShadow {
+		t.Fatalf("drift = %+v, want shadow-mode positive drift", decision.Drift)
+	}
+	if decision.Signal != nil {
+		t.Fatalf("signal must not fire in shadow mode: %v", decision.Signal)
+	}
+}
+
+func TestEvaluateHTTP_CaptureModeNeverBlocksFromContract(t *testing.T) {
+	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+
+	decision, err := EvaluateHTTP(EvaluateOptions{
+		Mode:           ModeCapture,
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		ScannerVerdict: config.ActionAllow,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP capture: %v", err)
+	}
+	if decision.Verdict != config.ActionAllow {
+		t.Fatalf("verdict = %q, want scanner allow (capture never blocks)", decision.Verdict)
+	}
+	if decision.LiveVerdict != config.ActionBlock {
+		t.Fatalf("live_verdict = %q, want block (live would have denied)", decision.LiveVerdict)
+	}
+	if decision.Signal != nil {
+		t.Fatalf("signal must not fire in capture mode: %v", decision.Signal)
 	}
 }
 
@@ -334,7 +468,9 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 	actionRule.Selector["effective_action"] = "delegate"
 	resolved := resolvedContractWithRules(actionRule)
 	allowed, err := EvaluateHTTP(EvaluateOptions{
-		Resolved: &resolved,
+		Mode:           ModeLive,
+		Resolved:       &resolved,
+		ScannerVerdict: config.ActionAllow,
 		Request: HTTPRequest{
 			URL:             "https://api.example.com/v1/chat",
 			Method:          "POST",
@@ -349,7 +485,9 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 	}
 
 	denied, err := EvaluateHTTP(EvaluateOptions{
-		Resolved: &resolved,
+		Mode:           ModeLive,
+		Resolved:       &resolved,
+		ScannerVerdict: config.ActionAllow,
 		Request: HTTPRequest{
 			URL:             "https://api.example.com/v1/chat",
 			Method:          "POST",
@@ -366,6 +504,7 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 	badPathRule := enforceRule("r-badpath", "api.example.com", "/v1/chat", "POST")
 	resolved = resolvedContractWithRules(badPathRule)
 	blocked, err := EvaluateHTTP(EvaluateOptions{
+		Mode:           ModeLive,
 		Resolved:       &resolved,
 		Request:        HTTPRequest{URL: "https://api.example.com/v1%2Fchat", Method: "POST"},
 		ScannerVerdict: config.ActionWarn,

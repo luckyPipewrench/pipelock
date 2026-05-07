@@ -187,8 +187,11 @@ func effectiveMode(mode Mode) Mode {
 }
 
 // SignalForDrift returns the live adaptive signal implied by a drift event.
+// The signal fires only when DriftEvent.Mode is exactly ModeLive — empty mode,
+// ModeShadow, and ModeCapture all return nil so observation paths cannot push
+// adaptive enforcement.
 func SignalForDrift(event DriftEvent) *session.SignalType {
-	if event.Kind == DriftKindPositive && effectiveMode(event.Mode) == ModeLive && event.Action == config.ActionBlock {
+	if event.Mode == ModeLive && event.Kind == DriftKindPositive && event.Action == config.ActionBlock {
 		sig := session.SignalBlock
 		return &sig
 	}

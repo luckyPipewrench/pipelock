@@ -475,6 +475,84 @@ func TestLoader_Watch_RejectedReloadKeepsWatcherAlive(t *testing.T) {
 	}
 }
 
+func TestLoader_Watch_NilReceiverReturnsError(t *testing.T) {
+	t.Parallel()
+	var l *Loader
+	err := l.Watch(context.Background())
+	if err == nil {
+		t.Fatal("Watch on nil loader returned nil")
+	}
+	if !strings.Contains(err.Error(), "nil loader") {
+		t.Fatalf("err = %v, want nil-loader error", err)
+	}
+}
+
+func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
+	t.Parallel()
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+
+	metrics := &captureMetrics{}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), metrics)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	if metrics.outcome("accepted") != 1 {
+		t.Fatalf("initial accepted = %d, want 1", metrics.outcome("accepted"))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- loader.Watch(ctx) }()
+	t.Cleanup(func() {
+		close(stop)
+		cancel()
+		<-done
+	})
+	time.Sleep(80 * time.Millisecond)
+
+	// Producer that writes the same content every 40ms (well below the
+	// 100ms debounce window). Without the maxDebounceWait cap, the
+	// debounce timer would reset on every write and Reload would never
+	// fire. With the cap, Reload fires within roughly maxDebounceWait
+	// after the first write.
+	activePath := filepath.Clean(filepath.Join(storeDir, activeFilename))
+	raw, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active.json: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(40 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				_ = os.WriteFile(activePath, raw, 0o600)
+			}
+		}
+	}()
+
+	// Allow up to maxDebounceWait + a generous grace for OS scheduling
+	// jitter. The forced flush fires through the same code path as a
+	// normal debounce tick, so the resulting outcome is "same_hash"
+	// (content unchanged).
+	deadline := time.Now().Add(maxDebounceWait + 1500*time.Millisecond)
+	for time.Now().Before(deadline) {
+		if metrics.outcome("same_hash") >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if metrics.outcome("same_hash") < 1 {
+		t.Fatalf("debounce never flushed under sustained writes; metrics = %v", snapshotOutcomes(metrics))
+	}
+}
+
 func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
@@ -773,6 +851,7 @@ type captureMetrics struct {
 	mu             sync.Mutex
 	outcomes       map[string]int
 	lastGeneration uint64
+	watcherErrors  int
 }
 
 func (m *captureMetrics) IncReload(outcome string) {
@@ -788,6 +867,12 @@ func (m *captureMetrics) SetGeneration(generation uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lastGeneration = generation
+}
+
+func (m *captureMetrics) IncWatcherError() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.watcherErrors++
 }
 
 // outcome returns the count for a specific outcome label. Safe for

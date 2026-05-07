@@ -29,6 +29,16 @@ const activeFilename = "active.json"
 // existing config hot-reload window so operator expectations stay consistent.
 const reloadDebounceWindow = 100 * time.Millisecond
 
+// maxDebounceWait caps how long the debounce timer can be reset by a
+// continuous burst of events before Reload fires anyway. Without a cap,
+// a producer (operator script, runaway CI) writing active.json faster
+// than reloadDebounceWindow indefinitely starves the debounce timer:
+// every event resets the 100ms wait, and Reload never runs. Two seconds
+// is well above any legitimate atomic-promote burst (which completes in
+// milliseconds) and short enough that a runaway producer cannot delay a
+// real promote indefinitely.
+const maxDebounceWait = 2 * time.Second
+
 // LoaderOptions configures a Loader. Every field is required when the
 // caller intends the lock runtime to gate decisions; partial inputs are
 // rejected at NewLoader time so a half-wired loader never silently
@@ -66,17 +76,25 @@ type LoaderOptions struct {
 // and so production callers can wire whatever registry they keep.
 type LoaderMetrics interface {
 	// IncReload records the outcome of a single Reload attempt. Outcomes:
-	//   - "accepted"     — new manifest accepted; ActiveSet swapped
-	//   - "same_hash"    — reload returned the same manifest hash; no-op
-	//   - "no_active"    — store has no active.json; Current() stays nil
-	//   - "rejected"     — store rejected the manifest (signature, env,
+	//   - "accepted"     : new manifest accepted; ActiveSet swapped
+	//   - "same_hash"    : reload returned the same manifest hash; no-op
+	//   - "no_active"    : store has no active.json; Current() stays nil
+	//   - "rejected"     : store rejected the manifest (signature, env,
 	//                      generation downgrade, prior_manifest_hash CAS)
-	//   - "error"        — I/O or other transient error; previous
+	//   - "error"        : I/O or other transient error; previous
 	//                      ActiveSet preserved
 	IncReload(outcome string)
 	// SetGeneration records the currently-active manifest generation.
 	// Zero means no active manifest.
 	SetGeneration(generation uint64)
+	// IncWatcherError records a non-fatal error from the fsnotify
+	// channel. The most operationally significant case is an inotify
+	// queue overflow, which silently drops events. Watch responds to
+	// every watcher error by triggering a defensive Reload on the next
+	// debounce tick so a missed promote event still lands eventually,
+	// but the counter exists so operators can alert on the underlying
+	// kernel pressure.
+	IncWatcherError()
 }
 
 // noopMetrics is the default LoaderMetrics when the caller passes nil.
@@ -84,6 +102,7 @@ type noopMetrics struct{}
 
 func (noopMetrics) IncReload(string)     {}
 func (noopMetrics) SetGeneration(uint64) {}
+func (noopMetrics) IncWatcherError()     {}
 
 // Loader watches an active manifest file and serves the latest ActiveSet
 // to the proxy decision path.
@@ -278,8 +297,15 @@ func (l *Loader) Watch(ctx context.Context) error {
 
 	// debounce is reset on every relevant event. When it fires, a single
 	// Reload runs and debounce resets to nil so a quiescent loop does not
-	// keep selecting on a closed channel.
-	var debounce <-chan time.Time
+	// keep selecting on a closed channel. burstStart is the timestamp of
+	// the first event in a still-active burst; once time.Since(burstStart)
+	// exceeds maxDebounceWait, the next event triggers an immediate
+	// Reload instead of resetting the timer, capping the worst-case
+	// reload latency at roughly maxDebounceWait under sustained writes.
+	var (
+		debounce   <-chan time.Time
+		burstStart time.Time
+	)
 
 	for {
 		select {
@@ -305,12 +331,27 @@ func (l *Loader) Watch(ctx context.Context) error {
 			if filepath.Base(event.Name) != activeFilename {
 				continue
 			}
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
-				debounce = time.After(reloadDebounceWindow)
+			isReloadTrigger := event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename)
+			if !isReloadTrigger {
+				continue
 			}
+			now := time.Now()
+			if debounce == nil {
+				burstStart = now
+			} else if now.Sub(burstStart) >= maxDebounceWait {
+				// Sustained burst exceeded the cap. Force a Reload now
+				// instead of resetting the debounce window again, so a
+				// runaway producer cannot starve a real promote.
+				debounce = nil
+				_ = l.Reload()
+				burstStart = time.Time{}
+				continue
+			}
+			debounce = time.After(reloadDebounceWindow)
 
 		case <-debounce:
 			debounce = nil
+			burstStart = time.Time{}
 			// Reload's own metrics record outcome (accepted, same_hash,
 			// rejected, error). Error return is informational; a rejected
 			// reload is fail-soft and the watcher keeps running so the
@@ -321,9 +362,21 @@ func (l *Loader) Watch(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			// Non-fatal: keep watching. fsnotify surfaces transient errors
-			// that are not actionable from here (e.g., a brief inotify
-			// queue overflow). The next event resyncs.
+			// fsnotify surfaces non-fatal errors here. The most
+			// operationally significant case is an inotify kernel queue
+			// overflow (ErrEventOverflow): events that were in the queue
+			// at overflow time are dropped. If the dropped event was a
+			// real promote, the watcher would silently miss it without
+			// a defensive trigger. Schedule a Reload on the next
+			// debounce tick so the same-hash short-circuit absorbs the
+			// no-change case and a real change still lands. The metrics
+			// counter lets operators alert on the underlying kernel
+			// pressure separately from the reload outcome.
+			l.metrics.IncWatcherError()
+			if debounce == nil {
+				burstStart = time.Now()
+			}
+			debounce = time.After(reloadDebounceWindow)
 		}
 	}
 }

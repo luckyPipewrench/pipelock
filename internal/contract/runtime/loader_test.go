@@ -879,7 +879,9 @@ func waitFor(cond func() bool) bool {
 }
 
 // snapshotOutcomes returns a copy of the current outcome counters for
-// inclusion in test failure messages without holding the lock.
+// inclusion in test failure messages. Acquires m.mu so it is safe to
+// call from the test goroutine while the watcher goroutine fires its
+// own metric increments.
 func snapshotOutcomes(m *captureMetrics) map[string]int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

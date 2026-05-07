@@ -440,6 +440,29 @@ func TestEvaluateHTTP_ShadowModeObservesContractBlockButLetsScannerVerdictStand(
 	}
 }
 
+func TestEvaluateHTTP_ShadowModeContractAllowDoesNotEmitObservedOnlyReason(t *testing.T) {
+	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+
+	decision, err := EvaluateHTTP(EvaluateOptions{
+		Mode:           ModeShadow,
+		Resolved:       &resolved,
+		Request:        HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		ScannerVerdict: config.ActionAllow,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateHTTP shadow contract allow: %v", err)
+	}
+	if decision.Verdict != config.ActionAllow || decision.LiveVerdict != config.ActionAllow {
+		t.Fatalf("verdict = %q live = %q, want allow/allow", decision.Verdict, decision.LiveVerdict)
+	}
+	if decision.Reason != "" {
+		t.Fatalf("reason = %q, want empty when live mode would also allow", decision.Reason)
+	}
+	if decision.Drift != nil {
+		t.Fatalf("drift = %+v, want nil for contract allow", decision.Drift)
+	}
+}
+
 func TestEvaluateHTTP_CaptureModeNeverBlocksFromContract(t *testing.T) {
 	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
 

@@ -339,7 +339,7 @@ func EvaluateHTTP(opts EvaluateOptions) (Decision, error) {
 			PolicySources: sources,
 			WinningSource: WinningSourceKillSwitch,
 			Suppressed:    true,
-			Reason:        "kill_switch_active",
+			Reason:        decisionReasonKillSwitchActive,
 		}, nil
 	}
 
@@ -362,7 +362,7 @@ func EvaluateHTTP(opts EvaluateOptions) (Decision, error) {
 			WinningSource: WinningSourceScanner,
 		}
 		if scannerMissing {
-			decision.Reason = "scanner_decision_missing"
+			decision.Reason = decisionReasonScannerDecisionMissing
 		}
 		return decision, nil
 	}
@@ -422,11 +422,11 @@ func evaluateContractLive(opts EvaluateOptions, sources []string, scannerVerdict
 		hostHasEnforceRule = true
 		hostRuleIDs = appendRuleID(hostRuleIDs, seenRuleIDs, rule.RuleID)
 		if !usesDefaultHTTPPort(u) {
-			return contractBlockDecision(opts, sources, rule.RuleID, "contract_non_default_port"), nil
+			return contractBlockDecision(opts, sources, rule.RuleID, decisionReasonContractNonDefaultPort), nil
 		}
 		matches, canCompare, invalidPath := ruleMatchesHTTP(rule, u, opts.Request)
 		if invalidPath {
-			return contractBlockDecision(opts, sources, rule.RuleID, "contract_invalid_path"), nil
+			return contractBlockDecision(opts, sources, rule.RuleID, decisionReasonContractInvalidPath), nil
 		}
 		if !canCompare {
 			continue
@@ -459,10 +459,10 @@ func evaluateContractLive(opts EvaluateOptions, sources []string, scannerVerdict
 		}, nil
 	}
 
-	reason := "contract_default_deny"
+	reason := decisionReasonContractDefaultDeny
 	ruleID := ""
 	if hostHasEnforceRule && hasComparableEvidence {
-		reason = "contract_enforce_default"
+		reason = decisionReasonContractEnforceDefault
 		ruleID = firstString(hostRuleIDs)
 	}
 	return contractBlockDecision(opts, sources, ruleID, reason), nil
@@ -487,8 +487,8 @@ func applyModeGate(live Decision, mode Mode, scannerVerdict string, sources []st
 		RuleID:        live.RuleID,
 		Drift:         live.Drift,
 	}
-	if live.WinningSource == WinningSourceContract {
-		out.Reason = "contract_observed_only"
+	if live.WinningSource == WinningSourceContract && live.Verdict != scannerVerdict {
+		out.Reason = decisionReasonContractObservedOnly
 	}
 	return out
 }

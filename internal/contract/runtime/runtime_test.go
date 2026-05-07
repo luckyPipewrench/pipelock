@@ -581,6 +581,33 @@ func TestEvaluateDrift_NegativeRequiresThreeClausesAndIsAdaptiveNeutral(t *testi
 	}
 }
 
+func TestEvaluateDrift_RejectsEmptyAndUnknownMode(t *testing.T) {
+	// An observation without an explicit mode previously fell through
+	// effectiveMode("") → ModeLive, which then caused SignalForDrift to
+	// emit session.SignalBlock and push adaptive enforcement. Empty mode
+	// must now fail-closed so the caller is forced to be explicit.
+	_, err := EvaluateDrift(DriftObservation{
+		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		ContractHash:       testContractHash,
+		OpportunityHealthy: true,
+		UnexpectedObserved: true,
+	})
+	if !errors.Is(err, ErrInvalidDecisionInput) {
+		t.Fatalf("empty mode err = %v, want ErrInvalidDecisionInput", err)
+	}
+
+	_, err = EvaluateDrift(DriftObservation{
+		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		ContractHash:       testContractHash,
+		Mode:               Mode("preview"),
+		OpportunityHealthy: true,
+		UnexpectedObserved: true,
+	})
+	if !errors.Is(err, ErrInvalidDecisionInput) {
+		t.Fatalf("unknown mode err = %v, want ErrInvalidDecisionInput", err)
+	}
+}
+
 func TestEvaluateDrift_PositiveSignalOnlyInLiveMode(t *testing.T) {
 	live, err := EvaluateDrift(DriftObservation{
 		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
@@ -627,17 +654,19 @@ func TestEvaluateDrift_SuppressedInvalidAndInactiveBranches(t *testing.T) {
 	_, err = EvaluateDrift(DriftObservation{
 		Rule:         contract.Rule{RuleID: "r1", LifecycleState: "bad"},
 		ContractHash: testContractHash,
+		Mode:         ModeLive,
 	})
 	if !errors.Is(err, ErrUnsupportedLifecycle) {
 		t.Fatalf("bad lifecycle err = %v", err)
 	}
-	_, err = EvaluateDrift(DriftObservation{Rule: captureRule("r1")})
+	_, err = EvaluateDrift(DriftObservation{Rule: captureRule("r1"), Mode: ModeLive})
 	if !errors.Is(err, ErrInvalidDecisionInput) {
 		t.Fatalf("missing contract hash err = %v", err)
 	}
 	_, err = EvaluateDrift(DriftObservation{
 		Rule:         contract.Rule{LifecycleState: LifecycleCaptureOnly},
 		ContractHash: testContractHash,
+		Mode:         ModeLive,
 	})
 	if !errors.Is(err, ErrInvalidDecisionInput) {
 		t.Fatalf("missing rule id err = %v", err)
@@ -647,6 +676,7 @@ func TestEvaluateDrift_SuppressedInvalidAndInactiveBranches(t *testing.T) {
 		result, err := EvaluateDrift(DriftObservation{
 			Rule:         contract.Rule{RuleID: "r1", LifecycleState: state},
 			ContractHash: testContractHash,
+			Mode:         ModeLive,
 		})
 		if err != nil {
 			t.Fatalf("EvaluateDrift %s: %v", state, err)
@@ -663,6 +693,7 @@ func TestEvaluateDrift_UsesRuleWindowFloor(t *testing.T) {
 	tooEarly, err := EvaluateDrift(DriftObservation{
 		Rule:                rule,
 		ContractHash:        testContractHash,
+		Mode:                ModeLive,
 		OpportunityHealthy:  true,
 		OpportunityObserved: true,
 		MissedWindows:       3,
@@ -676,6 +707,7 @@ func TestEvaluateDrift_UsesRuleWindowFloor(t *testing.T) {
 	fired, err := EvaluateDrift(DriftObservation{
 		Rule:                rule,
 		ContractHash:        testContractHash,
+		Mode:                ModeLive,
 		OpportunityHealthy:  true,
 		OpportunityObserved: true,
 		MissedWindows:       4,

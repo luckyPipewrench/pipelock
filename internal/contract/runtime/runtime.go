@@ -70,8 +70,10 @@ var (
 	// ErrNoResolvedContract is returned when a caller asks for evaluation
 	// without an active contract pin.
 	ErrNoResolvedContract = errors.New("contract runtime: no resolved contract")
-	// ErrUnsupportedLifecycle is returned for non-enumerated rule states.
-	ErrUnsupportedLifecycle = errors.New("contract runtime: unsupported lifecycle state")
+	// ErrUnsupportedLifecycle aliases the contract package's lifecycle
+	// error so a single sentinel works for validation-time and
+	// evaluation-time rejection.
+	ErrUnsupportedLifecycle = contract.ErrUnsupportedLifecycle
 	// ErrInvalidDecisionInput is returned for malformed request/evaluation input.
 	ErrInvalidDecisionInput = errors.New("contract runtime: invalid decision input")
 	// ErrInvalidSelector is returned when an active-set selector cannot be used safely.

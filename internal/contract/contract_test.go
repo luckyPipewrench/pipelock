@@ -244,6 +244,78 @@ func TestContract_Validate_RejectsMissingRuleKind(t *testing.T) {
 	}
 }
 
+func TestContract_Validate_RejectsUnknownLifecycleState(t *testing.T) {
+	t.Parallel()
+	// A lifecycle string that isn't in the enumerated set must be rejected at
+	// validation time. Without this, a poisoned or typo'd lifecycle ("enforce ",
+	// "enabled") slips past the rule-kind gate (which only fires when the value
+	// is exactly LifecycleEnforce) and gets silently treated as inert.
+	cases := []string{"enforce ", "Enforce", "enabled", "active", " "}
+	for _, state := range cases {
+		state := state
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			c := Contract{
+				SchemaVersion:    SchemaVersionContract,
+				ContractKind:     ContractKind,
+				DataClassRoot:    string(DataClassInternal),
+				FieldDataClasses: map[string]string{},
+				Rules: []Rule{{
+					RuleID:               "r-1",
+					RuleKind:             RuleKindHTTPDestination,
+					LifecycleState:       state,
+					RequiredCaptureGrade: CaptureGradeFull,
+					ObservedCaptureGrade: CaptureGradeFull,
+					Confidence:           "stable",
+					WilsonLower:          "0.99",
+					Observation:          map[string]any{},
+					Selector:             map[string]any{},
+					Rationale:            map[string]any{},
+					RecurringSupport:     map[string]any{},
+					OpportunityHealth:    map[string]any{},
+				}},
+			}
+			err := c.Validate()
+			if !errors.Is(err, ErrUnsupportedLifecycle) {
+				t.Fatalf("lifecycle %q: got %v, want ErrUnsupportedLifecycle", state, err)
+			}
+		})
+	}
+}
+
+func TestContract_Validate_AcceptsAllEnumeratedLifecycles(t *testing.T) {
+	t.Parallel()
+	for _, state := range []string{LifecycleProposed, LifecycleCaptureOnly, LifecycleEnforce, LifecycleExpired, LifecycleDemoted} {
+		state := state
+		t.Run(state, func(t *testing.T) {
+			t.Parallel()
+			c := Contract{
+				SchemaVersion:    SchemaVersionContract,
+				ContractKind:     ContractKind,
+				DataClassRoot:    string(DataClassInternal),
+				FieldDataClasses: map[string]string{},
+				Rules: []Rule{{
+					RuleID:               "r-1",
+					RuleKind:             RuleKindHTTPDestination,
+					LifecycleState:       state,
+					RequiredCaptureGrade: CaptureGradeFull,
+					ObservedCaptureGrade: CaptureGradeFull,
+					Confidence:           "stable",
+					WilsonLower:          "0.99",
+					Observation:          map[string]any{},
+					Selector:             map[string]any{},
+					Rationale:            map[string]any{},
+					RecurringSupport:     map[string]any{},
+					OpportunityHealth:    map[string]any{},
+				}},
+			}
+			if err := c.Validate(); err != nil {
+				t.Fatalf("lifecycle %q: got %v, want nil", state, err)
+			}
+		})
+	}
+}
+
 func TestContract_Validate_RejectsEnforceWithUnenforceableRuleKind(t *testing.T) {
 	t.Parallel()
 	c := Contract{

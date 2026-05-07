@@ -50,6 +50,14 @@ var ErrCaptureGrade = errors.New("contract: invalid capture grade")
 // kinds; only enforced rules are gated.
 var ErrUnenforceableRuleKind = errors.New("contract: rule_kind not enforceable in this schema version")
 
+// ErrUnsupportedLifecycle rejects rules whose lifecycle_state is not in the
+// enumerated set. Without this gate a typo (e.g. "enforce ", "enabled")
+// silently falls through every state-keyed branch — the rule-kind validator
+// only runs on the literal LifecycleEnforce string, so a poisoned lifecycle
+// can carry a rule that was meant to be enforced and turn it into runtime
+// dead code.
+var ErrUnsupportedLifecycle = errors.New("contract: unsupported lifecycle_state")
+
 // EnforceableRuleKinds returns the rule kinds the v1 runtime can evaluate
 // for live enforcement. The validator uses this to gate
 // LifecycleEnforce rules so a contract cannot ship enforced rules the
@@ -66,6 +74,16 @@ func ruleKindEnforceable(kind string) bool {
 		}
 	}
 	return false
+}
+
+// validLifecycle reports whether state is one of the enumerated values.
+func validLifecycle(state string) bool {
+	switch state {
+	case LifecycleProposed, LifecycleCaptureOnly, LifecycleEnforce, LifecycleExpired, LifecycleDemoted:
+		return true
+	default:
+		return false
+	}
 }
 
 // Capture-grade values describe how much scanner evidence backed a rule.
@@ -196,6 +214,9 @@ func (c Contract) Validate() error {
 	if !ok {
 		return fmt.Errorf("contract body is not a map after marshal+parse")
 	}
+	if err := validateRuleLifecycles(c.Rules); err != nil {
+		return err
+	}
 	if err := validateRuleKinds(c.Rules); err != nil {
 		return err
 	}
@@ -207,6 +228,20 @@ func (c Contract) Validate() error {
 		fcls[k] = v
 	}
 	return ValidateDataClassCoverage(bodyMap, fcls)
+}
+
+func validateRuleLifecycles(rules []Rule) error {
+	for i, rule := range rules {
+		if !validLifecycle(rule.LifecycleState) {
+			return fmt.Errorf(
+				"%w: rules[%d] lifecycle_state %q",
+				ErrUnsupportedLifecycle,
+				i,
+				rule.LifecycleState,
+			)
+		}
+	}
+	return nil
 }
 
 func validateRuleKinds(rules []Rule) error {
@@ -245,7 +280,7 @@ func validateRuleCaptureGrades(rules []Rule) error {
 		if !validCaptureGrade(observed) {
 			return fmt.Errorf("%w: rules[%d] invalid observed_capture_grade %q", ErrCaptureGrade, i, observed)
 		}
-		if rule.LifecycleState == "enforce" && compareCaptureGrade(observed, required) < 0 {
+		if rule.LifecycleState == LifecycleEnforce && compareCaptureGrade(observed, required) < 0 {
 			return fmt.Errorf(
 				"%w: rules[%d] enforce requires %s evidence, observed %s",
 				ErrCaptureGrade,
@@ -259,7 +294,7 @@ func validateRuleCaptureGrades(rules []Rule) error {
 }
 
 func effectiveCaptureGrades(rule Rule) (string, string) {
-	if rule.LifecycleState == "capture_only" && rule.RequiredCaptureGrade == "" && rule.ObservedCaptureGrade == "" {
+	if rule.LifecycleState == LifecycleCaptureOnly && rule.RequiredCaptureGrade == "" && rule.ObservedCaptureGrade == "" {
 		return CaptureGradeFull, CaptureGradeFull
 	}
 	return rule.RequiredCaptureGrade, rule.ObservedCaptureGrade

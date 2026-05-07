@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,10 +12,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/store"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+// activeFilename is the active-manifest filename inside StoreDir. It mirrors
+// the unexported constant in internal/contract/store; redeclared here so the
+// watcher can filter directory events without importing private store state.
+const activeFilename = "active.json"
+
+// reloadDebounceWindow coalesces an fsnotify burst (CREATE + RENAME + WRITE
+// emitted on a single atomic active.json swap) into one Reload. Matches the
+// existing config hot-reload window so operator expectations stay consistent.
+const reloadDebounceWindow = 100 * time.Millisecond
 
 // LoaderOptions configures a Loader. Every field is required when the
 // caller intends the lock runtime to gate decisions; partial inputs are
@@ -230,6 +243,91 @@ func (l *Loader) Reload() error {
 	return nil
 }
 
+// Watch runs an fsnotify watcher on the store directory until ctx is
+// cancelled. CREATE, RENAME, and WRITE events on active.json trigger a
+// debounced Reload (single window matches the config hot-reload window
+// so an atomic active.json swap that fires multiple events coalesces to
+// one Reload call).
+//
+// Watch is fail-soft for reload errors: a rejected reload (bad signature,
+// generation downgrade, env mismatch, prior-manifest CAS) leaves the
+// previous ActiveSet in place and the watcher keeps running so the next
+// promote attempt succeeds.
+//
+// Watch returns nil on graceful ctx cancel. It returns a non-nil error
+// only when the watched directory is removed (the loader cannot recover
+// from that without re-construction) or when fsnotify itself fails to
+// initialize.
+//
+// Caller is responsible for goroutine lifecycle. Watch blocks until
+// return; spawn it in a goroutine if the caller wants background
+// behaviour.
+func (l *Loader) Watch(ctx context.Context) error {
+	if l == nil {
+		return errors.New("contract runtime: nil loader")
+	}
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("contract runtime: create file watcher: %w", err)
+	}
+	defer func() { _ = watcher.Close() }()
+
+	if err := watcher.Add(l.storeDir); err != nil {
+		return fmt.Errorf("contract runtime: watch %s: %w", l.storeDir, err)
+	}
+
+	// debounce is reset on every relevant event. When it fires, a single
+	// Reload runs and debounce resets to nil so a quiescent loop does not
+	// keep selecting on a closed channel.
+	var debounce <-chan time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+			// Watched directory removed out from under us. fsnotify keeps
+			// the inotify slot allocated even after the inode is gone, but
+			// the loader has no path forward without operator intervention
+			// so we surface this to the caller.
+			if event.Name == l.storeDir && (event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename)) {
+				return fmt.Errorf("contract runtime: store directory removed: %s", l.storeDir)
+			}
+			// Filter to active.json events. The store atomically replaces
+			// active.json on every accepted promote, which fires CREATE +
+			// RENAME on the new path and (sometimes) REMOVE on the old.
+			// Treat all three as a reload trigger; debounce coalesces the
+			// burst.
+			if filepath.Base(event.Name) != activeFilename {
+				continue
+			}
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename) {
+				debounce = time.After(reloadDebounceWindow)
+			}
+
+		case <-debounce:
+			debounce = nil
+			// Reload's own metrics record outcome (accepted, same_hash,
+			// rejected, error). Error return is informational; a rejected
+			// reload is fail-soft and the watcher keeps running so the
+			// next event is another opportunity.
+			_ = l.Reload()
+
+		case _, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			// Non-fatal: keep watching. fsnotify surfaces transient errors
+			// that are not actionable from here (e.g., a brief inotify
+			// queue overflow). The next event resyncs.
+		}
+	}
+}
+
 // rejectionOutcome maps a store reload error to a metrics-friendly
 // outcome label. Validation errors collapse to "rejected"; transient
 // I/O collapses to "error" so an operator can distinguish a botched
@@ -254,7 +352,7 @@ func rejectionOutcome(err error) string {
 }
 
 func (l *Loader) validateActiveReadOnly() (store.State, error) {
-	activePath := filepath.Clean(filepath.Join(l.storeDir, "active.json"))
+	activePath := filepath.Clean(filepath.Join(l.storeDir, activeFilename))
 	raw, err := os.ReadFile(activePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

@@ -1022,6 +1022,7 @@ func (s *Server) Start(ctx context.Context) error {
 		rpHandler.SetEnvelopeEmitter(s.proxy.EnvelopeEmitterPtr())
 		rpHandler.SetEnvelopeVerifier(s.proxy.EnvelopeVerifierPtr())
 		rpHandler.SetReceiptEmitter(s.proxy.ReceiptEmitterPtr())
+		rpHandler.SetContractLoader(s.proxy.ContractLoaderPtr())
 		rpHandler.SetReloadLock(s.proxy.ReloadLock())
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())
 

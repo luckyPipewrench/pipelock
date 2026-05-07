@@ -1377,6 +1377,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
+	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
 	outReq := r.Clone(ctx)
 	outReq.RequestURI = "" // required for http.Client
@@ -1473,7 +1474,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Pipelock-Hint", "Request was redirected to a different origin. Cross-origin redirects are blocked to prevent open redirect attacks.")
 			}
 			writeBlockedError(w,
-				blockInfoFor(blockreason.RedirectScanDenied, blockedErr.layer),
+				redirectBlockedInfo(blockedErr),
 				"blocked: "+blockedErr.reason, http.StatusForbidden)
 			return
 		}

@@ -461,6 +461,15 @@ func Defaults() *Config {
 			Enabled:         true,
 			IntervalSeconds: 2,
 		},
+		LearnLock: LearnLock{
+			// Default off. The lock runtime is opt-in; if Enabled is
+			// flipped on without the rest of the fields the validator
+			// rejects the config at startup so a half-wired lock can
+			// never silently downgrade to scanner-only.
+			Enabled:           false,
+			Mode:              LockModeShadow, // safe-by-default; live requires explicit opt-in
+			MinimumSignatures: 1,
+		},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source
 	// selector can distinguish them from user-supplied patterns. Set at

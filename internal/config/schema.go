@@ -250,6 +250,7 @@ type Config struct {
 	MediationEnvelope        MediationEnvelope       `yaml:"mediation_envelope"`
 	Redaction                redact.Config           `yaml:"redaction"`
 	Learn                    Learn                   `yaml:"learn"`
+	LearnLock                LearnLock               `yaml:"learn_lock" json:"-"` // operational lock-runtime config, excluded from canonical policy hash
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
 	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
 	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
@@ -1368,4 +1369,92 @@ type LearnInferenceNormalization struct {
 	// requires operator acknowledgement). Strict greater-than: a
 	// tail at exactly the threshold does not block.
 	TailPromotionBlockPct float64 `yaml:"tail_promotion_block_pct"`
+}
+
+// Lock mode constants control whether a promoted contract gates live
+// proxy decisions. Live enforces, shadow only emits decisions/drift,
+// capture never blocks. The default for an enabled lock is "shadow";
+// operators must opt explicitly into "live".
+const (
+	LockModeLive    = "live"
+	LockModeShadow  = "shadow"
+	LockModeCapture = "capture"
+)
+
+// LearnLock governs the runtime that consumes a promoted active manifest
+// and gates proxy decisions on it. The block is operational (excluded
+// from the canonical policy hash) so two deployments that ratify the
+// same contract but enforce in different modes do not produce diverging
+// receipts. Settings are immutable across hot reload — the loader's
+// fsnotify watcher runs against StoreDir, so changes to StoreDir or
+// PinnedRootFingerprint require a process restart.
+//
+// When Enabled is false, the proxy never resolves an active contract
+// and behaves identically to v2.3 (scanner-only). When Enabled is true,
+// every required field below must be set; partial config is rejected at
+// startup so a half-wired lock never silently downgrades to scanner-only.
+type LearnLock struct {
+	// Enabled toggles the lock runtime. Default false. Operators opt in
+	// explicitly, mirroring the cautious-by-default stance for
+	// security-sensitive features that observe agent behaviour.
+	Enabled bool `yaml:"enabled"`
+
+	// Mode controls the gate semantics.
+	//   - "live"    — promoted contract gates proxy decisions
+	//   - "shadow"  — contract evaluates and emits drift but never blocks
+	//   - "capture" — contract path is silent (no signal, no receipts)
+	// Empty Mode falls through to "shadow" so a misconfigured config
+	// fails toward observation, not enforcement. Operators who want
+	// live enforcement must say so.
+	Mode string `yaml:"mode"`
+
+	// StoreDir points at the contract store rooted at active.json + history/.
+	// Required when Enabled is true. Must be an absolute path.
+	StoreDir string `yaml:"store_dir"`
+
+	// RosterPath is the absolute path to the deployment-level roster
+	// JSON file that names which signing keys are authorised for which
+	// purposes. Required when Enabled is true. The roster's root
+	// fingerprint must match PinnedRootFingerprint.
+	RosterPath string `yaml:"roster_path"`
+
+	// Environment binds the lock runtime to a specific deployment
+	// environment string (e.g., "production", "staging"). The store
+	// rejects active manifests whose env field does not match, so a
+	// production cluster cannot accidentally enforce a staging
+	// contract. Required when Enabled is true.
+	Environment string `yaml:"environment"`
+
+	// PinnedRootFingerprint is the hex-encoded sha256 of the trust
+	// roster root key. Active manifests must chain to a roster signed
+	// by this root; mismatch fails-closed at load. Required when
+	// Enabled is true; must be 64 lowercase hex characters.
+	PinnedRootFingerprint string `yaml:"pinned_root_fingerprint"`
+
+	// MinimumSignatures is the minimum number of valid manifest
+	// signatures required for the loader to accept an active.json.
+	// Defaults to 1 when 0 or negative. Higher values require dual
+	// control on promotes.
+	MinimumSignatures int `yaml:"minimum_signatures"`
+}
+
+// EffectiveMode returns Mode resolved through the safety default.
+// Empty/unknown modes resolve to "shadow" so a misconfigured lock
+// observes rather than enforces.
+func (l LearnLock) EffectiveMode() string {
+	switch l.Mode {
+	case LockModeLive, LockModeShadow, LockModeCapture:
+		return l.Mode
+	default:
+		return LockModeShadow
+	}
+}
+
+// EffectiveMinimumSignatures returns MinimumSignatures resolved through
+// the safety default. Zero or negative values resolve to 1.
+func (l LearnLock) EffectiveMinimumSignatures() int {
+	if l.MinimumSignatures <= 0 {
+		return 1
+	}
+	return l.MinimumSignatures
 }

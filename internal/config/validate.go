@@ -222,7 +222,74 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateLearn(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateLearnLock(); err != nil {
+		return warnings, err
+	}
 	return warnings, nil
+}
+
+// validateLearnLock enforces the schema for the lock runtime. When
+// learn_lock.enabled is true every other field is required; partial
+// configs are rejected at startup so a half-wired lock cannot silently
+// degrade to scanner-only and leave a customer thinking they are
+// enforcing a contract when they are not.
+func (c *Config) validateLearnLock() error {
+	l := c.LearnLock
+	if !l.Enabled {
+		return nil
+	}
+	if l.StoreDir == "" {
+		return fmt.Errorf("learn_lock.store_dir required when learn_lock.enabled is true")
+	}
+	if !filepath.IsAbs(l.StoreDir) {
+		return fmt.Errorf("learn_lock.store_dir must be an absolute path, got %q", l.StoreDir)
+	}
+	if l.RosterPath == "" {
+		return fmt.Errorf("learn_lock.roster_path required when learn_lock.enabled is true")
+	}
+	if !filepath.IsAbs(l.RosterPath) {
+		return fmt.Errorf("learn_lock.roster_path must be an absolute path, got %q", l.RosterPath)
+	}
+	if l.Environment == "" {
+		return fmt.Errorf("learn_lock.environment required when learn_lock.enabled is true")
+	}
+	if err := validateLockMode(l.Mode); err != nil {
+		return err
+	}
+	if err := validateLockRootFingerprint(l.PinnedRootFingerprint); err != nil {
+		return err
+	}
+	if l.MinimumSignatures < 0 {
+		return fmt.Errorf("learn_lock.minimum_signatures must be >= 0, got %d", l.MinimumSignatures)
+	}
+	return nil
+}
+
+func validateLockMode(mode string) error {
+	switch mode {
+	case "", LockModeLive, LockModeShadow, LockModeCapture:
+		return nil
+	default:
+		return fmt.Errorf("learn_lock.mode must be one of live/shadow/capture, got %q", mode)
+	}
+}
+
+func validateLockRootFingerprint(fp string) error {
+	if fp == "" {
+		return fmt.Errorf("learn_lock.pinned_root_fingerprint required when learn_lock.enabled is true")
+	}
+	if len(fp) != 64 {
+		return fmt.Errorf("learn_lock.pinned_root_fingerprint must be 64 hex characters (sha256), got %d", len(fp))
+	}
+	for _, r := range fp {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		default:
+			return fmt.Errorf("learn_lock.pinned_root_fingerprint must be lowercase hex sha256, found %q", r)
+		}
+	}
+	return nil
 }
 
 // validateRedaction delegates to the redact package's own schema

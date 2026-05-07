@@ -755,6 +755,71 @@ func TestRejectionOutcomeMapsErrorClasses(t *testing.T) {
 	}
 }
 
+func TestNewLoader_FailsOnMalformedActiveManifest(t *testing.T) {
+	t.Parallel()
+	// NewLoader is fail-closed: a present-but-invalid active.json must
+	// surface an error so the supervisor refuses to start with a broken
+	// lock. The store rejects the parse before signature/CAS gates even
+	// fire, so this exercises the initial-reload error path that maps to
+	// the wrapped initial reload error.
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	if err := os.MkdirAll(storeDir, 0o750); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(storeDir, activeFilename), []byte("{not valid json"), 0o600); err != nil {
+		t.Fatalf("write malformed active.json: %v", err)
+	}
+	if _, err := NewLoader(loaderOptions(fixture, storeDir, testLoaderEnv()), nil); err == nil {
+		t.Fatal("NewLoader accepted a malformed active.json")
+	} else if !strings.Contains(err.Error(), "initial reload") {
+		t.Fatalf("err = %v, want initial-reload wrap", err)
+	}
+}
+
+func TestLoader_Watch_FailsOnMissingStoreDir(t *testing.T) {
+	t.Parallel()
+	// Watch wires fsnotify.Add against the store directory at startup. A
+	// missing directory at watch-setup time surfaces an error to the
+	// caller so the supervisor knows the lock runtime is unhealthy
+	// instead of silently looping.
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", testLoaderEnv())
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, testLoaderEnv()), nil)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	// Drop the store directory before Watch starts so fsnotify.Add fails.
+	if err := os.RemoveAll(storeDir); err != nil {
+		t.Fatalf("remove store dir: %v", err)
+	}
+	err = loader.Watch(context.Background())
+	if err == nil {
+		t.Fatal("Watch returned nil on missing store directory")
+	}
+	if !strings.Contains(err.Error(), "watch ") {
+		t.Fatalf("err = %v, want watcher.Add wrap", err)
+	}
+}
+
+func TestRecoverAcceptedActiveRejectsNilPrev(t *testing.T) {
+	t.Parallel()
+	// Defensive guard: a caller threading nil prev into recovery must
+	// not crash. Reload always passes a non-nil prev when invoking
+	// recovery, so this test exists to keep the guard wired.
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", testLoaderEnv())
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, testLoaderEnv()), nil)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	if _, err := loader.recoverAcceptedActive(contractstore.State{}, nil); err == nil {
+		t.Fatal("recoverAcceptedActive accepted nil prev")
+	}
+}
+
 func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)

@@ -704,11 +704,22 @@ func appendPolicySource(values []string, source string) []string {
 
 // ProxyDecisionPayload builds the typed EvidenceReceipt v2 proxy_decision
 // payload from a runtime decision.
+//
+// LiveVerdict is omitted from the wire payload when it equals Verdict (the
+// ModeLive case) so receipts stay compact for the common path. ModeShadow
+// and ModeCapture surface the divergence by setting LiveVerdict to what
+// the contract path would have enforced under ModeLive while Verdict
+// reflects the scanner-floor result the proxy actually applied.
 func ProxyDecisionPayload(decision Decision, actionType, target, transport string) contractreceipt.PayloadProxyDecisionStruct {
+	live := decision.LiveVerdict
+	if live == decision.Verdict {
+		live = ""
+	}
 	return contractreceipt.PayloadProxyDecisionStruct{
 		ActionType:    actionType,
 		Target:        target,
 		Verdict:       decision.Verdict,
+		LiveVerdict:   live,
 		Transport:     transport,
 		PolicySources: append([]string(nil), decision.PolicySources...),
 		WinningSource: decision.WinningSource,

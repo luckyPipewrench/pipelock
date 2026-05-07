@@ -55,69 +55,22 @@ func reasonFromScanner(label string) blockreason.Reason {
 	}
 }
 
-// severityFromReason returns the canonical severity for a block-reason code.
-// Severity is fixed per reason per docs/specs/block-reason-header.md so call
-// sites do not need to track it manually.
+// severityFromReason delegates to the canonical
+// blockreason.SeverityFor table. The local wrapper used to maintain its own
+// switch, which silently drifted from the canonical mapping (BlockReasonOverflow,
+// for example, was returning SeverityCritical here while the canonical
+// helper returned SeverityWarn). Delegating keeps blockheaders.go correct
+// against any future vocabulary addition without a per-call-site update.
 func severityFromReason(r blockreason.Reason) blockreason.Severity {
-	switch r {
-	// info: malformed client request, feature gate.
-	case blockreason.NotEnabled, blockreason.BadRequest:
-		return blockreason.SeverityInfo
-	// warn: scanner ceilings, parser fails, transient unavailability.
-	case blockreason.SchemeBlocked,
-		blockreason.PathEntropy,
-		blockreason.SubdomainEntropy,
-		blockreason.URLLength,
-		blockreason.RateLimit,
-		blockreason.DataBudget,
-		blockreason.MediaPolicy,
-		blockreason.ParseError,
-		blockreason.Timeout,
-		blockreason.PatternUnavailable,
-		blockreason.CompressedResponse,
-		blockreason.BrowserShieldOversize:
-		return blockreason.SeverityWarn
-	// critical: real security events.
-	default:
-		return blockreason.SeverityCritical
-	}
+	return blockreason.SeverityFor(r)
 }
 
-// retryFromReason returns the canonical retry hint for a block-reason code.
-// See docs/specs/block-reason-header.md: none = permanent, transient =
-// time-bound, policy = needs operator policy change.
+// retryFromReason delegates to the canonical blockreason.RetryFor table for
+// the same reason as severityFromReason: drift between local and canonical
+// mappings was a latent bug class. The canonical helper is the single source
+// of truth used by NewForReason, the spec doc, and the matrix tests.
 func retryFromReason(r blockreason.Reason) blockreason.Retry {
-	switch r {
-	// transient: time-bound conditions.
-	case blockreason.SSRFDNSRebind,
-		blockreason.RateLimit,
-		blockreason.AirlockActive,
-		blockreason.KillSwitchActive,
-		blockreason.EscalationLevel,
-		blockreason.RedactionFailure,
-		blockreason.Timeout,
-		blockreason.PatternUnavailable,
-		blockreason.SessionAnomaly,
-		blockreason.OutboundEnvelopeFailed:
-		return blockreason.RetryTransient
-	// policy: only retry after operator changes pipelock policy.
-	case blockreason.DomainBlocklist,
-		blockreason.PathEntropy,
-		blockreason.SubdomainEntropy,
-		blockreason.URLLength,
-		blockreason.DataBudget,
-		blockreason.MediaPolicy,
-		blockreason.ToolPolicyDeny,
-		blockreason.SessionBinding,
-		blockreason.AuthorityMismatch,
-		blockreason.NotEnabled,
-		blockreason.CompressedResponse,
-		blockreason.BrowserShieldOversize:
-		return blockreason.RetryPolicy
-	// none: permanent for the request as-is.
-	default:
-		return blockreason.RetryNone
-	}
+	return blockreason.RetryFor(r)
 }
 
 // blockInfo builds a complete blockreason.Info from a scanner label.

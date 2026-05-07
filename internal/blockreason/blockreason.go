@@ -100,6 +100,19 @@ const (
 	NotEnabled         Reason = "not_enabled"
 	BadRequest         Reason = "bad_request"
 
+	// Contract / learn-and-lock layer. The first four are real blocks
+	// produced by the runtime evaluator under an active contract;
+	// ContractObservedOnly is an info-tier annotation surfaced in
+	// shadow / capture modes when the live verdict would have blocked but
+	// the configured mode does not enforce. ContractObservedOnly never
+	// appears on a 4xx response surface, so it is exempt from the
+	// production-emit-site matrix gate.
+	ContractDefaultDeny    Reason = "contract_default_deny"
+	ContractEnforceDefault Reason = "contract_enforce_default"
+	ContractNonDefaultPort Reason = "contract_non_default_port"
+	ContractInvalidPath    Reason = "contract_invalid_path"
+	ContractObservedOnly   Reason = "contract_observed_only"
+
 	// BlockReasonOverflow is the dedicated sentinel CloseFramePayload uses
 	// when an Info has somehow accumulated a Reason value too long to fit
 	// the bare {block_reason: <code>} payload within RFC 6455's 123-byte
@@ -146,6 +159,11 @@ var validReasons = map[Reason]struct{}{
 	NotEnabled:             {},
 	BadRequest:             {},
 	BlockReasonOverflow:    {},
+	ContractDefaultDeny:    {},
+	ContractEnforceDefault: {},
+	ContractNonDefaultPort: {},
+	ContractInvalidPath:    {},
+	ContractObservedOnly:   {},
 }
 
 // AllReasons returns every Reason in the canonical allowlist. The returned
@@ -186,12 +204,20 @@ const (
 	// RetryPolicy means the agent should only retry after an operator
 	// changes pipelock policy.
 	RetryPolicy Retry = "policy"
+	// RetryCanonicalize means the request as posed will not succeed because
+	// it carries a non-canonical input (today: a URL path that fails RFC 3986
+	// canonicalization). The agent SHOULD canonicalize the request and retry;
+	// no operator change is required. The wire value mirrors the spec hint
+	// "retry-with-canonical-path" so consumers see actionable guidance in
+	// X-Pipelock-Block-Reason-Retry instead of a generic "none".
+	RetryCanonicalize Retry = "retry-with-canonical-path"
 )
 
 var validRetries = map[Retry]struct{}{
-	RetryNone:      {},
-	RetryTransient: {},
-	RetryPolicy:    {},
+	RetryNone:         {},
+	RetryTransient:    {},
+	RetryPolicy:       {},
+	RetryCanonicalize: {},
 }
 
 // Construction errors. Use errors.Is to pattern-match.
@@ -433,7 +459,7 @@ func mustMarshal(p closeFramePayload) string {
 // the operator gets the strictest severity until the table is updated).
 func SeverityFor(reason Reason) Severity {
 	switch reason {
-	case NotEnabled, BadRequest:
+	case NotEnabled, BadRequest, ContractObservedOnly:
 		return SeverityInfo
 	case SchemeBlocked,
 		PathEntropy,
@@ -447,7 +473,9 @@ func SeverityFor(reason Reason) Severity {
 		PatternUnavailable,
 		CompressedResponse,
 		BrowserShieldOversize,
-		BlockReasonOverflow:
+		BlockReasonOverflow,
+		ContractNonDefaultPort,
+		ContractInvalidPath:
 		return SeverityWarn
 	default:
 		return SeverityCritical
@@ -485,6 +513,8 @@ func RetryFor(reason Reason) Retry {
 		CompressedResponse,
 		BrowserShieldOversize:
 		return RetryPolicy
+	case ContractInvalidPath:
+		return RetryCanonicalize
 	default:
 		return RetryNone
 	}

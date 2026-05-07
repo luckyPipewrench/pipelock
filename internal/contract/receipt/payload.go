@@ -4,10 +4,20 @@
 package receipt
 
 // PayloadProxyDecisionStruct holds the typed fields for a proxy_decision payload.
+//
+// Verdict is what the proxy enforced for this request. LiveVerdict is what
+// the contract evaluator would have enforced under ModeLive given the same
+// inputs: in ModeLive the two are equal, but ModeShadow / ModeCapture surface
+// the scanner-floor verdict as Verdict and the contract's would-have-been
+// outcome as LiveVerdict so audit consumers can distinguish "scanner allowed
+// and contract agreed" from "scanner allowed but contract would have blocked
+// in live mode." LiveVerdict is omitempty for legacy emissions and for paths
+// where the runtime did not surface a separate live result.
 type PayloadProxyDecisionStruct struct {
 	ActionType    string   `json:"action_type"`
 	Target        string   `json:"target"`
 	Verdict       string   `json:"verdict"`
+	LiveVerdict   string   `json:"live_verdict,omitempty"`
 	Transport     string   `json:"transport"`
 	PolicySources []string `json:"policy_sources"`
 	WinningSource string   `json:"winning_source"`

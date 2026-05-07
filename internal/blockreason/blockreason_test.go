@@ -496,6 +496,13 @@ var specCanonicalPairs = map[Reason]struct {
 
 	// Internal sentinel.
 	BlockReasonOverflow: {SeverityWarn, RetryTransient},
+
+	// Contract / learn-and-lock layer.
+	ContractDefaultDeny:    {SeverityCritical, RetryNone},
+	ContractEnforceDefault: {SeverityCritical, RetryNone},
+	ContractNonDefaultPort: {SeverityWarn, RetryNone},
+	ContractInvalidPath:    {SeverityWarn, RetryCanonicalize},
+	ContractObservedOnly:   {SeverityInfo, RetryNone},
 }
 
 // TestSpecCanonicalPairs_VocabularyCoverage asserts the test ground-truth

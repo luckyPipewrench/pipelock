@@ -102,6 +102,18 @@ Reason codes are lowercase snake_case. The v1 set is derived from existing pipel
 | `browser_shield_oversize` | Response body exceeded the configured Browser Shield size limit. Operator must raise the limit or exempt the host to clear the block. | `warn` | `policy` |
 | `block_reason_overflow` | Internal sentinel: the block-emit metadata itself was malformed (oversized Reason value, etc.). Pipelock falls back to this rather than silently downgrading to `parse_error` so audit fidelity is preserved. Agents should treat this as a malformed-block signal worth logging. | `warn` | `transient` |
 
+### Contract / learn-and-lock layer
+
+Emitted by the runtime evaluator when an active learn-and-lock contract claims jurisdiction over the request. The first four are real blocks; `contract_observed_only` is an info-tier annotation surfaced by shadow / capture modes when the contract path would have produced a non-allow live verdict but the configured mode does not enforce. `contract_observed_only` never appears on a 4xx response surface — it travels only on receipts and drift telemetry.
+
+| Code | When | Severity | Retry |
+|---|---|---|---|
+| `contract_default_deny` | Active contract claims jurisdiction (at least one host has an enforce rule with comparable evidence) and no allow rule matched the request. | `critical` | `none` |
+| `contract_enforce_default` | Active contract has an enforce rule that matched the request's host but no rule matched the full method / path / action shape. | `critical` | `none` |
+| `contract_non_default_port` | Active contract enforce rule matched the host but the request used a non-default port (rule scope excludes non-443 / non-80). | `warn` | `none` |
+| `contract_invalid_path` | Active contract enforce rule matched the host but the request path failed RFC 3986 canonicalization. | `warn` | `retry-with-canonical-path` |
+| `contract_observed_only` | Shadow / capture annotation: contract path would have blocked under live mode but the configured mode did not enforce. Never emitted on a block surface. | `info` | `none` |
+
 ## Severity
 
 Aligns with `internal/config/schema.go` constants:
@@ -117,6 +129,7 @@ The `info` / `warn` / `critical` values match pipelock's existing emit pipeline 
 - `none` — the block is permanent for the current request. Retrying without changing the input will produce the same block. Examples: `dlp_match`, `ssrf_private_ip`, `prompt_injection`.
 - `transient` — the underlying condition is time-bound. A retry after backoff may succeed. Examples: `rate_limit`, `airlock_active`, `kill_switch_active`, `dns_rebind` (resolver may stabilize).
 - `policy` — only retry after the operator changes pipelock policy. Examples: `domain_blocklist`, `tool_policy_deny`, `data_budget`.
+- `retry-with-canonical-path` — the input as posed will not succeed because it carries a non-canonical URL path. The agent SHOULD canonicalize the request path (RFC 3986 dot-segment removal, percent-encoding normalization) and retry; no operator change is required. Today emitted only by `contract_invalid_path`.
 
 ## Privacy
 

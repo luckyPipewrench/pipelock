@@ -93,6 +93,42 @@ var nonProductionEmitReasons = map[blockreason.Reason]string{
 	// error in the MCP response stream, with no HTTP response to attach a
 	// header to. Reason vocabulary kept for receipt + audit consistency.
 	blockreason.ToolChainBlocked: "fires at JSON-RPC layer in MCP response stream; no HTTP header surface",
+
+	// ContractObservedOnly is an info-tier annotation that the runtime
+	// evaluator surfaces in shadow / capture modes when the contract path
+	// would have produced a non-allow live verdict but the configured mode
+	// did not enforce. The annotation is for audit and drift telemetry
+	// (Decision.Reason + receipt.live_verdict); it never appears on a 4xx
+	// HTTP response surface. Reason vocabulary stays in the canonical
+	// allowlist so receipts and dashboards can label observation events
+	// alongside real blocks without forking into observed-vs-blocking.
+	blockreason.ContractObservedOnly: "shadow/capture mode annotation; never emitted on a block path",
+
+	// SSRFDNSRebind is part of the SSRF reason set on the wire, but the
+	// scanner pipeline currently emits SSRFPrivateIP / SSRFMetadata from
+	// the DNS rebinding TOCTOU path because the rebind detection lives
+	// upstream of the blockheaders helper that maps to the typed Reason.
+	// Vocabulary stays in the canonical allowlist so receipts and the
+	// public spec doc can name DNS rebinding distinctly from generic
+	// private-IP SSRF; the wire emit site lands when the SSRF block path
+	// is refactored to surface the more specific reason.
+	blockreason.SSRFDNSRebind: "vocabulary placeholder; SSRF block path collapses TOCTOU rebinds onto SSRFPrivateIP today",
+
+	// Timeout is reserved for fail-closed timeouts on scanner / HITL
+	// surfaces. Today the timeout paths return ParseError or do not
+	// surface a header at all (HITL has no HTTP response surface). The
+	// reason stays in the canonical allowlist so the spec doc can
+	// describe it once a transport wires the dedicated emit site.
+	blockreason.Timeout: "vocabulary placeholder; timeout block paths today return ParseError or have no HTTP surface",
+
+	// ToolPolicyDeny and SessionBinding are MCP-layer reasons. The MCP
+	// proxy emits its block as a JSON-RPC error in the response stream,
+	// not as an HTTP response — same shape as ToolPoisoning and
+	// ToolChainBlocked. Reason vocabulary kept for receipt + audit
+	// consistency once the MCP receipt stream wires these specific
+	// labels.
+	blockreason.ToolPolicyDeny: "fires at JSON-RPC layer in MCP response stream; no HTTP header surface",
+	blockreason.SessionBinding: "fires at JSON-RPC layer in MCP response stream; no HTTP header surface",
 }
 
 // constNameForReason maps a Reason value to the exported constant name in the
@@ -170,6 +206,16 @@ func constNameForReason(r blockreason.Reason) string {
 		return "BadRequest"
 	case blockreason.BlockReasonOverflow:
 		return "BlockReasonOverflow"
+	case blockreason.ContractDefaultDeny:
+		return "ContractDefaultDeny"
+	case blockreason.ContractEnforceDefault:
+		return "ContractEnforceDefault"
+	case blockreason.ContractNonDefaultPort:
+		return "ContractNonDefaultPort"
+	case blockreason.ContractInvalidPath:
+		return "ContractInvalidPath"
+	case blockreason.ContractObservedOnly:
+		return "ContractObservedOnly"
 	}
 	return ""
 }

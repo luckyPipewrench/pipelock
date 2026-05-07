@@ -4,6 +4,7 @@
 package config
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,7 @@ func TestLearnLock_EffectiveMinimumSignaturesDefaultsToOne(t *testing.T) {
 	}
 	for input, want := range cases {
 		input, want := input, want
-		t.Run("input", func(t *testing.T) {
+		t.Run(strconv.Itoa(input), func(t *testing.T) {
 			t.Parallel()
 			got := LearnLock{MinimumSignatures: input}.EffectiveMinimumSignatures()
 			if got != want {

@@ -247,6 +247,48 @@ func TestLoader_ReloadRejectsGenerationDowngradeAndKeepsCurrent(t *testing.T) {
 	}
 }
 
+func TestLoader_NilReceiverAccessorsAreSafe(t *testing.T) {
+	t.Parallel()
+	// Defensive guard: a misconfigured caller that passes nil through to
+	// Current() or Mode() must not panic. The proxy hot path calls these
+	// on every request, and a nil-deref there would blackhole traffic.
+	var l *Loader
+	if got := l.Current(); got != nil {
+		t.Fatalf("nil-loader Current() = %v, want nil", got)
+	}
+	if got := l.Mode(); got != "" {
+		t.Fatalf("nil-loader Mode() = %q, want empty", got)
+	}
+	if err := l.Reload(); err == nil {
+		t.Fatal("nil-loader Reload() returned nil error")
+	}
+}
+
+func TestLoader_NilMetricsExercisesNoopImpl(t *testing.T) {
+	t.Parallel()
+	// Constructing a Loader with metrics=nil must wire the noopMetrics
+	// implementation so all reload-outcome and generation calls land on
+	// real method receivers. Coverage proves no panic and no nil-deref
+	// from production code paths that assume metrics is always set.
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	if err := os.MkdirAll(storeDir, 0o750); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, testLoaderEnv()), nil)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	if loader.Current() != nil {
+		t.Fatalf("Current() = %v, want nil for empty store", loader.Current())
+	}
+	// Reload again to confirm noopMetrics handles a same-no-active path
+	// without surfacing an error.
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("Reload with nil metrics: %v", err)
+	}
+}
+
 // rosterFixture is the minimum fixture the Loader needs at construction
 // time: a real Ed25519 root key, a real activation-signing key, and a
 // roster file on disk that signing.LoadRoster can verify. Tests that

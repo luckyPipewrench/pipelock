@@ -351,6 +351,38 @@ func TestInterceptLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
 	}
 }
 
+// TestInterceptLiveLock_KillSwitchWithoutContractLoaderEmitsKSBlock exercises
+// the kill-switch path when no contract loader is configured. EvaluateGate
+// returns its scanner-verdict fallback (Verdict=Allow) so the post-eval
+// fall-through emitKillSwitchBlock fires instead of the contract-block branch
+// short-circuit, keeping kill-switch semantics intact.
+func TestInterceptLiveLock_KillSwitchWithoutContractLoaderEmitsKSBlock(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	ks := killswitch.New(cfg)
+	ks.SetAPI(true)
+	proxy := interceptLiveLockProxy(nil, ks, m)
+	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
+		"api.example.com", newInterceptLiveLockRequest(t, "api.example.com", "{}"), proxy)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.KillSwitchActive) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.KillSwitchActive)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
 func TestInterceptLiveLock_CertForgeCompletesBeforeContractBlock(t *testing.T) {
 	var hits atomic.Int32
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

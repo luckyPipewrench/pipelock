@@ -496,7 +496,13 @@ func newInterceptHandler(
 		if ic.KillSwitch != nil {
 			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
 			if d.Active {
-				gate, gateErr := EvaluateGate(ContractGateInput{
+				// Evaluate the contract gate purely so the kill-switch
+				// receipt carries any active-contract context (policy
+				// sources, contract hash, generation). The runtime
+				// guarantees that KillSwitchActive=true returns
+				// Verdict=Block with WinningSource=KillSwitch, so we
+				// never branch on the verdict — kill switch always wins.
+				if gate, gateErr := EvaluateGate(ContractGateInput{
 					Loader:           interceptContractLoader(ic),
 					Agent:            ic.Agent,
 					URL:              targetURL,
@@ -505,36 +511,8 @@ func newInterceptHandler(
 					ScannerVerdict:   config.ActionAllow,
 					KillSwitchActive: true,
 					Transport:        "intercept",
-				})
-				if gateErr != nil {
-					emitKillSwitchBlock()
-					return
-				}
-				if gate.Verdict == config.ActionBlock {
+				}); gateErr == nil {
 					interceptGate = gate
-					reason := gate.Reason
-					if reason == "" {
-						reason = gate.WinningSource
-					}
-					if reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
-						emitKillSwitchBlock()
-						return
-					}
-					ic.Logger.LogBlocked(actx, "contract", reason)
-					ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
-					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
-						ActionID:  actionID,
-						Verdict:   config.ActionBlock,
-						Layer:     "contract",
-						Pattern:   reason,
-						Transport: "intercept",
-						Method:    r.Method,
-						Target:    targetURL,
-						RequestID: ic.RequestID,
-						Agent:     ic.Agent,
-					}))
-					writeGateBlockedError(w, gate, "blocked: "+reason)
-					return
 				}
 				emitKillSwitchBlock()
 				return
@@ -1151,10 +1129,10 @@ func newInterceptHandler(
 		}
 		interceptGate = gate
 		if gate.Verdict == config.ActionBlock {
+			// The runtime always populates Reason on contract-block paths
+			// (kill-switch, scanner-missing, contractBlockDecision); empty
+			// is impossible per the EvaluateHTTP contract.
 			reason := gate.Reason
-			if reason == "" {
-				reason = gate.WinningSource
-			}
 			ic.Logger.LogBlocked(actx, "contract", reason)
 			ic.Metrics.RecordTLSRequestBlocked("contract")
 			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

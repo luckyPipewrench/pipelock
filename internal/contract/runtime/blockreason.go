@@ -17,6 +17,13 @@ const (
 	decisionReasonContractNonDefaultPort = "contract_non_default_port"
 	decisionReasonContractInvalidPath    = "contract_invalid_path"
 	decisionReasonContractObservedOnly   = "contract_observed_only"
+	// MCP-surface reasons map onto the same wire vocabulary as their HTTP
+	// equivalents so receipts, audit logs, and X-Pipelock-Block-Reason
+	// headers treat both surfaces uniformly. The strings stay distinct
+	// here so internal callers (drift telemetry, evaluator tests) can
+	// distinguish the surface that produced the block.
+	decisionReasonMCPArgsMismatch = "contract_mcp_args_mismatch"
+	decisionReasonMCPDefaultDeny  = "contract_mcp_default_deny"
 )
 
 // BlockReasonForDecision maps a Decision.Reason string to its canonical
@@ -54,6 +61,14 @@ func BlockReasonForDecision(decisionReason string) (blockreason.Reason, bool) {
 		// classified" rather than the more specific kill-switch or
 		// contract codes that imply jurisdictional enforcement.
 		return blockreason.ParseError, true
+	case decisionReasonMCPArgsMismatch:
+		// MCP server+tool match but args mismatch is the MCP-surface
+		// parallel to host match + path/method mismatch on HTTP. Map
+		// onto the same typed wire reason so the vocabulary stays
+		// stable across surfaces.
+		return blockreason.ContractEnforceDefault, true
+	case decisionReasonMCPDefaultDeny:
+		return blockreason.ContractDefaultDeny, true
 	default:
 		return "", false
 	}

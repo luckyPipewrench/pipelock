@@ -32,6 +32,7 @@ const (
 const (
 	RuleKindHTTPDestination = "http_destination"
 	RuleKindHTTPAction      = "http_action"
+	RuleKindMCPToolCall     = "mcp_tool_call"
 )
 
 // ErrContractSchemaVersion rejects contracts with non-current schema_version.
@@ -64,7 +65,7 @@ var ErrUnsupportedLifecycle = errors.New("contract: unsupported lifecycle_state"
 // runtime would silently ignore. Add a new kind here only when the
 // matching runtime evaluator branch lands in the same change.
 func EnforceableRuleKinds() []string {
-	return []string{RuleKindHTTPDestination, RuleKindHTTPAction}
+	return []string{RuleKindHTTPDestination, RuleKindHTTPAction, RuleKindMCPToolCall}
 }
 
 func ruleKindEnforceable(kind string) bool {

@@ -61,6 +61,7 @@ const (
 const (
 	ruleKindHTTPDestination = contract.RuleKindHTTPDestination
 	ruleKindHTTPAction      = contract.RuleKindHTTPAction
+	ruleKindMCPToolCall     = contract.RuleKindMCPToolCall
 
 	DriftKindPositive = "positive"
 	DriftKindNegative = "negative"

@@ -332,7 +332,7 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 		t.Fatalf("EvaluateHTTP nil resolved: %v", err)
 	}
 	if decision.Verdict != config.ActionBlock || decision.WinningSource != WinningSourceScanner ||
-		decision.Reason != "scanner_decision_missing" {
+		decision.Reason != decisionReasonScannerDecisionMissing {
 		t.Fatalf("missing scanner decision = %+v", decision)
 	}
 	if !contains(decision.PolicySources, PolicySourceScanner) {

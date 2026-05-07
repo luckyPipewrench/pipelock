@@ -28,6 +28,8 @@ func TestBlockReasonForDecision_AllSupportedStrings(t *testing.T) {
 		{"contract observed only", decisionReasonContractObservedOnly, blockreason.ContractObservedOnly},
 		{"kill switch active", decisionReasonKillSwitchActive, blockreason.KillSwitchActive},
 		{"scanner decision missing", decisionReasonScannerDecisionMissing, blockreason.ParseError},
+		{"mcp args mismatch", decisionReasonMCPArgsMismatch, blockreason.ContractEnforceDefault},
+		{"mcp default deny", decisionReasonMCPDefaultDeny, blockreason.ContractDefaultDeny},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,13 +82,15 @@ func TestBlockReasonForDecision_EmptyAndUnknownReturnFalse(t *testing.T) {
 func TestBlockReasonForDecision_RuntimeStringsMatchPrivateConstants(t *testing.T) {
 	t.Parallel()
 	pairs := map[string]string{
-		"kill_switch_active":        decisionReasonKillSwitchActive,
-		"scanner_decision_missing":  decisionReasonScannerDecisionMissing,
-		"contract_default_deny":     decisionReasonContractDefaultDeny,
-		"contract_enforce_default":  decisionReasonContractEnforceDefault,
-		"contract_non_default_port": decisionReasonContractNonDefaultPort,
-		"contract_invalid_path":     decisionReasonContractInvalidPath,
-		"contract_observed_only":    decisionReasonContractObservedOnly,
+		"kill_switch_active":         decisionReasonKillSwitchActive,
+		"scanner_decision_missing":   decisionReasonScannerDecisionMissing,
+		"contract_default_deny":      decisionReasonContractDefaultDeny,
+		"contract_enforce_default":   decisionReasonContractEnforceDefault,
+		"contract_non_default_port":  decisionReasonContractNonDefaultPort,
+		"contract_invalid_path":      decisionReasonContractInvalidPath,
+		"contract_observed_only":     decisionReasonContractObservedOnly,
+		"contract_mcp_args_mismatch": decisionReasonMCPArgsMismatch,
+		"contract_mcp_default_deny":  decisionReasonMCPDefaultDeny,
 	}
 	for wire, constant := range pairs {
 		if wire != constant {

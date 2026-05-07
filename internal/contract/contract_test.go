@@ -324,8 +324,8 @@ func TestContract_Validate_RejectsEnforceWithUnenforceableRuleKind(t *testing.T)
 		DataClassRoot:    string(DataClassInternal),
 		FieldDataClasses: map[string]string{},
 		Rules: []Rule{{
-			RuleID:               "r-mcp",
-			RuleKind:             "mcp_tool_call",
+			RuleID:               "r-future",
+			RuleKind:             "mcp_resource_access",
 			LifecycleState:       LifecycleEnforce,
 			RequiredCaptureGrade: CaptureGradeFull,
 			ObservedCaptureGrade: CaptureGradeFull,
@@ -356,12 +356,42 @@ func TestContract_Validate_AcceptsCaptureOnlyWithUnenforceableRuleKind(t *testin
 		FieldDataClasses: map[string]string{},
 		Rules: []Rule{{
 			RuleID:         "r-future",
-			RuleKind:       "mcp_tool_call",
+			RuleKind:       "mcp_resource_access",
 			LifecycleState: LifecycleCaptureOnly,
 		}},
 	}
 	if err := c.Validate(); err != nil {
 		t.Fatalf("got %v, want nil", err)
+	}
+}
+
+func TestContract_Validate_AcceptsMCPToolCallEnforce(t *testing.T) {
+	t.Parallel()
+	c := Contract{
+		SchemaVersion:    SchemaVersionContract,
+		ContractKind:     ContractKind,
+		DataClassRoot:    string(DataClassInternal),
+		FieldDataClasses: map[string]string{},
+		Rules: []Rule{{
+			RuleID:               "r-mcp",
+			RuleKind:             RuleKindMCPToolCall,
+			LifecycleState:       LifecycleEnforce,
+			RequiredCaptureGrade: CaptureGradeFull,
+			ObservedCaptureGrade: CaptureGradeFull,
+			Confidence:           "stable",
+			WilsonLower:          "0.99",
+			Observation:          map[string]any{},
+			Selector: map[string]any{
+				"server": map[string]any{"value": "stripe"},
+				"tool":   map[string]any{"value": "create_payment_intent"},
+			},
+			Rationale:         map[string]any{},
+			RecurringSupport:  map[string]any{},
+			OpportunityHealth: map[string]any{},
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("got %v, want nil — registry must accept mcp_tool_call enforce", err)
 	}
 }
 

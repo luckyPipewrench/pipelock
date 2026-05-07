@@ -1932,7 +1932,11 @@ fetch_proxy:
 		t.Fatal(err)
 	}
 
-	reloadDeadline := time.Now().Add(5 * time.Second)
+	// 15s deadline keeps the test green on slow GitHub Actions
+	// runners under -race load. Local desktop sees the reload
+	// activate within 1s; 5s flaked under CI scheduling jitter.
+	// Test is still well under the package timeout.
+	reloadDeadline := time.Now().Add(15 * time.Second)
 	reloaded := false
 	for time.Now().Before(reloadDeadline) {
 		select {
@@ -2078,7 +2082,11 @@ kill_switch:
 		t.Fatal(err)
 	}
 
-	reloadDeadline := time.Now().Add(5 * time.Second)
+	// 15s deadline keeps the test green on slow GitHub Actions
+	// runners under -race load. Local desktop sees the reload
+	// activate within 1s; 5s flaked under CI scheduling jitter.
+	// Test is still well under the package timeout.
+	reloadDeadline := time.Now().Add(15 * time.Second)
 	reloaded := false
 	for time.Now().Before(reloadDeadline) {
 		select {

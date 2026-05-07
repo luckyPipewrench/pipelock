@@ -615,8 +615,13 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 	// Allow up to maxDebounceWait + a generous grace for OS scheduling
 	// jitter. The forced flush fires through the same code path as a
 	// normal debounce tick, so the resulting outcome is "same_hash"
-	// (content unchanged).
-	deadline := time.Now().Add(maxDebounceWait + 1500*time.Millisecond)
+	// (content unchanged). Grace is intentionally large because
+	// GitHub Actions runners under -race load schedule the timer
+	// significantly later than the local desktop; 1.5s reproducibly
+	// flaked on CI while local runs always saw the flush within
+	// 200ms past maxDebounceWait. Five seconds keeps the test
+	// well under the package timeout.
+	deadline := time.Now().Add(maxDebounceWait + 5*time.Second)
 	for time.Now().Before(deadline) {
 		if metrics.outcome("same_hash") >= 1 {
 			break

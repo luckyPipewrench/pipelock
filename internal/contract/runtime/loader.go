@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -125,6 +126,7 @@ type Loader struct {
 	store     store.Store
 	storeDir  string
 	storeOpts store.Options
+	reloadMu  sync.Mutex
 	current   atomic.Pointer[ActiveSet]
 	mode      Mode
 	metrics   LoaderMetrics
@@ -212,13 +214,23 @@ func (l *Loader) Reload() error {
 	if l == nil {
 		return errors.New("contract runtime: nil loader")
 	}
+	l.reloadMu.Lock()
+	defer l.reloadMu.Unlock()
+
 	prev := l.current.Load()
 	opts := l.storeOpts
+	var activeState store.State
 	if prev != nil {
-		activeState, err := l.validateActiveReadOnly()
+		var err error
+		activeState, err = l.validateActiveReadOnly()
 		if err == nil && activeState.ManifestHash == prev.ManifestHash() {
 			l.metrics.IncReload("same_hash")
 			return nil
+		}
+		if err == nil && activeState.Envelope.Body.PriorManifestHash != prev.ManifestHash() {
+			if recovered, recoverErr := l.recoverAcceptedActive(activeState, prev); recoverErr == nil {
+				return l.acceptState(recovered)
+			}
 		}
 		opts.PreviousHash = prev.ManifestHash()
 		opts.PreviousGeneration = prev.Generation()
@@ -226,6 +238,16 @@ func (l *Loader) Reload() error {
 
 	state, err := l.store.Reload(opts)
 	if err != nil {
+		if prev != nil && errors.Is(err, store.ErrPriorManifest) {
+			if latestActive, activeErr := l.validateActiveReadOnly(); activeErr == nil {
+				if recovered, recoverErr := l.recoverAcceptedActive(latestActive, prev); recoverErr == nil {
+					return l.acceptState(recovered)
+				}
+			}
+			if recovered, recoverErr := l.recoverAcceptedActive(activeState, prev); recoverErr == nil {
+				return l.acceptState(recovered)
+			}
+		}
 		if errors.Is(err, store.ErrNoActiveManifest) {
 			if prev != nil {
 				l.metrics.IncReload("rejected")
@@ -251,6 +273,10 @@ func (l *Loader) Reload() error {
 		return nil
 	}
 
+	return l.acceptState(state)
+}
+
+func (l *Loader) acceptState(state store.State) error {
 	next, err := NewActiveSet(state)
 	if err != nil {
 		l.metrics.IncReload("rejected")
@@ -260,6 +286,51 @@ func (l *Loader) Reload() error {
 	l.metrics.IncReload("accepted")
 	l.metrics.SetGeneration(next.Generation())
 	return nil
+}
+
+func (l *Loader) recoverAcceptedActive(activeState store.State, prev *ActiveSet) (store.State, error) {
+	if prev == nil {
+		return store.State{}, errors.New("contract runtime: no previous active set")
+	}
+	if activeState.Envelope.Body.Generation <= prev.Generation() {
+		return store.State{}, fmt.Errorf("contract runtime: accepted active generation %d does not advance current generation %d",
+			activeState.Envelope.Body.Generation, prev.Generation())
+	}
+
+	opts := l.storeOpts
+	opts.PreviousHash = ""
+	opts.PreviousGeneration = 0
+	accepted, err := l.store.Accepted(activeState.ManifestHash, opts)
+	if err != nil {
+		return store.State{}, fmt.Errorf("contract runtime: active manifest is not accepted history: %w", err)
+	}
+	if accepted.ManifestHash != activeState.ManifestHash {
+		return store.State{}, fmt.Errorf("contract runtime: accepted active hash mismatch: got %s want %s", accepted.ManifestHash, activeState.ManifestHash)
+	}
+	if !l.acceptedChainReachesCurrent(accepted, prev, opts) {
+		return store.State{}, fmt.Errorf("contract runtime: accepted active chain does not reach current manifest %s", prev.ManifestHash())
+	}
+	return accepted, nil
+}
+
+func (l *Loader) acceptedChainReachesCurrent(state store.State, prev *ActiveSet, opts store.Options) bool {
+	for {
+		if state.ManifestHash == prev.ManifestHash() {
+			return true
+		}
+		if state.Envelope.Body.Generation <= prev.Generation() {
+			return false
+		}
+		prior := state.Envelope.Body.PriorManifestHash
+		if prior == "" || prior == "sha256:genesis" {
+			return false
+		}
+		next, err := l.store.Accepted(prior, opts)
+		if err != nil {
+			return false
+		}
+		state = next
+	}
 }
 
 // Watch runs an fsnotify watcher on the store directory until ctx is

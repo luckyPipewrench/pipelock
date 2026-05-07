@@ -291,6 +291,81 @@ func TestLoader_NilMetricsExercisesNoopImpl(t *testing.T) {
 	}
 }
 
+func TestLoader_ReloadAdoptsAcceptedActiveAfterMissedIntermediate(t *testing.T) {
+	t.Parallel()
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+
+	metrics := &captureMetrics{}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), metrics)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	current := loader.Current()
+	if current == nil {
+		t.Fatal("Current() = nil, want active set")
+	}
+
+	// Simulate two valid promotions landing before the runtime watcher gets
+	// a debounce tick. Both manifests have already been accepted into the
+	// immutable store history by the promotion path, but the runtime loader
+	// still has generation 1 in memory.
+	hash2 := writeAcceptedActiveStore(t, fixture, storeDir, 2, current.ManifestHash(), current.Generation(), env)
+	hash3 := writeAcceptedActiveStore(t, fixture, storeDir, 3, hash2, 2, env)
+
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("Reload after skipped intermediate accepted manifest: %v", err)
+	}
+	set := loader.Current()
+	if set == nil || set.Generation() != 3 || set.ManifestHash() != hash3 {
+		t.Fatalf("Current() = %+v, want generation 3 hash %s", set, hash3)
+	}
+	if metrics.outcome("accepted") != 2 {
+		t.Fatalf("accepted outcomes = %d, want 2 (initial + recovery)", metrics.outcome("accepted"))
+	}
+	journalPath := filepath.Clean(filepath.Join(storeDir, ".activation_journal.jsonl"))
+	journal, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("read activation journal: %v", err)
+	}
+	if strings.Contains(string(journal), `"outcome":"rejected"`) {
+		t.Fatalf("recovered accepted active should not add a rejected journal entry: %s", journal)
+	}
+}
+
+func TestLoader_ReloadRejectsSkippedActiveWithoutAcceptedHistory(t *testing.T) {
+	t.Parallel()
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+
+	metrics := &captureMetrics{}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), metrics)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	current := loader.Current()
+	if current == nil {
+		t.Fatal("Current() = nil, want active set")
+	}
+
+	hash2 := writeAcceptedActiveStore(t, fixture, storeDir, 2, current.ManifestHash(), current.Generation(), env)
+	writeSignedActiveStore(t, fixture, storeDir, 3, hash2, env)
+
+	if err := loader.Reload(); err == nil {
+		t.Fatal("Reload accepted skipped active manifest without immutable accepted history")
+	}
+	if loader.Current() != current {
+		t.Fatal("skipped active without accepted history must preserve previous active set")
+	}
+	if metrics.outcome("rejected") != 1 {
+		t.Fatalf("rejected outcomes = %d, want 1", metrics.outcome("rejected"))
+	}
+}
+
 func TestLoader_Watch_CancelExitsCleanly(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)
@@ -748,6 +823,37 @@ func writeSignedActiveStore(t *testing.T, fixture rosterFixture, storeDir string
 	if err := os.WriteFile(filepath.Join(storeDir, "active.json"), append(raw, '\n'), 0o600); err != nil {
 		t.Fatalf("write active.json: %v", err)
 	}
+}
+
+func writeAcceptedActiveStore(t *testing.T, fixture rosterFixture, storeDir string, generation uint64, prior string, previousGeneration uint64, env contract.Environment) string {
+	t.Helper()
+	st := contractstore.New(storeDir)
+	contractHash := putSignedLoaderContract(t, st, fixture)
+	active := signedLoaderManifest(t, contractHash, generation, prior, env, fixture)
+	raw, err := json.Marshal(active)
+	if err != nil {
+		t.Fatalf("marshal active manifest: %v", err)
+	}
+	loadedRoster, err := signing.LoadRoster(fixture.rosterPath, fixture.rootFingerprint)
+	if err != nil {
+		t.Fatalf("load roster: %v", err)
+	}
+	opts := contractstore.Options{
+		Environment:        env,
+		Roster:             loadedRoster,
+		PreviousHash:       prior,
+		PreviousGeneration: previousGeneration,
+		MinSignatures:      1,
+		Now:                func() time.Time { return time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC) },
+	}
+	hash, err := st.WriteActive(raw, opts)
+	if err != nil {
+		t.Fatalf("WriteActive generation %d: %v", generation, err)
+	}
+	if _, err := st.Reload(opts); err != nil {
+		t.Fatalf("Reload generation %d: %v", generation, err)
+	}
+	return hash
 }
 
 func putSignedLoaderContract(t *testing.T, st contractstore.Store, fixture rosterFixture) string {

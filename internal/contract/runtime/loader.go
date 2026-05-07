@@ -40,6 +40,17 @@ const reloadDebounceWindow = 100 * time.Millisecond
 // real promote indefinitely.
 const maxDebounceWait = 2 * time.Second
 
+// Reload outcome labels passed to LoaderMetrics.IncReload. Operators
+// alert on these strings so the values are part of the public surface
+// even though the metric interface is internal.
+const (
+	outcomeAccepted = "accepted"
+	outcomeSameHash = "same_hash"
+	outcomeNoActive = "no_active"
+	outcomeRejected = "rejected"
+	outcomeError    = "error"
+)
+
 // LoaderOptions configures a Loader. Every field is required when the
 // caller intends the lock runtime to gate decisions; partial inputs are
 // rejected at NewLoader time so a half-wired loader never silently
@@ -224,7 +235,7 @@ func (l *Loader) Reload() error {
 		var err error
 		activeState, err = l.validateActiveReadOnly()
 		if err == nil && activeState.ManifestHash == prev.ManifestHash() {
-			l.metrics.IncReload("same_hash")
+			l.metrics.IncReload(outcomeSameHash)
 			return nil
 		}
 		if err == nil && activeState.Envelope.Body.PriorManifestHash != prev.ManifestHash() {
@@ -250,13 +261,13 @@ func (l *Loader) Reload() error {
 		}
 		if errors.Is(err, store.ErrNoActiveManifest) {
 			if prev != nil {
-				l.metrics.IncReload("rejected")
+				l.metrics.IncReload(outcomeRejected)
 				return fmt.Errorf("contract runtime: active manifest disappeared after generation %d: %w", prev.Generation(), err)
 			}
 			// Store has no active.json — legitimate "nothing promoted"
 			// state during initial/never-active startup. Current() stays nil.
 			l.current.Store(nil)
-			l.metrics.IncReload("no_active")
+			l.metrics.IncReload(outcomeNoActive)
 			l.metrics.SetGeneration(0)
 			return nil
 		}
@@ -269,7 +280,7 @@ func (l *Loader) Reload() error {
 	// generation before returning state because generation monotonicity is
 	// part of the active-manifest CAS contract.
 	if prev != nil && state.ManifestHash == prev.ManifestHash() {
-		l.metrics.IncReload("same_hash")
+		l.metrics.IncReload(outcomeSameHash)
 		return nil
 	}
 
@@ -279,11 +290,11 @@ func (l *Loader) Reload() error {
 func (l *Loader) acceptState(state store.State) error {
 	next, err := NewActiveSet(state)
 	if err != nil {
-		l.metrics.IncReload("rejected")
+		l.metrics.IncReload(outcomeRejected)
 		return fmt.Errorf("contract runtime: build active set: %w", err)
 	}
 	l.current.Store(next)
-	l.metrics.IncReload("accepted")
+	l.metrics.IncReload(outcomeAccepted)
 	l.metrics.SetGeneration(next.Generation())
 	return nil
 }
@@ -402,7 +413,10 @@ func (l *Loader) Watch(ctx context.Context) error {
 			if filepath.Base(event.Name) != activeFilename {
 				continue
 			}
-			isReloadTrigger := event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Rename)
+			isReloadTrigger := event.Has(fsnotify.Write) ||
+				event.Has(fsnotify.Create) ||
+				event.Has(fsnotify.Rename) ||
+				event.Has(fsnotify.Remove)
 			if !isReloadTrigger {
 				continue
 			}
@@ -444,8 +458,20 @@ func (l *Loader) Watch(ctx context.Context) error {
 			// counter lets operators alert on the underlying kernel
 			// pressure separately from the reload outcome.
 			l.metrics.IncWatcherError()
+			now := time.Now()
 			if debounce == nil {
-				burstStart = time.Now()
+				burstStart = now
+			} else if now.Sub(burstStart) >= maxDebounceWait {
+				// Sustained watcher-error pressure (e.g., repeated
+				// inotify queue overflow) was resetting the debounce
+				// window without ever firing the defensive Reload.
+				// Force the flush when the burst exceeds the cap, so
+				// the recovery path lands under exactly the conditions
+				// it was added for.
+				debounce = nil
+				_ = l.Reload()
+				burstStart = time.Time{}
+				continue
 			}
 			debounce = time.After(reloadDebounceWindow)
 		}
@@ -466,12 +492,12 @@ func rejectionOutcome(err error) string {
 		errors.Is(err, store.ErrGeneration),
 		errors.Is(err, store.ErrPriorManifest),
 		errors.Is(err, store.ErrContractHistory):
-		return "rejected"
+		return outcomeRejected
 	case errors.Is(err, store.ErrDecode),
 		errors.Is(err, store.ErrWriteOnceConflict):
-		return "error"
+		return outcomeError
 	default:
-		return "error"
+		return outcomeError
 	}
 }
 

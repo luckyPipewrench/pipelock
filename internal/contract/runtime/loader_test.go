@@ -628,6 +628,133 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 	}
 }
 
+func TestLoader_Watch_RemoveEventTriggersReload(t *testing.T) {
+	t.Parallel()
+	// fsnotify.Remove on active.json must trigger Reload. Atomic rename
+	// can fire IN_DELETE for the displaced inode on some kernels, and
+	// an explicit operator unlink fires Remove cleanly. Without Remove
+	// in the trigger predicate the loader would sit on stale state.
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+
+	metrics := &captureMetrics{}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), metrics)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	current := loader.Current()
+	if current == nil {
+		t.Fatal("expected initial active set")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loader.Watch(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	time.Sleep(80 * time.Millisecond)
+
+	// Remove active.json directly. The watcher should see Remove and
+	// trigger a Reload through the debounce. Reload then rejects the
+	// missing-file-after-current path and preserves the previous set.
+	activePath := filepath.Clean(filepath.Join(storeDir, activeFilename))
+	if err := os.Remove(activePath); err != nil {
+		t.Fatalf("remove active.json: %v", err)
+	}
+
+	if !waitFor(func() bool {
+		return metrics.outcome("rejected") >= 1
+	}) {
+		t.Fatalf("rejected outcome never observed after Remove; metrics = %v", snapshotOutcomes(metrics))
+	}
+	if loader.Current() != current {
+		t.Fatal("missing active.json after current must preserve previous active set")
+	}
+}
+
+func TestLoader_ReloadRejectsRecoveryChainBreak(t *testing.T) {
+	t.Parallel()
+	// Recovery walks the accepted-history chain back from the current
+	// active to the loader's prev. If a generation in that chain is
+	// missing from accepted history, the walk fails and the rejection
+	// stands. This exercises acceptedChainReachesCurrent's break path.
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.root, "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+
+	metrics := &captureMetrics{}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), metrics)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	current := loader.Current()
+	if current == nil {
+		t.Fatal("expected initial active set")
+	}
+
+	// Promote gen 2 properly into accepted history, then write gen 4
+	// claiming gen 2 as its prior. Gen 3 is missing from history so
+	// the chain walk from gen 4 cannot reach gen 1.
+	hash2 := writeAcceptedActiveStore(t, fixture, storeDir, 2, current.ManifestHash(), current.Generation(), env)
+	writeSignedActiveStore(t, fixture, storeDir, 4, hash2, env)
+
+	if err := loader.Reload(); err == nil {
+		t.Fatal("Reload accepted skipped chain without intermediate accepted history")
+	}
+	if loader.Current() != current {
+		t.Fatal("broken recovery chain must preserve previous active set")
+	}
+	if metrics.outcome("rejected") != 1 {
+		t.Fatalf("rejected outcomes = %d, want 1", metrics.outcome("rejected"))
+	}
+}
+
+func TestRejectionOutcomeMapsErrorClasses(t *testing.T) {
+	t.Parallel()
+	// Sentinel errors that map to the "rejected" label vs the "error"
+	// label have to stay separated so operators alerting on rejections
+	// (signature failure, env mismatch, generation downgrade, prior CAS)
+	// do not see flapping I/O drown out a real promote rejection.
+	rejected := []error{
+		contractstore.ErrStructural,
+		contractstore.ErrSignature,
+		contractstore.ErrContractSignature,
+		contractstore.ErrDualControl,
+		contractstore.ErrEnvironmentMismatch,
+		contractstore.ErrGeneration,
+		contractstore.ErrPriorManifest,
+		contractstore.ErrContractHistory,
+	}
+	for _, err := range rejected {
+		err := err
+		t.Run("rejected_"+err.Error(), func(t *testing.T) {
+			t.Parallel()
+			if got := rejectionOutcome(err); got != "rejected" {
+				t.Fatalf("rejectionOutcome(%v) = %q, want rejected", err, got)
+			}
+		})
+	}
+	errs := []error{
+		contractstore.ErrDecode,
+		contractstore.ErrWriteOnceConflict,
+		errors.New("synthetic transient io"),
+	}
+	for _, err := range errs {
+		err := err
+		t.Run("error_"+err.Error(), func(t *testing.T) {
+			t.Parallel()
+			if got := rejectionOutcome(err); got != "error" {
+				t.Fatalf("rejectionOutcome(%v) = %q, want error", err, got)
+			}
+		})
+	}
+}
+
 func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 	t.Parallel()
 	fixture := newRosterFixture(t)

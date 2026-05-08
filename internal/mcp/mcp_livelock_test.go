@@ -31,6 +31,9 @@ const (
 	mcpAllowedTool    = "create_payment_intent"
 	mcpDeniedTool     = "refund_payment"
 	mcpDefaultEntity  = "_default"
+	mcpBlockReasonKey = "block_reason"
+	mcpUpstreamEval   = "contract upstream evaluation"
+	mcpToolsCallJSON  = `"method":"tools/call"`
 )
 
 // These tests exercise shared EvaluateMCP invariants through one canonical
@@ -158,8 +161,12 @@ func TestMCPContractLoaderFromConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("valid config err = %v", err)
 	}
-	if loader == nil || loader.Current() == nil {
-		t.Fatalf("valid config loader/current = %v/%v, want active loader", loader, loader.Current())
+	if loader == nil {
+		t.Fatal("valid config loader = nil, want active loader")
+	}
+	current := loader.Current()
+	if current == nil {
+		t.Fatalf("valid config current = %v, want active loader", current)
 	}
 }
 
@@ -385,8 +392,8 @@ func TestMCPHTTPListenerLiveLock_ToolCallDenialReturnsStructuredError(t *testing
 	}()
 	rawBody, _ := io.ReadAll(resp.Body)
 	data := decodeRPCError(t, string(rawBody))
-	if got := data["block_reason"]; got != string(blockreason.ContractDefaultDeny) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
 	if upstreamHits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
@@ -472,8 +479,8 @@ func TestRunHTTPProxyLiveLock_UpstreamEvaluationErrorExitsBeforeTraffic(t *testi
 			ContractAgent:  mcpLiveLockAgent,
 			ContractServer: mcpLiveLockServer,
 		})
-	if err == nil || !strings.Contains(err.Error(), "contract upstream evaluation") {
-		t.Fatalf("RunHTTPProxy err = %v, want contract upstream evaluation", err)
+	if err == nil || !strings.Contains(err.Error(), mcpUpstreamEval) {
+		t.Fatalf("RunHTTPProxy err = %v, want %s", err, mcpUpstreamEval)
 	}
 }
 
@@ -504,8 +511,8 @@ func TestRunHTTPProxyLiveLock_PerMessageUpstreamDenialReturnsStructuredError(t *
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
 	data := decodeRPCError(t, stdout.String())
-	if got := data["block_reason"]; got != string(blockreason.ContractDefaultDeny) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
 	if upstreamHits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
@@ -536,8 +543,8 @@ func TestRunHTTPProxyLiveLock_PerMessageUpstreamEvaluationErrorReturnsStructured
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
 	data := decodeRPCError(t, stdout.String())
-	if got := data["block_reason"]; got != string(blockreason.ParseError) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ParseError)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ParseError) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ParseError)
 	}
 }
 
@@ -571,8 +578,8 @@ func TestRunWSProxyLiveLock_UpstreamEvaluationErrorExitsBeforeTraffic(t *testing
 			ContractAgent:  mcpLiveLockAgent,
 			ContractServer: mcpLiveLockServer,
 		})
-	if err == nil || !strings.Contains(err.Error(), "contract upstream evaluation") {
-		t.Fatalf("RunWSProxy err = %v, want contract upstream evaluation", err)
+	if err == nil || !strings.Contains(err.Error(), mcpUpstreamEval) {
+		t.Fatalf("RunWSProxy err = %v, want %s", err, mcpUpstreamEval)
 	}
 }
 
@@ -593,8 +600,8 @@ func TestRunHTTPListenerProxyLiveLock_StartupEvaluationErrorExitsBeforeTraffic(t
 			ContractAgent:  mcpLiveLockAgent,
 			ContractServer: mcpLiveLockServer,
 		})
-	if err == nil || !strings.Contains(err.Error(), "contract upstream evaluation") {
-		t.Fatalf("RunHTTPListenerProxy err = %v, want contract upstream evaluation", err)
+	if err == nil || !strings.Contains(err.Error(), mcpUpstreamEval) {
+		t.Fatalf("RunHTTPListenerProxy err = %v, want %s", err, mcpUpstreamEval)
 	}
 }
 
@@ -648,8 +655,8 @@ func TestRunHTTPListenerProxyLiveLock_PerRequestUpstreamDenialReturnsStructuredE
 	}()
 	body, _ := io.ReadAll(resp.Body)
 	data := decodeRPCError(t, string(body))
-	if got := data["block_reason"]; got != string(blockreason.ContractDefaultDeny) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
 	if upstreamHits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
@@ -692,7 +699,7 @@ func TestRunProxyLiveLock_NoLoaderPassThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunProxy: %v", err)
 	}
-	if !strings.Contains(stdout.String(), `"method":"tools/call"`) {
+	if !strings.Contains(stdout.String(), mcpToolsCallJSON) {
 		t.Fatalf("stdout missing forwarded tool call: %s", stdout.String())
 	}
 }
@@ -705,10 +712,10 @@ func TestRunProxyLiveLock_DeniedToolCallNotForwardedToSubprocess(t *testing.T) {
 		t.Fatalf("RunProxy: %v", err)
 	}
 	data := decodeRPCError(t, stdout.String())
-	if got := data["block_reason"]; got != string(blockreason.ContractDefaultDeny) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
-	if strings.Contains(stdout.String(), `"method":"tools/call"`) {
+	if strings.Contains(stdout.String(), mcpToolsCallJSON) {
 		t.Fatalf("blocked tool call was forwarded to subprocess: %s", stdout.String())
 	}
 }
@@ -722,10 +729,10 @@ func TestRunProxyLiveLock_WarnScannerThenContractBlocks(t *testing.T) {
 		t.Fatalf("RunProxy: %v", err)
 	}
 	data := decodeRPCError(t, stdout.String())
-	if got := data["block_reason"]; got != string(blockreason.ContractDefaultDeny) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
-	if strings.Contains(stdout.String(), `"method":"tools/call"`) {
+	if strings.Contains(stdout.String(), mcpToolsCallJSON) {
 		t.Fatalf("blocked tool call was forwarded to subprocess: %s", stdout.String())
 	}
 }
@@ -739,8 +746,8 @@ func TestMCPStdioLiveLock_ArgMismatchBlocksAllowedToolName(t *testing.T) {
 		t.Fatalf("RunProxy: %v", err)
 	}
 	data := decodeRPCError(t, stdout.String())
-	if got := data["block_reason"]; got != string(blockreason.ContractEnforceDefault) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractEnforceDefault)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractEnforceDefault) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractEnforceDefault)
 	}
 }
 
@@ -792,8 +799,8 @@ func TestMCPToolLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	}
 	resp := string(blockRequestResponse(*decision.Blocked))
 	data := decodeRPCError(t, resp)
-	if got := data["block_reason"]; got != string(blockreason.PromptInjection) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.PromptInjection)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.PromptInjection) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.PromptInjection)
 	}
 }
 
@@ -805,8 +812,8 @@ func TestMCPToolLiveLock_HTTPWarnScannerThenContractBlocks(t *testing.T) {
 		t.Fatal("blocked = nil, want contract block after scanner warn")
 	}
 	data := decodeRPCError(t, string(blockRequestResponse(*decision.Blocked)))
-	if got := data["block_reason"]; got != string(blockreason.ContractDefaultDeny) {
-		t.Fatalf("block_reason = %v, want %s", got, blockreason.ContractDefaultDeny)
+	if got := data[mcpBlockReasonKey]; got != string(blockreason.ContractDefaultDeny) {
+		t.Fatalf("%s = %v, want %s", mcpBlockReasonKey, got, blockreason.ContractDefaultDeny)
 	}
 }
 

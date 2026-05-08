@@ -698,7 +698,7 @@ signed action receipts for MCP decisions.`,
 			}
 			contractLoader, contractLoaderErr := mcp.NewContractLoaderFromConfig(cfg)
 			if contractLoaderErr != nil {
-				return contractLoaderErr
+				return fmt.Errorf("building MCP contract loader: %w", contractLoaderErr)
 			}
 			contractAgent := agentName
 			if contractAgent == "" {

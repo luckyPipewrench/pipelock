@@ -336,6 +336,9 @@ func mcpContractBlockReason(gate mcpContractGateOutput) blockreason.Reason {
 	if reason, ok := contractruntime.BlockReasonForDecision(gate.Reason); ok {
 		return reason
 	}
+	if gate.WinningSource == contractruntime.WinningSourceContract {
+		return blockreason.ContractDefaultDeny
+	}
 	return blockreason.ParseError
 }
 

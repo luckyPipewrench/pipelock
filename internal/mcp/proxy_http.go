@@ -333,7 +333,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
 	}
 	receiptVerdict := ""
+	var receiptContractGate *mcpContractGateOutput
 	defer func() {
+		if receiptContractGate != nil {
+			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport, *receiptContractGate)
+			return
+		}
 		emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
 	}()
 
@@ -646,9 +651,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if contractGate.Verdict == config.ActionBlock {
 			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked tools/call %q (%s)\n", toolName, contractGate.Reason)
 			receiptVerdict = config.ActionBlock
+			receiptContractGate = &contractGate
 			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
-			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
-			receiptVerdict = ""
 			return result
 		}
 		if verdict.Method == methodToolsCall {
@@ -665,10 +669,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				return result
 			}
 			receiptVerdict = config.ActionAllow
-			defer func() {
-				emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
-				receiptVerdict = ""
-			}()
+			receiptContractGate = &contractGate
 		}
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
@@ -940,9 +941,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if contractGate.Verdict == config.ActionBlock {
 			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked tools/call %q (%s)\n", toolName, contractGate.Reason)
 			receiptVerdict = config.ActionBlock
+			receiptContractGate = &contractGate
 			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
-			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
-			receiptVerdict = ""
 			return result
 		}
 		if verdict.Method == methodToolsCall {
@@ -959,10 +959,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				return result
 			}
 			receiptVerdict = config.ActionWarn
-			defer func() {
-				emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
-				receiptVerdict = ""
-			}()
+			receiptContractGate = &contractGate
 		}
 		return result // forward
 	}

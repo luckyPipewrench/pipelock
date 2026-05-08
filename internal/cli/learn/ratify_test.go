@@ -119,6 +119,10 @@ func TestRatifyLowConfidenceGuards(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load ratified candidate: %v", err)
 			}
+			if len(env.Body.Rules) != len(tt.wantLifecycle) {
+				t.Fatalf("ratified rules count = %d (%#v), want %d from expected lifecycle map %#v",
+					len(env.Body.Rules), env.Body.Rules, len(tt.wantLifecycle), tt.wantLifecycle)
+			}
 			for _, rule := range env.Body.Rules {
 				want, ok := tt.wantLifecycle[rule.RuleID]
 				if !ok {

@@ -261,6 +261,7 @@ func TestConnectLiveLock_AllowRulePasses(t *testing.T) {
 	defer cleanup()
 	rph := newReceiptProxyHelper(t)
 	p.receiptEmitterPtr.Store(rph.emitter)
+	p.ks = killswitch.New(p.CurrentConfig())
 	rule := contractruntimetest.HTTPEnforceRule("r-connect", "127.0.0.1", "/", http.MethodConnect)
 	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
 

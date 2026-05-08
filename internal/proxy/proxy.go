@@ -3165,45 +3165,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Transport:        TransportFetch,
 	})
 	if gateErr != nil {
-		log.LogBlocked(actx, blockLayerContract, gateErr.Error())
-		p.recordDecision(config.ActionBlock, blockLayerContract, "contract evaluation failed", TransportFetch, requestID)
-		p.emitReceipt(receipt.EmitOpts{
-			ActionID:            actionID,
-			Verdict:             config.ActionBlock,
-			Layer:               blockLayerContract,
-			Pattern:             "contract evaluation failed",
-			Transport:           TransportFetch,
-			Method:              http.MethodGet,
-			Target:              displayURL,
-			RequestID:           requestID,
-			Agent:               agent,
-			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
-			SessionContaminated: fetchTaint.Risk.Contaminated,
-			RecentTaintSources:  fetchTaint.Risk.Sources,
-			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
-			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
-			AuthorityKind:       fetchTaint.Authority.String(),
-			TaintDecision:       fetchTaint.Result.Decision.String(),
-			TaintDecisionReason: fetchTaint.Result.Reason,
-			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
-		})
-		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerContract, time.Since(start), agentLabel)
-		writeBlockedJSON(w,
-			blockInfoFor(blockreason.ParseError, blockLayerContract),
-			http.StatusForbidden, FetchResponse{
-				URL:         displayURL,
-				Agent:       agent,
-				Blocked:     true,
-				BlockReason: "contract evaluation failed",
-			})
-		return
+		gate = contractEvaluationFailedGate()
 	}
 	fetchGate = gate
 	if gate.Verdict == config.ActionBlock {
-		reason := gate.Reason
-		if reason == "" {
-			reason = gate.WinningSource
-		}
+		reason := gateBlockReason(gate)
 		log.LogBlocked(actx, blockLayerContract, reason)
 		p.recordDecision(config.ActionBlock, blockLayerContract, reason, TransportFetch, requestID)
 		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{

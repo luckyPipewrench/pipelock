@@ -104,6 +104,37 @@ func TestEvaluateGate_PropagatesRuntimeDecisionErrors(t *testing.T) {
 	}
 }
 
+func TestGateBlockReasonFallsBackToWinningSource(t *testing.T) {
+	gate := ContractGateOutput{
+		Verdict:       config.ActionBlock,
+		WinningSource: contractruntime.WinningSourceScanner,
+	}
+	if got := gateBlockReason(gate); got != contractruntime.WinningSourceScanner {
+		t.Fatalf("gateBlockReason = %q, want scanner", got)
+	}
+
+	gate.Reason = contractDefaultDenyReason
+	if got := gateBlockReason(gate); got != contractDefaultDenyReason {
+		t.Fatalf("gateBlockReason = %q, want %s", got, contractDefaultDenyReason)
+	}
+}
+
+func TestContractEvaluationFailedGateFailsClosed(t *testing.T) {
+	gate := contractEvaluationFailedGate()
+	if gate.Verdict != config.ActionBlock {
+		t.Fatalf("verdict = %q, want block", gate.Verdict)
+	}
+	if gate.LiveVerdict != config.ActionBlock {
+		t.Fatalf("live_verdict = %q, want block", gate.LiveVerdict)
+	}
+	if gate.WinningSource != blockLayerContract {
+		t.Fatalf("winning_source = %q, want contract layer", gate.WinningSource)
+	}
+	if gateBlockReason(gate) != "contract evaluation failed" {
+		t.Fatalf("reason = %q, want contract evaluation failed", gateBlockReason(gate))
+	}
+}
+
 func TestEvaluateGate_LiveDefaultDeny(t *testing.T) {
 	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
 	loader := testContractLoader(t, contractruntime.ModeLive, rule)

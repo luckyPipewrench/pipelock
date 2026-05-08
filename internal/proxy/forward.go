@@ -413,30 +413,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Transport:        TransportConnect,
 	})
 	if gateErr != nil {
-		p.logger.LogBlocked(targetCtx, blockLayerContract, gateErr.Error())
-		p.emitReceipt(receipt.EmitOpts{
-			ActionID:  actionID,
-			Verdict:   config.ActionBlock,
-			Layer:     blockLayerContract,
-			Pattern:   "contract evaluation failed",
-			Transport: TransportConnect,
-			Method:    http.MethodConnect,
-			Target:    syntheticURL,
-			RequestID: requestID,
-			Agent:     agent,
-		})
-		p.metrics.RecordTunnelBlocked(agentLabel)
-		writeBlockedError(w,
-			blockInfoFor(blockreason.ParseError, blockLayerContract),
-			"CONNECT blocked: contract evaluation failed", http.StatusForbidden)
-		return
+		gate = contractEvaluationFailedGate()
 	}
 	connectGate = gate
 	if gate.Verdict == config.ActionBlock {
-		reason := gate.Reason
-		if reason == "" {
-			reason = gate.WinningSource
-		}
+		reason := gateBlockReason(gate)
 		p.logger.LogBlocked(targetCtx, blockLayerContract, reason)
 		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{
 			ActionID:  actionID,

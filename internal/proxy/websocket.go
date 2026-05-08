@@ -482,30 +482,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Transport:        TransportWS,
 	})
 	if gateErr != nil {
-		log.LogBlocked(actx, blockLayerContract, gateErr.Error())
-		p.metrics.RecordWSBlocked()
-		p.emitReceipt(receipt.EmitOpts{
-			ActionID:  receipt.NewActionID(),
-			Verdict:   config.ActionBlock,
-			Layer:     blockLayerContract,
-			Pattern:   "contract evaluation failed",
-			Transport: TransportWS,
-			Method:    "WS",
-			Target:    targetURL,
-			RequestID: requestID,
-			Agent:     agent,
-		})
-		writeBlockedError(w,
-			blockInfoFor(blockreason.ParseError, blockLayerContract),
-			"WebSocket blocked: contract evaluation failed", http.StatusForbidden)
-		return
+		gate = contractEvaluationFailedGate()
 	}
 	wsGate = gate
 	if gate.Verdict == config.ActionBlock {
-		reason := gate.Reason
-		if reason == "" {
-			reason = gate.WinningSource
-		}
+		reason := gateBlockReason(gate)
 		log.LogBlocked(actx, blockLayerContract, reason)
 		p.metrics.RecordWSBlocked()
 		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{

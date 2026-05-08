@@ -209,6 +209,22 @@ func gateBlockedInfo(gate ContractGateOutput) blockreason.Info {
 	return blockInfoFor(blockreason.ParseError, blockLayerContract)
 }
 
+func gateBlockReason(gate ContractGateOutput) string {
+	if gate.Reason != "" {
+		return gate.Reason
+	}
+	return gate.WinningSource
+}
+
+func contractEvaluationFailedGate() ContractGateOutput {
+	return ContractGateOutput{
+		Verdict:       config.ActionBlock,
+		LiveVerdict:   config.ActionBlock,
+		WinningSource: blockLayerContract,
+		Reason:        "contract evaluation failed",
+	}
+}
+
 func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
 	writeBlockedError(w, gateBlockedInfo(gate), body, http.StatusForbidden)
 }

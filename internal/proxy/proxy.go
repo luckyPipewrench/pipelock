@@ -2510,10 +2510,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries. The fetch path
-	// does not invoke the HTTP contract gate today; the loader handle is
-	// discarded here and re-snapshotted by handleForwardHTTP for the
-	// forward path.
+	// and resolveAgent() could read different registries. The contract
+	// loader is captured here too so the URL scan and contract gate use
+	// one coherent policy revision.
 	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
@@ -2701,6 +2700,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// resolver timeouts) from the finding classification — neither is evidence
 	// of threat.
 	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
+	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
@@ -3147,6 +3147,59 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				})
 			return
 		}
+	}
+
+	killSwitchActive := false
+	if p.ks != nil {
+		killSwitchActive = p.ks.IsActiveHTTP(r).Active
+	}
+	gate, gateErr := EvaluateGate(ContractGateInput{
+		Loader:           snapshotContractLoader,
+		Agent:            agent,
+		URL:              targetURL,
+		Method:           http.MethodGet,
+		EffectiveAction:  scannerVerdictForGate(hasFinding),
+		ScannerVerdict:   scannerVerdictForGate(hasFinding),
+		ScannerMatched:   hasFinding,
+		KillSwitchActive: killSwitchActive,
+		Transport:        TransportFetch,
+	})
+	if gateErr != nil {
+		gate = contractEvaluationFailedGate()
+	}
+	fetchGate = gate
+	if gate.Verdict == config.ActionBlock {
+		reason := gateBlockReason(gate)
+		log.LogBlocked(actx, blockLayerContract, reason)
+		p.recordDecision(config.ActionBlock, blockLayerContract, reason, TransportFetch, requestID)
+		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{
+			ActionID:            actionID,
+			Verdict:             config.ActionBlock,
+			Layer:               blockLayerContract,
+			Pattern:             reason,
+			Transport:           TransportFetch,
+			Method:              http.MethodGet,
+			Target:              displayURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   fetchTaint.Risk.Level.String(),
+			SessionContaminated: fetchTaint.Risk.Contaminated,
+			RecentTaintSources:  fetchTaint.Risk.Sources,
+			SessionTaskID:       fetchTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    fetchTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       fetchTaint.Authority.String(),
+			TaintDecision:       fetchTaint.Result.Decision.String(),
+			TaintDecisionReason: fetchTaint.Result.Reason,
+			TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
+		}))
+		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerContract, time.Since(start), agentLabel)
+		writeGateBlockedJSON(w, gate, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: reason,
+		})
+		return
 	}
 
 	// Fetch the URL — attach clientIP/requestID/agent and resolved agent
@@ -3609,7 +3662,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(start)
 	p.metrics.RecordAllowed(duration, agentLabel)
-	p.emitReceipt(receipt.EmitOpts{
+	allowReceipt := receipt.EmitOpts{
 		ActionID:            actionID,
 		Verdict:             config.ActionAllow,
 		Transport:           "fetch",
@@ -3626,7 +3679,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		TaintDecision:       fetchTaint.Result.Decision.String(),
 		TaintDecisionReason: fetchTaint.Result.Reason,
 		TaskOverrideApplied: fetchTaint.TaskOverrideApplied,
-	})
+	}
+	if fetchGate.HasContractContext() {
+		allowReceipt = withContractReceipt(fetchGate, allowReceipt)
+	}
+	p.emitReceipt(allowReceipt)
 	log.LogAllowed(actx, resp.StatusCode, len(body), duration)
 
 	writeJSON(w, http.StatusOK, FetchResponse{

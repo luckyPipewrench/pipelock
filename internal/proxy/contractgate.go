@@ -33,6 +33,12 @@ const (
 // silently route receipts into a separate label dimension.
 const blockLayerContract = "contract"
 
+// Contract-gated agent egress surfaces are /fetch, absolute-URI HTTP forward,
+// CONNECT tunnel setup, and the /ws handshake. MCP HTTP/SSE uses the MCP-side
+// evaluator, reverse proxy is inbound service traffic, and TLS-intercepted
+// requests inherit the CONNECT setup decision before inner request scanning.
+// Add new agent egress transports here unless a separate evaluator owns them.
+
 // ContractGateInput captures the proxy-side state a single request brings to
 // the contract evaluator. The helper is transport-agnostic; callers resolve
 // agent identity before invoking it.
@@ -190,20 +196,41 @@ func contractBlockInfo(reason string) (blockreason.Info, bool) {
 	}
 }
 
-func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
+func gateBlockedInfo(gate ContractGateOutput) blockreason.Info {
 	if gate.Reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
-		writeBlockedError(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), body, http.StatusForbidden)
-		return
+		return blockInfoFor(blockreason.KillSwitchActive, "kill_switch")
 	}
 	if gate.WinningSource == contractruntime.WinningSourceScanner {
-		writeBlockedError(w, blockInfoFor(blockreason.ParseError, "scanner"), body, http.StatusForbidden)
-		return
+		return blockInfoFor(blockreason.ParseError, "scanner")
 	}
 	if info, ok := contractBlockInfo(gate.Reason); ok {
-		writeBlockedError(w, info, body, http.StatusForbidden)
-		return
+		return info
 	}
-	writeBlockedError(w, blockInfoFor(blockreason.ParseError, blockLayerContract), body, http.StatusForbidden)
+	return blockInfoFor(blockreason.ParseError, blockLayerContract)
+}
+
+func gateBlockReason(gate ContractGateOutput) string {
+	if gate.Reason != "" {
+		return gate.Reason
+	}
+	return gate.WinningSource
+}
+
+func contractEvaluationFailedGate() ContractGateOutput {
+	return ContractGateOutput{
+		Verdict:       config.ActionBlock,
+		LiveVerdict:   config.ActionBlock,
+		WinningSource: blockLayerContract,
+		Reason:        "contract evaluation failed",
+	}
+}
+
+func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
+	writeBlockedError(w, gateBlockedInfo(gate), body, http.StatusForbidden)
+}
+
+func writeGateBlockedJSON(w http.ResponseWriter, gate ContractGateOutput, status int, resp FetchResponse) {
+	writeBlockedJSON(w, gateBlockedInfo(gate), status, resp)
 }
 
 func scannerVerdictForGate(hasFinding bool) string {

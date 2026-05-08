@@ -77,12 +77,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries. CONNECT is
-	// opaque to the HTTP contract gate (no URL/method to evaluate against
-	// http_destination/http_action rules) so the loader handle is
-	// discarded here; handleForwardHTTP captures it for absolute-URI
-	// requests.
-	resolved, id, envEmitter, _ := p.resolveAgentRuntimeFromRequest(r)
+	// and resolveAgent() could read different registries. CONNECT only
+	// exposes host:port; the contract gate evaluates a synthetic URL with
+	// path "/", so root-path rules can match and non-root path rules fall
+	// through to enforce-default-deny.
+	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -256,6 +255,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// clean-decay suppression or CEE signal recording. Fail-closed enforcement
 	// still fires below via !result.Allowed.
 	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || connectHeaderHadFinding
+	var connectGate ContractGateOutput
 
 	if !result.Allowed {
 		status := http.StatusForbidden
@@ -395,6 +395,44 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+
+	killSwitchActive := false
+	if p.ks != nil {
+		killSwitchActive = p.ks.IsActiveHTTP(r).Active
+	}
+	gate, gateErr := EvaluateGate(ContractGateInput{
+		Loader:           snapshotContractLoader,
+		Agent:            agent,
+		URL:              syntheticURL,
+		Method:           http.MethodConnect,
+		EffectiveAction:  scannerVerdictForGate(hasFinding),
+		ScannerVerdict:   scannerVerdictForGate(hasFinding),
+		ScannerMatched:   hasFinding,
+		KillSwitchActive: killSwitchActive,
+		Transport:        TransportConnect,
+	})
+	if gateErr != nil {
+		gate = contractEvaluationFailedGate()
+	}
+	connectGate = gate
+	if gate.Verdict == config.ActionBlock {
+		reason := gateBlockReason(gate)
+		p.logger.LogBlocked(targetCtx, blockLayerContract, reason)
+		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerContract,
+			Pattern:   reason,
+			Transport: TransportConnect,
+			Method:    http.MethodConnect,
+			Target:    syntheticURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
+		p.metrics.RecordTunnelBlocked(agentLabel)
+		writeGateBlockedError(w, gate, "CONNECT blocked: "+reason)
+		return
 	}
 
 	if connectRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
@@ -593,7 +631,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	p.metrics.RecordTunnel(duration, totalBytes, agentLabel)
 	// Count successful tunnels in request totals so /stats reflects CONNECT traffic.
 	p.metrics.RecordAllowed(duration, agentLabel)
-	p.emitReceipt(receipt.EmitOpts{
+	allowReceipt := receipt.EmitOpts{
 		ActionID:  actionID,
 		Verdict:   config.ActionAllow,
 		Transport: "connect",
@@ -601,7 +639,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Target:    syntheticURL,
 		RequestID: requestID,
 		Agent:     agent,
-	})
+	}
+	if connectGate.HasContractContext() {
+		allowReceipt = withContractReceipt(connectGate, allowReceipt)
+	}
+	p.emitReceipt(allowReceipt)
 	p.logger.LogTunnelClose(targetCtx, totalBytes, duration)
 
 	// Record data budget for the target domain

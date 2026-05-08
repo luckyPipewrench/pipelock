@@ -118,10 +118,10 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve per-agent config and scanner from a single registry snapshot.
 	// This prevents TOCTOU races during hot-reload where knownProfiles()
-	// and resolveAgent() could read different registries. WebSocket does
-	// not invoke the HTTP contract gate today; the loader handle is
-	// discarded.
-	resolved, id, envEmitter, _ := p.resolveAgentRuntimeFromRequest(r)
+	// and resolveAgent() could read different registries. The contract
+	// loader is captured for the handshake gate; per-frame scanning stays
+	// independent and unchanged.
+	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -252,6 +252,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// so DNS resolver failures don't taint downstream "finding" behavior. Fail-closed
 	// enforcement still fires via !result.Allowed.
 	wsHasFinding := !result.Allowed && !result.IsAdaptiveNeutral()
+	var wsGate ContractGateOutput
 
 	if !result.Allowed {
 		status := http.StatusForbidden
@@ -465,6 +466,44 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	killSwitchActive := false
+	if p.ks != nil {
+		killSwitchActive = p.ks.IsActiveHTTP(r).Active
+	}
+	gate, gateErr := EvaluateGate(ContractGateInput{
+		Loader:           snapshotContractLoader,
+		Agent:            agent,
+		URL:              scanURL,
+		Method:           http.MethodGet,
+		EffectiveAction:  scannerVerdictForGate(wsHasFinding),
+		ScannerVerdict:   scannerVerdictForGate(wsHasFinding),
+		ScannerMatched:   wsHasFinding,
+		KillSwitchActive: killSwitchActive,
+		Transport:        TransportWS,
+	})
+	if gateErr != nil {
+		gate = contractEvaluationFailedGate()
+	}
+	wsGate = gate
+	if gate.Verdict == config.ActionBlock {
+		reason := gateBlockReason(gate)
+		log.LogBlocked(actx, blockLayerContract, reason)
+		p.metrics.RecordWSBlocked()
+		p.emitReceipt(withContractReceipt(gate, receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerContract,
+			Pattern:   reason,
+			Transport: TransportWS,
+			Method:    "WS",
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
+		writeGateBlockedError(w, gate, "WebSocket blocked: "+reason)
+		return
+	}
+
 	// Upgrade the client connection.
 	upgrader := ws.HTTPUpgrader{
 		Timeout: 10 * time.Second,
@@ -669,7 +708,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if stats.blocked {
 		closeVerdict = config.ActionBlock
 	}
-	p.emitReceipt(receipt.EmitOpts{
+	closeReceipt := receipt.EmitOpts{
 		ActionID:         actionID,
 		Verdict:          closeVerdict,
 		Layer:            "session_close",
@@ -680,7 +719,11 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Agent:            agent,
 		RedactionProfile: cfg.Redaction.DefaultProfile,
 		RedactionReport:  relay.redactionLog,
-	})
+	}
+	if wsGate.HasContractContext() {
+		closeReceipt = withContractReceipt(wsGate, closeReceipt)
+	}
+	p.emitReceipt(closeReceipt)
 
 	sc.RecordRequest(relay.hostname, int(stats.clientToServer+stats.serverToClient))
 

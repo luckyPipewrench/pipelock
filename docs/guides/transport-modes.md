@@ -97,6 +97,8 @@ Bidirectional WebSocket proxy with frame-level scanning.
 - Compression rejection (RSV1 bit check prevents deflate-based DLP bypass)
 - Data budget tracking per domain
 
+**Learn-and-lock contracts:** WebSocket handshakes use HTTP GET semantics. A signed GET rule for `https://api.example.com/stream` also authorizes a `/ws?url=wss://api.example.com/stream` handshake; frame-level DLP and injection scanning still run after the connection is established.
+
 **What the agent receives:** WebSocket frames, scanned in both directions.
 
 **Use when:** Your agent uses WebSocket connections for real-time communication and you need DLP scanning on the message content.

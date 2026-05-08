@@ -33,6 +33,12 @@ const (
 // silently route receipts into a separate label dimension.
 const blockLayerContract = "contract"
 
+// Contract-gated agent egress surfaces are /fetch, absolute-URI HTTP forward,
+// CONNECT tunnel setup, and the /ws handshake. MCP HTTP/SSE uses the MCP-side
+// evaluator, reverse proxy is inbound service traffic, and TLS-intercepted
+// requests inherit the CONNECT setup decision before inner request scanning.
+// Add new agent egress transports here unless a separate evaluator owns them.
+
 // ContractGateInput captures the proxy-side state a single request brings to
 // the contract evaluator. The helper is transport-agnostic; callers resolve
 // agent identity before invoking it.
@@ -204,6 +210,22 @@ func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body 
 		return
 	}
 	writeBlockedError(w, blockInfoFor(blockreason.ParseError, blockLayerContract), body, http.StatusForbidden)
+}
+
+func writeGateBlockedJSON(w http.ResponseWriter, gate ContractGateOutput, status int, resp FetchResponse) {
+	if gate.Reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
+		writeBlockedJSON(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), status, resp)
+		return
+	}
+	if gate.WinningSource == contractruntime.WinningSourceScanner {
+		writeBlockedJSON(w, blockInfoFor(blockreason.ParseError, "scanner"), status, resp)
+		return
+	}
+	if info, ok := contractBlockInfo(gate.Reason); ok {
+		writeBlockedJSON(w, info, status, resp)
+		return
+	}
+	writeBlockedJSON(w, blockInfoFor(blockreason.ParseError, blockLayerContract), status, resp)
 }
 
 func scannerVerdictForGate(hasFinding bool) string {

@@ -38,7 +38,7 @@ func reasonFromScanner(label string) blockreason.Reason {
 		return blockreason.RateLimit
 	case scanner.ScannerDataBudget:
 		return blockreason.DataBudget
-	case scanner.ScannerDLP, scannerLabelBodyDLP, scannerLabelAddressProtection:
+	case scanner.ScannerDLP, scanner.ScannerCoreDLP, scannerLabelBodyDLP, scannerLabelAddressProtection:
 		return blockreason.DLPMatch
 	case scannerLabelRedaction:
 		return blockreason.RedactionFailure

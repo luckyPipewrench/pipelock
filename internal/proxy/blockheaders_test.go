@@ -28,6 +28,7 @@ func TestReasonFromScanner_AllMappedLayers(t *testing.T) {
 		scanner.ScannerRateLimit:        blockreason.RateLimit,
 		scanner.ScannerDataBudget:       blockreason.DataBudget,
 		scanner.ScannerDLP:              blockreason.DLPMatch,
+		scanner.ScannerCoreDLP:          blockreason.DLPMatch,
 		scanner.ScannerParser:           blockreason.ParseError,
 		scannerLabelBodyDLP:             blockreason.DLPMatch,
 		scannerLabelAddressProtection:   blockreason.DLPMatch,
@@ -156,18 +157,22 @@ func TestRetryFromReason_FullVocabulary(t *testing.T) {
 
 func TestBlockInfo_DerivesTripleAndLayer(t *testing.T) {
 	t.Parallel()
-	got := blockInfo(scanner.ScannerDLP)
-	if got.Reason != blockreason.DLPMatch {
-		t.Errorf("Reason = %q, want %q", got.Reason, blockreason.DLPMatch)
-	}
-	if got.Severity != blockreason.SeverityCritical {
-		t.Errorf("Severity = %q, want %q", got.Severity, blockreason.SeverityCritical)
-	}
-	if got.Retry != blockreason.RetryNone {
-		t.Errorf("Retry = %q, want %q", got.Retry, blockreason.RetryNone)
-	}
-	if got.Layer != scanner.ScannerDLP {
-		t.Errorf("Layer = %q, want %q", got.Layer, scanner.ScannerDLP)
+	for _, scannerLabel := range []string{scanner.ScannerDLP, scanner.ScannerCoreDLP} {
+		t.Run(scannerLabel, func(t *testing.T) {
+			got := blockInfo(scannerLabel)
+			if got.Reason != blockreason.DLPMatch {
+				t.Errorf("Reason = %q, want %q", got.Reason, blockreason.DLPMatch)
+			}
+			if got.Severity != blockreason.SeverityCritical {
+				t.Errorf("Severity = %q, want %q", got.Severity, blockreason.SeverityCritical)
+			}
+			if got.Retry != blockreason.RetryNone {
+				t.Errorf("Retry = %q, want %q", got.Retry, blockreason.RetryNone)
+			}
+			if got.Layer != scannerLabel {
+				t.Errorf("Layer = %q, want %q", got.Layer, scannerLabel)
+			}
+		})
 	}
 }
 

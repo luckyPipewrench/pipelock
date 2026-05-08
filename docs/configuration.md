@@ -1850,6 +1850,74 @@ flight_recorder:
 
 Evidence files are named `evidence-<session>-<seq>.jsonl`. Each entry contains a SHA-256 hash of its predecessor, forming a tamper-evident chain. Action receipts form a second chain within the evidence log (each receipt links to the previous receipt via `chain_prev_hash`). Breaking either chain is detectable by `pipelock integrity verify`.
 
+## Learn and Lock
+
+Per-agent behavioral-contract workflow. The `learn` block controls where observation evidence is written, how privacy salt is resolved, and which inference floors the compiler uses.
+
+```yaml
+learn:
+  enabled: false
+  capture_dir: /var/lib/pipelock/learn
+  privacy:
+    salt_source: "${PIPELOCK_LEARN_SALT}"
+    public_allowlist_default: true
+  inference:
+    floors:
+      min_sessions: 5
+      min_events: 20
+      min_windows: 3
+    normalization:
+      algorithm: frequency_weighted_entropy_v1
+      min_events: 10
+      min_distinct_values: 5
+      entropy_threshold_bits: 3.0
+      reserved_segments_extra: []
+      cardinality_cap_per_host: 1000
+      tail_promotion_block_pct: 5.0
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable the learn observation configuration. When true, `capture_dir` is required. |
+| `capture_dir` | `""` | Absolute directory for recorder JSONL evidence used by `pipelock learn observe`, `compile`, and `shadow`. Use durable storage for production captures. |
+| `privacy.salt_source` | `""` | Salt resolver for privacy-sensitive dimensions: `${VAR}` reads an environment variable, `file:/abs/path` reads a file, any other string is treated as a literal salt. |
+| `privacy.public_allowlist_default` | `true` | Use the built-in public allowlist when no explicit privacy allowlist is configured. |
+| `inference.floors.min_sessions` | `5` | Minimum distinct sessions before a rule can be classified stable. |
+| `inference.floors.min_events` | `20` | Minimum matching events before a rule can be classified stable. |
+| `inference.floors.min_windows` | `3` | Minimum observation windows before a rule can be classified stable. |
+| `inference.normalization.algorithm` | `frequency_weighted_entropy_v1` | Path-normalization algorithm. This is the only accepted value in v2.4. |
+| `inference.normalization.min_events` | `10` | Minimum events in a host/method/path bucket before segment collapse is eligible. |
+| `inference.normalization.min_distinct_values` | `5` | Minimum distinct segment values before a segment position can collapse. |
+| `inference.normalization.entropy_threshold_bits` | `3.0` | Frequency-weighted entropy threshold for segment collapse. |
+| `inference.normalization.reserved_segments_extra` | `[]` | Extra sensitive path segments that must never be collapsed. Extends the built-in reserved list; it cannot remove built-ins. |
+| `inference.normalization.cardinality_cap_per_host` | `1000` | Per-host cap for distinct path families before overflow enters the `_other` tail bucket. |
+| `inference.normalization.tail_promotion_block_pct` | `5.0` | Promotion block threshold when the `_other` tail bucket exceeds this percentage of host traffic. |
+
+`pipelock learn observe --capture-dir <abs-dir>` uses the same runtime as `pipelock run --capture-output`; it validates the capture directory and writes hash-chained recorder JSONL. `pipelock learn compile --agent <name>` signs candidate contracts with the agent's keystore key; generate one first with `pipelock keygen <name>` or pass `--keystore` / `--compile-key-agent` for a different key. `pipelock learn shadow` requires `--contract-key` unless you explicitly use the diagnostics-only `--allow-unsigned-contract-for-diagnostics` flag.
+
+For the end-to-end operator flow, see [Learn-and-Lock](guides/learn-and-lock.md).
+
+## Health Watchdog
+
+Wedge detection for `/health`. The watchdog is enabled by default and turns `/health` into a real liveness signal: HTTP 503 when scanner/config/session/kill-switch/watchdog health is bad, HTTP 200 when all tracked subsystems are healthy.
+
+```yaml
+health_watchdog:
+  enabled: true
+  interval_seconds: 2
+  expose_subsystems: false
+```
+
+| Field | Default | Restart? | Description |
+|-------|---------|----------|-------------|
+| `enabled` | `true` | Yes | Enable internal wedge detection. Set false only if an external supervisor provides equivalent checks and you want legacy always-200 health behavior. |
+| `interval_seconds` | `2` | Yes | Watchdog tick rate. The stale threshold is 3x this interval. |
+| `expose_subsystems` | `false` | Yes | Include the per-subsystem boolean map in `/health` responses. The HTTP status still reflects wedges when false; only the detailed map is hidden. |
+
+Omitting `health_watchdog`, setting it to YAML null, or leaving `enabled` blank all preserve the default `enabled: true`. Settings are operational and excluded from the canonical policy hash. Changing them on hot reload logs a warning and requires restart.
+
+For response examples and Kubernetes probe guidance, see [Health Endpoint and Wedge-Detection Watchdog](guides/health.md).
+
 ## A2A Scanning (v2.1)
 
 Scanning for Google A2A (Agent-to-Agent) protocol traffic. Detects A2A messages in forward proxy and MCP HTTP proxy paths. Applies field-aware content inspection with URL/text/secret classification.

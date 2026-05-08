@@ -24,7 +24,7 @@ pipelock init sidecar --inject-spec <manifest>
 
 The generated bundle includes:
 
-- The patched agent workload with `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` pointing at the companion Service
+- The patched agent workload with `HTTPS_PROXY` and `HTTP_PROXY` pointing at the companion Service, plus `NO_PROXY=localhost,127.0.0.1,.svc,.cluster.local` for local and in-cluster destinations that should bypass the proxy
 - A pipelock ConfigMap with forward proxy mode enabled
 - A companion pipelock Deployment with two replicas, anti-affinity, and production-oriented resource defaults
 - A companion pipelock Service

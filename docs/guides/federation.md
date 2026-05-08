@@ -56,6 +56,14 @@ Each `trust_list` entry names a trusted signing key and what it is allowed to si
 
 Key rotation is a config change. Edit `public_key`, hot-reload (`SIGHUP` or fsnotify watch), and the new key is in effect. There is no automatic well-known fetch.
 
+## TLS termination and target URIs
+
+Inbound signatures bind RFC 9421 `@target-uri`. For ordinary origin-form HTTP requests, Pipelock reconstructs the absolute target URI from the actual listener state: `https` when the request arrived over TLS, `http` otherwise, plus the request `Host` and path/query.
+
+Pipelock intentionally does not trust `X-Forwarded-Proto`, `X-Forwarded-Host`, `Forwarded`, or similar headers for this reconstruction. Those headers are caller-controlled unless a trusted frontend strips and rewrites them, and trusting them in the verifier would create a downgrade or host-spoofing path.
+
+For signed inbound mediator endpoints, terminate TLS at Pipelock itself, use mTLS to the Pipelock listener, or have a trusted local mediator re-sign after TLS termination. If an ingress, ALB, CDN, or reverse proxy terminates public HTTPS and forwards plaintext HTTP to Pipelock, peers that signed `https://...` will fail closed because Pipelock correctly reconstructs `http://...`.
+
 ## Outbound signing — over-cap body limitation
 
 When Pipelock signs an outbound mediated request, the signer buffers the request body up to `mediation_envelope.max_body_bytes` (default 1 MiB) to compute the RFC 9421 `Content-Digest` header. If the body exceeds the cap, **the request is still signed**, but `Content-Digest` is dropped from the declared component list and the signature covers headers + envelope only — NOT the body.
@@ -116,20 +124,20 @@ External verifiers fetch this endpoint on a configurable interval and use it as 
 
 The directory is served on the same listener as the proxy. There is no auth on the endpoint; the keys are public verification keys, not secrets. If you do not want this endpoint exposed publicly, gate it at your ingress layer.
 
-### `pipelock-verify-python` 0.2.0 example
+### Prepared `pipelock-verify-python` 0.2.0 example
 
-The Python verifier ships a directory-fetch helper:
+The prepared Python verifier update includes a directory-fetch helper:
 
 ```python
 from pipelock_verify import fetch_directory, verify
 
 directory = fetch_directory("https://pipelock.example.com")
-result = verify(receipt, trusted_directory=directory)
+result = verify(receipt, public_key_hex=directory.public_key_hex())
 if not result.valid:
     raise SystemExit(f"verification failed: {result.error}")
 ```
 
-The 0.1.x example pinned a SHA hex out of band; 0.2.0+ uses well-known fetch. See [`receipt-transports.md`](receipt-transports.md) and the Python verifier's README.
+The 0.1.x example pinned a SHA hex out of band; the prepared 0.2.0 update uses well-known fetch to resolve the public key for individual receipt verification once published. See [`receipt-transports.md`](receipt-transports.md) and the Python verifier's README.
 
 ## Authenticated agent identity
 
@@ -169,7 +177,7 @@ Different deployments (region A, region B) sign their own envelopes. A central a
 
 ### External auditor
 
-The auditor doesn't run Pipelock at all. They use `pipelock-verify-python` against the Pipelock deployment's well-known directory. The auditor verifies receipts the deployment emits without ever needing the deployment's blessing — the public verification keys are public, the directory endpoint is open.
+The auditor doesn't run Pipelock at all. They can use the Go reference verifier today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the Pipelock deployment's well-known directory. The auditor verifies individual receipts the deployment emits without ever needing the deployment's blessing — the public verification keys are public, the directory endpoint is open.
 
 ## Receipt verification
 
@@ -178,7 +186,7 @@ A request that traverses two mediated Pipelocks accumulates two layers of signed
 1. The originating Pipelock signs an outbound envelope.
 2. The receiving Pipelock verifies the inbound envelope and emits its own outbound envelope on the next hop (or on the response). The `EvidenceReceipt v2` schema reserves `proxy_decision.policy_sources` for runtime contract-aware decision evidence as that emit path is wired progressively.
 
-External auditors verify both envelopes independently using `pipelock-verify-python` against the corresponding deployments' well-known directories.
+External auditors verify both envelopes independently using the Go reference verifier today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the corresponding deployments' well-known directories.
 
 ## Failure modes
 
@@ -221,4 +229,4 @@ deployment, enabling it before clients sign envelopes will fail closed with
 - [`receipt-transports.md`](receipt-transports.md) — receipt verification recipe.
 - [`mediation-envelope.md`](mediation-envelope.md) — outbound envelope format and signing.
 - [`learn-and-lock.md`](learn-and-lock.md) — `EvidenceReceipt v2` envelope (independent of mediation-envelope verification).
-- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; v0.2.0 uses well-known fetch.
+- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; prepared v0.2.0 update uses well-known fetch for individual receipt verification once published.

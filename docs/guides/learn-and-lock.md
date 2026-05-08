@@ -40,7 +40,10 @@ The example below assumes `agent-a` is a configured agent in `pipelock.yaml`.
 # Phase 1 — observe for a few days.
 pipelock learn observe --capture-dir /var/lib/pipelock/learn
 
-# Phase 2 — compile the captured evidence into a candidate.
+# Generate or reuse the compile-signing key for this agent.
+pipelock keygen agent-a
+
+# Phase 2 — compile the captured evidence into a signed candidate.
 pipelock learn compile --agent agent-a
 # Outputs (under ~/.pipelock/contracts/candidates/):
 #   agent-a.candidate.yaml
@@ -54,6 +57,7 @@ pipelock learn review ~/.pipelock/contracts/candidates/agent-a.candidate.yaml
 # Phase 3 — shadow-replay against captured sessions to see what the
 # candidate would block. Use `pipelock learn diff` to compare two runs.
 pipelock learn shadow --contract ~/.pipelock/contracts/candidates/agent-a.candidate.yaml \
+                      --contract-key ~/.pipelock/agents/agent-a/id_ed25519.pub \
                       --sessions /var/lib/pipelock/learn
 
 # Phase 4a — operator ratifies the candidate (interactive per-rule approval).
@@ -173,7 +177,7 @@ The v2.4 receipt schema defines an `EvidenceReceipt v2` envelope for contract-aw
 
 v2 envelopes are distinguished from legacy v1 by the top-level `record_type` field. v1 verifiers reject v2 with `unsupported version 2 (expected 1)`; the existing audit pipeline keeps working unchanged for non-contract-aware deployments.
 
-External verification is via `pipelock-verify-python` 0.2.0 or later. See [`docs/guides/receipt-transports.md`](receipt-transports.md) for the verification recipe.
+External verification for individual EvidenceReceipt v2 envelopes is supported by the Go reference verifier today. A prepared `pipelock-verify-python` 0.2.0 update adds individual v2-envelope verification once published; v2 chain verification is not part of that Python update. Use the Go reference for full v2 chain checks until that lands. See [`docs/guides/receipt-transports.md`](receipt-transports.md) for the verification recipe.
 
 ## Signing keys
 
@@ -189,7 +193,7 @@ Deployment-level keys:
 - `roster-root` — signs the deployment's key roster (which keys the deployment trusts for which purpose).
 - `recovery-root` — separate, pinned, used only for break-glass recovery if the roster-root is compromised.
 
-`pipelock signing` subcommands manage the keystore (run `pipelock signing --help` for the current surface).
+Use `pipelock keygen <agent>` for per-agent signing keys and `pipelock signing roster ...` for activation rosters (run `pipelock signing --help` for the roster and recovery-key surface).
 
 ## Soak window
 
@@ -210,7 +214,7 @@ A new contract is not enforced the moment you ratify it. Pipelock's recommended 
 
 ## See also
 
-- [`internal/config/schema.go`](../../internal/config/schema.go) — the `Learn` struct is the schema source of truth (a dedicated configuration-reference section is a v2.5 follow-up).
+- [`docs/configuration.md`](../configuration.md#learn-and-lock) — `learn` configuration reference.
 - [`docs/guides/receipt-transports.md`](receipt-transports.md) — verifying receipts externally.
 - [`docs/guides/federation.md`](federation.md) — cross-org envelope verification (independent of contracts).
-- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; v0.2.0+ verifies EvidenceReceipt v2.
+- [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) — external Python verifier; prepared v0.2.0 update adds individual EvidenceReceipt v2 envelope verification once published.

@@ -16,9 +16,14 @@ Include:
 
 ## Response Timeline
 
-- **Acknowledgment:** Within 48 hours
-- **Initial assessment:** Within 1 week
-- **Fix and disclosure:** Coordinated with reporter, typically within 30 days
+| Severity | ACK target | Patch or mitigation target |
+|---|---:|---:|
+| Critical | 24 hours | 7 days |
+| High | 48 hours | 14 days |
+| Medium | 3 business days | 30 days |
+| Low | 5 business days | 90 days |
+
+Critical and High issues may be pre-disclosed under embargo to material relying parties when they are actively exposed and need time to patch. Embargoed notice is limited to what operators need to reduce risk. Public disclosure happens after a fix, mitigation, or coordinated disclosure deadline. CVE reservation is used when the issue affects released versions, has meaningful user impact, and benefits from ecosystem-wide tracking. Full governance is documented in [CHARTER.md](CHARTER.md).
 
 ## Scope
 

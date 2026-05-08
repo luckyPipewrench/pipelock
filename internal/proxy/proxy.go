@@ -60,6 +60,7 @@ const (
 	ctxKeyAgent
 	ctxKeyAgentConfig  // per-agent resolved config for redirect scanning
 	ctxKeyAgentScanner // per-agent resolved scanner for redirect scanning
+	ctxKeyAgentContractLoader
 
 	// ctxKeyReverseEnvelopeOpts stores the envelope.BuildOpts that the
 	// reverse proxy pre-computes in ServeHTTP so the signing
@@ -195,6 +196,20 @@ func newRedirectEnvelopeBlockedRequest(err error) *blockedRequestError {
 		reason,
 		reason+": "+err.Error(),
 	)
+}
+
+func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
+	if blockedErr != nil && blockedErr.layer == blockLayerContract {
+		reason := strings.TrimPrefix(blockedErr.reason, "redirect blocked: ")
+		if info, ok := contractBlockInfo(reason); ok {
+			return info
+		}
+	}
+	layer := ""
+	if blockedErr != nil {
+		layer = blockedErr.layer
+	}
+	return blockInfoFor(blockreason.RedirectScanDenied, layer)
 }
 
 // Regex patterns for extracting content from HTML hiding spots that
@@ -576,7 +591,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// TransportFetch here mislabels every forward-proxy
 			// redirect — both paths share p.client and therefore
 			// share this CheckRedirect closure.
+			redirectTransport := TransportFetch
 			if t, ok := req.Context().Value(ctxKeyRedirectTransport).(string); ok && t != "" {
+				redirectTransport = t
 				redirectWarnCtx.Transport = t
 			} else {
 				redirectWarnCtx.Transport = TransportFetch
@@ -595,6 +612,35 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					return newRedirectBlockedRequest(result.Scanner, result.Reason)
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
+			}
+			scannerMatched := !result.Allowed
+			contractLoader, _ := req.Context().Value(ctxKeyAgentContractLoader).(*contractruntime.Loader)
+			if contractLoader == nil {
+				contractLoader = p.currentContractLoader()
+			}
+			gate, gateErr := EvaluateGate(ContractGateInput{
+				Loader:          contractLoader,
+				Agent:           agentName,
+				URL:             redirectURL,
+				Method:          req.Method,
+				EffectiveAction: scannerVerdictForGate(scannerMatched),
+				ScannerVerdict:  scannerVerdictForGate(scannerMatched),
+				ScannerMatched:  scannerMatched,
+				Transport:       redirectTransport,
+			})
+			if gateErr != nil {
+				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+gateErr.Error())
+				return newRedirectBlockedRequest(blockLayerContract, "contract evaluation failed")
+			}
+			if gate.Verdict == config.ActionBlock {
+				reason := gate.Reason
+				if reason == "" {
+					reason = gate.WinningSource
+				}
+				actx := newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName)
+				logger.LogBlocked(actx, blockLayerContract, "redirect from "+originalURL+" blocked: "+reason)
+				return newRedirectBlockedRequest(blockLayerContract, reason)
 			}
 			// Mediation envelope refresh: on every allowed redirect,
 			// rebuild the envelope on req so ph, hop, and @target-uri
@@ -1134,6 +1180,12 @@ func (p *Proxy) EnvelopeVerifierPtr() *atomic.Pointer[envelope.Verifier] {
 // Long-lived runtimes use this to pick up hot-reload receipt config changes.
 func (p *Proxy) ReceiptEmitterPtr() *atomic.Pointer[receipt.Emitter] {
 	return &p.receiptEmitterPtr
+}
+
+// ContractLoaderPtr returns the atomic pointer to the learn-lock loader.
+// Long-lived runtimes use this to pick up hot-reload contract state changes.
+func (p *Proxy) ContractLoaderPtr() *atomic.Pointer[contractruntime.Loader] {
+	return &p.contractLoaderPtr
 }
 
 // RedactMatcherPtr returns the atomic pointer to the compiled redaction
@@ -2462,7 +2514,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// does not invoke the HTTP contract gate today; the loader handle is
 	// discarded here and re-snapshotted by handleForwardHTTP for the
 	// forward path.
-	resolved, id, envEmitter, _ := p.resolveAgentRuntimeFromRequest(r)
+	resolved, id, envEmitter, snapshotContractLoader := p.resolveAgentRuntimeFromRequest(r)
 	cfg := resolved.Config
 	agent := id.Name
 	if agent == "" {
@@ -3104,6 +3156,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	ctx = context.WithValue(ctx, ctxKeyAgentConfig, cfg)
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
+	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
@@ -3209,7 +3262,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedJSON(w,
-				blockInfoFor(blockreason.RedirectScanDenied, blockedErr.layer),
+				redirectBlockedInfo(blockedErr),
 				http.StatusForbidden, resp)
 			return
 		}

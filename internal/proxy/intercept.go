@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -41,6 +42,13 @@ func recEscalationLevel(rec session.Recorder) int {
 		return rec.EscalationLevel()
 	}
 	return 0
+}
+
+func interceptContractLoader(ic *InterceptContext) *contractruntime.Loader {
+	if ic == nil || ic.Proxy == nil {
+		return nil
+	}
+	return ic.Proxy.currentContractLoader()
 }
 
 // InterceptContext carries shared state for TLS-intercepted tunnel processing.
@@ -389,22 +397,6 @@ func newInterceptHandler(
 		// trusted before we drop it.
 		envelope.StripInbound(r.Header)
 
-		// Kill switch re-check for intercepted CONNECT tunnels.
-		// Raw relay (relay.go) polls this per copy iteration. Intercepted
-		// tunnels must check per inner request. Use IsActiveForIP (not
-		// IsActiveHTTP) because inner request paths belong to the upstream
-		// origin — /health and /metrics exemptions must not apply here.
-		if ic.KillSwitch != nil {
-			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
-			if d.Active {
-				ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
-				writeBlockedError(w,
-					blockInfoFor(blockreason.KillSwitchActive, ""),
-					"kill switch active", http.StatusServiceUnavailable)
-				return
-			}
-		}
-
 		// Authority check: Host must match CONNECT target (host:port).
 		// Prevents domain fronting where the agent CONNECTs to allowed.com
 		// but sends Host: evil.com inside the encrypted tunnel. Also prevents
@@ -463,9 +455,13 @@ func newInterceptHandler(
 		// warn/strip findings do not contribute to score decay.
 		hasFinding := false
 		var interceptRedactionReport *redact.Report
+		var interceptGate ContractGateOutput
 		withInterceptRedaction := func(opts receipt.EmitOpts) receipt.EmitOpts {
 			opts.RedactionProfile = ic.Config.Redaction.DefaultProfile
 			opts.RedactionReport = interceptRedactionReport
+			if interceptGate.HasContractContext() {
+				opts = withContractReceipt(interceptGate, opts)
+			}
 			return opts
 		}
 
@@ -473,6 +469,55 @@ func newInterceptHandler(
 		// scans the synthetic host URL; inside the intercepted tunnel we have
 		// the real path and query, which may contain exfiltrated secrets.
 		targetURL := r.URL.String()
+		emitKillSwitchBlock := func() {
+			ic.Logger.LogBlocked(actx, "kill_switch", killSwitchActiveReason)
+			ic.Metrics.RecordKillSwitchDenial("intercept", r.URL.Path)
+			interceptEmitReceipt(ic, receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "kill_switch",
+				Pattern:   killSwitchActiveReason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			})
+			writeBlockedError(w,
+				blockInfoFor(blockreason.KillSwitchActive, ""),
+				"kill switch active", http.StatusServiceUnavailable)
+		}
+
+		// Kill switch re-check for intercepted CONNECT tunnels.
+		// Raw relay (relay.go) polls this per copy iteration. Intercepted
+		// tunnels must check per inner request. Use IsActiveForIP (not
+		// IsActiveHTTP) because inner request paths belong to the upstream
+		// origin — /health and /metrics exemptions must not apply here.
+		if ic.KillSwitch != nil {
+			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
+			if d.Active {
+				// Evaluate the contract gate purely so the kill-switch
+				// receipt carries any active-contract context (policy
+				// sources, contract hash, generation). The runtime
+				// guarantees that KillSwitchActive=true returns
+				// Verdict=Block with WinningSource=KillSwitch, so we
+				// never branch on the verdict — kill switch always wins.
+				if gate, gateErr := EvaluateGate(ContractGateInput{
+					Loader:           interceptContractLoader(ic),
+					Agent:            ic.Agent,
+					URL:              targetURL,
+					Method:           r.Method,
+					EffectiveAction:  config.ActionAllow,
+					ScannerVerdict:   config.ActionAllow,
+					KillSwitchActive: true,
+					Transport:        "intercept",
+				}); gateErr == nil {
+					interceptGate = gate
+				}
+				emitKillSwitchBlock()
+				return
+			}
+		}
 		interceptScanCtx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
 			Method: r.Method, URL: targetURL, Target: target,
 			ClientIP: ic.ClientIP, RequestID: ic.RequestID,
@@ -1061,6 +1106,47 @@ func newInterceptHandler(
 				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
 				"blocked: session escalation level "+session.EscalationLabel(recEscalationLevel(ic.Recorder)),
 				http.StatusForbidden)
+			return
+		}
+
+		gate, gateErr := EvaluateGate(ContractGateInput{
+			Loader:          interceptContractLoader(ic),
+			Agent:           ic.Agent,
+			URL:             targetURL,
+			Method:          r.Method,
+			EffectiveAction: scannerVerdictForGate(hasFinding),
+			ScannerVerdict:  scannerVerdictForGate(hasFinding),
+			ScannerMatched:  hasFinding,
+			Transport:       "intercept",
+		})
+		if gateErr != nil {
+			ic.Logger.LogBlocked(actx, "contract", gateErr.Error())
+			ic.Metrics.RecordTLSRequestBlocked("contract")
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ParseError, "contract"),
+				"blocked: contract evaluation failed", http.StatusForbidden)
+			return
+		}
+		interceptGate = gate
+		if gate.Verdict == config.ActionBlock {
+			// The runtime always populates Reason on contract-block paths
+			// (kill-switch, scanner-missing, contractBlockDecision); empty
+			// is impossible per the EvaluateHTTP contract.
+			reason := gate.Reason
+			ic.Logger.LogBlocked(actx, "contract", reason)
+			ic.Metrics.RecordTLSRequestBlocked("contract")
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionBlock,
+				Layer:     "contract",
+				Pattern:   reason,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			}))
+			writeGateBlockedError(w, gate, "blocked: "+reason)
 			return
 		}
 

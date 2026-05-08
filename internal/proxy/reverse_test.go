@@ -22,7 +22,10 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -52,6 +55,21 @@ func testPost(t *testing.T, url, contentType, body string) *http.Response {
 		t.Fatalf("create request: %v", err)
 	}
 	req.Header.Set("Content-Type", contentType)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	return resp
+}
+
+func testAgentPost(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(AgentHeader, "agent-a")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -103,6 +121,81 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 	return proxy
 }
 
+type reverseLiveLockTransport struct {
+	base http.RoundTripper
+	addr string
+}
+
+func (rt reverseLiveLockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	clone := req.Clone(req.Context())
+	u := *req.URL
+	u.Scheme = "http"
+	u.Host = rt.addr
+	clone.URL = &u
+	return rt.base.RoundTrip(clone)
+}
+
+func reverseLiveLockSetup(
+	t *testing.T,
+	targetHost string,
+	loader *contractruntime.Loader,
+	ks *killswitch.Controller,
+	upstreamHandler http.HandlerFunc,
+) *httptest.Server {
+	t.Helper()
+	return reverseLiveLockSetupWithConfig(t, reverseTestConfig(), targetHost, loader, ks, upstreamHandler)
+}
+
+func reverseLiveLockSetupWithConfig(
+	t *testing.T,
+	cfg *config.Config,
+	targetHost string,
+	loader *contractruntime.Loader,
+	ks *killswitch.Controller,
+	upstreamHandler http.HandlerFunc,
+) *httptest.Server {
+	t.Helper()
+
+	upstream := newIPv4Server(t, upstreamHandler)
+	t.Cleanup(upstream.Close)
+
+	upstreamURL, err := url.Parse("http://" + targetHost)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+
+	cfg.ApplyDefaults()
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	var loaderPtr atomic.Pointer[contractruntime.Loader]
+	if loader != nil {
+		loaderPtr.Store(loader)
+	}
+	if ks == nil {
+		ks = killswitch.New(cfg)
+	}
+
+	logger := audit.NewNop()
+	m := metrics.New()
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+	handler.SetContractLoader(&loaderPtr)
+	handler.proxy.Transport = reverseLiveLockTransport{
+		base: &http.Transport{DisableCompression: true},
+		addr: upstream.Listener.Addr().String(),
+	}
+
+	proxy := newIPv4Server(t, handler)
+	t.Cleanup(proxy.Close)
+	return proxy
+}
+
 // reverseTestConfig returns a config with DLP and response scanning enabled,
 // SSRF disabled for unit tests.
 func reverseTestConfig() *config.Config {
@@ -117,6 +210,221 @@ func reverseTestConfig() *config.Config {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
 	return cfg
+}
+
+func TestReverseTargetURLCleansTraversalBeforeContractGate(t *testing.T) {
+	upstream, err := url.Parse("http://api.example.com/v1/chat")
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/../../admin?x=1", nil)
+
+	got := reverseTargetURL(upstream, req)
+	want := "http://api.example.com/admin?x=1"
+	if got != want {
+		t.Fatalf("reverseTargetURL = %q, want %q", got, want)
+	}
+}
+
+func TestReverseLiveLock_PathTraversalDoesNotMatchAllowedPath(t *testing.T) {
+	var hits atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("unexpected"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat/../../admin", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != contractEnforceDefaultReason {
+		t.Fatalf("block reason = %q, want %s", got, contractEnforceDefaultReason)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_NoActiveContractPassThrough(t *testing.T) {
+	var hits atomic.Int32
+	proxy := reverseLiveLockSetup(t, "evil.example.com", emptyContractLoader(t), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("ok"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_AllowRulePasses(t *testing.T) {
+	var hits atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("ok"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
+	var hits atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "evil.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("unexpected"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != contractDefaultDenyReason {
+		t.Fatalf("block reason = %q, want %s", got, contractDefaultDenyReason)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
+	var hits atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("unexpected"))
+		})
+
+	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", `{"token":"`+fakeToken+`"}`)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_AuditScannerBlockContinuesAsWarn(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetupWithConfig(t, cfg, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			_, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte("forwarded"))
+		})
+
+	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", `{"token":"`+fakeToken+`"}`)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
+	var hits atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "evil.example.com", testContractLoader(t, contractruntime.ModeShadow, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("ok"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
+	var hits atomic.Int32
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "evil.example.com", testContractLoader(t, contractruntime.ModeCapture, rule), nil,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("ok"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	ks := killswitch.New(cfg)
+	ks.SetAPI(true)
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetup(t, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), ks,
+		func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			_, _ = w.Write([]byte("unexpected"))
+		})
+
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.KillSwitchActive) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.KillSwitchActive)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
 }
 
 func TestReverseProxy_CleanPassthrough(t *testing.T) {

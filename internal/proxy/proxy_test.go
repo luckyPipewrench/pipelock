@@ -21,8 +21,11 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -1471,6 +1474,220 @@ func TestFetchEndpoint_BindDefaultAgentIdentityIgnoresHeaderAndQuery(t *testing.
 }
 
 // --- Redirect Scanning Tests ---
+
+func installFetchRedirectLiveLockDialer(p *Proxy, routes map[string]string) {
+	p.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if target, ok := routes[addr]; ok {
+				return (&net.Dialer{}).DialContext(ctx, network, target)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+		DisableCompression: true,
+	}
+}
+
+func newFetchRedirectLiveLockProxy(t *testing.T, loader *contractruntime.Loader, routes map[string]string) *Proxy {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	p, err := New(cfg, logger, sc, metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+	if loader != nil {
+		p.contractLoaderPtr.Store(loader)
+	}
+	installFetchRedirectLiveLockDialer(p, routes)
+	return p
+}
+
+func serveFetch(t *testing.T, p *Proxy, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(target), nil)
+	req.Header.Set(AgentHeader, "agent-a")
+	w := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fetch", p.handleFetch)
+	mux.ServeHTTP(w, req)
+	return w
+}
+
+func TestFetchEndpoint_LiveLockRedirectAllowedDestinationFollows(t *testing.T) {
+	var finalHits int
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat":
+			http.Redirect(w, r, "http://api.example.com/v2/chat", http.StatusFound)
+		case "/v2/chat":
+			finalHits++
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte("allowed destination"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer origin.Close()
+
+	ruleV1 := contractruntimetest.HTTPEnforceRule("r-chat-v1", "api.example.com", "/v1/chat", http.MethodGet)
+	ruleV2 := contractruntimetest.HTTPEnforceRule("r-chat-v2", "api.example.com", "/v2/chat", http.MethodGet)
+	p := newFetchRedirectLiveLockProxy(t, testContractLoader(t, contractruntime.ModeLive, ruleV1, ruleV2), map[string]string{
+		"api.example.com:80": origin.Listener.Addr().String(),
+	})
+
+	w := serveFetch(t, p, "http://api.example.com/v1/chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "allowed destination") {
+		t.Fatalf("body does not include final response: %q", w.Body.String())
+	}
+	if finalHits != 1 {
+		t.Fatalf("final hits = %d, want 1", finalHits)
+	}
+}
+
+func TestFetchEndpoint_LiveLockRedirectUnapprovedDestinationBlocks(t *testing.T) {
+	var evilHits int
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.example.com/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+	evil := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		evilHits++
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer evil.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodGet)
+	p := newFetchRedirectLiveLockProxy(t, testContractLoader(t, contractruntime.ModeLive, rule), map[string]string{
+		"api.example.com:80":  origin.Listener.Addr().String(),
+		"evil.example.com:80": evil.Listener.Addr().String(),
+	})
+
+	w := serveFetch(t, p, "http://api.example.com/v1/chat")
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(blockreason.HeaderReason); got != contractDefaultDenyReason {
+		t.Fatalf("block reason header = %q, want %s", got, contractDefaultDenyReason)
+	}
+	if !strings.Contains(w.Body.String(), "redirect blocked") {
+		t.Fatalf("body does not name redirect block: %q", w.Body.String())
+	}
+	if evilHits != 0 {
+		t.Fatalf("evil hits = %d, want 0", evilHits)
+	}
+}
+
+func TestFetchEndpoint_LiveLockRedirectUsesGlobalLoaderFallback(t *testing.T) {
+	var evilHits int
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.example.com/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+	evil := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		evilHits++
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer evil.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodGet)
+	p := newFetchRedirectLiveLockProxy(t, testContractLoader(t, contractruntime.ModeLive, rule), map[string]string{
+		"api.example.com:80":  origin.Listener.Addr().String(),
+		"evil.example.com:80": evil.Listener.Addr().String(),
+	})
+
+	ctx := context.WithValue(context.Background(), ctxKeyAgent, "agent-a")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://api.example.com/v1/chat", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := p.client.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("client.Do err = nil, want redirect block")
+	}
+	blockedErr, ok := blockedRequestErrorFrom(err)
+	if !ok {
+		t.Fatalf("client.Do err = %T %[1]v, want blockedRequestError", err)
+	}
+	if blockedErr.layer != blockLayerContract {
+		t.Fatalf("blocked layer = %q, want %q", blockedErr.layer, blockLayerContract)
+	}
+	if evilHits != 0 {
+		t.Fatalf("evil hits = %d, want 0", evilHits)
+	}
+}
+
+func TestFetchEndpoint_LiveLockRedirectChainCapStillApplies(t *testing.T) {
+	var redirects int
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirects++
+		http.Redirect(w, r, r.URL.Path+"x", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/a", http.MethodGet)
+	p := newFetchRedirectLiveLockProxy(t, testContractLoader(t, contractruntime.ModeShadow, rule), map[string]string{
+		"api.example.com:80": origin.Listener.Addr().String(),
+	})
+
+	w := serveFetch(t, p, "http://api.example.com/a")
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "too many redirects") {
+		t.Fatalf("body does not name redirect cap: %q", w.Body.String())
+	}
+	if redirects < 5 {
+		t.Fatalf("redirects = %d, want at least 5", redirects)
+	}
+}
+
+func TestFetchEndpoint_LiveLockRedirectShadowModeObservesWithoutBlocking(t *testing.T) {
+	var evilHits int
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.example.com/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+	evil := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		evilHits++
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("shadow destination"))
+	}))
+	defer evil.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodGet)
+	p := newFetchRedirectLiveLockProxy(t, testContractLoader(t, contractruntime.ModeShadow, rule), map[string]string{
+		"api.example.com:80":  origin.Listener.Addr().String(),
+		"evil.example.com:80": evil.Listener.Addr().String(),
+	})
+
+	w := serveFetch(t, p, "http://api.example.com/v1/chat")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "shadow destination") {
+		t.Fatalf("body does not include redirected response: %q", w.Body.String())
+	}
+	if evilHits != 1 {
+		t.Fatalf("evil hits = %d, want 1", evilHits)
+	}
+}
 
 func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
 	// Backend redirects to a blocklisted domain — should be caught by CheckRedirect

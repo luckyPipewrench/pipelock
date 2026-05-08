@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -72,6 +74,7 @@ type ReverseProxyHandler struct {
 	envelopeEmitterPtr  *atomic.Pointer[envelope.Emitter]
 	envelopeVerifierPtr *atomic.Pointer[envelope.Verifier]
 	receiptEmitterPtr   *atomic.Pointer[receipt.Emitter]
+	contractLoaderPtr   *atomic.Pointer[contractruntime.Loader]
 	reloadMu            *sync.RWMutex
 }
 
@@ -111,6 +114,8 @@ func NewReverseProxy(
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
+		req.URL.Path = cleanReversePath(req.URL.Path)
+		req.URL.RawPath = ""
 		req.Host = upstream.Host
 	}
 
@@ -164,6 +169,11 @@ func (rp *ReverseProxyHandler) SetReceiptEmitter(ptr *atomic.Pointer[receipt.Emi
 	rp.receiptEmitterPtr = ptr
 }
 
+// SetContractLoader sets the atomic pointer to the learn-lock loader.
+func (rp *ReverseProxyHandler) SetContractLoader(ptr *atomic.Pointer[contractruntime.Loader]) {
+	rp.contractLoaderPtr = ptr
+}
+
 // emitReceipt records a signed action receipt for a reverse-proxy
 // decision. Mirrors Proxy.emitReceipt: nil emitter is a no-op, errors are
 // logged but never propagated so a recorder failure cannot poison the
@@ -190,6 +200,47 @@ func (rp *ReverseProxyHandler) emitReceipt(opts receipt.EmitOpts) {
 	}
 }
 
+func reverseTargetURL(upstream *url.URL, r *http.Request) string {
+	if upstream == nil || r == nil || r.URL == nil {
+		return ""
+	}
+	target := *upstream
+	target.Path = joinReversePaths(upstream.Path, r.URL.Path)
+	target.RawPath = ""
+	switch {
+	case upstream.RawQuery == "":
+		target.RawQuery = r.URL.RawQuery
+	case r.URL.RawQuery == "":
+		target.RawQuery = upstream.RawQuery
+	default:
+		target.RawQuery = upstream.RawQuery + "&" + r.URL.RawQuery
+	}
+	return target.String()
+}
+
+func joinReversePaths(basePath, reqPath string) string {
+	baseSlash := strings.HasSuffix(basePath, "/")
+	reqSlash := strings.HasPrefix(reqPath, "/")
+	var joined string
+	switch {
+	case baseSlash && reqSlash:
+		joined = basePath + reqPath[1:]
+	case !baseSlash && !reqSlash:
+		joined = basePath + "/" + reqPath
+	default:
+		joined = basePath + reqPath
+	}
+	return cleanReversePath(joined)
+}
+
+func cleanReversePath(joined string) string {
+	cleaned := path.Clean(joined)
+	if strings.HasSuffix(joined, "/") && cleaned != "/" {
+		return cleaned + "/"
+	}
+	return cleaned
+}
+
 // SetReloadLock lets ServeHTTP snapshot cfg/scanner/emitter state coherently
 // with Proxy.Reload publication.
 func (rp *ReverseProxyHandler) SetReloadLock(mu *sync.RWMutex) {
@@ -209,6 +260,7 @@ type reverseRuntimeSnapshot struct {
 	sc               *scanner.Scanner
 	admissionEmitter *envelope.Emitter
 	inboundVerifier  *envelope.Verifier
+	contractLoader   *contractruntime.Loader
 }
 
 func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
@@ -225,6 +277,9 @@ func (rp *ReverseProxyHandler) snapshotRuntime() reverseRuntimeSnapshot {
 	}
 	if rp.envelopeVerifierPtr != nil {
 		snap.inboundVerifier = rp.envelopeVerifierPtr.Load()
+	}
+	if rp.contractLoaderPtr != nil {
+		snap.contractLoader = rp.contractLoaderPtr.Load()
 	}
 	return snap
 }
@@ -285,12 +340,24 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	admissionEmitter := snap.admissionEmitter
 	clientIP, requestID := requestMeta(r)
 	agent, _ := r.Context().Value(ctxKeyAgent).(string)
+	if agent == "" {
+		agent = edition.ResolveAgentIdentity(r, nil, cfg.DefaultAgentIdentity, cfg.BindDefaultAgentIdentity).Name
+	}
+	targetURL := reverseTargetURL(rp.upstream, r)
+	var reverseGate ContractGateOutput
+	withReverseContractReceipt := func(opts receipt.EmitOpts) receipt.EmitOpts {
+		if reverseGate.HasContractContext() {
+			opts = withContractReceipt(reverseGate, opts)
+		}
+		return opts
+	}
 	ctx := scanner.WithDLPWarnContext(r.Context(), scanner.DLPWarnContext{
-		Method: r.Method, URL: r.URL.String(), ClientIP: clientIP,
+		Method: r.Method, URL: targetURL, ClientIP: clientIP,
 		RequestID: requestID, Agent: agent, Transport: "reverse",
 	})
 	ctx = context.WithValue(ctx, ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
+	ctx = context.WithValue(ctx, ctxKeyAgent, agent)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
 	r = r.WithContext(ctx)
@@ -323,6 +390,45 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// Kill switch: deny all traffic when active.
 	if rp.ks != nil && rp.ks.IsActive() {
+		gate, gateErr := EvaluateGate(ContractGateInput{
+			Loader:           snap.contractLoader,
+			Agent:            agent,
+			URL:              targetURL,
+			Method:           r.Method,
+			EffectiveAction:  config.ActionAllow,
+			ScannerVerdict:   config.ActionAllow,
+			KillSwitchActive: true,
+			Transport:        TransportReverse,
+		})
+		if gateErr != nil {
+			rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), "kill_switch", killSwitchActiveReason)
+		}
+		if gateErr == nil && gate.Verdict == config.ActionBlock {
+			reverseGate = gate
+			reason := gate.Reason
+			if reason == "" {
+				reason = gate.WinningSource
+			}
+			rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockLayerContract, reason)
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerContract)
+			rp.metrics.RecordKillSwitchDenial("reverse_proxy", r.URL.Path)
+			rp.emitReceipt(withReverseContractReceipt(receipt.EmitOpts{
+				ActionID:  receipt.NewActionID(),
+				Verdict:   config.ActionBlock,
+				Layer:     blockLayerContract,
+				Pattern:   reason,
+				Transport: TransportReverse,
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: requestID,
+				Agent:     agent,
+			}))
+			writeReverseProxyBlock(w, http.StatusForbidden,
+				blockInfoFor(blockreason.KillSwitchActive, "kill_switch"),
+				reason)
+			return
+		}
 		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
 		rp.metrics.RecordKillSwitchDenial("reverse_proxy", r.URL.Path)
 		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
@@ -338,6 +444,9 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// is disabled. Only the path+query are agent-controlled; the upstream
 	// host is operator-configured so we skip the full URL pipeline (SSRF,
 	// blocklist, rate limit) which only applies to agent-chosen destinations.
+	hasFinding := false
+	requestEffectiveAction := config.ActionAllow
+	requestScannerVerdict := config.ActionAllow
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
 
@@ -368,10 +477,13 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 
 		if !pathDLP.Clean {
+			hasFinding = true
 			action := cfg.RequestBodyScanning.Action
 			if action == "" {
 				action = config.ActionBlock
 			}
+			requestEffectiveAction = action
+			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(pathDLP.Matches)
 			rp.logger.LogBodyDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""),
 				action,
@@ -393,10 +505,13 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
 		headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
 		if headerResult != nil {
+			hasFinding = true
 			action := cfg.RequestBodyScanning.Action
 			if action == "" {
 				action = config.ActionBlock
 			}
+			requestEffectiveAction = action
+			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(headerResult.DLPMatches)
 			rp.logger.LogHeaderDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""), headerResult.HeaderName,
 				action, patternNames, nil)
@@ -418,14 +533,83 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	var reverseBodyBytes []byte
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
 		redaction := currentRedactionRuntimeForConfig(cfg, rp.redactionRuntimePtr)
-		blocked, verdict, bodyBytes := rp.scanRequest(w, r, cfg, sc, redaction)
+		blocked, verdict, bodyBytes, bodyFinding := rp.scanRequest(w, r, cfg, sc, redaction, reverseBlockReceiptInput{
+			RequestID: requestID,
+			Agent:     agent,
+			Target:    targetURL,
+		})
 		if blocked {
 			return
+		}
+		if bodyFinding {
+			hasFinding = true
 		}
 		if verdict != "" {
 			forwardedVerdict = verdict
 		}
+		if bodyFinding && verdict != "" {
+			requestEffectiveAction = verdict
+			requestScannerVerdict = scannerVerdictForContinuingAction(verdict, cfg.EnforceEnabled())
+		}
 		reverseBodyBytes = bodyBytes
+	}
+
+	gate, gateErr := EvaluateGate(ContractGateInput{
+		Loader:          snap.contractLoader,
+		Agent:           agent,
+		URL:             targetURL,
+		Method:          r.Method,
+		EffectiveAction: requestEffectiveAction,
+		ScannerVerdict:  requestScannerVerdict,
+		ScannerMatched:  hasFinding,
+		Transport:       TransportReverse,
+	})
+	if gateErr != nil {
+		rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockLayerContract, gateErr.Error())
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerContract)
+		rp.emitReceipt(withReverseContractReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerContract,
+			Pattern:   "contract evaluation failed",
+			Transport: TransportReverse,
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(blockreason.ContractDefaultDeny, blockLayerContract),
+			"contract evaluation failed")
+		return
+	}
+	reverseGate = gate
+	if gate.Verdict == config.ActionBlock {
+		reason := gate.Reason
+		if reason == "" {
+			reason = gate.WinningSource
+		}
+		info, ok := contractBlockInfo(reason)
+		if !ok {
+			info = blockInfoFor(blockreason.ContractDefaultDeny, blockLayerContract)
+		}
+		rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockLayerContract, reason)
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerContract)
+		rp.emitReceipt(withReverseContractReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     blockLayerContract,
+			Pattern:   reason,
+			Transport: TransportReverse,
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
+		writeReverseProxyBlock(w, http.StatusForbidden, info, reason)
+		return
 	}
 
 	// Stash envelope build metadata on the request context so the
@@ -481,6 +665,12 @@ type reverseSigningRoundTripper struct {
 	rp   *ReverseProxyHandler
 }
 
+type reverseBlockReceiptInput struct {
+	RequestID string
+	Agent     string
+	Target    string
+}
+
 // RoundTrip implements http.RoundTripper. It runs envelope injection
 // and signing before handing the request off to the base transport.
 // Errors from InjectAndSign fail closed and block the outbound request.
@@ -515,10 +705,10 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // request had no scannable body) and the caller may hand it to the
 // envelope signer via ctxKeyReverseEnvelopeBody so the signing
 // RoundTripper can compute content-digest without a second drain.
-func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime) (blocked bool, verdict string, body []byte) {
+func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime, receiptInput reverseBlockReceiptInput) (blocked bool, verdict string, body []byte, finding bool) {
 	// Skip binary content types — no secrets to scan in images/video.
 	if isBinaryMIME(r.Header.Get("Content-Type")) && redaction == nil {
-		return false, "", nil
+		return false, "", nil, false
 	}
 
 	maxBytes := cfg.RequestBodyScanning.MaxBodyBytes
@@ -579,7 +769,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		r.GetBody = func() (io.ReadCloser, error) {
 			return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
 		}
-		return false, config.ActionAllow, bodyBytes
+		return false, config.ActionAllow, bodyBytes, false
 	}
 
 	action := result.Action
@@ -617,19 +807,41 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     layer,
+			Pattern:   reason,
+			Transport: TransportReverse,
+			Method:    r.Method,
+			Target:    receiptInput.Target,
+			RequestID: receiptInput.RequestID,
+			Agent:     receiptInput.Agent,
+		})
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, scanner.ScannerDLP),
 			reason)
-		return true, config.ActionBlock, nil
+		return true, config.ActionBlock, nil, true
 	}
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
+		rp.emitReceipt(receipt.EmitOpts{
+			ActionID:  receipt.NewActionID(),
+			Verdict:   config.ActionBlock,
+			Layer:     "dlp",
+			Pattern:   reason,
+			Transport: TransportReverse,
+			Method:    r.Method,
+			Target:    receiptInput.Target,
+			RequestID: receiptInput.RequestID,
+			Agent:     receiptInput.Agent,
+		})
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, scanner.ScannerDLP),
 			reason)
-		return true, config.ActionBlock, nil
+		return true, config.ActionBlock, nil, true
 	}
 
 	// Warn mode: re-wrap body and continue.
@@ -639,7 +851,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	r.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bodyBytesCopy)), nil
 	}
-	return false, action, bodyBytes
+	return false, action, bodyBytes, true
 }
 
 // modifyResponse scans the upstream response body for prompt injection.

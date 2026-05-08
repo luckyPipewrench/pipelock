@@ -196,36 +196,25 @@ func contractBlockInfo(reason string) (blockreason.Info, bool) {
 	}
 }
 
-func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
+func gateBlockedInfo(gate ContractGateOutput) blockreason.Info {
 	if gate.Reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
-		writeBlockedError(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), body, http.StatusForbidden)
-		return
+		return blockInfoFor(blockreason.KillSwitchActive, "kill_switch")
 	}
 	if gate.WinningSource == contractruntime.WinningSourceScanner {
-		writeBlockedError(w, blockInfoFor(blockreason.ParseError, "scanner"), body, http.StatusForbidden)
-		return
+		return blockInfoFor(blockreason.ParseError, "scanner")
 	}
 	if info, ok := contractBlockInfo(gate.Reason); ok {
-		writeBlockedError(w, info, body, http.StatusForbidden)
-		return
+		return info
 	}
-	writeBlockedError(w, blockInfoFor(blockreason.ParseError, blockLayerContract), body, http.StatusForbidden)
+	return blockInfoFor(blockreason.ParseError, blockLayerContract)
+}
+
+func writeGateBlockedError(w http.ResponseWriter, gate ContractGateOutput, body string) {
+	writeBlockedError(w, gateBlockedInfo(gate), body, http.StatusForbidden)
 }
 
 func writeGateBlockedJSON(w http.ResponseWriter, gate ContractGateOutput, status int, resp FetchResponse) {
-	if gate.Reason == killSwitchActiveReason || gate.WinningSource == contractruntime.WinningSourceKillSwitch {
-		writeBlockedJSON(w, blockInfoFor(blockreason.KillSwitchActive, "kill_switch"), status, resp)
-		return
-	}
-	if gate.WinningSource == contractruntime.WinningSourceScanner {
-		writeBlockedJSON(w, blockInfoFor(blockreason.ParseError, "scanner"), status, resp)
-		return
-	}
-	if info, ok := contractBlockInfo(gate.Reason); ok {
-		writeBlockedJSON(w, info, status, resp)
-		return
-	}
-	writeBlockedJSON(w, blockInfoFor(blockreason.ParseError, blockLayerContract), status, resp)
+	writeBlockedJSON(w, gateBlockedInfo(gate), status, resp)
 }
 
 func scannerVerdictForGate(hasFinding bool) string {

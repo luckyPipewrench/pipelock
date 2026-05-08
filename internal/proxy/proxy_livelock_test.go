@@ -126,14 +126,13 @@ func TestFetchLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 
 	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodGet)
 	p := newFetchLiveLockProxy(t, testContractLoader(t, contractruntime.ModeLive, rule), backend.Listener.Addr().String())
-	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
-	rec := serveFetchLiveLock(t, p, "http://api.example.com/v1/chat?token="+fakeToken)
+	rec := serveFetchLiveLock(t, p, "http://api.example.com/v1/chat%250d%250aInjected:1")
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
-	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
-		t.Fatalf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.ParseError) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ParseError)
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", hits.Load())
@@ -413,14 +412,13 @@ func TestWebSocketLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	}
 	rule := contractruntimetest.HTTPEnforceRule("r-ws", "api.example.com", "/v1/chat", http.MethodGet)
 	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
-	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
 
-	rec := serveWSLiveLockStatus(t, p, "ws://api.example.com/v1/chat?token="+fakeToken)
+	rec := serveWSLiveLockStatus(t, p, "ws://api.example.com/v1/chat%250d%250aInjected:1")
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
-	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
-		t.Fatalf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	if got := rec.Header().Get(blockreason.HeaderReason); got != string(blockreason.ParseError) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.ParseError)
 	}
 }
 

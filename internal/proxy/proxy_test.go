@@ -1589,6 +1589,48 @@ func TestFetchEndpoint_LiveLockRedirectUnapprovedDestinationBlocks(t *testing.T)
 	}
 }
 
+func TestFetchEndpoint_LiveLockRedirectUsesGlobalLoaderFallback(t *testing.T) {
+	var evilHits int
+	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://evil.example.com/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+	evil := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		evilHits++
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer evil.Close()
+
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodGet)
+	p := newFetchRedirectLiveLockProxy(t, testContractLoader(t, contractruntime.ModeLive, rule), map[string]string{
+		"api.example.com:80":  origin.Listener.Addr().String(),
+		"evil.example.com:80": evil.Listener.Addr().String(),
+	})
+
+	ctx := context.WithValue(context.Background(), ctxKeyAgent, "agent-a")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://api.example.com/v1/chat", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := p.client.Do(req)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if err == nil {
+		t.Fatal("client.Do err = nil, want redirect block")
+	}
+	blockedErr, ok := blockedRequestErrorFrom(err)
+	if !ok {
+		t.Fatalf("client.Do err = %T %[1]v, want blockedRequestError", err)
+	}
+	if blockedErr.layer != blockLayerContract {
+		t.Fatalf("blocked layer = %q, want %q", blockedErr.layer, blockLayerContract)
+	}
+	if evilHits != 0 {
+		t.Fatalf("evil hits = %d, want 0", evilHits)
+	}
+}
+
 func TestFetchEndpoint_LiveLockRedirectChainCapStillApplies(t *testing.T) {
 	var redirects int
 	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

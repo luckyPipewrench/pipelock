@@ -183,7 +183,7 @@ func TestInterceptLiveLock_NoActiveContractPassThrough(t *testing.T) {
 	defer upstream.Close()
 
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
-	proxy := interceptLiveLockProxy(emptyContractLoader(t, contractruntime.ModeLive), nil, m)
+	proxy := interceptLiveLockProxy(emptyContractLoader(t), nil, m)
 	resp, _ := interceptLiveLockRequest(t, upstream, cache, pool, cfg, sc, logger, m,
 		"evil.example.com", newInterceptLiveLockRequest(t, "evil.example.com", "{}"), proxy)
 	defer func() { _ = resp.Body.Close() }()

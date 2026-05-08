@@ -445,6 +445,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// host is operator-configured so we skip the full URL pipeline (SSRF,
 	// blocklist, rate limit) which only applies to agent-chosen destinations.
 	hasFinding := false
+	requestEffectiveAction := config.ActionAllow
+	requestScannerVerdict := config.ActionAllow
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
 
@@ -480,6 +482,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if action == "" {
 				action = config.ActionBlock
 			}
+			requestEffectiveAction = action
+			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(pathDLP.Matches)
 			rp.logger.LogBodyDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""),
 				action,
@@ -506,6 +510,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if action == "" {
 				action = config.ActionBlock
 			}
+			requestEffectiveAction = action
+			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(headerResult.DLPMatches)
 			rp.logger.LogHeaderDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""), headerResult.HeaderName,
 				action, patternNames, nil)
@@ -540,6 +546,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		if verdict != "" {
 			forwardedVerdict = verdict
+			requestEffectiveAction = verdict
+			requestScannerVerdict = scannerVerdictForContinuingAction(verdict, cfg.EnforceEnabled())
 		}
 		reverseBodyBytes = bodyBytes
 	}
@@ -549,8 +557,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		Agent:           agent,
 		URL:             targetURL,
 		Method:          r.Method,
-		EffectiveAction: scannerVerdictForGate(hasFinding),
-		ScannerVerdict:  scannerVerdictForGate(hasFinding),
+		EffectiveAction: requestEffectiveAction,
+		ScannerVerdict:  requestScannerVerdict,
 		ScannerMatched:  hasFinding,
 		Transport:       TransportReverse,
 	})

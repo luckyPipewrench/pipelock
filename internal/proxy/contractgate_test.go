@@ -43,7 +43,7 @@ func TestEvaluateGate_NilLoaderFallsThroughToScanner(t *testing.T) {
 }
 
 func TestEvaluateGate_NoActiveManifestDoesNotEmitContractReceiptContext(t *testing.T) {
-	loader := emptyContractLoader(t, contractruntime.ModeLive)
+	loader := emptyContractLoader(t)
 	out, err := EvaluateGate(ContractGateInput{
 		Loader:         loader,
 		Agent:          "agent-a",
@@ -327,6 +327,29 @@ func TestScannerVerdictForGate(t *testing.T) {
 	}
 	if got := scannerVerdictForGate(false); got != config.ActionAllow {
 		t.Fatalf("hasFinding=false got %q, want allow", got)
+	}
+}
+
+func TestScannerVerdictForContinuingAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		action  string
+		enforce bool
+		want    string
+	}{
+		{name: "empty", action: "", enforce: true, want: config.ActionAllow},
+		{name: "allow", action: config.ActionAllow, enforce: true, want: config.ActionAllow},
+		{name: "warn", action: config.ActionWarn, enforce: true, want: config.ActionWarn},
+		{name: "block enforce", action: config.ActionBlock, enforce: true, want: config.ActionBlock},
+		{name: "block audit", action: config.ActionBlock, enforce: false, want: config.ActionWarn},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scannerVerdictForContinuingAction(tc.action, tc.enforce); got != tc.want {
+				t.Fatalf("scannerVerdictForContinuingAction(%q, %t) = %q, want %q", tc.action, tc.enforce, got, tc.want)
+			}
+		})
 	}
 }
 

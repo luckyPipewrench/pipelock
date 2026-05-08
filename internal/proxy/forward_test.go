@@ -178,7 +178,7 @@ func forwardHTTPClient(t *testing.T, proxyAddr string) *http.Client {
 	}
 }
 
-func emptyContractLoader(t *testing.T, mode contractruntime.Mode) *contractruntime.Loader {
+func emptyContractLoader(t *testing.T) *contractruntime.Loader {
 	t.Helper()
 	fixture := contractruntimetest.NewFixture(t)
 	storeDir := t.TempDir()
@@ -188,7 +188,7 @@ func emptyContractLoader(t *testing.T, mode contractruntime.Mode) *contractrunti
 		PinnedRootFingerprint: fixture.RootFingerprint(),
 		Environment:           contractruntimetest.Env(),
 		MinSignatures:         1,
-		Mode:                  mode,
+		Mode:                  contractruntime.ModeLive,
 	}, nil)
 	if err != nil {
 		t.Fatalf("NewLoader: %v", err)
@@ -206,7 +206,7 @@ func TestForwardLiveLock_NoActiveContractPassThrough(t *testing.T) {
 
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
 	defer cleanup()
-	p.contractLoaderPtr.Store(emptyContractLoader(t, contractruntime.ModeLive))
+	p.contractLoaderPtr.Store(emptyContractLoader(t))
 	installForwardTestDialer(p, backend.Listener.Addr().String())
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://evil.example.com/v1/chat", strings.NewReader("{}"))

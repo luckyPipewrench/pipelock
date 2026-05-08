@@ -213,6 +213,20 @@ func scannerVerdictForGate(hasFinding bool) string {
 	return config.ActionAllow
 }
 
+func scannerVerdictForContinuingAction(action string, enforce bool) string {
+	switch action {
+	case "", config.ActionAllow:
+		return config.ActionAllow
+	case config.ActionBlock:
+		if enforce {
+			return config.ActionBlock
+		}
+		return config.ActionWarn
+	default:
+		return action
+	}
+}
+
 // ForwardBlockReceiptInput is the per-request data the forward block-receipt
 // helper needs. It collapses the loose arguments forwardBlockReceiptOpts would
 // otherwise take.

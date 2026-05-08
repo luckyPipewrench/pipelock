@@ -143,6 +143,18 @@ func reverseLiveLockSetup(
 	upstreamHandler http.HandlerFunc,
 ) *httptest.Server {
 	t.Helper()
+	return reverseLiveLockSetupWithConfig(t, reverseTestConfig(), targetHost, loader, ks, upstreamHandler)
+}
+
+func reverseLiveLockSetupWithConfig(
+	t *testing.T,
+	cfg *config.Config,
+	targetHost string,
+	loader *contractruntime.Loader,
+	ks *killswitch.Controller,
+	upstreamHandler http.HandlerFunc,
+) *httptest.Server {
+	t.Helper()
 
 	upstream := newIPv4Server(t, upstreamHandler)
 	t.Cleanup(upstream.Close)
@@ -152,7 +164,6 @@ func reverseLiveLockSetup(
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 
-	cfg := reverseTestConfig()
 	cfg.ApplyDefaults()
 
 	sc := scanner.New(cfg)
@@ -240,7 +251,7 @@ func TestReverseLiveLock_PathTraversalDoesNotMatchAllowedPath(t *testing.T) {
 
 func TestReverseLiveLock_NoActiveContractPassThrough(t *testing.T) {
 	var hits atomic.Int32
-	proxy := reverseLiveLockSetup(t, "evil.example.com", emptyContractLoader(t, contractruntime.ModeLive), nil,
+	proxy := reverseLiveLockSetup(t, "evil.example.com", emptyContractLoader(t), nil,
 		func(w http.ResponseWriter, _ *http.Request) {
 			hits.Add(1)
 			_, _ = w.Write([]byte("ok"))
@@ -321,6 +332,32 @@ func TestReverseLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", hits.Load())
+	}
+}
+
+func TestReverseLiveLock_AuditScannerBlockContinuesAsWarn(t *testing.T) {
+	var hits atomic.Int32
+	cfg := reverseTestConfig()
+	enforce := false
+	cfg.Enforce = &enforce
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	proxy := reverseLiveLockSetupWithConfig(t, cfg, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), nil,
+		func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			_, _ = io.ReadAll(r.Body)
+			_, _ = w.Write([]byte("forwarded"))
+		})
+
+	fakeToken := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXX"
+	resp := testAgentPost(t, proxy.URL+"/v1/chat", `{"token":"`+fakeToken+`"}`)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("upstream hits = %d, want 1", hits.Load())
 	}
 }
 

@@ -615,6 +615,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			}
 			scannerMatched := !result.Allowed
 			contractLoader, _ := req.Context().Value(ctxKeyAgentContractLoader).(*contractruntime.Loader)
+			if contractLoader == nil {
+				contractLoader = p.currentContractLoader()
+			}
 			gate, gateErr := EvaluateGate(ContractGateInput{
 				Loader:          contractLoader,
 				Agent:           agentName,

@@ -461,13 +461,18 @@ func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 	// multiple events; the 100ms debounce window should coalesce them
 	// into a single Reload, which the same-hash short-circuit then turns
 	// into one same_hash outcome (no swap, no rejection).
+	//
+	// atomicfile.Write mirrors the production promote path (temp +
+	// rename). os.WriteFile truncates in place and races with Reload's
+	// read under -race CI load, surfacing parse-error outcomes that
+	// would break the error == 0 assertion below for the wrong reason.
 	activePath := filepath.Clean(filepath.Join(storeDir, activeFilename))
 	raw, err := os.ReadFile(activePath)
 	if err != nil {
 		t.Fatalf("read active.json: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if err := os.WriteFile(activePath, raw, 0o600); err != nil {
+		if err := atomicfile.Write(activePath, raw, 0o600); err != nil {
 			t.Fatalf("rewrite active.json: %v", err)
 		}
 	}

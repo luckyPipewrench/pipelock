@@ -1897,6 +1897,35 @@ learn:
 
 For the end-to-end operator flow, see [Learn-and-Lock](guides/learn-and-lock.md).
 
+### Live lock (runtime active-set)
+
+The `learn` block above governs the observation, compile, and shadow phases. The `learn_lock` block governs the runtime path: which active-manifest directory the proxy watches, which roster pins the signing keys, and which mode the gate runs in. The two blocks are independent and can be enabled separately. `learn_lock` is opt-in and default-off; with it disabled the proxy never resolves an active contract and behaves identically to v2.3 (scanner-only).
+
+```yaml
+learn_lock:
+  enabled: false
+  mode: shadow
+  store_dir: /var/lib/pipelock/contracts/active
+  roster_path: /etc/pipelock/roster.json
+  environment: production
+  pinned_root_fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  minimum_signatures: 1
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable the live-lock runtime. When false, the proxy ignores any active manifest and runs as scanner-only. When true, every other field below is required; partial config is rejected at startup so a half-wired lock never silently downgrades. |
+| `mode` | `shadow` (when `enabled` is true) | Gate semantics: `live` enforces (block on contract deny), `shadow` evaluates and emits drift but never blocks, `capture` is silent. Empty or unknown values resolve to `shadow`, so a misconfigured lock fails toward observation rather than enforcement. |
+| `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime watches this directory via fsnotify with a 100ms debounce and a 2s maximum-debounce cap; reload is fail-closed on initial load and missed-promote recovery walks the accepted-history chain. |
+| `roster_path` | `""` | Absolute path to the deployment-level roster JSON file naming which signing keys are authorised for which purposes. Required when `enabled` is true. The roster's root fingerprint must match `pinned_root_fingerprint`. |
+| `environment` | `""` | Deployment environment string (e.g., `production`, `staging`). The store rejects active manifests whose env field does not match, so a production cluster cannot accidentally enforce a staging contract. Required when `enabled` is true. |
+| `pinned_root_fingerprint` | `""` | Canonical sha256 fingerprint of the trust roster root key: literal `sha256:` prefix followed by 64 lowercase hex characters. Active manifests must chain to a roster signed by this root; mismatch fails closed at load. Required when `enabled` is true. |
+| `minimum_signatures` | `1` | Minimum number of valid manifest signatures the loader accepts. Higher values require dual control on promotes. Defaults to `1` when `0` or negative. |
+
+Mode resolution: `EffectiveMode()` reads the field above, returning `live`, `shadow`, or `capture`; any other value resolves to `shadow`. This means a typo in `mode` does not silently enable enforcement.
+
+Restart vs reload: `enabled`, `store_dir`, `roster_path`, `environment`, and `pinned_root_fingerprint` require a process restart to change. `mode` and `minimum_signatures` are picked up by the next active-manifest reload.
+
 ## Health Watchdog
 
 Wedge detection for `/health`. The watchdog is enabled by default and turns `/health` into a real liveness signal: HTTP 503 when scanner/config/session/kill-switch/watchdog health is bad, HTTP 200 when all tracked subsystems are healthy.

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -163,7 +164,12 @@ func WriteSignedActiveStore(t *testing.T, fixture Fixture, storeDir string, opts
 	if err := os.MkdirAll(storeDir, 0o750); err != nil {
 		t.Fatalf("mkdir store: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(storeDir, "active.json"), append(raw, '\n'), 0o600); err != nil {
+	// atomicfile.Write mirrors how the production promote path lands the
+	// active manifest (temp + rename). Tests that rewrite active.json
+	// while a Watch goroutine is reading it would otherwise produce
+	// parse-error outcomes under -race load instead of the intended
+	// signature/generation/same-hash outcomes.
+	if err := atomicfile.Write(filepath.Join(storeDir, "active.json"), append(raw, '\n'), 0o600); err != nil {
 		t.Fatalf("write active.json: %v", err)
 	}
 }

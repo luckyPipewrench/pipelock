@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
@@ -460,13 +461,18 @@ func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 	// multiple events; the 100ms debounce window should coalesce them
 	// into a single Reload, which the same-hash short-circuit then turns
 	// into one same_hash outcome (no swap, no rejection).
+	//
+	// atomicfile.Write mirrors the production promote path (temp +
+	// rename). os.WriteFile truncates in place and races with Reload's
+	// read under -race CI load, surfacing parse-error outcomes that
+	// would break the error == 0 assertion below for the wrong reason.
 	activePath := filepath.Clean(filepath.Join(storeDir, activeFilename))
 	raw, err := os.ReadFile(activePath)
 	if err != nil {
 		t.Fatalf("read active.json: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if err := os.WriteFile(activePath, raw, 0o600); err != nil {
+		if err := atomicfile.Write(activePath, raw, 0o600); err != nil {
 			t.Fatalf("rewrite active.json: %v", err)
 		}
 	}
@@ -586,11 +592,18 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 	})
 	time.Sleep(80 * time.Millisecond)
 
-	// Producer that writes the same content every 40ms (well below the
-	// 100ms debounce window). Without the maxDebounceWait cap, the
+	// Producer that rewrites the same content every 40ms (well below
+	// the 100ms debounce window). Without the maxDebounceWait cap, the
 	// debounce timer would reset on every write and Reload would never
 	// fire. With the cap, Reload fires within roughly maxDebounceWait
 	// after the first write.
+	//
+	// Use atomicfile.Write (temp + rename) so the producer mirrors how
+	// real promotes write the active manifest. os.WriteFile truncates
+	// in place, which under -race CI load races with Reload's read and
+	// produces parse errors instead of same_hash outcomes; the assertion
+	// below would then never fire even though the maxDebounceWait code
+	// path is working as intended.
 	activePath := filepath.Clean(filepath.Join(storeDir, activeFilename))
 	raw, err := os.ReadFile(activePath)
 	if err != nil {
@@ -604,7 +617,7 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				_ = os.WriteFile(activePath, raw, 0o600)
+				_ = atomicfile.Write(activePath, raw, 0o600)
 			}
 		}
 	}()

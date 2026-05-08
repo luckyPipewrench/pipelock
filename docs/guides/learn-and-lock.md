@@ -2,7 +2,7 @@
 
 Pipelock can watch an agent's real traffic, compile a behavioral envelope from what it observed, replay that envelope in shadow against captured traffic, and record operator-ratified signed contracts in a content-addressed active manifest. The contract binds the agent to what it actually did; lifecycle and shadow receipts emitted by the workflow are independently verifiable.
 
-> **v2.4 status:** v2.4 ships the policy compiler, candidate signing, shadow replay, ratification, and the signed active-manifest workflow. **Live proxy enforcement of a promoted contract is wired progressively after the activation surface** — the contract evaluator package and `EvidenceReceipt v2` `proxy_decision` payload are present for runtime contract-aware decisions, but the proxy request path consumes them as the runtime integration lands. Until then, the load-bearing surface is the activation lifecycle and the shadow-evidence stream.
+> **v2.4 status:** v2.4 ships the full learn-and-lock arc: policy compiler, candidate signing, shadow replay, ratification, signed active-manifest workflow, **and live proxy enforcement of promoted contracts on every URL-bearing transport plus the MCP tool-call surface** (forward absolute-URI and CONNECT, reverse and redirect-refresh chains, intercept, `/fetch`, WebSocket handshake, MCP HTTP listener and stdio-to-HTTP bridge, MCP stdio subprocess wrap, and the `mcp_tool_call` rule kind via `runtime.EvaluateMCP`). Scanner block always wins over contract allow on every gated transport. See ["Live enforcement"](#live-enforcement) below for the transport matrix, scanner-floor invariant, mode gating, and kill-switch override.
 
 This is the v2.4 headline feature. It is **opt-in** and **default-off**. A new agent runs without a contract until you choose to compile, ratify, and promote one for it.
 
@@ -10,7 +10,7 @@ This is the v2.4 headline feature. It is **opt-in** and **default-off**. A new a
 
 Pipelock's network policy is rule-based: blocklist these domains, allow these MCP tools, redact these patterns. That rule set is necessarily generic. It does not know that *this particular agent* never POSTs to `repos.example.com` or that *that particular agent* always speaks JSON-RPC, never JSON-LD.
 
-A behavioral contract is the missing per-agent layer. It distills observed behaviour into a typed, signed envelope. The v2.4 surface produces the signed contract, shadow evidence, and signed active-manifest activation state that the proxy enforcement path consumes as runtime integration lands. Lifecycle and shadow evidence use the new `EvidenceReceipt v2` envelope with the active manifest hash, contract hash, selector ID, and contract generation bound under signature, so an external auditor can prove which contract the operator ratified and promoted.
+A behavioral contract is the missing per-agent layer. It distills observed behaviour into a typed, signed envelope. The v2.4 surface produces the signed contract, shadow evidence, signed active-manifest activation state, and live runtime enforcement of the promoted contract on every gated transport. Lifecycle, shadow, and runtime `proxy_decision` receipts use the new `EvidenceReceipt v2` envelope with the active manifest hash, contract hash, selector ID, and contract generation bound under signature, so an external auditor can prove which contract the operator ratified, promoted, and enforced.
 
 ## Four-phase pipeline
 
@@ -19,7 +19,7 @@ A behavioral contract is the missing per-agent layer. It distills observed behav
 | 1 — observe | `pipelock learn observe` | Run the proxy in capture mode. Flight-recorder evidence accumulates in a hash-chained JSONL log per session under `learn.capture_dir`. |
 | 2 — compile | `pipelock learn compile` | Read recorder JSONL, infer rule shapes, emit a signed candidate contract YAML and a Markdown review report for the operator. |
 | 3 — shadow | `pipelock learn shadow` | Replay captured evidence through the candidate contract without enforcing. Emits would-have-blocked deltas and a signed `shadow_delta` receipt stream. Lets you see what the contract *would* have done before you ratify it. |
-| 4 — activate | `pipelock learn ratify` + `pipelock learn promote` | Two-phase activation: operator ratification per rule, then signed active-manifest swap with monotonic generation + `prior_manifest_hash` CAS. Lifecycle receipts are emitted during ratify / promote / rollback. The proxy-decision receipt kind is reserved for progressive runtime emission as live enforcement is wired. |
+| 4 — activate | `pipelock learn ratify` + `pipelock learn promote` | Two-phase activation: operator ratification per rule, then signed active-manifest swap with monotonic generation + `prior_manifest_hash` CAS. Lifecycle receipts are emitted during ratify / promote / rollback. Once promoted, the contract is enforced live on every gated transport and `proxy_decision` receipts are emitted per request decision. |
 
 Operator-facing supporting commands:
 
@@ -154,7 +154,7 @@ learn:
 
 The fixed thresholds (Wilson alpha, `tau_brittle`, `tau_stable`, headroom) are part of the statistical contract and are hardcoded in the inference package; they are not exposed in YAML. Floors and normalisation parameters ARE deployment-configurable because traffic volumes differ across deployments and floors function as exposure gates.
 
-The schema lives at `internal/config/schema.go` (`type Learn struct`); a dedicated configuration-reference section in `docs/configuration.md` is a v2.5 follow-up.
+The schema lives at `internal/config/schema.go` (`type Learn struct`); a dedicated configuration reference is at [`docs/configuration.md#learn-and-lock`](../configuration.md#learn-and-lock).
 
 ## Confidence model
 
@@ -173,7 +173,7 @@ A per-host cardinality cap (default 1000) bounds memory. Tail coverage is explic
 
 ## Receipts
 
-The v2.4 receipt schema defines an `EvidenceReceipt v2` envelope for contract-aware proxy decisions (`proxy_decision`) and contract-lifecycle events (`contract_ratified`, `contract_promote_intent`, `contract_promote_committed`, `contract_rollback_authorized`, `contract_rollback_committed`, `contract_demoted`, `contract_expired`, `contract_drift` with `drift_kind`, `shadow_delta`, `opportunity_missing`, `key_rotation`, `contract_redaction_request`). The lifecycle kinds emit from the activation CLI today; the proxy-decision kind for in-flight contract-aware traffic is wired progressively as runtime evaluation lands. Pin the actual emit-site coverage to your release: in v2.4 the lifecycle path is the load-bearing surface.
+The v2.4 receipt schema defines an `EvidenceReceipt v2` envelope for contract-aware proxy decisions (`proxy_decision`) and contract-lifecycle events (`contract_ratified`, `contract_promote_intent`, `contract_promote_committed`, `contract_rollback_authorized`, `contract_rollback_committed`, `contract_demoted`, `contract_expired`, `contract_drift` with `drift_kind`, `shadow_delta`, `opportunity_missing`, `key_rotation`, `contract_redaction_request`). Lifecycle kinds emit from the activation CLI; `shadow_delta` and `opportunity_missing` emit from the shadow-replay path; `proxy_decision` emits from the live-lock runtime on every gated transport. Auditors get a complete decision trail bound to the active manifest.
 
 v2 envelopes are distinguished from legacy v1 by the top-level `record_type` field. v1 verifiers reject v2 with `unsupported version 2 (expected 1)`; the existing audit pipeline keeps working unchanged for non-contract-aware deployments.
 
@@ -202,8 +202,47 @@ A new contract is not enforced the moment you ratify it. Pipelock's recommended 
 1. **Observe ≥7 days of representative traffic** before compiling. Short windows produce thin-sample rules.
 2. **Run the candidate in shadow ≥3 days.** Watch the shadow-delta report for `would_have_blocked` events that match real legitimate traffic. Adjust `learn.inference.floors` or `accept_tail` annotations as needed.
 3. **Ratify per rule.** Sign each rule individually. The operator-facing review tells you which rules cleared the confidence floor and which are thin-sample.
-4. **Promote.** The active manifest swap is atomic with a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. v2.4 records the promoted manifest, the `contract_promote_intent` / `contract_promote_committed` lifecycle receipts, and the activation journal entry. Production request-time enforcement against the promoted manifest is wired progressively after the activation surface.
+4. **Promote.** The active manifest swap is atomic with a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. v2.4 records the promoted manifest, the `contract_promote_intent` / `contract_promote_committed` lifecycle receipts, and the activation journal entry. Once the swap commits, the runtime picks up the new active manifest via fsnotify (100ms debounce, 2s maximum-debounce cap, fail-closed on initial reload, missed-promote recovery via accepted-history chain walk) and starts enforcing it on every gated transport. See ["Live enforcement"](#live-enforcement) below.
 5. **Watch the receipt stream.** A spike in `contract_drift` receipts means the contract is over-fit. A spike in `opportunity_missing` health alerts means parent opportunity dropped (the agent stopped doing the thing the rule covers); auto-demotion is BLOCKED in this case so a benign change doesn't silently weaken the contract.
+
+## Live enforcement
+
+Once an active manifest is promoted, the runtime gates every URL-bearing transport plus the MCP tool-call surface. A shared `decisionGate` helper composes the contract verdict with the existing scanner verdict on each gated path so call sites stay small and the security floor is enforced uniformly.
+
+**Decision sequence (every gated path):**
+
+1. **Kill switch.** Any of the four kill-switch sources (config, API, SIGUSR1, sentinel file) blocks the request before any other check.
+2. **Scanner verdict.** DLP / SSRF / injection / blocklist run as today. A scanner block returns 403 with the existing `X-Pipelock-Block-Reason` and skips contract evaluation. **Scanner block always wins over contract allow.**
+3. **No active contract.** If no manifest is active for the agent, the scanner verdict passes through unchanged.
+4. **Contract verdict.** With an active manifest, the runtime evaluates the request against the matching rule kind (`http_destination` for URL transports; `mcp_tool_call` for MCP). An allow rule passes the request; an unmatched destination is **default-deny**.
+5. **Mode gate.** Live mode emits the contract block. Shadow mode allows the request and emits a `would_have_blocked` shadow-delta record. Capture mode is silent (no block, no shadow record); capture is for the observation phase only.
+
+**Transport coverage:**
+
+| Transport | URL gate | MCP tool-call gate | Notes |
+|---|---|---|---|
+| Forward proxy (absolute-URI) | yes | n/a | Full URL visible. |
+| Forward proxy (CONNECT) | yes (host:port) | n/a | CONNECT cannot see paths. Path-keyed rules cannot match CONNECT requests by design. |
+| Reverse proxy | yes | n/a | Pre-configured upstream URL. |
+| Redirect-refresh chain | yes (per leg) | n/a | Each redirected leg is re-evaluated against the redirected URL. An allowed origin cannot redirect-bridge to an unapproved destination. |
+| Intercept proxy | yes | n/a | TLS-intercepted CONNECT path. |
+| `/fetch` | yes | n/a | Target URL from query parameter. |
+| WebSocket `/ws` | yes (handshake) | n/a | Per-frame scanning unchanged. |
+| MCP HTTP listener (`--listen --upstream`) | yes (configured upstream) | yes (per `tools/call`) | |
+| MCP stdio-to-HTTP bridge (`--upstream`) | yes (configured upstream) | yes (per `tools/call`) | |
+| MCP stdio subprocess wrap (`-- COMMAND`) | n/a (no remote URL) | yes (per `tools/call`) | Denied tool calls return a JSON-RPC error with block-reason metadata; subprocess is not invoked. |
+
+**Block-reason vocabulary additions:**
+
+Contract-driven blocks use canonical block-reason codes alongside the existing scanner vocabulary. The codes are visible on the `X-Pipelock-Block-Reason` HTTP header (HTTP-capable transports) and on JSON-RPC error metadata (MCP-internal blocks).
+
+**Receipts:**
+
+Every contract decision (allow OR block) emits an EvidenceReceipt v2 envelope with the `proxy_decision` payload kind, bound to the active manifest hash, contract hash, rule ID, generation, transport, and verdict. Receipts ride the existing emit channels and the existing audit pipeline keeps working unchanged for non-contract decisions.
+
+**Active-manifest reload:**
+
+The runtime watches the active-manifest store via fsnotify with a 100ms debounce window and a 2s maximum-debounce cap. Reload is fail-closed on initial load (an unreadable manifest blocks rather than silently falling back to no-contract). A missed promote (crash between `promote-intent` and `promote-committed`) is recovered by walking the accepted-history chain on next reload, so the runtime cannot strand on a stale manifest.
 
 ## Anti-patterns
 

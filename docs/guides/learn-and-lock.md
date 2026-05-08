@@ -205,6 +205,15 @@ A new contract is not enforced the moment you ratify it. Pipelock's recommended 
 4. **Promote.** The active manifest swap is atomic with a compare-and-swap on `prior_manifest_hash` and a monotonic generation counter. v2.4 records the promoted manifest, the `contract_promote_intent` / `contract_promote_committed` lifecycle receipts, and the activation journal entry. Once the swap commits, the runtime picks up the new active manifest via fsnotify (100ms debounce, 2s maximum-debounce cap, fail-closed on initial reload, missed-promote recovery via accepted-history chain walk) and starts enforcing it on every gated transport. See ["Live enforcement"](#live-enforcement) below.
 5. **Watch the receipt stream.** A spike in `contract_drift` receipts means the contract is over-fit. A spike in `opportunity_missing` health alerts means parent opportunity dropped (the agent stopped doing the thing the rule covers); auto-demotion is BLOCKED in this case so a benign change doesn't silently weaken the contract.
 
+### Ratify safety guard
+
+`pipelock learn ratify` refuses to promote candidates whose rules cannot pass the configured confidence floor. The default behaviour:
+
+- **Non-interactive (`--interactive=false`):** refuses the candidate if any rule has `confidence: never_confirmed` or `confidence: refuted`.
+- **Interactive (`--interactive`):** refuses the candidate if 100% of rules are at one of those low-confidence states. Mixed-confidence candidates remain operator-reviewable per rule.
+
+If your captures are thin and you deliberately want to ratify a low-confidence candidate (typically for an operator-supervised dogfood window), pass `--accept-low-confidence` to override. The override is explicit by name so it cannot be set by accident; the safer path is to gather more captures and recompile until rules pass the floor naturally. The compile-time floor itself is configurable via `learn.inference.floors` in pipelock config.
+
 ## Live enforcement
 
 Once an active manifest is promoted, the runtime gates every URL-bearing transport plus the MCP tool-call surface. A shared `decisionGate` helper composes the contract verdict with the existing scanner verdict on each gated path so call sites stay small and the security floor is enforced uniformly.

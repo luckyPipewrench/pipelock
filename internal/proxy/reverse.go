@@ -546,6 +546,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		if verdict != "" {
 			forwardedVerdict = verdict
+		}
+		if bodyFinding && verdict != "" {
 			requestEffectiveAction = verdict
 			requestScannerVerdict = scannerVerdictForContinuingAction(verdict, cfg.EnforceEnabled())
 		}
@@ -578,7 +580,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Agent:     agent,
 		}))
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(blockreason.ParseError, blockLayerContract),
+			blockInfoFor(blockreason.ContractDefaultDeny, blockLayerContract),
 			"contract evaluation failed")
 		return
 	}
@@ -590,7 +592,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 		info, ok := contractBlockInfo(reason)
 		if !ok {
-			info = blockInfoFor(blockreason.ParseError, blockLayerContract)
+			info = blockInfoFor(blockreason.ContractDefaultDeny, blockLayerContract)
 		}
 		rp.logger.LogBlocked(newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent), blockLayerContract, reason)
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")

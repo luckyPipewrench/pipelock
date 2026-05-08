@@ -33,17 +33,25 @@ const (
 	ratifyDecisionEnforce = "enforce"
 	ratifyDecisionCapture = "capture_only"
 	ratifyDecisionReject  = "reject"
+
+	ratifyConfidenceNeverConfirmed = "never_confirmed"
+	ratifyConfidenceRefuted        = "refuted"
 )
 
+// ErrLowConfidenceRatification is returned when ratify would promote
+// low-confidence rules without explicit operator override.
+var ErrLowConfidenceRatification = errors.New("learn ratify: low-confidence rules require explicit override")
+
 type ratifyFlags struct {
-	candidatePath   string
-	outPath         string
-	receiptOut      string
-	keystore        string
-	compileKeyAgent string
-	receiptKey      string
-	interactive     bool
-	deterministic   bool
+	candidatePath       string
+	outPath             string
+	receiptOut          string
+	keystore            string
+	compileKeyAgent     string
+	receiptKey          string
+	interactive         bool
+	acceptLowConfidence bool
+	deterministic       bool
 }
 
 type ratifyDecision struct {
@@ -61,7 +69,12 @@ capture-only, or reject for each rule, then write a newly signed candidate
 and a contract_ratified evidence receipt.
 
 Interactive mode reads one decision per rule from stdin: e=enforce,
-c=capture-only, r=reject.`,
+c=capture-only, r=reject.
+
+Non-interactive ratification refuses never_confirmed and refuted rules unless
+--accept-low-confidence is set. That override can promote rules built from
+insufficient or refuted evidence into enforcement, so use it only for deliberate
+operator-reviewed dogfood workflows.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRatify(cmd, flags)
@@ -74,6 +87,7 @@ c=capture-only, r=reject.`,
 	cmd.Flags().StringVar(&flags.compileKeyAgent, "compile-key-agent", "", "keystore agent name for contract re-signing; defaults to candidate signer")
 	cmd.Flags().StringVar(&flags.receiptKey, "receipt-key-agent", flags.receiptKey, "keystore agent name for ratification receipt signing")
 	cmd.Flags().BoolVar(&flags.interactive, "interactive", false, "prompt for each rule decision")
+	cmd.Flags().BoolVar(&flags.acceptLowConfidence, "accept-low-confidence", false, "allow ratifying never_confirmed or refuted rules; dangerous because thin or refuted evidence can become enforce policy")
 	cmd.Flags().BoolVar(&flags.deterministic, "deterministic", false, "use deterministic timestamps, ids, and signing keys for tests")
 	_ = cmd.MarkFlagRequired("candidate")
 	return cmd
@@ -87,7 +101,11 @@ func runRatify(cmd *cobra.Command, flags ratifyFlags) error {
 	if len(env.Body.Rules) == 0 {
 		return fmt.Errorf("%w: candidate has no rules", ErrInvalidCandidate)
 	}
-	decisions, err := collectRatifyDecisions(cmd, env.Body, flags.interactive)
+	if flags.interactive && !flags.acceptLowConfidence && allLowConfidenceRules(env.Body.Rules) {
+		return fmt.Errorf("%w: candidate has only low-confidence rules (%s); rerun with --accept-low-confidence only after operator review",
+			ErrLowConfidenceRatification, lowConfidenceRuleSummary(env.Body.Rules))
+	}
+	decisions, err := collectRatifyDecisions(cmd, env.Body, flags.interactive, flags.acceptLowConfidence)
 	if err != nil {
 		return err
 	}
@@ -186,9 +204,15 @@ func loadCandidateEnvelope(path string) (string, contract.ContractEnvelope, erro
 	return clean, env, nil
 }
 
-func collectRatifyDecisions(cmd *cobra.Command, c contract.Contract, interactive bool) ([]ratifyDecision, error) {
+func collectRatifyDecisions(cmd *cobra.Command, c contract.Contract, interactive, acceptLowConfidence bool) ([]ratifyDecision, error) {
 	decisions := make([]ratifyDecision, 0, len(c.Rules))
 	if !interactive {
+		if !acceptLowConfidence {
+			if summary := lowConfidenceRuleSummary(c.Rules); summary != "" {
+				return nil, fmt.Errorf("%w: refusing non-interactive enforce for %s; rerun with --interactive to review each rule or --accept-low-confidence to override",
+					ErrLowConfidenceRatification, summary)
+			}
+		}
 		for _, rule := range c.Rules {
 			decisions = append(decisions, ratifyDecision{RuleID: rule.RuleID, Decision: ratifyDecisionEnforce})
 		}
@@ -206,6 +230,37 @@ func collectRatifyDecisions(cmd *cobra.Command, c contract.Contract, interactive
 		decisions = append(decisions, ratifyDecision{RuleID: rule.RuleID, Decision: choice})
 	}
 	return decisions, nil
+}
+
+func allLowConfidenceRules(rules []contract.Rule) bool {
+	if len(rules) == 0 {
+		return false
+	}
+	for _, rule := range rules {
+		if !isLowConfidenceRule(rule) {
+			return false
+		}
+	}
+	return true
+}
+
+func lowConfidenceRuleSummary(rules []contract.Rule) string {
+	low := make([]string, 0)
+	for _, rule := range rules {
+		if isLowConfidenceRule(rule) {
+			low = append(low, fmt.Sprintf("%s(confidence=%s)", rule.RuleID, strings.TrimSpace(rule.Confidence)))
+		}
+	}
+	return strings.Join(low, ", ")
+}
+
+func isLowConfidenceRule(rule contract.Rule) bool {
+	switch strings.ToLower(strings.TrimSpace(rule.Confidence)) {
+	case ratifyConfidenceNeverConfirmed, ratifyConfidenceRefuted:
+		return true
+	default:
+		return false
+	}
 }
 
 func renderRatifyRule(w io.Writer, c contract.Contract, rule contract.Rule, index int) error {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -30,6 +31,15 @@ func RunWSProxy(
 	upstreamURL string,
 	opts MCPProxyOpts,
 ) error {
+	if opts.ContractServer == "" {
+		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
+	}
+	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+		return fmt.Errorf("contract upstream evaluation: %w", gateErr)
+	} else if gate.Verdict == config.ActionBlock {
+		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
+	}
+
 	// Separate parent and inner context. The parent context comes from
 	// signal handling (SIGINT/SIGTERM). The inner context is cancelled
 	// when either direction finishes (stdin EOF or upstream close).

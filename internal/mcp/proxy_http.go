@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -109,7 +110,16 @@ func RunHTTPProxy(
 	if opts.Transport == "" {
 		opts.Transport = "mcp_http_upstream"
 	}
+	if opts.ContractServer == "" {
+		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
+	}
 	opts.TaintExternalSource = true
+
+	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+		return fmt.Errorf("contract upstream evaluation: %w", gateErr)
+	} else if gate.Verdict == config.ActionBlock {
+		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
+	}
 
 	// Create a child context so we can stop the GET stream when stdin EOF is reached.
 	ctx, cancel := context.WithCancel(ctx)
@@ -215,6 +225,26 @@ func RunHTTPProxy(
 		// server-initiated calls, to prevent tracker pollution.
 		if isRequest(msg) {
 			tracker.Track(frame.ID)
+		}
+
+		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
+			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed"))
+			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
+			}
+			continue
+		} else if gate.Verdict == config.ActionBlock {
+			if gate.WinningSource == contractruntime.WinningSourceScanner {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scanner denied: %s\n", gate.Reason)
+			} else {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
+			}
+			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract"))
+			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
+			}
+			continue
 		}
 
 		// POST to upstream.
@@ -600,6 +630,27 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return result
 		}
+		contractGate, contractErr := evaluateMCPToolGate(frame, config.ActionAllow, false, opts)
+		if contractErr != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: contract tool-call evaluation failed: %v\n", contractErr)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "contract tool-call evaluation failed",
+				ErrorCode:      -32006,
+				ErrorMessage:   "pipelock: contract tool-call evaluation failed",
+			}
+			return result
+		}
+		if contractGate.Verdict == config.ActionBlock {
+			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked tools/call %q (%s)\n", toolName, contractGate.Reason)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
+			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
+			receiptVerdict = ""
+			return result
+		}
 		if verdict.Method == methodToolsCall {
 			var decorateErr error
 			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionAllow, taintEval)
@@ -614,6 +665,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				return result
 			}
 			receiptVerdict = config.ActionAllow
+			defer func() {
+				emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
+				receiptVerdict = ""
+			}()
 		}
 		if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled {
 			rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
@@ -714,6 +769,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			LogMessage:     "blocked",
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
+			ErrorData:      mcpBlockReasonData(mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")),
 		}
 		return result
 	case config.ActionRedirect:
@@ -868,6 +924,27 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			return result
 		}
+		contractGate, contractErr := evaluateMCPToolGate(frame, effectiveAction, len(reasons) > 0, opts)
+		if contractErr != nil {
+			_, _ = fmt.Fprintf(logW, "pipelock: contract tool-call evaluation failed: %v\n", contractErr)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID:             verdict.ID,
+				IsNotification: isRPCNotification(verdict.ID),
+				LogMessage:     "contract tool-call evaluation failed",
+				ErrorCode:      -32006,
+				ErrorMessage:   "pipelock: contract tool-call evaluation failed",
+			}
+			return result
+		}
+		if contractGate.Verdict == config.ActionBlock {
+			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked tools/call %q (%s)\n", toolName, contractGate.Reason)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = ptrMCPBlockedRequest(mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract"))
+			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
+			receiptVerdict = ""
+			return result
+		}
 		if verdict.Method == methodToolsCall {
 			var decorateErr error
 			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
@@ -882,6 +959,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				return result
 			}
 			receiptVerdict = config.ActionWarn
+			defer func() {
+				emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolName, receiptVerdict, taintEval, redactionReport, contractGate)
+				receiptVerdict = ""
+			}()
 		}
 		return result // forward
 	}
@@ -1063,6 +1144,14 @@ func RunHTTPListenerProxy(
 	opts MCPProxyOpts,
 ) error {
 	safeLogW := &syncWriter{w: logW}
+	if opts.ContractServer == "" {
+		opts.ContractServer = mcpContractServerFromUpstream(upstreamURL)
+	}
+	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+		return fmt.Errorf("contract upstream evaluation: %w", gateErr)
+	} else if gate.Verdict == config.ActionBlock {
+		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
+	}
 
 	// Shared tool baseline across all requests for drift detection and
 	// session binding. It intentionally survives hot reloads for the
@@ -1125,6 +1214,11 @@ func RunHTTPListenerProxy(
 		Transport:           "mcp_http_listener",
 		ReceiptEmitter:      opts.receiptEmitter(),
 		ReceiptEmitterFn:    opts.ReceiptEmitterFn,
+		ContractLoader:      opts.ContractLoader,
+		ContractLoaderPtr:   opts.ContractLoaderPtr,
+		ContractLoaderFn:    opts.ContractLoaderFn,
+		ContractAgent:       opts.ContractAgent,
+		ContractServer:      opts.ContractServer,
 		CaptureObs:          opts.captureObserver(),
 		ConfigHash:          opts.captureConfigHash(),
 		ConfigHashFn:        opts.ConfigHashFn,
@@ -1407,6 +1501,20 @@ func RunHTTPListenerProxy(
 			} else {
 				_, _ = w.Write(blockRequestResponse(*blocked))
 			}
+			return
+		}
+
+		if gate, gateErr := evaluateMCPUpstreamGate(r.Context(), upstreamURL, scanOpts); gateErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed")))
+			return
+		} else if gate.Verdict == config.ActionBlock {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract")))
 			return
 		}
 

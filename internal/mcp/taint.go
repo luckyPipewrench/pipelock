@@ -243,30 +243,35 @@ func emitMCPToolReceipt(
 	actionID, mcpMethod, toolName, receiptVerdict string,
 	decision taintDecision,
 	report *redact.Report,
+	contractGate ...mcpContractGateOutput,
 ) {
 	if actionID == "" || receiptEmitter == nil {
 		return
 	}
+	emitOpts := receipt.EmitOpts{
+		ActionID:            actionID,
+		Verdict:             receiptVerdict,
+		RedactionProfile:    redactionProfile,
+		RedactionReport:     report,
+		Transport:           transport,
+		Target:              toolName,
+		MCPMethod:           mcpMethod,
+		ToolName:            toolName,
+		SessionTaintLevel:   decision.Risk.Level.String(),
+		SessionContaminated: decision.Risk.Contaminated,
+		RecentTaintSources:  decision.Risk.Sources,
+		SessionTaskID:       decision.Task.CurrentTaskID,
+		SessionTaskLabel:    decision.Task.CurrentTaskLabel,
+		AuthorityKind:       decision.Authority.String(),
+		TaintDecision:       decision.Result.Decision.String(),
+		TaintDecisionReason: decision.Result.Reason,
+		TaskOverrideApplied: decision.TaskOverrideApplied,
+	}
+	if len(contractGate) > 0 {
+		emitOpts = mcpWithContractReceipt(emitOpts, contractGate[0])
+	}
 	_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
-		Receipt: receipt.EmitOpts{
-			ActionID:            actionID,
-			Verdict:             receiptVerdict,
-			RedactionProfile:    redactionProfile,
-			RedactionReport:     report,
-			Transport:           transport,
-			Target:              toolName,
-			MCPMethod:           mcpMethod,
-			ToolName:            toolName,
-			SessionTaintLevel:   decision.Risk.Level.String(),
-			SessionContaminated: decision.Risk.Contaminated,
-			RecentTaintSources:  decision.Risk.Sources,
-			SessionTaskID:       decision.Task.CurrentTaskID,
-			SessionTaskLabel:    decision.Task.CurrentTaskLabel,
-			AuthorityKind:       decision.Authority.String(),
-			TaintDecision:       decision.Result.Decision.String(),
-			TaintDecisionReason: decision.Result.Reason,
-			TaskOverrideApplied: decision.TaskOverrideApplied,
-		},
+		Receipt: emitOpts,
 	})
 }
 

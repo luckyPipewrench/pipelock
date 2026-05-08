@@ -2,10 +2,12 @@ package mcp
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -142,6 +144,17 @@ type MCPProxyOpts struct {
 	// Nil-safe (no-op when nil).
 	ReceiptEmitter   *receipt.Emitter
 	ReceiptEmitterFn func() *receipt.Emitter
+
+	// Learn-lock contract enforcement for MCP transports. HTTP listener and
+	// stdio-to-HTTP modes gate the configured upstream URL; every transport
+	// gates tools/call messages with runtime.EvaluateMCP. ContractLoaderPtr
+	// is for hot-reload owners; ContractLoader is for short-lived command
+	// invocations and tests.
+	ContractLoader    *contractruntime.Loader
+	ContractLoaderPtr *atomic.Pointer[contractruntime.Loader]
+	ContractLoaderFn  func() *contractruntime.Loader
+	ContractAgent     string
+	ContractServer    string
 
 	// EnvelopeEmitter builds mediation envelopes for MCP allow decisions.
 	// When non-nil, tools/call messages forwarded on allow get a
@@ -291,6 +304,16 @@ func (o MCPProxyOpts) receiptEmitter() *receipt.Emitter {
 		return o.ReceiptEmitterFn()
 	}
 	return o.ReceiptEmitter
+}
+
+func (o MCPProxyOpts) contractLoader() *contractruntime.Loader {
+	if o.ContractLoaderFn != nil {
+		return o.ContractLoaderFn()
+	}
+	if o.ContractLoaderPtr != nil {
+		return o.ContractLoaderPtr.Load()
+	}
+	return o.ContractLoader
 }
 
 func (o MCPProxyOpts) envelopeEmitter() *envelope.Emitter {

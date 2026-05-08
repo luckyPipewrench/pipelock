@@ -637,8 +637,9 @@ type rpcError struct {
 }
 
 type rpcErrorDetail struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // blockResponse generates a JSON-RPC 2.0 error response for a blocked message.
@@ -865,6 +866,9 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Set transport for capture records if not already set by caller.
 	if opts.Transport == "" {
 		opts.Transport = "mcp_stdio"
+	}
+	if opts.ContractServer == "" {
+		opts.ContractServer = mcpContractServerFromCommand(command)
 	}
 
 	// Per-invocation adaptive enforcement recorder. Nil when Store is nil

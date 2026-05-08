@@ -30,6 +30,12 @@ import (
 // RunProxyWithSandbox runs an MCP proxy with a sandboxed child process.
 // The optional strict parameter enables subreaper for orphan cleanup.
 func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.Reader, clientOut io.Writer, logW io.Writer, opts MCPProxyOpts, strict ...bool) error {
+	if opts.Transport == "" {
+		opts.Transport = "mcp_stdio"
+	}
+	if opts.ContractServer == "" {
+		opts.ContractServer = mcpContractServerFromCommand([]string{sandboxCmd.Path})
+	}
 	isStrict := len(strict) > 0 && strict[0]
 	if isStrict {
 		if err := sandbox.SetChildSubreaper(); err != nil {

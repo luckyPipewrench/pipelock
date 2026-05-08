@@ -696,6 +696,14 @@ signed action receipts for MCP decisions.`,
 			if captureProfile == "" {
 				captureProfile = edition.ProfileDefault
 			}
+			contractLoader, contractLoaderErr := mcp.NewContractLoaderFromConfig(cfg)
+			if contractLoaderErr != nil {
+				return contractLoaderErr
+			}
+			contractAgent := agentName
+			if contractAgent == "" {
+				contractAgent = captureProfile
+			}
 
 			toolAction := "disabled"
 			if toolCfg != nil {
@@ -761,6 +769,8 @@ signed action receipts for MCP decisions.`,
 						RedactLimits:    cfg.Redaction.Limits.ToLimits(),
 						RedactProfile:   cfg.Redaction.DefaultProfile,
 						TaintCfg:        &cfg.Taint,
+						ContractLoader:  contractLoader,
+						ContractAgent:   contractAgent,
 					}); err != nil {
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)
@@ -792,6 +802,8 @@ signed action receipts for MCP decisions.`,
 						RedactLimits:    cfg.Redaction.Limits.ToLimits(),
 						RedactProfile:   cfg.Redaction.DefaultProfile,
 						TaintCfg:        &cfg.Taint,
+						ContractLoader:  contractLoader,
+						ContractAgent:   contractAgent,
 					}
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if sentryClient != nil {
@@ -823,6 +835,8 @@ signed action receipts for MCP decisions.`,
 					RedactLimits:    cfg.Redaction.Limits.ToLimits(),
 					RedactProfile:   cfg.Redaction.DefaultProfile,
 					TaintCfg:        &cfg.Taint,
+					ContractLoader:  contractLoader,
+					ContractAgent:   contractAgent,
 				}
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if sentryClient != nil {
@@ -958,6 +972,8 @@ signed action receipts for MCP decisions.`,
 					RedactLimits:    cfg.Redaction.Limits.ToLimits(),
 					RedactProfile:   cfg.Redaction.DefaultProfile,
 					TaintCfg:        &cfg.Taint,
+					ContractLoader:  contractLoader,
+					ContractAgent:   contractAgent,
 				}
 				if err := mcp.RunProxyWithSandbox(ctx, sandboxCmd, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), proxyOpts, mcpStrict); err != nil {
 					return handleProxyError(err, cmd.ErrOrStderr(), sentryClient)
@@ -1068,6 +1084,8 @@ signed action receipts for MCP decisions.`,
 				RedactProfile:   cfg.Redaction.DefaultProfile,
 				TaintCfg:        &cfg.Taint,
 				Lineage:         lin, OnChildReady: onChildReady,
+				ContractLoader: contractLoader,
+				ContractAgent:  contractAgent,
 			}
 			if err := mcp.RunProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), logW, serverCmd, proxyOpts, extraEnv...); err != nil {
 				return handleProxyError(err, logW, sentryClient)

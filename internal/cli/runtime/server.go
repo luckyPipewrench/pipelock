@@ -1000,6 +1000,8 @@ func (s *Server) Start(ctx context.Context) error {
 				MediaPolicyFn:       mcpMediaPolicyFn,
 				ToolFreezer:         s.proxy.FrozenTools(),
 				FrozenToolStableKey: s.opts.MCPUpstream,
+				ContractLoaderPtr:   s.proxy.ContractLoaderPtr(),
+				ContractAgent:       edition.ProfileDefault,
 			})
 		}()
 	}

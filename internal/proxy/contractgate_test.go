@@ -42,6 +42,26 @@ func TestEvaluateGate_NilLoaderFallsThroughToScanner(t *testing.T) {
 	}
 }
 
+func TestEvaluateGate_MissingScannerVerdictFailsClosed(t *testing.T) {
+	out, err := EvaluateGate(ContractGateInput{
+		URL:       "http://api.example.com/v1/chat",
+		Method:    http.MethodPost,
+		Transport: TransportForward,
+	})
+	if err != nil {
+		t.Fatalf("EvaluateGate: %v", err)
+	}
+	if out.Verdict != config.ActionBlock {
+		t.Fatalf("verdict = %q, want block", out.Verdict)
+	}
+	if out.LiveVerdict != config.ActionBlock {
+		t.Fatalf("live_verdict = %q, want block", out.LiveVerdict)
+	}
+	if out.WinningSource != contractruntime.WinningSourceScanner {
+		t.Fatalf("winning_source = %q, want scanner", out.WinningSource)
+	}
+}
+
 func TestEvaluateGate_NoActiveManifestDoesNotEmitContractReceiptContext(t *testing.T) {
 	loader := emptyContractLoader(t)
 	out, err := EvaluateGate(ContractGateInput{
@@ -64,6 +84,23 @@ func TestEvaluateGate_NoActiveManifestDoesNotEmitContractReceiptContext(t *testi
 	opts := withContractReceipt(out, receipt.EmitOpts{Verdict: config.ActionAllow})
 	if opts.ContractWinningSource != "" || opts.ActiveManifestHash != "" || opts.ContractHash != "" {
 		t.Fatalf("receipt opts got contract fields without active manifest: %+v", opts)
+	}
+}
+
+func TestEvaluateGate_PropagatesRuntimeDecisionErrors(t *testing.T) {
+	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
+	loader := testContractLoader(t, contractruntime.ModeLive, rule)
+
+	_, err := EvaluateGate(ContractGateInput{
+		Loader:         loader,
+		Agent:          "agent-a",
+		URL:            "not-a-url",
+		Method:         http.MethodPost,
+		ScannerVerdict: config.ActionAllow,
+		Transport:      TransportForward,
+	})
+	if err == nil {
+		t.Fatal("EvaluateGate error = nil, want invalid decision input")
 	}
 }
 

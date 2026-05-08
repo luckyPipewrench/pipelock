@@ -5,13 +5,16 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
@@ -196,14 +199,45 @@ func TestFetchLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
 
 func doConnectLiveLock(t *testing.T, proxyAddr, target string) *http.Response {
 	t.Helper()
-	conn := dialProxy(t, proxyAddr)
+	conn, resp := dialConnectLiveLock(t, proxyAddr, target)
 	t.Cleanup(func() { _ = conn.Close() })
+	return resp
+}
+
+func dialConnectLiveLock(t *testing.T, proxyAddr, target string) (net.Conn, *http.Response) {
+	t.Helper()
+	conn := dialProxy(t, proxyAddr)
 	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s: agent-a\r\n\r\n", target, target, AgentHeader)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
+		_ = conn.Close()
 		t.Fatalf("read CONNECT response: %v", err)
 	}
-	return resp
+	return conn, resp
+}
+
+func assertConnectLiveLockEcho(t *testing.T, proxyAddr, target string, msg []byte) {
+	t.Helper()
+	conn, resp := dialConnectLiveLock(t, proxyAddr, target)
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatalf("write CONNECT tunnel: %v", err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read CONNECT tunnel echo: %v", err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("CONNECT tunnel echo = %q, want %q", got, msg)
+	}
 }
 
 func TestConnectLiveLock_NoActiveContractPassThrough(t *testing.T) {
@@ -225,14 +259,13 @@ func TestConnectLiveLock_AllowRulePasses(t *testing.T) {
 	defer func() { _ = ln.Close() }()
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, nil)
 	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
 	rule := contractruntimetest.HTTPEnforceRule("r-connect", "127.0.0.1", "/", http.MethodConnect)
 	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
 
-	resp := doConnectLiveLock(t, proxyAddr, ln.Addr().String())
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
+	assertConnectLiveLockEcho(t, proxyAddr, ln.Addr().String(), []byte("live lock connect allow"))
+	assertContractContextAllowReceipt(t, rph, TransportConnect, contractruntime.WinningSourceContract)
 }
 
 func TestConnectLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
@@ -346,37 +379,67 @@ func serveWSLiveLockStatus(t *testing.T, p *Proxy, targetURL string) *httptest.R
 func TestWebSocketLiveLock_NoActiveContractPassThrough(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()
-	proxyAddr, p, cleanup := setupWSProxyWithProxy(t, nil)
+	proxyAddr, p, cleanup := setupWSProxyWithProxy(t, func(cfg *config.Config) {
+		cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+	})
 	defer cleanup()
 	p.contractLoaderPtr.Store(emptyContractLoader(t))
 
-	conn := dialWS(t, proxyAddr, backendAddr)
-	defer func() { _ = conn.Close() }()
-	msg := []byte("live lock ws")
+	assertWSLiveLockEcho(t, proxyAddr, backendAddr, []byte("live lock ws"))
+}
+
+func assertWSLiveLockEcho(t *testing.T, proxyAddr, backendAddr string, msg []byte) {
+	t.Helper()
+	conn := dialWSLiveLock(t, proxyAddr, backendAddr)
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, msg); err != nil {
+		_ = conn.Close()
 		t.Fatalf("write ws: %v", err)
 	}
 	got, op, err := wsutil.ReadServerData(conn)
 	if err != nil {
+		_ = conn.Close()
 		t.Fatalf("read ws: %v", err)
 	}
 	if op != ws.OpText || string(got) != string(msg) {
+		_ = conn.Close()
 		t.Fatalf("echo = op %v %q, want text %q", op, got, msg)
 	}
+	_ = ws.WriteFrame(conn, ws.NewCloseFrame(ws.NewCloseFrameBody(ws.StatusNormalClosure, "")))
+	_ = conn.Close()
+}
+
+func dialWSLiveLock(t *testing.T, proxyAddr, backendAddr string) net.Conn {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			AgentHeader: []string{"agent-a"},
+		}),
+		Extensions: nil,
+	}
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	return conn
 }
 
 func TestWebSocketLiveLock_AllowRulePassesHandshakeGate(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.WebSocketProxy.Enabled = true
 	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)
 	}
-	rule := contractruntimetest.HTTPEnforceRule("r-ws", "api.example.com", "/v1/chat", http.MethodGet)
+	rule := contractruntimetest.HTTPEnforceRule("r-ws", "127.0.0.1", "/", http.MethodGet)
 	p.contractLoaderPtr.Store(testContractLoader(t, contractruntime.ModeLive, rule))
 
-	rec := serveWSLiveLockStatus(t, p, "ws://api.example.com/v1/chat")
+	rec := serveWSLiveLockStatus(t, p, "ws://127.0.0.1/")
 	if rec.Code == http.StatusForbidden {
 		t.Fatalf("status = 403, contract allow rule should pass handshake gate: %s", rec.Body.String())
 	}
@@ -432,20 +495,39 @@ func TestWebSocketLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
 
 func webSocketLiveLockObserveModeAllows(t *testing.T, mode contractruntime.Mode) {
 	t.Helper()
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.WebSocketProxy.Enabled = true
-	p, err := New(cfg, audit.NewNop(), scanner.New(cfg), metrics.New())
-	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
-	}
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+	proxyAddr, p, cleanup := setupWSProxyWithProxy(t, nil)
+	defer cleanup()
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
 	rule := contractruntimetest.HTTPEnforceRule("r-ws", "api.example.com", "/v1/chat", http.MethodGet)
 	p.contractLoaderPtr.Store(testContractLoader(t, mode, rule))
 
-	rec := serveWSLiveLockStatus(t, p, "ws://evil.example.com/v1/chat")
-	if rec.Code == http.StatusForbidden {
-		t.Fatalf("status = 403, %s mode should observe without blocking: %s", mode, rec.Body.String())
+	assertWSLiveLockEcho(t, proxyAddr, backendAddr, []byte("live lock ws "+string(mode)))
+	assertContractContextAllowReceipt(t, rph, TransportWS, contractruntime.WinningSourceScanner)
+}
+
+func assertContractContextAllowReceipt(t *testing.T, rph *receiptProxyHelper, transport, wantWinningSource string) {
+	t.Helper()
+	waitForReceiptOrTimeout(t, rph.dir)
+	receipts := rph.findReceipts(t)
+	for _, r := range receipts {
+		if r.ActionRecord.Transport != transport || r.ActionRecord.Verdict != config.ActionAllow {
+			continue
+		}
+		if wantWinningSource != "" && r.ActionRecord.ContractWinningSource != wantWinningSource {
+			t.Fatalf("contract_winning_source = %q, want %s", r.ActionRecord.ContractWinningSource, wantWinningSource)
+		}
+		if r.ActionRecord.ActiveManifestHash == "" {
+			t.Fatal("active_manifest_hash = empty, want contract receipt context")
+		}
+		if r.ActionRecord.ContractHash == "" {
+			t.Fatal("contract_hash = empty, want contract receipt context")
+		}
+		return
 	}
+	t.Fatalf("no allow receipt found for transport %q in %d receipts", transport, len(receipts))
 }
 
 func TestWebSocketLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {

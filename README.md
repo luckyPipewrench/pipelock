@@ -521,7 +521,7 @@ Pipelock is tested like a security product. The open-source core has thousands o
 | Metric | Value |
 |--------|-------|
 | Go tests (with `-race`) | Thousands across unit, integration, and end-to-end paths |
-| Statement coverage | 88%+ |
+| Releases shipped | 40 (current: v2.4.0) |
 | Evasion techniques tested | 230+ |
 | Scanner pipeline overhead | ~40us per URL scan |
 | CI matrix | Go 1.25 + 1.26, CodeQL, golangci-lint |

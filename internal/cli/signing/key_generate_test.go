@@ -204,6 +204,90 @@ func TestLoadKeyFile_DetectsPurposeMismatch(t *testing.T) {
 	}
 }
 
+func TestLoadKeyFile_RejectsMismatchedPrivatePublic(t *testing.T) {
+	dir := t.TempDir()
+	rootPath := filepath.Join(dir, "root.json")
+	otherPath := filepath.Join(dir, "other.json")
+
+	for _, e := range []struct {
+		purpose string
+		out     string
+	}{
+		{string(domsigning.PurposeRosterRoot), rootPath},
+		{string(domsigning.PurposeContractActivationSigning), otherPath},
+	} {
+		cmd := keyGenerateCmd()
+		cmd.SetOut(&bytes.Buffer{})
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs([]string{"--purpose", e.purpose, "--out", e.out})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("seed %s: %v", e.purpose, err)
+		}
+	}
+
+	rootRaw, err := os.ReadFile(filepath.Clean(rootPath))
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	otherRaw, err := os.ReadFile(filepath.Clean(otherPath))
+	if err != nil {
+		t.Fatalf("read other: %v", err)
+	}
+	var rootKF keyFile
+	if err := json.Unmarshal(rootRaw, &rootKF); err != nil {
+		t.Fatalf("unmarshal root: %v", err)
+	}
+	var otherKF keyFile
+	if err := json.Unmarshal(otherRaw, &otherKF); err != nil {
+		t.Fatalf("unmarshal other: %v", err)
+	}
+	rootKF.Public = otherKF.Public
+	tampered, err := json.Marshal(rootKF)
+	if err != nil {
+		t.Fatalf("marshal tampered: %v", err)
+	}
+	if err := os.WriteFile(rootPath, tampered, 0o600); err != nil {
+		t.Fatalf("write tampered: %v", err)
+	}
+
+	_, _, _, err = loadKeyFile(rootPath, domsigning.PurposeRosterRoot)
+	if err == nil {
+		t.Fatalf("expected public/private mismatch error")
+	}
+	if !strings.Contains(err.Error(), "does not match public key") {
+		t.Errorf("err %q does not mention public/private mismatch", err.Error())
+	}
+}
+
+func TestLoadKeyFile_RejectsTrailingJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "k.json")
+
+	gen := keyGenerateCmd()
+	gen.SetOut(&bytes.Buffer{})
+	gen.SetErr(&bytes.Buffer{})
+	gen.SetArgs([]string{"--purpose", string(domsigning.PurposeRosterRoot), "--out", path})
+	if err := gen.Execute(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	raw = append(raw, []byte("\n{}")...)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write trailing: %v", err)
+	}
+
+	_, _, _, err = loadKeyFile(path, domsigning.PurposeRosterRoot)
+	if err == nil {
+		t.Fatalf("expected trailing-json error")
+	}
+	if !strings.Contains(err.Error(), "trailing JSON") {
+		t.Errorf("err %q does not mention trailing JSON", err.Error())
+	}
+}
+
 func TestReadPublicKeyForRoster_AcceptsKeyFileJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "k.json")
@@ -224,6 +308,43 @@ func TestReadPublicKeyForRoster_AcceptsKeyFileJSON(t *testing.T) {
 	}
 	if purpose != string(domsigning.PurposeContractCompileSigning) {
 		t.Errorf("purpose = %q, want %q", purpose, domsigning.PurposeContractCompileSigning)
+	}
+}
+
+func TestReadPublicKeyForRoster_RejectsUnsupportedKeyFileSchema(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "k.json")
+	gen := keyGenerateCmd()
+	gen.SetOut(&bytes.Buffer{})
+	gen.SetErr(&bytes.Buffer{})
+	gen.SetArgs([]string{"--purpose", string(domsigning.PurposeContractCompileSigning), "--out", path})
+	if err := gen.Execute(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var kf keyFile
+	if err := json.Unmarshal(raw, &kf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	kf.SchemaVersion = keyFileSchemaVersion + 1
+	tampered, err := json.Marshal(kf)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, tampered, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, _, err = readPublicKeyForRoster(path)
+	if err == nil {
+		t.Fatalf("expected unsupported-schema error")
+	}
+	if !strings.Contains(err.Error(), "unsupported key file schema_version") {
+		t.Errorf("err %q does not mention schema version", err.Error())
 	}
 }
 

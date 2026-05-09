@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,6 +89,8 @@ Examples:
 			if !force {
 				if _, statErr := os.Stat(cleanOut); statErr == nil {
 					return fmt.Errorf("output file %q already exists (use --force to overwrite)", cleanOut)
+				} else if !errors.Is(statErr, os.ErrNotExist) {
+					return fmt.Errorf("stat output file %q: %w", cleanOut, statErr)
 				}
 			}
 

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,6 +27,47 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+type cliTestBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *cliTestBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *cliTestBuffer) contains(s string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return bytes.Contains(b.buf.Bytes(), []byte(s))
+}
+
+func (b *cliTestBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForCLIOutput(t *testing.T, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if buf.contains(want) {
+			return
+		}
+		select {
+		case cmdErr := <-errCh:
+			cancel()
+			t.Fatalf("run exited before output %q: %v\nstderr:\n%s", want, cmdErr, buf.String())
+		default:
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for output %q\nstderr:\n%s", want, buf.String())
+}
 
 func TestRootCmd_Version(t *testing.T) {
 	cmd := rootCmd()
@@ -2227,9 +2269,9 @@ fetch_proxy:
 	cmd := rootCmd()
 	cmd.SetContext(ctx)
 	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	var stderr bytes.Buffer
+	stderr := &cliTestBuffer{}
 	cmd.SetOut(io.Discard)
-	cmd.SetErr(&stderr)
+	cmd.SetErr(stderr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -2270,8 +2312,7 @@ fetch_proxy:
 		t.Fatal(writeErr)
 	}
 
-	// Wait for reload to process.
-	time.Sleep(500 * time.Millisecond)
+	waitForCLIOutput(t, stderr, errCh, cancel, "metrics_listen changed")
 
 	cancel()
 	select {
@@ -2284,7 +2325,7 @@ fetch_proxy:
 	}
 
 	// Safe to read stderr now that the command has exited.
-	if !bytes.Contains(stderr.Bytes(), []byte("metrics_listen changed")) {
+	if !stderr.contains("metrics_listen changed") {
 		t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
 	}
 }
@@ -2317,9 +2358,9 @@ fetch_proxy:
 	cmd := rootCmd()
 	cmd.SetContext(ctx)
 	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	var stderr bytes.Buffer
+	stderr := &cliTestBuffer{}
 	cmd.SetOut(io.Discard)
-	cmd.SetErr(&stderr)
+	cmd.SetErr(stderr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -2360,8 +2401,7 @@ fetch_proxy:
 		t.Fatal(writeErr)
 	}
 
-	// Wait for reload to process.
-	time.Sleep(500 * time.Millisecond)
+	waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
 
 	cancel()
 	select {
@@ -2374,7 +2414,7 @@ fetch_proxy:
 	}
 
 	// Verify license change warning appeared.
-	if !bytes.Contains(stderr.Bytes(), []byte("license key inputs changed")) {
+	if !stderr.contains("license key inputs changed") {
 		t.Errorf("expected license reload warning, got:\n%s", stderr.String())
 	}
 }
@@ -2407,9 +2447,9 @@ fetch_proxy:
 	cmd := rootCmd()
 	cmd.SetContext(ctx)
 	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	var stderr bytes.Buffer
+	stderr := &cliTestBuffer{}
 	cmd.SetOut(io.Discard)
-	cmd.SetErr(&stderr)
+	cmd.SetErr(stderr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -2450,8 +2490,7 @@ fetch_proxy:
 		t.Fatal(writeErr)
 	}
 
-	// Wait for reload to process.
-	time.Sleep(500 * time.Millisecond)
+	waitForCLIOutput(t, stderr, errCh, cancel, "mode downgraded from balanced to audit")
 
 	cancel()
 	select {
@@ -2464,7 +2503,7 @@ fetch_proxy:
 	}
 
 	// Verify NO license warning appeared (same key, just mode change).
-	if bytes.Contains(stderr.Bytes(), []byte("license")) {
+	if stderr.contains("license") {
 		t.Errorf("unexpected license warning on non-license reload:\n%s", stderr.String())
 	}
 }
@@ -2496,9 +2535,9 @@ fetch_proxy:
 	cmd := rootCmd()
 	cmd.SetContext(ctx)
 	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	var stderr bytes.Buffer
+	stderr := &cliTestBuffer{}
 	cmd.SetOut(io.Discard)
-	cmd.SetErr(&stderr)
+	cmd.SetErr(stderr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -2545,8 +2584,7 @@ fetch_proxy:
 		t.Fatal(writeErr)
 	}
 
-	// Wait for reload to process.
-	time.Sleep(500 * time.Millisecond)
+	waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
 
 	cancel()
 	select {
@@ -2559,7 +2597,7 @@ fetch_proxy:
 	}
 
 	// Verify license change warning appeared from license_file addition.
-	if !bytes.Contains(stderr.Bytes(), []byte("license key inputs changed")) {
+	if !stderr.contains("license key inputs changed") {
 		t.Errorf("expected license reload warning from license_file change, got:\n%s", stderr.String())
 	}
 }

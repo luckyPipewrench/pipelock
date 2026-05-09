@@ -8,7 +8,9 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,9 +30,16 @@ const keyFileSchemaVersion = 1
 // canonical sha256 fingerprint when deriving a default key_id.
 const keyFileShortFingerprintHex = 8
 
+// keyFileMaxSize caps JSON key files accepted by the roster CLI. Generated
+// files are under 1 KiB; this leaves room for formatting while avoiding
+// accidental reads of large non-key files.
+const keyFileMaxSize = 16 * 1024
+
 // fingerprintPrefix is the canonical prefix on sha256 fingerprints emitted
 // by signing.Fingerprint and consumed by pinned-fingerprint config fields.
 const fingerprintPrefix = "sha256:"
+
+var errKeyFileTooLarge = errors.New("key file exceeds size cap")
 
 // keyFile is the on-disk JSON shape produced by "pipelock signing key generate".
 // Both private and public keys are stored hex-encoded; the file is written
@@ -105,6 +114,8 @@ Examples:
 			if !force {
 				if _, statErr := os.Stat(cleanOut); statErr == nil {
 					return fmt.Errorf("output file %q already exists (use --force to overwrite)", cleanOut)
+				} else if !errors.Is(statErr, os.ErrNotExist) {
+					return fmt.Errorf("stat output file %q: %w", cleanOut, statErr)
 				}
 			}
 
@@ -172,32 +183,24 @@ Examples:
 // cannot smuggle extra metadata past the loader.
 func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, ed25519.PublicKey, ed25519.PrivateKey, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := os.ReadFile(cleanPath)
+	raw, err := readKeyFileBytes(cleanPath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read key file %q: %w", cleanPath, err)
 	}
-	var kf keyFile
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&kf); err != nil {
+	kf, err := decodeKeyFile(raw)
+	if err != nil {
 		return nil, nil, nil, fmt.Errorf("decode key file %q: %w", cleanPath, err)
 	}
-	if kf.SchemaVersion != keyFileSchemaVersion {
-		return nil, nil, nil, fmt.Errorf("unsupported key file schema_version %d (expected %d)", kf.SchemaVersion, keyFileSchemaVersion)
-	}
-	kp := domsigning.KeyPurpose(kf.Purpose)
-	if err := kp.Validate(); err != nil {
-		return nil, nil, nil, fmt.Errorf("invalid key file purpose: %w", err)
+	kp, err := validateKeyFileMetadata(kf)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	if expectedPurpose != "" && kp != expectedPurpose {
 		return nil, nil, nil, fmt.Errorf("key file purpose mismatch: file=%q expected=%q", kf.Purpose, expectedPurpose)
 	}
-	pubBytes, err := hex.DecodeString(kf.Public)
+	pubBytes, err := decodeKeyFilePublic(kf)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("decode public key hex: %w", err)
-	}
-	if len(pubBytes) != ed25519.PublicKeySize {
-		return nil, nil, nil, fmt.Errorf("public key has wrong size: got %d, want %d", len(pubBytes), ed25519.PublicKeySize)
+		return nil, nil, nil, err
 	}
 	privBytes, err := hex.DecodeString(kf.Private)
 	if err != nil {
@@ -206,7 +209,12 @@ func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, 
 	if len(privBytes) != ed25519.PrivateKeySize {
 		return nil, nil, nil, fmt.Errorf("private key has wrong size: got %d, want %d", len(privBytes), ed25519.PrivateKeySize)
 	}
-	return &kf, ed25519.PublicKey(pubBytes), ed25519.PrivateKey(privBytes), nil
+	priv := ed25519.PrivateKey(privBytes)
+	derivedPub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok || !bytes.Equal(derivedPub, pubBytes) {
+		return nil, nil, nil, fmt.Errorf("private key does not match public key")
+	}
+	return &kf, pubBytes, priv, nil
 }
 
 // readPublicKeyForRoster reads a public key from disk in either the JSON
@@ -219,24 +227,22 @@ func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, 
 // has no purpose field, so callers fall back to the operator-supplied flag.
 func readPublicKeyForRoster(path string) ([]byte, string, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := os.ReadFile(cleanPath)
+	raw, err := readKeyFileBytes(cleanPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("read public key %q: %w", cleanPath, err)
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) > 0 && trimmed[0] == '{' {
-		var kf keyFile
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&kf); err != nil {
+		kf, err := decodeKeyFile(raw)
+		if err != nil {
 			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
 		}
-		pub, err := hex.DecodeString(kf.Public)
-		if err != nil {
-			return nil, "", fmt.Errorf("decode public key hex in %q: %w", cleanPath, err)
+		if _, err := validateKeyFileMetadata(kf); err != nil {
+			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
 		}
-		if len(pub) != ed25519.PublicKeySize {
-			return nil, "", fmt.Errorf("public key in %q has wrong size: got %d, want %d", cleanPath, len(pub), ed25519.PublicKeySize)
+		pub, err := decodeKeyFilePublic(kf)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
 		}
 		return pub, kf.Purpose, nil
 	}
@@ -245,4 +251,53 @@ func readPublicKeyForRoster(path string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("decode agent keystore .pub file %q: %w", cleanPath, err)
 	}
 	return pub, "", nil
+}
+
+func readKeyFileBytes(cleanPath string) ([]byte, error) {
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > keyFileMaxSize {
+		return nil, fmt.Errorf("%w: got %d bytes, max %d", errKeyFileTooLarge, info.Size(), keyFileMaxSize)
+	}
+	return os.ReadFile(cleanPath) //nolint:gosec // path is operator-supplied, cleaned, stat-checked, and size-capped above
+}
+
+func decodeKeyFile(raw []byte) (keyFile, error) {
+	var kf keyFile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&kf); err != nil {
+		return keyFile{}, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err == nil {
+		return keyFile{}, fmt.Errorf("trailing JSON after key file object")
+	} else if !errors.Is(err, io.EOF) {
+		return keyFile{}, fmt.Errorf("trailing JSON after key file object")
+	}
+	return kf, nil
+}
+
+func validateKeyFileMetadata(kf keyFile) (domsigning.KeyPurpose, error) {
+	if kf.SchemaVersion != keyFileSchemaVersion {
+		return "", fmt.Errorf("unsupported key file schema_version %d (expected %d)", kf.SchemaVersion, keyFileSchemaVersion)
+	}
+	kp := domsigning.KeyPurpose(kf.Purpose)
+	if err := kp.Validate(); err != nil {
+		return "", fmt.Errorf("invalid key file purpose: %w", err)
+	}
+	return kp, nil
+}
+
+func decodeKeyFilePublic(kf keyFile) (ed25519.PublicKey, error) {
+	pubBytes, err := hex.DecodeString(kf.Public)
+	if err != nil {
+		return nil, fmt.Errorf("decode public key hex: %w", err)
+	}
+	if len(pubBytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("public key has wrong size: got %d, want %d", len(pubBytes), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(pubBytes), nil
 }

@@ -325,6 +325,27 @@ func TestRosterBuild_RefusesStatusRootInInclude(t *testing.T) {
 	}
 }
 
+func TestRosterBuild_RefusesWrongPurposeRoot(t *testing.T) {
+	fx := newRosterBuildFixture(t)
+	out := filepath.Join(fx.dir, "roster.json")
+
+	cmd := rosterBuildCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--root", fx.activationPath,
+		"--include", "id=compile-test,key=" + fx.compilePath + ",purpose=" + string(domsigning.PurposeContractCompileSigning),
+		"--out", out,
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected wrong-purpose-root error")
+	}
+	if !strings.Contains(err.Error(), "purpose mismatch") {
+		t.Errorf("err %q does not mention purpose mismatch", err.Error())
+	}
+}
+
 func TestRosterBuild_RefusesRelativeOutPath(t *testing.T) {
 	fx := newRosterBuildFixture(t)
 
@@ -342,6 +363,87 @@ func TestRosterBuild_RefusesRelativeOutPath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "absolute") {
 		t.Errorf("err %q does not mention absolute requirement", err.Error())
+	}
+}
+
+func TestRosterBuild_RefusesUnsupportedSchemaVersion(t *testing.T) {
+	fx := newRosterBuildFixture(t)
+	out := filepath.Join(fx.dir, "roster.json")
+
+	cmd := rosterBuildCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--root", fx.rootPath,
+		"--include", "id=activation-primary,key=" + fx.activationPath + ",purpose=" + string(domsigning.PurposeContractActivationSigning),
+		"--schema-version", "2",
+		"--out", out,
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected unsupported-schema-version error")
+	}
+	if !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("err %q does not mention unsupported schema", err.Error())
+	}
+}
+
+func TestRosterBuild_RefusesOverwriteWithoutForce(t *testing.T) {
+	fx := newRosterBuildFixture(t)
+	out := filepath.Join(fx.dir, "roster.json")
+	if err := os.WriteFile(out, []byte("preexisting"), 0o600); err != nil {
+		t.Fatalf("seed output: %v", err)
+	}
+
+	cmd := rosterBuildCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--root", fx.rootPath,
+		"--include", "id=activation-primary,key=" + fx.activationPath + ",purpose=" + string(domsigning.PurposeContractActivationSigning),
+		"--out", out,
+	})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected refuse-overwrite error")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("err %q does not mention existing output", err.Error())
+	}
+	got, err := os.ReadFile(filepath.Clean(out))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "preexisting" {
+		t.Errorf("output changed without --force: %q", string(got))
+	}
+}
+
+func TestRosterBuild_AllowsOverwriteWithForce(t *testing.T) {
+	fx := newRosterBuildFixture(t)
+	out := filepath.Join(fx.dir, "roster.json")
+	if err := os.WriteFile(out, []byte("preexisting"), 0o600); err != nil {
+		t.Fatalf("seed output: %v", err)
+	}
+
+	cmd := rosterBuildCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--root", fx.rootPath,
+		"--include", "id=activation-primary,key=" + fx.activationPath + ",purpose=" + string(domsigning.PurposeContractActivationSigning),
+		"--out", out,
+		"--force",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(out))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if bytes.Equal(got, []byte("preexisting")) {
+		t.Errorf("output was not overwritten under --force")
 	}
 }
 

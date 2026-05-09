@@ -73,10 +73,10 @@ and a contract_ratified evidence receipt.
 Interactive mode reads one decision per rule from stdin: e=enforce,
 c=capture-only, r=reject.
 
-Non-interactive ratification refuses never_confirmed and refuted rules unless
---accept-low-confidence is set. That override can promote rules built from
-insufficient or refuted evidence into enforcement, so use it only for deliberate
-operator-reviewed dogfood workflows.`,
+Non-interactive ratification treats any confidence other than stable or brittle
+as low-confidence unless --accept-low-confidence is set. That override can
+promote rules built from insufficient, novel, or refuted evidence into
+enforcement, so use it only for deliberate operator-reviewed dogfood workflows.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runRatify(cmd, flags)
@@ -89,7 +89,7 @@ operator-reviewed dogfood workflows.`,
 	cmd.Flags().StringVar(&flags.compileKeyAgent, "compile-key-agent", "", "keystore agent name for contract re-signing; defaults to candidate signer")
 	cmd.Flags().StringVar(&flags.receiptKey, "receipt-key-agent", flags.receiptKey, "keystore agent name for ratification receipt signing")
 	cmd.Flags().BoolVar(&flags.interactive, "interactive", false, "prompt for each rule decision")
-	cmd.Flags().BoolVar(&flags.acceptLowConfidence, "accept-low-confidence", false, "allow ratifying never_confirmed or refuted rules; dangerous because thin or refuted evidence can become enforce policy")
+	cmd.Flags().BoolVar(&flags.acceptLowConfidence, "accept-low-confidence", false, "allow ratifying rules whose confidence is not stable or brittle; dangerous because thin or refuted evidence can become enforce policy")
 	cmd.Flags().BoolVar(&flags.deterministic, "deterministic", false, "use deterministic timestamps, ids, and signing keys for tests")
 	_ = cmd.MarkFlagRequired("candidate")
 	return cmd

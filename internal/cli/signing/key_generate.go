@@ -35,6 +35,10 @@ const keyFileShortFingerprintHex = 8
 // accidental reads of large non-key files.
 const keyFileMaxSize = 16 * 1024
 
+// privateKeyDisallowedPermBits masks group-write, group-execute, and all world
+// bits. Group-read is allowed for Kubernetes fsGroup read-only mounts.
+const privateKeyDisallowedPermBits = 0o037
+
 // fingerprintPrefix is the canonical prefix on sha256 fingerprints emitted
 // by signing.Fingerprint and consumed by pinned-fingerprint config fields.
 const fingerprintPrefix = "sha256:"
@@ -269,7 +273,7 @@ func readKeyFileBytes(cleanPath string, requireSecretPerms bool) ([]byte, error)
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file %q is not a regular file (mode=%s)", cleanPath, info.Mode())
 	}
-	if requireSecretPerms && info.Mode().Perm()&0o037 != 0 {
+	if requireSecretPerms && info.Mode().Perm()&privateKeyDisallowedPermBits != 0 {
 		return nil, fmt.Errorf("private key %s has permissions %04o, want 0600 or 0640 (run: chmod 640 %s)", cleanPath, info.Mode().Perm(), cleanPath)
 	}
 	if info.Size() > keyFileMaxSize {

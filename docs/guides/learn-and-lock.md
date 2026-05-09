@@ -193,7 +193,38 @@ Deployment-level keys:
 - `roster-root` — signs the deployment's key roster (which keys the deployment trusts for which purpose).
 - `recovery-root` — separate, pinned, used only for break-glass recovery if the roster-root is compromised.
 
-Use `pipelock keygen <agent>` for per-agent signing keys and `pipelock signing roster ...` for activation rosters (run `pipelock signing --help` for the roster and recovery-key surface).
+Two CLI surfaces:
+
+- `pipelock keygen <agent>` writes a per-agent compile signing keypair under `~/.pipelock/agents/<agent>/`. Used by the agent's owner to sign that agent's candidate contracts.
+- `pipelock signing key generate --purpose <purpose> --out <path>` writes a deployment-level keypair (root, activation, recovery, receipt-signing) to a 0o600 JSON file. Used by the operator to bootstrap the trust topology.
+
+A complete bootstrap looks like:
+
+```bash
+# Operator: deployment root + activation key + receipt-signing key.
+pipelock signing key generate --purpose roster-root --out /etc/pipelock/keys/fleet-root.json
+pipelock signing key generate --purpose contract-activation-signing --out /etc/pipelock/keys/activation.json --id activation-primary
+pipelock signing key generate --purpose receipt-signing --out /etc/pipelock/keys/receipt-signing.json --id receipt-signing
+
+# Per-agent: compile signing keys under the agent keystore.
+pipelock keygen agent-a
+pipelock keygen agent-b
+
+# Operator: compose and sign the roster.
+pipelock signing roster build \
+  --root /etc/pipelock/keys/fleet-root.json \
+  --include id=activation-primary,key=/etc/pipelock/keys/activation.json,purpose=contract-activation-signing,role=operator \
+  --include id=receipt-signing,key=/etc/pipelock/keys/receipt-signing.json,purpose=receipt-signing,role=runtime \
+  --include id=compile-agent-a,key=$HOME/.pipelock/agents/agent-a/id_ed25519.pub,purpose=contract-compile-signing \
+  --include id=compile-agent-b,key=$HOME/.pipelock/agents/agent-b/id_ed25519.pub,purpose=contract-compile-signing \
+  --out /etc/pipelock/roster.json
+
+pipelock signing roster verify --path /etc/pipelock/roster.json --root-fingerprint sha256:<from-key-generate-output>
+```
+
+The roster MUST include a `receipt-signing` entry. `pipelock learn promote` signs the lifecycle receipts with this key, and the runtime verifies them against the roster on load; if the roster does not name a `receipt-signing` key, the runtime rejects the receipts the operator just produced. The same applies to any compile signing key whose contracts you intend to promote: the agent's compile key must be in the roster the deploying runtime trusts.
+
+Run `pipelock signing --help` for the full surface (roster show / verify, recovery / transition verification). See [Live lock trust topology](../configuration.md#live-lock-trust-topology) in the configuration reference for the refusal cases enforced by `roster build`.
 
 ## Soak window
 
@@ -213,6 +244,44 @@ A new contract is not enforced the moment you ratify it. Pipelock's recommended 
 - **Interactive (`--interactive`):** refuses the candidate if 100% of rules are at one of those low-confidence states. Mixed-confidence candidates remain operator-reviewable per rule.
 
 If your captures are thin and you deliberately want to ratify a low-confidence candidate (typically for an operator-supervised dogfood window), pass `--accept-low-confidence` to override. The override is explicit by name so it cannot be set by accident; the safer path is to gather more captures and recompile until rules pass the floor naturally. The compile-time floor itself is configurable via `learn.inference.floors` in pipelock config.
+
+### Promote workflow gotchas
+
+Two ergonomic notes the help text alone does not surface:
+
+- **`learn promote` reads from the contract store's `history/` directory.** `learn ratify` writes the ratified contract YAML to `--out`, but does not stage it inside the store. Before invoking `learn promote --contract <hash>`, copy the ratified file to `<contract-store>/history/sha256-<hash>.yaml`. A future v2.4.x ergonomic improvement will auto-stage it.
+- **Promote requires the activation key in the keystore AND the receipt-signing key in the roster.** `--activation-key <key-id>` looks up the key by ID in `--keystore`, signs the manifest, and signs the lifecycle receipts under the keystore's receipt-signing agent (`--receipt-key-agent`, defaults to `receipt-signing`). The runtime then verifies those receipts against the roster. If the receipt-signing key is not named in the roster, the receipts the operator just produced will not validate on load.
+
+### Promoting in a Kubernetes deployment
+
+Pipelock's published image is `FROM scratch`: no shell, no `tar`, no `cp`, no `ls`. `kubectl exec`, `kubectl cp`, and `kubectl debug --target=<pipelock-container>` therefore cannot ship the active manifest into the pipelock pod's `pipelock-active-manifest` PVC directly. The operator pattern is a short-lived shuttle pod that mounts the same PVC:
+
+```bash
+# 1. Generate, ratify, and promote locally so you have an on-disk
+#    contract store at e.g. /etc/pipelock/contracts/store on the
+#    operator workstation.
+pipelock learn promote ...
+
+# 2. Apply a shuttle pod that mounts the deployment's
+#    pipelock-active-manifest PVC. Match the namespace, fsGroup, and
+#    nodeSelector to the deployment. With Longhorn RWO, the shuttle
+#    must land on the same node as any other pod that has the PVC
+#    attached, OR you scale those pods to zero first.
+kubectl apply -f shuttle.yaml
+
+# 3. Stream the contract store contents into the PVC via tar.
+tar c -C /etc/pipelock/contracts/store \
+    active.json manifests history .activation_journal.jsonl \
+  | kubectl exec -n <ns> shuttle -i -- sh -c \
+    'cat > /tmp/store.tar && tar xf /tmp/store.tar -C /active/'
+
+# 4. Delete the shuttle pod. Pipelock pods will pick up the new
+#    active.json on next start (or on fsnotify reload if they are
+#    already running with the PVC attached).
+kubectl delete pod -n <ns> shuttle
+```
+
+A minimal shuttle pod manifest (alpine + same PVC mount, conforming to the namespace's PodSecurity policy) is short enough to keep inline as part of the operator runbook. v2.4.x is expected to ship a `pipelock contract install --pod <ns/name>` helper that automates the shuttle.
 
 ## Live enforcement
 

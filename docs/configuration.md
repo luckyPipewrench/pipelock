@@ -1907,7 +1907,10 @@ learn_lock:
   mode: shadow
   store_dir: /var/lib/pipelock/contracts/active
   roster_path: /etc/pipelock/roster.json
-  environment: production
+  environment:
+    id: production
+    tenant: ""
+    deployment_id: ""
   pinned_root_fingerprint: sha256:0000000000000000000000000000000000000000000000000000000000000000
   minimum_signatures: 1
 ```
@@ -1918,13 +1921,17 @@ learn_lock:
 | `mode` | `shadow` (when `enabled` is true) | Gate semantics: `live` enforces (block on contract deny), `shadow` evaluates and emits drift but never blocks, `capture` is silent. Empty or unknown values resolve to `shadow`, so a misconfigured lock fails toward observation rather than enforcement. |
 | `store_dir` | `""` | Absolute path to the active-manifest store (the directory containing `active.json` plus the `history/` chain). Required when `enabled` is true. The runtime watches this directory via fsnotify with a 100ms debounce and a 2s maximum-debounce cap; reload is fail-closed on initial load and missed-promote recovery walks the accepted-history chain. |
 | `roster_path` | `""` | Absolute path to the deployment-level roster JSON file naming which signing keys are authorised for which purposes. Required when `enabled` is true. The roster's root fingerprint must match `pinned_root_fingerprint`. |
-| `environment` | `""` | Deployment environment string (e.g., `production`, `staging`). The store rejects active manifests whose env field does not match, so a production cluster cannot accidentally enforce a staging contract. Required when `enabled` is true. |
+| `environment.id` | `""` | Deployment environment identifier (e.g., `production`, `staging`). Required key when `enabled` is true; non-empty value enforced by validation. |
+| `environment.tenant` | `""` | Tenant scope for contract activation. Required key when `enabled` is true; explicit empty string means intentionally unscoped tenant. |
+| `environment.deployment_id` | `""` | Deployment scope identifier. Required key when `enabled` is true; explicit empty string means intentionally unscoped deployment axis. |
 | `pinned_root_fingerprint` | `""` | Canonical sha256 fingerprint of the trust roster root key: literal `sha256:` prefix followed by 64 lowercase hex characters. Active manifests must chain to a roster signed by this root; mismatch fails closed at load. Required when `enabled` is true. |
 | `minimum_signatures` | `1` | Minimum number of valid manifest signatures the loader accepts. Higher values require dual control on promotes. Defaults to `1` when `0` or negative. |
 
+The `environment` block is a required nested mapping with all three keys present. The store compares the manifest's environment tuple against the loader's tuple by exact byte-equality, so a production cluster cannot accidentally enforce a staging contract and a multi-tenant deployment cannot enforce another tenant's contract. The old string form (`environment: production`) is rejected at config load with a migration error pointing at the nested form.
+
 Mode resolution: `EffectiveMode()` reads the field above, returning `live`, `shadow`, or `capture`; any other value resolves to `shadow`. This means a typo in `mode` does not silently enable enforcement.
 
-Restart vs reload: `enabled`, `store_dir`, `roster_path`, `environment`, and `pinned_root_fingerprint` require a process restart to change. `mode` and `minimum_signatures` are picked up by the next active-manifest reload.
+Restart vs reload: `enabled`, `store_dir`, `roster_path`, `environment.*`, and `pinned_root_fingerprint` require a process restart to change. `mode` and `minimum_signatures` are picked up by the next active-manifest reload.
 
 ## Health Watchdog
 

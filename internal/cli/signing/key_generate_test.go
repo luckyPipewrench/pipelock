@@ -406,12 +406,61 @@ func TestReadKeyFileBytes_RejectsNonRegularFile(t *testing.T) {
 	// Directory is the most portable non-regular file; FIFOs require mkfifo
 	// which is platform-specific. Both fail the IsRegular() gate identically.
 	dir := t.TempDir()
-	_, err := readKeyFileBytes(dir)
+	_, err := readKeyFileBytes(dir, false)
 	if err == nil {
 		t.Fatalf("expected non-regular-file rejection on directory")
 	}
 	if !strings.Contains(err.Error(), "regular file") {
 		t.Errorf("err %q does not mention regular file", err.Error())
+	}
+}
+
+func TestReadKeyFileBytes_RejectsLoosePermissions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{name: "group write", mode: 0o620},
+		{name: "world read", mode: 0o604},
+		{name: "world writable", mode: 0o666},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "key.json")
+			if err := os.WriteFile(path, []byte("{}"), tc.mode); err != nil {
+				t.Fatalf("write key: %v", err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatalf("chmod key: %v", err)
+			}
+			_, err := readKeyFileBytes(path, true)
+			if err == nil {
+				t.Fatalf("readKeyFileBytes accepted mode %04o", tc.mode)
+			}
+			if !strings.Contains(err.Error(), "permissions") {
+				t.Fatalf("err = %v, want permissions rejection", err)
+			}
+		})
+	}
+}
+
+func TestReadKeyFileBytes_AcceptsGroupReadPermissions(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "key.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil { //nolint:gosec // test intentionally verifies k8s fsGroup-style 0640 is accepted.
+		t.Fatalf("chmod key: %v", err)
+	}
+	raw, err := readKeyFileBytes(path, true)
+	if err != nil {
+		t.Fatalf("readKeyFileBytes should accept 0640: %v", err)
+	}
+	if string(raw) != "{}" {
+		t.Fatalf("raw = %q, want {}", raw)
 	}
 }
 
@@ -423,7 +472,7 @@ func TestReadKeyFileBytes_RejectsOversizedFile(t *testing.T) {
 	if err := os.WriteFile(path, big, 0o600); err != nil {
 		t.Fatalf("write big: %v", err)
 	}
-	_, err := readKeyFileBytes(path)
+	_, err := readKeyFileBytes(path, false)
 	if err == nil {
 		t.Fatalf("expected oversize rejection")
 	}

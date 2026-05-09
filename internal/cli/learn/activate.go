@@ -126,8 +126,8 @@ func addLifecycleFlags(cmd *cobra.Command, flags *lifecycleFlags) {
 	cmd.Flags().StringVar(&flags.receiptKey, "receipt-key-agent", flags.receiptKey, "keystore agent name for committed lifecycle receipts")
 	cmd.Flags().StringVar(&flags.receiptOut, "receipt-out", "", "signed lifecycle receipt JSONL path; defaults under --contract-store")
 	cmd.Flags().StringVar(&flags.environmentID, "environment-id", "", "manifest environment id; inherited from current active manifest when omitted")
-	cmd.Flags().StringVar(&flags.tenant, "tenant", "", "manifest tenant; inherited from current active manifest when omitted")
-	cmd.Flags().StringVar(&flags.deploymentID, "deployment-id", "", "manifest deployment id; inherited from current active manifest when omitted")
+	cmd.Flags().StringVar(&flags.tenant, "tenant", "", "manifest tenant; inherited from current active manifest when all environment flags are omitted; empty means unscoped")
+	cmd.Flags().StringVar(&flags.deploymentID, "deployment-id", "", "manifest deployment id; inherited from current active manifest when all environment flags are omitted; empty means unscoped")
 	cmd.Flags().BoolVar(&flags.production, "production", false, "enforce production activation policy")
 	cmd.Flags().BoolVar(&flags.deterministic, "deterministic", false, "use deterministic timestamps and ids for tests")
 	_ = cmd.MarkFlagRequired("contract-store")
@@ -417,8 +417,8 @@ func resolveLifecycleEnvironment(flags lifecycleFlags, current contractstore.Sta
 	if !provided && hasCurrent {
 		return current.Envelope.Body.Environment, nil
 	}
-	if flags.environmentID == "" || flags.tenant == "" || flags.deploymentID == "" {
-		return contract.Environment{}, fmt.Errorf("learn lifecycle: --environment-id, --tenant, and --deployment-id are required without an accepted manifest")
+	if flags.environmentID == "" {
+		return contract.Environment{}, fmt.Errorf("learn lifecycle: --environment-id is required without an accepted manifest")
 	}
 	env := contract.Environment{ID: flags.environmentID, Tenant: flags.tenant, DeploymentID: flags.deploymentID}
 	if hasCurrent && env != current.Envelope.Body.Environment {

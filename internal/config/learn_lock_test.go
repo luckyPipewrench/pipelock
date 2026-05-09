@@ -4,6 +4,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,9 +106,9 @@ func TestValidate_LearnLockEnabledRequiresEveryField(t *testing.T) {
 			want: "roster_path must be an absolute path",
 		},
 		{
-			name: "missing environment",
-			mut:  func(l *LearnLock) { l.Environment = "" },
-			want: "learn_lock.environment required",
+			name: "missing environment id",
+			mut:  func(l *LearnLock) { l.Environment.ID = "" },
+			want: "learn_lock.environment.id required",
 		},
 		{
 			name: "missing pinned root fingerprint",
@@ -161,7 +163,7 @@ func TestValidate_LearnLockEnabledRequiresEveryField(t *testing.T) {
 				Mode:                  LockModeShadow,
 				StoreDir:              "/var/lib/pipelock/contracts",
 				RosterPath:            "/etc/pipelock/roster.json",
-				Environment:           "production",
+				Environment:           LearnLockEnvironment{ID: "production", Tenant: "acme", DeploymentID: "prod-us-1"},
 				PinnedRootFingerprint: validFP,
 				MinimumSignatures:     1,
 			}
@@ -184,7 +186,7 @@ func TestValidate_LearnLockEnabledHappyPath(t *testing.T) {
 		Mode:                  LockModeLive,
 		StoreDir:              "/var/lib/pipelock/contracts",
 		RosterPath:            "/etc/pipelock/roster.json",
-		Environment:           "production",
+		Environment:           LearnLockEnvironment{ID: "production", Tenant: "acme", DeploymentID: "prod-us-1"},
 		PinnedRootFingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		MinimumSignatures:     2,
 	}
@@ -203,7 +205,7 @@ func TestValidate_LearnLockEnabledEmptyModeAccepted(t *testing.T) {
 		Mode:                  "",
 		StoreDir:              "/var/lib/pipelock/contracts",
 		RosterPath:            "/etc/pipelock/roster.json",
-		Environment:           "production",
+		Environment:           LearnLockEnvironment{ID: "production", Tenant: "", DeploymentID: ""},
 		PinnedRootFingerprint: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}
 	if err := cfg.Validate(); err != nil {
@@ -211,5 +213,132 @@ func TestValidate_LearnLockEnabledEmptyModeAccepted(t *testing.T) {
 	}
 	if cfg.LearnLock.EffectiveMode() != LockModeShadow {
 		t.Fatalf("empty Mode should resolve to shadow, got %q", cfg.LearnLock.EffectiveMode())
+	}
+}
+
+func TestLoad_LearnLockEnvironmentNestedSchema(t *testing.T) {
+	t.Parallel()
+	const validFP = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	base := `
+learn_lock:
+  enabled: true
+  mode: live
+  store_dir: /var/lib/pipelock/contracts
+  roster_path: /etc/pipelock/roster.json
+  pinned_root_fingerprint: ` + validFP + `
+  minimum_signatures: 1
+`
+	cases := []struct {
+		name      string
+		envYAML   string
+		wantID    string
+		wantTen   string
+		wantDep   string
+		wantError string
+	}{
+		{
+			name: "nested full tuple",
+			envYAML: `  environment:
+    id: production
+    tenant: acme
+    deployment_id: prod-us-1
+`,
+			wantID:  "production",
+			wantTen: "acme",
+			wantDep: "prod-us-1",
+		},
+		{
+			name: "explicit empty tuple scopes",
+			envYAML: `  environment:
+    id: production
+    tenant: ""
+    deployment_id: ""
+`,
+			wantID: "production",
+		},
+		{
+			name: "old string form rejected",
+			envYAML: `  environment: production
+`,
+			wantError: "must be a mapping",
+		},
+		{
+			name: "missing tenant rejected",
+			envYAML: `  environment:
+    id: production
+    deployment_id: prod-us-1
+`,
+			wantError: "environment.tenant required",
+		},
+		{
+			name: "missing deployment_id rejected",
+			envYAML: `  environment:
+    id: production
+    tenant: acme
+`,
+			wantError: "environment.deployment_id required",
+		},
+		{
+			name: "null tenant rejected",
+			envYAML: `  environment:
+    id: production
+    tenant: null
+    deployment_id: prod-us-1
+`,
+			wantError: "environment.tenant must be a string",
+		},
+		{
+			name: "unknown nested field rejected",
+			envYAML: `  environment:
+    id: production
+    tenant: acme
+    deployment_id: prod-us-1
+    cluster: acme
+`,
+			wantError: "environment.cluster is not supported",
+		},
+		{
+			name: "empty mapping rejected via missing-required-key",
+			envYAML: `  environment: {}
+`,
+			wantError: "environment.id required",
+		},
+		{
+			name: "duplicate key rejected",
+			envYAML: `  environment:
+    id: production
+    id: staging
+    tenant: acme
+    deployment_id: prod-us-1
+`,
+			wantError: "environment.id is duplicated",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, []byte(base+tc.envYAML), 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			cfg, err := Load(path)
+			if tc.wantError != "" {
+				if err == nil {
+					t.Fatalf("Load() err = nil, want %q", tc.wantError)
+				}
+				if !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("Load() err = %q, want substring %q", err, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Load(): %v", err)
+			}
+			got := cfg.LearnLock.Environment
+			if got.ID != tc.wantID || got.Tenant != tc.wantTen || got.DeploymentID != tc.wantDep {
+				t.Fatalf("environment = %+v, want id=%q tenant=%q deployment_id=%q", got, tc.wantID, tc.wantTen, tc.wantDep)
+			}
+		})
 	}
 }

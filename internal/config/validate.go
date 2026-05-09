@@ -250,8 +250,8 @@ func (c *Config) validateLearnLock() error {
 	if !filepath.IsAbs(l.RosterPath) {
 		return fmt.Errorf("learn_lock.roster_path must be an absolute path, got %q", l.RosterPath)
 	}
-	if l.Environment == "" {
-		return fmt.Errorf("learn_lock.environment required when learn_lock.enabled is true")
+	if l.Environment.ID == "" {
+		return fmt.Errorf("learn_lock.environment.id required when learn_lock.enabled is true")
 	}
 	if err := validateLockMode(l.Mode); err != nil {
 		return err

@@ -792,6 +792,71 @@ func TestNewLoader_FailsOnMalformedActiveManifest(t *testing.T) {
 	}
 }
 
+func TestNewLoader_RejectsActiveManifestSymlink(t *testing.T) {
+	t.Parallel()
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.Root(), "store")
+	env := testLoaderEnv()
+	externalDir := t.TempDir()
+	writeSignedActiveStore(t, fixture, externalDir, 1, "sha256:genesis", env)
+	if err := os.MkdirAll(storeDir, 0o750); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(externalDir, activeFilename), filepath.Join(storeDir, activeFilename)); err != nil {
+		t.Fatalf("symlink active.json: %v", err)
+	}
+
+	_, err := NewLoader(loaderOptions(fixture, storeDir, env), nil)
+	if err == nil {
+		t.Fatal("NewLoader accepted active.json symlink")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("err = %v, want regular-file rejection", err)
+	}
+}
+
+func TestLoader_ReloadRejectsActiveManifestSymlinkAndKeepsCurrent(t *testing.T) {
+	t.Parallel()
+	fixture := newRosterFixture(t)
+	storeDir := filepath.Join(fixture.Root(), "store")
+	env := testLoaderEnv()
+	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:genesis", env)
+
+	metrics := &captureMetrics{}
+	loader, err := NewLoader(loaderOptions(fixture, storeDir, env), metrics)
+	if err != nil {
+		t.Fatalf("NewLoader: %v", err)
+	}
+	current := loader.Current()
+	if current == nil {
+		t.Fatal("expected initial active set")
+	}
+
+	externalDir := t.TempDir()
+	writeSignedActiveStore(t, fixture, externalDir, 2, current.ManifestHash(), env)
+	activePath := filepath.Join(storeDir, activeFilename)
+	if err := os.Remove(activePath); err != nil {
+		t.Fatalf("remove active.json: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(externalDir, activeFilename), activePath); err != nil {
+		t.Fatalf("symlink active.json: %v", err)
+	}
+
+	err = loader.Reload()
+	if err == nil {
+		t.Fatal("Reload accepted active.json symlink")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("err = %v, want regular-file rejection", err)
+	}
+	if loader.Current() != current {
+		t.Fatal("symlink rejection must preserve previous active set")
+	}
+	if metrics.outcome("rejected") != 1 {
+		t.Fatalf("rejected outcomes = %d, want 1", metrics.outcome("rejected"))
+	}
+}
+
 func TestLoader_Watch_FailsOnMissingStoreDir(t *testing.T) {
 	t.Parallel()
 	// Watch wires fsnotify.Add against the store directory at startup. A

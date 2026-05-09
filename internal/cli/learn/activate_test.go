@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -114,9 +115,17 @@ func TestResolveLifecycleEnvironmentInheritsOrRequiresExplicit(t *testing.T) {
 		t.Fatalf("mismatched environment err = %v, want mismatch", err)
 	}
 
-	_, err = resolveLifecycleEnvironment(lifecycleFlags{environmentID: "stage"}, contractstore.State{}, false)
-	if err == nil || !strings.Contains(err.Error(), "--tenant") {
-		t.Fatalf("partial environment err = %v, want missing flag error", err)
+	got, err = resolveLifecycleEnvironment(lifecycleFlags{environmentID: "stage"}, contractstore.State{}, false)
+	if err != nil {
+		t.Fatalf("resolve environment with empty tenant/deployment_id: %v", err)
+	}
+	if got != (contract.Environment{ID: "stage"}) {
+		t.Fatalf("explicit environment with empty tuple scopes = %+v, want id-only stage", got)
+	}
+
+	_, err = resolveLifecycleEnvironment(lifecycleFlags{tenant: "tenant"}, contractstore.State{}, false)
+	if err == nil || !strings.Contains(err.Error(), "--environment-id") {
+		t.Fatalf("missing environment id err = %v, want missing flag error", err)
 	}
 }
 
@@ -192,6 +201,55 @@ func TestRunPromoteWritesReceiptsAndAcceptedManifest(t *testing.T) {
 	mustUnmarshalPayload(t, committed, &committedPayload)
 	if committedPayload.ValidationOutcome != lifecycleOutcomeAccepted || committedPayload.TargetManifestHash != latest.ManifestHash {
 		t.Fatalf("committed payload = %+v, latest=%s", committedPayload, latest.ManifestHash)
+	}
+}
+
+func TestRunPromoteManifestLoadsInRuntimeWithEnvironmentTuple(t *testing.T) {
+	fixture := newLifecycleTestFixture(t)
+	firstContract := fixture.putContract(t, "agent-a")
+	if err := runPromote(lifecycleTestCmd(nil, nil), fixture.promoteFlags(firstContract, "agent-a", filepath.Join(fixture.root, "first-receipts.jsonl"))); err != nil {
+		t.Fatalf("runPromote first: %v", err)
+	}
+
+	loader, err := contractruntime.NewLoader(contractruntime.LoaderOptions{
+		StoreDir:              fixture.storeDir,
+		RosterPath:            fixture.rosterPath,
+		PinnedRootFingerprint: fixture.rootFingerprint,
+		Environment:           fixture.env,
+		MinSignatures:         1,
+		Mode:                  contractruntime.ModeLive,
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewLoader with matching environment tuple: %v", err)
+	}
+	if loader.Current() == nil || loader.Current().Generation() != 1 {
+		t.Fatalf("runtime current = %+v, want generation 1", loader.Current())
+	}
+
+	secondContract := fixture.putContract(t, "agent-b")
+	if err := runPromote(lifecycleTestCmd(nil, nil), fixture.promoteFlags(secondContract, "agent-b", filepath.Join(fixture.root, "second-receipts.jsonl"))); err != nil {
+		t.Fatalf("runPromote second: %v", err)
+	}
+	if err := loader.Reload(); err != nil {
+		t.Fatalf("runtime Reload after second promote: %v", err)
+	}
+	if loader.Current() == nil || loader.Current().Generation() != 2 {
+		t.Fatalf("runtime current after reload = %+v, want generation 2", loader.Current())
+	}
+
+	_, err = contractruntime.NewLoader(contractruntime.LoaderOptions{
+		StoreDir:              fixture.storeDir,
+		RosterPath:            fixture.rosterPath,
+		PinnedRootFingerprint: fixture.rootFingerprint,
+		Environment:           contract.Environment{ID: fixture.env.ID, Tenant: "wrong", DeploymentID: fixture.env.DeploymentID},
+		MinSignatures:         1,
+		Mode:                  contractruntime.ModeLive,
+	}, nil)
+	if err == nil {
+		t.Fatal("NewLoader accepted mismatched environment tuple")
+	}
+	if !strings.Contains(err.Error(), "environment mismatch") {
+		t.Fatalf("mismatch err = %v, want environment mismatch", err)
 	}
 }
 
@@ -282,6 +340,27 @@ func TestLifecycleErrorPaths(t *testing.T) {
 	missingEnv.deploymentID = ""
 	if err := runPromote(lifecycleTestCmd(nil, nil), missingEnv); err == nil || !strings.Contains(err.Error(), "--environment-id") {
 		t.Fatalf("runPromote missing env err = %v, want environment flag error", err)
+	}
+
+	emptyFixture := newLifecycleTestFixture(t)
+	emptyContractHash := emptyFixture.putContract(t, "agent-a")
+	emptyTupleScopes := emptyFixture.promoteFlags(emptyContractHash, "agent-a", filepath.Join(emptyFixture.root, "empty-scope-receipts.jsonl"))
+	emptyTupleScopes.tenant = ""
+	emptyTupleScopes.deploymentID = ""
+	if err := runPromote(lifecycleTestCmd(nil, nil), emptyTupleScopes); err != nil {
+		t.Fatalf("runPromote should accept empty tenant/deployment_id with environment id: %v", err)
+	}
+	latest, err := contractstore.New(emptyFixture.storeDir).LatestAccepted(contractstore.Options{
+		Environment:   contract.Environment{ID: emptyFixture.env.ID},
+		Roster:        emptyFixture.roster,
+		MinSignatures: 1,
+		Now:           lifecycleTestNow,
+	})
+	if err != nil {
+		t.Fatalf("LatestAccepted with id-only environment: %v", err)
+	}
+	if latest.Envelope.Body.Environment != (contract.Environment{ID: emptyFixture.env.ID}) {
+		t.Fatalf("promote environment = %+v, want id-only environment", latest.Envelope.Body.Environment)
 	}
 
 	missingSelector := base

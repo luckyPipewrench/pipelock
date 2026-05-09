@@ -231,6 +231,10 @@ func (l *Loader) Reload() error {
 	prev := l.current.Load()
 	opts := l.storeOpts
 	var activeState store.State
+	if err := l.validateActivePath(); err != nil {
+		l.metrics.IncReload(rejectionOutcome(err))
+		return fmt.Errorf("contract runtime: active manifest path: %w", err)
+	}
 	if prev != nil {
 		var err error
 		activeState, err = l.validateActiveReadOnly()
@@ -501,7 +505,37 @@ func rejectionOutcome(err error) string {
 	}
 }
 
+// validateActivePath rejects active manifest paths whose Lstat is anything
+// other than a regular file or absent. Symlinks, FIFOs, and device nodes
+// are refused so a hostile object planted at <storeDir>/active.json cannot
+// redirect the loader's read to attacker-controlled bytes.
+//
+// Threat-model assumption: the store directory is owner-only (0o700) on
+// the filesystem layer. A check-then-read race exists between this Lstat
+// and the subsequent manifest read; an attacker who can replace the regular
+// file with a symlink in that window could still redirect the read. Mitigation
+// lives in the operator runbook (chmod 0o700 the store dir owned by the
+// pipelock UID); a future O_NOFOLLOW + fstat path here closes the race
+// entirely. Tracked as a v2.4.1 hardening item.
+func (l *Loader) validateActivePath() error {
+	activePath := filepath.Clean(filepath.Join(l.storeDir, activeFilename))
+	info, err := os.Lstat(activePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("%w: stat active manifest: %w", store.ErrDecode, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: active manifest %s must be a regular file (mode=%s)", store.ErrStructural, activePath, info.Mode())
+	}
+	return nil
+}
+
 func (l *Loader) validateActiveReadOnly() (store.State, error) {
+	if err := l.validateActivePath(); err != nil {
+		return store.State{}, err
+	}
 	activePath := filepath.Clean(filepath.Join(l.storeDir, activeFilename))
 	raw, err := os.ReadFile(activePath)
 	if err != nil {

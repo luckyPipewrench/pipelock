@@ -1419,11 +1419,11 @@ type LearnLock struct {
 	RosterPath string `yaml:"roster_path"`
 
 	// Environment binds the lock runtime to a specific deployment
-	// environment string (e.g., "production", "staging"). The store
-	// rejects active manifests whose env field does not match, so a
-	// production cluster cannot accidentally enforce a staging
-	// contract. Required when Enabled is true.
-	Environment string `yaml:"environment"`
+	// environment tuple. The store rejects active manifests whose env
+	// tuple does not match, so a production cluster cannot accidentally
+	// enforce a staging or wrong-tenant contract. Required when Enabled
+	// is true.
+	Environment LearnLockEnvironment `yaml:"environment"`
 
 	// PinnedRootFingerprint is the canonical sha256 fingerprint of the
 	// trust roster root key: "sha256:" followed by 64 lowercase hex

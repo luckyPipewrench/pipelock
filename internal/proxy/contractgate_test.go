@@ -243,10 +243,13 @@ func TestBuildContractLoader_EnabledHappyPathReturnsLoader(t *testing.T) {
 	// signing scaffolding stays in one place across packages.
 	fixture := contractruntimetest.NewFixture(t)
 	storeDir := t.TempDir()
+	env := contractruntimetest.Env()
+	env.Tenant = "tenant-a"
+	env.DeploymentID = "deploy-a"
 	contractruntimetest.WriteSignedActiveStore(t, fixture, storeDir, contractruntimetest.ActiveStoreOptions{
 		Generation:  1,
 		PriorHash:   "sha256:genesis",
-		Environment: contractruntimetest.Env(),
+		Environment: env,
 	})
 
 	cfg := &config.Config{}
@@ -254,7 +257,7 @@ func TestBuildContractLoader_EnabledHappyPathReturnsLoader(t *testing.T) {
 	cfg.LearnLock.StoreDir = storeDir
 	cfg.LearnLock.RosterPath = fixture.RosterPath()
 	cfg.LearnLock.PinnedRootFingerprint = fixture.RootFingerprint()
-	cfg.LearnLock.Environment = "prod"
+	cfg.LearnLock.Environment = config.LearnLockEnvironment{ID: env.ID, Tenant: env.Tenant, DeploymentID: env.DeploymentID}
 	cfg.LearnLock.MinimumSignatures = 1
 	cfg.LearnLock.Mode = "live"
 

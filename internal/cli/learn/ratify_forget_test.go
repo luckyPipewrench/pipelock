@@ -182,7 +182,7 @@ func testRule(id, host, path string) contract.Rule {
 		LifecycleState:       "capture_only",
 		RequiredCaptureGrade: contract.CaptureGradeFull,
 		ObservedCaptureGrade: contract.CaptureGradeFull,
-		Confidence:           "high",
+		Confidence:           "stable",
 		WilsonLower:          "0.990000",
 		Observation:          map[string]any{"event_count": "21", "redacted_samples": []any{"sha256:sample"}},
 		Selector:             map[string]any{"host": host, "path": path},

@@ -51,7 +51,9 @@ func NewContractLoaderFromConfig(cfg *config.Config) (*contractruntime.Loader, e
 		RosterPath:            cfg.LearnLock.RosterPath,
 		PinnedRootFingerprint: cfg.LearnLock.PinnedRootFingerprint,
 		Environment: contract.Environment{
-			ID: cfg.LearnLock.Environment,
+			ID:           cfg.LearnLock.Environment.ID,
+			Tenant:       cfg.LearnLock.Environment.Tenant,
+			DeploymentID: cfg.LearnLock.Environment.DeploymentID,
 		},
 		MinSignatures: cfg.LearnLock.EffectiveMinimumSignatures(),
 		Mode:          contractruntime.Mode(cfg.LearnLock.EffectiveMode()),

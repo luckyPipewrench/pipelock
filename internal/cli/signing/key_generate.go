@@ -183,7 +183,7 @@ Examples:
 // cannot smuggle extra metadata past the loader.
 func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, ed25519.PublicKey, ed25519.PrivateKey, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := readKeyFileBytes(cleanPath)
+	raw, err := readKeyFileBytes(cleanPath, true)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("read key file %q: %w", cleanPath, err)
 	}
@@ -227,7 +227,7 @@ func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, 
 // has no purpose field, so callers fall back to the operator-supplied flag.
 func readPublicKeyForRoster(path string) ([]byte, string, error) {
 	cleanPath := filepath.Clean(path)
-	raw, err := readKeyFileBytes(cleanPath)
+	raw, err := readKeyFileBytes(cleanPath, false)
 	if err != nil {
 		return nil, "", fmt.Errorf("read public key %q: %w", cleanPath, err)
 	}
@@ -251,7 +251,7 @@ func readPublicKeyForRoster(path string) ([]byte, string, error) {
 	return pub, "", nil
 }
 
-func readKeyFileBytes(cleanPath string) ([]byte, error) {
+func readKeyFileBytes(cleanPath string, requireSecretPerms bool) ([]byte, error) {
 	// Open first so the subsequent Stat is on the same file descriptor
 	// (TOCTOU defense) AND so a non-regular file like a FIFO or device
 	// is detected before any read can block. Plain os.Stat + os.ReadFile
@@ -268,6 +268,9 @@ func readKeyFileBytes(cleanPath string) ([]byte, error) {
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("key file %q is not a regular file (mode=%s)", cleanPath, info.Mode())
+	}
+	if requireSecretPerms && info.Mode().Perm()&0o037 != 0 {
+		return nil, fmt.Errorf("private key %s has permissions %04o, want 0600 or 0640 (run: chmod 640 %s)", cleanPath, info.Mode().Perm(), cleanPath)
 	}
 	if info.Size() > keyFileMaxSize {
 		return nil, fmt.Errorf("%w: got %d bytes, max %d", errKeyFileTooLarge, info.Size(), keyFileMaxSize)

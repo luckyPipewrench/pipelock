@@ -123,7 +123,7 @@ func mcpLiveLockConfig(t *testing.T) *config.Config {
 	cfg.LearnLock.StoreDir = storeDir
 	cfg.LearnLock.RosterPath = fixture.RosterPath()
 	cfg.LearnLock.PinnedRootFingerprint = fixture.RootFingerprint()
-	cfg.LearnLock.Environment = env.ID
+	cfg.LearnLock.Environment = config.LearnLockEnvironment{ID: env.ID, Tenant: env.Tenant, DeploymentID: env.DeploymentID}
 	cfg.LearnLock.MinimumSignatures = 1
 	return cfg
 }

@@ -34,6 +34,8 @@ const (
 	ratifyDecisionCapture = "capture_only"
 	ratifyDecisionReject  = "reject"
 
+	ratifyConfidenceStable         = "stable"
+	ratifyConfidenceBrittle        = "brittle"
 	ratifyConfidenceNeverConfirmed = "never_confirmed"
 	ratifyConfidenceRefuted        = "refuted"
 )
@@ -256,10 +258,10 @@ func lowConfidenceRuleSummary(rules []contract.Rule) string {
 
 func isLowConfidenceRule(rule contract.Rule) bool {
 	switch strings.ToLower(strings.TrimSpace(rule.Confidence)) {
-	case ratifyConfidenceNeverConfirmed, ratifyConfidenceRefuted:
-		return true
-	default:
+	case ratifyConfidenceStable, ratifyConfidenceBrittle:
 		return false
+	default:
+		return true
 	}
 }
 

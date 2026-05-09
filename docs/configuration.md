@@ -2184,6 +2184,24 @@ The `listen`, `enabled`, and `upstream` fields cannot be changed via hot-reload 
 
 The live-lock runtime activates per-agent behavioural contracts only after their candidate is signed by an operator-controlled activation key, and trusts that key only because the deployment-local roster names it under a fleet-root signature. Bootstrapping the roster is a one-time operator workflow.
 
+Runtime config uses a nested environment tuple. All three keys are required when `learn_lock.enabled` is true. Use explicit empty strings for `tenant` or `deployment_id` only when the deployment is intentionally unscoped on that axis.
+
+```yaml
+learn_lock:
+  enabled: true
+  mode: shadow
+  store_dir: /var/lib/pipelock/contracts/active
+  roster_path: /etc/pipelock/roster.json
+  environment:
+    id: production
+    tenant: acme
+    deployment_id: prod-us-1
+  pinned_root_fingerprint: sha256:<64 lowercase hex>
+  minimum_signatures: 1
+```
+
+The old string form, `learn_lock.environment: production`, is not accepted by the v2.4 runtime. Migrate it to the nested block before enabling live-lock with a v2.4 binary.
+
 ### Generating the roster
 
 Two commands compose the trust topology:

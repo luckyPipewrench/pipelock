@@ -54,6 +54,38 @@ func TestRatifyLowConfidenceGuards(t *testing.T) {
 			wantErrRules: []string{"r-reject", testRatifyConfidenceRefuted},
 		},
 		{
+			name:         "non-interactive empty confidence refuses fail-closed",
+			confidences:  []string{testRatifyConfidenceStable, ""},
+			wantErr:      true,
+			wantErrRules: []string{"r-reject", "confidence="},
+		},
+		{
+			name:         "non-interactive novel confidence refuses fail-closed",
+			confidences:  []string{testRatifyConfidenceStable, "maybe_ok"},
+			wantErr:      true,
+			wantErrRules: []string{"r-reject", "maybe_ok"},
+		},
+		{
+			name:         "non-interactive homoglyph confidence refuses fail-closed",
+			confidences:  []string{testRatifyConfidenceStable, "stаble"},
+			wantErr:      true,
+			wantErrRules: []string{"r-reject", "stаble"},
+		},
+		{
+			name:         "non-interactive whitespace confidence refuses fail-closed",
+			confidences:  []string{testRatifyConfidenceStable, "   "},
+			wantErr:      true,
+			wantErrRules: []string{"r-reject", "confidence="},
+		},
+		{
+			name:        "non-interactive uppercase stable accepted via case-fold",
+			confidences: []string{testRatifyConfidenceStable, "STABLE"},
+			wantLifecycle: map[string]string{
+				"r-enforce": ratifyDecisionEnforce,
+				"r-reject":  ratifyDecisionEnforce,
+			},
+		},
+		{
 			name:                "non-interactive accept-low-confidence mixed enforces",
 			acceptLowConfidence: true,
 			confidences:         []string{testRatifyConfidenceStable, testRatifyConfidenceNeverConfirmed},

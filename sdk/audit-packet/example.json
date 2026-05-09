@@ -1,0 +1,93 @@
+{
+  "schema_version": "pipelock.audit_packet.v0",
+  "packet_id": "ap-2026-05-09-d4f2c1a8",
+  "generated_at": "2026-05-09T17:32:18Z",
+  "run": {
+    "provider": "github_actions",
+    "repository": "luckyPipewrench/pipelock",
+    "workflow": "agent-egress-demo",
+    "run_id": "8923477112",
+    "run_attempt": "1",
+    "ref": "refs/pull/498/merge",
+    "sha": "cef4f47ec55c2e7d8f3a6b1f9c0e2d1a4b3c5d6e",
+    "agent_identity": "github-actions-agent",
+    "started_at": "2026-05-09T17:30:42Z",
+    "completed_at": "2026-05-09T17:32:11Z",
+    "agent_exit_code": 0
+  },
+  "policy": {
+    "policy_hashes": [
+      "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    ],
+    "config_path": ".pipelock/ci.yaml",
+    "runtime_config_path": "/home/runner/work/_temp/pipelock-runtime.yaml",
+    "config_snapshot_sha256": "sha256:bd17b22b3a3d6c8c6d2dfb5e84a13d7a2e7eecb6c8d9d2b1c4e5a6b7c8d9e0f1"
+  },
+  "summary": {
+    "receipt_count": 12,
+    "totals": {
+      "allow": 9,
+      "block": 2,
+      "warn": 1,
+      "ask": 0,
+      "strip": 0,
+      "forward": 0,
+      "redirect": 0,
+      "other": 0
+    },
+    "transports": {
+      "https": 11,
+      "ws": 1
+    },
+    "layers": {
+      "domain_blocklist": 1,
+      "dlp": 1,
+      "response_injection": 1
+    },
+    "domains_touched": [
+      "api.anthropic.com",
+      "github.com",
+      "registry.npmjs.org"
+    ]
+  },
+  "verifier": {
+    "verdict": "valid",
+    "trusted": true,
+    "receipt_count": 12,
+    "root_hash": "sha256:91a2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071829a3b4c5d6e7f8091",
+    "final_seq": 11,
+    "signer_key": "pipelock-public-key:ed25519:0000000000000000000000000000000000000000000000000000000000000001",
+    "output_file": "verifier.txt"
+  },
+  "posture": {
+    "enforcement_mode": "linux_netns_iptables_setpriv",
+    "runner_os": "Linux",
+    "runner_arch": "X64",
+    "raw_socket_status": "denied",
+    "docker_socket_status": "masked",
+    "dns_udp_status": "denied",
+    "browser_proxy_status": "forced",
+    "websocket_frame_scanning": "explicit_ws_proxy_path_required",
+    "network_namespace": "pipelock-agent",
+    "agent_user": "pipelock-agent",
+    "agent_uid": 2001,
+    "host_user": "pipelock-host",
+    "host_uid": 2002,
+    "host_ip": "10.20.30.1",
+    "agent_ip": "10.20.30.2",
+    "proxy_url": "http://10.20.30.1:8888",
+    "script_basename": "agent-review.sh",
+    "script_arg_count": 2,
+    "unsupported_paths": [
+      "nested-docker",
+      "github-service-containers",
+      "ssh-egress"
+    ]
+  },
+  "artifacts": {
+    "packet": "packet.json",
+    "summary": "summary.md",
+    "evidence": "evidence.jsonl",
+    "verifier": "verifier.txt"
+  }
+}

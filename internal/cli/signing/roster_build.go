@@ -252,9 +252,12 @@ func parseIncludeSpecs(raw []string) ([]includeSpec, error) {
 
 // parseIncludeSpec parses one comma-separated key=value entry. Required keys:
 // id, key, purpose. Optional: status, role. Unknown keys reject so a
-// fat-fingered operator does not silently lose data.
+// fat-fingered operator does not silently lose data. Duplicate keys also
+// reject; otherwise "id=A,id=B" silently wins B and the operator-intended
+// roster differs from what got signed.
 func parseIncludeSpec(entry string) (includeSpec, error) {
 	var spec includeSpec
+	seen := make(map[string]struct{}, 5)
 	for _, raw := range strings.Split(entry, ",") {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
@@ -264,6 +267,12 @@ func parseIncludeSpec(entry string) (includeSpec, error) {
 		if !ok {
 			return includeSpec{}, fmt.Errorf("expected key=value, got %q", raw)
 		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if _, dup := seen[k]; dup {
+			return includeSpec{}, fmt.Errorf("duplicate key %q", k)
+		}
+		seen[k] = struct{}{}
 		switch k {
 		case "id":
 			spec.ID = v

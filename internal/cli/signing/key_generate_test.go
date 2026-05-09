@@ -348,6 +348,90 @@ func TestReadPublicKeyForRoster_RejectsUnsupportedKeyFileSchema(t *testing.T) {
 	}
 }
 
+func TestReadPublicKeyForRoster_RejectsJSONKeyFileWithMismatchedPriv(t *testing.T) {
+	dir := t.TempDir()
+	rootPath := filepath.Join(dir, "root.json")
+	otherPath := filepath.Join(dir, "other.json")
+
+	for _, e := range []struct {
+		purpose string
+		out     string
+	}{
+		{string(domsigning.PurposeContractCompileSigning), rootPath},
+		{string(domsigning.PurposeContractCompileSigning), otherPath},
+	} {
+		gen := keyGenerateCmd()
+		gen.SetOut(&bytes.Buffer{})
+		gen.SetErr(&bytes.Buffer{})
+		gen.SetArgs([]string{"--purpose", e.purpose, "--out", e.out, "--id", filepath.Base(e.out)})
+		if err := gen.Execute(); err != nil {
+			t.Fatalf("seed %s: %v", e.out, err)
+		}
+	}
+
+	rootRaw, err := os.ReadFile(filepath.Clean(rootPath))
+	if err != nil {
+		t.Fatalf("read root: %v", err)
+	}
+	otherRaw, err := os.ReadFile(filepath.Clean(otherPath))
+	if err != nil {
+		t.Fatalf("read other: %v", err)
+	}
+	var rootKF, otherKF keyFile
+	if err := json.Unmarshal(rootRaw, &rootKF); err != nil {
+		t.Fatalf("unmarshal root: %v", err)
+	}
+	if err := json.Unmarshal(otherRaw, &otherKF); err != nil {
+		t.Fatalf("unmarshal other: %v", err)
+	}
+	rootKF.Public = otherKF.Public
+	tampered, err := json.Marshal(rootKF)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(rootPath, tampered, 0o600); err != nil {
+		t.Fatalf("write tampered: %v", err)
+	}
+
+	_, _, err = readPublicKeyForRoster(rootPath)
+	if err == nil {
+		t.Fatalf("expected mismatched-keypair rejection on JSON include path")
+	}
+	if !strings.Contains(err.Error(), "private") || !strings.Contains(err.Error(), "public") {
+		t.Errorf("err %q does not name the priv/pub mismatch", err.Error())
+	}
+}
+
+func TestReadKeyFileBytes_RejectsNonRegularFile(t *testing.T) {
+	// Directory is the most portable non-regular file; FIFOs require mkfifo
+	// which is platform-specific. Both fail the IsRegular() gate identically.
+	dir := t.TempDir()
+	_, err := readKeyFileBytes(dir)
+	if err == nil {
+		t.Fatalf("expected non-regular-file rejection on directory")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Errorf("err %q does not mention regular file", err.Error())
+	}
+}
+
+func TestReadKeyFileBytes_RejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.json")
+	// Slightly above the cap; the LimitReader path also catches grows-after-stat.
+	big := bytes.Repeat([]byte("x"), keyFileMaxSize+10)
+	if err := os.WriteFile(path, big, 0o600); err != nil {
+		t.Fatalf("write big: %v", err)
+	}
+	_, err := readKeyFileBytes(path)
+	if err == nil {
+		t.Fatalf("expected oversize rejection")
+	}
+	if !errors.Is(err, errKeyFileTooLarge) {
+		t.Errorf("err = %v, want errKeyFileTooLarge", err)
+	}
+}
+
 func TestReadPublicKeyForRoster_AcceptsAgentKeystorePub(t *testing.T) {
 	dir := t.TempDir()
 	pub, _, err := domsigning.GenerateKeyPair()

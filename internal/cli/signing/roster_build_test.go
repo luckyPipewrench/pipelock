@@ -447,6 +447,37 @@ func TestRosterBuild_AllowsOverwriteWithForce(t *testing.T) {
 	}
 }
 
+func TestParseIncludeSpec_RejectsDuplicateKeys(t *testing.T) {
+	cases := []string{
+		"id=a,id=b,key=/k,purpose=p",
+		"id=x,key=/k,key=/other,purpose=p",
+		"id=x,key=/k,purpose=p,purpose=q",
+		"id=x,key=/k,purpose=p,status=active,status=revoked",
+		"id=x,key=/k,purpose=p,role=foo,role=bar",
+	}
+	for _, c := range cases {
+		t.Run(c, func(t *testing.T) {
+			_, err := parseIncludeSpec(c)
+			if err == nil {
+				t.Fatalf("expected duplicate-key rejection for %q", c)
+			}
+			if !strings.Contains(err.Error(), "duplicate key") {
+				t.Errorf("err %q does not mention duplicate key", err.Error())
+			}
+		})
+	}
+}
+
+func TestParseIncludeSpec_TrimsWhitespaceAroundKeyAndValue(t *testing.T) {
+	spec, err := parseIncludeSpec(" id = x , key = /k , purpose = p ")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if spec.ID != "x" || spec.KeyPath != "/k" || spec.Purpose != "p" {
+		t.Errorf("trim failed: %+v", spec)
+	}
+}
+
 func TestParseIncludeSpec_RejectsUnknownKey(t *testing.T) {
 	_, err := parseIncludeSpec("id=x,key=/k,purpose=p,bogus=z")
 	if err == nil {

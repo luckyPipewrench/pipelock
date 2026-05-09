@@ -233,14 +233,12 @@ func readPublicKeyForRoster(path string) ([]byte, string, error) {
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) > 0 && trimmed[0] == '{' {
-		kf, err := decodeKeyFile(raw)
-		if err != nil {
-			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
-		}
-		if _, err := validateKeyFileMetadata(kf); err != nil {
-			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
-		}
-		pub, err := decodeKeyFilePublic(kf)
+		// Delegate to loadKeyFile so the include path inherits the full
+		// keyFile gate (schema, purpose, hex sizes, trailing JSON, AND the
+		// private->public derivation check). Otherwise an include-side
+		// keyFile with a tampered private half could be silently accepted
+		// since this branch never uses the private key.
+		kf, pub, _, err := loadKeyFile(cleanPath, "")
 		if err != nil {
 			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
 		}
@@ -254,14 +252,36 @@ func readPublicKeyForRoster(path string) ([]byte, string, error) {
 }
 
 func readKeyFileBytes(cleanPath string) ([]byte, error) {
-	info, err := os.Stat(cleanPath)
+	// Open first so the subsequent Stat is on the same file descriptor
+	// (TOCTOU defense) AND so a non-regular file like a FIFO or device
+	// is detected before any read can block. Plain os.Stat + os.ReadFile
+	// would happily ReadFile-block-forever on a named pipe whose size
+	// reports 0.
+	f, err := os.Open(cleanPath) //nolint:gosec // path is operator-supplied and cleaned; size cap and regular-file check below
 	if err != nil {
 		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("key file %q is not a regular file (mode=%s)", cleanPath, info.Mode())
 	}
 	if info.Size() > keyFileMaxSize {
 		return nil, fmt.Errorf("%w: got %d bytes, max %d", errKeyFileTooLarge, info.Size(), keyFileMaxSize)
 	}
-	return os.ReadFile(cleanPath) //nolint:gosec // path is operator-supplied, cleaned, stat-checked, and size-capped above
+	// LimitReader is belt-and-suspenders: even if the file grew between
+	// stat and read, the read is bounded.
+	raw, err := io.ReadAll(io.LimitReader(f, keyFileMaxSize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > keyFileMaxSize {
+		return nil, fmt.Errorf("%w: got %d bytes, max %d", errKeyFileTooLarge, len(raw), keyFileMaxSize)
+	}
+	return raw, nil
 }
 
 func decodeKeyFile(raw []byte) (keyFile, error) {

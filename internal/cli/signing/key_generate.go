@@ -1,0 +1,248 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package signing
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
+	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
+)
+
+// keyFileSchemaVersion is the wire schema version of files written by
+// "pipelock signing key generate". Bump only on a breaking change.
+const keyFileSchemaVersion = 1
+
+// keyFileShortFingerprintHex is the number of hex chars taken from the
+// canonical sha256 fingerprint when deriving a default key_id.
+const keyFileShortFingerprintHex = 8
+
+// fingerprintPrefix is the canonical prefix on sha256 fingerprints emitted
+// by signing.Fingerprint and consumed by pinned-fingerprint config fields.
+const fingerprintPrefix = "sha256:"
+
+// keyFile is the on-disk JSON shape produced by "pipelock signing key generate".
+// Both private and public keys are stored hex-encoded; the file is written
+// 0o600 because the private key is sensitive.
+type keyFile struct {
+	SchemaVersion int    `json:"schema_version"`
+	Purpose       string `json:"purpose"`
+	KeyID         string `json:"key_id"`
+	Public        string `json:"public"`     // 64-char hex
+	Private       string `json:"private"`    // 128-char hex
+	CreatedAt     string `json:"created_at"` // RFC 3339 UTC
+}
+
+// keyGenerateGroupCmd is the parent "key" cobra command hosting key
+// generation subcommands. Distinct from the agent-scoped pipelock keygen
+// command because deployment-level keys (root, activation) live outside the
+// per-agent keystore layout and carry an explicit purpose binding.
+func keyGenerateGroupCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "key",
+		Short: "Generate deployment-level signing keys",
+		Long: `Generate deployment-level Ed25519 keys with explicit purpose
+binding. Subcommands:
+  generate    Generate one keypair bound to a recognised wire purpose`,
+	}
+	cmd.AddCommand(keyGenerateCmd())
+	return cmd
+}
+
+func keyGenerateCmd() *cobra.Command {
+	var purpose string
+	var outPath string
+	var keyID string
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "generate",
+		Short: "Generate an Ed25519 keypair bound to a specific purpose",
+		Long: `Generates a new Ed25519 keypair for a deployment-level role and
+writes it to disk as a JSON file. Distinct from "pipelock keygen <agent>",
+which writes per-agent keystore files under ~/.pipelock/agents/.
+
+The --purpose flag binds the key to one of the recognised wire purposes:
+  roster-root                    deployment-local trust root that signs the roster
+  contract-activation-signing    operator key that signs ratify and promote
+  contract-compile-signing       per-agent compile signing
+  recovery-root                  break-glass root for recovery operations
+  receipt-signing                runtime receipt signing
+  rules-official-signing         official rules package signing
+
+Writes a 0o600 JSON file containing schema_version, purpose, key_id, public
+(hex), private (hex), and created_at. The canonical sha256 fingerprint is
+printed on success for use in pinned_root_fingerprint configuration.
+
+Examples:
+  pipelock signing key generate --purpose roster-root --out /etc/pipelock/keys/fleet-root.json
+  pipelock signing key generate --purpose contract-activation-signing \
+    --out /etc/pipelock/keys/activation.json --id activation-primary`,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+
+			kp := domsigning.KeyPurpose(purpose)
+			if err := kp.Validate(); err != nil {
+				return err
+			}
+
+			if !filepath.IsAbs(outPath) {
+				return fmt.Errorf("--out must be absolute, got %q", outPath)
+			}
+			cleanOut := filepath.Clean(outPath)
+
+			if !force {
+				if _, statErr := os.Stat(cleanOut); statErr == nil {
+					return fmt.Errorf("output file %q already exists (use --force to overwrite)", cleanOut)
+				}
+			}
+
+			pub, priv, err := domsigning.GenerateKeyPair()
+			if err != nil {
+				return err
+			}
+
+			fp, err := domsigning.Fingerprint(pub)
+			if err != nil {
+				return fmt.Errorf("compute fingerprint: %w", err)
+			}
+
+			resolvedID := keyID
+			if resolvedID == "" {
+				short := strings.TrimPrefix(fp, fingerprintPrefix)
+				if len(short) > keyFileShortFingerprintHex {
+					short = short[:keyFileShortFingerprintHex]
+				}
+				resolvedID = fmt.Sprintf("%s-%s", purpose, short)
+			}
+
+			file := keyFile{
+				SchemaVersion: keyFileSchemaVersion,
+				Purpose:       purpose,
+				KeyID:         resolvedID,
+				Public:        hex.EncodeToString(pub),
+				Private:       hex.EncodeToString(priv),
+				CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+			}
+
+			data, err := json.MarshalIndent(file, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshal key file: %w", err)
+			}
+			data = append(data, '\n')
+
+			if err := atomicfile.Write(cleanOut, data, 0o600); err != nil {
+				return fmt.Errorf("write key file: %w", err)
+			}
+
+			_, _ = fmt.Fprintf(out, "Generated %s keypair\n", purpose)
+			_, _ = fmt.Fprintf(out, "  key_id:      %s\n", resolvedID)
+			_, _ = fmt.Fprintf(out, "  fingerprint: %s\n", fp)
+			_, _ = fmt.Fprintf(out, "  out:         %s\n", cleanOut)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&purpose, "purpose", "",
+		"key purpose (one of: roster-root, contract-activation-signing, contract-compile-signing, recovery-root, receipt-signing, rules-official-signing)")
+	cmd.Flags().StringVar(&outPath, "out", "", "absolute output path for the keypair JSON file")
+	cmd.Flags().StringVar(&keyID, "id", "", "operator-chosen key ID (default: <purpose>-<short-fingerprint>)")
+	cmd.Flags().BoolVar(&force, "force", false, "overwrite an existing output file")
+	_ = cmd.MarkFlagRequired("purpose")
+	_ = cmd.MarkFlagRequired("out")
+	return cmd
+}
+
+// loadKeyFile reads a keyFile from disk and returns the parsed struct
+// alongside the decoded public and private keys. If expectedPurpose is
+// non-empty, the file's purpose field must match exactly.
+//
+// Strict JSON decoding rejects unknown fields so a hostile or stale key file
+// cannot smuggle extra metadata past the loader.
+func loadKeyFile(path string, expectedPurpose domsigning.KeyPurpose) (*keyFile, ed25519.PublicKey, ed25519.PrivateKey, error) {
+	cleanPath := filepath.Clean(path)
+	raw, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("read key file %q: %w", cleanPath, err)
+	}
+	var kf keyFile
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&kf); err != nil {
+		return nil, nil, nil, fmt.Errorf("decode key file %q: %w", cleanPath, err)
+	}
+	if kf.SchemaVersion != keyFileSchemaVersion {
+		return nil, nil, nil, fmt.Errorf("unsupported key file schema_version %d (expected %d)", kf.SchemaVersion, keyFileSchemaVersion)
+	}
+	kp := domsigning.KeyPurpose(kf.Purpose)
+	if err := kp.Validate(); err != nil {
+		return nil, nil, nil, fmt.Errorf("invalid key file purpose: %w", err)
+	}
+	if expectedPurpose != "" && kp != expectedPurpose {
+		return nil, nil, nil, fmt.Errorf("key file purpose mismatch: file=%q expected=%q", kf.Purpose, expectedPurpose)
+	}
+	pubBytes, err := hex.DecodeString(kf.Public)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("decode public key hex: %w", err)
+	}
+	if len(pubBytes) != ed25519.PublicKeySize {
+		return nil, nil, nil, fmt.Errorf("public key has wrong size: got %d, want %d", len(pubBytes), ed25519.PublicKeySize)
+	}
+	privBytes, err := hex.DecodeString(kf.Private)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("decode private key hex: %w", err)
+	}
+	if len(privBytes) != ed25519.PrivateKeySize {
+		return nil, nil, nil, fmt.Errorf("private key has wrong size: got %d, want %d", len(privBytes), ed25519.PrivateKeySize)
+	}
+	return &kf, ed25519.PublicKey(pubBytes), ed25519.PrivateKey(privBytes), nil
+}
+
+// readPublicKeyForRoster reads a public key from disk in either the JSON
+// keyFile format produced by "pipelock signing key generate" or the agent
+// keystore .pub format produced by "pipelock keygen". Returns the raw
+// 32-byte public key and the file's declared purpose if available.
+//
+// The detected purpose is used to enforce that a roster --include entry's
+// purpose= flag matches the file's binding. The agent keystore .pub format
+// has no purpose field, so callers fall back to the operator-supplied flag.
+func readPublicKeyForRoster(path string) ([]byte, string, error) {
+	cleanPath := filepath.Clean(path)
+	raw, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("read public key %q: %w", cleanPath, err)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		var kf keyFile
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&kf); err != nil {
+			return nil, "", fmt.Errorf("decode key file %q: %w", cleanPath, err)
+		}
+		pub, err := hex.DecodeString(kf.Public)
+		if err != nil {
+			return nil, "", fmt.Errorf("decode public key hex in %q: %w", cleanPath, err)
+		}
+		if len(pub) != ed25519.PublicKeySize {
+			return nil, "", fmt.Errorf("public key in %q has wrong size: got %d, want %d", cleanPath, len(pub), ed25519.PublicKeySize)
+		}
+		return pub, kf.Purpose, nil
+	}
+	pub, err := domsigning.DecodePublicKey(string(raw))
+	if err != nil {
+		return nil, "", fmt.Errorf("decode agent keystore .pub file %q: %w", cleanPath, err)
+	}
+	return pub, "", nil
+}

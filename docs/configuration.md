@@ -2179,3 +2179,62 @@ pipelock run --reverse-proxy --reverse-upstream http://localhost:7899 --reverse-
 ### Hot-reload
 
 The `listen`, `enabled`, and `upstream` fields cannot be changed via hot-reload (requires restart). All other scanning config (DLP patterns, response patterns, action, header mode) updates on reload.
+
+## Live lock trust topology
+
+The live-lock runtime activates per-agent behavioural contracts only after their candidate is signed by an operator-controlled activation key, and trusts that key only because the deployment-local roster names it under a fleet-root signature. Bootstrapping the roster is a one-time operator workflow.
+
+### Generating the roster
+
+Two commands compose the trust topology:
+
+- `pipelock signing key generate --purpose <purpose> --out <path>` writes a new Ed25519 keypair to a 0o600 JSON file with explicit purpose binding. Used for deployment-level keys (root, activation, recovery).
+- `pipelock signing roster build --root <root.json> --include id=,key=,purpose=,...` composes a signed `RosterEnvelope` from the root key plus a list of public-key includes. The output JSON is what `learn_lock.roster_path` consumes and what `pipelock signing roster verify` accepts.
+
+End-to-end example:
+
+```bash
+# Generate the fleet root.
+pipelock signing key generate \
+  --purpose roster-root \
+  --out /etc/pipelock/keys/fleet-root.json
+
+# Generate the operator activation key.
+pipelock signing key generate \
+  --purpose contract-activation-signing \
+  --out /etc/pipelock/keys/activation.json \
+  --id activation-primary
+
+# Per-agent compile keys (existing command, agent-scoped keystore).
+pipelock keygen agent-a
+pipelock keygen agent-b
+
+# Compose and sign the roster.
+pipelock signing roster build \
+  --root /etc/pipelock/keys/fleet-root.json \
+  --include id=activation-primary,key=/etc/pipelock/keys/activation.json,purpose=contract-activation-signing,role=operator \
+  --include id=compile-agent-a,key=$HOME/.pipelock/agents/agent-a/id_ed25519.pub,purpose=contract-compile-signing \
+  --include id=compile-agent-b,key=$HOME/.pipelock/agents/agent-b/id_ed25519.pub,purpose=contract-compile-signing \
+  --data-class internal \
+  --out /etc/pipelock/roster.json
+
+# Verify the signed roster against the printed root fingerprint.
+pipelock signing roster verify \
+  --path /etc/pipelock/roster.json \
+  --root-fingerprint sha256:<from-key-generate-output>
+```
+
+The fingerprint printed by `pipelock signing key generate --purpose roster-root` is what `learn_lock.pinned_root_fingerprint` consumes. Pin it once at deployment time; the runtime rejects any roster that does not chain back to that exact value.
+
+### Refusal cases
+
+`pipelock signing roster build` refuses with a typed error when:
+
+- two `--include` entries share the same `id`
+- an `--include` `purpose=` flag disagrees with the file's `purpose` field (only enforced when the include points at a JSON keyFile; agent keystore `.pub` files have no purpose binding and rely on the operator-supplied flag)
+- the `--data-class` value is not in `{public, internal, sensitive}` (`regulated` is rejected explicitly)
+- an include passes `status=root` (the root entry is auto-included from `--root`)
+- the `--root` file's purpose is not `roster-root`
+- the output file already exists and `--force` is not set
+
+All key files are written with `0o600` permission via atomic temp-file-then-rename, so a partial write cannot leave a malformed key on disk.

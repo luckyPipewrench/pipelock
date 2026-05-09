@@ -44,15 +44,17 @@ ceremonies to confirm that signed artifacts are authentic before
 trusting them in production.
 
 Subcommand groups:
-  roster      Show and verify key rosters
+  key         Generate deployment-level signing keys
+  roster      Build, show, and verify key rosters
   recovery    Verify recovery authorizations
   transition  Verify root transition documents`,
 	}
 
 	roster := &cobra.Command{
 		Use:   "roster",
-		Short: "Show and verify key rosters",
+		Short: "Build, show, and verify key rosters",
 	}
+	roster.AddCommand(rosterBuildCmd())
 	roster.AddCommand(rosterShowCmd())
 	roster.AddCommand(rosterVerifyCmd())
 
@@ -68,7 +70,7 @@ Subcommand groups:
 	}
 	transition.AddCommand(transitionVerifyCmd())
 
-	cmd.AddCommand(roster, recovery, transition)
+	cmd.AddCommand(keyGenerateGroupCmd(), roster, recovery, transition)
 	return cmd
 }
 

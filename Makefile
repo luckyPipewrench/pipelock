@@ -20,8 +20,15 @@ LDFLAGS := -ldflags "-s -w \
 build:
 	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
 
+VERIFIER_BINARY := pipelock-verifier
+LDFLAGS_VERIFIER := -ldflags "-s -w \
+	-X $(MODULE)/internal/cliutil.Version=$(VERSION) \
+	-X $(MODULE)/internal/cliutil.BuildDate=$(BUILD_DATE) \
+	-X $(MODULE)/internal/cliutil.GitCommit=$(GIT_COMMIT) \
+	-X $(MODULE)/internal/cliutil.GoVersion=$(GO_VERSION)"
+
 build-verifier:
-	go build -trimpath $(LDFLAGS) -o pipelock-verifier ./cmd/pipelock-verifier
+	go build -trimpath $(LDFLAGS_VERIFIER) -o $(VERIFIER_BINARY) ./cmd/pipelock-verifier
 
 install:
 	go install $(LDFLAGS) ./cmd/pipelock
@@ -72,7 +79,7 @@ tidy-check:
 	git diff --exit-code go.mod go.sum
 
 clean:
-	rm -f $(BINARY) coverage.out coverage.html
+	rm -f $(BINARY) $(VERIFIER_BINARY) coverage.out coverage.html
 
 docker:
 	docker build \

@@ -278,6 +278,17 @@ func resolveArtifactPath(baseDir, rel string) (string, error) {
 	if err != nil || strings.HasPrefix(rel2, ".."+string(filepath.Separator)) || rel2 == ".." {
 		return "", fmt.Errorf("artifact path escapes packet directory after resolution: %q", rel)
 	}
+	// Re-check containment after symlink resolution. filepath.Rel inspects
+	// the path string only; a packet whose evidence.jsonl is itself a
+	// symlink to /etc/passwd would pass the path check and read outside the
+	// packet dir at open time. EvalSymlinks fails when the target does not
+	// yet exist, which is fine: downstream open will still fail.
+	if resolved, evalErr := filepath.EvalSymlinks(absFull); evalErr == nil {
+		rel3, relErr := filepath.Rel(absBase, resolved)
+		if relErr != nil || rel3 == ".." || strings.HasPrefix(rel3, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("artifact path escapes packet directory via symlink: %q", rel)
+		}
+	}
 	return full, nil
 }
 

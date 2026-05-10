@@ -110,13 +110,21 @@ func emitReceiptReport(stdout, stderr io.Writer, r receiptReport, jsonMode bool)
 	}
 }
 
-// writeJSON marshals v to stdout. Marshal failures degrade to a minimal
-// machine-readable error envelope rather than blowing up; the caller's
-// non-zero exit code communicates the problem.
+// writeJSON marshals v to stdout. Marshal failures degrade to a
+// machine-readable error envelope. The envelope is itself produced via
+// json.Marshal so quotes / backslashes / control bytes in the inner error
+// text round-trip safely; falling back to fmt.Sprintf would have produced
+// invalid JSON for any error containing those characters.
 func writeJSON(out io.Writer, v any) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		_, _ = fmt.Fprintf(out, `{"error":"json marshal failed: %s"}`, err.Error())
+		envelope, mErr := json.Marshal(struct {
+			Error string `json:"error"`
+		}{Error: "json marshal failed: " + err.Error()})
+		if mErr != nil {
+			envelope = []byte(`{"error":"json marshal failed"}`)
+		}
+		_, _ = out.Write(envelope)
 		_, _ = fmt.Fprintln(out)
 		return
 	}
@@ -163,11 +171,16 @@ func exitCodeFor(err error) int {
 	return cliutil.ExitGeneral
 }
 
+// isCobraUsageError matches the four prefixes cobra emits today for
+// usage-class failures. Flag errors are routed through SetFlagErrorFunc
+// directly, so they never reach this matcher; this exists only to map the
+// remaining unknown-command and missing-arg paths to exit code 64. Cobra
+// version bumps may shift wording; if a future cobra changes a prefix the
+// CLI degrades to ExitGeneral, not to a wrong exit code.
 func isCobraUsageError(err error) bool {
 	msg := err.Error()
 	return strings.HasPrefix(msg, "unknown command ") ||
 		strings.HasPrefix(msg, "unknown flag:") ||
 		strings.HasPrefix(msg, "accepts ") ||
-		strings.HasPrefix(msg, "requires at least ") ||
-		strings.HasPrefix(msg, "requires a command")
+		strings.HasPrefix(msg, "requires at least ")
 }

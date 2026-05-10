@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -86,18 +87,19 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		}
 		label = fmt.Sprintf("%s (session %s)", target, opts.sessionID)
 	} else {
-		info, statErr := os.Stat(target)
+		clean := filepath.Clean(target)
+		info, statErr := os.Stat(clean)
 		if statErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("stat %q: %w", target, statErr))
 		}
 		if info.IsDir() {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%q is a directory; pass --dir to verify a session directory", target))
 		}
-		receipts, err = receipt.ExtractReceipts(target)
+		receipts, err = receipt.ExtractReceipts(clean)
 		if err != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
 		}
-		label = target
+		label = clean
 	}
 
 	if len(receipts) == 0 {

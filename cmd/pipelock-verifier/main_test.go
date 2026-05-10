@@ -753,6 +753,23 @@ func TestResolveArtifactPath(t *testing.T) {
 	}
 }
 
+func TestResolveArtifactPath_SymlinkContainmentRejected(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	outside := t.TempDir()
+	outsideTarget := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideTarget, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("write outside target: %v", err)
+	}
+	link := filepath.Join(base, "evidence.jsonl")
+	if err := os.Symlink(outsideTarget, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if _, err := resolveArtifactPath(base, "evidence.jsonl"); err == nil {
+		t.Fatalf("symlinked artifact pointing outside packet dir should be rejected")
+	}
+}
+
 func TestVerifyExpectedSHA(t *testing.T) {
 	t.Parallel()
 	data := []byte("payload")

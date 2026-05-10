@@ -21,6 +21,9 @@ Locks:
   an explicit value for "not probed" or "off"; the four status enums use `unknown`,
   `websocket_frame_scanning` uses `off`).
 - `unsupported_paths` is required; emit an empty array when no unsupported paths are known.
+- Artifact paths in the `artifacts` block must stay inside the packet directory. The
+  validator rejects empty paths (where required), absolute paths, Windows-style paths
+  (backslash or colon), and `..` traversal.
 - `enforcement_mode` is free-form (linux_netns_iptables_setpriv is the v0 reference).
 - `policy.policy_hashes` is plural because hot-reload can change policy mid-run.
 

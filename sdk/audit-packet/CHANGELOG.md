@@ -14,10 +14,11 @@ Locks:
 - Eight verdict buckets in `summary.totals`: `allow`, `block`, `warn`, `ask`, `strip`,
   `forward`, `redirect`, `other`. All eight are required, even when zero.
 - Verifier verdict enum: `valid`, `invalid`, `error`, `not_run`, `self_consistent_only`.
-- `verifier.trusted` is true only when `verdict` is `valid` AND a long-lived signer public
-  key was pinned at verification time.
+- `verifier.trusted` is required. It is true only when `verdict` is `valid` AND a long-lived
+  signer public key was pinned at verification time.
 - Posture status enums for `raw_socket_status`, `docker_socket_status`, `dns_udp_status`,
-  `browser_proxy_status` (each includes an `unknown` value for "not probed").
+  `browser_proxy_status` (each is required and includes an `unknown` value for "not probed").
+- `unsupported_paths` is required; emit an empty array when no unsupported paths are known.
 - `enforcement_mode` is free-form (linux_netns_iptables_setpriv is the v0 reference).
 - `policy.policy_hashes` is plural because hot-reload can change policy mid-run.
 

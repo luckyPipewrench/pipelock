@@ -3,6 +3,19 @@
   "$id": "https://pipelab.org/schemas/audit-packet-v0.schema.json",
   "title": "Pipelock Audit Packet v0",
   "description": "Procurement-ready evidence bundle emitted after a Pipelock-mediated agent run. Pairs a verdict from a signed receipt chain with the enforcement posture claims that produced it. Versioned independently from pipelock binary releases.",
+  "$defs": {
+    "artifact_path": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        { "not": { "const": "." } },
+        { "not": { "pattern": "^/" } },
+        { "not": { "pattern": ":" } },
+        { "not": { "pattern": "\\\\" } },
+        { "not": { "pattern": "(^|/)\\.\\.(/|$)" } }
+      ]
+    }
+  },
   "type": "object",
   "required": [
     "schema_version",
@@ -156,8 +169,30 @@
     "verifier": {
       "type": "object",
       "description": "Verdict from the receipt chain verifier. The verdict alone is not the proof; consumers MUST cross-reference posture claims and the signer key when assigning trust.",
-      "required": ["verdict"],
+      "required": ["verdict", "trusted"],
       "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": ["trusted"],
+            "properties": { "trusted": { "const": true } }
+          },
+          "then": {
+            "required": ["signer_key"],
+            "properties": { "verdict": { "const": "valid" } }
+          }
+        },
+        {
+          "if": {
+            "required": ["verdict"],
+            "properties": { "verdict": { "const": "valid" } }
+          },
+          "then": {
+            "required": ["signer_key"],
+            "properties": { "trusted": { "const": true } }
+          }
+        }
+      ],
       "properties": {
         "verdict": {
           "type": "string",
@@ -184,7 +219,8 @@
         },
         "signer_key": {
           "type": "string",
-          "description": "Signer public key in pipelock public-key text form, or empty when no key was pinned."
+          "minLength": 1,
+          "description": "Signer public key in pipelock public-key text form. Omitted when no key was pinned."
         },
         "output_file": {
           "type": "string",
@@ -238,7 +274,16 @@
     "posture": {
       "type": "object",
       "description": "Enforcement posture claimed by the producer. These fields document WHAT was enforced; the receipts in evidence.jsonl prove what happened under that posture. Both sides matter: a clean receipt chain under a posture that admits unsupported paths is weaker evidence than the same chain under stricter posture.",
-      "required": ["enforcement_mode", "runner_os"],
+      "required": [
+        "enforcement_mode",
+        "runner_os",
+        "raw_socket_status",
+        "docker_socket_status",
+        "dns_udp_status",
+        "browser_proxy_status",
+        "websocket_frame_scanning",
+        "unsupported_paths"
+      ],
       "additionalProperties": false,
       "properties": {
         "enforcement_mode": {
@@ -295,10 +340,22 @@
       "required": ["packet", "evidence", "verifier"],
       "additionalProperties": false,
       "properties": {
-        "packet":   { "type": "string", "description": "Relative path to this packet.json." },
-        "summary":  { "type": "string", "description": "Relative path to the human-readable summary.md." },
-        "evidence": { "type": "string", "description": "Relative path to evidence.jsonl, the byte-for-byte signed receipt chain." },
-        "verifier": { "type": "string", "description": "Relative path to verifier.txt, the verifier's raw output." }
+        "packet": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to this packet.json."
+        },
+        "summary": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to the human-readable summary.md."
+        },
+        "evidence": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to evidence.jsonl, the byte-for-byte signed receipt chain."
+        },
+        "verifier": {
+          "$ref": "#/$defs/artifact_path",
+          "description": "Relative path to verifier.txt, the verifier's raw output."
+        }
       }
     }
   }

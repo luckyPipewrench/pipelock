@@ -48,8 +48,10 @@ The schema is the contract between producers (the action, future producers) and 
   provenance. Consumers that conflate this with `valid` defeat the whole point of pinning.
 - **Posture status enums.** `raw_socket_status`, `docker_socket_status`, `dns_udp_status`,
   `browser_proxy_status` each have a closed enum that distinguishes "denied" from "unknown".
-  Producers MUST NOT emit "unknown" for a path they did not probe AND treat that as evidence;
-  consumers reading "unknown" treat it as no claim, not as a denial.
+  Producers MUST emit these fields; if they did not probe a path, they emit `unknown`.
+  Consumers reading `unknown` treat it as no claim, not as a denial.
+- **Verifier trust semantics.** `verifier.trusted` is required. `verdict=valid` requires
+  `trusted=true` and a signer key; all other verifier verdicts require `trusted=false`.
 - **`additionalProperties: false`** at the top level and on most nested objects. Schema-version
   bumps add fields; v0 packets must NOT silently smuggle unknown fields.
 
@@ -66,18 +68,18 @@ The merged spec keeps the impl's 8-bucket totals (each maps 1:1 to a `config.Act
 nested `run` / `policy` blocks (so a CISO can ctrl-F `policy_hash` and find it in one section),
 and the impl's `self_consistent_only` verdict (it already happens; consumers need to model it).
 
-Posture-claim fields from the draft (`raw_socket_status`, `docker_socket_status`, etc.) are
-required because the packet's job is to document _what was enforced_, not just _what the
-receipts said_. A clean receipt chain under a posture that admits unsupported paths is weaker
-evidence than the same chain under stricter posture, and the schema needs to make that
-visible to relying parties.
+Posture-claim fields from the draft (`raw_socket_status`, `docker_socket_status`, etc.) and
+`unsupported_paths` are required because the packet's job is to document _what was enforced_,
+not just _what the receipts said_. A clean receipt chain under a posture that admits
+unsupported paths is weaker evidence than the same chain under stricter posture, and the
+schema needs to make that visible to relying parties.
 
 ## Validating a packet
 
 The Go binding lives in this directory:
 
 ```go
-import "github.com/luckyPipewrench/pipelock/sdk/auditpacket"
+import auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 
 var p auditpacket.Packet
 if err := json.Unmarshal(data, &p); err != nil {
@@ -88,10 +90,12 @@ if err := p.Validate(); err != nil {
 }
 ```
 
-`Packet.Validate()` enforces structural invariants the JSON Schema also enforces (required
-fields, enum values, totals key set). For full schema-level validation, run any JSON Schema
-2020-12 validator against `v0.json`; we do not ship a validator dependency in pipelock to
-keep the direct-dependency count minimal.
+`Packet.Validate()` enforces structural invariants the JSON Schema also enforces: required
+semantic fields, enum values, non-negative counts, verifier trust semantics, summary total
+consistency, sorted unique domains, and artifact path containment. For full schema-level
+validation, including JSON key presence and `additionalProperties: false`, run any JSON
+Schema 2020-12 validator against `v0.json`; we do not ship a validator dependency in
+pipelock to keep the direct-dependency count minimal.
 
 ## Versioning
 

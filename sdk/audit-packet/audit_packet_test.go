@@ -165,14 +165,51 @@ func TestValidate(t *testing.T) {
 			wantSub: "totals counts",
 		},
 		{
+			name:    "totals sum mismatch",
+			mutate:  func(p *auditpacket.Packet) { p.Summary.Totals.Allow++ },
+			wantSub: "totals sum",
+		},
+		{
 			name:    "negative receipt_count",
 			mutate:  func(p *auditpacket.Packet) { p.Summary.ReceiptCount = -1 },
 			wantSub: "receipt_count",
 		},
 		{
+			name:    "negative transport count",
+			mutate:  func(p *auditpacket.Packet) { p.Summary.Transports["https"] = -1 },
+			wantSub: "transports",
+		},
+		{
+			name:    "negative layer count",
+			mutate:  func(p *auditpacket.Packet) { p.Summary.Layers["dlp"] = -1 },
+			wantSub: "layers",
+		},
+		{
+			name: "domains_touched must be sorted",
+			mutate: func(p *auditpacket.Packet) {
+				p.Summary.DomainsTouched = []string{"z.example", "a.example"}
+			},
+			wantSub: "domains_touched must be sorted",
+		},
+		{
+			name: "domains_touched must be unique",
+			mutate: func(p *auditpacket.Packet) {
+				p.Summary.DomainsTouched = []string{"a.example", "a.example"}
+			},
+			wantSub: "domains_touched contains duplicate",
+		},
+		{
 			name:    "unknown verdict",
 			mutate:  func(p *auditpacket.Packet) { p.Verifier.Verdict = "ok" },
 			wantSub: "verdict",
+		},
+		{
+			name: "valid verdict requires trusted",
+			mutate: func(p *auditpacket.Packet) {
+				p.Verifier.Verdict = auditpacket.VerdictValid
+				p.Verifier.Trusted = false
+			},
+			wantSub: "verdict=valid requires trusted=true",
 		},
 		{
 			name: "trusted=true with self_consistent_only is rejected",
@@ -183,6 +220,138 @@ func TestValidate(t *testing.T) {
 			wantSub: "trusted=true requires verdict=valid",
 		},
 		{
+			name: "trusted=true requires signer_key",
+			mutate: func(p *auditpacket.Packet) {
+				p.Verifier.SignerKey = ""
+			},
+			wantSub: "trusted=true requires signer_key",
+		},
+		{
+			name:    "negative verifier receipt_count",
+			mutate:  func(p *auditpacket.Packet) { p.Verifier.ReceiptCount = -1 },
+			wantSub: "receipt_count",
+		},
+		{
+			name:    "negative final_seq",
+			mutate:  func(p *auditpacket.Packet) { p.Verifier.FinalSeq = -1 },
+			wantSub: "final_seq",
+		},
+		{
+			name: "invalid inline receipt",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{}}
+			},
+			wantSub: "receipts[0]",
+		},
+		{
+			name: "inline receipt missing receipt_hash",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{
+					ActionID:      "a",
+					ChainSeq:      0,
+					ChainPrevHash: "genesis",
+					Verdict:       "allow",
+					PolicyHash:    "sha256:test",
+				}}
+			},
+			wantSub: "receipt_hash",
+		},
+		{
+			name: "invalid inline receipt chain seq",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{
+					ActionID:      "a",
+					ReceiptHash:   "h",
+					ChainSeq:      -1,
+					ChainPrevHash: "genesis",
+					Verdict:       "allow",
+					PolicyHash:    "sha256:test",
+				}}
+			},
+			wantSub: "chain_seq",
+		},
+		{
+			name: "inline receipt missing chain_prev_hash",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{
+					ActionID:    "a",
+					ReceiptHash: "h",
+					ChainSeq:    0,
+					Verdict:     "allow",
+					PolicyHash:  "sha256:test",
+				}}
+			},
+			wantSub: "chain_prev_hash",
+		},
+		{
+			name: "inline receipt missing verdict",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{
+					ActionID:      "a",
+					ReceiptHash:   "h",
+					ChainSeq:      0,
+					ChainPrevHash: "genesis",
+					PolicyHash:    "sha256:test",
+				}}
+			},
+			wantSub: "verdict",
+		},
+		{
+			name: "inline receipt missing policy_hash",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{
+					ActionID:      "a",
+					ReceiptHash:   "h",
+					ChainSeq:      0,
+					ChainPrevHash: "genesis",
+					Verdict:       "allow",
+				}}
+			},
+			wantSub: "policy_hash",
+		},
+		{
+			name: "valid inline receipt",
+			mutate: func(p *auditpacket.Packet) {
+				p.Receipts = []auditpacket.Receipt{{
+					ActionID:      "a",
+					ReceiptHash:   "h",
+					ChainSeq:      0,
+					ChainPrevHash: "genesis",
+					Verdict:       "allow",
+					PolicyHash:    "sha256:test",
+				}}
+			},
+			wantSub: "",
+		},
+		{
+			name: "valid scanner config snapshot",
+			mutate: func(p *auditpacket.Packet) {
+				truthy := true
+				p.ScannerConfigSnapshot = &auditpacket.ScannerConfigSnapshot{
+					DLPPatternsCount:      1,
+					ResponsePatternsCount: 2,
+					SSRFEnabled:           &truthy,
+					RedactionEnabled:      &truthy,
+					FlightRecorderEnabled: &truthy,
+				}
+			},
+			wantSub: "",
+		},
+		{
+			name: "negative scanner config count",
+			mutate: func(p *auditpacket.Packet) {
+				p.ScannerConfigSnapshot = &auditpacket.ScannerConfigSnapshot{DLPPatternsCount: -1}
+			},
+			wantSub: "dlp_patterns_count",
+		},
+		{
+			name: "negative scanner response count",
+			mutate: func(p *auditpacket.Packet) {
+				p.ScannerConfigSnapshot = &auditpacket.ScannerConfigSnapshot{ResponsePatternsCount: -1}
+			},
+			wantSub: "response_patterns_count",
+		},
+		{
 			name:    "missing enforcement_mode",
 			mutate:  func(p *auditpacket.Packet) { p.Posture.EnforcementMode = "" },
 			wantSub: "enforcement_mode",
@@ -191,6 +360,41 @@ func TestValidate(t *testing.T) {
 			name:    "missing runner_os",
 			mutate:  func(p *auditpacket.Packet) { p.Posture.RunnerOS = "" },
 			wantSub: "runner_os",
+		},
+		{
+			name:    "invalid raw_socket_status",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.RawSocketStatus = "" },
+			wantSub: "raw_socket_status",
+		},
+		{
+			name:    "invalid docker_socket_status",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.DockerSocketStatus = "mounted" },
+			wantSub: "docker_socket_status",
+		},
+		{
+			name:    "invalid dns_udp_status",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.DNSUDPStatus = "blocked" },
+			wantSub: "dns_udp_status",
+		},
+		{
+			name:    "invalid browser_proxy_status",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.BrowserProxyStatus = "enabled" },
+			wantSub: "browser_proxy_status",
+		},
+		{
+			name:    "invalid websocket_frame_scanning",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.WebsocketFrameScanning = "unknown" },
+			wantSub: "websocket_frame_scanning",
+		},
+		{
+			name:    "negative script_arg_count",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.ScriptArgCount = -1 },
+			wantSub: "script_arg_count",
+		},
+		{
+			name:    "unsupported_paths nil rejected",
+			mutate:  func(p *auditpacket.Packet) { p.Posture.UnsupportedPaths = nil },
+			wantSub: "unsupported_paths",
 		},
 		{
 			name:    "missing artifacts.packet",
@@ -206,6 +410,26 @@ func TestValidate(t *testing.T) {
 			name:    "missing artifacts.verifier",
 			mutate:  func(p *auditpacket.Packet) { p.Artifacts.Verifier = "" },
 			wantSub: "verifier path",
+		},
+		{
+			name:    "absolute artifact path rejected",
+			mutate:  func(p *auditpacket.Packet) { p.Artifacts.Evidence = "/tmp/evidence.jsonl" },
+			wantSub: "evidence path must be relative",
+		},
+		{
+			name:    "windows artifact path rejected",
+			mutate:  func(p *auditpacket.Packet) { p.Artifacts.Packet = `C:\tmp\packet.json` },
+			wantSub: "packet path must be slash-relative",
+		},
+		{
+			name:    "traversal artifact path rejected",
+			mutate:  func(p *auditpacket.Packet) { p.Artifacts.Verifier = "../verifier.txt" },
+			wantSub: "verifier path must stay inside",
+		},
+		{
+			name:    "optional summary artifact may be empty",
+			mutate:  func(p *auditpacket.Packet) { p.Artifacts.Summary = "" },
+			wantSub: "",
 		},
 	}
 

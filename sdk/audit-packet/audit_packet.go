@@ -6,7 +6,9 @@ package auditpacket
 import (
 	"errors"
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 )
 
 // SchemaVersion is the locked identifier producers stamp into every v0 packet.
@@ -50,6 +52,13 @@ const (
 	StatusAdvisory = "advisory"
 )
 
+// WebSocket frame-scanning posture values.
+const (
+	WebsocketFrameScanningExplicitProxyPathRequired = "explicit_ws_proxy_path_required"
+	WebsocketFrameScanningAlwaysOn                  = "always_on"
+	WebsocketFrameScanningOff                       = "off"
+)
+
 // totalsKeys is the locked v0 set. All eight keys MUST be present in
 // summary.totals, even when zero.
 var totalsKeys = []string{
@@ -76,6 +85,40 @@ var validProviders = map[string]struct{}{
 	ProviderGitHubActions: {},
 	ProviderSelfHosted:    {},
 	ProviderLocal:         {},
+}
+
+var validRawSocketStatuses = map[string]struct{}{
+	StatusDenied:  {},
+	StatusAllowed: {},
+	StatusUnknown: {},
+}
+
+var validDockerSocketStatuses = map[string]struct{}{
+	StatusDenied:  {},
+	StatusMasked:  {},
+	StatusAllowed: {},
+	StatusAbsent:  {},
+	StatusUnknown: {},
+}
+
+var validDNSUDPStatuses = map[string]struct{}{
+	StatusDenied:  {},
+	StatusProxied: {},
+	StatusAllowed: {},
+	StatusUnknown: {},
+}
+
+var validBrowserProxyStatuses = map[string]struct{}{
+	StatusForced:   {},
+	StatusAdvisory: {},
+	StatusAbsent:   {},
+	StatusUnknown:  {},
+}
+
+var validWebsocketFrameScanning = map[string]struct{}{
+	WebsocketFrameScanningExplicitProxyPathRequired: {},
+	WebsocketFrameScanningAlwaysOn:                  {},
+	WebsocketFrameScanningOff:                       {},
 }
 
 // Packet is the top-level audit packet structure. Field tags match the JSON
@@ -191,11 +234,11 @@ type Posture struct {
 	EnforcementMode        string   `json:"enforcement_mode"`
 	RunnerOS               string   `json:"runner_os"`
 	RunnerArch             string   `json:"runner_arch,omitempty"`
-	RawSocketStatus        string   `json:"raw_socket_status,omitempty"`
-	DockerSocketStatus     string   `json:"docker_socket_status,omitempty"`
-	DNSUDPStatus           string   `json:"dns_udp_status,omitempty"`
-	BrowserProxyStatus     string   `json:"browser_proxy_status,omitempty"`
-	WebsocketFrameScanning string   `json:"websocket_frame_scanning,omitempty"`
+	RawSocketStatus        string   `json:"raw_socket_status"`
+	DockerSocketStatus     string   `json:"docker_socket_status"`
+	DNSUDPStatus           string   `json:"dns_udp_status"`
+	BrowserProxyStatus     string   `json:"browser_proxy_status"`
+	WebsocketFrameScanning string   `json:"websocket_frame_scanning"`
 	NetworkNamespace       string   `json:"network_namespace,omitempty"`
 	AgentUser              string   `json:"agent_user,omitempty"`
 	AgentUID               int      `json:"agent_uid,omitempty"`
@@ -206,7 +249,7 @@ type Posture struct {
 	ProxyURL               string   `json:"proxy_url,omitempty"`
 	ScriptBasename         string   `json:"script_basename,omitempty"`
 	ScriptArgCount         int      `json:"script_arg_count,omitempty"`
-	UnsupportedPaths       []string `json:"unsupported_paths,omitempty"`
+	UnsupportedPaths       []string `json:"unsupported_paths"`
 }
 
 // Artifacts records relative paths to sibling files in the audit packet
@@ -242,6 +285,16 @@ func (p *Packet) Validate() error {
 	}
 	if err := p.Verifier.validate(); err != nil {
 		return fmt.Errorf("auditpacket: verifier: %w", err)
+	}
+	for i, receipt := range p.Receipts {
+		if err := receipt.validate(); err != nil {
+			return fmt.Errorf("auditpacket: receipts[%d]: %w", i, err)
+		}
+	}
+	if p.ScannerConfigSnapshot != nil {
+		if err := p.ScannerConfigSnapshot.validate(); err != nil {
+			return fmt.Errorf("auditpacket: scanner_config_snapshot: %w", err)
+		}
 	}
 	if err := p.Posture.validate(); err != nil {
 		return fmt.Errorf("auditpacket: posture: %w", err)
@@ -284,6 +337,25 @@ func (s Summary) validate() error {
 		s.Totals.Redirect < 0 || s.Totals.Other < 0 {
 		return errors.New("totals counts must be non-negative")
 	}
+	totalReceipts := s.Totals.Allow + s.Totals.Block + s.Totals.Warn + s.Totals.Ask +
+		s.Totals.Strip + s.Totals.Forward + s.Totals.Redirect + s.Totals.Other
+	if totalReceipts != s.ReceiptCount {
+		return fmt.Errorf("totals sum %d does not match receipt_count %d", totalReceipts, s.ReceiptCount)
+	}
+	if err := validateCountsMap("transports", s.Transports); err != nil {
+		return err
+	}
+	if err := validateCountsMap("layers", s.Layers); err != nil {
+		return err
+	}
+	if !sort.StringsAreSorted(s.DomainsTouched) {
+		return errors.New("domains_touched must be sorted")
+	}
+	for i := 1; i < len(s.DomainsTouched); i++ {
+		if s.DomainsTouched[i] == s.DomainsTouched[i-1] {
+			return fmt.Errorf("domains_touched contains duplicate %q", s.DomainsTouched[i])
+		}
+	}
 	return nil
 }
 
@@ -296,6 +368,50 @@ func (v Verifier) validate() error {
 	if v.Trusted && v.Verdict != VerdictValid {
 		return fmt.Errorf("trusted=true requires verdict=valid, got %q", v.Verdict)
 	}
+	if v.Verdict == VerdictValid && !v.Trusted {
+		return errors.New("verdict=valid requires trusted=true")
+	}
+	if v.Trusted && v.SignerKey == "" {
+		return errors.New("trusted=true requires signer_key")
+	}
+	if v.ReceiptCount < 0 {
+		return errors.New("receipt_count must be non-negative")
+	}
+	if v.FinalSeq < 0 {
+		return errors.New("final_seq must be non-negative")
+	}
+	return nil
+}
+
+func (r Receipt) validate() error {
+	if r.ActionID == "" {
+		return errors.New("action_id is required")
+	}
+	if r.ReceiptHash == "" {
+		return errors.New("receipt_hash is required")
+	}
+	if r.ChainSeq < 0 {
+		return errors.New("chain_seq must be non-negative")
+	}
+	if r.ChainPrevHash == "" {
+		return errors.New("chain_prev_hash is required")
+	}
+	if r.Verdict == "" {
+		return errors.New("verdict is required")
+	}
+	if r.PolicyHash == "" {
+		return errors.New("policy_hash is required")
+	}
+	return nil
+}
+
+func (s ScannerConfigSnapshot) validate() error {
+	if s.DLPPatternsCount < 0 {
+		return errors.New("dlp_patterns_count must be non-negative")
+	}
+	if s.ResponsePatternsCount < 0 {
+		return errors.New("response_patterns_count must be non-negative")
+	}
 	return nil
 }
 
@@ -306,18 +422,75 @@ func (p Posture) validate() error {
 	if p.RunnerOS == "" {
 		return errors.New("runner_os is required")
 	}
+	if err := validateEnum("raw_socket_status", p.RawSocketStatus, validRawSocketStatuses); err != nil {
+		return err
+	}
+	if err := validateEnum("docker_socket_status", p.DockerSocketStatus, validDockerSocketStatuses); err != nil {
+		return err
+	}
+	if err := validateEnum("dns_udp_status", p.DNSUDPStatus, validDNSUDPStatuses); err != nil {
+		return err
+	}
+	if err := validateEnum("browser_proxy_status", p.BrowserProxyStatus, validBrowserProxyStatuses); err != nil {
+		return err
+	}
+	if err := validateEnum("websocket_frame_scanning", p.WebsocketFrameScanning, validWebsocketFrameScanning); err != nil {
+		return err
+	}
+	if p.ScriptArgCount < 0 {
+		return errors.New("script_arg_count must be non-negative")
+	}
+	if p.UnsupportedPaths == nil {
+		return errors.New("unsupported_paths is required (use empty array, not null)")
+	}
 	return nil
 }
 
 func (a Artifacts) validate() error {
-	if a.Packet == "" {
-		return errors.New("packet path is required")
+	return errors.Join(
+		validateArtifactPath("packet", a.Packet),
+		validateOptionalArtifactPath("summary", a.Summary),
+		validateArtifactPath("evidence", a.Evidence),
+		validateArtifactPath("verifier", a.Verifier),
+	)
+}
+
+func validateCountsMap(name string, counts map[string]int) error {
+	for key, count := range counts {
+		if count < 0 {
+			return fmt.Errorf("%s[%q] must be non-negative", name, key)
+		}
 	}
-	if a.Evidence == "" {
-		return errors.New("evidence path is required")
+	return nil
+}
+
+func validateEnum(name, value string, valid map[string]struct{}) error {
+	if _, ok := valid[value]; ok {
+		return nil
 	}
-	if a.Verifier == "" {
-		return errors.New("verifier path is required")
+	return fmt.Errorf("%s %q is not a valid v0 value", name, value)
+}
+
+func validateArtifactPath(name, value string) error {
+	if value == "" {
+		return fmt.Errorf("%s path is required", name)
+	}
+	return validateOptionalArtifactPath(name, value)
+}
+
+func validateOptionalArtifactPath(name, value string) error {
+	if value == "" {
+		return nil
+	}
+	if strings.Contains(value, "\\") || strings.Contains(value, ":") {
+		return fmt.Errorf("%s path must be slash-relative inside the packet directory", name)
+	}
+	if path.IsAbs(value) {
+		return fmt.Errorf("%s path must be relative", name)
+	}
+	clean := path.Clean(value)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("%s path must stay inside the packet directory", name)
 	}
 	return nil
 }

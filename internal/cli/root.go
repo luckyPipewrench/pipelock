@@ -110,6 +110,7 @@ Quick start:
 		setup.CursorCmd(),
 		setup.VscodeCmd(),
 		setup.JetbrainsCmd(),
+		setup.CodexCmd(),
 		// Signing & integrity
 		clisigning.IntegrityCmd(),
 		clisigning.SignCmd(),

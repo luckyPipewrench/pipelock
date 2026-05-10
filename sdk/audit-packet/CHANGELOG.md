@@ -17,7 +17,9 @@ Locks:
 - `verifier.trusted` is required. It is true only when `verdict` is `valid` AND a long-lived
   signer public key was pinned at verification time.
 - Posture status enums for `raw_socket_status`, `docker_socket_status`, `dns_udp_status`,
-  `browser_proxy_status` (each is required and includes an `unknown` value for "not probed").
+  `browser_proxy_status`, and `websocket_frame_scanning` (each is required and includes
+  an explicit value for "not probed" or "off"; the four status enums use `unknown`,
+  `websocket_frame_scanning` uses `off`).
 - `unsupported_paths` is required; emit an empty array when no unsupported paths are known.
 - `enforcement_mode` is free-form (linux_netns_iptables_setpriv is the v0 reference).
 - `policy.policy_hashes` is plural because hot-reload can change policy mid-run.

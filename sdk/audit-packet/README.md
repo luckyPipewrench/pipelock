@@ -47,9 +47,12 @@ The schema is the contract between producers (the action, future producers) and 
   correctly but no signer key was pinned — the chain proves internal consistency, not Pipelock
   provenance. Consumers that conflate this with `valid` defeat the whole point of pinning.
 - **Posture status enums.** `raw_socket_status`, `docker_socket_status`, `dns_udp_status`,
-  `browser_proxy_status` each have a closed enum that distinguishes "denied" from "unknown".
-  Producers MUST emit these fields; if they did not probe a path, they emit `unknown`.
-  Consumers reading `unknown` treat it as no claim, not as a denial.
+  `browser_proxy_status`, and `websocket_frame_scanning` each have a closed enum.
+  Producers MUST emit all five plus `unsupported_paths`; the first four use `unknown` for
+  "not probed" and `websocket_frame_scanning` uses `off`. `unsupported_paths` is a
+  required array of egress vectors the producer explicitly does not enforce; emit an
+  empty array when none are known. Consumers reading `unknown` treat it as no claim,
+  not as a denial.
 - **Verifier trust semantics.** `verifier.trusted` is required. `verdict=valid` requires
   `trusted=true` and a signer key; all other verifier verdicts require `trusted=false`.
 - **`additionalProperties: false`** at the top level and on most nested objects. Schema-version

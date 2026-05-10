@@ -81,11 +81,12 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		label    string
 	)
 	if opts.asDir {
-		receipts, err = receipt.ExtractReceiptsFromSessionDir(target, opts.sessionID)
+		clean := filepath.Clean(target)
+		receipts, err = receipt.ExtractReceiptsFromSessionDir(clean, opts.sessionID)
 		if err != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
 		}
-		label = fmt.Sprintf("%s (session %s)", target, opts.sessionID)
+		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
 	} else {
 		clean := filepath.Clean(target)
 		info, statErr := os.Stat(clean)

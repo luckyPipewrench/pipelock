@@ -50,6 +50,31 @@ builds:
     ldflags:
       - -s -w
 
+  # Pipelock-verifier: standalone receipt + Audit Packet validator. No
+  # network surface, no proxy, no scanner. Shipped as a separate binary so
+  # consumers (CI runners, third parties) can drop in a pure-verifier without
+  # provisioning the full firewall stack.
+  - id: pipelock-verifier
+    main: ./cmd/pipelock-verifier
+    binary: pipelock-verifier
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version={{.Version}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate={{.Date}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GitCommit={{.ShortCommit}}
+      - -X github.com/luckyPipewrench/pipelock/internal/cliutil.GoVersion={{.Env.GOVERSION}}
+
 archives:
   - id: pipelock
     ids: [pipelock]
@@ -59,6 +84,18 @@ archives:
         formats: [zip]
     name_template: >-
       {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+  - id: pipelock-verifier
+    ids: [pipelock-verifier]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      pipelock-verifier_
       {{- .Version }}_
       {{- .Os }}_
       {{- .Arch }}

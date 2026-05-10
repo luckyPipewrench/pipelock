@@ -14,11 +14,14 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
 
-.PHONY: build test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check \
+.PHONY: build build-verifier test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check \
 	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check
 
 build:
 	go build -trimpath $(LDFLAGS) -o $(BINARY) ./cmd/pipelock
+
+build-verifier:
+	go build -trimpath $(LDFLAGS) -o pipelock-verifier ./cmd/pipelock-verifier
 
 install:
 	go install $(LDFLAGS) ./cmd/pipelock

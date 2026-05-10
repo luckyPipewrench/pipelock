@@ -278,6 +278,9 @@ func unsupportedCodexInstallReason(server codexMCPServer) string {
 }
 
 func unsupportedCodexRemoveReason(server codexMCPServer) string {
+	if !serverEnabled(server) {
+		return "server disabled (codex mcp add re-adds as enabled, which would silently mutate state)"
+	}
 	if rawJSONHasValue(server.StartupTimeoutSec) || rawJSONHasValue(server.ToolTimeoutSec) {
 		return "custom timeout settings cannot be preserved by codex mcp add"
 	}
@@ -383,12 +386,13 @@ func unwrapCodexArgs(args []string) (origCmd string, origArgs []string, origURL 
 // codexInstallPlan is the precomputed action list for a server (preview-able
 // before any shell-out). One per input server.
 type codexInstallPlan struct {
-	Server  string
-	Action  string // codexActionWrapStdio, codexActionWrapURL, codexActionSkipWrapped, codexActionSkipUnsupported
-	Reason  string // human-readable detail; empty when not skipped
-	NewCmd  string
-	NewArgs []string
-	Env     map[string]string
+	Server   string
+	Action   string // codexActionWrapStdio, codexActionWrapURL, codexActionSkipWrapped, codexActionSkipUnsupported
+	Reason   string // human-readable detail; empty when not skipped
+	NewCmd   string
+	NewArgs  []string
+	Env      map[string]string
+	Original codexMCPTransport // pre-wrap state, used for rollback if `codex mcp add` fails
 }
 
 // planCodexInstall computes the wrap plan for each server. Pure function:
@@ -412,18 +416,20 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			})
 		case s.Transport.Type == codexTransportStdio && s.Transport.Command != "":
 			plans = append(plans, codexInstallPlan{
-				Server:  s.Name,
-				Action:  codexActionWrapStdio,
-				NewCmd:  pipelockBin,
-				NewArgs: wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile),
-				Env:     copyStringMap(s.Transport.Env),
+				Server:   s.Name,
+				Action:   codexActionWrapStdio,
+				NewCmd:   pipelockBin,
+				NewArgs:  wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile),
+				Env:      copyStringMap(s.Transport.Env),
+				Original: s.Transport,
 			})
 		case s.Transport.URL != "":
 			plans = append(plans, codexInstallPlan{
-				Server:  s.Name,
-				Action:  codexActionWrapURL,
-				NewCmd:  pipelockBin,
-				NewArgs: wrapCodexURL(s.Transport.URL, configFile),
+				Server:   s.Name,
+				Action:   codexActionWrapURL,
+				NewCmd:   pipelockBin,
+				NewArgs:  wrapCodexURL(s.Transport.URL, configFile),
+				Original: s.Transport,
 			})
 		default:
 			plans = append(plans, codexInstallPlan{
@@ -438,13 +444,14 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 
 // codexRemovePlan describes how to unwrap one server. Pure function output.
 type codexRemovePlan struct {
-	Server  string
-	Action  string // codexActionUnwrapStdio, codexActionUnwrapURL, codexActionSkipNotWrapped
-	Reason  string
-	NewCmd  string
-	NewArgs []string
-	NewURL  string
-	Env     map[string]string
+	Server   string
+	Action   string // codexActionUnwrapStdio, codexActionUnwrapURL, codexActionSkipNotWrapped
+	Reason   string
+	NewCmd   string
+	NewArgs  []string
+	NewURL   string
+	Env      map[string]string
+	Original codexMCPTransport // pre-unwrap (wrapped) state, used for rollback if `codex mcp add` fails
 }
 
 // planCodexRemove computes the unwrap plan for each server. Pure function.
@@ -469,17 +476,19 @@ func planCodexRemove(servers []codexMCPServer, pipelockBin string) ([]codexRemov
 		switch {
 		case origURL != "":
 			plans = append(plans, codexRemovePlan{
-				Server: s.Name,
-				Action: codexActionUnwrapURL,
-				NewURL: origURL,
+				Server:   s.Name,
+				Action:   codexActionUnwrapURL,
+				NewURL:   origURL,
+				Original: s.Transport,
 			})
 		default:
 			plans = append(plans, codexRemovePlan{
-				Server:  s.Name,
-				Action:  codexActionUnwrapStdio,
-				NewCmd:  origCmd,
-				NewArgs: origArgs,
-				Env:     copyStringMap(s.Transport.Env),
+				Server:   s.Name,
+				Action:   codexActionUnwrapStdio,
+				NewCmd:   origCmd,
+				NewArgs:  origArgs,
+				Env:      copyStringMap(s.Transport.Env),
+				Original: s.Transport,
 			})
 		}
 	}
@@ -521,11 +530,11 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"would wrap %s (%s): codex mcp add %s%s -- %s %s\n",
-					p.Server, p.Action, p.Server, formatEnvFlags(p.Env), p.NewCmd, joinArgs(p.NewArgs))
+					p.Server, p.Action, p.Server, formatEnvFlags(p.Env), strconv.Quote(p.NewCmd), joinArgs(p.NewArgs))
 				wrapped++
 				continue
 			}
-			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, p.NewCmd, p.NewArgs, p.Env); err != nil {
+			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, p.NewCmd, p.NewArgs, p.Env, p.Original); err != nil {
 				return fmt.Errorf("wrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrapped %s\n", p.Server)
@@ -576,22 +585,22 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 					"would unwrap %s: codex mcp add %s%s -- %s %s\n",
-					p.Server, p.Server, formatEnvFlags(p.Env), p.NewCmd, joinArgs(p.NewArgs))
+					p.Server, p.Server, formatEnvFlags(p.Env), strconv.Quote(p.NewCmd), joinArgs(p.NewArgs))
 				unwrapped++
 				continue
 			}
-			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, p.NewCmd, p.NewArgs, p.Env); err != nil {
+			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, p.NewCmd, p.NewArgs, p.Env, p.Original); err != nil {
 				return fmt.Errorf("unwrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unwrapped %s\n", p.Server)
 			unwrapped++
 		case codexActionUnwrapURL:
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "would unwrap %s: codex mcp add %s --url %s\n", p.Server, p.Server, p.NewURL)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "would unwrap %s: codex mcp add %s --url %s\n", p.Server, p.Server, strconv.Quote(p.NewURL))
 				unwrapped++
 				continue
 			}
-			if err := codexReplaceURL(cmd.Context(), codexBin, p.Server, p.NewURL); err != nil {
+			if err := codexReplaceURL(cmd.Context(), codexBin, p.Server, p.NewURL, p.Original); err != nil {
 				return fmt.Errorf("unwrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unwrapped %s\n", p.Server)
@@ -613,10 +622,44 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 // codexReplaceServer is the stdio-server replace primitive: remove + add.
 // Codex's `mcp add` rejects duplicates, so we always remove first. The remove
 // is best-effort: a "not found" error is treated as success (idempotent).
-func codexReplaceServer(ctx context.Context, codexBin, name, command string, args []string, env map[string]string) error {
+//
+// If the add step fails after the remove succeeded, the server is gone from
+// Codex's config. We attempt to roll back by re-adding the original transport
+// (captured before the remove call). The error returned distinguishes the
+// rollback-succeeded case ("rolled back to original config") from the
+// rollback-failed case ("rollback also failed; verify with codex mcp list").
+func codexReplaceServer(ctx context.Context, codexBin, name, command string, args []string, env map[string]string, original codexMCPTransport) error {
 	if err := codexMCPRemoveBestEffort(ctx, codexBin, name); err != nil {
 		return err
 	}
+	if _, addErr := runCodexCommand(ctx, codexBin, buildCodexAddArgs(name, command, args, env)...); addErr != nil {
+		if rbErr := rollbackCodexAdd(ctx, codexBin, name, original); rbErr != nil {
+			return fmt.Errorf("codex mcp add %s failed and rollback also failed (server may be missing; verify with `codex mcp list`): %w", name, errors.Join(addErr, rbErr))
+		}
+		return fmt.Errorf("codex mcp add %s: %w (rolled back to original config)", name, addErr)
+	}
+	return nil
+}
+
+// codexReplaceURL is the URL-server replace primitive: remove + add --url.
+// Same rollback semantics as codexReplaceServer.
+func codexReplaceURL(ctx context.Context, codexBin, name, url string, original codexMCPTransport) error {
+	if err := codexMCPRemoveBestEffort(ctx, codexBin, name); err != nil {
+		return err
+	}
+	if _, addErr := runCodexCommand(ctx, codexBin, "mcp", "add", name, "--url", url); addErr != nil {
+		if rbErr := rollbackCodexAdd(ctx, codexBin, name, original); rbErr != nil {
+			return fmt.Errorf("codex mcp add %s --url failed and rollback also failed (server may be missing; verify with `codex mcp list`): %w", name, errors.Join(addErr, rbErr))
+		}
+		return fmt.Errorf("codex mcp add %s --url: %w (rolled back to original config)", name, addErr)
+	}
+	return nil
+}
+
+// buildCodexAddArgs assembles the argv for `codex mcp add NAME [--env K=V]... -- COMMAND ARGS...`.
+// Extracted so codexReplaceServer and rollbackCodexAdd share one source of
+// truth for the add shape.
+func buildCodexAddArgs(name, command string, args []string, env map[string]string) []string {
 	addArgs := []string{"mcp", "add"}
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -628,21 +671,22 @@ func codexReplaceServer(ctx context.Context, codexBin, name, command string, arg
 	}
 	addArgs = append(addArgs, name, "--", command)
 	addArgs = append(addArgs, args...)
-	if _, err := runCodexCommand(ctx, codexBin, addArgs...); err != nil {
-		return fmt.Errorf("codex mcp add %s: %w", name, err)
-	}
-	return nil
+	return addArgs
 }
 
-// codexReplaceURL is the URL-server replace primitive: remove + add --url.
-func codexReplaceURL(ctx context.Context, codexBin, name, url string) error {
-	if err := codexMCPRemoveBestEffort(ctx, codexBin, name); err != nil {
+// rollbackCodexAdd re-registers a server using the captured original transport
+// so a failed wrap or unwrap does not leave the user's Codex config with a
+// missing server. Returns the rollback error if the re-add itself fails.
+func rollbackCodexAdd(ctx context.Context, codexBin, name string, original codexMCPTransport) error {
+	if original.Type == codexTransportStdio || (original.Command != "" && original.URL == "") {
+		_, err := runCodexCommand(ctx, codexBin, buildCodexAddArgs(name, original.Command, original.Args, original.Env)...)
 		return err
 	}
-	if _, err := runCodexCommand(ctx, codexBin, "mcp", "add", name, "--url", url); err != nil {
-		return fmt.Errorf("codex mcp add --url %s: %w", name, err)
+	if original.URL != "" {
+		_, err := runCodexCommand(ctx, codexBin, "mcp", "add", name, "--url", original.URL)
+		return err
 	}
-	return nil
+	return fmt.Errorf("captured original transport has neither command nor url (type=%q)", original.Type)
 }
 
 // codexMCPRemoveBestEffort removes a server, treating "not found" as success.

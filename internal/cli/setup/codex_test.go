@@ -713,6 +713,28 @@ func TestPlanCodexRemove_UnsupportedCodexStateErrors(t *testing.T) {
 	}
 }
 
+func TestPlanCodexRemove_DisabledServerErrors(t *testing.T) {
+	// A wrapped server flagged disabled in Codex's config must NOT be unwrapped
+	// blindly: codex mcp add re-adds as enabled, silently mutating state. The
+	// remove path errors with a clear reason rather than re-enabling.
+	servers := []codexMCPServer{{
+		Name:    "wrapped-disabled",
+		Enabled: codexBoolPtr(false),
+		Transport: codexMCPTransport{
+			Type:    "stdio",
+			Command: pipelockBin,
+			Args:    []string{"mcp", "proxy", "--", "node", "x.js"},
+		},
+	}}
+	_, err := planCodexRemove(servers, pipelockBin)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "server disabled") {
+		t.Errorf("error should explain disabled state: %v", err)
+	}
+}
+
 func TestRawJSONHasValue(t *testing.T) {
 	tests := []struct {
 		raw  string
@@ -1149,6 +1171,50 @@ func TestRunCodexRemove_RoundTrip(t *testing.T) {
 	}
 }
 
+// rollbackFakeCodex returns a codex binary that simulates a failed wrap-add
+// followed by a succeeding rollback-add. It detects the wrap by checking
+// whether the add line contains "pipelock" (i.e. is wrapping a server
+// through pipelock) and rejects only that. Other adds (the rollback) succeed.
+// Each invocation is appended to invokeLog for assertion.
+func rollbackFakeCodex(t *testing.T, listJSON string) (binPath, invokeLog string) {
+	t.Helper()
+	if runtime.GOOS == osWindows {
+		t.Skip("rollbackFakeCodex shell helper not supported on Windows")
+	}
+	dir := t.TempDir()
+	binPath = filepath.Join(dir, "codex")
+	invokeLog = filepath.Join(dir, "invocations.log")
+	listFile := filepath.Join(dir, "list.json")
+	if err := os.WriteFile(listFile, []byte(listJSON), 0o600); err != nil {
+		t.Fatalf("writing list.json: %v", err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %q
+case "$1 $2" in
+"mcp list")
+  cat %q
+  exit 0
+  ;;
+"mcp remove")
+  exit 0
+  ;;
+"mcp add")
+  # Reject only the wrap-add (args contain "mcp proxy" after the "--"
+  # separator, the canonical pipelock wrap shape). Accept the rollback-add
+  # which re-registers the original command.
+  if echo "$@" | grep -q "mcp proxy"; then
+    echo "Error: synthetic wrap-add failure" >&2
+    exit 1
+  fi
+  exit 0
+  ;;
+esac
+exit 0
+`, invokeLog, listFile)
+	writeShellScript(t, binPath, script)
+	return binPath, invokeLog
+}
+
 // failingFakeCodex returns a codex binary that succeeds on `mcp list --json`
 // but fails on every other call (used to exercise add/remove error paths).
 func failingFakeCodex(t *testing.T, listJSON string) string {
@@ -1162,11 +1228,20 @@ func failingFakeCodex(t *testing.T, listJSON string) string {
 	if err := os.WriteFile(listFile, []byte(listJSON), 0o600); err != nil {
 		t.Fatalf("writing list.json: %v", err)
 	}
+	// mcp remove returns "not found" (which codexMCPRemoveBestEffort treats as
+	// success), so the install/remove path proceeds to mcp add. mcp add fails
+	// with a generic synthetic failure, which then triggers the rollback path
+	// which ALSO fails (same script). Tests use this to exercise the
+	// "rollback also failed" branch.
 	script := fmt.Sprintf(`#!/bin/sh
 case "$1 $2" in
 "mcp list")
   cat %q
   exit 0
+  ;;
+"mcp remove")
+  echo "Error: server not found" >&2
+  exit 1
   ;;
 esac
 echo "Error: synthetic failure" >&2
@@ -1218,7 +1293,51 @@ func TestRunCodexRemove_MCPListFails(t *testing.T) {
 	}
 }
 
-func TestRunCodexInstall_AddFails(t *testing.T) {
+func TestRunCodexInstall_AddFailsRollsBackToOriginal(t *testing.T) {
+	// Wrap-add fails; rollback re-adds the original stdio server. The user
+	// should see the failure but be told the rollback succeeded so they know
+	// the server is still functional in its original (unwrapped) form.
+	listJSON := `[{
+		"name": "demo",
+		"enabled": true,
+		"transport": {"type": "stdio", "command": "/usr/bin/node", "args": ["server.js"], "env": {"PORT": "3000"}}
+	}]`
+	codexBin, invokeLog := rollbackFakeCodex(t, listJSON)
+
+	root := newCodexTestRoot()
+	root.SetArgs([]string{"codex", "install", "--codex-path", codexBin})
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("expected error from failed wrap-add, got nil")
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should mention successful rollback, got: %v", err)
+	}
+
+	logData, readErr := os.ReadFile(filepath.Clean(invokeLog))
+	if readErr != nil {
+		t.Fatalf("reading invoke log: %v", readErr)
+	}
+	logStr := string(logData)
+	// Expect: 1 list, 1 remove, 1 wrap-add (fails), 1 rollback-add (succeeds with original cmd).
+	if strings.Count(logStr, "mcp add") != 2 {
+		t.Errorf("expected exactly 2 mcp add invocations (wrap + rollback), got log: %s", logStr)
+	}
+	if !strings.Contains(logStr, "/usr/bin/node") {
+		t.Errorf("rollback should re-add original /usr/bin/node command, got: %s", logStr)
+	}
+	if !strings.Contains(logStr, "--env PORT=3000") {
+		t.Errorf("rollback should preserve original env, got: %s", logStr)
+	}
+}
+
+func TestRunCodexInstall_AddFailsAndRollbackFails(t *testing.T) {
+	// failingFakeCodex fails on every non-list call, so both the wrap-add AND
+	// the rollback-add will fail. The error should explicitly tell the user
+	// the rollback failed and to verify with `codex mcp list`.
 	listJSON := `[{
 		"name": "demo",
 		"enabled": true,
@@ -1236,6 +1355,78 @@ func TestRunCodexInstall_AddFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "wrapping") || !strings.Contains(err.Error(), "demo") {
 		t.Errorf("error should reference wrap target: %v", err)
+	}
+	if !strings.Contains(err.Error(), "rollback also failed") {
+		t.Errorf("error should report rollback failure, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "codex mcp list") {
+		t.Errorf("error should tell operator to verify with codex mcp list, got: %v", err)
+	}
+}
+
+func TestRunCodexRemove_AddFailsRollsBackToWrapped(t *testing.T) {
+	// Unwrap-add fails; rollback re-adds the wrapped (original input) server.
+	// rollbackFakeCodex succeeds on rollback because the rollback-add args
+	// contain "pipelock" (the wrap), which our fake script accepts since it
+	// only fails when "pipelock" is in args. We invert: use a fake that
+	// fails when "pipelock" is NOT in args (i.e. fails the unwrap).
+	if runtime.GOOS == osWindows {
+		t.Skip("shell helper not supported on Windows")
+	}
+	listJSON := `[{
+		"name": "wrapped",
+		"enabled": true,
+		"transport": {
+			"type": "stdio",
+			"command": "/usr/local/bin/pipelock",
+			"args": ["mcp", "proxy", "--", "/usr/bin/node", "server.js"],
+			"env": {"PORT": "3000"}
+		}
+	}]`
+	dir := t.TempDir()
+	codexBin := filepath.Join(dir, "codex")
+	invokeLog := filepath.Join(dir, "invocations.log")
+	listFile := filepath.Join(dir, "list.json")
+	if err := os.WriteFile(listFile, []byte(listJSON), 0o600); err != nil {
+		t.Fatalf("writing list.json: %v", err)
+	}
+	// Script: list/remove succeed, mcp add SUCCEEDS only when args contain
+	// "pipelock" (the rollback re-adds the wrapped form, which contains
+	// "pipelock" in its command). Unwrap-add (no "pipelock") fails.
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %q
+case "$1 $2" in
+"mcp list") cat %q; exit 0 ;;
+"mcp remove") exit 0 ;;
+"mcp add")
+  if echo "$@" | grep -q "pipelock"; then exit 0; fi
+  echo "Error: synthetic unwrap-add failure" >&2
+  exit 1
+  ;;
+esac
+exit 0
+`, invokeLog, listFile)
+	writeShellScript(t, codexBin, script)
+
+	root := newCodexTestRoot()
+	root.SetArgs([]string{"codex", "remove", "--codex-path", codexBin})
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetErr(&out)
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("expected error from failed unwrap-add, got nil")
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should mention successful rollback, got: %v", err)
+	}
+	logData, readErr := os.ReadFile(filepath.Clean(invokeLog))
+	if readErr != nil {
+		t.Fatalf("reading invoke log: %v", readErr)
+	}
+	logStr := string(logData)
+	if strings.Count(logStr, "mcp add") != 2 {
+		t.Errorf("expected exactly 2 mcp add invocations (unwrap + rollback), got log: %s", logStr)
 	}
 }
 

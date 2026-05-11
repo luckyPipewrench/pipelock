@@ -18,12 +18,13 @@ import (
 // consistent for a single request or tunnel. Callers load this atomically
 // instead of mixing cfg.Redaction fields with an independently-swapped matcher.
 type redactionRuntime struct {
-	matcher              *redact.Matcher
-	limits               redact.Limits
-	allowlistUnparseable []string
-	providers            *redact.ProviderRegistry
-	configKey            string
-	required             bool
+	matcher                    *redact.Matcher
+	limits                     redact.Limits
+	allowlistUnparseable       []string
+	allowlistUnparseableRoutes []redact.UnparseableRouteSpec
+	providers                  *redact.ProviderRegistry
+	configKey                  string
+	required                   bool
 }
 
 func (p *Proxy) buildRedactionRuntime(cfg *config.Config) (*redactionRuntime, error) {
@@ -39,13 +40,15 @@ func (p *Proxy) buildRedactionRuntime(cfg *config.Config) (*redactionRuntime, er
 		return nil, fmt.Errorf("build redaction provider registry: %w", err)
 	}
 	allowlist := append([]string(nil), cfg.Redaction.AllowlistUnparseable...)
+	routes := append([]redact.UnparseableRouteSpec(nil), cfg.Redaction.AllowlistUnparseableRoutes...)
 	return &redactionRuntime{
-		matcher:              matcher,
-		limits:               cfg.Redaction.Limits.ToLimits(),
-		allowlistUnparseable: allowlist,
-		providers:            providers,
-		configKey:            redactionConfigKey(cfg),
-		required:             cfg.Redaction.Enabled,
+		matcher:                    matcher,
+		limits:                     cfg.Redaction.Limits.ToLimits(),
+		allowlistUnparseable:       allowlist,
+		allowlistUnparseableRoutes: routes,
+		providers:                  providers,
+		configKey:                  redactionConfigKey(cfg),
+		required:                   cfg.Redaction.Enabled,
 	}, nil
 }
 
@@ -76,24 +79,18 @@ func (p *Proxy) CurrentRedactionConfigFor(cfg *config.Config) (*redact.Matcher, 
 }
 
 func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[redactionRuntime]) *redactionRuntime {
-	// Trust whatever the reload path stored last. Earlier versions of this
-	// factory compared the caller's `cfg` hash against the stored runtime's
-	// `configKey`; during hot-reload, the cfgPtr and redactionRuntimePtr
-	// atomics are updated with a gap of a few instructions, so a request
-	// landing in that window would see OLD cfg + NEW runtime, the hashes
-	// would disagree, and the factory would return a fail-closed sentinel
-	// (matcher nil, required true) even though the freshly-published
-	// runtime was authoritative. The reload-time invariant is that
-	// `redactionRuntimePtr` reflects the current policy: nil when disabled,
-	// non-nil with a populated matcher when enabled. Honor that directly
-	// and stop racing with our own reload sequence.
 	if ptr != nil {
 		if rt := ptr.Load(); rt != nil && rt.matcher != nil {
-			return rt
+			if cfg != nil && rt.configKey == redactionConfigKey(cfg) {
+				return rt
+			}
 		}
 	}
 	// No runtime published yet (startup, or cfg disables redaction). Fall
-	// back to cfg so callers see the intended operator state.
+	// back to cfg so callers see the intended operator state. A populated
+	// runtime whose configKey does not match cfg is treated the same way:
+	// fail closed instead of mixing one policy's matcher with another
+	// policy's receipts and canonical hash.
 	if cfg == nil || !cfg.Redaction.Enabled {
 		return nil
 	}
@@ -101,11 +98,12 @@ func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[re
 	// only happen before startup setup runs. Keep the fail-closed sentinel
 	// so request handlers block instead of silently skipping.
 	return &redactionRuntime{
-		limits:               cfg.Redaction.Limits.ToLimits(),
-		allowlistUnparseable: append([]string(nil), cfg.Redaction.AllowlistUnparseable...),
-		providers:            nil,
-		configKey:            redactionConfigKey(cfg),
-		required:             true,
+		limits:                     cfg.Redaction.Limits.ToLimits(),
+		allowlistUnparseable:       append([]string(nil), cfg.Redaction.AllowlistUnparseable...),
+		allowlistUnparseableRoutes: append([]redact.UnparseableRouteSpec(nil), cfg.Redaction.AllowlistUnparseableRoutes...),
+		providers:                  nil,
+		configKey:                  redactionConfigKey(cfg),
+		required:                   true,
 	}
 }
 
@@ -129,5 +127,6 @@ func applyBodyScanRedaction(req *BodyScanRequest, rt *redactionRuntime) {
 	req.RedactMatcher = rt.matcher
 	req.RedactLimits = rt.limits
 	req.RedactAllowlistUnparseable = rt.allowlistUnparseable
+	req.RedactAllowlistUnparseableRoutes = rt.allowlistUnparseableRoutes
 	req.RedactProviderRegistry = rt.providers
 }

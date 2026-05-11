@@ -121,6 +121,7 @@ type BodyScanResult struct {
 // function signature under the 6-parameter guideline (ctx is passed separately).
 type BodyScanRequest struct {
 	Body            io.Reader
+	Method          string
 	ContentType     string
 	ContentEncoding string
 	MaxBytes        int
@@ -139,6 +140,10 @@ type BodyScanRequest struct {
 	// permitted through as-is. When the Host is not in this list and the
 	// body is not JSON, redaction fails closed. Nil/empty = strict.
 	RedactAllowlistUnparseable []string
+	// RedactAllowlistUnparseableRoutes lists route-scoped exceptions for
+	// trusted non-JSON bodies. These are preferred over host-only entries
+	// for OAuth token and upload endpoints.
+	RedactAllowlistUnparseableRoutes []redact.UnparseableRouteSpec
 	// RedactProviderRegistry selects the provider parser profile for JSON
 	// redaction. Nil falls back to the generic JSON parser.
 	RedactProviderRegistry *redact.ProviderRegistry
@@ -299,7 +304,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 }
 
 func allowlistSkipsRedactionRewrite(req BodyScanRequest) bool {
-	return !isJSONContentType(req.ContentType) && hostAllowlisted(req.Host, req.RedactAllowlistUnparseable)
+	return !isJSONContentType(req.ContentType) && unparseableBodyAllowlisted(req)
 }
 
 // applyRedaction is the pre-DLP content-transformation step. Returns
@@ -309,10 +314,10 @@ func allowlistSkipsRedactionRewrite(req BodyScanRequest) bool {
 // redaction gate fired.
 func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
 	if !isJSONContentType(req.ContentType) {
-		if !hostAllowlisted(req.Host, req.RedactAllowlistUnparseable) {
+		if !unparseableBodyAllowlisted(req) {
 			return nil, nil, &redact.BlockError{
 				Reason: redact.ReasonNonJSONBody,
-				Detail: fmt.Sprintf("redaction enabled but body Content-Type %q is not JSON and host %q is not on redaction.allowlist_unparseable", req.ContentType, req.Host),
+				Detail: fmt.Sprintf("redaction enabled but body Content-Type %q is not JSON and request host %q/path %q is not allowed by redaction.allowlist_unparseable or redaction.allowlist_unparseable_routes", req.ContentType, req.Host, req.Path),
 			}
 		}
 		// Allowlisted host with non-JSON body: caller forwards as-is.
@@ -328,6 +333,83 @@ func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, er
 		return nil, nil, err
 	}
 	return rewritten, report, nil
+}
+
+func unparseableBodyAllowlisted(req BodyScanRequest) bool {
+	if hostAllowlisted(req.Host, req.RedactAllowlistUnparseable) {
+		return true
+	}
+	for _, route := range req.RedactAllowlistUnparseableRoutes {
+		if unparseableRouteMatches(req, route) {
+			return true
+		}
+	}
+	return false
+}
+
+func unparseableRouteMatches(req BodyScanRequest, route redact.UnparseableRouteSpec) bool {
+	if !hostAllowlisted(req.Host, []string{route.Host}) {
+		return false
+	}
+	if len(route.Methods) > 0 {
+		method := strings.ToUpper(req.Method)
+		matched := false
+		for _, candidate := range route.Methods {
+			if method == strings.ToUpper(candidate) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(route.PathPrefixes) > 0 {
+		matched := false
+		for _, prefix := range route.PathPrefixes {
+			if strings.HasPrefix(req.Path, prefix) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(route.PathSuffixes) > 0 {
+		matched := false
+		for _, suffix := range route.PathSuffixes {
+			if strings.HasSuffix(req.Path, suffix) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(route.ContentTypes) > 0 {
+		mt, _, err := mime.ParseMediaType(req.ContentType)
+		if err != nil {
+			return false
+		}
+		mt = strings.ToLower(mt)
+		matched := false
+		for _, candidate := range route.ContentTypes {
+			candidateMT, _, err := mime.ParseMediaType(candidate)
+			if err != nil {
+				continue
+			}
+			if mt == strings.ToLower(candidateMT) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 // isFailClosedBodyResult reports whether a body-scan result must block even

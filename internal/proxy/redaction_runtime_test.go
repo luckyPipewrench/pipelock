@@ -51,17 +51,10 @@ func TestCurrentRedactionRuntimeForConfig_MatchingRuntime(t *testing.T) {
 	}
 }
 
-func TestCurrentRedactionRuntimeForConfig_MismatchUsesStoredRuntime(t *testing.T) {
-	// Regression for CC-4: during the hot-reload window the atomic may hold
-	// a runtime whose configKey was computed from a config that the caller
-	// has not yet observed. The previous behavior was to fail-closed with a
-	// nil-matcher sentinel, which meant requests landing in a
-	// sub-millisecond window during reload were blocked with
-	// "redaction runtime unavailable". The corrected behavior is to trust
-	// the atomically-stored runtime (the reload path only publishes a
-	// non-nil runtime when the matcher is populated and the policy is
-	// enabled), which keeps redaction running through the reload window
-	// instead of flipping to fail-closed.
+func TestCurrentRedactionRuntimeForConfig_MismatchFailsClosed(t *testing.T) {
+	// The request-scoped cfg drives receipt policy hashes. If the stored
+	// runtime was built from a different config, returning it would mix one
+	// policy's matcher with another policy's signed evidence.
 	cfg := config.Defaults()
 	applyRedactionTestProfile(cfg)
 
@@ -74,17 +67,21 @@ func TestCurrentRedactionRuntimeForConfig_MismatchUsesStoredRuntime(t *testing.T
 	ptr.Store(stored)
 
 	got := currentRedactionRuntimeForConfig(cfg, &ptr)
-	if got != stored {
-		t.Fatalf("expected stored runtime to win during reload window, got %p (want %p)", got, stored)
+	if got == nil {
+		t.Fatal("expected fail-closed sentinel on runtime/config mismatch")
+	}
+	if got == stored {
+		t.Fatal("mismatched runtime must not be returned")
+	}
+	if got.matcher != nil {
+		t.Fatal("sentinel must not expose a matcher")
+	}
+	if !got.required {
+		t.Fatal("sentinel must require redaction")
 	}
 }
 
-func TestCurrentRedactionConfigFor_ReloadWindowStillPropagatesMatcher(t *testing.T) {
-	// Paired with TestCurrentRedactionRuntimeForConfig_MismatchUsesStoredRuntime:
-	// when the atomic holds a populated runtime the public accessor must
-	// expose its matcher even if the caller's cfg has not yet been swapped
-	// in. Previously this path returned (nil, limits, true) as a
-	// fail-closed sentinel, which was spurious during hot reload.
+func TestCurrentRedactionConfigFor_MismatchFailsClosed(t *testing.T) {
 	cfg := config.Defaults()
 	applyRedactionTestProfile(cfg)
 
@@ -97,11 +94,11 @@ func TestCurrentRedactionConfigFor_ReloadWindowStillPropagatesMatcher(t *testing
 	})
 
 	matcher, _, required := p.CurrentRedactionConfigFor(cfg)
-	if matcher != matcherInstance {
-		t.Fatalf("expected stored matcher (%p), got %p", matcherInstance, matcher)
+	if matcher != nil {
+		t.Fatalf("mismatched runtime exposed matcher %p", matcher)
 	}
 	if !required {
-		t.Fatal("stored runtime had required=true; must be preserved")
+		t.Fatal("mismatched enabled config must fail closed")
 	}
 }
 

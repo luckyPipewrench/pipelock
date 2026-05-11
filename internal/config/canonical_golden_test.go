@@ -67,7 +67,10 @@ const (
 	// trust_domains (per-key actor binding so a compromised partner key
 	// cannot impersonate another peer's trust domain). Both change the
 	// attested envelope trust contract.
-	goldenHashDefaults = "900c875010b9b2aea4ca20b1ef9b5f9d3383f33c6eb343417bb022dd7e4855af"
+	// Re-bumped for route-scoped redaction non-JSON exceptions:
+	// redaction.allowlist_unparseable_routes is new policy surface that
+	// constrains which opaque request formats may skip JSON rewriting.
+	goldenHashDefaults = "180b942eeb225400c1e6c2850c70f70a96eb0238ab39d0a57c12bcd136771621"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -92,7 +95,9 @@ const (
 	// resolved-default values flow into ph identically to Defaults().
 	// Re-bumped for federation plumbing: see goldenHashDefaults note.
 	// Re-bumped for federation hardening: see goldenHashDefaults note.
-	goldenHashRichConfig = "84e565a39537756c063ca4bc8d7bc69a1a10dba8b3e750f909b163bd7f345dc3"
+	// Re-bumped for route-scoped redaction non-JSON exceptions: see
+	// goldenHashDefaults note.
+	goldenHashRichConfig = "a0ec45732d24b1c5d914ab60c116cea97557cf784384f01bd2785615f1283a5d"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

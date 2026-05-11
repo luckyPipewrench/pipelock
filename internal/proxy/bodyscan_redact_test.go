@@ -133,6 +133,107 @@ func TestScanRequestBody_Redaction_HostPortMatchesAllowlist(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_Redaction_RouteAllowlistRequiresFullMatch(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	route := redact.UnparseableRouteSpec{
+		Host:         "login.microsoftonline.com",
+		Methods:      []string{"POST"},
+		PathSuffixes: []string{"/oauth2/v2.0/token"},
+		ContentTypes: []string{"application/x-www-form-urlencoded"},
+	}
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                             strings.NewReader(`grant_type=refresh_token&refresh_token=opaque`),
+		Method:                           "POST",
+		ContentType:                      "application/x-www-form-urlencoded; charset=utf-8",
+		MaxBytes:                         1024,
+		Scanner:                          sc,
+		RedactMatcher:                    redact.NewDefaultMatcher(),
+		Host:                             "login.microsoftonline.com:443",
+		Path:                             "/tenant-id/oauth2/v2.0/token",
+		RedactAllowlistUnparseableRoutes: []redact.UnparseableRouteSpec{route},
+	})
+	if !result.Clean {
+		t.Fatalf("matching route should skip JSON redaction gate, got block: reason=%q detail=%q", result.RedactionBlockReason, result.Reason)
+	}
+
+	_, result = scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                             strings.NewReader(`grant_type=refresh_token&refresh_token=opaque`),
+		Method:                           "POST",
+		ContentType:                      "application/x-www-form-urlencoded",
+		MaxBytes:                         1024,
+		Scanner:                          sc,
+		RedactMatcher:                    redact.NewDefaultMatcher(),
+		Host:                             "login.microsoftonline.com:443",
+		Path:                             "/tenant-id/oauth2/v2.0/devicecode",
+		RedactAllowlistUnparseableRoutes: []redact.UnparseableRouteSpec{route},
+	})
+	if result.Clean {
+		t.Fatal("route with wrong path should fail the non-JSON redaction gate")
+	}
+	if result.RedactionBlockReason != redact.ReasonNonJSONBody {
+		t.Fatalf("RedactionBlockReason = %q, want %q", result.RedactionBlockReason, redact.ReasonNonJSONBody)
+	}
+}
+
+func TestScanRequestBody_Redaction_RouteAllowlistStillRunsDLP(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:          strings.NewReader(`refresh_token=` + redactionE2ESecret()),
+		Method:        "POST",
+		ContentType:   "application/x-www-form-urlencoded",
+		MaxBytes:      1024,
+		Scanner:       sc,
+		RedactMatcher: redact.NewDefaultMatcher(),
+		Host:          "login.microsoftonline.com",
+		Path:          "/tenant-id/oauth2/v2.0/token",
+		RedactAllowlistUnparseableRoutes: []redact.UnparseableRouteSpec{{
+			Host:         "login.microsoftonline.com",
+			Methods:      []string{"POST"},
+			PathSuffixes: []string{"/oauth2/v2.0/token"},
+			ContentTypes: []string{"application/x-www-form-urlencoded"},
+		}},
+	})
+	if result.Clean {
+		t.Fatal("route-scoped redaction exception skipped DLP; expected body DLP finding")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatalf("expected DLP matches after route allowlist, got %+v", result)
+	}
+}
+
+func TestScanRequestBody_Redaction_RouteAllowlistNormalizesRuntimeCandidates(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:          strings.NewReader(`grant_type=refresh_token&refresh_token=opaque`),
+		Method:        "POST",
+		ContentType:   "application/x-www-form-urlencoded; charset=utf-8",
+		MaxBytes:      1024,
+		Scanner:       sc,
+		RedactMatcher: redact.NewDefaultMatcher(),
+		Host:          "login.microsoftonline.com",
+		Path:          "/tenant-id/oauth2/v2.0/token",
+		RedactAllowlistUnparseableRoutes: []redact.UnparseableRouteSpec{{
+			Host:         "login.microsoftonline.com",
+			Methods:      []string{"post"},
+			PathSuffixes: []string{"/oauth2/v2.0/token"},
+			ContentTypes: []string{"Application/X-WWW-Form-Urlencoded"},
+		}},
+	})
+	if !result.Clean {
+		t.Fatalf("runtime route matcher should normalize method and content type candidates, got block: reason=%q detail=%q", result.RedactionBlockReason, result.Reason)
+	}
+}
+
 // TestScanRequestBody_Redaction_NilMatcherIsNoop confirms the existing
 // scan path is unaffected when redaction is not enabled (RedactMatcher
 // is nil).

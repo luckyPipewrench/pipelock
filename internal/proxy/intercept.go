@@ -724,6 +724,7 @@ func newInterceptHandler(
 			}
 			bodyReq := BodyScanRequest{
 				Body:            r.Body,
+				Method:          r.Method,
 				ContentType:     r.Header.Get("Content-Type"),
 				ContentEncoding: r.Header.Get("Content-Encoding"),
 				MaxBytes:        ic.Config.RequestBodyScanning.MaxBodyBytes,

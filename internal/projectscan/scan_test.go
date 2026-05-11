@@ -11,6 +11,11 @@ import (
 	"testing"
 )
 
+const (
+	patternBitcoinWIF = "Bitcoin WIF Private Key"
+	patternCreditCard = "Credit " + "Card Number"
+)
+
 func TestScan_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	report, err := Scan(dir)
@@ -247,6 +252,50 @@ func TestScanFiles_YAMLConfig(t *testing.T) {
 	}
 	if !foundAnthropic {
 		t.Error("expected DLP match for Anthropic API Key in YAML")
+	}
+}
+
+func TestScanFiles_ValidatedWIFRejectsPackageIntegrityHash(t *testing.T) {
+	dir := t.TempDir()
+	invalidWIF := "K" + strings.Repeat("A", 51)
+	lockfile := `{
+  "packages": {
+    "node_modules/sharp": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/sharp/-/sharp-0.34.5.tgz",
+      "integrity": "sha512-` + invalidWIF + `=="
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte(lockfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := scanFiles(dir, compileDLPPatterns())
+	for _, f := range findings {
+		if f.Pattern == patternBitcoinWIF {
+			t.Fatalf("package integrity hash should not be flagged as WIF: %+v", f)
+		}
+	}
+}
+
+func TestScanFiles_ValidatedWIFStillFlagsRealKey(t *testing.T) {
+	dir := t.TempDir()
+	wif := "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("BTC_WIF="+wif+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := scanFiles(dir, compileDLPPatterns())
+	found := false
+	for _, f := range findings {
+		if f.Pattern == patternBitcoinWIF {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected valid WIF to be flagged")
 	}
 }
 
@@ -507,5 +556,47 @@ func TestScanEnvSecrets_SkipsPathValues(t *testing.T) {
 		if strings.Contains(f.Message, "MY_CUSTOM_PATH") {
 			t.Errorf("absolute path value should be skipped, got finding: %s", f.Message)
 		}
+	}
+}
+
+func TestScanEnvSecrets_ValidatedPatternsRejectInvalidMatches(t *testing.T) {
+	invalidWIF := "K" + strings.Repeat("A", 51)
+	invalidCard := "1234-" + "5678-" + "9012-" + "3456"
+	t.Setenv("AUDIT_INVALID_WIF", invalidWIF)
+	t.Setenv("AUDIT_INVALID_CARD", invalidCard)
+
+	findings := scanEnvSecrets(compileDLPPatterns())
+	for _, f := range findings {
+		if strings.Contains(f.Message, "AUDIT_INVALID_WIF") {
+			t.Fatalf("invalid WIF-shaped env value should not be flagged: %s", f.Message)
+		}
+		if strings.Contains(f.Message, "AUDIT_INVALID_CARD") {
+			t.Fatalf("invalid card-shaped env value should not be flagged: %s", f.Message)
+		}
+	}
+}
+
+func TestScanEnvSecrets_ValidatedPatternsStillFlagRealMatches(t *testing.T) {
+	wif := "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ"
+	card := "4532" + "015112830366"
+	t.Setenv("AUDIT_REAL_WIF", wif)
+	t.Setenv("AUDIT_REAL_CARD", card)
+
+	findings := scanEnvSecrets(compileDLPPatterns())
+	foundWIF := false
+	foundCard := false
+	for _, f := range findings {
+		if strings.Contains(f.Message, "AUDIT_REAL_WIF") && f.Pattern == patternBitcoinWIF {
+			foundWIF = true
+		}
+		if strings.Contains(f.Message, "AUDIT_REAL_CARD") && f.Pattern == patternCreditCard {
+			foundCard = true
+		}
+	}
+	if !foundWIF {
+		t.Fatal("expected valid WIF env value to be flagged")
+	}
+	if !foundCard {
+		t.Fatal("expected valid credit card env value to be flagged")
 	}
 }

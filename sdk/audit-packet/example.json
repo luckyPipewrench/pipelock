@@ -56,7 +56,7 @@
     "receipt_count": 12,
     "root_hash": "sha256:91a2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f6071829a3b4c5d6e7f8091",
     "final_seq": 11,
-    "signer_key": "pipelock-public-key:ed25519:0000000000000000000000000000000000000000000000000000000000000001",
+    "signer_key": "0000000000000000000000000000000000000000000000000000000000000001",
     "output_file": "verifier.txt"
   },
   "posture": {

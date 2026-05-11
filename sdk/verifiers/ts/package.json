@@ -1,0 +1,33 @@
+{
+  "name": "@pipelock/verifier-ts",
+  "version": "0.1.0",
+  "description": "TypeScript reference verifier for Pipelock Audit Packet v0 receipts and chains.",
+  "type": "module",
+  "bin": {
+    "pipelock-verifier-ts": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/copy-schema.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@noble/ed25519": "2.3.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.12.12",
+    "typescript": "5.4.5"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json",
+    "package-lock.json"
+  ]
+}

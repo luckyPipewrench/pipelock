@@ -83,6 +83,31 @@ fn audit_packet_detects_final_seq_mismatch() {
 }
 
 #[test]
+fn audit_packet_detects_final_seq_zero_mismatch() {
+    let packet_dir = write_packet(Some(|packet| {
+        packet["verifier"]["final_seq"] = Value::from(0);
+    }));
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert_eq!(report.cross_check, "fail");
+    assert!(has_error(&report.errors, "final_seq"));
+}
+
+#[test]
+fn audit_packet_reports_chain_failure_reason() {
+    let root = common::repo_root();
+    let packet_dir = write_packet(None);
+    fs::copy(
+        root.join("sdk/conformance/testdata/broken-chain.jsonl"),
+        packet_dir.join("evidence.jsonl"),
+    )
+    .unwrap();
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.cross_check, "skipped");
+    assert!(has_error(&report.errors, "chain_prev_hash mismatch"));
+}
+
+#[test]
 fn audit_packet_detects_verdict_vs_chain_disagreement() {
     let packet_dir = write_packet(Some(|packet| {
         packet["verifier"]["verdict"] = Value::from("invalid");

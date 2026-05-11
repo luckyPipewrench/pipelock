@@ -84,18 +84,22 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
                 errors.push("receipt_count must be non-negative".to_string());
             }
             let mut sum = 0;
+            let mut invalid_total = false;
             for key in Totals::keys() {
                 let value = totals.get(key).and_then(Value::as_u64);
                 if value.is_none() {
+                    invalid_total = true;
                     errors.push(format!("totals.{key} must be non-negative"));
                 }
                 sum += value.unwrap_or(0);
             }
-            if let Some(receipt_count) = receipt_count {
-                if sum != receipt_count {
-                    errors.push(format!(
-                        "totals sum {sum} does not match receipt_count {receipt_count}"
-                    ));
+            if !invalid_total {
+                if let Some(receipt_count) = receipt_count {
+                    if sum != receipt_count {
+                        errors.push(format!(
+                            "totals sum {sum} does not match receipt_count {receipt_count}"
+                        ));
+                    }
                 }
             }
             if let Some(summary) = packet.get("summary") {
@@ -252,15 +256,17 @@ fn domains_check(value: Option<&Value>, errors: &mut Vec<String>) {
         let prev = domains[index - 1].as_str().unwrap_or("");
         let current = domains[index].as_str().unwrap_or("");
         if prev > current {
-            errors.push("domains_touched must be sorted".to_string());
-            break;
+            errors.push(format!(
+                "domains_touched[{index}] {} must sort after {}",
+                json_string(current),
+                json_string(prev)
+            ));
         }
         if prev == current {
             errors.push(format!(
-                "domains_touched contains duplicate {}",
-                json_string(current)
+                "domains_touched contains duplicate {} at index {index}",
+                json_string(current),
             ));
-            break;
         }
     }
 }

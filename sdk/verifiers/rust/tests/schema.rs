@@ -32,6 +32,7 @@ fn trusted_requires_valid_verdict_and_signer_key() {
         serde_json::from_str(&fs::read_to_string(root.join("sdk/audit-packet/example.json")).unwrap())
             .unwrap();
     packet["verifier"]["verdict"] = Value::from("invalid");
+    packet["verifier"]["trusted"] = Value::from(true);
     packet["verifier"]["signer_key"] = Value::from("");
     let errors = validate_audit_packet(&packet);
     assert!(errors.iter().any(|err| err.contains("trusted=true requires verdict=valid")));

@@ -68,8 +68,13 @@ pub fn resolve_signer_key(input: &str) -> Result<String> {
             .to_string();
     }
 
-    if let Some(rest) = value.strip_prefix("pipelock-ed25519-public-v1\n") {
-        let body = rest.lines().next().unwrap_or("").trim();
+    let mut lines = value.lines();
+    if lines
+        .next()
+        .map(|line| line.trim_end_matches('\r'))
+        == Some("pipelock-ed25519-public-v1")
+    {
+        let body = lines.next().unwrap_or("").trim();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(body)
             .map_err(|err| VerifierError::Runtime(format!("decode public key: {err}")))?;
@@ -119,6 +124,20 @@ pub fn resolve_artifact_path(base_dir: &Path, rel: &str) -> Result<PathBuf> {
     let abs_base = fs::canonicalize(base_dir)
         .map_err(|err| VerifierError::Runtime(format!("resolve {}: {err}", base_dir.display())))?;
     let abs_full = abs_base.join(rel_path);
+    let mut current = abs_base.clone();
+    for component in rel_path.components() {
+        current.push(component.as_os_str());
+        if current.exists() {
+            let resolved = fs::canonicalize(&current).map_err(|err| {
+                VerifierError::Runtime(format!("resolve {}: {err}", current.display()))
+            })?;
+            if !resolved.starts_with(&abs_base) {
+                return Err(VerifierError::Runtime(format!(
+                    "artifact path escapes packet directory via symlink: {rel}"
+                )));
+            }
+        }
+    }
     if abs_full.exists() {
         let resolved = fs::canonicalize(&abs_full).map_err(|err| {
             VerifierError::Runtime(format!("resolve {}: {err}", abs_full.display()))

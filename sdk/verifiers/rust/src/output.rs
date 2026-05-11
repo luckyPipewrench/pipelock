@@ -92,8 +92,10 @@ pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
     if let Some(error) = &report.error {
         eprintln!("  error:      {error}");
     }
-    if report.broken_at_seq.unwrap_or(0) != 0 || report.error.is_some() {
-        eprintln!("  broken at:  seq {}", report.broken_at_seq.unwrap_or(0));
+    if let Some(seq) = report.broken_at_seq {
+        eprintln!("  broken at:  seq {seq}");
+    } else if report.error.is_some() {
+        eprintln!("  broken at:  seq unknown");
     }
     Ok(())
 }

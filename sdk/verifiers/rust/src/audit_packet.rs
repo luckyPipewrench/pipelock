@@ -98,6 +98,16 @@ pub fn verify_audit_packet(target: &str, opts: &AuditPacketOptions) -> Result<Au
     };
     let chain = verify_chain(&receipts, &key_hex);
     report.chain_check = if chain.valid { "pass" } else { "fail" }.to_string();
+    if !chain.valid {
+        push_error(
+            &mut report,
+            format!(
+                "chain: {}",
+                chain.error.as_deref().unwrap_or("verification failed")
+            ),
+        );
+        return Ok(report);
+    }
 
     let cross_errors = cross_check(&packet, &chain, &receipts);
     if !cross_errors.is_empty() {
@@ -182,12 +192,13 @@ fn trust_verdict(packet: &AuditPacket, opts: &AuditPacketOptions) -> bool {
 
 fn cross_check(packet: &AuditPacket, chain: &ChainResult, receipts: &[Receipt]) -> Vec<String> {
     let mut errors = Vec::new();
-    let receipt_count = u64_at(packet, &["summary", "receipt_count"]).unwrap_or(u64::MAX);
-    if chain.receipt_count as u64 != receipt_count {
-        errors.push(format!(
-            "chain receipt_count {} != packet.summary.receipt_count {receipt_count}",
-            chain.receipt_count
-        ));
+    if let Some(receipt_count) = u64_at(packet, &["summary", "receipt_count"]) {
+        if chain.receipt_count as u64 != receipt_count {
+            errors.push(format!(
+                "chain receipt_count {} != packet.summary.receipt_count {receipt_count}",
+                chain.receipt_count
+            ));
+        }
     }
     let expected_totals = compute_totals(receipts);
     let got_totals = totals_from_packet(Some(packet));
@@ -209,7 +220,7 @@ fn cross_check(packet: &AuditPacket, chain: &ChainResult, receipts: &[Receipt]) 
         }
     }
     if let Some(final_seq) = u64_at(packet, &["verifier", "final_seq"]) {
-        if final_seq != 0 && final_seq != chain.final_seq {
+        if final_seq != chain.final_seq {
             errors.push(format!(
                 "final_seq mismatch: chain={} packet={final_seq}",
                 chain.final_seq
@@ -217,19 +228,13 @@ fn cross_check(packet: &AuditPacket, chain: &ChainResult, receipts: &[Receipt]) 
         }
     }
     match string_at(packet, &["verifier", "verdict"]) {
-        Some("valid" | "self_consistent_only") => {
-            if !chain.valid {
-                errors.push(format!(
-                    "verdict={} but chain rejected: {}",
-                    string_at(packet, &["verifier", "verdict"]).unwrap_or(""),
-                    chain.error.as_deref().unwrap_or("")
-                ));
-            }
-        }
-        Some("invalid") => {
-            if chain.valid {
-                errors.push("verdict=invalid but chain re-verified successfully".to_string());
-            }
+        Some("valid" | "self_consistent_only") if !chain.valid => errors.push(format!(
+            "verdict={} but chain rejected: {}",
+            string_at(packet, &["verifier", "verdict"]).unwrap_or(""),
+            chain.error.as_deref().unwrap_or("")
+        )),
+        Some("invalid") if chain.valid => {
+            errors.push("verdict=invalid but chain re-verified successfully".to_string());
         }
         _ => {}
     }

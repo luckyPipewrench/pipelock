@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import * as ed25519 from "@noble/ed25519";
 import type { ActionRecord, Receipt } from "./types.js";
 import { canonicalizeActionRecord } from "./canonical.js";
-import { decodeHex, sha256Hex } from "./util.js";
+import { decodeHex } from "./util.js";
 
 const signaturePrefix = "ed25519:";
 
@@ -58,10 +59,11 @@ export function normalizeReceipt(receipt: Receipt): Receipt {
 
 export async function verifyReceipt(receipt: Receipt, expectedKeyHex = ""): Promise<void> {
   normalizeReceipt(receipt);
-  const signerKey = receipt.signer_key ?? "";
-  const keyHex = expectedKeyHex === "" ? signerKey : expectedKeyHex;
-  if (expectedKeyHex !== "" && signerKey !== expectedKeyHex) {
-    throw new Error(`signer_key ${signerKey} does not match expected key ${expectedKeyHex}`);
+  const signerKey = (receipt.signer_key ?? "").toLowerCase();
+  const expected = expectedKeyHex.toLowerCase();
+  const keyHex = expected === "" ? signerKey : expected;
+  if (expected !== "" && signerKey !== expected) {
+    throw new Error(`signer_key ${signerKey} does not match expected key ${expected}`);
   }
 
   const pubKey = decodeHex(keyHex, 32, "signer_key");
@@ -70,7 +72,9 @@ export async function verifyReceipt(receipt: Receipt, expectedKeyHex = ""): Prom
     throw new Error(`invalid signature format: missing ${signaturePrefix} prefix`);
   }
   const sig = decodeHex(signature.slice(signaturePrefix.length), 64, "signature");
-  const digest = Buffer.from(sha256Hex(canonicalizeActionRecord(receipt.action_record as ActionRecord)), "hex");
-  const ok = await ed25519.verifyAsync(sig, digest, pubKey);
+  const digest = createHash("sha256")
+    .update(canonicalizeActionRecord(receipt.action_record as ActionRecord))
+    .digest();
+  const ok = await ed25519.verifyAsync(sig, digest, pubKey, { zip215: false });
   if (!ok) throw new Error("signature verification failed");
 }

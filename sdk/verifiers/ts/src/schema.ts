@@ -8,6 +8,10 @@ import type { AuditPacket } from "./types.js";
 const schemaURL = new URL("./v0.schema.json", import.meta.url);
 const require = createRequire(import.meta.url);
 const addFormats = require("ajv-formats") as (ajv: Ajv2020) => void;
+const ajv = new Ajv2020({ allErrors: true, strict: false });
+addFormats(ajv);
+const schema = JSON.parse(readFileSync(fileURLToPath(schemaURL), "utf8")) as object;
+const cachedValidator = ajv.compile(schema);
 
 function formatAjvError(error: ErrorObject): string {
   const location = error.instancePath === "" ? "/" : error.instancePath;
@@ -15,12 +19,8 @@ function formatAjvError(error: ErrorObject): string {
 }
 
 export function validateSchema(packet: unknown): string[] {
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  addFormats(ajv);
-  const schema = JSON.parse(readFileSync(fileURLToPath(schemaURL), "utf8")) as object;
-  const validate = ajv.compile(schema);
-  if (validate(packet)) return [];
-  return (validate.errors ?? []).map(formatAjvError);
+  if (cachedValidator(packet)) return [];
+  return (cachedValidator.errors ?? []).map(formatAjvError);
 }
 
 const totalsKeys = ["allow", "block", "warn", "ask", "strip", "forward", "redirect", "other"] as const;

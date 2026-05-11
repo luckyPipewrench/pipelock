@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { extractReceipts } from "../src/recorder.js";
@@ -46,8 +48,12 @@ test("mixed signer keys are rejected without pinned key", async () => {
 });
 
 test("malformed JSONL raises an error", () => {
-  assert.throws(() => {
-    JSON.parse(readFileSync(validChain, "utf8").split("\n")[0] ?? "");
-    extractReceipts("/nonexistent/evidence.jsonl");
-  });
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "malformed.jsonl");
+  try {
+    writeFileSync(file, "{\"v\":1,\"seq\":0,\"ts\":\"2026-05-10T00:00:00Z\",\"session_id\":\"s\",\"type\":\"noop\",\"transport\":\"x\",\"summary\":\"\",\"detail\":{},\"prev_hash\":\"genesis\",\"hash\":\"h\"}\n{\"bad\":\n", { mode: 0o600 });
+    assert.throws(() => extractReceipts(file), /line 2/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

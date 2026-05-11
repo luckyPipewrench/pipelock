@@ -35,9 +35,12 @@ export function extractReceipts(file: string): Receipt[] {
 function seqStart(file: string): number {
   const base = path.basename(file, ".jsonl");
   const dash = base.lastIndexOf("-");
-  if (dash < 0) return 0;
-  const parsed = Number.parseInt(base.slice(dash + 1), 10);
-  return Number.isFinite(parsed) ? parsed : 0;
+  const suffix = dash < 0 ? "" : base.slice(dash + 1);
+  const parsed = Number.parseInt(suffix, 10);
+  if (!/^\d+$/u.test(suffix) || !Number.isFinite(parsed)) {
+    throw new RuntimeError(`evidence file has non-numeric sequence suffix: ${file}`);
+  }
+  return parsed;
 }
 
 export function extractReceiptsFromSessionDir(dir: string, sessionId: string): Receipt[] {

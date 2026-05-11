@@ -52,11 +52,11 @@ async function runAuditPacketCommand(args: string[]): Promise<number> {
   });
   const target = requireOneArg(parsed.positionals, "audit-packet");
   const report = await verifyAuditPacket(target, {
-    signerKey: String(parsed.values.key ?? ""),
+    signerKey: parsed.values.key ?? "",
     offline: parsed.values.offline === true,
     allowSelfConsistentOnly: parsed.values["allow-self-consistent-only"] === true,
     noTrustRequired: parsed.values["no-trust-required"] === true,
-    expectSha256: String(parsed.values["expect-sha256"] ?? "")
+    expectSha256: parsed.values["expect-sha256"] ?? ""
   });
   emitAuditPacket(report, parsed.values.json === true);
   return report.valid ? 0 : 1;
@@ -70,14 +70,13 @@ async function runChainCommand(args: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       key: { type: "string", default: "" },
       dir: { type: "boolean", default: false },
-      "session-id": { type: "string", default: "proxy" },
-      session: { type: "string", default: undefined }
+      "session-id": { type: "string", default: "proxy" }
     }
   });
   const target = requireOneArg(parsed.positionals, "chain");
-  const keyHex = resolveSignerKey(String(parsed.values.key ?? ""));
+  const keyHex = resolveSignerKey(parsed.values.key ?? "");
   const asDir = parsed.values.dir === true;
-  const sessionID = String(parsed.values.session ?? parsed.values["session-id"] ?? "proxy");
+  const sessionID = parsed.values["session-id"] ?? "proxy";
   let receipts;
   let label: string;
   try {
@@ -125,7 +124,7 @@ async function runReceiptCommand(args: string[]): Promise<number> {
     }
   });
   const target = requireOneArg(parsed.positionals, "receipt");
-  const report = await runReceipt(target, String(parsed.values.key ?? ""));
+  const report = await runReceipt(target, parsed.values.key ?? "");
   emitReceipt(report, parsed.values.json === true);
   return report.valid ? 0 : 1;
 }

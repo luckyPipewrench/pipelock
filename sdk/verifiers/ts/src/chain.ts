@@ -66,7 +66,8 @@ export async function verifyChain(receipts: Receipt[], expectedKeyHex = ""): Pro
 }
 
 export function computeTotals(receipts: Receipt[]) {
-  const totals = {
+  type VerdictBucket = "allow" | "block" | "warn" | "ask" | "strip" | "forward" | "redirect" | "other";
+  const totals: Record<VerdictBucket, number> = {
     allow: 0,
     block: 0,
     warn: 0,
@@ -78,8 +79,8 @@ export function computeTotals(receipts: Receipt[]) {
   };
   for (const receipt of receipts) {
     const verdict = String(receipt.action_record?.verdict ?? "").trim().toLowerCase();
-    if (verdict in totals) {
-      totals[verdict as keyof typeof totals]++;
+    if (Object.prototype.hasOwnProperty.call(totals, verdict)) {
+      totals[verdict as VerdictBucket] += 1;
     } else {
       totals.other++;
     }

@@ -152,7 +152,10 @@ func Scan(dir string) (*Report, error) {
 	r.Findings = append(r.Findings, hostileFindings...)
 
 	// Compile DLP patterns once for both scans
-	patterns := compileDLPPatterns()
+	patterns, err := compileDLPPatterns()
+	if err != nil {
+		return nil, fmt.Errorf("compile DLP patterns: %w", err)
+	}
 
 	// Scan for secrets in environment
 	envFindings := scanEnvSecrets(patterns)
@@ -286,10 +289,14 @@ type compiledDLP struct {
 	validate func(string) bool
 }
 
-func compileDLPPatterns() []compiledDLP {
+func compileDLPPatterns() ([]compiledDLP, error) {
 	defaults := config.Defaults()
-	patterns := make([]compiledDLP, 0, len(defaults.DLP.Patterns))
-	for _, p := range defaults.DLP.Patterns {
+	return compileDLPPatternsFrom(defaults.DLP.Patterns)
+}
+
+func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, error) {
+	patterns := make([]compiledDLP, 0, len(patternDefs))
+	for _, p := range patternDefs {
 		pattern := p.Regex
 		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
@@ -302,13 +309,13 @@ func compileDLPPatterns() []compiledDLP {
 		if p.Validator != "" {
 			fn, ok := scanner.DLPValidators[p.Validator]
 			if !ok {
-				panic(fmt.Sprintf("BUG: unknown DLP validator %q for pattern %q", p.Validator, p.Name))
+				return nil, fmt.Errorf("unknown DLP validator %q for pattern %q", p.Validator, p.Name)
 			}
 			cp.validate = fn
 		}
 		patterns = append(patterns, cp)
 	}
-	return patterns
+	return patterns, nil
 }
 
 func (p compiledDLP) matches(text string) bool {

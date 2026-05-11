@@ -72,11 +72,14 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Rust stable + rustfmt + clippy
+      # Pin to Rust 1.95.0 so local Fedora-packaged rustc/rustfmt (currently
+      # 1.95.0 / rustfmt 1.9.0) agrees with CI on fmt and clippy output.
+      # Bump in lockstep with `dnf` package updates; do not chase stable
+      # silently because rustfmt rules tighten each release.
+      - name: Set up Rust 1.95.0 + rustfmt + clippy
         run: |
-          rustup update --no-self-update stable
-          rustup default stable
-          rustup component add rustfmt clippy
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.95.0
 
       - name: Cache cargo
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4

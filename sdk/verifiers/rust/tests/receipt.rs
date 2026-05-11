@@ -38,13 +38,11 @@ fn invalid_signature_is_rejected() {
     )
     .unwrap();
     assert!(!report.valid);
-    assert!(
-        report
-            .error
-            .as_deref()
-            .unwrap_or("")
-            .contains("signature verification failed")
-    );
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("signature verification failed"));
 }
 
 #[test]

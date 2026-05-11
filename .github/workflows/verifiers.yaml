@@ -18,7 +18,6 @@ on:
       - 'sdk/conformance/**'
       - '.github/workflows/verifiers.yaml'
   pull_request:
-    branches: [main]
     paths:
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'

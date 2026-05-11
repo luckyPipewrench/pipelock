@@ -303,7 +303,7 @@ func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, err
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := compiledDLP{name: p.Name, re: re}
 		if p.Validator != "" {

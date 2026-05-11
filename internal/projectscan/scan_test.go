@@ -46,6 +46,20 @@ func TestCompileDLPPatterns_UnknownValidatorErrors(t *testing.T) {
 	}
 }
 
+func TestCompileDLPPatterns_InvalidRegexErrors(t *testing.T) {
+	_, err := compileDLPPatternsFrom([]config.DLPPattern{{
+		Name:     "Bad Regex",
+		Regex:    `[`,
+		Severity: severityCritical,
+	}})
+	if err == nil {
+		t.Fatal("expected invalid regex error")
+	}
+	if !strings.Contains(err.Error(), `compile DLP pattern "Bad Regex"`) {
+		t.Fatalf("expected pattern name in error, got: %v", err)
+	}
+}
+
 func TestScan_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	report, err := Scan(dir)

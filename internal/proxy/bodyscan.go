@@ -355,7 +355,7 @@ func unparseableRouteMatches(req BodyScanRequest, route redact.UnparseableRouteS
 		method := strings.ToUpper(req.Method)
 		matched := false
 		for _, candidate := range route.Methods {
-			if method == candidate {
+			if method == strings.ToUpper(candidate) {
 				matched = true
 				break
 			}
@@ -396,7 +396,11 @@ func unparseableRouteMatches(req BodyScanRequest, route redact.UnparseableRouteS
 		mt = strings.ToLower(mt)
 		matched := false
 		for _, candidate := range route.ContentTypes {
-			if mt == candidate {
+			candidateMT, _, err := mime.ParseMediaType(candidate)
+			if err != nil {
+				continue
+			}
+			if mt == strings.ToLower(candidateMT) {
 				matched = true
 				break
 			}

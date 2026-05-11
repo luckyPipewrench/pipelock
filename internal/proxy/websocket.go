@@ -899,7 +899,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 
 	bodyReq := BodyScanRequest{
 		Body:        bytes.NewReader(msg),
-		Method:      "WS",
+		Method:      http.MethodGet,
 		ContentType: contentType,
 		MaxBytes:    maxBytes,
 		Scanner:     r.scanner,

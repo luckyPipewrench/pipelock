@@ -332,7 +332,7 @@ redaction:
 | `limits.max_depth` | `64` | Max JSON nesting depth the redactor will traverse |
 | `strict_reload` | `false` | Fail reload closed if an active dictionary disappears or corrupts |
 | `allowlist_unparseable` | `[]` | Bare hostnames allowed to pass non-JSON bodies/messages unchanged |
-| `allowlist_unparseable_routes` | `[]` | Route-scoped non-JSON exceptions with `host` plus optional `methods`, `path_prefixes`, `path_suffixes`, and `content_types` constraints |
+| `allowlist_unparseable_routes` | `[]` | Route-scoped non-JSON exceptions with `host` plus at least one of `methods`, `path_prefixes`, `path_suffixes`, or `content_types` |
 
 **Requirements and fail-closed behavior:**
 - `redaction.enabled: true` requires `request_body_scanning.enabled: true` because the rewrite hook lives in the request-body scan path.

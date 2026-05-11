@@ -210,6 +210,9 @@ func (r UnparseableRouteSpec) Validate() error {
 		if !strings.HasPrefix(prefix, "/") {
 			return fmt.Errorf("path_prefixes[%d] %q: must start with /", i, prefix)
 		}
+		if prefix == "/" && len(r.Methods) == 0 && len(r.PathSuffixes) == 0 && len(r.ContentTypes) == 0 {
+			return fmt.Errorf("path_prefixes[%d] %q: root prefix requires methods, path_suffixes, or content_types", i, prefix)
+		}
 	}
 	for i, suffix := range r.PathSuffixes {
 		if suffix == "" {

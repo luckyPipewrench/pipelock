@@ -326,6 +326,7 @@ func TestConfig_ValidateAllowlistUnparseableRoutes(t *testing.T) {
 		{"bad-host", UnparseableRouteSpec{Host: "https://graph.microsoft.com", Methods: []string{"PUT"}}},
 		{"lowercase-method", UnparseableRouteSpec{Host: "graph.microsoft.com", Methods: []string{"put"}}},
 		{"bad-prefix", UnparseableRouteSpec{Host: "graph.microsoft.com", PathPrefixes: []string{"v1.0/me"}}},
+		{"root-prefix-only", UnparseableRouteSpec{Host: "graph.microsoft.com", PathPrefixes: []string{"/"}}},
 		{"empty-suffix", UnparseableRouteSpec{Host: "graph.microsoft.com", PathSuffixes: []string{""}}},
 		{"content-type-param", UnparseableRouteSpec{Host: "graph.microsoft.com", ContentTypes: []string{"application/octet-stream; charset=utf-8"}}},
 		{"uppercase-content-type", UnparseableRouteSpec{Host: "graph.microsoft.com", ContentTypes: []string{"Application/Octet-Stream"}}},

@@ -79,24 +79,18 @@ func (p *Proxy) CurrentRedactionConfigFor(cfg *config.Config) (*redact.Matcher, 
 }
 
 func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[redactionRuntime]) *redactionRuntime {
-	// Trust whatever the reload path stored last. Earlier versions of this
-	// factory compared the caller's `cfg` hash against the stored runtime's
-	// `configKey`; during hot-reload, the cfgPtr and redactionRuntimePtr
-	// atomics are updated with a gap of a few instructions, so a request
-	// landing in that window would see OLD cfg + NEW runtime, the hashes
-	// would disagree, and the factory would return a fail-closed sentinel
-	// (matcher nil, required true) even though the freshly-published
-	// runtime was authoritative. The reload-time invariant is that
-	// `redactionRuntimePtr` reflects the current policy: nil when disabled,
-	// non-nil with a populated matcher when enabled. Honor that directly
-	// and stop racing with our own reload sequence.
 	if ptr != nil {
 		if rt := ptr.Load(); rt != nil && rt.matcher != nil {
-			return rt
+			if cfg != nil && rt.configKey == redactionConfigKey(cfg) {
+				return rt
+			}
 		}
 	}
 	// No runtime published yet (startup, or cfg disables redaction). Fall
-	// back to cfg so callers see the intended operator state.
+	// back to cfg so callers see the intended operator state. A populated
+	// runtime whose configKey does not match cfg is treated the same way:
+	// fail closed instead of mixing one policy's matcher with another
+	// policy's receipts and canonical hash.
 	if cfg == nil || !cfg.Redaction.Enabled {
 		return nil
 	}

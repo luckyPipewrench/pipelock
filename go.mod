@@ -6,8 +6,8 @@ require (
 	github.com/CycloneDX/cyclonedx-go v0.10.0
 	github.com/common-fate/httpsig v0.2.1
 	github.com/dunglas/httpsfv v1.1.0
-	github.com/fsnotify/fsnotify v1.10.0
-	github.com/getsentry/sentry-go v0.46.1
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/gobwas/ws v1.4.0
 	github.com/goccy/go-yaml v1.19.2
@@ -17,10 +17,10 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
 	go.opentelemetry.io/proto/otlp v1.10.0
-	golang.org/x/crypto v0.50.0
-	golang.org/x/net v0.53.0
-	golang.org/x/sys v0.43.0
-	golang.org/x/text v0.36.0
+	golang.org/x/crypto v0.51.0
+	golang.org/x/net v0.54.0
+	golang.org/x/sys v0.44.0
+	golang.org/x/text v0.37.0
 	golang.org/x/time v0.15.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1

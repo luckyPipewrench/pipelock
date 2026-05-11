@@ -182,6 +182,12 @@ func (c *Config) policySemanticView() Config {
 	view.APIAllowlist = sortedCopy(view.APIAllowlist)
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = sortedCopy(view.TrustedDomains)
+	if view.Redaction.Enabled {
+		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
+	} else {
+		view.Redaction.AllowlistUnparseable = nil
+	}
+	view.Redaction.AllowlistUnparseableRoutes = canonicalUnparseableRoutes(view.Redaction.Enabled, view.Redaction.AllowlistUnparseableRoutes)
 	view.Redaction.Providers = canonicalRedactionProviders(view.Redaction.Enabled, view.Redaction.Providers)
 
 	// Resolve omitted-or-zero learn-inference fields to their effective
@@ -195,6 +201,27 @@ func (c *Config) policySemanticView() Config {
 	view.Learn.Inference.Normalization = view.Learn.Inference.Normalization.Resolved()
 
 	return view
+}
+
+func canonicalUnparseableRoutes(enabled bool, routes []redact.UnparseableRouteSpec) []redact.UnparseableRouteSpec {
+	if !enabled || len(routes) == 0 {
+		return nil
+	}
+	out := make([]redact.UnparseableRouteSpec, len(routes))
+	for i, route := range routes {
+		cpy := route
+		cpy.Methods = sortedCopy(cpy.Methods)
+		cpy.PathPrefixes = sortedCopy(cpy.PathPrefixes)
+		cpy.PathSuffixes = sortedCopy(cpy.PathSuffixes)
+		cpy.ContentTypes = sortedCopy(cpy.ContentTypes)
+		out[i] = cpy
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left, _ := json.Marshal(out[i])
+		right, _ := json.Marshal(out[j])
+		return string(left) < string(right)
+	})
+	return out
 }
 
 func canonicalRedactionProviders(enabled bool, providers map[string]redact.ProviderSpec) map[string]redact.ProviderSpec {

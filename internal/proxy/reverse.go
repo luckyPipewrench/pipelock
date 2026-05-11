@@ -718,6 +718,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 
 	bodyReq := BodyScanRequest{
 		Body:            r.Body,
+		Method:          r.Method,
 		ContentType:     r.Header.Get("Content-Type"),
 		ContentEncoding: r.Header.Get("Content-Encoding"),
 		MaxBytes:        maxBytes,

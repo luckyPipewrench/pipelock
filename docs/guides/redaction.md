@@ -48,6 +48,11 @@ redaction:
   allowlist_unparseable:
     - api.anthropic.com
     - api.openai.com
+  allowlist_unparseable_routes:
+    - host: login.microsoftonline.com
+      methods: [POST]
+      path_suffixes: [/oauth2/v2.0/token]
+      content_types: [application/x-www-form-urlencoded]
   providers:
     acme_llm:
       host_patterns:
@@ -63,11 +68,13 @@ Use a narrow `code` profile for developer traffic and add broader `business` pro
 
 - `redaction.enabled: true` requires `request_body_scanning.enabled: true`.
 - Only complete JSON payloads are rewritten.
-- Non-JSON HTTP bodies and complete non-JSON WebSocket messages are blocked unless the destination host is on `allowlist_unparseable`.
+- Non-JSON HTTP bodies and complete non-JSON WebSocket messages are blocked unless the destination host is on `allowlist_unparseable` or the request matches `allowlist_unparseable_routes`.
 - Outbound WebSocket fragments are blocked while redaction is enabled because partial JSON messages cannot be rewritten safely.
 - Malformed JSON, numeric scalars containing secrets, key-collision rewrites, or redaction limits being exceeded all block the request instead of forwarding partially transformed data.
 
 `allowlist_unparseable` accepts bare lowercase hostnames only. Do not include schemes, paths, or ports. Use it sparingly for trusted endpoints that legitimately require non-JSON request formats.
+
+Prefer `allowlist_unparseable_routes` for OAuth token endpoints and upload paths. Each route requires a bare lowercase `host` plus at least one additional constraint: `methods`, `path_prefixes`, `path_suffixes`, or `content_types`. Matching requests skip only the JSON rewrite gate; request body and header scanning still run.
 
 ## Provider Parsers
 

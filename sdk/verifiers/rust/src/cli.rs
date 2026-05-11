@@ -142,7 +142,12 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                 index += 1;
                 parsed.key = args
                     .get(index)
-                    .ok_or_else(|| VerifierError::Usage(format!("--key requires a value\n{}", usage(Some(command)))))?
+                    .ok_or_else(|| {
+                        VerifierError::Usage(format!(
+                            "--key requires a value\n{}",
+                            usage(Some(command))
+                        ))
+                    })?
                     .clone();
             }
             "--expect-sha256" if command == "audit-packet" => {
@@ -176,7 +181,8 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                     parsed.expect_sha256 =
                         inline_value.expect("split flag produced value").to_string();
                 } else if flag == "--session-id" && command == "chain" {
-                    parsed.session_id = inline_value.expect("split flag produced value").to_string();
+                    parsed.session_id =
+                        inline_value.expect("split flag produced value").to_string();
                 } else {
                     return Err(VerifierError::Usage(format!(
                         "Unknown option {arg}\n{}",

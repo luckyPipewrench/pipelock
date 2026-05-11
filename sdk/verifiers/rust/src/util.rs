@@ -42,7 +42,11 @@ pub fn parse_json_line(text: &str, label: &str) -> Result<Value> {
     serde_json::from_str(text).map_err(|err| VerifierError::Runtime(format!("{label}: {err}")))
 }
 
-pub fn decode_hex(input: &str, byte_len: usize, label: &str) -> std::result::Result<Vec<u8>, String> {
+pub fn decode_hex(
+    input: &str,
+    byte_len: usize,
+    label: &str,
+) -> std::result::Result<Vec<u8>, String> {
     let trimmed = input.trim().to_ascii_lowercase();
     if trimmed.len() != byte_len * 2 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!(
@@ -69,11 +73,7 @@ pub fn resolve_signer_key(input: &str) -> Result<String> {
     }
 
     let mut lines = value.lines();
-    if lines
-        .next()
-        .map(|line| line.trim_end_matches('\r'))
-        == Some("pipelock-ed25519-public-v1")
-    {
+    if lines.next().map(|line| line.trim_end_matches('\r')) == Some("pipelock-ed25519-public-v1") {
         let body = lines.next().unwrap_or("").trim();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(body)
@@ -92,7 +92,10 @@ pub fn resolve_packet_path(target: &str) -> Result<(PathBuf, PathBuf)> {
     if info.is_dir() {
         Ok((clean.join("packet.json"), clean))
     } else {
-        let base = clean.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let base = clean
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         Ok((clean, base))
     }
 }

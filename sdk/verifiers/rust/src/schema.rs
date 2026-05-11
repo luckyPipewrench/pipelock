@@ -12,14 +12,19 @@ static COMPILED_SCHEMA: LazyLock<JSONSchema> = LazyLock::new(|| {
         .expect("embedded schema compiles")
 });
 
-const VERIFIER_VERDICTS: &[&str] = &["valid", "invalid", "error", "not_run", "self_consistent_only"];
+const VERIFIER_VERDICTS: &[&str] = &[
+    "valid",
+    "invalid",
+    "error",
+    "not_run",
+    "self_consistent_only",
+];
 const PROVIDERS: &[&str] = &["github_actions", "self_hosted", "local"];
 const RAW_SOCKET_STATUSES: &[&str] = &["denied", "allowed", "unknown"];
 const DOCKER_SOCKET_STATUSES: &[&str] = &["denied", "masked", "allowed", "absent", "unknown"];
 const DNS_UDP_STATUSES: &[&str] = &["denied", "proxied", "allowed", "unknown"];
 const BROWSER_PROXY_STATUSES: &[&str] = &["forced", "advisory", "absent", "unknown"];
-const WEBSOCKET_FRAME_SCANNING: &[&str] =
-    &["explicit_ws_proxy_path_required", "always_on", "off"];
+const WEBSOCKET_FRAME_SCANNING: &[&str] = &["explicit_ws_proxy_path_required", "always_on", "off"];
 
 pub fn validate_audit_packet(packet: &AuditPacket) -> Vec<String> {
     let mut errors = validate_schema(packet);
@@ -56,10 +61,20 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
     match packet.get("run") {
         Some(run) => {
             enum_check("provider", run.get("provider"), PROVIDERS, &mut errors);
-            if run.get("agent_identity").and_then(Value::as_str).unwrap_or("").is_empty() {
+            if run
+                .get("agent_identity")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+            {
                 errors.push("agent_identity is required".to_string());
             }
-            if run.get("started_at").and_then(Value::as_str).unwrap_or("").is_empty() {
+            if run
+                .get("started_at")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+            {
                 errors.push("started_at is required".to_string());
             }
         }
@@ -74,7 +89,10 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
         errors.push("policy_hashes is required (use empty array, not null)".to_string());
     }
 
-    match packet.get("summary").and_then(|summary| summary.get("totals")) {
+    match packet
+        .get("summary")
+        .and_then(|summary| summary.get("totals"))
+    {
         Some(totals) => {
             let receipt_count = packet
                 .get("summary")
@@ -120,24 +138,38 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
                     json_text(verifier.get("verdict"))
                 ));
             }
-            if verifier.get("trusted").and_then(Value::as_bool) == Some(true) && verdict != Some("valid") {
+            if verifier.get("trusted").and_then(Value::as_bool) == Some(true)
+                && verdict != Some("valid")
+            {
                 errors.push(format!(
                     "trusted=true requires verdict=valid, got {}",
                     json_text(verifier.get("verdict"))
                 ));
             }
-            if verdict == Some("valid") && verifier.get("trusted").and_then(Value::as_bool) != Some(true) {
+            if verdict == Some("valid")
+                && verifier.get("trusted").and_then(Value::as_bool) != Some(true)
+            {
                 errors.push("verdict=valid requires trusted=true".to_string());
             }
             if verifier.get("trusted").and_then(Value::as_bool) == Some(true)
-                && verifier.get("signer_key").and_then(Value::as_str).unwrap_or("").is_empty()
+                && verifier
+                    .get("signer_key")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .is_empty()
             {
                 errors.push("trusted=true requires signer_key".to_string());
             }
-            if verifier.get("receipt_count").is_some_and(|value| value.as_u64().is_none()) {
+            if verifier
+                .get("receipt_count")
+                .is_some_and(|value| value.as_u64().is_none())
+            {
                 errors.push("receipt_count must be non-negative".to_string());
             }
-            if verifier.get("final_seq").is_some_and(|value| value.as_u64().is_none()) {
+            if verifier
+                .get("final_seq")
+                .is_some_and(|value| value.as_u64().is_none())
+            {
                 errors.push("final_seq must be non-negative".to_string());
             }
         }
@@ -154,7 +186,12 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
             {
                 errors.push("enforcement_mode is required".to_string());
             }
-            if posture.get("runner_os").and_then(Value::as_str).unwrap_or("").is_empty() {
+            if posture
+                .get("runner_os")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .is_empty()
+            {
                 errors.push("runner_os is required".to_string());
             }
             enum_check(
@@ -191,7 +228,8 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
                 .get("unsupported_paths")
                 .is_some_and(Value::is_array)
             {
-                errors.push("unsupported_paths is required (use empty array, not null)".to_string());
+                errors
+                    .push("unsupported_paths is required (use empty array, not null)".to_string());
             }
         }
         None => errors.push("posture is required".to_string()),
@@ -229,7 +267,10 @@ pub fn validate_structural(packet: &AuditPacket) -> Vec<String> {
 }
 
 fn enum_check(name: &str, value: Option<&Value>, values: &[&str], errors: &mut Vec<String>) {
-    if !value.and_then(Value::as_str).is_some_and(|value| values.contains(&value)) {
+    if !value
+        .and_then(Value::as_str)
+        .is_some_and(|value| values.contains(&value))
+    {
         errors.push(format!(
             "{name} {} is not a valid v0 value",
             json_text(value)

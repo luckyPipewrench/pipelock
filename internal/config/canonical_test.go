@@ -214,6 +214,26 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			},
 		},
 		{
+			name: "redaction route-scoped non-json exception changed",
+			mut: func(c *Config) {
+				c.RequestBodyScanning.Enabled = true
+				c.Redaction = redact.Config{
+					Enabled:        true,
+					DefaultProfile: "code",
+					Profiles: map[string]redact.ProfileSpec{
+						"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+					},
+					AllowlistUnparseableRoutes: []redact.UnparseableRouteSpec{{
+						Host:         "login.microsoftonline.com",
+						Methods:      []string{"POST"},
+						PathSuffixes: []string{"/oauth2/v2.0/token"},
+						ContentTypes: []string{"application/x-www-form-urlencoded"},
+					}},
+					Limits: redact.DefaultLimits(),
+				}
+			},
+		},
+		{
 			// Transport timeouts are enforcement-relevant (DoS
 			// exposure bound, tunnel lifetime) so they must flip ph.
 			// Listen / Upstream addresses are separately excluded as
@@ -262,6 +282,51 @@ func TestCanonicalPolicyHash_RedactionProviderOrderCanonical(t *testing.T) {
 	}
 }
 
+func TestCanonicalPolicyHash_RedactionUnparseableRouteOrderCanonical(t *testing.T) {
+	t.Parallel()
+
+	mkRedaction := func(routes []redact.UnparseableRouteSpec) redact.Config {
+		return redact.Config{
+			Enabled:        true,
+			DefaultProfile: "code",
+			Profiles: map[string]redact.ProfileSpec{
+				"code": {Classes: []string{string(redact.ClassAWSAccessKey)}},
+			},
+			AllowlistUnparseable:       []string{"b.example", "a.example"},
+			AllowlistUnparseableRoutes: routes,
+			Limits:                     redact.DefaultLimits(),
+		}
+	}
+	routeA := redact.UnparseableRouteSpec{
+		Host:         "login.microsoftonline.com",
+		Methods:      []string{"POST"},
+		PathSuffixes: []string{"/oauth2/v2.0/token"},
+		ContentTypes: []string{"application/x-www-form-urlencoded"},
+	}
+	routeB := redact.UnparseableRouteSpec{
+		Host:         "graph.microsoft.com",
+		Methods:      []string{"PUT"},
+		PathPrefixes: []string{"/v1.0/drives/", "/v1.0/me/drive/"},
+		PathSuffixes: []string{":/content"},
+		ContentTypes: []string{"application/octet-stream", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+	}
+
+	first := canonicalHashOf(t, func(c *Config) {
+		c.RequestBodyScanning.Enabled = true
+		c.Redaction = mkRedaction([]redact.UnparseableRouteSpec{routeA, routeB})
+	})
+	second := canonicalHashOf(t, func(c *Config) {
+		c.RequestBodyScanning.Enabled = true
+		routeBReordered := routeB
+		routeBReordered.PathPrefixes = []string{"/v1.0/me/drive/", "/v1.0/drives/"}
+		routeBReordered.ContentTypes = []string{"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream"}
+		c.Redaction = mkRedaction([]redact.UnparseableRouteSpec{routeBReordered, routeA})
+	})
+	if first != second {
+		t.Fatalf("redaction unparseable route order should canonicalize:\nfirst:  %s\nsecond: %s", first, second)
+	}
+}
+
 func TestCanonicalPolicyHash_DisabledRedactionProviderIsInert(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +341,24 @@ func TestCanonicalPolicyHash_DisabledRedactionProviderIsInert(t *testing.T) {
 	})
 	if got != base {
 		t.Fatalf("disabled redaction provider profile changed canonical hash:\nbase: %s\ngot:  %s", base, got)
+	}
+}
+
+func TestCanonicalPolicyHash_DisabledRedactionUnparseableRoutesAreInert(t *testing.T) {
+	t.Parallel()
+
+	base := canonicalHashOf(t, nil)
+	got := canonicalHashOf(t, func(c *Config) {
+		c.Redaction.AllowlistUnparseable = []string{"api.example.com"}
+		c.Redaction.AllowlistUnparseableRoutes = []redact.UnparseableRouteSpec{{
+			Host:         "login.microsoftonline.com",
+			Methods:      []string{"POST"},
+			PathSuffixes: []string{"/oauth2/v2.0/token"},
+			ContentTypes: []string{"application/x-www-form-urlencoded"},
+		}}
+	})
+	if got != base {
+		t.Fatalf("disabled redaction unparseable allowlists changed canonical hash:\nbase: %s\ngot:  %s", base, got)
 	}
 }
 

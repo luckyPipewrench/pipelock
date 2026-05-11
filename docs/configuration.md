@@ -291,6 +291,11 @@ redaction:
   allowlist_unparseable:
     - api.anthropic.com
     - api.openai.com
+  allowlist_unparseable_routes:
+    - host: login.microsoftonline.com
+      methods: [POST]
+      path_suffixes: [/oauth2/v2.0/token]
+      content_types: [application/x-www-form-urlencoded]
   providers:
     acme_llm:
       host_patterns:
@@ -327,10 +332,11 @@ redaction:
 | `limits.max_depth` | `64` | Max JSON nesting depth the redactor will traverse |
 | `strict_reload` | `false` | Fail reload closed if an active dictionary disappears or corrupts |
 | `allowlist_unparseable` | `[]` | Bare hostnames allowed to pass non-JSON bodies/messages unchanged |
+| `allowlist_unparseable_routes` | `[]` | Route-scoped non-JSON exceptions with `host` plus at least one of `methods`, `path_prefixes`, `path_suffixes`, or `content_types` |
 
 **Requirements and fail-closed behavior:**
 - `redaction.enabled: true` requires `request_body_scanning.enabled: true` because the rewrite hook lives in the request-body scan path.
-- Rewrites only operate on complete JSON payloads. Non-JSON HTTP bodies and non-JSON complete WebSocket messages are blocked unless the destination host is on `allowlist_unparseable`.
+- Rewrites only operate on complete JSON payloads. Non-JSON HTTP bodies and non-JSON complete WebSocket messages are blocked unless the destination host is on `allowlist_unparseable` or the request matches `allowlist_unparseable_routes`.
 - Outbound WebSocket fragments are blocked while redaction is enabled. The proxy cannot safely rewrite partial JSON messages.
 - Successful rewrites add a `redaction` summary to the signed action receipt only when one or more values were replaced; untouched requests keep the legacy receipt bytes unchanged.
 

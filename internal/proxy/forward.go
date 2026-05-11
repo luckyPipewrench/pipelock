@@ -1011,6 +1011,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
 			Body:            r.Body,
+			Method:          r.Method,
 			ContentType:     r.Header.Get("Content-Type"),
 			ContentEncoding: r.Header.Get("Content-Encoding"),
 			MaxBytes:        cfg.RequestBodyScanning.MaxBodyBytes,

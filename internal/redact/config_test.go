@@ -297,6 +297,51 @@ func TestConfig_ValidateStructureWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestConfig_ValidateAllowlistUnparseableRoutes(t *testing.T) {
+	t.Parallel()
+	mkCfg := func(route UnparseableRouteSpec) *Config {
+		return &Config{
+			Enabled:                    true,
+			DefaultProfile:             "p",
+			Profiles:                   map[string]ProfileSpec{"p": {Classes: []string{"ipv4"}}},
+			AllowlistUnparseableRoutes: []UnparseableRouteSpec{route},
+		}
+	}
+
+	valid := UnparseableRouteSpec{
+		Host:         "login.microsoftonline.com",
+		Methods:      []string{"POST"},
+		PathSuffixes: []string{"/oauth2/v2.0/token"},
+		ContentTypes: []string{"application/x-www-form-urlencoded"},
+	}
+	if err := mkCfg(valid).Validate(); err != nil {
+		t.Fatalf("valid route should validate: %v", err)
+	}
+
+	rejectCases := []struct {
+		name  string
+		route UnparseableRouteSpec
+	}{
+		{"host-only", UnparseableRouteSpec{Host: "graph.microsoft.com"}},
+		{"bad-host", UnparseableRouteSpec{Host: "https://graph.microsoft.com", Methods: []string{"PUT"}}},
+		{"lowercase-method", UnparseableRouteSpec{Host: "graph.microsoft.com", Methods: []string{"put"}}},
+		{"bad-prefix", UnparseableRouteSpec{Host: "graph.microsoft.com", PathPrefixes: []string{"v1.0/me"}}},
+		{"root-prefix-only", UnparseableRouteSpec{Host: "graph.microsoft.com", PathPrefixes: []string{"/"}}},
+		{"empty-suffix", UnparseableRouteSpec{Host: "graph.microsoft.com", PathSuffixes: []string{""}}},
+		{"content-type-param", UnparseableRouteSpec{Host: "graph.microsoft.com", ContentTypes: []string{"application/octet-stream; charset=utf-8"}}},
+		{"uppercase-content-type", UnparseableRouteSpec{Host: "graph.microsoft.com", ContentTypes: []string{"Application/Octet-Stream"}}},
+	}
+	for _, tc := range rejectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := mkCfg(tc.route).Validate()
+			if err == nil || !strings.Contains(err.Error(), "allowlist_unparseable_routes") {
+				t.Fatalf("route should be rejected, got %v", err)
+			}
+		})
+	}
+}
+
 func TestConfig_ValidateAllowlistUnparseable(t *testing.T) {
 	t.Parallel()
 	mkCfg := func(hosts ...string) *Config {

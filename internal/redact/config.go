@@ -6,6 +6,7 @@ package redact
 import (
 	"errors"
 	"fmt"
+	"mime"
 	"strings"
 )
 
@@ -45,6 +46,11 @@ type Config struct {
 	// parseable JSON. Bodies from hosts not in this list are blocked per
 	// the fail-closed invariant.
 	AllowlistUnparseable []string `yaml:"allowlist_unparseable"`
+
+	// AllowlistUnparseableRoutes narrows non-JSON redaction bypasses to a
+	// host plus at least one route constraint. Use this for trusted OAuth
+	// token endpoints or upload routes instead of broad host-only entries.
+	AllowlistUnparseableRoutes []UnparseableRouteSpec `yaml:"allowlist_unparseable_routes"`
 
 	// Providers registers provider parser profiles. Built-ins for Anthropic,
 	// OpenAI, and Gemini are always present; entries here add or override
@@ -92,6 +98,17 @@ type LimitsSpec struct {
 	MaxDepth                int `yaml:"max_depth"`
 }
 
+// UnparseableRouteSpec is a route-scoped non-JSON redaction exception.
+// Matching requests still pass through request body/header scanning; this
+// only skips the JSON rewrite gate for trusted non-JSON formats.
+type UnparseableRouteSpec struct {
+	Host         string   `yaml:"host"`
+	Methods      []string `yaml:"methods,omitempty"`
+	PathPrefixes []string `yaml:"path_prefixes,omitempty"`
+	PathSuffixes []string `yaml:"path_suffixes,omitempty"`
+	ContentTypes []string `yaml:"content_types,omitempty"`
+}
+
 // ToLimits converts the YAML form into the internal Limits type.
 // Struct fields match one-for-one so a Go conversion is sufficient.
 func (s LimitsSpec) ToLimits() Limits {
@@ -112,6 +129,11 @@ func (c *Config) Validate() error {
 	for i, host := range c.AllowlistUnparseable {
 		if err := validateHostEntry(host); err != nil {
 			return fmt.Errorf("redact: allowlist_unparseable[%d] %q: %w", i, host, err)
+		}
+	}
+	for i, route := range c.AllowlistUnparseableRoutes {
+		if err := route.Validate(); err != nil {
+			return fmt.Errorf("redact: allowlist_unparseable_routes[%d]: %w", i, err)
 		}
 	}
 	// Structural: dictionary class names must match the placeholder-safe
@@ -158,6 +180,55 @@ func (c *Config) Validate() error {
 		}
 		if len(d.Entries) == 0 && d.EntriesFile == "" {
 			return fmt.Errorf("redact: dictionary %q has no entries or entries_file", name)
+		}
+	}
+	return nil
+}
+
+// Validate rejects broad or ambiguous route exceptions. Host is required,
+// and at least one route constraint beyond host is required so operators do
+// not accidentally recreate a host-only allowlist entry in the route surface.
+func (r UnparseableRouteSpec) Validate() error {
+	if err := validateHostEntry(r.Host); err != nil {
+		return fmt.Errorf("host %q: %w", r.Host, err)
+	}
+	if len(r.Methods) == 0 && len(r.PathPrefixes) == 0 && len(r.PathSuffixes) == 0 && len(r.ContentTypes) == 0 {
+		return errors.New("must include at least one of methods, path_prefixes, path_suffixes, or content_types")
+	}
+	for i, method := range r.Methods {
+		if method == "" {
+			return fmt.Errorf("methods[%d]: empty", i)
+		}
+		if strings.ToUpper(method) != method {
+			return fmt.Errorf("methods[%d] %q: must be uppercase", i, method)
+		}
+		if strings.ContainsAny(method, " \t\r\n") {
+			return fmt.Errorf("methods[%d] %q: must not contain whitespace", i, method)
+		}
+	}
+	for i, prefix := range r.PathPrefixes {
+		if !strings.HasPrefix(prefix, "/") {
+			return fmt.Errorf("path_prefixes[%d] %q: must start with /", i, prefix)
+		}
+		if prefix == "/" && len(r.Methods) == 0 && len(r.PathSuffixes) == 0 && len(r.ContentTypes) == 0 {
+			return fmt.Errorf("path_prefixes[%d] %q: root prefix requires methods, path_suffixes, or content_types", i, prefix)
+		}
+	}
+	for i, suffix := range r.PathSuffixes {
+		if suffix == "" {
+			return fmt.Errorf("path_suffixes[%d]: empty", i)
+		}
+	}
+	for i, ct := range r.ContentTypes {
+		mt, params, err := mime.ParseMediaType(ct)
+		if err != nil {
+			return fmt.Errorf("content_types[%d] %q: %w", i, ct, err)
+		}
+		if len(params) != 0 {
+			return fmt.Errorf("content_types[%d] %q: parameters are not allowed", i, ct)
+		}
+		if strings.ToLower(mt) != ct {
+			return fmt.Errorf("content_types[%d] %q: must be lowercase canonical media type", i, ct)
 		}
 	}
 	return nil

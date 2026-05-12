@@ -152,7 +152,10 @@ func Scan(dir string) (*Report, error) {
 	r.Findings = append(r.Findings, hostileFindings...)
 
 	// Compile DLP patterns once for both scans
-	patterns := compileDLPPatterns()
+	patterns, err := compileDLPPatterns()
+	if err != nil {
+		return nil, fmt.Errorf("compile DLP patterns: %w", err)
+	}
 
 	// Scan for secrets in environment
 	envFindings := scanEnvSecrets(patterns)
@@ -265,7 +268,7 @@ func scanEnvSecrets(patterns []compiledDLP) []Finding {
 		}
 
 		for _, p := range patterns {
-			if p.re.MatchString(value) {
+			if p.matches(value) {
 				findings = append(findings, Finding{
 					Severity: severityCritical,
 					Category: "secret",
@@ -281,21 +284,53 @@ func scanEnvSecrets(patterns []compiledDLP) []Finding {
 }
 
 type compiledDLP struct {
-	name string
-	re   *regexp.Regexp
+	name     string
+	re       *regexp.Regexp
+	validate func(string) bool
 }
 
-func compileDLPPatterns() []compiledDLP {
+func compileDLPPatterns() ([]compiledDLP, error) {
 	defaults := config.Defaults()
-	patterns := make([]compiledDLP, 0, len(defaults.DLP.Patterns))
-	for _, p := range defaults.DLP.Patterns {
-		re, err := regexp.Compile(p.Regex)
-		if err != nil {
-			continue
+	return compileDLPPatternsFrom(defaults.DLP.Patterns)
+}
+
+func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, error) {
+	patterns := make([]compiledDLP, 0, len(patternDefs))
+	for _, p := range patternDefs {
+		pattern := p.Regex
+		if !strings.HasPrefix(pattern, "(?i)") {
+			pattern = "(?i)" + pattern
 		}
-		patterns = append(patterns, compiledDLP{name: p.Name, re: re})
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
+		}
+		cp := compiledDLP{name: p.Name, re: re}
+		if p.Validator != "" {
+			fn, ok := scanner.DLPValidators[p.Validator]
+			if !ok {
+				return nil, fmt.Errorf("unknown DLP validator %q for pattern %q", p.Validator, p.Name)
+			}
+			cp.validate = fn
+		}
+		patterns = append(patterns, cp)
 	}
-	return patterns
+	return patterns, nil
+}
+
+func (p compiledDLP) matches(text string) bool {
+	if p.re == nil {
+		return false
+	}
+	if p.validate == nil {
+		return p.re.MatchString(text)
+	}
+	for _, match := range p.re.FindAllString(text, -1) {
+		if p.validate(match) {
+			return true
+		}
+	}
+	return false
 }
 
 // scanFiles walks the directory and scans config/env files for secrets.
@@ -361,7 +396,7 @@ func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding 
 		lineNum++
 		line := s.Text()
 		for _, p := range patterns {
-			if p.re.MatchString(line) {
+			if p.matches(line) {
 				findings = append(findings, Finding{
 					Severity: severityCritical,
 					Category: "secret",

@@ -918,13 +918,48 @@ func TestProbeOperatorEgress(t *testing.T) {
 		}
 	})
 
-	t.Run("operator unparseable HTTP code -> fail", func(t *testing.T) {
+	t.Run("operator empty output -> fail", func(t *testing.T) {
 		env := makeProbeEnv(t, func(e *probeEnv) {
 			e.operatorUser = testOperatorUser
 			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
 				// Empty stdout but exit 0 — pathological but
 				// catchable.
 				return "", 0, nil
+			}
+		})
+		gotStatus, gotDetail := probeOperatorEgress(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "no output") {
+			t.Fatalf("detail: got %q, want substring 'no output'", gotDetail)
+		}
+	})
+
+	t.Run("operator stderr noise prefix -> pass", func(t *testing.T) {
+		// realRunCommand merges stdout+stderr; benign sudo/PAM warnings
+		// can land in front of curl's HTTP code. The last whitespace-
+		// separated token is what `-w '%{http_code}'` printed.
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.operatorUser = testOperatorUser
+			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+				return "sudo: setrlimit(RLIMIT_CORE): Operation not permitted 200", 0, nil
+			}
+		})
+		gotStatus, gotDetail := probeOperatorEgress(context.Background(), env)
+		if gotStatus != statusPass {
+			t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "HTTP 200") {
+			t.Fatalf("detail: got %q, want substring 'HTTP 200'", gotDetail)
+		}
+	})
+
+	t.Run("operator non-numeric last token -> fail", func(t *testing.T) {
+		env := makeProbeEnv(t, func(e *probeEnv) {
+			e.operatorUser = testOperatorUser
+			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+				return "curl: warning something something garbage", 0, nil
 			}
 		})
 		gotStatus, gotDetail := probeOperatorEgress(context.Background(), env)

@@ -759,8 +759,15 @@ func probeOperatorEgress(ctx context.Context, env *probeEnv) (string, string) {
 	// exits 0 even on 4xx/5xx, so we must inspect the printed status
 	// code instead of trusting curl's exit code alone. A captive portal
 	// or carrier intercept returning a synthetic 4xx would otherwise
-	// look like "operator reachable".
-	httpCodeStr := strings.TrimSpace(oneLine(out))
+	// look like "operator reachable". realRunCommand merges stdout and
+	// stderr, so benign sudo/PAM/libnss warnings can land in front of
+	// curl's HTTP code; take the trailing whitespace-separated token
+	// since `-w '%{http_code}'` writes the code last with no newline.
+	fields := strings.Fields(oneLine(out))
+	if len(fields) == 0 {
+		return statusFail, "operator curl produced no output"
+	}
+	httpCodeStr := fields[len(fields)-1]
 	httpCode, parseErr := strconv.Atoi(httpCodeStr)
 	if parseErr != nil {
 		return statusFail, fmt.Sprintf("operator returned unparseable HTTP code: %q", httpCodeStr)

@@ -1,0 +1,22 @@
+# OPSEC banlist — public, structural patterns only.
+#
+# Each non-comment, non-blank line is: <PCRE-style regex>\t<reason>
+# (tab-separated, exactly one tab). Backslashes follow Python re semantics
+# under `grep -P`. Lines beginning with `#` are comments.
+#
+# The committed banlist intentionally holds only patterns that have no
+# legitimate use in this repository — structural tracker-ID shapes and
+# private-network IPv4 ranges. Personal names, internal hostnames, agent
+# names, and topic-specific terms live in a local-only file pointed to by
+# PIPELOCK_OPSEC_EXTRA (default $HOME/.config/pipelock/opsec-extra.patterns)
+# so the public banlist does not itself leak the items we are trying to
+# keep out of the repo.
+#
+# Allowlist: an added line containing the literal substring `OPSEC-OK`
+# is exempt from every pattern. Use sparingly and only when the match
+# is genuinely intentional (e.g. a test asserting the hook fires).
+\b(?:TD|LL)-[0-9]+\b	Internal tech-debt / lessons-learned tracker ID
+\bPR-[0-9]{1,3}(?![0-9])	Internal multi-PR sequencing label (use #N for GitHub PRs)
+\b10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\b	Private RFC1918 IPv4 (10.0.0.0/8)
+\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b	Private RFC1918 IPv4 (192.168.0.0/16)
+\b172\.(?:1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}\b	Private RFC1918 IPv4 (172.16.0.0/12)

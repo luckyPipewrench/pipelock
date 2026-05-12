@@ -1,0 +1,49 @@
+name: OPSEC
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  banlist:
+    name: opsec banlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      BASE_REF: ${{ github.base_ref }}
+    steps:
+      - name: Checkout PR with full history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin "${BASE_REF}":"refs/remotes/origin/${BASE_REF}"
+
+      - name: Block design/internal/private doc paths
+        run: |
+          base="origin/${BASE_REF}"
+          added=$(git diff --name-only --diff-filter=AM "${base}"...HEAD | grep -E "^docs/(design|internal|private)/" || true)
+          if [ -n "${added}" ]; then
+            echo "::error::OPSEC: design/internal docs belong in the private ops repo, not this public repo:"
+            echo "${added}"
+            exit 1
+          fi
+
+      - name: Run banlist grep against PR diff
+        env:
+          # Optional repo secret named OPSEC_PATTERNS holds personal/topic
+          # banlist content (tab-separated regex\treason rows). If unset,
+          # the workflow runs only the public .opsec-patterns rules.
+          OPSEC_EXTRA_PATTERNS: ${{ secrets.OPSEC_PATTERNS }}
+        run: |
+          bash scripts/opsec-grep.sh --range "origin/${BASE_REF}..HEAD"
+
+      - name: Run banlist grep self-tests
+        run: |
+          bash scripts/opsec-grep_test.sh

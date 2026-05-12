@@ -31,6 +31,24 @@ repos:
     hooks:
       - id: gitleaks
 
+  # OPSEC: block internal-only document paths and scan added lines
+  # against the banlist. See scripts/opsec-grep.sh for details.
+  - repo: local
+    hooks:
+      - id: opsec-path-block
+        name: opsec path block
+        entry: bash scripts/opsec-path-block.sh
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: opsec-grep
+        name: opsec banlist grep
+        entry: bash scripts/opsec-grep.sh --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+
   # Go: vet, build, test
   - repo: local
     hooks:

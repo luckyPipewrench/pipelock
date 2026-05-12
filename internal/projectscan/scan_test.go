@@ -9,7 +9,56 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+const (
+	patternBitcoinWIF = "Bitcoin WIF Private Key"
+	patternCreditCard = "Credit " + "Card Number"
+)
+
+func mustCompileDLPPatterns(t *testing.T) []compiledDLP {
+	t.Helper()
+
+	patterns, err := compileDLPPatterns()
+	if err != nil {
+		t.Fatalf("compile DLP patterns: %v", err)
+	}
+	return patterns
+}
+
+func TestCompileDLPPatterns_UnknownValidatorErrors(t *testing.T) {
+	_, err := compileDLPPatternsFrom([]config.DLPPattern{{
+		Name:      "Bad Validator",
+		Regex:     `abc`,
+		Severity:  severityCritical,
+		Validator: "not-a-validator",
+	}})
+	if err == nil {
+		t.Fatal("expected unknown validator error")
+	}
+	if !strings.Contains(err.Error(), `unknown DLP validator "not-a-validator"`) {
+		t.Fatalf("expected validator name in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `pattern "Bad Validator"`) {
+		t.Fatalf("expected pattern name in error, got: %v", err)
+	}
+}
+
+func TestCompileDLPPatterns_InvalidRegexErrors(t *testing.T) {
+	_, err := compileDLPPatternsFrom([]config.DLPPattern{{
+		Name:     "Bad Regex",
+		Regex:    `[`,
+		Severity: severityCritical,
+	}})
+	if err == nil {
+		t.Fatal("expected invalid regex error")
+	}
+	if !strings.Contains(err.Error(), `compile DLP pattern "Bad Regex"`) {
+		t.Fatalf("expected pattern name in error, got: %v", err)
+	}
+}
 
 func TestScan_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
@@ -178,7 +227,7 @@ func TestScanFiles_DotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir, compileDLPPatterns())
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
 	if len(findings) == 0 {
 		t.Fatal("expected findings from .env file")
 	}
@@ -207,7 +256,7 @@ func TestScanFiles_SkipsNodeModules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir, compileDLPPatterns())
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
 	for _, f := range findings {
 		if f.File != "" && filepath.Base(filepath.Dir(f.File)) == "bad-pkg" {
 			t.Error("should not scan files in node_modules")
@@ -223,7 +272,7 @@ func TestScanFiles_LargeFileSkipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir, compileDLPPatterns())
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
 	if len(findings) != 0 {
 		t.Error("expected no findings from oversized file")
 	}
@@ -238,7 +287,7 @@ func TestScanFiles_YAMLConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir, compileDLPPatterns())
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
 	foundAnthropic := false
 	for _, f := range findings {
 		if f.Pattern == "Anthropic API Key" {
@@ -247,6 +296,50 @@ func TestScanFiles_YAMLConfig(t *testing.T) {
 	}
 	if !foundAnthropic {
 		t.Error("expected DLP match for Anthropic API Key in YAML")
+	}
+}
+
+func TestScanFiles_ValidatedWIFRejectsPackageIntegrityHash(t *testing.T) {
+	dir := t.TempDir()
+	invalidWIF := "K" + strings.Repeat("A", 51)
+	lockfile := `{
+  "packages": {
+    "node_modules/sharp": {
+      "version": "0.34.5",
+      "resolved": "https://registry.npmjs.org/sharp/-/sharp-0.34.5.tgz",
+      "integrity": "sha512-` + invalidWIF + `=="
+    }
+  }
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "package-lock.json"), []byte(lockfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
+	for _, f := range findings {
+		if f.Pattern == patternBitcoinWIF {
+			t.Fatalf("package integrity hash should not be flagged as WIF: %+v", f)
+		}
+	}
+}
+
+func TestScanFiles_ValidatedWIFStillFlagsRealKey(t *testing.T) {
+	dir := t.TempDir()
+	wif := "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("BTC_WIF="+wif+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
+	found := false
+	for _, f := range findings {
+		if f.Pattern == patternBitcoinWIF {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected valid WIF to be flagged")
 	}
 }
 
@@ -310,7 +403,7 @@ func TestScanFiles_EnvPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFiles(dir, compileDLPPatterns())
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
 	if len(findings) == 0 {
 		t.Error("expected findings from .env.production file")
 	}
@@ -326,7 +419,7 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 	if err := os.WriteFile(secret, []byte("KEY="+fakeKey+"\n"), 0o000); err != nil {
 		t.Fatal(err)
 	}
-	findings := scanFiles(dir, compileDLPPatterns())
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
 	if len(findings) != 0 {
 		t.Error("expected no findings for unreadable file")
 	}
@@ -486,7 +579,7 @@ func TestScanEnvSecrets_SkipsSafeNames(t *testing.T) {
 	// credential linters do not flag the source.
 	fakeCCN := "1234-" + "5678-" + "9012-" + "3456"
 	t.Setenv("GITHUB_PATH", fakeCCN)
-	findings := scanEnvSecrets(compileDLPPatterns())
+	findings := scanEnvSecrets(mustCompileDLPPatterns(t))
 	for _, f := range findings {
 		if strings.Contains(f.Message, "GITHUB_PATH") {
 			t.Errorf("GITHUB_PATH should be skipped, got finding: %s", f.Message)
@@ -502,10 +595,52 @@ func TestScanEnvSecrets_SkipsPathValues(t *testing.T) {
 	// Unknown var name — wouldn't be in envVarAlwaysSafe — but with a
 	// path-shaped value, it must still be skipped.
 	t.Setenv("MY_CUSTOM_PATH", "/tmp/_some_long_path_with_digits_1234567890123456")
-	findings := scanEnvSecrets(compileDLPPatterns())
+	findings := scanEnvSecrets(mustCompileDLPPatterns(t))
 	for _, f := range findings {
 		if strings.Contains(f.Message, "MY_CUSTOM_PATH") {
 			t.Errorf("absolute path value should be skipped, got finding: %s", f.Message)
 		}
+	}
+}
+
+func TestScanEnvSecrets_ValidatedPatternsRejectInvalidMatches(t *testing.T) {
+	invalidWIF := "K" + strings.Repeat("A", 51)
+	invalidCard := "1234-" + "5678-" + "9012-" + "3456"
+	t.Setenv("AUDIT_INVALID_WIF", invalidWIF)
+	t.Setenv("AUDIT_INVALID_CARD", invalidCard)
+
+	findings := scanEnvSecrets(mustCompileDLPPatterns(t))
+	for _, f := range findings {
+		if strings.Contains(f.Message, "AUDIT_INVALID_WIF") {
+			t.Fatalf("invalid WIF-shaped env value should not be flagged: %s", f.Message)
+		}
+		if strings.Contains(f.Message, "AUDIT_INVALID_CARD") {
+			t.Fatalf("invalid card-shaped env value should not be flagged: %s", f.Message)
+		}
+	}
+}
+
+func TestScanEnvSecrets_ValidatedPatternsStillFlagRealMatches(t *testing.T) {
+	wif := "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ"
+	card := "4532" + "015112830366"
+	t.Setenv("AUDIT_REAL_WIF", wif)
+	t.Setenv("AUDIT_REAL_CARD", card)
+
+	findings := scanEnvSecrets(mustCompileDLPPatterns(t))
+	foundWIF := false
+	foundCard := false
+	for _, f := range findings {
+		if strings.Contains(f.Message, "AUDIT_REAL_WIF") && f.Pattern == patternBitcoinWIF {
+			foundWIF = true
+		}
+		if strings.Contains(f.Message, "AUDIT_REAL_CARD") && f.Pattern == patternCreditCard {
+			foundCard = true
+		}
+	}
+	if !foundWIF {
+		t.Fatal("expected valid WIF env value to be flagged")
+	}
+	if !foundCard {
+		t.Fatal("expected valid credit card env value to be flagged")
 	}
 }

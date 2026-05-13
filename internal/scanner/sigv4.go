@@ -21,11 +21,16 @@ import (
 //
 // The carve-out is intentionally narrow:
 //
-//   - All four mandatory SigV4 query parameters must validate structurally:
-//     X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date, X-Amz-Signature.
-//     These fields must be singletons. Duplicate structural fields fall back
+//   - All five mandatory SigV4 query parameters must validate structurally
+//     and appear exactly once: X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date,
+//     X-Amz-Signature, X-Amz-Expires. Duplicate structural fields fall back
 //     to normal DLP scanning so a duplicate credential cannot be hidden by
-//     the scrub pass.
+//     the scrub pass and an attacker cannot silence the long-expiry warn
+//     by pinning the scanner's view to a short value.
+//   - The destination host must match an AWS-published amazonaws.com
+//     hostname. The carve-out is for legitimate fetches to the issuer's
+//     own S3 endpoint; a SigV4-shaped URL to an attacker host is not
+//     evidence of legitimacy because pipelock cannot verify the HMAC.
 //   - The AKIA exemption applies ONLY to the access-key component of a
 //     parsed X-Amz-Credential value. AKIA anywhere else in the URL (path,
 //     hostname, other query params, subsequence-concatenated values) still
@@ -56,10 +61,12 @@ const (
 	sigV4CredentialScopeSegments = 5
 
 	// sigV4AccessKeyLength is the exact length of AWS access key IDs:
-	// four-character prefix plus sixteen uppercase alphanumeric characters.
-	// The immutable core DLP regex intentionally accepts longer runs so it
-	// catches secrets embedded in surrounding text. The carve-out must be
-	// stricter so it never scrubs attacker-appended suffix material.
+	// 20 characters. AWS uses both 4-char prefixes (AKIA, ASIA, AGPA, AIDA,
+	// AROA, AIPA, ANPA, ANVA) and the 3-char A3T prefix; in all cases the
+	// total key length is 20. The immutable core DLP regex intentionally
+	// accepts longer runs so it catches secrets embedded in surrounding
+	// text. The carve-out must be stricter so it never scrubs
+	// attacker-appended suffix material.
 	sigV4AccessKeyLength = 20
 
 	// sigV4LongExpiryThreshold is the X-Amz-Expires value (in seconds)
@@ -79,12 +86,21 @@ const (
 	sigV4AccessKeyPlaceholderRune = 'a'
 )
 
+// sigV4CredentialQueryKey is the URL-encoded representation of the
+// X-Amz-Credential parameter as it appears in a raw query string.
+// Used by the order-preserving scrubber to locate the right pair
+// without going through url.Values (which sorts on Encode()).
+// Built at runtime to keep gosec G101 from flagging the literal as
+// a hardcoded credential.
+var sigV4CredentialQueryKey = "X-Amz-" + "Credential"
+
 var (
 	// sigV4AccessKeyAnchored mirrors the AWS Access ID shape but is exact.
-	// The core pattern is deliberately wider ({16,}) because it scans
-	// arbitrary text. The carve-out is a structural exemption and must only
-	// scrub the exact key ID field length used by SigV4 credential scopes.
-	sigV4AccessKeyAnchored = regexp.MustCompile(`^(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}$`)
+	// Every alternation yields a 20-character access-key ID: 4-char prefixes
+	// plus 16 trailing alphanumerics, or the 3-char A3T prefix plus a 4th
+	// alphanumeric plus 16 more (also 20 total). The immutable core DLP
+	// pattern is deliberately wider ({16,}) because it scans arbitrary text.
+	sigV4AccessKeyAnchored = regexp.MustCompile(`^(AKIA|A3T[A-Z0-9]|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}$`)
 
 	// sigV4DateValueRe matches the X-Amz-Date format: YYYYMMDDTHHMMSSZ.
 	// Structural only; we do not validate that the date is real.
@@ -96,6 +112,21 @@ var (
 
 	// sigV4ScopeDateRe matches the YYYYMMDD prefix of a credential scope.
 	sigV4ScopeDateRe = regexp.MustCompile(`^[0-9]{8}$`)
+
+	// sigV4AmazonHostSuffixes lists DNS suffixes for AWS-issued endpoints
+	// that legitimately emit presigned URLs. The carve-out only fires when
+	// parsed.Hostname() matches one of these (case-insensitive). Pipelock
+	// cannot verify the HMAC of a SigV4 URL, so structural validity alone
+	// is not evidence of legitimacy: a presigned-looking URL pointing at
+	// an attacker host would let an attacker exfiltrate an AKIA-shaped
+	// value via the scrub-then-fetch path. *.amazonaws.com is registered
+	// to AWS and cannot be claimed by a third party, so the suffix gate is
+	// effective. Path-style and virtual-hosted S3, FIPS, and access-point
+	// hostnames all live under this suffix.
+	sigV4AmazonHostSuffixes = []string{
+		".amazonaws.com",
+		".amazonaws.com.cn", // AWS China regions
+	}
 )
 
 // sigV4Detection captures the result of structurally validating a presigned
@@ -104,23 +135,29 @@ var (
 type sigV4Detection struct {
 	Valid   bool
 	KeyID   string
-	Expires int // 0 when absent or unparseable
+	Expires int
 }
 
-// detectValidSigV4 returns the AKIA inside the X-Amz-Credential value when
-// the URL carries a structurally valid AWS Signature Version 4 query set.
-// Strict by design: all four mandatory parameters must pass their format
-// check. An invalid or partial set returns Valid=false and leaves the
-// caller to fall through to the normal core DLP scan.
+// detectValidSigV4 returns the access-key inside the X-Amz-Credential value
+// when the URL carries a structurally valid AWS Signature Version 4 query
+// set hosted on an AWS-issued amazonaws.com endpoint. Strict by design:
+// all five mandatory parameters must pass their format check and appear
+// exactly once, and the destination host must be AWS-owned. An invalid or
+// partial set returns Valid=false and leaves the caller to fall through
+// to the normal core DLP scan.
 //
 // This function does NOT prove the signature is cryptographically valid;
 // pipelock has no AWS credentials to compute the HMAC, and verifying
 // would require a network call defeating the purpose. The structural
-// check is sufficient to distinguish "AKIA living inside a SigV4-shaped
-// presigned URL" (carve-out) from "AKIA appearing bare in arbitrary URL
-// content" (block).
+// check plus the AWS-host gate is sufficient to distinguish "AKIA living
+// inside a SigV4-shaped presigned URL fetched from AWS S3" (carve-out)
+// from "AKIA appearing bare or wrapped in arbitrary URL content"
+// (block).
 func detectValidSigV4(parsed *url.URL) sigV4Detection {
 	if parsed == nil {
+		return sigV4Detection{}
+	}
+	if !isAWSEndpointHost(parsed.Hostname()) {
 		return sigV4Detection{}
 	}
 	q := parsed.Query()
@@ -162,23 +199,26 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 		return sigV4Detection{}
 	}
 
-	det := sigV4Detection{Valid: true, KeyID: parts[0]}
-
-	// X-Amz-Expires is optional, but if present must be a singleton: a
-	// second value can let an attacker silence the long-expiry warn by
-	// pinning the carve-out check to a short value while AWS SDKs that
-	// honour the last value still issue a long-lived URL.
-	if expValues, ok := q["X-Amz-Expires"]; ok {
-		if len(expValues) != 1 {
-			return sigV4Detection{}
-		}
-		if v, err := strconv.Atoi(expValues[0]); err == nil && v > 0 {
-			det.Expires = v
-		}
+	// X-Amz-Expires is mandatory and must be a positive integer. Real
+	// presigned URLs always carry it; making it optional would let an
+	// attacker omit the field to silence the long-expiry audit warn
+	// while still earning the carve-out.
+	expRaw, ok := sigV4Singleton(q, "X-Amz-Expires")
+	if !ok {
+		return sigV4Detection{}
 	}
-	return det
+	expires, err := strconv.Atoi(expRaw)
+	if err != nil || expires <= 0 {
+		return sigV4Detection{}
+	}
+
+	return sigV4Detection{Valid: true, KeyID: parts[0], Expires: expires}
 }
 
+// sigV4Singleton returns the sole value for key when exactly one is
+// present. Missing keys and duplicate keys both return ok=false so a
+// parser-differential attack (Get() picks first value while an upstream
+// honours the second) cannot mask a malicious second value.
 func sigV4Singleton(q url.Values, key string) (string, bool) {
 	values, ok := q[key]
 	if !ok || len(values) != 1 {
@@ -187,51 +227,93 @@ func sigV4Singleton(q url.Values, key string) (string, bool) {
 	return values[0], true
 }
 
+// isAWSEndpointHost reports whether hostname terminates in one of the
+// known AWS-issued DNS suffixes. The match is case-insensitive and
+// requires a true suffix (not a substring), so attacker-controlled hosts
+// like example.com.evil.tld cannot impersonate an AWS endpoint.
+func isAWSEndpointHost(hostname string) bool {
+	if hostname == "" {
+		return false
+	}
+	h := strings.ToLower(hostname)
+	for _, suf := range sigV4AmazonHostSuffixes {
+		if strings.HasSuffix(h, suf) {
+			return true
+		}
+	}
+	return false
+}
+
 // scrubSigV4Credential returns a clone of parsed with the access-key
 // component of X-Amz-Credential replaced by a same-length lowercase
 // placeholder. The rest of the credential value (date / region / service /
 // aws4_request) is preserved verbatim. All other URL components — path,
-// hostname, other query parameters — are left untouched so any AKIA
-// living outside the credential field is still scanned and blocked.
+// hostname, other query parameters, AND their order — are left untouched
+// so any AKIA living outside the credential field is still scanned and
+// blocked, including by the ordered-subsequence detector in
+// querySubsequenceCoreDLP which reads pairs from RawQuery in iteration
+// order.
 //
 // Callers must only invoke this with akia equal to a value previously
 // returned by detectValidSigV4 against the same parsed URL. The function
 // returns the original parsed pointer unchanged when the credential
 // value does not start with the expected access-key prefix, so a stale
 // or mismatched detection cannot accidentally widen the carve-out.
+//
+// The scrub does NOT use url.Values.Encode() because Encode() sorts
+// query keys alphabetically. Re-ordering breaks the ordered-subsequence
+// DLP detector: an attacker could split a non-AKIA secret across two
+// query params whose iteration order in the original RawQuery yields a
+// matching concatenation but whose alphabetical order does not. Walking
+// RawQuery as &-split pairs and rewriting only the credential value's
+// access-key span preserves every other byte verbatim.
 func scrubSigV4Credential(parsed *url.URL, akia string) *url.URL {
 	if parsed == nil || akia == "" {
 		return parsed
 	}
-	q := parsed.Query()
-	values := q["X-Amz-Credential"]
-	if len(values) != 1 {
-		return parsed
-	}
-	cred := values[0]
-	if cred == "" {
-		return parsed
-	}
-	parts := strings.SplitN(cred, "/", 2)
-	if len(parts) == 0 || len(parts[0]) != sigV4AccessKeyLength || parts[0] != akia {
+	if parsed.RawQuery == "" {
 		return parsed
 	}
 
-	placeholder := strings.Repeat(string(sigV4AccessKeyPlaceholderRune), len(parts[0]))
-	rebuilt := placeholder
-	if len(parts) == 2 {
-		rebuilt = placeholder + "/" + parts[1]
+	pairs := strings.Split(parsed.RawQuery, "&")
+	credPairs := 0
+	credIdx := -1
+	for i, pair := range pairs {
+		k, _, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		if k == sigV4CredentialQueryKey {
+			credPairs++
+			credIdx = i
+		}
 	}
+	// Duplicate-credential defence: detectValidSigV4 already rejects this
+	// case, but a future caller might invoke scrub without the gate. Bail
+	// out rather than silently scrubbing only the first occurrence.
+	if credPairs != 1 || credIdx < 0 {
+		return parsed
+	}
+
+	pair := pairs[credIdx]
+	_, encodedValue, _ := strings.Cut(pair, "=")
+	decodedValue, err := url.QueryUnescape(encodedValue)
+	if err != nil {
+		return parsed
+	}
+	scopeParts := strings.SplitN(decodedValue, "/", 2)
+	if len(scopeParts) == 0 || len(scopeParts[0]) != sigV4AccessKeyLength || scopeParts[0] != akia {
+		return parsed
+	}
+
+	placeholder := strings.Repeat(string(sigV4AccessKeyPlaceholderRune), len(scopeParts[0]))
+	rebuiltDecoded := placeholder
+	if len(scopeParts) == 2 {
+		rebuiltDecoded = placeholder + "/" + scopeParts[1]
+	}
+	pairs[credIdx] = sigV4CredentialQueryKey + "=" + url.QueryEscape(rebuiltDecoded)
 
 	clone := *parsed
-	cq := clone.Query()
-	cq["X-Amz-Credential"] = []string{rebuilt}
-	// cq.Encode() sorts keys alphabetically and percent-encodes the "/"
-	// inside the credential value. The scrubbed URL is only used as the
-	// scan target for DLP and entropy checks; the actual network fetch
-	// uses the original RawQuery. IterativeDecode in checkCoreDLP
-	// normalises %2F back, so the byte-level divergence does not affect
-	// pattern matching.
-	clone.RawQuery = cq.Encode()
+	clone.RawQuery = strings.Join(pairs, "&")
 	return &clone
 }

@@ -87,11 +87,9 @@ func TestDetectValidSigV4(t *testing.T) {
 			wantExp:   3600,
 		},
 		{
-			name:      "valid_no_expires_field",
+			name:      "missing_expires_invalidates",
 			rawURL:    buildSigV4URL(t, fakeAKIAExample, "", ""),
-			wantValid: true,
-			wantKeyID: fakeAKIAExample,
-			wantExp:   0,
+			wantValid: false,
 		},
 		{
 			name:      "valid_long_expiry_3_days",
@@ -330,16 +328,110 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("negative_expires_ignored", func(t *testing.T) {
+	t.Run("negative_expires_invalidates", func(t *testing.T) {
 		t.Parallel()
 		raw := buildSigV4URL(t, fakeAKIAExample, "-1", "")
 		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("negative X-Amz-Expires should invalidate detection")
+		}
+	})
+
+	t.Run("non_numeric_expires_invalidates", func(t *testing.T) {
+		t.Parallel()
+		raw := buildSigV4URL(t, fakeAKIAExample, "abc", "")
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("non-numeric X-Amz-Expires should invalidate detection")
+		}
+	})
+
+	t.Run("zero_expires_invalidates", func(t *testing.T) {
+		t.Parallel()
+		raw := buildSigV4URL(t, fakeAKIAExample, "0", "")
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("zero X-Amz-Expires should invalidate detection")
+		}
+	})
+
+	t.Run("non_aws_host_rejected", func(t *testing.T) {
+		t.Parallel()
+		raw := strings.Replace(
+			buildSigV4URL(t, fakeAKIAExample, "3600", ""),
+			"examplebucket.s3.amazonaws.com",
+			"attacker.example",
+			1,
+		)
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("SigV4-shaped URL pointing at non-AWS host must not engage the carve-out")
+		}
+	})
+
+	t.Run("attacker_suffix_lookalike_rejected", func(t *testing.T) {
+		t.Parallel()
+		// .amazonaws.com.evil.tld must not match the AWS suffix gate.
+		raw := strings.Replace(
+			buildSigV4URL(t, fakeAKIAExample, "3600", ""),
+			"examplebucket.s3.amazonaws.com",
+			"examplebucket.s3.amazonaws.com.evil.tld",
+			1,
+		)
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("attacker-controlled suffix lookalike must not engage the carve-out")
+		}
+	})
+
+	t.Run("aws_china_partition_accepted", func(t *testing.T) {
+		t.Parallel()
+		raw := strings.Replace(
+			buildSigV4URL(t, fakeAKIAExample, "3600", ""),
+			"examplebucket.s3.amazonaws.com",
+			"examplebucket.s3.cn-north-1.amazonaws.com.cn",
+			1,
+		)
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); !got.Valid {
+			t.Errorf("AWS China partition host (.amazonaws.com.cn) must engage the carve-out")
+		}
+	})
+
+	t.Run("a3t_prefix_must_be_20_chars_total", func(t *testing.T) {
+		t.Parallel()
+		// A3T is a 3-char prefix; total key length is still 20.
+		// "A3T" + 17 alphanumerics = 20 chars.
+		a3tKey := "A3T" + "ABCDEFGHIJKLMNOPQ" // 3 + 17 = 20
+		raw := strings.Replace(
+			buildSigV4URL(t, fakeAKIAExample, "3600", ""),
+			"X-Amz-Credential="+url.QueryEscape(fakeAKIAExample+"/"+validSigV4Scope),
+			"X-Amz-Credential="+url.QueryEscape(a3tKey+"/"+validSigV4Scope),
+			1,
+		)
+		parsed := mustParseURL(t, raw)
 		got := detectValidSigV4(parsed)
 		if !got.Valid {
-			t.Errorf("detection should still succeed when Expires is malformed")
+			t.Errorf("20-char A3T-prefixed key should engage carve-out, got Valid=false")
 		}
-		if got.Expires != 0 {
-			t.Errorf("Expires = %d, want 0 for negative input", got.Expires)
+		if got.KeyID != a3tKey {
+			t.Errorf("KeyID = %q, want %q", got.KeyID, a3tKey)
+		}
+	})
+
+	t.Run("a3t_prefix_19_chars_rejected", func(t *testing.T) {
+		t.Parallel()
+		// "A3T" + 16 alphanumerics = 19 chars total — must be rejected.
+		shortA3T := "A3T" + "ABCDEFGHIJKLMNOP" // 3 + 16 = 19
+		raw := strings.Replace(
+			buildSigV4URL(t, fakeAKIAExample, "3600", ""),
+			"X-Amz-Credential="+url.QueryEscape(fakeAKIAExample+"/"+validSigV4Scope),
+			"X-Amz-Credential="+url.QueryEscape(shortA3T+"/"+validSigV4Scope),
+			1,
+		)
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("19-char A3T-prefixed key must be rejected (length mismatch)")
 		}
 	})
 }
@@ -350,13 +442,20 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 func TestSigV4CarveoutEndToEnd(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Defaults()
-	cfg.Internal = nil // disable SSRF DNS in unit tests
-	cfg.APIAllowlist = []string{"examplebucket.s3.amazonaws.com", "*.amazonaws.com", "example.com"}
-
-	scanner := New(cfg)
-	defer scanner.Close()
-	ctx := context.Background()
+	newCarveoutScanner := func(t *testing.T) *Scanner {
+		t.Helper()
+		cfg := config.Defaults()
+		cfg.Internal = nil
+		cfg.APIAllowlist = []string{
+			"examplebucket.s3.amazonaws.com",
+			"*.amazonaws.com",
+			"example.com",
+			"attacker.example",
+		}
+		s := New(cfg)
+		t.Cleanup(s.Close)
+		return s
+	}
 
 	cases := []struct {
 		name            string
@@ -398,8 +497,13 @@ func TestSigV4CarveoutEndToEnd(t *testing.T) {
 			wantBlockReason: "AWS Access ID",
 		},
 		{
-			name:            "AKIA_in_path_blocks_even_with_valid_SigV4",
-			rawURL:          "https://example.com/" + fakeAKIAExample + "/file.jpg?X-Amz-Algorithm=" + sigV4AlgorithmValue + "&X-Amz-Date=" + validSigV4Date + "&X-Amz-Signature=" + validSigV4Signature + "&X-Amz-Credential=" + fakeAKIAExample + "/" + validSigV4Scope + "&X-Amz-Expires=3600",
+			name: "AKIA_in_path_with_SigV4_query_set_on_AWS_host_blocks",
+			rawURL: "https://examplebucket.s3.amazonaws.com/" + fakeAKIAExample +
+				"/file.jpg?X-Amz-Algorithm=" + sigV4AlgorithmValue +
+				"&X-Amz-Date=" + validSigV4Date +
+				"&X-Amz-Signature=" + validSigV4Signature +
+				"&X-Amz-Credential=" + fakeAKIAExample + "/" + validSigV4Scope +
+				"&X-Amz-Expires=3600",
 			wantAllowed:     false,
 			wantBlockReason: "AWS Access ID",
 		},
@@ -415,12 +519,23 @@ func TestSigV4CarveoutEndToEnd(t *testing.T) {
 			wantAllowed:     false,
 			wantBlockReason: "AWS Access ID",
 		},
+		{
+			name: "SigV4_shaped_URL_to_non_AWS_host_still_blocks",
+			rawURL: "https://attacker.example/exfil?X-Amz-Algorithm=" + sigV4AlgorithmValue +
+				"&X-Amz-Date=" + validSigV4Date +
+				"&X-Amz-Signature=" + validSigV4Signature +
+				"&X-Amz-Credential=" + fakeAKIAExample + "/" + validSigV4Scope +
+				"&X-Amz-Expires=3600",
+			wantAllowed:     false,
+			wantBlockReason: "AWS Access ID",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := scanner.Scan(ctx, tc.rawURL)
+			scanner := newCarveoutScanner(t)
+			got := scanner.Scan(context.Background(), tc.rawURL)
 
 			if got.Allowed != tc.wantAllowed {
 				t.Fatalf("Allowed = %v, want %v (reason=%q)", got.Allowed, tc.wantAllowed, got.Reason)
@@ -486,5 +601,46 @@ func TestSigV4CarveoutDoesNotShortcircuitOtherScanners(t *testing.T) {
 	}
 	if got.Scanner != ScannerLength {
 		t.Errorf("expected Scanner = %q, got %q", ScannerLength, got.Scanner)
+	}
+}
+
+// TestSigV4ScrubPreservesQueryOrder pins the order-preservation contract
+// of scrubSigV4Credential. The ordered-subsequence DLP detector walks
+// values from RawQuery in iteration order and only tries strictly
+// increasing index combinations. If the scrub reorders pairs (e.g., via
+// url.Values.Encode() which sorts alphabetically), an attacker can split
+// an AKIA-shaped value across two extra query params whose alphabetical
+// order hides the matching concatenation.
+//
+// This test builds a SigV4-valid URL plus two extras: z_split1=AKIA
+// (4 chars) and a_split2=IOSFODNN7EXAMPLE1 (17 chars). In original
+// RawQuery iteration order the two parts concatenate to a valid AWS
+// Access ID and the subsequence detector blocks. Alphabetical reorder
+// would put a_split2 before z_split1 and the concat would not match.
+func TestSigV4ScrubPreservesQueryOrder(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = []string{"examplebucket.s3.amazonaws.com", "*.amazonaws.com"}
+
+	sc := New(cfg)
+	defer sc.Close()
+
+	// 4 + 17 = 21 chars total; matches AWS Access ID pattern `AKIA[A-Z0-9]{16,}`.
+	akiaPart1 := "AKIA"
+	akiaPart2 := "IOSFODNN7EXAMPLE1"
+	raw := buildSigV4URL(t, fakeAKIAExample, "3600",
+		"z_split1="+akiaPart1+"&a_split2="+akiaPart2)
+
+	got := sc.Scan(context.Background(), raw)
+	if got.Allowed {
+		t.Fatalf("BYPASS: split AKIA hidden by alphabetical scrub reorder passed core DLP; got Allowed=true, Class=%d", got.Class)
+	}
+	if !strings.Contains(got.Reason, "AWS Access ID") {
+		t.Errorf("Reason = %q, want AWS Access ID match from subsequence detector", got.Reason)
+	}
+	if got.IsAdaptiveNeutral() {
+		t.Errorf("block must not be classified adaptive-neutral; would suppress SignalBlock")
 	}
 }

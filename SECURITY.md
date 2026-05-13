@@ -45,6 +45,10 @@ The following are in scope:
 | 1.x     | Yes       |
 | 0.x     | No        |
 
+## Reporter credit
+
+Reporters are credited by name, handle, or organisation in the published GitHub Security Advisory unless they request otherwise. Credit takes the form the reporter prefers, including anonymous. A separate hall-of-fame document is on the roadmap; until it exists, the published advisory is the canonical credit.
+
 ## Security Design
 
 Pipelock's security model is documented in the README. Key design decisions:

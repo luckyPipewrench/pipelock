@@ -112,6 +112,43 @@ func parseHeaderFlags(raw []string) (http.Header, error) {
 	return h, nil
 }
 
+// readHeaderFile reads "Key: Value" entries from a sidecar file with strict
+// permissions. Empty path returns nil. Lines starting with '#' and blank
+// lines are skipped. The file must be regular and its permission bits must
+// be 0o600 or 0o640 (group-read allowed for k8s fsGroup parity with
+// signing.LoadPrivateKeyFile). Values are not validated here; the caller
+// hands the returned lines to parseHeaderFlags which applies the same
+// validation as --header.
+func readHeaderFile(path string) ([]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	clean := filepath.Clean(path)
+	info, err := os.Stat(clean)
+	if err != nil {
+		return nil, fmt.Errorf("--header-file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("--header-file %q: not a regular file (mode=%s)", path, info.Mode())
+	}
+	if info.Mode().Perm()&0o037 != 0 {
+		return nil, fmt.Errorf("--header-file %q: permissions %04o reveal the header values to other users; restrict to 0600 or 0640", path, info.Mode().Perm())
+	}
+	data, err := os.ReadFile(clean) //nolint:gosec // path is operator-supplied and cleaned + perm-gated above
+	if err != nil {
+		return nil, fmt.Errorf("--header-file %q: %w", path, err)
+	}
+	var lines []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		lines = append(lines, raw)
+	}
+	return lines, nil
+}
+
 func validHeaderName(key string) bool {
 	if key == "" {
 		return false
@@ -304,6 +341,7 @@ func mcpProxyCmd() *cobra.Command {
 	var listenAddr string
 	var envVars []string
 	var rawHeaders []string
+	var headerFile string
 	var agentName string
 	var sandboxEnabled bool
 	var sandboxStrict bool
@@ -718,7 +756,13 @@ signed action receipts for MCP decisions.`,
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "warning: --env is ignored in HTTP transport mode (no child process)")
 				}
 
-				extraHeaders, headerErr := parseHeaderFlags(rawHeaders)
+				fileHeaders, fileErr := readHeaderFile(headerFile)
+				if fileErr != nil {
+					return fileErr
+				}
+				mergedHeaders := append([]string{}, fileHeaders...)
+				mergedHeaders = append(mergedHeaders, rawHeaders...)
+				extraHeaders, headerErr := parseHeaderFlags(mergedHeaders)
 				if headerErr != nil {
 					return headerErr
 				}
@@ -1099,6 +1143,7 @@ signed action receipts for MCP decisions.`,
 	cmd.Flags().StringVar(&listenAddr, "listen", "", "listen address for HTTP reverse proxy mode (e.g. 0.0.0.0:8889)")
 	cmd.Flags().StringArrayVar(&envVars, "env", nil, "pass environment variable to child process (KEY or KEY=VALUE, repeatable)")
 	cmd.Flags().StringArrayVar(&rawHeaders, "header", nil, "extra HTTP header for upstream MCP server in --upstream HTTP mode (repeatable, format: 'Key: Value')")
+	cmd.Flags().StringVar(&headerFile, "header-file", "", "path to a 0o600 (or 0o640) file with extra HTTP headers, one per line as 'Key: Value' (comments with '#'); merged with --header")
 	cmd.Flags().StringVar(&agentName, "agent", "", "agent profile name (resolves to config profile for policy/scanner)")
 	cmd.Flags().BoolVar(&sandboxEnabled, "sandbox", false, "run child in sandbox (Landlock + seccomp + network namespace, Linux only)")
 	cmd.Flags().BoolVar(&sandboxStrict, "sandbox-strict", false, "strict sandbox: error on missing layers, private /dev/shm, block clone3 (implies --sandbox)")

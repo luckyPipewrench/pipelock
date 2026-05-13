@@ -5,9 +5,13 @@ package signing
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 )
 
 // --- atomicWrite coverage tests (61.9% -> higher) ---
@@ -373,5 +377,83 @@ func TestKeystore_ListAgents(t *testing.T) {
 	// Should be sorted.
 	if agents[0] != "alpha" || agents[1] != "bravo" || agents[2] != "charlie" {
 		t.Errorf("agents not sorted: %v", agents)
+	}
+}
+
+// --- DefaultKeystorePath error-branch coverage ---
+
+// TestDefaultKeystorePath_NoHome exercises the os.UserHomeDir error branch
+// by emptying HOME. Go's os.UserHomeDir on Unix returns an error when HOME
+// is unset or empty, which is exactly the production failure mode this
+// branch is meant to surface.
+func TestDefaultKeystorePath_NoHome(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	got, err := DefaultKeystorePath()
+	if err == nil {
+		t.Fatalf("expected error when HOME is empty, got path=%q", got)
+	}
+	if got != "" {
+		t.Errorf("expected empty path on error, got %q", got)
+	}
+}
+
+// --- LoadPublicKey + LoadPrivateKeyFile error-branch coverage ---
+
+// TestLoadPublicKey_EmptyInput covers the early reject branch where the
+// caller supplies an empty or whitespace-only input. Without this guard,
+// downstream filepath.Clean and ParsePublicKey would receive a degenerate
+// value and produce a less informative error.
+func TestLoadPublicKey_EmptyInput(t *testing.T) {
+	for _, input := range []string{"", "   ", "\t\n"} {
+		if _, err := LoadPublicKey(input); err == nil {
+			t.Errorf("expected error for input %q, got nil", input)
+		}
+	}
+}
+
+// TestLoadPrivateKeyFile_NonexistentPath covers the filepath.EvalSymlinks
+// error branch. The path is operator-supplied, so the wrap-cleanly check
+// is worth pinning.
+func TestLoadPrivateKeyFile_NonexistentPath(t *testing.T) {
+	dir := t.TempDir()
+	_, err := LoadPrivateKeyFile(filepath.Join(dir, "does-not-exist"))
+	if err == nil {
+		t.Fatal("expected error for nonexistent private key path")
+	}
+	if !strings.Contains(err.Error(), "reading private key") {
+		t.Errorf("error should wrap 'reading private key', got: %v", err)
+	}
+}
+
+// --- findRootKey wrong-status branch coverage ---
+
+// TestFindRootKey_KeyIDMatchesButStatusNotRoot exercises the inner reject
+// branch where the roster body's RosterSignedBy points at a key that exists
+// but is marked active (or anything other than root). Findroot must reject
+// even though the key_id matches, because an attacker who manages to flip
+// a runtime key's status field could otherwise hijack root-only operations.
+func TestFindRootKey_KeyIDMatchesButStatusNotRoot(t *testing.T) {
+	body := contract.KeyRoster{
+		SchemaVersion:  1,
+		RosterSignedBy: "test-key-id",
+		Keys: []contract.KeyInfo{
+			{
+				KeyID:        "test-key-id",
+				KeyPurpose:   string(PurposeRosterRoot),
+				PublicKeyHex: testRosterPubHex,
+				ValidFrom:    testRosterValidFrom,
+				Status:       contract.KeyStatusActive, // wrong status
+			},
+		},
+		DataClassRoot: testRosterDataClass,
+	}
+
+	_, err := findRootKey(body)
+	if err == nil {
+		t.Fatal("expected error when matched key has wrong status, got nil")
+	}
+	if !errors.Is(err, ErrRosterRootMissing) {
+		t.Errorf("expected ErrRosterRootMissing, got %v", err)
 	}
 }

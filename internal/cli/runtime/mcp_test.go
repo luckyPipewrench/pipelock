@@ -1050,3 +1050,74 @@ func loadActionReceipts(t *testing.T, dir string) []receipt.Receipt {
 
 	return receipts
 }
+
+// TestReadHeaderFile_Strict locks in the file-mode and parse semantics so
+// the IDE wrap can rely on --header-file delivering the same validation
+// guarantees as --header without leaking credential values into argv.
+func TestReadHeaderFile_Strict(t *testing.T) {
+	dir := t.TempDir()
+
+	// Empty path returns nil, nil.
+	if got, err := readHeaderFile(""); err != nil || got != nil {
+		t.Errorf("readHeaderFile empty path = %v, %v; want nil, nil", got, err)
+	}
+
+	// Nonexistent path errors cleanly.
+	if _, err := readHeaderFile(filepath.Join(dir, "missing.headers")); err == nil {
+		t.Error("readHeaderFile on missing file should error")
+	}
+
+	// 0o644 (world-readable) is rejected.
+	loose := filepath.Join(dir, "loose.headers")
+	if err := os.WriteFile(loose, []byte("X-Foo: bar\n"), 0o644); err != nil { //nolint:gosec // intentionally loose for the rejection test
+		t.Fatal(err)
+	}
+	if _, err := readHeaderFile(loose); err == nil {
+		t.Error("readHeaderFile must reject 0o644-mode files")
+	}
+
+	// 0o600 with comments + blank lines + a valid header is accepted.
+	good := filepath.Join(dir, "good.headers")
+	body := "# comment\n\nX-Trace-Id: t-123\nAuthorization: Bearer abc\n"
+	if err := os.WriteFile(good, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := readHeaderFile(good)
+	if err != nil {
+		t.Fatalf("readHeaderFile good file: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 header lines after comment/blank filtering, got %d: %v", len(lines), lines)
+	}
+
+	// Pipe the lines into parseHeaderFlags to confirm the round-trip
+	// honors the same validation as --header.
+	hdrs, err := parseHeaderFlags(lines)
+	if err != nil {
+		t.Fatalf("parseHeaderFlags from sidecar lines: %v", err)
+	}
+	if hdrs.Get("X-Trace-Id") != "t-123" {
+		t.Errorf("X-Trace-Id = %q, want t-123", hdrs.Get("X-Trace-Id"))
+	}
+	if hdrs.Get("Authorization") != "Bearer abc" {
+		t.Errorf("Authorization = %q, want 'Bearer abc'", hdrs.Get("Authorization"))
+	}
+
+	// 0o640 is accepted for deployment environments that use fsGroup-style
+	// group readability while still rejecting world-readable sidecars.
+	groupReadable := filepath.Join(dir, "group-readable.headers")
+	if err := os.WriteFile(groupReadable, []byte("X-Group: ok\n"), 0o640); err != nil { //nolint:gosec // intentionally group-readable for the acceptance test
+		t.Fatal(err)
+	}
+	lines, err = readHeaderFile(groupReadable)
+	if err != nil {
+		t.Fatalf("readHeaderFile 0o640 file: %v", err)
+	}
+	hdrs, err = parseHeaderFlags(lines)
+	if err != nil {
+		t.Fatalf("parseHeaderFlags from 0o640 sidecar lines: %v", err)
+	}
+	if hdrs.Get("X-Group") != "ok" {
+		t.Errorf("X-Group = %q, want ok", hdrs.Get("X-Group"))
+	}
+}

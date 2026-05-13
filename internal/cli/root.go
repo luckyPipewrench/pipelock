@@ -110,6 +110,7 @@ Quick start:
 		// Setup (IDE integrations)
 		setup.InitCmd(),
 		setup.ClaudeCmd(),
+		setup.ClineCmd(),
 		setup.CursorCmd(),
 		setup.VscodeCmd(),
 		setup.JetbrainsCmd(),

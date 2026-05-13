@@ -4,19 +4,23 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 const (
-	testOriginalCmd = "npx"
-	testTypeHTTP    = "http" // VS Code MCP server type for HTTP upstream
-	testTypeStdio   = "stdio"
-	testExampleURL  = "https://api.example.com/mcp"
-	testNodeCmd     = "node"
-	testBearerTok   = "Bearer " + "vs-tok"
+	testOriginalCmd    = "npx"
+	testTypeHTTP       = "http" // VS Code MCP server type for HTTP upstream
+	testTypeStdio      = "stdio"
+	testExampleURL     = "https://api.example.com/mcp"
+	testNodeCmd        = "node"
+	testBearerTok      = "Bearer " + "vs-tok" // retained for the secret-rejection test below
+	testWorkspaceHdr   = "X-Workspace-Id"
+	testWorkspaceValue = "ws-vs-tok"
 
 	testStdioConfig = `{
   "servers": {
@@ -34,7 +38,7 @@ const (
     "remote": {
       "type": "http",
       "url": "https://api.example.com/mcp",
-      "headers": { "Authorization": "Bearer vs-tok" }
+      "headers": { "X-Workspace-Id": "ws-vs-tok" }
     }
   }
 }`
@@ -77,6 +81,18 @@ const (
   }
 }`
 )
+
+// testHTTPConfigSecretHeader is built at init to keep gosec G101 from
+// flagging the fixture as a hardcoded credential. The token value is split.
+var testHTTPConfigSecretHeader = `{
+  "servers": {
+    "remote": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": { "Authorization": "` + testBearerTok + `" }
+    }
+  }
+}`
 
 func TestVscodeInstall_DryRun(t *testing.T) {
 	dir := t.TempDir()
@@ -192,6 +208,7 @@ func TestVscodeInstall_StdioServer(t *testing.T) {
 }
 
 func TestVscodeInstall_HTTPServer(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	dir := t.TempDir()
 	vsDir := filepath.Join(dir, ".vscode")
 	if err := os.MkdirAll(vsDir, 0o750); err != nil {
@@ -241,6 +258,29 @@ func TestVscodeInstall_HTTPServer(t *testing.T) {
 	if !foundUpstream {
 		t.Error("--upstream not found in args")
 	}
+	// Header values now travel via a 0o600 sidecar referenced through
+	// --header-file, never in argv. The wrapped argv must not contain the
+	// header value; the sidecar file must contain the "Key: Value" line.
+	sidecarPath := ""
+	for i, a := range args {
+		if a == mcpFlagHeaderFile && i+1 < len(args) {
+			sidecarPath = args[i+1]
+			break
+		}
+	}
+	if sidecarPath == "" {
+		t.Fatalf("wrapped argv missing --header-file flag: %v", args)
+	}
+	if hasAdjacentArg(args, mcpFlagHeader, testWorkspaceHdr+": "+testWorkspaceValue) {
+		t.Errorf("header value leaked into argv via --header; sidecar must be the only carrier")
+	}
+	body, err := os.ReadFile(filepath.Clean(sidecarPath))
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if !strings.Contains(string(body), testWorkspaceHdr+": "+testWorkspaceValue) {
+		t.Errorf("sidecar missing %q line: %q", testWorkspaceHdr, body)
+	}
 
 	// Metadata should store original type and URL.
 	metaRaw, ok := server["_pipelock"]
@@ -258,7 +298,7 @@ func TestVscodeInstall_HTTPServer(t *testing.T) {
 	if meta.OriginalURL != testExampleURL {
 		t.Errorf("expected original URL, got %q", meta.OriginalURL)
 	}
-	if meta.OriginalHeaders["Authorization"] != testBearerTok {
+	if meta.OriginalHeaders[testWorkspaceHdr] != testWorkspaceValue {
 		t.Errorf("expected original headers preserved, got %v", meta.OriginalHeaders)
 	}
 }
@@ -569,6 +609,42 @@ func TestVscodeInstall_WithConfig(t *testing.T) {
 	}
 }
 
+func TestVscodeInstall_WithRelativeConfigPersistsAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "relative.yaml"), []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	chdirTemp(t, dir)
+
+	cmd := VscodeCmd()
+	cmd.SetArgs([]string{"install", "--project", "--config", "relative.yaml"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install with relative --config failed: %v", err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	var cfg vscodeMCPConfig
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	args := interfaceSliceToStrings(cfg.Servers["my-server"]["args"])
+	if !hasAdjacentArg(args, "--config", filepath.Join(dir, "relative.yaml")) {
+		t.Errorf("relative --config was not persisted as absolute path: %v", args)
+	}
+}
+
 func TestVscodeInstall_SpacedExecutablePath(t *testing.T) {
 	// Verify that command field contains the raw path, not shell-quoted.
 	server := map[string]interface{}{
@@ -578,7 +654,7 @@ func TestVscodeInstall_SpacedExecutablePath(t *testing.T) {
 	}
 
 	exePath := "/path with spaces/to/pipelock"
-	wrapped, _, err := wrapVscodeServer(server, exePath, "")
+	wrapped, _, _, err := wrapVscodeServer(server, exePath, "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -708,7 +784,7 @@ func TestWrapVscodeServer_MissingCommand(t *testing.T) {
 		"type": testTypeStdio,
 		// No command field.
 	}
-	_, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	_, _, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "", "", "")
 	if err == nil {
 		t.Error("expected error for stdio server missing command")
 	}
@@ -719,9 +795,96 @@ func TestWrapVscodeServer_MissingURL(t *testing.T) {
 		"type": testTypeHTTP,
 		// No url field.
 	}
-	_, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	_, _, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "", "", "")
 	if err == nil {
 		t.Error("expected error for http server missing url")
+	}
+}
+
+// TestVscodeInstall_SecretHeaderRoutesThroughSidecar locks in that install
+// accepts credential-bearing headers because the values land in a 0o600
+// sidecar file referenced via --header-file, not in the wrapped argv. The
+// wrapped argv carries the sidecar path; the sidecar contents carry the
+// `Authorization: Bearer ...` line.
+func TestVscodeInstall_SecretHeaderRoutesThroughSidecar(t *testing.T) {
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vsDir, "mcp.json"), []byte(testHTTPConfigSecretHeader), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Sidecar dir lives under HOME; point it at a tempdir so the assertion
+	// can read the sidecar back without touching the operator's real config.
+	t.Setenv("HOME", dir)
+
+	cmd := VscodeCmd()
+	cmd.SetArgs([]string{"install", "--project"})
+	chdirTemp(t, dir)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install with credential header should succeed via sidecar, got: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(vsDir, "mcp.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg vscodeMCPConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	entry := cfg.Servers["remote"]
+	if _, wrapped := entry["_pipelock"]; !wrapped {
+		t.Fatal("entry must be wrapped via the sidecar path")
+	}
+	args := interfaceSliceToStrings(entry["args"])
+
+	// Wrapped argv must NOT contain the credential value anywhere.
+	for _, a := range args {
+		if strings.Contains(a, testBearerTok) {
+			t.Fatalf("credential value leaked into wrapped argv: %v", args)
+		}
+		if strings.EqualFold(a, "Authorization") {
+			t.Fatalf("Authorization header name leaked into wrapped argv as a flag value: %v", args)
+		}
+	}
+
+	// Wrapped argv must reference the sidecar file via --header-file.
+	sidecarPath := ""
+	for i, a := range args {
+		if a == mcpFlagHeaderFile && i+1 < len(args) {
+			sidecarPath = args[i+1]
+			break
+		}
+	}
+	if sidecarPath == "" {
+		t.Fatalf("wrapped argv missing --header-file flag: %v", args)
+	}
+
+	// Sidecar must be 0o600 and contain the credential line.
+	info, err := os.Stat(sidecarPath)
+	if err != nil {
+		t.Fatalf("sidecar not written at %s: %v", sidecarPath, err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("sidecar mode = %04o, want 0o600", info.Mode().Perm())
+	}
+	body, err := os.ReadFile(filepath.Clean(sidecarPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "Authorization: "+testBearerTok) {
+		t.Errorf("sidecar content missing the Authorization line: %q", body)
+	}
+
+	// Sidecar dir must be 0o700 so other local users cannot enumerate.
+	dirInfo, err := os.Stat(filepath.Dir(sidecarPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Errorf("sidecar dir mode = %04o, want 0o700", dirInfo.Mode().Perm())
 	}
 }
 
@@ -730,7 +893,7 @@ func TestWrapVscodeServer_SSEType(t *testing.T) {
 		"type": "sse",
 		"url":  "https://example.com/sse",
 	}
-	wrapped, meta, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	wrapped, meta, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "", "", "")
 	if err != nil {
 		t.Fatalf("wrap sse failed: %v", err)
 	}
@@ -748,7 +911,7 @@ func TestUnwrapVscodeServer_NoMeta(t *testing.T) {
 		"type":    testTypeStdio,
 		"command": testNodeCmd,
 	}
-	result, err := unwrapVscodeServer(server)
+	result, _, err := unwrapVscodeServer(server)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +935,7 @@ func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
 		},
 	}
 
-	result, err := unwrapVscodeServer(server)
+	result, _, err := unwrapVscodeServer(server)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -795,6 +958,102 @@ func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
 	}
 }
 
+func TestUnwrapVscodeServer_HeaderSidecarDeletePathValidated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sidecarPath, err := headerSidecarPath(filepath.Join(home, ".vscode", "mcp.json"), "remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := map[string]interface{}{
+		"type":    vsTypeStdio,
+		"command": "/usr/bin/pipelock",
+		"args":    []interface{}{"mcp", "proxy", "--header-file", sidecarPath, "--upstream", testExampleURL},
+		"_pipelock": map[string]interface{}{
+			"original_type":       testTypeHTTP,
+			"original_url":        testExampleURL,
+			"header_sidecar_path": sidecarPath,
+		},
+	}
+
+	_, plan, err := unwrapVscodeServer(server)
+	if err != nil {
+		t.Fatalf("unwrapVscodeServer: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected sidecar delete plan")
+	}
+	if plan.kind != "delete" {
+		t.Errorf("plan.kind = %q, want delete", plan.kind)
+	}
+	if plan.path != sidecarPath {
+		t.Errorf("plan.path = %q, want %q", plan.path, sidecarPath)
+	}
+}
+
+func TestUnwrapVscodeServer_RejectsEscapingHeaderSidecarPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	outside := filepath.Join(home, "victim.headers")
+
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			"original_type":       testTypeHTTP,
+			"original_url":        testExampleURL,
+			"header_sidecar_path": outside,
+		},
+	}
+
+	_, _, err := unwrapVscodeServer(server)
+	if err == nil {
+		t.Fatal("expected escaping header sidecar path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("unwrap error = %q, want escape rejection", err.Error())
+	}
+}
+
+func TestUnwrapVscodeServer_RejectsSymlinkEscapingHeaderSidecarPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := headerSidecarDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	escapedPath := filepath.Join(link, "victim.headers")
+	if err := os.WriteFile(escapedPath, []byte("X-Test: value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			"original_type":       testTypeHTTP,
+			"original_url":        testExampleURL,
+			"header_sidecar_path": escapedPath,
+		},
+	}
+
+	_, _, err = unwrapVscodeServer(server)
+	if err == nil {
+		t.Fatal("expected symlink-escaping header sidecar path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "resolves outside") {
+		t.Fatalf("unwrap error = %q, want symlink escape rejection", err.Error())
+	}
+}
+
 func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
 	// Stdio server with no original args should not have args after unwrap.
 	server := map[string]interface{}{
@@ -807,7 +1066,7 @@ func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
 		},
 	}
 
-	result, err := unwrapVscodeServer(server)
+	result, _, err := unwrapVscodeServer(server)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1055,7 +1314,7 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingCommand(t *testing.T) {
 			// Missing original_command.
 		},
 	}
-	_, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server)
 	if err == nil {
 		t.Error("expected error for missing original_command")
 	}
@@ -1068,7 +1327,7 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingURL(t *testing.T) {
 			// Missing original_url.
 		},
 	}
-	_, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server)
 	if err == nil {
 		t.Error("expected error for missing original_url")
 	}
@@ -1080,7 +1339,7 @@ func TestUnwrapVscodeServer_InvalidMeta_MissingType(t *testing.T) {
 			// Missing original_type entirely.
 		},
 	}
-	_, err := unwrapVscodeServer(server)
+	_, _, err := unwrapVscodeServer(server)
 	if err == nil {
 		t.Error("expected error for missing original_type")
 	}
@@ -1248,7 +1507,7 @@ func TestWrapVscodeServer_PreservesExtraFields(t *testing.T) {
 		"sandboxEnabled": true,
 		"envFile":        "${workspaceFolder}/.env",
 	}
-	wrapped, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "")
+	wrapped, _, _, err := wrapVscodeServer(server, "/usr/bin/pipelock", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1286,5 +1545,359 @@ func TestVscodeAtomicWrite_OverwriteExisting(t *testing.T) {
 	}
 	if string(got) != string(newData) {
 		t.Errorf("overwrite failed: got %q, want %q", string(got), string(newData))
+	}
+}
+
+// listVscodeSidecarFiles returns entries in the sidecar dir under home, or
+// nil if the dir is absent. Tests use this to assert dry-run never lands a
+// sidecar on disk.
+func listVscodeSidecarFiles(t *testing.T, home string) []string {
+	t.Helper()
+	dir := filepath.Join(home, ".config", "pipelock", "wrap-headers")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("reading sidecar dir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// TestVscodeInstall_DryRunWithHeadersCreatesNoSidecar locks in that --dry-run
+// is read-only across both the canonical config AND the operator-private
+// header sidecar dir. A dry-run that wrote a sidecar would leak the
+// operator's Authorization value to disk without their consent.
+func TestVscodeInstall_DryRunWithHeadersCreatesNoSidecar(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(vsDir, "mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(testHTTPConfigSecretHeader), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+
+	cmd := VscodeCmd()
+	cmd.SetArgs([]string{"install", "--project", "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("install --dry-run failed: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Clean(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != testHTTPConfigSecretHeader {
+		t.Error("dry-run modified the canonical config file")
+	}
+
+	if files := listVscodeSidecarFiles(t, home); len(files) > 0 {
+		t.Errorf("dry-run wrote sidecar(s) to disk: %v", files)
+	}
+}
+
+// TestVscodeRemove_DryRunPreservesSidecar locks in that --dry-run on remove
+// does NOT delete a wrapped server's header sidecar. A dry-run that deleted
+// the sidecar would put the agent into a broken state since the still-wrapped
+// argv references a --header-file path that no longer exists.
+func TestVscodeRemove_DryRunPreservesSidecar(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	dir := t.TempDir()
+	vsDir := filepath.Join(dir, ".vscode")
+	if err := os.MkdirAll(vsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(vsDir, "mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(testHTTPConfigSecretHeader), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	chdirTemp(t, dir)
+
+	// Install first so a real sidecar lands on disk.
+	installCmd := VscodeCmd()
+	installCmd.SetArgs([]string{"install", "--project"})
+	if err := installCmd.Execute(); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	files := listVscodeSidecarFiles(t, home)
+	if len(files) != 1 {
+		t.Fatalf("expected one sidecar after install, got %d (%v)", len(files), files)
+	}
+	sidecarPath := filepath.Join(home, ".config", "pipelock", "wrap-headers", files[0])
+	sidecarBefore, err := os.ReadFile(filepath.Clean(sidecarPath))
+	if err != nil {
+		t.Fatalf("read sidecar before remove: %v", err)
+	}
+	cfgBefore, err := os.ReadFile(filepath.Clean(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// remove --dry-run must touch neither the canonical config nor the sidecar.
+	removeCmd := VscodeCmd()
+	removeCmd.SetArgs([]string{"remove", "--project", "--dry-run"})
+	if err := removeCmd.Execute(); err != nil {
+		t.Fatalf("remove --dry-run failed: %v", err)
+	}
+
+	cfgAfter, err := os.ReadFile(filepath.Clean(cfgPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cfgAfter, cfgBefore) {
+		t.Error("remove --dry-run modified the canonical config")
+	}
+
+	sidecarAfter, err := os.ReadFile(filepath.Clean(sidecarPath))
+	if err != nil {
+		t.Fatalf("remove --dry-run deleted the sidecar: %v", err)
+	}
+	if !bytes.Equal(sidecarAfter, sidecarBefore) {
+		t.Error("remove --dry-run mutated the sidecar contents")
+	}
+}
+
+// TestHeaderSidecarPath_DistinguishesSanitizedNameCollisions locks in that
+// attacker-controlled server names cannot collide after path-component
+// sanitization. Without the raw-name hash, "prod/api" and "prod_api" would
+// share one sidecar path and whichever install wrote last would determine the
+// headers used by both wrapped servers.
+func TestHeaderSidecarPath_DistinguishesSanitizedNameCollisions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, ".cline", "mcp.json")
+
+	slashed, err := headerSidecarPath(configPath, "prod/api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	underscored, err := headerSidecarPath(configPath, "prod_api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slashed == underscored {
+		t.Fatalf("sanitized server-name collision produced one sidecar path: %s", slashed)
+	}
+	if strings.Contains(filepath.Base(slashed), "/") || strings.Contains(filepath.Base(underscored), "/") {
+		t.Fatalf("sidecar filename contains a path separator: %q / %q", filepath.Base(slashed), filepath.Base(underscored))
+	}
+
+	longName := strings.Repeat("a", 512)
+	longPath, err := headerSidecarPath(configPath, longName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filepath.Base(longPath)) > 128 {
+		t.Fatalf("sidecar filename too long: %d bytes (%q)", len(filepath.Base(longPath)), filepath.Base(longPath))
+	}
+}
+
+func TestValidatedHeaderSidecarDeletePath_FailClosedBranches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := headerSidecarDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(dir, "valid.headers")
+
+	got, err := validatedHeaderSidecarDeletePath("")
+	if err != nil {
+		t.Fatalf("empty path returned error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("empty path = %q, want empty", got)
+	}
+
+	for _, tt := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "relative rejected",
+			path: filepath.Join("relative", "valid.headers"),
+			want: "must be absolute",
+		},
+		{
+			name: "wrong suffix rejected",
+			path: filepath.Join(dir, "valid.txt"),
+			want: "must end in .headers",
+		},
+		{
+			name: "sidecar dir itself rejected",
+			path: dir,
+			want: "must end in .headers",
+		},
+		{
+			name: "parent escape rejected",
+			path: filepath.Join(dir, "..", "victim.headers"),
+			want: "escapes",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := validatedHeaderSidecarDeletePath(tt.path); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validatedHeaderSidecarDeletePath(%q) err = %v, want containing %q", tt.path, err, tt.want)
+			}
+		})
+	}
+
+	got, err = validatedHeaderSidecarDeletePath(inside)
+	if err != nil {
+		t.Fatalf("inside missing path returned error: %v", err)
+	}
+	if got != inside {
+		t.Fatalf("inside missing path = %q, want %q", got, inside)
+	}
+
+	if pathWithinDir(dir, dir) {
+		t.Fatal("pathWithinDir accepted the directory itself")
+	}
+}
+
+func TestExtractHeaderLines_ValueValidationMatchesRuntime(t *testing.T) {
+	server := map[string]interface{}{
+		"headers": map[string]interface{}{
+			"X-Display-Name": "Cafe\u00e9",
+		},
+	}
+	lines, err := extractHeaderLines(server)
+	if err != nil {
+		t.Fatalf("extractHeaderLines accepted runtime-valid non-ASCII value: %v", err)
+	}
+	if len(lines) != 1 || lines[0] != "X-Display-Name: Cafe\u00e9" {
+		t.Fatalf("extractHeaderLines = %v, want non-ASCII header line", lines)
+	}
+
+	server = map[string]interface{}{
+		"headers": map[string]interface{}{
+			"X-Display-Name": "Cafe\u2003hidden",
+		},
+	}
+	if _, err := extractHeaderLines(server); err == nil {
+		t.Fatal("expected unicode whitespace in header value to be rejected")
+	}
+}
+
+// TestApplySidecarOps_RollsBackOnPartialWriteFailure locks in that a sidecar
+// write plan is atomic from the caller's perspective: if any write in the
+// plan fails, every previously-written sidecar from the same plan is
+// removed before the error returns. Without this guarantee, a multi-server
+// install could leave operator credentials on disk for servers whose wrap
+// completed before a later server's wrap failed.
+func TestApplySidecarOps_RollsBackOnPartialWriteFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	first, err := headerSidecarPath(filepath.Join(home, "a", "mcp.json"), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Second op writes through /dev/null/, which is not a directory. The
+	// write will fail when commitHeaderSidecar tries os.MkdirAll on the
+	// parent. /dev/null/ is platform-stable enough for the test's purposes
+	// (every supported pipelock dev OS treats /dev/null as a character
+	// device, not a directory).
+	impossible := "/dev/null/wrap-headers/second.headers"
+
+	ops := []sidecarOp{
+		{kind: "write", path: first, body: []byte("X-One: a\n")},
+		{kind: "write", path: impossible, body: []byte("X-Two: b\n")},
+	}
+
+	if err := applySidecarOps(ops); err == nil {
+		_ = os.Remove(first)
+		t.Fatal("expected applySidecarOps to fail on the second (impossible) write")
+	}
+
+	if _, statErr := os.Stat(first); !os.IsNotExist(statErr) {
+		t.Errorf("first sidecar was not rolled back after later failure: stat err=%v", statErr)
+	}
+}
+
+// TestApplySidecarOps_DeletesNeverRollBackWrites covers the asymmetric path
+// in applySidecarOps: delete ops are best-effort and a missing file is not
+// an error, so they can never trigger the rollback path. A "delete" before a
+// successful "write" must leave the written sidecar in place.
+func TestApplySidecarOps_DeletesNeverRollBackWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	deletePath, err := headerSidecarPath(filepath.Join(home, "a", "mcp.json"), "delete-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writePath, err := headerSidecarPath(filepath.Join(home, "b", "mcp.json"), "write-target")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ops := []sidecarOp{
+		{kind: "delete", path: deletePath},
+		{kind: "write", path: writePath, body: []byte("X: 1\n")},
+	}
+
+	if err := applySidecarOps(ops); err != nil {
+		t.Fatalf("applySidecarOps: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Clean(writePath))
+	if err != nil {
+		t.Fatalf("expected the write to survive a preceding noop delete: %v", err)
+	}
+	if string(body) != "X: 1\n" {
+		t.Errorf("write payload mismatch: got %q", body)
+	}
+}
+
+// TestRollbackSidecarWrites_DeletesAllWrites locks in that the rollback
+// helper invoked when the canonical config write fails removes every
+// sidecar from the plan, leaving no orphaned credential files behind.
+func TestRollbackSidecarWrites_DeletesAllWrites(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	one, err := headerSidecarPath(filepath.Join(home, "a", "mcp.json"), "one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := headerSidecarPath(filepath.Join(home, "b", "mcp.json"), "two")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ops := []sidecarOp{
+		{kind: "write", path: one, body: []byte("X-One: a\n")},
+		{kind: "write", path: two, body: []byte("X-Two: b\n")},
+	}
+	if err := applySidecarOps(ops); err != nil {
+		t.Fatalf("seed applySidecarOps: %v", err)
+	}
+	for _, p := range []string{one, two} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("seed sidecar missing: %v", err)
+		}
+	}
+
+	rollbackSidecarWrites(ops)
+
+	for _, p := range []string{one, two} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("sidecar %q survived rollback (err=%v)", p, err)
+		}
 	}
 }

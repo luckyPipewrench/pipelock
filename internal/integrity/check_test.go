@@ -1152,3 +1152,18 @@ func TestGenerate_WalkError(t *testing.T) {
 		t.Fatal("expected error for unreadable subdirectory")
 	}
 }
+
+// TestMatchDoublestar_PatternWithoutStars covers the early-return branch
+// that fires when a caller passes a pattern that lacks the "**" wildcard.
+// strings.SplitN with no occurrence returns a single-element slice; the
+// function must refuse to match rather than treat the whole pattern as a
+// prefix. Other matchDoublestar tests only exercise patterns that already
+// contain "**".
+func TestMatchDoublestar_PatternWithoutStars(t *testing.T) {
+	if matchDoublestar("plain-pattern", "plain-pattern") {
+		t.Error("matchDoublestar must reject patterns with no '**' wildcard")
+	}
+	if matchDoublestar("dir/file.txt", "dir/file.txt") {
+		t.Error("matchDoublestar must reject literal path patterns")
+	}
+}

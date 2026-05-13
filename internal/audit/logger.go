@@ -207,9 +207,57 @@ func (e *logEntry) errField(err error) *logEntry {
 // Interface-typed audit fields use this key, so it is hardcoded to satisfy
 // the unparam linter. Called as a statement (never chained) because it is
 // always conditional on len(bundleRules) > 0.
+//
+// When the slice is the typed []BundleRuleHit form (the normal case), the
+// primary hit's RuleID and BundleVersion are also emitted as scalar fields
+// so emit-side consumers can read them without importing this package.
+// The primary hit is selected DETERMINISTICALLY by lexicographic sort on
+// RuleID, NOT by slice order, so the same detection produces the same
+// externally visible rule_id across runs even if scanner iteration order
+// changes upstream. Auditability depends on this property.
+// See internal/emit/otlp_agent_threat.go.
 func (e *logEntry) bundleRulesField(value any) {
 	e.event = e.event.Interface("bundle_rules", value)
 	e.fields["bundle_rules"] = value
+	if hits, ok := value.([]BundleRuleHit); ok && len(hits) > 0 {
+		primary := selectPrimaryBundleHit(hits)
+		if primary.RuleID != "" {
+			e.fields["primary_rule_id"] = primary.RuleID
+		}
+		if primary.BundleVersion != "" {
+			e.fields["bundle_version"] = primary.BundleVersion
+		}
+	}
+}
+
+// selectPrimaryBundleHit returns the canonical primary BundleRuleHit
+// for a multi-hit detection, using lexicographic sort on RuleID as the
+// stable tie-breaker. Hits with empty RuleID are deprioritised so a
+// well-formed hit wins over a malformed one. The input slice is not
+// mutated.
+//
+// Selection is intentionally NOT based on slice order. Pipelock's
+// scanner emits hits in pattern-iteration order, which is stable in
+// practice but not part of any documented contract. Pinning the
+// "primary" choice to a content-addressed criterion (RuleID) means
+// the externally visible agent.threat.detection.rule_id stays stable
+// regardless of upstream ordering changes.
+func selectPrimaryBundleHit(hits []BundleRuleHit) BundleRuleHit {
+	primary := hits[0]
+	for _, h := range hits[1:] {
+		// Empty-RuleID hits never win against a non-empty one.
+		if primary.RuleID == "" && h.RuleID != "" {
+			primary = h
+			continue
+		}
+		if h.RuleID == "" {
+			continue
+		}
+		if h.RuleID < primary.RuleID {
+			primary = h
+		}
+	}
+	return primary
 }
 
 // msg sends the zerolog message. Call this instead of e.event.Msg() to keep

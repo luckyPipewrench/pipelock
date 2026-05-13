@@ -15,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
@@ -54,6 +55,7 @@ type OTLPSink struct {
 	headers   map[string]string
 	minSev    Severity
 	useGzip   bool
+	version   string // Pipelock binary version, used for pipelock-core@<v> ruleset suffix
 	client    *http.Client
 	resource  *respb.Resource
 	queue     chan Event
@@ -62,6 +64,15 @@ type OTLPSink struct {
 	closeMu   sync.Mutex
 	closeWG   sync.WaitGroup
 	closeOnce sync.Once
+
+	// agentThreatDetection toggles the unstable OTel
+	// `agent.threat.detection.*` attribute set on scanner-decision
+	// log records. Off by default; enabled via EnableAgentThreatDetection.
+	// atomic.Bool because EnableAgentThreatDetection may be called from
+	// the main goroutine after run() has started (the constructor spawns
+	// run() before returning), and eventToLogRecord reads the flag from
+	// the run() goroutine. See docs/observability/agent-threat-detection.md.
+	agentThreatDetection atomic.Bool
 }
 
 // NewOTLPSink creates an OTLPSink that sends log records to the given endpoint.
@@ -106,6 +117,7 @@ func NewOTLPSink(endpoint, version string, minSev Severity, headers map[string]s
 		headers:  hdrs,
 		minSev:   minSev,
 		useGzip:  useGzip,
+		version:  version,
 		client:   &http.Client{Timeout: timeout},
 		resource: resource,
 		queue:    make(chan Event, queueSize),
@@ -116,6 +128,29 @@ func NewOTLPSink(endpoint, version string, minSev Severity, headers map[string]s
 	go s.run()
 
 	return s, nil
+}
+
+// EnableAgentThreatDetection turns on the unstable OTel
+// `agent.threat.detection.*` attribute set on scanner-decision log records.
+// Convention attribute names may change in subsequent Pipelock releases
+// until the OTel SIG accepts the proposal. Tracks
+// open-telemetry/semantic-conventions-genai#132.
+//
+// Safe to call after construction; the flag is atomic and read by the
+// background emit goroutine on each event.
+//
+// See docs/observability/agent-threat-detection.md for the attribute
+// mapping and ruleset namespace strategy.
+func (s *OTLPSink) EnableAgentThreatDetection() {
+	s.agentThreatDetection.Store(true)
+}
+
+// AgentThreatDetectionEnabled reports whether the unstable OTel
+// `agent.threat.detection.*` attribute set is being appended to
+// scanner-decision log records. Used by runtime construction tests
+// and operator introspection.
+func (s *OTLPSink) AgentThreatDetectionEnabled() bool {
+	return s.agentThreatDetection.Load()
 }
 
 // Emit enqueues an event for async delivery.
@@ -302,6 +337,13 @@ func (s *OTLPSink) eventToLogRecord(event Event) *logspb.LogRecord {
 	}
 	// Add instance ID as an attribute for per-event queryability.
 	attrs = append(attrs, stringKV("pipelock.instance", event.InstanceID))
+	// Optional: append OTel `agent.threat.detection.*` attributes when
+	// the feature flag is on and the event represents a scanner decision
+	// with a verdict in the convention's vocabulary. The mapper returns
+	// nil for non-qualifying events, in which case nothing is appended.
+	if s.agentThreatDetection.Load() {
+		attrs = append(attrs, agentThreatDetectionAttrs(event, s.version)...)
+	}
 
 	tsNano := uint64(event.Timestamp.UnixNano())
 	return &logspb.LogRecord{

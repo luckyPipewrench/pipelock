@@ -255,6 +255,9 @@ func BuildEmitSinks(cfg *config.Config) ([]emit.Sink, error) {
 			}
 			return nil, fmt.Errorf("creating otlp sink: %w", otlpErr)
 		}
+		if cfg.Emit.OTLP.AgentThreatDetectionEmit {
+			otlpSink.EnableAgentThreatDetection()
+		}
 		sinks = append(sinks, otlpSink)
 	}
 

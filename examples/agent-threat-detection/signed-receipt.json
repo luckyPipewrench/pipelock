@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "01HXMP000000000000000EXAMPLE",
+    "action_type": "fetch",
+    "timestamp": "2026-05-13T15:00:00Z",
+    "principal": "org:example",
+    "actor": "agent:example-agent",
+    "delegation_chain": [
+      "example-policy-v1"
+    ],
+    "target": "https://api.example.com/upload",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "block",
+    "transport": "forward",
+    "method": "POST",
+    "layer": "dlp",
+    "pattern": "aws-access-key-id",
+    "severity": "critical",
+    "request_id": "req-2026-05-13-9c4ad1",
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:0000000000000000000000000000000000000000000000000000000000000000example0000000000000000000000000000000000000000000000000000000000000000",
+  "signer_key": "0000000000000000000000000000000000000000000000000000000000000000"
+}

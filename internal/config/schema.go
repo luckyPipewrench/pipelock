@@ -703,6 +703,19 @@ type OTLPConfig struct {
 	MinSeverity    string            `yaml:"min_severity"`    // info, warn, critical
 	QueueSize      int               `yaml:"queue_size"`      // async buffer size (default 256)
 	Gzip           bool              `yaml:"gzip"`            // compress requests
+
+	// AgentThreatDetectionEmit adds attributes proposed by the unstable
+	// OTel `agent.threat.detection.*` semantic convention to scanner-decision
+	// log records. Off by default; opt in by setting true. Attribute names
+	// may change in subsequent Pipelock releases until the convention is
+	// accepted by the OTel SIG. See docs/observability/agent-threat-detection.md.
+	//
+	// json:"-" because this is a telemetry-output knob with no effect on
+	// detection or enforcement semantics, and policySemanticView's
+	// canonical hash must remain stable across pure-telemetry field
+	// additions. Verifiers compare detection semantics, not emission
+	// destinations.
+	AgentThreatDetectionEmit bool `yaml:"agent_threat_detection_emit" json:"-"`
 }
 
 // WebhookConfig configures the webhook emission sink.

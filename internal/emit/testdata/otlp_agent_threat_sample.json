@@ -1,0 +1,21 @@
+{
+  "timestamp": "2026-05-13T15:00:00Z",
+  "severity_number": 17,
+  "severity_text": "ERROR",
+  "body_type": "blocked",
+  "attributes": {
+    "action": "block",
+    "agent.threat.detection.action": "block",
+    "agent.threat.detection.correlation_id": "req-abc-123",
+    "agent.threat.detection.rule_id": "example-bundle-rule-001",
+    "agent.threat.detection.ruleset": "pipelock-rules@1.2.3",
+    "agent.threat.detection.severity": "high",
+    "bundle_version": "1.2.3",
+    "layer": "dlp",
+    "pattern": "aws-access-key-id",
+    "pipelock.instance": "pipelock-sample",
+    "primary_rule_id": "example-bundle-rule-001",
+    "request_id": "req-abc-123",
+    "transport": "forward"
+  }
+}

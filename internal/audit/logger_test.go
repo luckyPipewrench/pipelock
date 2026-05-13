@@ -2769,6 +2769,199 @@ func TestLogResponseScanEmitterIncludesAgent(t *testing.T) {
 	}
 }
 
+// TestBundleRulesField_ScalarFieldsOnEmitEvent verifies that when an
+// audit event carries a non-empty []BundleRuleHit, the emitter receives
+// primary_rule_id and bundle_version as scalar fields from the first
+// hit, so the emit-side OTel agent.threat.detection.* mapper can read
+// them without importing this package. See
+// internal/emit/otlp_agent_threat.go.
+func TestBundleRulesField_ScalarFieldsOnEmitEvent(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	// Primary is selected by lexicographic sort on RuleID for determinism
+	// (see selectPrimaryBundleHit); "custom-xss-002" sorts before
+	// "owasp-injection-001" regardless of slice order.
+	const wantPrimaryRuleID = "custom-xss-002"
+	const wantBundleVersion = "1.2.0"
+	hits := []BundleRuleHit{
+		{RuleID: "owasp-injection-001", Bundle: "owasp-top10", BundleVersion: wantBundleVersion},
+		{RuleID: wantPrimaryRuleID, Bundle: "owasp-top10", BundleVersion: wantBundleVersion},
+	}
+	logger.LogResponseScan(LogContext{
+		url: "https://example.com/page", clientIP: testClientIP, requestID: "req-bundle-1",
+	}, "block", 2, []string{"owasp-injection-001", wantPrimaryRuleID}, hits)
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if got := ev.Fields["primary_rule_id"]; got != wantPrimaryRuleID {
+		t.Errorf("emit primary_rule_id = %v, want %s", got, wantPrimaryRuleID)
+	}
+	if got := ev.Fields["bundle_version"]; got != wantBundleVersion {
+		t.Errorf("emit bundle_version = %v, want %s", got, wantBundleVersion)
+	}
+	// The typed slice must still be present for downstream consumers
+	// that want to enumerate every hit.
+	if _, ok := ev.Fields["bundle_rules"].([]BundleRuleHit); !ok {
+		t.Errorf("emit bundle_rules = %T, want []BundleRuleHit", ev.Fields["bundle_rules"])
+	}
+}
+
+// TestBundleRulesField_NoScalarsWithoutHits verifies that the scalar
+// fields are NOT populated when bundleRulesField is called with nil
+// or an empty slice. (A non-typed value never reaches the scalar path
+// because the type assertion to []BundleRuleHit short-circuits, which
+// is covered implicitly by every non-bundle-rule call site.)
+func TestBundleRulesField_NoScalarsWithoutHits(t *testing.T) {
+	cases := []struct {
+		name string
+		hits []BundleRuleHit
+	}{
+		{name: "nil-hits", hits: nil},
+		{name: "empty-hits", hits: []BundleRuleHit{}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+
+			logger.LogResponseScan(LogContext{
+				url: "https://example.com/page", clientIP: testClientIP, requestID: "req-no-bundle",
+			}, "block", 1, []string{"injection"}, tc.hits)
+
+			ev, ok := sink.lastEvent()
+			if !ok {
+				t.Fatal("expected emitted event")
+			}
+			if got, present := ev.Fields["primary_rule_id"]; present {
+				t.Errorf("emit primary_rule_id present without bundle hits: %v", got)
+			}
+			if got, present := ev.Fields["bundle_version"]; present {
+				t.Errorf("emit bundle_version present without bundle hits: %v", got)
+			}
+		})
+	}
+}
+
+// TestSelectPrimaryBundleHit_Deterministic verifies the canonical
+// primary-hit selection: lexicographic sort on RuleID, regardless of
+// input slice order. This is the auditability property the OTel
+// `agent.threat.detection.rule_id` attribute depends on.
+func TestSelectPrimaryBundleHit_Deterministic(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		hits       []BundleRuleHit
+		wantRuleID string
+		wantBundle string
+	}{
+		{
+			name: "single-hit-passthrough",
+			hits: []BundleRuleHit{
+				{RuleID: "rule-z", BundleVersion: "1.0"},
+			},
+			wantRuleID: "rule-z",
+			wantBundle: "1.0",
+		},
+		{
+			name: "lex-smallest-wins-regardless-of-order",
+			hits: []BundleRuleHit{
+				{RuleID: "rule-z", BundleVersion: "1.0"},
+				{RuleID: "rule-a", BundleVersion: "1.0"},
+				{RuleID: "rule-m", BundleVersion: "1.0"},
+			},
+			wantRuleID: "rule-a",
+			wantBundle: "1.0",
+		},
+		{
+			name: "reversed-order-same-winner",
+			hits: []BundleRuleHit{
+				{RuleID: "rule-m", BundleVersion: "1.0"},
+				{RuleID: "rule-a", BundleVersion: "1.0"},
+				{RuleID: "rule-z", BundleVersion: "1.0"},
+			},
+			wantRuleID: "rule-a",
+			wantBundle: "1.0",
+		},
+		{
+			name: "empty-rule-ids-deprioritised",
+			hits: []BundleRuleHit{
+				{RuleID: "", BundleVersion: "1.0"},
+				{RuleID: "rule-real", BundleVersion: "1.0"},
+			},
+			wantRuleID: "rule-real",
+			wantBundle: "1.0",
+		},
+		{
+			name: "all-empty-rule-ids-fallthrough",
+			hits: []BundleRuleHit{
+				{RuleID: "", BundleVersion: "1.0"},
+				{RuleID: "", BundleVersion: "2.0"},
+			},
+			wantRuleID: "",
+			wantBundle: "1.0",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := selectPrimaryBundleHit(tc.hits)
+			if got.RuleID != tc.wantRuleID {
+				t.Errorf("RuleID got=%q want=%q", got.RuleID, tc.wantRuleID)
+			}
+			if got.BundleVersion != tc.wantBundle {
+				t.Errorf("BundleVersion got=%q want=%q", got.BundleVersion, tc.wantBundle)
+			}
+		})
+	}
+}
+
+// TestBundleRulesField_DeterministicPrimaryRuleID verifies the
+// end-to-end determinism property: the same set of bundle rule hits
+// produces the same primary_rule_id scalar on the emit event regardless
+// of the order the scanner returned the hits in. The primary is
+// lex-smallest by RuleID, so "custom-xss-002" wins over
+// "owasp-injection-001".
+func TestBundleRulesField_DeterministicPrimaryRuleID(t *testing.T) {
+	t.Parallel()
+	const wantPrimary = "custom-xss-002"
+	const otherRule = "owasp-injection-001"
+	orderings := [][]BundleRuleHit{
+		{
+			{RuleID: otherRule, Bundle: "owasp-top10", BundleVersion: "1.2.0"},
+			{RuleID: wantPrimary, Bundle: "owasp-top10", BundleVersion: "1.2.0"},
+		},
+		{
+			// Same hits, different slice order; primary stays
+			// custom-xss-002 because it sorts first.
+			{RuleID: wantPrimary, Bundle: "owasp-top10", BundleVersion: "1.2.0"},
+			{RuleID: otherRule, Bundle: "owasp-top10", BundleVersion: "1.2.0"},
+		},
+	}
+	for i, hits := range orderings {
+		i, hits := i, hits
+		t.Run(fmt.Sprintf("ordering-%d", i), func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+			logger.LogResponseScan(LogContext{
+				url: "https://example.com/p", clientIP: testClientIP, requestID: "req-det",
+			}, "block", 2, []string{otherRule, wantPrimary}, hits)
+
+			ev, ok := sink.lastEvent()
+			if !ok {
+				t.Fatal("expected emitted event")
+			}
+			if got := ev.Fields["primary_rule_id"]; got != wantPrimary {
+				t.Errorf("ordering-%d primary_rule_id=%v want=%s", i, got, wantPrimary)
+			}
+		})
+	}
+}
+
 func TestLogAnomalyEmitterIncludesAgent(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

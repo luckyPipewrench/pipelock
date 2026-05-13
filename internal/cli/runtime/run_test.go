@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 )
 
@@ -396,6 +397,54 @@ func TestBuildEmitSinks_OTLPWithHeaders(t *testing.T) {
 	}
 	for _, s := range sinks {
 		_ = s.Close()
+	}
+}
+
+func TestBuildEmitSinks_OTLPAgentThreatDetectionFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cases := []struct {
+		name        string
+		enable      bool
+		wantEnabled bool
+	}{
+		{name: "off-by-default", enable: false, wantEnabled: false},
+		{name: "opted-in", enable: true, wantEnabled: true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.Emit.OTLP.Endpoint = srv.URL
+			cfg.Emit.OTLP.AgentThreatDetectionEmit = tc.enable
+
+			sinks, err := BuildEmitSinks(cfg)
+			if err != nil {
+				t.Fatalf("BuildEmitSinks: %v", err)
+			}
+			defer func() {
+				for _, s := range sinks {
+					_ = s.Close()
+				}
+			}()
+
+			var otlp *emit.OTLPSink
+			for _, s := range sinks {
+				if v, ok := s.(*emit.OTLPSink); ok {
+					otlp = v
+					break
+				}
+			}
+			if otlp == nil {
+				t.Fatalf("BuildEmitSinks did not return an *emit.OTLPSink")
+			}
+			if got := otlp.AgentThreatDetectionEnabled(); got != tc.wantEnabled {
+				t.Errorf("AgentThreatDetectionEnabled() = %v, want %v", got, tc.wantEnabled)
+			}
+		})
 	}
 }
 

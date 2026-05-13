@@ -17,7 +17,10 @@ const VALID_ACTION_TYPES: &[&str] = &[
     "unclassified",
 ];
 
-pub fn verify_receipt(receipt: &Receipt, expected_key_hex: &str) -> std::result::Result<(), String> {
+pub fn verify_receipt(
+    receipt: &Receipt,
+    expected_key_hex: &str,
+) -> std::result::Result<(), String> {
     normalize_receipt(receipt)?;
     let signer_key = receipt
         .get("signer_key")
@@ -53,7 +56,8 @@ pub fn verify_receipt(receipt: &Receipt, expected_key_hex: &str) -> std::result:
         .map_err(|_| "invalid signer_key length".to_string())?;
     let verifying_key =
         VerifyingKey::from_bytes(&pub_key).map_err(|err| format!("invalid signer_key: {err}"))?;
-    let signature = Signature::from_slice(&sig_bytes).map_err(|err| format!("invalid signature: {err}"))?;
+    let signature =
+        Signature::from_slice(&sig_bytes).map_err(|err| format!("invalid signature: {err}"))?;
     verifying_key
         .verify_strict(&digest, &signature)
         .map_err(|_| "signature verification failed".to_string())
@@ -78,8 +82,12 @@ pub fn normalize_receipt(receipt: &Receipt) -> std::result::Result<(), String> {
     Ok(())
 }
 
-pub fn validate_action_record(action_record: &serde_json::Value) -> std::result::Result<(), String> {
-    let version = action_record.get("version").and_then(|value| value.as_u64());
+pub fn validate_action_record(
+    action_record: &serde_json::Value,
+) -> std::result::Result<(), String> {
+    let version = action_record
+        .get("version")
+        .and_then(|value| value.as_u64());
     if version != Some(1) {
         return Err(format!(
             "unsupported action record version {} (expected 1)",

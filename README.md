@@ -460,6 +460,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Metrics Reference](docs/metrics.md) | Prometheus metric families, labels, JSON stats, and alert rules |
 | [Community Rules](docs/rules.md) | Install, configure, and create signed rule bundles |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
+| [Security Documents](docs/security/) | Disclosure policy, unsupported paths, key rotation, TLS CA threat model |
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments |
 | [Transport Modes](docs/guides/transport-modes.md) | All proxy modes and their scanning capabilities |
 | [OWASP MCP Top 10](docs/compliance/owasp-mcp-top10.md) | OWASP MCP Top 10 coverage |

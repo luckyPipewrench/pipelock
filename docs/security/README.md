@@ -1,0 +1,18 @@
+# Pipelock security documents
+
+This directory holds policy and threat-model documents that integrators and procurement reviewers ask for as standalone files. Each document is independent prose and can be read on its own.
+
+| Document | Purpose |
+|---|---|
+| [current-unsupported-paths.md](current-unsupported-paths.md) | Egress paths the current binary does not intercept. Integrator action required for each. |
+| [key-rotation-runbook.md](key-rotation-runbook.md) | Operational procedure for rotating Ed25519 signing keys without breaking the live-lock roster. |
+| [coordinated-disclosure.md](coordinated-disclosure.md) | Vulnerability disclosure policy, response SLA, embargo handling, and CVE process. |
+| [per-deployment-ca-threat-model.md](per-deployment-ca-threat-model.md) | Threat model for the per-deployment TLS interception CA, including snapshot-restoration and root-compromise blast radius. |
+
+These documents describe what the current binary enforces today. Behaviour planned for later versions is tracked in the project roadmap and is out of scope here.
+
+## See also
+
+- [SECURITY.md](../../SECURITY.md): reporting channel and supported versions
+- [CHARTER.md](../../CHARTER.md): project governance, disclosure SLA source
+- [README.md](../../README.md): supported transports and scanner layers

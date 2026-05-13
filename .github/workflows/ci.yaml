@@ -71,7 +71,7 @@ jobs:
   test:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       matrix:
         go-version: ['1.25', '1.26']

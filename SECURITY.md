@@ -45,10 +45,14 @@ The following are in scope:
 | 1.x     | Yes       |
 | 0.x     | No        |
 
+## Reporter credit
+
+Reporters are credited by name, handle, or organisation in the published GitHub Security Advisory unless they request otherwise. Credit takes the form the reporter prefers, including anonymous. A separate hall-of-fame document is on the roadmap; until it exists, the published advisory is the canonical credit.
+
 ## Security Design
 
 Pipelock's security model is documented in the README. Key design decisions:
 
 1. **Opt-in MITM only:** TLS interception is disabled by default and requires explicit CA setup (`pipelock tls init`). Without it, security comes from capability separation, not inspection.
 2. **Defense in depth:** Multiple scanner layers (blocklist, DLP, entropy) each catch different attack vectors.
-3. **Honest claims:** We document what each mode prevents vs. detects. See the security matrix in the README.
+3. **Honest claims:** We document what each mode prevents vs. detects. See the security matrix in the README and the standalone documents under [docs/security/](docs/security/).

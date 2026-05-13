@@ -40,7 +40,10 @@ pub fn emit_audit_packet(report: &AuditPacketReport, json: bool) -> Result<()> {
         println!("  enforcement:  {}", report.posture.enforcement_mode);
     }
     if !report.posture.unsupported_paths.is_empty() {
-        println!("  unsupported:  {}", report.posture.unsupported_paths.join(", "));
+        println!(
+            "  unsupported:  {}",
+            report.posture.unsupported_paths.join(", ")
+        );
     }
     if let Some(errors) = &report.errors {
         for err in errors {
@@ -52,7 +55,10 @@ pub fn emit_audit_packet(report: &AuditPacketReport, json: bool) -> Result<()> {
             eprintln!("WARN:  {warning}");
         }
     }
-    println!("  result:       {}", if report.valid { "VALID" } else { "INVALID" });
+    println!(
+        "  result:       {}",
+        if report.valid { "VALID" } else { "INVALID" }
+    );
     Ok(())
 }
 
@@ -62,11 +68,26 @@ pub fn emit_receipt(report: &ReceiptReport, json: bool) -> Result<()> {
     }
     if report.valid {
         println!("RECEIPT VALID: {}", report.path);
-        println!("  action_id:    {}", report.action_id.as_deref().unwrap_or(""));
-        println!("  verdict:      {}", report.verdict.as_deref().unwrap_or(""));
-        println!("  transport:    {}", report.transport.as_deref().unwrap_or(""));
-        println!("  signer:       {}", report.signer_key.as_deref().unwrap_or(""));
-        println!("  policy_hash:  {}", report.policy_hash.as_deref().unwrap_or(""));
+        println!(
+            "  action_id:    {}",
+            report.action_id.as_deref().unwrap_or("")
+        );
+        println!(
+            "  verdict:      {}",
+            report.verdict.as_deref().unwrap_or("")
+        );
+        println!(
+            "  transport:    {}",
+            report.transport.as_deref().unwrap_or("")
+        );
+        println!(
+            "  signer:       {}",
+            report.signer_key.as_deref().unwrap_or("")
+        );
+        println!(
+            "  policy_hash:  {}",
+            report.policy_hash.as_deref().unwrap_or("")
+        );
         println!("  chain_seq:    {}", report.chain_seq.unwrap_or(0));
         return Ok(());
     }
@@ -85,7 +106,10 @@ pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
         println!("CHAIN VALID: {}", report.path);
         println!("  receipts:   {}", report.receipt_count);
         println!("  final seq:  {}", report.final_seq);
-        println!("  root hash:  {}", report.root_hash.as_deref().unwrap_or(""));
+        println!(
+            "  root hash:  {}",
+            report.root_hash.as_deref().unwrap_or("")
+        );
         return Ok(());
     }
     eprintln!("CHAIN BROKEN: {}", report.path);

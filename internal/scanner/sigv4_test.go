@@ -474,6 +474,43 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 			t.Errorf("19-char A3T-prefixed key must be rejected (length mismatch)")
 		}
 	})
+
+	t.Run("percent_encoded_sigv4_key_names_rejected", func(t *testing.T) {
+		t.Parallel()
+		// Attacker percent-encodes the canonical SigV4 key names. The decoder
+		// used by parsed.Query() would canonicalize them and (without strict
+		// literal-key handling) let the detector validate the URL. The
+		// scrubber walks RawQuery byte-for-byte, so it would miss the pair
+		// and leave the AKIA un-scrubbed despite the carve-out flag firing.
+		// Detector must reject any percent-encoded SigV4 key name.
+		raw := "https://examplebucket.s3.amazonaws.com/x" +
+			"?X%2DAmz%2DAlgorithm=" + sigV4AlgorithmValue +
+			"&X%2DAmz%2DCredential=" + fakeAKIAExample + "/" + validSigV4Scope +
+			"&X%2DAmz%2DDate=" + validSigV4Date +
+			"&X%2DAmz%2DExpires=3600" +
+			"&X%2DAmz%2DSignature=" + validSigV4Signature
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("BYPASS: percent-encoded SigV4 key names engaged the carve-out; scrubber would miss the credential pair and leave AKIA unscrubbed")
+		}
+	})
+
+	t.Run("mixed_literal_and_encoded_keys_rejected", func(t *testing.T) {
+		t.Parallel()
+		// Only the credential key is encoded — the other four are literal.
+		// Still must invalidate, because the asymmetry hits one field only
+		// and that's the one we scrub.
+		raw := "https://examplebucket.s3.amazonaws.com/x" +
+			"?X-Amz-Algorithm=" + sigV4AlgorithmValue +
+			"&X%2DAmz%2DCredential=" + fakeAKIAExample + "/" + validSigV4Scope +
+			"&X-Amz-Date=" + validSigV4Date +
+			"&X-Amz-Expires=3600" +
+			"&X-Amz-Signature=" + validSigV4Signature
+		parsed := mustParseURL(t, raw)
+		if got := detectValidSigV4(parsed); got.Valid {
+			t.Errorf("encoded X-Amz-Credential key must invalidate detection")
+		}
+	})
 }
 
 // TestSigV4CarveoutEndToEnd exercises the full Scan() path: SigV4 validation,

@@ -160,23 +160,25 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 	if !isAWSEndpointHost(parsed.Hostname()) {
 		return sigV4Detection{}
 	}
-	q := parsed.Query()
 
-	alg, ok := sigV4Singleton(q, "X-Amz-Algorithm")
-	if !ok || alg != sigV4AlgorithmValue {
-		return sigV4Detection{}
-	}
-	date, ok := sigV4Singleton(q, "X-Amz-Date")
-	if !ok || !sigV4DateValueRe.MatchString(date) {
-		return sigV4Detection{}
-	}
-	signature, ok := sigV4Singleton(q, "X-Amz-Signature")
-	if !ok || !sigV4SignatureRe.MatchString(signature) {
+	params, ok := extractSigV4FieldsLiteralKeyed(parsed.RawQuery)
+	if !ok {
 		return sigV4Detection{}
 	}
 
-	cred, ok := sigV4Singleton(q, "X-Amz-Credential")
-	if !ok || cred == "" {
+	if params["X-Amz-Algorithm"] != sigV4AlgorithmValue {
+		return sigV4Detection{}
+	}
+	date := params["X-Amz-Date"]
+	if !sigV4DateValueRe.MatchString(date) {
+		return sigV4Detection{}
+	}
+	if !sigV4SignatureRe.MatchString(params["X-Amz-Signature"]) {
+		return sigV4Detection{}
+	}
+
+	cred := params["X-Amz-Credential"]
+	if cred == "" {
 		return sigV4Detection{}
 	}
 	parts := strings.Split(cred, "/")
@@ -203,8 +205,8 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 	// presigned URLs always carry it; making it optional would let an
 	// attacker omit the field to silence the long-expiry audit warn
 	// while still earning the carve-out.
-	expRaw, ok := sigV4Singleton(q, "X-Amz-Expires")
-	if !ok {
+	expRaw := params["X-Amz-Expires"]
+	if expRaw == "" {
 		return sigV4Detection{}
 	}
 	expires, err := strconv.Atoi(expRaw)
@@ -215,16 +217,54 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 	return sigV4Detection{Valid: true, KeyID: parts[0], Expires: expires}
 }
 
-// sigV4Singleton returns the sole value for key when exactly one is
-// present. Missing keys and duplicate keys both return ok=false so a
-// parser-differential attack (Get() picks first value while an upstream
-// honours the second) cannot mask a malicious second value.
-func sigV4Singleton(q url.Values, key string) (string, bool) {
-	values, ok := q[key]
-	if !ok || len(values) != 1 {
-		return "", false
+// extractSigV4FieldsLiteralKeyed walks RawQuery and returns a map of
+// the five mandatory SigV4 parameter values keyed by their canonical
+// literal names (X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date,
+// X-Amz-Signature, X-Amz-Expires).
+//
+// Keys are compared byte-for-byte against the canonical literal — no
+// percent-decoding on the key side. This keeps the detector and the
+// order-preserving scrubber in lockstep: an attacker who crafts a URL
+// with percent-encoded SigV4 key names (e.g. X%2DAmz%2DCredential)
+// would otherwise pass the detector (which used parsed.Query() to
+// canonicalize keys before lookup) while the scrubber's literal-key
+// match in RawQuery missed the pair entirely, leaving the AKIA
+// un-scrubbed and the result still flagged ClassStructuralExemption.
+//
+// Returns ok=false on any duplicate of a known SigV4 field or on a
+// value whose percent-encoding is malformed. Unknown query keys are
+// ignored. Missing SigV4 fields are reported as zero-length strings;
+// the caller is responsible for rejecting empties.
+func extractSigV4FieldsLiteralKeyed(rawQuery string) (map[string]string, bool) {
+	known := map[string]struct{}{
+		"X-Amz-Algorithm":  {},
+		"X-Amz-Credential": {},
+		"X-Amz-Date":       {},
+		"X-Amz-Signature":  {},
+		"X-Amz-Expires":    {},
 	}
-	return values[0], true
+	out := map[string]string{}
+	if rawQuery == "" {
+		return out, true
+	}
+	for _, pair := range strings.Split(rawQuery, "&") {
+		rawKey, rawValue, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		if _, isKnown := known[rawKey]; !isKnown {
+			continue
+		}
+		if _, dup := out[rawKey]; dup {
+			return nil, false
+		}
+		decodedValue, err := url.QueryUnescape(rawValue)
+		if err != nil {
+			return nil, false
+		}
+		out[rawKey] = decodedValue
+	}
+	return out, true
 }
 
 // isAWSEndpointHost reports whether hostname terminates in one of the

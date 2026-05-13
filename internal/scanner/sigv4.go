@@ -250,6 +250,9 @@ func extractSigV4FieldsLiteralKeyed(rawQuery string) (map[string]string, bool) {
 	for _, pair := range strings.Split(rawQuery, "&") {
 		rawKey, rawValue, ok := strings.Cut(pair, "=")
 		if !ok {
+			if _, isKnown := known[rawKey]; isKnown {
+				return nil, false
+			}
 			continue
 		}
 		if _, isKnown := known[rawKey]; !isKnown {

@@ -164,6 +164,11 @@ func TestDetectValidSigV4(t *testing.T) {
 			wantValid: false,
 		},
 		{
+			name:      "bare_known_key_invalidates_even_with_valid_pair",
+			rawURL:    buildSigV4URL(t, fakeAKIAExample, "3600", "X-Amz-Credential"),
+			wantValid: false,
+		},
+		{
 			name:      "missing_signature",
 			rawURL:    strings.Replace(buildSigV4URL(t, fakeAKIAExample, "3600", ""), "X-Amz-Signature="+validSigV4Signature, "", 1),
 			wantValid: false,
@@ -603,6 +608,12 @@ func TestSigV4CarveoutEndToEnd(t *testing.T) {
 				"&X-Amz-Signature=" + validSigV4Signature +
 				"&X-Amz-Credential=" + fakeAKIAExample + "/" + validSigV4Scope +
 				"&X-Amz-Expires=3600",
+			wantAllowed:     false,
+			wantBlockReason: "AWS Access ID",
+		},
+		{
+			name:            "bare_known_SigV4_key_invalidates_carveout_and_blocks",
+			rawURL:          buildSigV4URL(t, fakeAKIAExample, "3600", "X-Amz-Credential"),
 			wantAllowed:     false,
 			wantBlockReason: "AWS Access ID",
 		},

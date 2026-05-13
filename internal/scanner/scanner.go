@@ -79,6 +79,14 @@ const (
 	// A burst of DNS failures would otherwise cascade into airlock lockdown
 	// via SignalBlock accumulation.
 	ClassInfrastructureError
+	// ClassStructuralExemption means the request was allowed because a
+	// would-be DLP match sits inside a structurally validated capability
+	// token (e.g., the AKIA inside a SigV4 X-Amz-Credential value of a
+	// presigned URL). The matched value is a scoped bearer for a specific
+	// resource, not a leaked long-lived credential. Adaptive-neutral: a
+	// burst of legitimate presigned-URL fetches must not poison the
+	// session score, but should also not earn clean-decay trust.
+	ClassStructuralExemption
 )
 
 // WarnMatch describes a DLP pattern match from a warn-mode pattern.
@@ -119,14 +127,25 @@ func (r Result) IsInfrastructureError() bool {
 	return r.Class == ClassInfrastructureError
 }
 
+// IsStructuralExemption reports whether this allow result represents a
+// structurally validated capability-token carve-out (e.g., the AKIA inside
+// a SigV4 X-Amz-Credential of a presigned URL). The match was real but
+// scoped to a single resource by the issuer; treating it as a clean signal
+// would let an attacker drive adaptive score down via legitimate fetches,
+// so it is adaptive-neutral instead.
+func (r Result) IsStructuralExemption() bool {
+	return r.Class == ClassStructuralExemption
+}
+
 // IsAdaptiveNeutral reports whether this result should be score-neutral for
-// adaptive enforcement: both protective enforcement (rate limiting, data
-// budget) and infrastructure failures (DNS resolver errors) block requests
-// without indicating adversarial behavior. Config mismatch is NOT covered
-// here — it produces a bounded SignalNearMiss by design so repeated probing
-// of misconfigured allowlists remains visible to scoring.
+// adaptive enforcement: protective enforcement (rate limiting, data budget),
+// infrastructure failures (DNS resolver errors), and structural exemptions
+// (validated capability tokens) all skip both block-signal and clean-decay.
+// Config mismatch is NOT covered here — it produces a bounded SignalNearMiss
+// by design so repeated probing of misconfigured allowlists remains visible
+// to scoring.
 func (r Result) IsAdaptiveNeutral() bool {
-	return r.IsProtective() || r.IsInfrastructureError()
+	return r.IsProtective() || r.IsInfrastructureError() || r.IsStructuralExemption()
 }
 
 // dlpWarnCtxKey and DLPWarnContext are defined in warnctx.go.
@@ -796,16 +815,32 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		return result
 	}
 
+	// SigV4 presigned URL carve-out. Detect once before content-scanning
+	// stages so core DLP, main DLP, and query-entropy all see the same
+	// scrubbed URL. The scrub replaces ONLY the AKIA component of a
+	// structurally validated X-Amz-Credential value with a same-length
+	// lowercase placeholder; the AKIA appearing in any other URL component
+	// (path, hostname, other query params) is left untouched and still
+	// triggers core/main DLP blocks. Query entropy on the credential value
+	// drops below threshold once the AKIA is normalised, so legitimate
+	// presigned URLs stop tripping on the issuer's deliberately diverse
+	// scope string. See sigv4.go.
+	sigV4 := detectValidSigV4(parsed)
+	scanURL := parsed
+	if sigV4.Valid {
+		scanURL = scrubSigV4Credential(parsed, sigV4.KeyID)
+	}
+
 	// Core DLP — immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
-	if result := s.checkCoreDLP(parsed); !result.Allowed {
+	if result := s.checkCoreDLP(scanURL); !result.Allowed {
 		return result
 	}
 
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
-	dlpResult, dlpWarns := s.checkDLP(parsed)
+	dlpResult, dlpWarns := s.checkDLP(scanURL)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	if !dlpResult.Allowed {
 		dlpResult.WarnMatches = dlpWarns
@@ -814,11 +849,22 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 	}
 	// Attach DLP warn matches to whatever result is returned from here on.
 	// The defer fires on every return path, including blocks by later scanners.
+	// When SigV4 detection validated the URL, also mark the allow result as
+	// adaptive-neutral and attach a long-expiry warn for audit visibility.
 	defer func() {
+		if sigV4.Valid && result.Allowed && result.Class == ClassThreat {
+			result.Class = ClassStructuralExemption
+		}
+		if sigV4.Valid && result.Allowed && sigV4.Expires > sigV4LongExpiryThreshold {
+			dlpWarns = append(dlpWarns, WarnMatch{
+				PatternName: WarnPatternSigV4LongExpiry,
+				Severity:    "info",
+			})
+		}
 		result.WarnMatches = dlpWarns
 		s.emitDLPWarns(ctx, dlpWarns)
 	}()
-	if result := s.checkEntropy(parsed); !result.Allowed {
+	if result := s.checkEntropy(scanURL); !result.Allowed {
 		return result
 	}
 

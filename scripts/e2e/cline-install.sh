@@ -29,7 +29,63 @@ set -euo pipefail
 # subcommand or the structural assertions will fail.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-WORKDIR="${WORKDIR:-$(mktemp -d -t pipelock-cline-e2e-XXXXXX)}"
+OWNED_WORKDIR=""
+
+validate_workdir() {
+  local dir="$1"
+
+  if [[ -z "$dir" || "$dir" == "/" ]]; then
+    echo "ERROR: refusing unsafe WORKDIR: ${dir:-<empty>}" >&2
+    exit 1
+  fi
+  if [[ -n "${HOME:-}" && -d "$HOME" ]]; then
+    local home_dir
+    home_dir="$(cd "$HOME" && pwd -P)"
+    if [[ "$dir" == "$home_dir" ]]; then
+      echo "ERROR: refusing WORKDIR equal to HOME: $dir" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$dir" == "$REPO_ROOT" ]]; then
+    echo "ERROR: refusing WORKDIR equal to repository root: $dir" >&2
+    exit 1
+  fi
+}
+
+if [[ -n "${WORKDIR:-}" ]]; then
+  mkdir -p "$WORKDIR"
+  WORKDIR="$(cd "$WORKDIR" && pwd -P)"
+  validate_workdir "$WORKDIR"
+  WORKDIR_OWNED=0
+else
+  WORKDIR="$(mktemp -d -t pipelock-cline-e2e-XXXXXX)"
+  WORKDIR="$(cd "$WORKDIR" && pwd -P)"
+  validate_workdir "$WORKDIR"
+  OWNED_WORKDIR="$WORKDIR"
+  WORKDIR_OWNED=1
+fi
+
+cleanup() {
+  if [[ "$WORKDIR_OWNED" != "1" || -z "$OWNED_WORKDIR" ]]; then
+    return
+  fi
+
+  local tmp_base
+  tmp_base="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+  local owned_prefix
+  if [[ "$tmp_base" == "/" ]]; then
+    owned_prefix="/pipelock-cline-e2e-"
+  else
+    owned_prefix="$tmp_base/pipelock-cline-e2e-"
+  fi
+  if [[ "$OWNED_WORKDIR" == "$owned_prefix"* ]]; then
+    rm -rf -- "$OWNED_WORKDIR"
+  else
+    echo "WARNING: refusing to remove unexpected WORKDIR: $OWNED_WORKDIR" >&2
+  fi
+}
+trap cleanup EXIT
+
 CONFIG="$WORKDIR/cline_mcp_settings.json"
 SEED="$WORKDIR/cline_mcp_settings.seed.json"
 
@@ -44,9 +100,6 @@ fi
 PASS=0
 FAIL=0
 FAILED_TESTS=()
-
-# Cleanup on exit.
-trap 'rm -rf "$WORKDIR"' EXIT
 
 # assert <description> <command>: runs the command, records pass/fail.
 assert() {

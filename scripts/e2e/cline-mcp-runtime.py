@@ -7,8 +7,8 @@ PIPELOCK_BIN), seeds a temp cline_mcp_settings.json with an entry for
 runs `pipelock cline install`, spawns the wrapped subprocess, drives the
 full MCP handshake (initialize, initialized notification, tools/list),
 asserts the everything server's known tools came back through pipelock's
-MCP proxy, then runs `pipelock cline remove` and verifies the config
-matches the seed byte-equivalent.
+MCP proxy, then runs `pipelock cline remove` and verifies the config is
+semantically equivalent to the seed JSON.
 
 Usage:
     python3 scripts/e2e/cline-mcp-runtime.py
@@ -19,10 +19,13 @@ Exit 0 on full pass, non-zero on first failure.
 """
 import json
 import os
+import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -121,48 +124,74 @@ def send_message(proc, payload: dict) -> None:
     proc.stdin.flush()
 
 
-def _drain_stderr_briefly(proc, timeout: float = 1.0) -> str:
-    """Read whatever has accumulated on stderr within a short timeout.
+class StreamTail:
+    """Thread-safe bounded text tail for subprocess diagnostics."""
 
-    Plain stderr.read() can block forever when a grandchild (npx -> node) still
-    holds the pipe after the immediate parent (pipelock) exits, so we use a
-    selector with a deadline and accept that we may miss the tail.
-    """
-    import selectors
+    def __init__(self, limit: int = 8192):
+        self._limit = limit
+        self._text = ""
+        self._lock = threading.Lock()
 
-    sel = selectors.DefaultSelector()
-    sel.register(proc.stderr, selectors.EVENT_READ)
-    out = b""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        events = sel.select(0.1)
-        if not events:
-            continue
-        chunk = proc.stderr.read1(65536)
-        if not chunk:
-            break
-        out += chunk
-    sel.close()
-    return out.decode("utf-8", errors="replace")
+    def append(self, raw: bytes) -> None:
+        text = raw.decode("utf-8", errors="replace")
+        with self._lock:
+            self._text = (self._text + text)[-self._limit:]
+
+    def tail(self, limit: int = 2000) -> str:
+        with self._lock:
+            return self._text[-limit:]
 
 
-def read_response(proc, expected_id, timeout: float = 30.0) -> dict:
+def start_stdout_reader(stream) -> tuple[queue.Queue, threading.Thread]:
+    lines = queue.Queue()
+
+    def read_lines() -> None:
+        try:
+            for raw in iter(stream.readline, b""):
+                lines.put(raw)
+        finally:
+            lines.put(None)
+
+    thread = threading.Thread(target=read_lines, name="pipelock-e2e-stdout", daemon=True)
+    thread.start()
+    return lines, thread
+
+
+def start_stderr_tailer(stream, tail: StreamTail) -> threading.Thread:
+    def read_stderr() -> None:
+        for chunk in iter(lambda: stream.read(4096), b""):
+            tail.append(chunk)
+
+    thread = threading.Thread(target=read_stderr, name="pipelock-e2e-stderr", daemon=True)
+    thread.start()
+    return thread
+
+
+def read_response(proc, stdout_lines, stderr_tail: StreamTail, expected_id, timeout: float = 30.0) -> dict:
     """Read JSON-RPC frames from stdout until one matches expected_id.
 
-    The proxy may interleave log lines; non-JSON output is skipped. Pure
-    timeout-and-poll loop avoids selectors that fight Python's buffered I/O.
+    The proxy may interleave log lines; non-JSON output is skipped. A
+    background reader owns the blocking pipe read so this function's timeout
+    cannot hang behind readline().
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        line = proc.stdout.readline()
-        if not line:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            line = stdout_lines.get(timeout=min(0.1, remaining))
+        except queue.Empty:
             if proc.poll() is not None:
-                tail = _drain_stderr_briefly(proc)
                 sys.exit(
                     f"subprocess exited before response id={expected_id}; "
-                    f"stderr tail:\n{tail[-2000:]}"
+                    f"stderr tail:\n{stderr_tail.tail()}"
                 )
-            time.sleep(0.05)
+            continue
+        if not line:
+            if proc.poll() is not None:
+                sys.exit(
+                    f"subprocess exited before response id={expected_id}; "
+                    f"stderr tail:\n{stderr_tail.tail()}"
+                )
             continue
         text = line.decode("utf-8", errors="replace").strip()
         if not text or not text.startswith("{"):
@@ -173,7 +202,10 @@ def read_response(proc, expected_id, timeout: float = 30.0) -> dict:
             continue
         if obj.get("id") == expected_id:
             return obj
-    sys.exit(f"timeout waiting for response id={expected_id}")
+    sys.exit(
+        f"timeout waiting for response id={expected_id}; "
+        f"stderr tail:\n{stderr_tail.tail()}"
+    )
 
 
 def main():
@@ -209,7 +241,11 @@ def main():
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
+        stdout_lines, stdout_thread = start_stdout_reader(proc.stdout)
+        stderr_tail = StreamTail()
+        stderr_thread = start_stderr_tailer(proc.stderr, stderr_tail)
         try:
             send_message(proc, {
                 "jsonrpc": "2.0",
@@ -221,7 +257,7 @@ def main():
                     "clientInfo": {"name": "pipelock-e2e", "version": "0"},
                 },
             })
-            resp = read_response(proc, expected_id=1, timeout=60.0)
+            resp = read_response(proc, stdout_lines, stderr_tail, expected_id=1, timeout=60.0)
             if "result" not in resp or "serverInfo" not in resp["result"]:
                 sys.exit(f"initialize returned unexpected shape: {resp}")
             server_name = resp["result"]["serverInfo"].get("name", "?")
@@ -233,7 +269,7 @@ def main():
             })
 
             send_message(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-            resp = read_response(proc, expected_id=2, timeout=30.0)
+            resp = read_response(proc, stdout_lines, stderr_tail, expected_id=2, timeout=30.0)
             tools = resp.get("result", {}).get("tools", [])
             tool_names = {t.get("name") for t in tools}
             print(f"  tools/list returned {len(tools)} tools")
@@ -252,7 +288,18 @@ def main():
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                proc.wait(timeout=5)
+            for stream in (proc.stdout, proc.stderr):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            stdout_thread.join(timeout=2)
+            stderr_thread.join(timeout=2)
 
         print("\n[3] remove and verify canonical-JSON restoration")
         remove = subprocess.run(

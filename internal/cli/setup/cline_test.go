@@ -93,11 +93,19 @@ func writeClineFile(t *testing.T, body string) string {
 
 func runClineCmd(t *testing.T, args ...string) error {
 	t.Helper()
+	_, _, err := runClineCmdOutput(t, args...)
+	return err
+}
+
+func runClineCmdOutput(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
 	cmd := ClineCmd()
 	cmd.SetArgs(args)
-	cmd.SetOut(os.Stdout)
-	cmd.SetErr(os.Stderr)
-	return cmd.Execute()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	err := cmd.Execute()
+	return stdout.String(), stderr.String(), err
 }
 
 func hasAdjacentArg(args []string, flag, value string) bool {

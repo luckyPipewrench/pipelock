@@ -1102,4 +1102,22 @@ func TestReadHeaderFile_Strict(t *testing.T) {
 	if hdrs.Get("Authorization") != "Bearer abc" {
 		t.Errorf("Authorization = %q, want 'Bearer abc'", hdrs.Get("Authorization"))
 	}
+
+	// 0o640 is accepted for deployment environments that use fsGroup-style
+	// group readability while still rejecting world-readable sidecars.
+	groupReadable := filepath.Join(dir, "group-readable.headers")
+	if err := os.WriteFile(groupReadable, []byte("X-Group: ok\n"), 0o640); err != nil { //nolint:gosec // intentionally group-readable for the acceptance test
+		t.Fatal(err)
+	}
+	lines, err = readHeaderFile(groupReadable)
+	if err != nil {
+		t.Fatalf("readHeaderFile 0o640 file: %v", err)
+	}
+	hdrs, err = parseHeaderFlags(lines)
+	if err != nil {
+		t.Fatalf("parseHeaderFlags from 0o640 sidecar lines: %v", err)
+	}
+	if hdrs.Get("X-Group") != "ok" {
+		t.Errorf("X-Group = %q, want ok", hdrs.Get("X-Group"))
+	}
 }

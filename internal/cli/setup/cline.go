@@ -185,9 +185,9 @@ func runClineInstall(cmd *cobra.Command, override string, dryRun bool, configFil
 			return fmt.Errorf("marshaling metadata for %q: %w", name, err)
 		}
 		var metaMap interface{}
-		// metaJSON came from json.Marshal of a typed struct above, so
-		// unmarshalling into an interface{} cannot fail on valid input.
-		_ = json.Unmarshal(metaJSON, &metaMap)
+		if err := json.Unmarshal(metaJSON, &metaMap); err != nil {
+			return fmt.Errorf("unmarshaling metadata for %q: %w", name, err)
+		}
 		newServer[mcpFieldPipelock] = metaMap
 
 		mcpCfg.Servers[name] = newServer

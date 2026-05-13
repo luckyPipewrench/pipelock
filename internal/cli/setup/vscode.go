@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -315,7 +316,9 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 			return fmt.Errorf("marshaling metadata for %q: %w", name, err)
 		}
 		var metaMap interface{}
-		_ = json.Unmarshal(metaJSON, &metaMap)
+		if err := json.Unmarshal(metaJSON, &metaMap); err != nil {
+			return fmt.Errorf("unmarshaling metadata for %q: %w", name, err)
+		}
 		newServer["_pipelock"] = metaMap
 
 		mcpCfg.Servers[name] = newServer
@@ -551,7 +554,11 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile, targetConf
 		if headers, ok := server["headers"].(map[string]interface{}); ok {
 			meta.OriginalHeaders = make(map[string]string, len(headers))
 			for k, v := range headers {
-				meta.OriginalHeaders[k] = fmt.Sprint(v)
+				value, ok := v.(string)
+				if !ok {
+					return nil, nil, nil, fmt.Errorf("header %q has non-string value of type %T; only string header values are supported", k, v)
+				}
+				meta.OriginalHeaders[k] = value
 			}
 		}
 		var (
@@ -612,7 +619,11 @@ func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, 
 
 	var plan *sidecarOp
 	if meta.HeaderSidecarPath != "" {
-		plan = &sidecarOp{kind: "delete", path: meta.HeaderSidecarPath}
+		path, err := validatedHeaderSidecarDeletePath(meta.HeaderSidecarPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		plan = &sidecarOp{kind: "delete", path: path}
 	}
 
 	result := make(map[string]interface{})
@@ -759,6 +770,55 @@ func headerSidecarPath(targetConfigPath, serverName string) (string, error) {
 	return filepath.Join(dir, configPrefix+"-"+serverPrefix+"-"+safeName+".headers"), nil
 }
 
+func validatedHeaderSidecarDeletePath(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("invalid _pipelock metadata: header sidecar path must be absolute")
+	}
+	if !strings.HasSuffix(filepath.Base(path), ".headers") {
+		return "", fmt.Errorf("invalid _pipelock metadata: header sidecar path must end in .headers")
+	}
+	dir, err := headerSidecarDir()
+	if err != nil {
+		return "", err
+	}
+	cleanDir, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return "", fmt.Errorf("resolving header sidecar dir: %w", err)
+	}
+	cleanPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("resolving header sidecar path: %w", err)
+	}
+	if !pathWithinDir(cleanDir, cleanPath) {
+		return "", fmt.Errorf("invalid _pipelock metadata: header sidecar path escapes %s", cleanDir)
+	}
+
+	resolvedDir := cleanDir
+	if realDir, err := filepath.EvalSymlinks(cleanDir); err == nil {
+		resolvedDir = realDir
+	}
+	if realPath, err := filepath.EvalSymlinks(cleanPath); err == nil {
+		if !pathWithinDir(resolvedDir, realPath) {
+			return "", fmt.Errorf("invalid _pipelock metadata: header sidecar path resolves outside %s", resolvedDir)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolving header sidecar path symlinks: %w", err)
+	}
+
+	return cleanPath, nil
+}
+
+func pathWithinDir(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == "." || rel == "" {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
 // sanitizeSidecarComponent strips characters that have meaning in path
 // segments so an attacker-named MCP server cannot redirect the sidecar
 // elsewhere. Replace anything outside [A-Za-z0-9._-] with '_'.
@@ -873,7 +933,13 @@ func isSetupHTTPTokenChar(c byte) bool {
 
 func validSetupHeaderValue(value string) bool {
 	for _, r := range value {
-		if r > 127 || r == 0x7f || (r < 0x20 && r != '\t') {
+		if r == '\t' || r == ' ' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+		if r > 127 && unicode.IsSpace(r) {
 			return false
 		}
 	}

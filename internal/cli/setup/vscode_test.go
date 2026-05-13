@@ -958,6 +958,102 @@ func TestUnwrapVscodeServer_HTTPWithHeaders(t *testing.T) {
 	}
 }
 
+func TestUnwrapVscodeServer_HeaderSidecarDeletePathValidated(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sidecarPath, err := headerSidecarPath(filepath.Join(home, ".vscode", "mcp.json"), "remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := map[string]interface{}{
+		"type":    vsTypeStdio,
+		"command": "/usr/bin/pipelock",
+		"args":    []interface{}{"mcp", "proxy", "--header-file", sidecarPath, "--upstream", testExampleURL},
+		"_pipelock": map[string]interface{}{
+			"original_type":       testTypeHTTP,
+			"original_url":        testExampleURL,
+			"header_sidecar_path": sidecarPath,
+		},
+	}
+
+	_, plan, err := unwrapVscodeServer(server)
+	if err != nil {
+		t.Fatalf("unwrapVscodeServer: %v", err)
+	}
+	if plan == nil {
+		t.Fatal("expected sidecar delete plan")
+	}
+	if plan.kind != "delete" {
+		t.Errorf("plan.kind = %q, want delete", plan.kind)
+	}
+	if plan.path != sidecarPath {
+		t.Errorf("plan.path = %q, want %q", plan.path, sidecarPath)
+	}
+}
+
+func TestUnwrapVscodeServer_RejectsEscapingHeaderSidecarPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	outside := filepath.Join(home, "victim.headers")
+
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			"original_type":       testTypeHTTP,
+			"original_url":        testExampleURL,
+			"header_sidecar_path": outside,
+		},
+	}
+
+	_, _, err := unwrapVscodeServer(server)
+	if err == nil {
+		t.Fatal("expected escaping header sidecar path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("unwrap error = %q, want escape rejection", err.Error())
+	}
+}
+
+func TestUnwrapVscodeServer_RejectsSymlinkEscapingHeaderSidecarPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := headerSidecarDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(home, "outside")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	escapedPath := filepath.Join(link, "victim.headers")
+	if err := os.WriteFile(escapedPath, []byte("X-Test: value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	server := map[string]interface{}{
+		"_pipelock": map[string]interface{}{
+			"original_type":       testTypeHTTP,
+			"original_url":        testExampleURL,
+			"header_sidecar_path": escapedPath,
+		},
+	}
+
+	_, _, err = unwrapVscodeServer(server)
+	if err == nil {
+		t.Fatal("expected symlink-escaping header sidecar path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "resolves outside") {
+		t.Fatalf("unwrap error = %q, want symlink escape rejection", err.Error())
+	}
+}
+
 func TestUnwrapVscodeServer_StdioNoArgs(t *testing.T) {
 	// Stdio server with no original args should not have args after unwrap.
 	server := map[string]interface{}{
@@ -1606,6 +1702,93 @@ func TestHeaderSidecarPath_DistinguishesSanitizedNameCollisions(t *testing.T) {
 	}
 	if len(filepath.Base(longPath)) > 128 {
 		t.Fatalf("sidecar filename too long: %d bytes (%q)", len(filepath.Base(longPath)), filepath.Base(longPath))
+	}
+}
+
+func TestValidatedHeaderSidecarDeletePath_FailClosedBranches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := headerSidecarDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(dir, "valid.headers")
+
+	got, err := validatedHeaderSidecarDeletePath("")
+	if err != nil {
+		t.Fatalf("empty path returned error: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("empty path = %q, want empty", got)
+	}
+
+	for _, tt := range []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "relative rejected",
+			path: filepath.Join("relative", "valid.headers"),
+			want: "must be absolute",
+		},
+		{
+			name: "wrong suffix rejected",
+			path: filepath.Join(dir, "valid.txt"),
+			want: "must end in .headers",
+		},
+		{
+			name: "sidecar dir itself rejected",
+			path: dir,
+			want: "must end in .headers",
+		},
+		{
+			name: "parent escape rejected",
+			path: filepath.Join(dir, "..", "victim.headers"),
+			want: "escapes",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := validatedHeaderSidecarDeletePath(tt.path); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validatedHeaderSidecarDeletePath(%q) err = %v, want containing %q", tt.path, err, tt.want)
+			}
+		})
+	}
+
+	got, err = validatedHeaderSidecarDeletePath(inside)
+	if err != nil {
+		t.Fatalf("inside missing path returned error: %v", err)
+	}
+	if got != inside {
+		t.Fatalf("inside missing path = %q, want %q", got, inside)
+	}
+
+	if pathWithinDir(dir, dir) {
+		t.Fatal("pathWithinDir accepted the directory itself")
+	}
+}
+
+func TestExtractHeaderLines_ValueValidationMatchesRuntime(t *testing.T) {
+	server := map[string]interface{}{
+		"headers": map[string]interface{}{
+			"X-Display-Name": "Cafe\u00e9",
+		},
+	}
+	lines, err := extractHeaderLines(server)
+	if err != nil {
+		t.Fatalf("extractHeaderLines accepted runtime-valid non-ASCII value: %v", err)
+	}
+	if len(lines) != 1 || lines[0] != "X-Display-Name: Cafe\u00e9" {
+		t.Fatalf("extractHeaderLines = %v, want non-ASCII header line", lines)
+	}
+
+	server = map[string]interface{}{
+		"headers": map[string]interface{}{
+			"X-Display-Name": "Cafe\u2003hidden",
+		},
+	}
+	if _, err := extractHeaderLines(server); err == nil {
+		t.Fatal("expected unicode whitespace in header value to be rejected")
 	}
 }
 

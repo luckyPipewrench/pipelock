@@ -70,7 +70,15 @@ const (
 	// Re-bumped for route-scoped redaction non-JSON exceptions:
 	// redaction.allowlist_unparseable_routes is new policy surface that
 	// constrains which opaque request formats may skip JSON rewriting.
-	goldenHashDefaults = "180b942eeb225400c1e6c2850c70f70a96eb0238ab39d0a57c12bcd136771621"
+	// Re-bumped to close documented skill-poisoning vector gaps:
+	// Memory Persistence Directive, Credential Solicitation, and Covert
+	// Action Directive each widened their alternation to catch three
+	// vectors that escaped the prior pattern set (memory persistence
+	// using "future sessions"/"for all future", credential solicitation
+	// of plural ".aws/credentials" files, covert exfil verbs including
+	// exfiltrate/leak/stream/transmit/relay/forward/smuggle). See
+	// TestSkillPoisoningCorpus for the six-vector regression suite.
+	goldenHashDefaults = "ecb13adaa7ab0d2686ca1944a9ded8c265a082a77ba859378934ec787f4b9fb9"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -97,7 +105,11 @@ const (
 	// Re-bumped for federation hardening: see goldenHashDefaults note.
 	// Re-bumped for route-scoped redaction non-JSON exceptions: see
 	// goldenHashDefaults note.
-	goldenHashRichConfig = "a0ec45732d24b1c5d914ab60c116cea97557cf784384f01bd2785615f1283a5d"
+	// Re-bumped for skill-poisoning pattern broadening: see
+	// goldenHashDefaults note. The rich fixture inherits the response
+	// scanning pattern set from Defaults(), so the hash shifts in
+	// lockstep.
+	goldenHashRichConfig = "6589f303225d574e76472bc069c532bb0e60e044e4e02f382672384fc1abd8a0"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

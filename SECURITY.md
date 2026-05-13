@@ -51,4 +51,4 @@ Pipelock's security model is documented in the README. Key design decisions:
 
 1. **Opt-in MITM only:** TLS interception is disabled by default and requires explicit CA setup (`pipelock tls init`). Without it, security comes from capability separation, not inspection.
 2. **Defense in depth:** Multiple scanner layers (blocklist, DLP, entropy) each catch different attack vectors.
-3. **Honest claims:** We document what each mode prevents vs. detects. See the security matrix in the README.
+3. **Honest claims:** We document what each mode prevents vs. detects. See the security matrix in the README and the standalone documents under [docs/security/](docs/security/).

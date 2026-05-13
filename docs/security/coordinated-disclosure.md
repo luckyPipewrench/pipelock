@@ -77,4 +77,4 @@ Reporters are credited in the published advisory and in [SECURITY.md](../../SECU
 
 - [SECURITY.md](../../SECURITY.md): reporting channel and supported versions
 - [CHARTER.md](../../CHARTER.md): governance and the source of the response SLA
-- [v1-unsupported-paths.md](v1-unsupported-paths.md): egress paths that are not in scope for vulnerability reports
+- [current-unsupported-paths.md](current-unsupported-paths.md): egress paths that are not in scope for vulnerability reports

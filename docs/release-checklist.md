@@ -76,6 +76,11 @@ make debt-check
   operational changes.
 - Confirm degraded rule-bundle behavior is visible in logs and still fail-closed
   on enforcement paths.
+- Review `docs/security/` against the candidate binary: every command shown must
+  exist with the documented flags, every crypto primitive must match shipped
+  implementation, unsupported-path language must describe current behavior rather
+  than roadmap work, and disclosure SLA wording must match `SECURITY.md` and
+  `CHARTER.md`.
 
 ## Repo Settings To Pair With This
 

@@ -115,6 +115,38 @@ assert() {
   fi
 }
 
+json_value_equals() {
+  local file="$1"
+  local filter="$2"
+  local expected="$3"
+  local actual
+  actual="$(jq -r "$filter" "$file")"
+  [[ "$actual" == "$expected" ]]
+}
+
+stdio_command_points_at_pipelock() {
+  local actual
+  actual="$(jq -r '.mcpServers["fixture-stdio"].command' "$CONFIG")"
+  [[ "$actual" == "$PIPELOCK" || "$actual" == "$(readlink -f "$PIPELOCK")" ]]
+}
+
+mode_is_600() {
+  local path="$1"
+  [[ "$(stat -c '%a' "$path")" == "600" ]]
+}
+
+proxy_output_exists() {
+  [[ -s "$WORKDIR/proxy.stdout" || -s "$WORKDIR/proxy.stderr" ]]
+}
+
+wrapped_argv_has_no_cobra_error() {
+  ! grep -qE 'unknown command|unknown flag|invalid argument' "$WORKDIR/proxy.stderr"
+}
+
+canonical_json_matches() {
+  diff <(jq -S . "$SEED") <(jq -S . "$CONFIG")
+}
+
 # require_jq verifies jq is present; the script depends on it for structural
 # assertions.
 require_jq() {
@@ -192,67 +224,68 @@ PIPELOCK_CONFIG="" XDG_CONFIG_HOME="" HOME="$DISCOVER_HOME" \
 assert "install-discover stderr notes the discovered config" \
   grep -q "Using config $DISCOVER_HOME/.config/pipelock/pipelock.yaml" "$WORKDIR/install-discover.stderr"
 assert "install-discover stdio args carry --config" \
-  bash -c "jq -e '.mcpServers[\"fixture-stdio\"].args | index(\"--config\") as \$i | .[\$i+1] == \"$DISCOVER_HOME/.config/pipelock/pipelock.yaml\"' '$DISCOVER_CFG'"
+  jq -e --arg expected "$DISCOVER_HOME/.config/pipelock/pipelock.yaml" \
+    '.mcpServers["fixture-stdio"].args | index("--config") as $i | .[$i+1] == $expected' "$DISCOVER_CFG"
 assert "install-discover http args carry --config" \
-  bash -c "jq -e '.mcpServers[\"fixture-http\"].args | index(\"--config\") as \$i | .[\$i+1] == \"$DISCOVER_HOME/.config/pipelock/pipelock.yaml\"' '$DISCOVER_CFG'"
+  jq -e --arg expected "$DISCOVER_HOME/.config/pipelock/pipelock.yaml" \
+    '.mcpServers["fixture-http"].args | index("--config") as $i | .[$i+1] == $expected' "$DISCOVER_CFG"
 
 echo ""
 echo "[2] structural assertions on wrapped config"
 
 # Both entries should have _pipelock metadata.
 assert "stdio entry carries _pipelock metadata" \
-  bash -c "jq -e '.mcpServers[\"fixture-stdio\"]._pipelock' '$CONFIG'"
+  jq -e '.mcpServers["fixture-stdio"]._pipelock' "$CONFIG"
 assert "http entry carries _pipelock metadata" \
-  bash -c "jq -e '.mcpServers[\"fixture-http\"]._pipelock' '$CONFIG'"
+  jq -e '.mcpServers["fixture-http"]._pipelock' "$CONFIG"
 
 # Both entries should declare type=stdio (so Cline launches pipelock).
 assert "wrapped stdio entry type=stdio" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].type' '$CONFIG') == 'stdio' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"].type' "stdio"
 assert "wrapped http entry type=stdio" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-http\"].type' '$CONFIG') == 'stdio' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-http"].type' "stdio"
 
 # Stdio entry: command = pipelock binary path, args starts with "mcp proxy".
 assert "stdio command points at pipelock" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].command' '$CONFIG') == '$PIPELOCK' ]] || \
-           [[ \$(jq -r '.mcpServers[\"fixture-stdio\"].command' '$CONFIG') == \$(readlink -f '$PIPELOCK') ]]"
+  stdio_command_points_at_pipelock
 assert "stdio args[0]=mcp" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].args[0]' '$CONFIG') == 'mcp' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"].args[0]' "mcp"
 assert "stdio args[1]=proxy" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].args[1]' '$CONFIG') == 'proxy' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"].args[1]' "proxy"
 
 # Stdio entry: --env FIXTURE_VAR passthrough is present.
 assert "stdio carries --env FIXTURE_VAR passthrough" \
-  bash -c "jq -e '.mcpServers[\"fixture-stdio\"].args | index(\"--env\") as \$i | .[\$i+1] == \"FIXTURE_VAR\"' '$CONFIG'"
+  jq -e '.mcpServers["fixture-stdio"].args | index("--env") as $i | .[$i+1] == "FIXTURE_VAR"' "$CONFIG"
 
 # Stdio entry: -- separator precedes the original command.
 assert "stdio carries -- separator before original command" \
-  bash -c "jq -e '.mcpServers[\"fixture-stdio\"].args | index(\"--\") as \$i | .[\$i+1] == \"cat\"' '$CONFIG'"
+  jq -e '.mcpServers["fixture-stdio"].args | index("--") as $i | .[$i+1] == "cat"' "$CONFIG"
 
 # HTTP entry: --header-file carries the path to a 0o600 sidecar; the
 # Authorization value lives in the sidecar file, never in argv.
 assert "http carries --header-file flag with a sidecar path" \
-  bash -c "jq -e '.mcpServers[\"fixture-http\"].args | index(\"--header-file\") as \$i | (.[\$i+1] | type) == \"string\" and (.[\$i+1] | length) > 0' '$CONFIG'"
+  jq -e '.mcpServers["fixture-http"].args | index("--header-file") as $i | (.[ $i+1 ] | type) == "string" and (.[ $i+1 ] | length) > 0' "$CONFIG"
 
 SIDECAR_PATH=$(jq -r '.mcpServers["fixture-http"].args as $a | $a | index("--header-file") as $i | $a[$i+1]' "$CONFIG")
 assert "sidecar file exists at the path embedded in argv" test -f "$SIDECAR_PATH"
 assert "sidecar mode is 0o600" \
-  bash -c "[[ \$(stat -c '%a' '$SIDECAR_PATH') == '600' ]]"
+  mode_is_600 "$SIDECAR_PATH"
 assert "sidecar contains the Authorization header line" \
   grep -q "Authorization: Bearer fixture-token" "$SIDECAR_PATH"
 assert "wrapped argv does NOT contain the Authorization header value" \
-  bash -c "! jq -e '.mcpServers[\"fixture-http\"].args | any(. == \"Authorization: Bearer fixture-token\")' '$CONFIG' >/dev/null 2>&1"
+  jq -e '.mcpServers["fixture-http"].args | all(. != "Authorization: Bearer fixture-token")' "$CONFIG"
 assert "_pipelock metadata records the sidecar path" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-http\"]._pipelock.header_sidecar_path' '$CONFIG') == '$SIDECAR_PATH' ]]"
+  jq -e --arg path "$SIDECAR_PATH" '.mcpServers["fixture-http"]._pipelock.header_sidecar_path == $path' "$CONFIG"
 
 # HTTP entry: --upstream carries the original URL.
 assert "http carries --upstream original-url" \
-  bash -c "jq -e '.mcpServers[\"fixture-http\"].args | index(\"--upstream\") as \$i | .[\$i+1] == \"https://fixture.invalid/mcp\"' '$CONFIG'"
+  jq -e '.mcpServers["fixture-http"].args | index("--upstream") as $i | .[$i+1] == "https://fixture.invalid/mcp"' "$CONFIG"
 
 # Both metadata entries: TypeOmitted=true (Cline omits type field).
 assert "stdio metadata TypeOmitted=true" \
-  bash -c "jq -e '.mcpServers[\"fixture-stdio\"]._pipelock.type_omitted == true' '$CONFIG'"
+  jq -e '.mcpServers["fixture-stdio"]._pipelock.type_omitted == true' "$CONFIG"
 assert "http metadata TypeOmitted=true" \
-  bash -c "jq -e '.mcpServers[\"fixture-http\"]._pipelock.type_omitted == true' '$CONFIG'"
+  jq -e '.mcpServers["fixture-http"]._pipelock.type_omitted == true' "$CONFIG"
 
 # Backup matches the seed file.
 assert "install wrote .bak matching seed" cmp -s "$SEED" "$CONFIG.bak"
@@ -273,7 +306,7 @@ INIT_REQ='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersi
 printf '%s\n' "$INIT_REQ" | timeout 5 "$WRAPPED_CMD" "${WRAPPED_ARGS[@]}" >"$WORKDIR/proxy.stdout" 2>"$WORKDIR/proxy.stderr" || true
 
 assert "proxy produced stdout or stderr output (didn't crash immediately)" \
-  bash -c "[[ -s '$WORKDIR/proxy.stdout' ]] || [[ -s '$WORKDIR/proxy.stderr' ]]"
+  proxy_output_exists
 
 # Confirm the binary at least recognised the cline-install-shaped args
 # (cobra parse error would be in stderr, immediate help text). Either a
@@ -281,7 +314,7 @@ assert "proxy produced stdout or stderr output (didn't crash immediately)" \
 # message on stderr (proxy initialized then child exited) is acceptable;
 # what we are rejecting here is "unknown command" or "unknown flag" output.
 assert "wrapped argv parses without cobra error" \
-  bash -c "! grep -qE 'unknown command|unknown flag|invalid argument' '$WORKDIR/proxy.stderr'"
+  wrapped_argv_has_no_cobra_error
 
 echo ""
 echo "[4] remove and restore"
@@ -292,25 +325,25 @@ assert "remove stdout reports 2 unwrapped" grep -q "Unwrapped 2 server(s)" "$WOR
 
 # Order-of-keys equivalence: parse both, compare as canonical JSON.
 assert "post-remove config equals seed (canonical JSON compare)" \
-  bash -c "diff <(jq -S . '$SEED') <(jq -S . '$CONFIG')"
+  canonical_json_matches
 
 # Per-server fields should be exactly what the seed had: no leftover
 # _pipelock, no leftover type=stdio, original env/headers/url back.
 assert "stdio entry restored: no leftover _pipelock" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"]._pipelock // \"absent\"' '$CONFIG') == 'absent' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"]._pipelock // "absent"' "absent"
 assert "stdio entry restored: no leftover type field" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].type // \"absent\"' '$CONFIG') == 'absent' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"].type // "absent"' "absent"
 assert "stdio entry restored: command back to 'cat'" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].command' '$CONFIG') == 'cat' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"].command' "cat"
 assert "stdio entry restored: env block intact" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-stdio\"].env.FIXTURE_VAR' '$CONFIG') == 'value' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-stdio"].env.FIXTURE_VAR' "value"
 
 assert "http entry restored: no leftover type field" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-http\"].type // \"absent\"' '$CONFIG') == 'absent' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-http"].type // "absent"' "absent"
 assert "http entry restored: url back" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-http\"].url' '$CONFIG') == 'https://fixture.invalid/mcp' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-http"].url' "https://fixture.invalid/mcp"
 assert "http entry restored: Authorization header back" \
-  bash -c "[[ \$(jq -r '.mcpServers[\"fixture-http\"].headers.Authorization' '$CONFIG') == 'Bearer fixture-token' ]]"
+  json_value_equals "$CONFIG" '.mcpServers["fixture-http"].headers.Authorization' "Bearer fixture-token"
 
 echo ""
 echo "[5] idempotence: re-run install on already-installed config (no double-wrap)"

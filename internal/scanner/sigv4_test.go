@@ -273,6 +273,37 @@ func TestScrubSigV4Credential(t *testing.T) {
 		}
 	})
 
+	t.Run("no_op_when_raw_query_empty", func(t *testing.T) {
+		t.Parallel()
+		parsed := mustParseURL(t, "https://examplebucket.s3.amazonaws.com/path")
+		got := scrubSigV4Credential(parsed, fakeAKIAExample)
+		if got != parsed {
+			t.Errorf("scrubSigV4Credential returned new pointer when RawQuery is empty")
+		}
+	})
+
+	t.Run("preserves_malformed_pair_without_equals", func(t *testing.T) {
+		t.Parallel()
+		raw := buildSigV4URL(t, fakeAKIAExample, "3600", "bareflag")
+		parsed := mustParseURL(t, raw)
+		got := scrubSigV4Credential(parsed, fakeAKIAExample)
+		if got == parsed {
+			t.Fatalf("scrubSigV4Credential should still scrub the valid credential pair")
+		}
+		if !strings.Contains(got.RawQuery, "bareflag") {
+			t.Errorf("malformed query pair without '=' was not preserved: %q", got.RawQuery)
+		}
+	})
+
+	t.Run("no_op_on_malformed_credential_percent_encoding", func(t *testing.T) {
+		t.Parallel()
+		parsed := mustParseURL(t, "https://examplebucket.s3.amazonaws.com/path?X-Amz-Credential=%zz")
+		got := scrubSigV4Credential(parsed, fakeAKIAExample)
+		if got != parsed {
+			t.Errorf("scrubSigV4Credential returned new pointer for malformed percent encoding")
+		}
+	})
+
 	t.Run("no_op_on_duplicate_credential_values", func(t *testing.T) {
 		t.Parallel()
 		raw := buildSigV4URL(t, fakeAKIAExample, "3600", "X-Amz-Credential="+url.QueryEscape(fakeASIAExample+"/"+validSigV4Scope))
@@ -306,10 +337,11 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 
 	t.Run("empty_region_in_credential_scope_invalidates", func(t *testing.T) {
 		t.Parallel()
-		raw := "https://example.com/x?X-Amz-Algorithm=" + sigV4AlgorithmValue +
+		raw := "https://examplebucket.s3.amazonaws.com/x?X-Amz-Algorithm=" + sigV4AlgorithmValue +
 			"&X-Amz-Date=" + validSigV4Date +
 			"&X-Amz-Signature=" + validSigV4Signature +
-			"&X-Amz-Credential=" + fakeAKIAExample + "/20260512//s3/aws4_request"
+			"&X-Amz-Credential=" + fakeAKIAExample + "/20260512//s3/aws4_request" +
+			"&X-Amz-Expires=3600"
 		parsed := mustParseURL(t, raw)
 		if got := detectValidSigV4(parsed); got.Valid {
 			t.Errorf("empty region in credential scope should invalidate detection")
@@ -318,10 +350,11 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 
 	t.Run("empty_service_in_credential_scope_invalidates", func(t *testing.T) {
 		t.Parallel()
-		raw := "https://example.com/x?X-Amz-Algorithm=" + sigV4AlgorithmValue +
+		raw := "https://examplebucket.s3.amazonaws.com/x?X-Amz-Algorithm=" + sigV4AlgorithmValue +
 			"&X-Amz-Date=" + validSigV4Date +
 			"&X-Amz-Signature=" + validSigV4Signature +
-			"&X-Amz-Credential=" + fakeAKIAExample + "/20260512/us-east-1//aws4_request"
+			"&X-Amz-Credential=" + fakeAKIAExample + "/20260512/us-east-1//aws4_request" +
+			"&X-Amz-Expires=3600"
 		parsed := mustParseURL(t, raw)
 		if got := detectValidSigV4(parsed); got.Valid {
 			t.Errorf("empty service in credential scope should invalidate detection")
@@ -381,6 +414,13 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 		parsed := mustParseURL(t, raw)
 		if got := detectValidSigV4(parsed); got.Valid {
 			t.Errorf("attacker-controlled suffix lookalike must not engage the carve-out")
+		}
+	})
+
+	t.Run("empty_host_rejected", func(t *testing.T) {
+		t.Parallel()
+		if isAWSEndpointHost("") {
+			t.Errorf("empty hostname must not engage the carve-out")
 		}
 	})
 

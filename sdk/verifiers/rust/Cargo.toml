@@ -15,7 +15,7 @@ base64 = "=0.22.1"
 ed25519-dalek = { version = "=2.1.1", default-features = false, features = ["std"] }
 hex = "=0.4.3"
 jsonschema = { version = "=0.18.0", default-features = false, features = ["draft202012"] }
-serde = { version = "=1.0.210", features = ["derive"] }
+serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.120", features = ["preserve_order"] }
 sha2 = "=0.10.8"
 thiserror = "=1.0.69"

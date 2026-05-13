@@ -12,6 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/assess"
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/canary"
+	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
@@ -79,6 +80,8 @@ Quick start:
 		canary.Cmd(),
 		audit.ReportCmd(),
 		audit.SimulateCmd(),
+		// Containment (workstation-tier)
+		contain.Cmd(),
 		// Diagnostics
 		diag.DiagnoseCmd(),
 		diag.DiscoverCmd(),

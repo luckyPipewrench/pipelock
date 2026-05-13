@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -333,6 +334,78 @@ func TestProxy_ReloadEnvelopeEmitter_DisabledNilsEmitter(t *testing.T) {
 	// not mask the assertion.
 	if em := p.envelopeEmitterPtr.Load(); em != nil {
 		t.Errorf("envelope emitter pointer should be nil after enabled=false reload, got %p", em)
+	}
+}
+
+func TestProxy_ReloadInboundVerifierActorFormatStrictFlip(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testInboundEnvelopeKey(t)
+	strictCfg := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
+	p, err := New(strictCfg, audit.NewNop(), scanner.New(strictCfg), metrics.New())
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	assertInboundActorRejected(t, p, strictCfg, signedInboundRequest(t, priv, "legacy-agent"))
+	assertInboundActorVerified(t, p, strictCfg, signedInboundRequest(t, priv, "spiffe://partner.example/agent/proxy"))
+
+	firstReload := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
+	if ok := p.Reload(firstReload, scanner.New(firstReload)); !ok {
+		t.Fatal("first strict reload should publish")
+	}
+	assertInboundActorRejected(t, p, firstReload, signedInboundRequest(t, priv, "legacy-agent"))
+
+	unrelatedReload := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
+	unrelatedReload.FetchProxy.UserAgent = "pipelock-test-reload"
+	if ok := p.Reload(unrelatedReload, scanner.New(unrelatedReload)); !ok {
+		t.Fatal("second unrelated reload should publish")
+	}
+	assertInboundActorRejected(t, p, unrelatedReload, signedInboundRequest(t, priv, "legacy-agent"))
+
+	permissiveCfg := inboundVerifierReloadConfig(pub, envelope.ActorFormatLegacy, nil)
+	if ok := p.Reload(permissiveCfg, scanner.New(permissiveCfg)); !ok {
+		t.Fatal("downgrade to legacy actor format should publish")
+	}
+	assertInboundActorVerified(t, p, permissiveCfg, signedInboundRequest(t, priv, "legacy-agent"))
+
+	strictAgain := inboundVerifierReloadConfig(pub, envelope.ActorFormatSPIFFE, []string{"partner.example"})
+	if ok := p.Reload(strictAgain, scanner.New(strictAgain)); !ok {
+		t.Fatal("upgrade back to strict actor format should publish")
+	}
+	assertInboundActorRejected(t, p, strictAgain, signedInboundRequest(t, priv, "legacy-agent"))
+	assertInboundActorVerified(t, p, strictAgain, signedInboundRequest(t, priv, "spiffe://partner.example/agent/proxy"))
+}
+
+func inboundVerifierReloadConfig(pub ed25519.PublicKey, actorFormat string, trustDomains []string) *config.Config {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.MediationEnvelope.ActorFormat = actorFormat
+	cfg.MediationEnvelope.MaxBodyBytes = 1024
+	cfg.MediationEnvelope.VerifyInbound.Enabled = true
+	cfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{
+		KeyID:        testInboundKeyID,
+		PublicKey:    hex.EncodeToString(pub),
+		TrustDomains: append([]string(nil), trustDomains...),
+	}}
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.Window = "5m"
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 32
+	return cfg
+}
+
+func assertInboundActorRejected(t *testing.T, p *Proxy, cfg *config.Config, req *http.Request) {
+	t.Helper()
+	if err := verifyInboundEnvelope(req, cfg, p.envelopeVerifierPtr.Load()); err == nil {
+		t.Fatal("expected inbound envelope verification to reject actor")
+	}
+}
+
+func assertInboundActorVerified(t *testing.T, p *Proxy, cfg *config.Config, req *http.Request) {
+	t.Helper()
+	if err := verifyInboundEnvelope(req, cfg, p.envelopeVerifierPtr.Load()); err != nil {
+		t.Fatalf("expected inbound envelope verification to accept actor: %v", err)
 	}
 }
 

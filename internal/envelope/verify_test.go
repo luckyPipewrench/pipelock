@@ -390,6 +390,24 @@ func TestParseActor_StrictSPIFFE(t *testing.T) {
 	}
 }
 
+func TestParseActorStrictRequiresSPIFFE(t *testing.T) {
+	t.Parallel()
+
+	if _, err := ParseActorStrict("agent:legacy"); err == nil {
+		t.Fatal("strict parser should reject free-form actors")
+	}
+	if _, err := ParseActorStrict("spiffe:///missing-domain"); err == nil {
+		t.Fatal("strict parser should reject malformed SPIFFE actors")
+	}
+	parsed, err := ParseActorStrict("spiffe://Strict.Test/agent/alpha")
+	if err != nil {
+		t.Fatalf("ParseActorStrict SPIFFE: %v", err)
+	}
+	if !parsed.IsSPIFFE || parsed.TrustDomain != "strict.test" {
+		t.Fatalf("strict parser returned %+v", parsed)
+	}
+}
+
 func TestIsValidTrustDomain(t *testing.T) {
 	t.Parallel()
 	good := []string{"trust.example", "partner.internal", "a", "single-label"}
@@ -761,6 +779,43 @@ func TestVerifier_TrustDomainPinRequiresSPIFFEActor(t *testing.T) {
 	}
 	if _, err := verifier.VerifyRequest(req, nil); err == nil {
 		t.Fatal("trust-domain-pinned key should reject legacy actor")
+	}
+}
+
+func TestVerifier_StrictActorFormatRejectsLegacyActor(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	req := signedLegacyActorRequest(t, priv, now)
+	verifier := newTestVerifier(t, pub, now)
+
+	if _, err := verifier.VerifyRequest(req, nil); err == nil {
+		t.Fatal("strict verifier should reject legacy actor")
+	}
+}
+
+func TestVerifier_LegacyActorFormatAllowsMigrationPath(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testSignerKey(t)
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	req := signedLegacyActorRequest(t, priv, now)
+	verifier, err := NewVerifier(VerifierConfig{
+		TrustedKeys: []TrustedKey{{
+			KeyID:     "trusted-key",
+			PublicKey: pub,
+		}},
+		ReplayCache: newReplayCache(5*time.Minute, 1000, func() time.Time { return now }),
+		Skew:        time.Minute,
+		ActorFormat: ActorFormatLegacy,
+		NowFn:       func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier legacy: %v", err)
+	}
+	if _, err := verifier.VerifyRequest(req, nil); err != nil {
+		t.Fatalf("legacy actor should verify under migration format: %v", err)
 	}
 }
 

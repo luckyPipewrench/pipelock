@@ -14,6 +14,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/canary"
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
+	clienvelope "github.com/luckyPipewrench/pipelock/internal/cli/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
 	"github.com/luckyPipewrench/pipelock/internal/cli/learn"
@@ -82,6 +83,8 @@ Quick start:
 		audit.SimulateCmd(),
 		// Containment (workstation-tier)
 		contain.Cmd(),
+		// Mediation envelope trust management
+		clienvelope.Cmd(),
 		// Diagnostics
 		diag.DiagnoseCmd(),
 		diag.DiscoverCmd(),

@@ -33,6 +33,10 @@ type VerifierConfig struct {
 	TrustedKeys []TrustedKey
 	ReplayCache *ReplayCache
 	Skew        time.Duration
+	// ActorFormat controls inbound actor parsing. "spiffe" requires
+	// every verified envelope actor to be a valid SPIFFE ID; "legacy"
+	// keeps the permissive migration path.
+	ActorFormat string
 	// MaxSignatureLifetime caps the (expires - created) duration the
 	// verifier accepts. Without a cap, a trusted-but-careless signer that
 	// emits long-lived signatures defeats the replay window: the cache
@@ -49,6 +53,7 @@ type Verifier struct {
 	keys                 map[string]trustedKey
 	replayCache          *ReplayCache
 	skew                 time.Duration
+	actorFormat          string
 	maxSignatureLifetime time.Duration
 	nowFn                func() time.Time
 }
@@ -157,10 +162,19 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 	if now == nil {
 		now = time.Now
 	}
+	actorFormat := strings.ToLower(strings.TrimSpace(cfg.ActorFormat))
+	switch actorFormat {
+	case "", ActorFormatSPIFFE:
+		actorFormat = ActorFormatSPIFFE
+	case ActorFormatLegacy:
+	default:
+		return nil, fmt.Errorf("unknown inbound actor_format %q", cfg.ActorFormat)
+	}
 	return &Verifier{
 		keys:                 keys,
 		replayCache:          cfg.ReplayCache,
 		skew:                 cfg.Skew,
+		actorFormat:          actorFormat,
 		maxSignatureLifetime: cfg.MaxSignatureLifetime,
 		nowFn:                now,
 	}, nil
@@ -184,7 +198,7 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 	if err != nil {
 		return Envelope{}, verificationError(VerificationFailureParse, "parse %s: %w", HeaderName, err)
 	}
-	parsedActor, err := ParseActor(env.Actor)
+	parsedActor, err := v.parseActor(env.Actor)
 	if err != nil {
 		return Envelope{}, verificationError(VerificationFailureParse, "parse actor: %w", err)
 	}
@@ -269,6 +283,13 @@ func (v *Verifier) VerifyRequest(req *http.Request, body []byte) (Envelope, erro
 		return Envelope{}, wrapVerificationError(code, err)
 	}
 	return env, nil
+}
+
+func (v *Verifier) parseActor(raw string) (ParsedActor, error) {
+	if v.actorFormat == ActorFormatLegacy {
+		return ParseActor(raw)
+	}
+	return ParseActorStrict(raw)
 }
 
 func (v *Verifier) validateTime(created, expires int64) error {

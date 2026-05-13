@@ -2154,7 +2154,7 @@ mediation_envelope:
 | `signed_components` | (see below) | Ordered list of RFC 9421 component identifiers covered by the signature. |
 | `created_skew_seconds` | `60` | Clock-drift tolerance (seconds) accepted between signer and verifier. |
 | `max_body_bytes` | `1048576` | Upper bound on the body drained for Content-Digest when body scanning is disabled. |
-| `actor_format` | `spiffe` | Format for newly emitted `actor` values. `spiffe` maps agent names to `spiffe://<trust_domain>/agent/<name>`; `legacy` preserves the configured name. |
+| `actor_format` | `spiffe` | Format for newly emitted `actor` values and inbound verification strictness. `spiffe` maps agent names to `spiffe://<trust_domain>/agent/<name>` and requires verified inbound actors to be valid SPIFFE IDs. `legacy` preserves the older free-form actor string and keeps inbound actor parsing permissive for migration. |
 | `trust_domain` | `pipelock.local` | SPIFFE trust domain used when `actor_format: spiffe`. Must be a DNS-shaped label with no scheme, slashes, userinfo, or port. |
 | `signature_expires` | `=replay_cache.window` | Per-signature lifetime emitted by the outbound signer (Go duration string). When `verify_inbound.enabled` is true, this must be `<= verify_inbound.replay_cache.window`; an explicit value larger than the window is rejected at startup so a captured signature can never outlive its replay-cache nonce. When inbound verification is disabled, any positive duration is accepted. Empty falls back to the configured replay-cache window. |
 | `verify_inbound.enabled` | `false` | Require every inbound request on this listener to carry a valid Pipelock mediation signature before the inbound envelope headers are stripped. |

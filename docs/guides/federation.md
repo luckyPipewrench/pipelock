@@ -1,6 +1,6 @@
 # Federation: Inbound Envelope Verification, SPIFFE Actors, Well-Known Directory
 
-When two organisations both run Pipelock, the mediation envelope makes their proxies interoperate. v2.4 closes the federation loop:
+When two organisations both run Pipelock, the mediation envelope makes their proxies interoperate. The federation surface includes:
 
 - **Inbound envelope verification** so a Pipelock that receives a request signed by another Pipelock can verify the signature, check the trust list, and protect against replay.
 - **SPIFFE actor format** so mediators identify themselves with cryptographically-defined trust-domain identities instead of free-form strings.
@@ -41,9 +41,11 @@ mediation_envelope:
       max_entries: 100000           # nonce-keyed in-process cache
 ```
 
-### Permissive vs strict (v2.4 vs v2.5)
+### Permissive vs strict actors
 
-In v2.4 a `trust_list` entry with empty `trust_domains` accepts a signature for any claimed actor under that key. v2.5 will require an explicit `trust_domains` pin per key. Production deployments should pin every key from day one so a compromised partner key cannot impersonate an actor in another federation peer's trust domain.
+`mediation_envelope.actor_format: spiffe` is the default. It emits SPIFFE actor IDs on outbound envelopes and requires verified inbound envelopes to carry syntactically valid SPIFFE actors. The same knob controls both surfaces; set `mediation_envelope.actor_format: legacy` only for migration windows where a trusted peer still signs free-form actor strings.
+
+A `trust_list` entry with empty `trust_domains` accepts a signature for any claimed SPIFFE trust domain under that key. Production deployments should pin every key from day one so a compromised partner key cannot impersonate an actor in another federation peer's trust domain.
 
 ### Trust list
 
@@ -52,7 +54,7 @@ Each `trust_list` entry names a trusted signing key and what it is allowed to si
 - `key_id` — opaque identifier echoed in receipts so an auditor can trace which trusted key validated which envelope.
 - `public_key` — REQUIRED. Ed25519 public key, either raw 64-character hex or the versioned `pipelock-ed25519-public-v1` format emitted by Pipelock signing tooling. Validated at config-load.
 - `well_known_url` — optional metadata pointer. Validated as HTTPS at config-load. Inbound verification does NOT fetch from this URL; it is for human and tooling provenance. To rotate keys, update `public_key`.
-- `trust_domains` — optional. When non-empty, restricts the actor SPIFFE trust domain a signed envelope can claim under this key. When empty (v2.4 migration default), the key signs for any actor.
+- `trust_domains` — optional. When non-empty, restricts the actor SPIFFE trust domain a signed envelope can claim under this key. When empty, the key signs for any SPIFFE trust domain accepted by the current `actor_format`.
 
 Key rotation is a config change. Edit `public_key`, hot-reload (`SIGHUP` or fsnotify watch), and the new key is in effect. There is no automatic well-known fetch.
 
@@ -84,9 +86,13 @@ The cache is in-process. Multi-replica deployments (HA pairs, load-balanced side
 
 ## SPIFFE actor format
 
-Outbound envelopes write SPIFFE format by default in v2.4: `spiffe://<trust-domain>/agent/<name>` for individual agents, `spiffe://<trust-domain>/mediators/<deployment-id>` for the mediator itself.
+Outbound envelopes write SPIFFE format by default:
+`spiffe://<trust-domain>/agent/<name>` for individual agents,
+`spiffe://<trust-domain>/mediators/<deployment-id>` for the mediator itself.
 
-Inbound accepts both formats in v2.4 (permissive). v2.5 will require SPIFFE for inbound.
+Inbound requires SPIFFE by default. Operators can temporarily set
+`mediation_envelope.actor_format: legacy` to accept free-form actor strings
+from older trusted peers during migration.
 
 SPIFFE parsing follows the SPIFFE-ID §2 spec:
 
@@ -95,7 +101,38 @@ SPIFFE parsing follows the SPIFFE-ID §2 spec:
 - Workload path must be non-empty and canonical (no empty, `.`, or `..` segments) so allowlist checks comparing the workload as a string cannot be bypassed via path traversal.
 - Scheme must be exactly `spiffe`.
 
-Pipelock rejects malformed SPIFFE IDs at envelope verification time. Legacy free-form actors are accepted in permissive mode but flagged with `actor_format: "legacy"` in the verification result so operators can monitor migration progress.
+Pipelock rejects malformed SPIFFE IDs at envelope verification time. Legacy
+free-form actors are accepted only when `mediation_envelope.actor_format` is
+set to `legacy`.
+
+## Trust CLI
+
+Use `pipelock envelope trust` to manage the local operator trust list used for
+manual envelope verification and peer onboarding:
+
+```sh
+pipelock envelope trust add partner.example --key <64-char-ed25519-public-key-hex>
+pipelock envelope trust add spiffe://partner.example/agent/proxy \
+  --source https://partner.example/.well-known/http-message-signatures-directory
+pipelock envelope trust list
+pipelock envelope trust list --json
+pipelock envelope trust verify --stdin < signed-request.http
+pipelock envelope trust remove partner.example
+```
+
+The default trust store is
+`$XDG_STATE_HOME/pipelock/envelope/trust.json` (or
+`~/.local/state/pipelock/envelope/trust.json` when `XDG_STATE_HOME` is unset)
+and is written with `0o600` permissions. `--store` intentionally selects an
+operator-controlled alternate path. `--source` fetches a public verification
+key from a well-known HTTP Message Signatures directory. Only use `--source`
+for a directory you already intend to trust; the fetched key becomes local
+trust material for operator verification workflows.
+
+Adding a peer to this store does not change runtime admission. Inbound proxy
+verification still uses the pinned keys in
+`mediation_envelope.verify_inbound.trust_list` in `pipelock.yaml`; update that
+config and reload the proxy to change what runtime traffic can present.
 
 ## Well-known directory
 

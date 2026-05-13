@@ -161,8 +161,9 @@ RFC 9421 HTTP Message Signatures for the mediation envelope ship in v2.2.0. The 
 **SPIFFE actors.** New outbound envelopes default to SPIFFE-formatted actors:
 `spiffe://<trust_domain>/agent/<agent-name>`. Set
 `mediation_envelope.actor_format: legacy` to preserve the older unstructured
-actor string during migration. Inbound parsing is permissive in v2.4: both
-legacy actor strings and SPIFFE IDs are accepted.
+actor string during migration. Inbound verification uses the same knob:
+`spiffe` requires verified inbound actors to be valid SPIFFE IDs, while
+`legacy` keeps the older permissive parser for migration.
 
 **Inbound verification.** Set `mediation_envelope.verify_inbound.enabled: true`
 with a `trust_list` of accepted `key_id` / Ed25519 public-key pairs to require
@@ -188,7 +189,8 @@ The verifier enforces three federation guards beyond signature validity:
   SPIFFE-ID §2: no userinfo, no port in the trust domain, no `..` or empty
   path segments. Allowlist comparisons on `actor.TrustDomain` or
   `actor.Workload` cannot be bypassed via traversal or smuggled authority
-  components.
+  components. Free-form actors are rejected unless
+  `mediation_envelope.actor_format: legacy` is explicitly configured.
 
 Verification runs on every transport — `/fetch`, forward CONNECT, WebSocket,
 TLS-intercepted CONNECT inner requests, and the reverse proxy — before the
@@ -200,6 +202,24 @@ public key at `/.well-known/http-message-signatures-directory` and emits an
 audit anomaly when the route is requested. Verifiers can fetch that JSON
 directory instead of sideloading a public-key pin. Unsigned envelope
 configurations return 404 for the well-known route.
+
+**Trust CLI.** `pipelock envelope trust` manages a local JSON trust list for
+operator verification workflows:
+
+```sh
+pipelock envelope trust add partner.example --key <64-char-ed25519-public-key-hex>
+pipelock envelope trust add spiffe://partner.example/agent/proxy \
+  --source https://partner.example/.well-known/http-message-signatures-directory
+pipelock envelope trust list --json
+pipelock envelope trust verify --stdin < signed-request.http
+```
+
+The store defaults to `$XDG_STATE_HOME/pipelock/envelope/trust.json` and is
+written with `0o600` permissions. `--store` intentionally selects an
+operator-controlled alternate path. The runtime proxy verifier still reads
+trusted keys from `mediation_envelope.verify_inbound.trust_list` in
+`pipelock.yaml`; the local trust store is for operator workflows until runtime
+trust-store loading is added.
 
 ## Example: reading the envelope in Go
 

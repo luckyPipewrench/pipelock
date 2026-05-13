@@ -4,6 +4,8 @@
 package cli
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -36,5 +38,20 @@ func TestRegisterCommand(t *testing.T) {
 	}
 	if !found {
 		t.Error("registered command not found in rootCmd subcommands")
+	}
+}
+
+func TestEnvelopeHelpRegistered(t *testing.T) {
+	cmd := rootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"envelope", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("envelope help: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "trust") {
+		t.Fatalf("help output = %q, want trust subcommand", got)
 	}
 }

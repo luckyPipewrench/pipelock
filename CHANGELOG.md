@@ -5,6 +5,16 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`pipelock envelope trust` operator CLI.** New `pipelock envelope trust add/list/remove/verify` commands manage a local JSON trust list for operator review, peer onboarding, and manual envelope verification. The runtime proxy verifier still reads trusted keys from `mediation_envelope.verify_inbound.trust_list` in `pipelock.yaml`; the local store does not change runtime admission until runtime trust-store loading is added.
+
+### Security Hardening
+
+- **Inbound mediation-envelope verification now requires SPIFFE actors by default.** `mediation_envelope.actor_format: spiffe` already emitted SPIFFE actors on outbound envelopes; it now also requires verified inbound envelopes to carry syntactically valid SPIFFE IDs. Operators with mixed-mode federations that still receive legacy free-form actor strings must set `mediation_envelope.actor_format: legacy` temporarily to preserve v2.4 behavior during peer migration.
+
 ## [2.4.0] - 2026-05-06
 
 ### Highlights

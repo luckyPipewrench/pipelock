@@ -21,7 +21,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
-const testInboundVerifyMissingPattern = "inbound_verify_missing"
+const (
+	testInboundVerifyMissingPattern = "inbound_verify_missing"
+	testInboundVerifyParsePattern   = "inbound_verify_parse"
+	testInboundKeyID                = "partner-key"
+	testInboundBody                 = "payload"
+)
 
 func TestInboundEnvelopeFailurePatternUsesVerifierCodes(t *testing.T) {
 	t.Parallel()
@@ -37,7 +42,7 @@ func TestInboundEnvelopeFailurePatternUsesVerifierCodes(t *testing.T) {
 		{name: "missing", code: envelope.VerificationFailureMissing, want: testInboundVerifyMissingPattern},
 		{name: "digest", code: envelope.VerificationFailureDigest, want: "inbound_verify_digest"},
 		{name: "signature", code: envelope.VerificationFailureSignature, want: "inbound_verify_signature"},
-		{name: "parse", code: envelope.VerificationFailureParse, want: "inbound_verify_parse"},
+		{name: "parse", code: envelope.VerificationFailureParse, want: testInboundVerifyParsePattern},
 	}
 
 	for _, tt := range tests {
@@ -110,7 +115,7 @@ func TestInboundEnvelopeFailurePatternFallback(t *testing.T) {
 		{name: "missing", err: errors.New("missing header"), want: testInboundVerifyMissingPattern},
 		{name: "digest", err: errors.New("content-digest mismatch"), want: "inbound_verify_digest"},
 		{name: "signature", err: errors.New("signature verification failed"), want: "inbound_verify_signature"},
-		{name: "parse", err: errors.New("parse Signature-Input"), want: "inbound_verify_parse"},
+		{name: "parse", err: errors.New("parse Signature-Input"), want: testInboundVerifyParsePattern},
 		{name: "failed", err: errors.New("unexpected verifier failure"), want: "inbound_verify_failed"},
 	}
 
@@ -143,7 +148,7 @@ func TestBuildInboundEnvelopeVerifier(t *testing.T) {
 	}
 	cfg.MediationEnvelope.VerifyInbound.Enabled = true
 	cfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{
-		KeyID:        "partner-key",
+		KeyID:        testInboundKeyID,
 		PublicKey:    hex.EncodeToString(pub),
 		TrustDomains: []string{"partner.example"},
 	}}
@@ -169,10 +174,44 @@ func TestVerifyInboundEnvelopeValidSignedRequest(t *testing.T) {
 
 	pub, priv := testInboundEnvelopeKey(t)
 	cfg, verifier := testInboundVerifier(t, pub)
-	req := signedInboundRequest(t, priv, "partner-key", "spiffe://partner.example/agent/proxy", "payload")
+	req := signedInboundRequest(t, priv, "spiffe://partner.example/agent/proxy")
 
 	if err := verifyInboundEnvelope(req, cfg, verifier); err != nil {
 		t.Fatalf("verifyInboundEnvelope: %v", err)
+	}
+}
+
+func TestVerifyInboundEnvelopeStrictActorFormatRejectsLegacyActor(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testInboundEnvelopeKey(t)
+	cfg, verifier := testInboundVerifier(t, pub)
+	req := signedInboundRequest(t, priv, "legacy-agent")
+
+	err := verifyInboundEnvelope(req, cfg, verifier)
+	if err == nil {
+		t.Fatal("strict inbound actor format should reject legacy actor")
+	}
+	if got := inboundEnvelopeFailurePattern(err); got != testInboundVerifyParsePattern {
+		t.Fatalf("pattern = %q, want %s", got, testInboundVerifyParsePattern)
+	}
+}
+
+func TestVerifyInboundEnvelopeLegacyActorFormatAllowsMigrationPath(t *testing.T) {
+	t.Parallel()
+
+	pub, priv := testInboundEnvelopeKey(t)
+	cfg, _ := testInboundVerifier(t, pub)
+	cfg.MediationEnvelope.ActorFormat = envelope.ActorFormatLegacy
+	cfg.MediationEnvelope.VerifyInbound.TrustList[0].TrustDomains = nil
+	verifier, err := buildInboundEnvelopeVerifier(cfg)
+	if err != nil {
+		t.Fatalf("buildInboundEnvelopeVerifier: %v", err)
+	}
+	req := signedInboundRequest(t, priv, "legacy-agent")
+
+	if err := verifyInboundEnvelope(req, cfg, verifier); err != nil {
+		t.Fatalf("legacy actor should verify in migration mode: %v", err)
 	}
 }
 
@@ -238,7 +277,7 @@ func testInboundVerifier(t *testing.T, pub ed25519.PublicKey) (*config.Config, *
 	cfg.MediationEnvelope.MaxBodyBytes = 1024
 	cfg.MediationEnvelope.VerifyInbound.Enabled = true
 	cfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{
-		KeyID:        "partner-key",
+		KeyID:        testInboundKeyID,
 		PublicKey:    hex.EncodeToString(pub),
 		TrustDomains: []string{"partner.example"},
 	}}
@@ -252,10 +291,10 @@ func testInboundVerifier(t *testing.T, pub ed25519.PublicKey) (*config.Config, *
 	return cfg, verifier
 }
 
-func signedInboundRequest(t *testing.T, priv ed25519.PrivateKey, keyID, actor, body string) *http.Request {
+func signedInboundRequest(t *testing.T, priv ed25519.PrivateKey, actor string) *http.Request {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/api", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/api", strings.NewReader(testInboundBody))
 	env := envelope.Envelope{
 		Version:   1,
 		Action:    "write",
@@ -270,14 +309,14 @@ func signedInboundRequest(t *testing.T, priv ed25519.PrivateKey, keyID, actor, b
 	}
 	signer, err := envelope.NewSigner(envelope.SignerConfig{
 		PrivKey:          priv,
-		KeyID:            keyID,
+		KeyID:            testInboundKeyID,
 		SignedComponents: config.DefaultEnvelopeSignedComponents(),
 		Expires:          time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	if err := signer.SignRequest(req, []byte(body)); err != nil {
+	if err := signer.SignRequest(req, []byte(testInboundBody)); err != nil {
 		t.Fatalf("SignRequest: %v", err)
 	}
 	return req

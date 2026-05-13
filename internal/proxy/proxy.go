@@ -1109,6 +1109,7 @@ func buildInboundEnvelopeVerifier(cfg *config.Config) (*envelope.Verifier, error
 		TrustedKeys:          keys,
 		ReplayCache:          envelope.NewReplayCache(window, verify.ReplayCache.MaxEntries),
 		Skew:                 skew,
+		ActorFormat:          cfg.MediationEnvelope.ActorFormat,
 		MaxSignatureLifetime: window + skew,
 	})
 }

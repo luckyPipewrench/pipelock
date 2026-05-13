@@ -913,9 +913,10 @@ type MediationEnvelope struct {
 	// the cache.
 	SignatureExpires string `yaml:"signature_expires"`
 
-	// ActorFormat controls new outbound envelope actor values. v2.4
-	// defaults to SPIFFE format while inbound parsing remains permissive
-	// for legacy actor strings.
+	// ActorFormat controls emitted envelope actor values and inbound
+	// verification strictness. "spiffe" emits SPIFFE IDs and requires
+	// inbound verified actors to be SPIFFE IDs. "legacy" preserves the
+	// older free-form actor string for migration.
 	ActorFormat string `yaml:"actor_format"`
 	TrustDomain string `yaml:"trust_domain"`
 

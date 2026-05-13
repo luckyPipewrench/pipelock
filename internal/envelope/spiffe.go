@@ -24,9 +24,8 @@ type ParsedActor struct {
 	Workload    string
 }
 
-// ParseActor accepts legacy free-form actor strings and SPIFFE IDs. The
-// permissive behavior is the v2.4 migration mode; callers that need the v2.5
-// strict behavior can require ParsedActor.IsSPIFFE after parsing.
+// ParseActor accepts legacy free-form actor strings and SPIFFE IDs. Call
+// ParseActorStrict on inbound federation paths that require SPIFFE identity.
 //
 // SPIFFE-ID parsing follows SPIFFE-ID §2: trust domain must be a bare
 // authority (no userinfo, no port), and the workload path must be
@@ -79,6 +78,18 @@ func ParseActor(raw string) (ParsedActor, error) {
 		TrustDomain: strings.ToLower(u.Host),
 		Workload:    u.EscapedPath(),
 	}, nil
+}
+
+// ParseActorStrict accepts only syntactically valid SPIFFE IDs.
+func ParseActorStrict(raw string) (ParsedActor, error) {
+	parsed, err := ParseActor(raw)
+	if err != nil {
+		return ParsedActor{}, err
+	}
+	if !parsed.IsSPIFFE {
+		return ParsedActor{}, fmt.Errorf("actor must be a SPIFFE ID")
+	}
+	return parsed, nil
 }
 
 // isCanonicalSPIFFEPath returns true when p is already in canonical form:
@@ -146,7 +157,7 @@ func FormatActor(actor, actorFormat, trustDomain string) (string, error) {
 		return trimmed, nil
 	case ActorFormatSPIFFE:
 		if strings.HasPrefix(strings.ToLower(trimmed), "spiffe://") {
-			if _, err := ParseActor(trimmed); err != nil {
+			if _, err := ParseActorStrict(trimmed); err != nil {
 				return "", err
 			}
 			return trimmed, nil

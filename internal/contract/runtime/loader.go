@@ -340,7 +340,7 @@ func (l *Loader) acceptedChainReachesCurrent(state store.State, prev *ActiveSet,
 		if prior == "" || prior == "sha256:genesis" {
 			return false
 		}
-		next, err := l.store.Accepted(prior, opts)
+		next, err := l.store.AcceptedHistory(prior, opts)
 		if err != nil {
 			return false
 		}

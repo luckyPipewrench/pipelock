@@ -402,7 +402,7 @@ func loadLifecycleSigner(keystoreDir, keyID string) (privateKeySigner, error) {
 }
 
 func latestAccepted(st contractstore.Store, opts contractstore.Options) (contractstore.State, bool, error) {
-	current, err := st.LatestAccepted(opts)
+	current, err := st.LatestAcceptedHistory(opts)
 	if err == nil {
 		return current, true, nil
 	}

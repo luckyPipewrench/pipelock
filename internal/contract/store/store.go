@@ -174,6 +174,10 @@ func (s Store) Reload(opts Options) (State, error) {
 // ValidateEnvelope runs strict decode, signature checks, CAS checks, and
 // contract-history resolution without mutating store files.
 func (s Store) ValidateEnvelope(raw []byte, opts Options) (State, error) {
+	return s.validateEnvelope(raw, opts, true)
+}
+
+func (s Store) validateEnvelope(raw []byte, opts Options, checkTombstones bool) (State, error) {
 	var env contract.ActiveManifestEnvelope
 	if err := contract.DecodeStrictJSON(raw, &env); err != nil {
 		return State{}, fmt.Errorf("%w: active manifest: %w", ErrDecode, err)
@@ -201,7 +205,60 @@ func (s Store) ValidateEnvelope(raw []byte, opts Options) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	if checkTombstones {
+		if err := s.tombstoneCheck(env.Body.Selectors, opts); err != nil {
+			return State{}, err
+		}
+	}
 	return State{Envelope: env, ManifestHash: hash, Contracts: contracts}, nil
+}
+
+// LatestAcceptedHistory returns the highest-generation immutable accepted
+// manifest without applying the tombstone adoption gate. It is for baseline
+// and chain-continuity reads only: callers may use the returned hash,
+// generation, and environment to build a new manifest, but must not adopt the
+// returned selectors as runtime state without a later ValidateEnvelope,
+// LatestAccepted, or Accepted call.
+func (s Store) LatestAcceptedHistory(opts Options) (State, error) {
+	return s.latestAccepted(opts, false)
+}
+
+// AcceptedHistory returns an immutable accepted manifest by manifest hash
+// without applying the tombstone adoption gate. It is for baseline and
+// chain-continuity reads only. Use Accepted when the returned selectors will
+// be adopted as runtime state.
+func (s Store) AcceptedHistory(hash string, opts Options) (State, error) {
+	return s.accepted(hash, opts, false)
+}
+
+func (s Store) tombstoneAdoptionCheck(selectors []contract.ManifestSelector, opts Options, enabled bool) error {
+	if enabled {
+		return s.tombstoneCheck(selectors, opts)
+	}
+	return nil
+}
+
+func (s Store) accepted(hash string, opts Options, checkTombstones bool) (State, error) {
+	accepted, err := s.loadAcceptedManifestByHash(hash, opts)
+	if err != nil {
+		return State{}, err
+	}
+	if err := s.acceptedChainContinuous(hash, map[string]acceptedManifest{hash: accepted}, opts, map[string]struct{}{}); err != nil {
+		return State{}, err
+	}
+	contracts, err := s.loadContracts(accepted.env.Body.Selectors, opts)
+	if err != nil {
+		return State{}, err
+	}
+	if err := s.tombstoneAdoptionCheck(accepted.env.Body.Selectors, opts, checkTombstones); err != nil {
+		return State{}, err
+	}
+	return State{
+		Envelope:     accepted.env,
+		ManifestHash: accepted.hash,
+		Contracts:    contracts,
+		AcceptedPath: accepted.path,
+	}, nil
 }
 
 // WriteActive validates and atomically writes active.json. The advisory lock
@@ -266,7 +323,17 @@ func (s Store) PutHistoryContract(raw []byte, opts Options) (string, error) {
 }
 
 // LatestAccepted returns the highest-generation immutable accepted manifest.
+// The returned state is the candidate for being ADOPTED as runtime active
+// state (recovery path, rollback display, "current active" inspection),
+// so the tombstone cross-check fires before return. Callers that only
+// need baseline metadata or historical chain continuity should use
+// LatestAcceptedHistory or AcceptedHistory so historical reads do not fail
+// closed when an ancestor referenced a now-tombstoned contract.
 func (s Store) LatestAccepted(opts Options) (State, error) {
+	return s.latestAccepted(opts, true)
+}
+
+func (s Store) latestAccepted(opts Options, checkTombstones bool) (State, error) {
 	entries, err := readDir(s.manifestDir())
 	if err != nil {
 		return State{}, fmt.Errorf("read accepted manifests: %w", err)
@@ -298,6 +365,9 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
+	if err := s.tombstoneAdoptionCheck(latest.env.Body.Selectors, opts, checkTombstones); err != nil {
+		return State{}, err
+	}
 	return State{
 		Envelope:     latest.env,
 		ManifestHash: latest.hash,
@@ -306,25 +376,14 @@ func (s Store) LatestAccepted(opts Options) (State, error) {
 	}, nil
 }
 
-// Accepted returns an immutable accepted manifest by manifest hash.
+// Accepted returns an immutable accepted manifest by manifest hash. As
+// with LatestAccepted, callers use this to adopt a historical manifest
+// as runtime state (loader recovery from a prior-hash mismatch, learn
+// activate --rollback). The tombstone cross-check fires before return
+// so rollback or recovery cannot resurrect a contract the operator has
+// already signed a withdrawal for.
 func (s Store) Accepted(hash string, opts Options) (State, error) {
-	accepted, err := s.loadAcceptedManifestByHash(hash, opts)
-	if err != nil {
-		return State{}, err
-	}
-	if err := s.acceptedChainContinuous(hash, map[string]acceptedManifest{hash: accepted}, opts, map[string]struct{}{}); err != nil {
-		return State{}, err
-	}
-	contracts, err := s.loadContracts(accepted.env.Body.Selectors, opts)
-	if err != nil {
-		return State{}, err
-	}
-	return State{
-		Envelope:     accepted.env,
-		ManifestHash: accepted.hash,
-		Contracts:    contracts,
-		AcceptedPath: accepted.path,
-	}, nil
+	return s.accepted(hash, opts, true)
 }
 
 type acceptedManifest struct {
@@ -488,7 +547,7 @@ func (s Store) currentActiveLocked(opts Options) (State, error) {
 	currentOpts := opts
 	currentOpts.PreviousHash = ""
 	currentOpts.PreviousGeneration = 0
-	return s.ValidateEnvelope(raw, currentOpts)
+	return s.validateEnvelope(raw, currentOpts, false)
 }
 
 func verifyManifestSignatures(env contract.ActiveManifestEnvelope, opts Options) error {

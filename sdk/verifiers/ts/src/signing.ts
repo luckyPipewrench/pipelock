@@ -15,7 +15,7 @@ const validActionTypes = new Set([
   "spend",
   "commit",
   "actuate",
-  "unclassified"
+  "unclassified",
 ]);
 
 function requireString(value: unknown, name: string): string {
@@ -31,9 +31,12 @@ function requireNumber(value: unknown, name: string): number {
 }
 
 export function validateActionRecord(actionRecord: ActionRecord | undefined): ActionRecord {
-  if (!actionRecord || typeof actionRecord !== "object") throw new Error("action_record is required");
+  if (!actionRecord || typeof actionRecord !== "object")
+    throw new Error("action_record is required");
   if (actionRecord.version !== 1) {
-    throw new Error(`unsupported action record version ${String(actionRecord.version)} (expected 1)`);
+    throw new Error(
+      `unsupported action record version ${String(actionRecord.version)} (expected 1)`,
+    );
   }
   requireString(actionRecord.action_id, "action_id");
   const actionType = requireString(actionRecord.action_type, "action_type");

@@ -32,8 +32,8 @@ const fullReceipt: Receipt = {
         level: 5,
         timestamp: "2026-05-10T12:34:55Z",
         receipt_id: "r1",
-        match_reason: "pattern"
-      }
+        match_reason: "pattern",
+      },
     ],
     session_task_id: "task-1",
     session_task_label: "review",
@@ -60,7 +60,7 @@ const fullReceipt: Receipt = {
       parser: "json",
       total_redactions: 2,
       by_class: { token: 1, secret: 1 },
-      cache_boundary_kept: true
+      cache_boundary_kept: true,
     },
     request_id: "req-1",
     chain_prev_hash: "genesis",
@@ -70,11 +70,11 @@ const fullReceipt: Receipt = {
     rulebook_id: "rulebook-v1",
     remedy_class: "notify",
     contestation_window: "24h",
-    precedent_refs: ["p1", "p2"]
+    precedent_refs: ["p1", "p2"],
   },
   signature:
     "ed25519:dc7bdb6220e7dd261ca6a55f295ee0ca44c8dbb04c36a07940ee11730c2119dd1bae6e96ea6d465a7c6ba357119c2218a795b2eec17f424d6e070e03b9c9540c",
-  signer_key: "7de2d117b21faaa0f1d9d3d02fcba13838bef0c75caddf71de376f0bb837bfbc"
+  signer_key: "7de2d117b21faaa0f1d9d3d02fcba13838bef0c75caddf71de376f0bb837bfbc",
 };
 
 function sha256(data: Buffer): string {
@@ -84,14 +84,14 @@ function sha256(data: Buffer): string {
 test("canonical ActionRecord matches Go hash for all current fields", () => {
   assert.equal(
     sha256(canonicalizeActionRecord(fullReceipt.action_record!)),
-    "8d5805f40a979a44983971f1a1a5de677cfa173edc33d71146c586a12a1ff3e1"
+    "8d5805f40a979a44983971f1a1a5de677cfa173edc33d71146c586a12a1ff3e1",
   );
 });
 
 test("canonical Receipt envelope matches Go hash", () => {
   assert.equal(
     sha256(canonicalizeReceipt(fullReceipt)),
-    "1b07dab8572e98c5f823cfdc449cbce6711d6ed626df500d739fd9ba9b630345"
+    "1b07dab8572e98c5f823cfdc449cbce6711d6ed626df500d739fd9ba9b630345",
   );
 });
 

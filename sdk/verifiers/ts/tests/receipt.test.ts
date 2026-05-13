@@ -22,8 +22,5 @@ test("receipt command rejects a tampered signature", async () => {
 
 test("receipt verifier rejects a pinned-key mismatch", async () => {
   const receipt = JSON.parse(readFileSync(validSingle, "utf8")) as Receipt;
-  await assert.rejects(
-    verifyReceipt(receipt, "0".repeat(64)),
-    /does not match expected key/u
-  );
+  await assert.rejects(verifyReceipt(receipt, "0".repeat(64)), /does not match expected key/u);
 });

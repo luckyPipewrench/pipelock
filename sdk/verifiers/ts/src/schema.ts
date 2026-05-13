@@ -23,7 +23,16 @@ export function validateSchema(packet: unknown): string[] {
   return (cachedValidator.errors ?? []).map(formatAjvError);
 }
 
-const totalsKeys = ["allow", "block", "warn", "ask", "strip", "forward", "redirect", "other"] as const;
+const totalsKeys = [
+  "allow",
+  "block",
+  "warn",
+  "ask",
+  "strip",
+  "forward",
+  "redirect",
+  "other",
+] as const;
 const verifierVerdicts = new Set(["valid", "invalid", "error", "not_run", "self_consistent_only"]);
 const providers = new Set(["github_actions", "self_hosted", "local"]);
 const rawSocketStatuses = new Set(["denied", "allowed", "unknown"]);
@@ -51,7 +60,9 @@ function nonNegativeMap(name: string, value: unknown, errors: string[]): void {
 export function validateStructural(packet: AuditPacket): string[] {
   const errors: string[] = [];
   if (packet.schema_version !== "pipelock.audit_packet.v0") {
-    errors.push(`schema_version ${JSON.stringify(packet.schema_version)} is not "pipelock.audit_packet.v0"`);
+    errors.push(
+      `schema_version ${JSON.stringify(packet.schema_version)} is not "pipelock.audit_packet.v0"`,
+    );
   }
   if (!packet.run) {
     errors.push("run is required");
@@ -98,7 +109,9 @@ export function validateStructural(packet: AuditPacket): string[] {
   } else {
     const verdict = packet.verifier.verdict;
     if (typeof verdict !== "string" || !verifierVerdicts.has(verdict)) {
-      errors.push(`verdict ${JSON.stringify(verdict)} not in {valid, invalid, error, not_run, self_consistent_only}`);
+      errors.push(
+        `verdict ${JSON.stringify(verdict)} not in {valid, invalid, error, not_run, self_consistent_only}`,
+      );
     }
     if (packet.verifier.trusted === true && verdict !== "valid") {
       errors.push(`trusted=true requires verdict=valid, got ${JSON.stringify(verdict)}`);
@@ -118,10 +131,25 @@ export function validateStructural(packet: AuditPacket): string[] {
     if (!packet.posture.enforcement_mode) errors.push("enforcement_mode is required");
     if (!packet.posture.runner_os) errors.push("runner_os is required");
     enumCheck("raw_socket_status", packet.posture.raw_socket_status, rawSocketStatuses, errors);
-    enumCheck("docker_socket_status", packet.posture.docker_socket_status, dockerSocketStatuses, errors);
+    enumCheck(
+      "docker_socket_status",
+      packet.posture.docker_socket_status,
+      dockerSocketStatuses,
+      errors,
+    );
     enumCheck("dns_udp_status", packet.posture.dns_udp_status, dnsUDPStatuses, errors);
-    enumCheck("browser_proxy_status", packet.posture.browser_proxy_status, browserProxyStatuses, errors);
-    enumCheck("websocket_frame_scanning", packet.posture.websocket_frame_scanning, websocketFrameScanning, errors);
+    enumCheck(
+      "browser_proxy_status",
+      packet.posture.browser_proxy_status,
+      browserProxyStatuses,
+      errors,
+    );
+    enumCheck(
+      "websocket_frame_scanning",
+      packet.posture.websocket_frame_scanning,
+      websocketFrameScanning,
+      errors,
+    );
     if (!Array.isArray(packet.posture.unsupported_paths)) {
       errors.push("unsupported_paths is required (use empty array, not null)");
     }

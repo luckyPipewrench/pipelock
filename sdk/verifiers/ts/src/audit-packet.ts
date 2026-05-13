@@ -21,7 +21,7 @@ const zeroTotals: Totals = {
   strip: 0,
   forward: 0,
   redirect: 0,
-  other: 0
+  other: 0,
 };
 
 function reportFromPacket(packetPath: string, packet?: AuditPacket): AuditPacketReport {
@@ -32,21 +32,21 @@ function reportFromPacket(packetPath: string, packet?: AuditPacket): AuditPacket
     valid: false,
     summary: {
       receipt_count: packet?.summary?.receipt_count ?? 0,
-      totals: { ...zeroTotals, ...(packet?.summary?.totals ?? {}) }
+      totals: { ...zeroTotals, ...(packet?.summary?.totals ?? {}) },
     },
     posture: {
       enforcement_mode: packet?.posture?.enforcement_mode ?? "",
-      unsupported_paths: packet?.posture?.unsupported_paths ?? []
+      unsupported_paths: packet?.posture?.unsupported_paths ?? [],
     },
     run: {
       provider: packet?.run?.provider ?? "",
       repository: packet?.run?.repository,
       sha: packet?.run?.sha,
-      agent_identity: packet?.run?.agent_identity ?? ""
+      agent_identity: packet?.run?.agent_identity ?? "",
     },
     schema_check: "skipped",
     chain_check: "skipped",
-    cross_check: "skipped"
+    cross_check: "skipped",
   };
 }
 
@@ -70,7 +70,9 @@ function crossCheck(packet: AuditPacket, chain: ChainResult, receipts: Receipt[]
   const errors: string[] = [];
   const receiptCount = packet.summary?.receipt_count ?? -1;
   if (chain.receipt_count !== receiptCount) {
-    errors.push(`chain receipt_count ${chain.receipt_count} != packet.summary.receipt_count ${receiptCount}`);
+    errors.push(
+      `chain receipt_count ${chain.receipt_count} != packet.summary.receipt_count ${receiptCount}`,
+    );
   }
   const expectedTotals = computeTotals(receipts);
   const gotTotals = { ...zeroTotals, ...(packet.summary?.totals ?? {}) };
@@ -83,7 +85,9 @@ function crossCheck(packet: AuditPacket, chain: ChainResult, receipts: Receipt[]
     errors.push(`root_hash mismatch: chain=${chain.root_hash} packet=${packet.verifier.root_hash}`);
   }
   if ((packet.verifier?.final_seq ?? 0) !== 0 && packet.verifier?.final_seq !== chain.final_seq) {
-    errors.push(`final_seq mismatch: chain=${chain.final_seq} packet=${String(packet.verifier?.final_seq)}`);
+    errors.push(
+      `final_seq mismatch: chain=${chain.final_seq} packet=${String(packet.verifier?.final_seq)}`,
+    );
   }
   switch (packet.verifier?.verdict) {
     case "valid":
@@ -99,7 +103,10 @@ function crossCheck(packet: AuditPacket, chain: ChainResult, receipts: Receipt[]
   return errors;
 }
 
-export async function verifyAuditPacket(target: string, opts: AuditPacketOptions): Promise<AuditPacketReport> {
+export async function verifyAuditPacket(
+  target: string,
+  opts: AuditPacketOptions,
+): Promise<AuditPacketReport> {
   const { packetPath, baseDir } = resolvePacketPath(target);
   const rawPacket = readFileSync(packetPath);
   const report = reportFromPacket(packetPath);
@@ -140,7 +147,8 @@ export async function verifyAuditPacket(target: string, opts: AuditPacketOptions
   try {
     const evidencePath = resolveArtifactPath(baseDir, packet.artifacts?.evidence ?? "");
     receipts = extractReceipts(evidencePath);
-    const keyInput = opts.signerKey.trim() === "" ? packet.verifier?.signer_key ?? "" : opts.signerKey;
+    const keyInput =
+      opts.signerKey.trim() === "" ? (packet.verifier?.signer_key ?? "") : opts.signerKey;
     chain = await verifyChain(receipts, resolveSignerKey(keyInput));
   } catch (err) {
     report.chain_check = "fail";

@@ -50,14 +50,14 @@ const actionRecordFields: readonly FieldSpec[] = [
   ["rulebook_id", true],
   ["remedy_class", true],
   ["contestation_window", true],
-  ["precedent_refs", true]
+  ["precedent_refs", true],
 ];
 
 const receiptFields: readonly FieldSpec[] = [
   ["version", false],
   ["action_record", false, "action_record"],
   ["signature", false],
-  ["signer_key", false]
+  ["signer_key", false],
 ];
 
 const redactionFields: readonly FieldSpec[] = [
@@ -66,7 +66,7 @@ const redactionFields: readonly FieldSpec[] = [
   ["parser", true],
   ["total_redactions", true],
   ["by_class", true],
-  ["cache_boundary_kept", true]
+  ["cache_boundary_kept", true],
 ];
 
 const taintSourceFields: readonly FieldSpec[] = [
@@ -75,7 +75,7 @@ const taintSourceFields: readonly FieldSpec[] = [
   ["level", false],
   ["timestamp", false],
   ["receipt_id", true],
-  ["match_reason", true]
+  ["match_reason", true],
 ];
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -92,7 +92,10 @@ function isGoZero(value: unknown): boolean {
   return false;
 }
 
-function orderStruct(value: Record<string, unknown>, fields: readonly FieldSpec[]): Record<string, unknown> {
+function orderStruct(
+  value: Record<string, unknown>,
+  fields: readonly FieldSpec[],
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, omitempty, nested] of fields) {
     let fieldValue = value[name];
@@ -107,7 +110,7 @@ function orderStruct(value: Record<string, unknown>, fields: readonly FieldSpec[
       fieldValue = orderStruct(fieldValue, redactionFields);
     } else if (nested === "taint_source" && Array.isArray(fieldValue)) {
       fieldValue = fieldValue.map((item) =>
-        isPlainObject(item) ? orderStruct(item, taintSourceFields) : item
+        isPlainObject(item) ? orderStruct(item, taintSourceFields) : item,
       );
     } else {
       fieldValue = normalizeMaps(fieldValue);
@@ -151,7 +154,10 @@ function goHTMLEscape(serialized: string): string {
 }
 
 export function canonicalizeActionRecord(actionRecord: ActionRecord): Buffer {
-  return Buffer.from(goHTMLEscape(stringifyCompact(orderStruct(actionRecord, actionRecordFields))), "utf8");
+  return Buffer.from(
+    goHTMLEscape(stringifyCompact(orderStruct(actionRecord, actionRecordFields))),
+    "utf8",
+  );
 }
 
 export function canonicalizeReceipt(receipt: Receipt): Buffer {

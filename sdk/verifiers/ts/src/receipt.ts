@@ -28,7 +28,7 @@ export async function runReceipt(pathname: string, signerKey: string): Promise<R
     transport: receipt.action_record?.transport,
     signer_key: receipt.signer_key,
     policy_hash: receipt.action_record?.policy_hash,
-    chain_seq: receipt.action_record?.chain_seq
+    chain_seq: receipt.action_record?.chain_seq,
   };
   try {
     await verifyReceipt(receipt, keyHex);

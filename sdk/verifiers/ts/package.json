@@ -10,6 +10,8 @@
     "build": "tsc && node scripts/copy-schema.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test dist/tests/*.test.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "prepack": "npm run build"
   },
   "dependencies": {
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@types/node": "20.12.12",
+    "prettier": "3.3.3",
     "typescript": "5.4.5"
   },
   "engines": {

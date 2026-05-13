@@ -14,7 +14,9 @@ export function readEntries(file: string): RecorderEntry[] {
     if (line === "") continue;
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
     if (entry.v !== 1 && entry.v !== 2) {
-      throw new RuntimeError(`line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2)`);
+      throw new RuntimeError(
+        `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2)`,
+      );
     }
     entries.push(entry);
   }

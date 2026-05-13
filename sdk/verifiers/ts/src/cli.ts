@@ -33,7 +33,8 @@ function usage(command?: string): string {
 }
 
 function requireOneArg(positionals: string[], command: string): string {
-  if (positionals.length !== 1) throw new UsageError(`${usage(command)}\naccepts 1 arg, received ${positionals.length}`);
+  if (positionals.length !== 1)
+    throw new UsageError(`${usage(command)}\naccepts 1 arg, received ${positionals.length}`);
   return positionals[0] as string;
 }
 
@@ -47,8 +48,8 @@ async function runAuditPacketCommand(args: string[]): Promise<number> {
       offline: { type: "boolean", default: false },
       "allow-self-consistent-only": { type: "boolean", default: false },
       "no-trust-required": { type: "boolean", default: false },
-      "expect-sha256": { type: "string", default: "" }
-    }
+      "expect-sha256": { type: "string", default: "" },
+    },
   });
   const target = requireOneArg(parsed.positionals, "audit-packet");
   const report = await verifyAuditPacket(target, {
@@ -56,7 +57,7 @@ async function runAuditPacketCommand(args: string[]): Promise<number> {
     offline: parsed.values.offline === true,
     allowSelfConsistentOnly: parsed.values["allow-self-consistent-only"] === true,
     noTrustRequired: parsed.values["no-trust-required"] === true,
-    expectSha256: parsed.values["expect-sha256"] ?? ""
+    expectSha256: parsed.values["expect-sha256"] ?? "",
   });
   emitAuditPacket(report, parsed.values.json === true);
   return report.valid ? 0 : 1;
@@ -70,8 +71,8 @@ async function runChainCommand(args: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       key: { type: "string", default: "" },
       dir: { type: "boolean", default: false },
-      "session-id": { type: "string", default: "proxy" }
-    }
+      "session-id": { type: "string", default: "proxy" },
+    },
   });
   const target = requireOneArg(parsed.positionals, "chain");
   const keyHex = resolveSignerKey(parsed.values.key ?? "");
@@ -87,7 +88,9 @@ async function runChainCommand(args: string[]): Promise<number> {
     } else {
       const clean = path.normalize(target);
       if (statSync(clean).isDirectory()) {
-        throw new RuntimeError(`${target} is a directory; pass --dir to verify a session directory`);
+        throw new RuntimeError(
+          `${target} is a directory; pass --dir to verify a session directory`,
+        );
       }
       receipts = extractReceipts(clean);
       label = clean;
@@ -96,7 +99,13 @@ async function runChainCommand(args: string[]): Promise<number> {
     throw new RuntimeError(`extract receipts: ${errorMessage(err)}`);
   }
   if (receipts.length === 0) {
-    const report: ChainCommandReport = { path: label, valid: false, receipt_count: 0, final_seq: 0, error: "no receipts in chain" };
+    const report: ChainCommandReport = {
+      path: label,
+      valid: false,
+      receipt_count: 0,
+      final_seq: 0,
+      error: "no receipts in chain",
+    };
     emitChain(report, parsed.values.json === true);
     return 1;
   }
@@ -108,7 +117,7 @@ async function runChainCommand(args: string[]): Promise<number> {
     final_seq: result.final_seq,
     root_hash: result.root_hash || undefined,
     error: result.error,
-    broken_at_seq: result.broken_at_seq
+    broken_at_seq: result.broken_at_seq,
   };
   emitChain(report, parsed.values.json === true);
   return result.valid ? 0 : 1;
@@ -120,8 +129,8 @@ async function runReceiptCommand(args: string[]): Promise<number> {
     allowPositionals: true,
     options: {
       json: { type: "boolean", default: false },
-      key: { type: "string", default: "" }
-    }
+      key: { type: "string", default: "" },
+    },
   });
   const target = requireOneArg(parsed.positionals, "receipt");
   const report = await runReceipt(target, parsed.values.key ?? "");

@@ -30,7 +30,7 @@ export async function verifyChain(receipts: Receipt[], expectedKeyHex = ""): Pro
         final_seq: 0,
         root_hash: "",
         broken_at_seq: seq,
-        error: `seq ${seq}: signature: ${(err as Error).message}`
+        error: `seq ${seq}: signature: ${(err as Error).message}`,
       };
     }
     if (seq !== i) {
@@ -40,7 +40,7 @@ export async function verifyChain(receipts: Receipt[], expectedKeyHex = ""): Pro
         final_seq: 0,
         root_hash: "",
         broken_at_seq: seq,
-        error: `seq gap: expected ${i}, got ${seq}`
+        error: `seq gap: expected ${i}, got ${seq}`,
       };
     }
     if (receipt.action_record?.chain_prev_hash !== prevHash) {
@@ -50,7 +50,7 @@ export async function verifyChain(receipts: Receipt[], expectedKeyHex = ""): Pro
         final_seq: 0,
         root_hash: "",
         broken_at_seq: seq,
-        error: `seq ${seq}: chain_prev_hash mismatch`
+        error: `seq ${seq}: chain_prev_hash mismatch`,
       };
     }
     prevHash = receiptHash(receipt);
@@ -61,12 +61,20 @@ export async function verifyChain(receipts: Receipt[], expectedKeyHex = ""): Pro
     valid: true,
     receipt_count: receipts.length,
     final_seq: last.action_record?.chain_seq ?? 0,
-    root_hash: prevHash
+    root_hash: prevHash,
   };
 }
 
 export function computeTotals(receipts: Receipt[]) {
-  type VerdictBucket = "allow" | "block" | "warn" | "ask" | "strip" | "forward" | "redirect" | "other";
+  type VerdictBucket =
+    | "allow"
+    | "block"
+    | "warn"
+    | "ask"
+    | "strip"
+    | "forward"
+    | "redirect"
+    | "other";
   const totals: Record<VerdictBucket, number> = {
     allow: 0,
     block: 0,
@@ -75,10 +83,12 @@ export function computeTotals(receipts: Receipt[]) {
     strip: 0,
     forward: 0,
     redirect: 0,
-    other: 0
+    other: 0,
   };
   for (const receipt of receipts) {
-    const verdict = String(receipt.action_record?.verdict ?? "").trim().toLowerCase();
+    const verdict = String(receipt.action_record?.verdict ?? "")
+      .trim()
+      .toLowerCase();
     if (Object.prototype.hasOwnProperty.call(totals, verdict)) {
       totals[verdict as VerdictBucket] += 1;
     } else {

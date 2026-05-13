@@ -22,8 +22,10 @@ export function emitAuditPacket(report: AuditPacketReport, json: boolean): void 
   if (report.run.provider) process.stdout.write(`  provider:     ${report.run.provider}\n`);
   if (report.run.repository) process.stdout.write(`  repository:   ${report.run.repository}\n`);
   if (report.run.sha) process.stdout.write(`  sha:          ${report.run.sha}\n`);
-  if (report.run.agent_identity) process.stdout.write(`  agent:        ${report.run.agent_identity}\n`);
-  if (report.posture.enforcement_mode) process.stdout.write(`  enforcement:  ${report.posture.enforcement_mode}\n`);
+  if (report.run.agent_identity)
+    process.stdout.write(`  agent:        ${report.run.agent_identity}\n`);
+  if (report.posture.enforcement_mode)
+    process.stdout.write(`  enforcement:  ${report.posture.enforcement_mode}\n`);
   if (report.posture.unsupported_paths.length > 0) {
     process.stdout.write(`  unsupported:  ${report.posture.unsupported_paths.join(", ")}\n`);
   }

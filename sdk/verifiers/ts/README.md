@@ -21,12 +21,12 @@ pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE]
 
 Exit codes match the Go verifier:
 
-| Code | Meaning |
-| --- | --- |
-| 0 | valid |
-| 1 | invalid |
-| 2 | runtime error |
-| 64 | CLI usage error |
+| Code | Meaning         |
+| ---- | --------------- |
+| 0    | valid           |
+| 1    | invalid         |
+| 2    | runtime error   |
+| 64   | CLI usage error |
 
 `audit-packet` validates `packet.json` against `sdk/audit-packet/v0.json`, applies the structural v0 checks, and re-verifies the referenced receipt chain unless `--offline` is set. `chain` accepts either an `evidence.jsonl` file or a recorder session directory with `--dir`. `receipt` verifies one receipt JSON file.
 

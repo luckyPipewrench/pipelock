@@ -17,10 +17,10 @@ function basePacket(): AuditPacket {
     run: {
       provider: "local",
       agent_identity: "test-agent",
-      started_at: "2026-05-10T00:00:00Z"
+      started_at: "2026-05-10T00:00:00Z",
     },
     policy: {
-      policy_hashes: ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"]
+      policy_hashes: ["sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],
     },
     summary: {
       receipt_count: 5,
@@ -32,8 +32,8 @@ function basePacket(): AuditPacket {
         strip: 0,
         forward: 0,
         redirect: 0,
-        other: 0
-      }
+        other: 0,
+      },
     },
     verifier: {
       verdict: "valid",
@@ -41,7 +41,7 @@ function basePacket(): AuditPacket {
       receipt_count: 5,
       root_hash: rootHash,
       final_seq: 4,
-      signer_key: publicKey
+      signer_key: publicKey,
     },
     posture: {
       enforcement_mode: "local",
@@ -51,13 +51,13 @@ function basePacket(): AuditPacket {
       dns_udp_status: "unknown",
       browser_proxy_status: "unknown",
       websocket_frame_scanning: "explicit_ws_proxy_path_required",
-      unsupported_paths: []
+      unsupported_paths: [],
     },
     artifacts: {
       packet: "packet.json",
       evidence: "evidence.jsonl",
-      verifier: "verifier.txt"
-    }
+      verifier: "verifier.txt",
+    },
   };
 }
 
@@ -65,8 +65,14 @@ function writePacket(mutator?: (packet: AuditPacket) => void): string {
   const dir = mkdtempSync(path.join(tmpdir(), "pipelock-ts-verifier-"));
   const packet = basePacket();
   mutator?.(packet);
-  writeFileSync(path.join(dir, "packet.json"), `${JSON.stringify(packet, null, 2)}\n`, { mode: 0o600 });
-  writeFileSync(path.join(dir, "evidence.jsonl"), readFileSync("../../conformance/testdata/valid-chain.jsonl"), { mode: 0o600 });
+  writeFileSync(path.join(dir, "packet.json"), `${JSON.stringify(packet, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  writeFileSync(
+    path.join(dir, "evidence.jsonl"),
+    readFileSync("../../conformance/testdata/valid-chain.jsonl"),
+    { mode: 0o600 },
+  );
   writeFileSync(path.join(dir, "verifier.txt"), "ok\n", { mode: 0o600 });
   return dir;
 }
@@ -76,7 +82,7 @@ const defaultOptions = {
   offline: false,
   allowSelfConsistentOnly: false,
   noTrustRequired: false,
-  expectSha256: ""
+  expectSha256: "",
 };
 
 test("audit packet verifies end to end", async () => {
@@ -88,53 +94,71 @@ test("audit packet verifies end to end", async () => {
 });
 
 test("audit packet detects totals mismatch", async () => {
-  const report = await verifyAuditPacket(writePacket((packet) => {
-    packet.summary!.totals!.allow = 4;
-    packet.summary!.totals!.block = 1;
-  }), defaultOptions);
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.summary!.totals!.allow = 4;
+      packet.summary!.totals!.block = 1;
+    }),
+    defaultOptions,
+  );
   assert.equal(report.valid, false);
   assert.equal(report.cross_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("totals[allow]")));
 });
 
 test("audit packet detects receipt_count mismatch", async () => {
-  const report = await verifyAuditPacket(writePacket((packet) => {
-    packet.summary!.receipt_count = 6;
-    packet.summary!.totals!.other = 1;
-  }), defaultOptions);
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.summary!.receipt_count = 6;
+      packet.summary!.totals!.other = 1;
+    }),
+    defaultOptions,
+  );
   assert.equal(report.cross_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("receipt_count")));
 });
 
 test("audit packet detects root_hash mismatch", async () => {
-  const report = await verifyAuditPacket(writePacket((packet) => {
-    packet.verifier!.root_hash = "0".repeat(64);
-  }), defaultOptions);
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.verifier!.root_hash = "0".repeat(64);
+    }),
+    defaultOptions,
+  );
   assert.equal(report.cross_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("root_hash")));
 });
 
 test("audit packet detects final_seq mismatch", async () => {
-  const report = await verifyAuditPacket(writePacket((packet) => {
-    packet.verifier!.final_seq = 3;
-  }), defaultOptions);
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.verifier!.final_seq = 3;
+    }),
+    defaultOptions,
+  );
   assert.equal(report.cross_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("final_seq")));
 });
 
 test("audit packet detects verdict-vs-chain disagreement", async () => {
-  const report = await verifyAuditPacket(writePacket((packet) => {
-    packet.verifier!.verdict = "invalid";
-    packet.verifier!.trusted = false;
-  }), defaultOptions);
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.verifier!.verdict = "invalid";
+      packet.verifier!.trusted = false;
+    }),
+    defaultOptions,
+  );
   assert.equal(report.cross_check, "fail");
   assert.ok(report.errors?.some((err) => err.includes("verdict=invalid")));
 });
 
 test("--offline skips chain verification", async () => {
-  const report = await verifyAuditPacket(writePacket((packet) => {
-    packet.verifier!.root_hash = "0".repeat(64);
-  }), { ...defaultOptions, offline: true });
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.verifier!.root_hash = "0".repeat(64);
+    }),
+    { ...defaultOptions, offline: true },
+  );
   assert.equal(report.valid, true);
   assert.equal(report.chain_check, "skipped");
   assert.equal(report.cross_check, "skipped");
@@ -143,7 +167,7 @@ test("--offline skips chain verification", async () => {
 test("CLI missing argument exits 64", () => {
   const result = spawnSync(process.execPath, ["dist/src/cli.js", "audit-packet"], {
     cwd: process.cwd(),
-    encoding: "utf8"
+    encoding: "utf8",
   });
   assert.equal(result.status, 64);
   assert.match(result.stderr, /Usage: pipelock-verifier-ts audit-packet/u);

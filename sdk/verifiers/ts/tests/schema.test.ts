@@ -12,12 +12,24 @@ test("sdk audit-packet example passes schema and structural checks", () => {
   assert.deepEqual(validateAuditPacket(example()), []);
 });
 
-for (const field of ["schema_version", "generated_at", "run", "policy", "summary", "verifier", "posture", "artifacts"]) {
+for (const field of [
+  "schema_version",
+  "generated_at",
+  "run",
+  "policy",
+  "summary",
+  "verifier",
+  "posture",
+  "artifacts",
+]) {
   test(`missing ${field} fails clearly`, () => {
     const packet = example();
     delete packet[field];
     const errors = validateAuditPacket(packet);
-    assert.ok(errors.some((err) => err.includes(field)), errors.join("\n"));
+    assert.ok(
+      errors.some((err) => err.includes(field)),
+      errors.join("\n"),
+    );
   });
 }
 

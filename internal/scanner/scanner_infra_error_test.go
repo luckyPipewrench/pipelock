@@ -22,6 +22,7 @@ func TestIsInfrastructureError(t *testing.T) {
 		{"ClassProtective is not infrastructure error", ClassProtective, false},
 		{"ClassConfigMismatch is not infrastructure error", ClassConfigMismatch, false},
 		{"ClassInfrastructureError is infrastructure error", ClassInfrastructureError, true},
+		{"ClassStructuralExemption is not infrastructure error", ClassStructuralExemption, false},
 	}
 
 	for _, tt := range tests {
@@ -47,6 +48,7 @@ func TestIsAdaptiveNeutral(t *testing.T) {
 		{"ClassProtective is adaptive neutral", ClassProtective, true},
 		{"ClassConfigMismatch is not adaptive neutral", ClassConfigMismatch, false},
 		{"ClassInfrastructureError is adaptive neutral", ClassInfrastructureError, true},
+		{"ClassStructuralExemption is adaptive neutral", ClassStructuralExemption, true},
 	}
 
 	for _, tt := range tests {

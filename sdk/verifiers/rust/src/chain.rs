@@ -41,7 +41,10 @@ pub fn verify_chain(receipts: &[Receipt], expected_key_hex: &str) -> ChainResult
             .and_then(|record| record.get("chain_seq"))
             .and_then(|value| value.as_u64())
         else {
-            return broken(index as u64, format!("seq {index}: missing or invalid chain_seq"));
+            return broken(
+                index as u64,
+                format!("seq {index}: missing or invalid chain_seq"),
+            );
         };
         if let Err(err) = verify_receipt(receipt, &key_hex) {
             return broken(seq, format!("seq {seq}: signature: {err}"));

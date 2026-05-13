@@ -243,14 +243,32 @@ fn cross_check(packet: &AuditPacket, chain: &ChainResult, receipts: &[Receipt]) 
 
 fn totals_from_packet(packet: Option<&AuditPacket>) -> Totals {
     let mut totals = Totals::zero();
-    let Some(totals_value) = packet.and_then(|packet| packet.get("summary")).and_then(|summary| summary.get("totals")) else {
+    let Some(totals_value) = packet
+        .and_then(|packet| packet.get("summary"))
+        .and_then(|summary| summary.get("totals"))
+    else {
         return totals;
     };
-    totals.allow = totals_value.get("allow").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    totals.block = totals_value.get("block").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    totals.warn = totals_value.get("warn").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    totals.ask = totals_value.get("ask").and_then(serde_json::Value::as_u64).unwrap_or(0);
-    totals.strip = totals_value.get("strip").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    totals.allow = totals_value
+        .get("allow")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    totals.block = totals_value
+        .get("block")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    totals.warn = totals_value
+        .get("warn")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    totals.ask = totals_value
+        .get("ask")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    totals.strip = totals_value
+        .get("strip")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     totals.forward = totals_value
         .get("forward")
         .and_then(serde_json::Value::as_u64)
@@ -259,6 +277,9 @@ fn totals_from_packet(packet: Option<&AuditPacket>) -> Totals {
         .get("redirect")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
-    totals.other = totals_value.get("other").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    totals.other = totals_value
+        .get("other")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
     totals
 }

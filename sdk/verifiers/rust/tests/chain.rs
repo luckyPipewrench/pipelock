@@ -27,7 +27,10 @@ fn broken_chain_prev_hash_is_rejected() {
     let result = verify_chain(&receipts, "");
     assert!(!result.valid);
     assert_eq!(result.broken_at_seq, Some(3));
-    assert!(result.error.unwrap_or_default().contains("chain_prev_hash mismatch"));
+    assert!(result
+        .error
+        .unwrap_or_default()
+        .contains("chain_prev_hash mismatch"));
 }
 
 #[test]

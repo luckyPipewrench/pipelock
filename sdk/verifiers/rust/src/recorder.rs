@@ -27,11 +27,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
 pub fn extract_receipts(path: &Path) -> Result<Vec<Receipt>> {
     let mut receipts = Vec::new();
     for entry in read_entries(path)? {
-        if entry
-            .get("type")
-            .and_then(serde_json::Value::as_str)
-            != Some(ACTION_RECEIPT_TYPE)
-        {
+        if entry.get("type").and_then(serde_json::Value::as_str) != Some(ACTION_RECEIPT_TYPE) {
             continue;
         }
         let detail = entry.get("detail").ok_or_else(|| {
@@ -61,7 +57,8 @@ pub fn extract_receipts_from_session_dir(dir: &Path, session_id: &str) -> Result
     for entry in fs::read_dir(dir)
         .map_err(|err| VerifierError::Runtime(format!("read {}: {err}", dir.display())))?
     {
-        let entry = entry.map_err(|err| VerifierError::Runtime(format!("read dir entry: {err}")))?;
+        let entry =
+            entry.map_err(|err| VerifierError::Runtime(format!("read dir entry: {err}")))?;
         let name = entry.file_name().to_string_lossy().to_string();
         if entry
             .file_type()
@@ -91,7 +88,10 @@ fn seq_start(path: &Path) -> Result<u64> {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    let suffix = name.rsplit_once('-').map(|(_, suffix)| suffix).unwrap_or("");
+    let suffix = name
+        .rsplit_once('-')
+        .map(|(_, suffix)| suffix)
+        .unwrap_or("");
     if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
         return Err(VerifierError::Runtime(format!(
             "evidence file has non-numeric sequence suffix: {}",

@@ -6,6 +6,7 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -519,7 +520,7 @@ func TestOpenCodeRemove_WarnsAndSkipsInvalidWrappedEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if !strings.Contains(stdout, "Unwrapped 0 server") {
+	if !strings.Contains(stdout, "No OpenCode servers were unwrapped") {
 		t.Errorf("stdout = %q", stdout)
 	}
 	if !strings.Contains(stderr, "could not unwrap") {
@@ -528,14 +529,33 @@ func TestOpenCodeRemove_WarnsAndSkipsInvalidWrappedEntry(t *testing.T) {
 }
 
 func TestOpenCodeRemove_SkipsNonWrappedEntry(t *testing.T) {
-	path := writeOpenCodeFile(t, testOpenCodeLocalConfig)
+	original := `{
+  // keep this comment on no-op remove
+  "mcp": {
+    "my-server": {
+      "type": "local",
+      "command": ["npx", "-y", "@example/mcp-server"]
+    }
+  }
+}`
+	path := writeOpenCodeFile(t, original)
 
 	stdout, _, err := runOpenCodeCmdOutput(t, "remove", "--path", path)
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if !strings.Contains(stdout, "Unwrapped 0 server") {
+	if !strings.Contains(stdout, "No OpenCode servers were unwrapped") {
 		t.Errorf("stdout = %q", stdout)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Error("no-op remove rewrote the config")
+	}
+	if _, err := os.Stat(path + ".bak"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("no-op remove created backup: %v", err)
 	}
 }
 

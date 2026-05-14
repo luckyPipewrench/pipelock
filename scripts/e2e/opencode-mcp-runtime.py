@@ -36,6 +36,21 @@ EVERYTHING_PACKAGE = "@modelcontextprotocol/server-everything@2026.1.26"
 
 # Stable subset of the everything server's tool roster.
 EXPECTED_TOOLS = {"echo", "get-sum"}
+COMMAND_TIMEOUT_SECONDS = 300
+
+
+def run_or_exit(args: list[str], description: str, cwd: Path | None = None, capture_output: bool = False):
+    """Run a bounded subprocess and exit with context on timeout."""
+    try:
+        return subprocess.run(
+            args,
+            cwd=cwd,
+            capture_output=capture_output,
+            text=capture_output,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        sys.exit(f"{description} timed out after {COMMAND_TIMEOUT_SECONDS}s")
 
 
 def build_pipelock(workdir: Path) -> Path:
@@ -46,11 +61,13 @@ def build_pipelock(workdir: Path) -> Path:
         return Path(bin_override)
     out = workdir / "pipelock"
     print(f"Building pipelock from {REPO_ROOT} -> {out}")
-    subprocess.run(
+    result = run_or_exit(
         ["go", "build", "-o", str(out), "./cmd/pipelock"],
+        "go build",
         cwd=REPO_ROOT,
-        check=True,
     )
+    if result.returncode != 0:
+        sys.exit(f"go build failed with exit code {result.returncode}")
     return out
 
 
@@ -89,10 +106,10 @@ flight_recorder:
 
 
 def run_install(pipelock: Path, cfg_path: Path, pipelock_cfg: Path) -> None:
-    result = subprocess.run(
+    result = run_or_exit(
         [str(pipelock), "opencode", "install", "--path", str(cfg_path), "-c", str(pipelock_cfg)],
+        "opencode install",
         capture_output=True,
-        text=True,
     )
     if result.returncode != 0:
         sys.exit(f"install failed: {result.stderr}")
@@ -198,7 +215,7 @@ def read_response(proc, stdout_lines, stderr_tail: StreamTail, expected_id, time
 
 def main():
     # Opt-in gate. This E2E fetches an upstream npm package at runtime.
-    if not os.environ.get("PIPELOCK_E2E_LIVE_UPSTREAM"):
+    if os.environ.get("PIPELOCK_E2E_LIVE_UPSTREAM") != "1":
         print(
             "Skipping runtime MCP E2E. Set PIPELOCK_E2E_LIVE_UPSTREAM=1 to run "
             "the test, which fetches @modelcontextprotocol/server-everything "
@@ -287,10 +304,10 @@ def main():
             stderr_thread.join(timeout=2)
 
         print("\n[3] remove and verify canonical-JSON restoration")
-        remove = subprocess.run(
+        remove = run_or_exit(
             [str(pipelock), "opencode", "remove", "--path", str(cfg_path)],
+            "opencode remove",
             capture_output=True,
-            text=True,
         )
         if remove.returncode != 0:
             sys.exit(f"remove failed: {remove.stderr}")

@@ -206,7 +206,7 @@ func runOpenCodeInstall(cmd *cobra.Command, override string, dryRun bool, config
 
 	output, err := marshalOpenCodeConfig(existingData, mcpCfg)
 	if err != nil {
-		return fmt.Errorf("marshaling %s: %w", opencodeConfigFilename, err)
+		return fmt.Errorf("marshaling %s: %w", targetPath, err)
 	}
 
 	if dryRun {
@@ -280,9 +280,14 @@ func runOpenCodeRemove(cmd *cobra.Command, override string, dryRun bool) error {
 		unwrapped++
 	}
 
+	if unwrapped == 0 && len(sidecarOps) == 0 {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "No OpenCode servers were unwrapped in %s\n", targetPath)
+		return nil
+	}
+
 	output, err := marshalOpenCodeConfig(existingData, mcpCfg)
 	if err != nil {
-		return fmt.Errorf("marshaling %s: %w", opencodeConfigFilename, err)
+		return fmt.Errorf("marshaling %s: %w", targetPath, err)
 	}
 
 	if dryRun {

@@ -123,11 +123,14 @@ pipelock envelope trust remove partner.example
 The default trust store is
 `$XDG_STATE_HOME/pipelock/envelope/trust.json` (or
 `~/.local/state/pipelock/envelope/trust.json` when `XDG_STATE_HOME` is unset)
-and is written with `0o600` permissions. `--store` intentionally selects an
-operator-controlled alternate path. `--source` fetches a public verification
-key from a well-known HTTP Message Signatures directory. Only use `--source`
-for a directory you already intend to trust; the fetched key becomes local
-trust material for operator verification workflows.
+and is written with `0o600` permissions. Its containing directory
+(`$XDG_STATE_HOME/pipelock/envelope` or
+`~/.local/state/pipelock/envelope`) is created with `0o750` permissions.
+`--store` intentionally selects an operator-controlled alternate path.
+`--source` fetches a public verification key from a well-known HTTP Message
+Signatures directory. Only use `--source` for a directory you already intend to
+trust; the fetched key becomes local trust material for operator verification
+workflows.
 
 Adding a peer to this store does not change runtime admission. Inbound proxy
 verification still uses the pinned keys in

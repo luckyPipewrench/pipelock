@@ -60,10 +60,14 @@ func defaultTrustStorePath() (string, string, error) {
 }
 
 func (s *trustStore) load() ([]trustRecord, error) {
-	data, err := os.ReadFile(s.path) //nolint:gosec // path is operator-selected state store path.
-	if os.IsNotExist(err) {
+	path, err := s.readPath()
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
 		return nil, nil
 	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is operator-selected state store path after validation.
 	if err != nil {
 		return nil, fmt.Errorf("reading trust store: %w", err)
 	}
@@ -109,26 +113,78 @@ func (s *trustStore) save(records []trustRecord) error {
 	return nil
 }
 
+func (s *trustStore) readPath() (string, error) {
+	cleanPath := filepath.Clean(s.path)
+	info, err := os.Lstat(cleanPath)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("checking trust store path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("trust store path must not be a symlink")
+	}
+	if err := validateTrustStoreParent(cleanPath); err != nil {
+		return "", err
+	}
+	if s.root == "" {
+		return cleanPath, nil
+	}
+	resolvedPath, err := filepath.EvalSymlinks(cleanPath)
+	if err != nil {
+		return "", fmt.Errorf("resolving trust store path: %w", err)
+	}
+	if err := s.validateContained(resolvedPath); err != nil {
+		return "", err
+	}
+	return resolvedPath, nil
+}
+
 func (s *trustStore) validateWritePath() error {
-	info, err := os.Lstat(s.path)
+	cleanPath := filepath.Clean(s.path)
+	info, err := os.Lstat(cleanPath)
 	if err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("trust store path must not be a symlink")
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("checking trust store path: %w", err)
 	}
+	if err := validateTrustStoreParent(cleanPath); err != nil {
+		return err
+	}
 	if s.root == "" {
 		return nil
 	}
+	return s.validateContained(filepath.Dir(cleanPath))
+}
+
+func validateTrustStoreParent(cleanPath string) error {
+	parent := filepath.Dir(cleanPath)
+	absParent, err := filepath.Abs(parent)
+	if err != nil {
+		return fmt.Errorf("resolving trust store directory: %w", err)
+	}
+	resolvedParent, err := filepath.EvalSymlinks(absParent)
+	if err != nil {
+		return fmt.Errorf("resolving trust store directory: %w", err)
+	}
+	if filepath.Clean(resolvedParent) != filepath.Clean(absParent) {
+		return fmt.Errorf("trust store path must not be a symlink")
+	}
+	return nil
+}
+
+func (s *trustStore) validateContained(path string) error {
 	root, err := filepath.EvalSymlinks(s.root)
 	if err != nil {
 		return fmt.Errorf("resolving trust store root: %w", err)
 	}
-	parent, err := filepath.EvalSymlinks(filepath.Dir(s.path))
+	resolvedPath, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return fmt.Errorf("resolving trust store directory: %w", err)
+		return fmt.Errorf("resolving trust store path: %w", err)
 	}
-	rel, err := filepath.Rel(root, parent)
+	rel, err := filepath.Rel(root, resolvedPath)
 	if err != nil {
 		return fmt.Errorf("checking trust store containment: %w", err)
 	}
@@ -163,7 +219,7 @@ func validateTrustRecord(rec trustRecord) error {
 		if err != nil {
 			return fmt.Errorf("key_source: %w", err)
 		}
-		if u.Scheme != "https" && !isLocalHTTPSource(u) {
+		if !isAllowedDirectoryURL(u) {
 			return fmt.Errorf("key_source must be https or loopback http")
 		}
 	}
@@ -215,4 +271,8 @@ func isLocalHTTPSource(u *url.URL) bool {
 	}
 	host := strings.ToLower(u.Hostname())
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+func isAllowedDirectoryURL(u *url.URL) bool {
+	return u.Scheme == "https" || isLocalHTTPSource(u)
 }

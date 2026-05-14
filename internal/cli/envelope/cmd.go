@@ -30,8 +30,11 @@ const (
 	directoryAlg               = "ed25519"
 	directoryUse               = "pipelock-mediation"
 	maxVerifyStdinBodyBytes    = 16 << 20
+	maxVerifyRawRequestBytes   = maxVerifyStdinBodyBytes + (1 << 20)
 	runtimeTrustAdvisoryFormat = "note: runtime proxy verification reads trusted keys from pipelock.yaml mediation_envelope.verify_inbound.trust_list; this trust store is for operator workflows until runtime trust-store loading is added.\n"
 )
+
+var errHTTPRequestTooLarge = errors.New("request exceeds size limit")
 
 // Cmd returns the `pipelock envelope` cobra command tree.
 func Cmd() *cobra.Command {
@@ -276,14 +279,22 @@ func fetchDirectoryKey(ctx context.Context, sourceURL string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parsing directory URL: %w", err)
 	}
-	if parsed.Scheme != "https" && !isLocalHTTPSource(parsed) {
+	if !isAllowedDirectoryURL(parsed) {
 		return "", errors.New("directory URL must be https or loopback http")
 	}
 	u, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("building directory request: %w", err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if !isAllowedDirectoryURL(req.URL) {
+				return errors.New("directory URL must be https or loopback http")
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(u)
 	if err != nil {
 		return "", fmt.Errorf("fetching directory: %w", err)
@@ -364,8 +375,12 @@ func actorAllowedByTrustRecords(actor domenvelope.ParsedActor, records []trustRe
 }
 
 func readHTTPRequest(r io.Reader) (*http.Request, []byte, error) {
-	req, err := http.ReadRequest(bufio.NewReader(r))
+	limited := &requestLimitReader{r: r, remaining: maxVerifyRawRequestBytes}
+	req, err := http.ReadRequest(bufio.NewReader(limited))
 	if err != nil {
+		if limited.exceeded || errors.Is(err, errHTTPRequestTooLarge) {
+			return nil, nil, fmt.Errorf("request exceeds %d bytes", maxVerifyRawRequestBytes)
+		}
 		return nil, nil, fmt.Errorf("reading HTTP request: %w", err)
 	}
 	var body []byte
@@ -373,6 +388,9 @@ func readHTTPRequest(r io.Reader) (*http.Request, []byte, error) {
 		body, err = io.ReadAll(io.LimitReader(req.Body, maxVerifyStdinBodyBytes+1))
 		_ = req.Body.Close()
 		if err != nil {
+			if limited.exceeded || errors.Is(err, errHTTPRequestTooLarge) {
+				return nil, nil, fmt.Errorf("request exceeds %d bytes", maxVerifyRawRequestBytes)
+			}
 			return nil, nil, fmt.Errorf("reading request body: %w", err)
 		}
 		if len(body) > maxVerifyStdinBodyBytes {
@@ -382,6 +400,25 @@ func readHTTPRequest(r io.Reader) (*http.Request, []byte, error) {
 		req.ContentLength = int64(len(body))
 	}
 	return req, body, nil
+}
+
+type requestLimitReader struct {
+	r         io.Reader
+	remaining int64
+	exceeded  bool
+}
+
+func (r *requestLimitReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		r.exceeded = true
+		return 0, errHTTPRequestTooLarge
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	return n, err
 }
 
 func displayTrustTarget(rec trustRecord) string {

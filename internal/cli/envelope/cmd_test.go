@@ -465,8 +465,8 @@ func TestDefaultTrustStoreRejectsEscapingSymlink(t *testing.T) {
 		KeyHex:      pubHex,
 		AddedAt:     time.Now().UTC(),
 	}})
-	if err == nil || !strings.Contains(err.Error(), "escapes XDG state home") {
-		t.Fatalf("save through escaping symlink error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("save through escaping symlink error = %v, want symlink rejection", err)
 	}
 }
 
@@ -481,6 +481,12 @@ func TestTrustStoreValidateWritePathErrors(t *testing.T) {
 	store = &trustStore{path: filepath.Join(root, "missing-parent", "trust.json"), root: root}
 	if err := store.validateWritePath(); err == nil || !strings.Contains(err.Error(), "resolving trust store directory") {
 		t.Fatalf("missing parent error = %v", err)
+	}
+
+	outside := t.TempDir()
+	store = &trustStore{root: root}
+	if err := store.validateContained(outside); err == nil || !strings.Contains(err.Error(), "escapes XDG state home") {
+		t.Fatalf("outside containment error = %v, want escape rejection", err)
 	}
 }
 
@@ -512,6 +518,38 @@ func TestTrustStoreLoadErrors(t *testing.T) {
 	if err != nil || len(records) != 0 {
 		t.Fatalf("empty load = %+v, %v", records, err)
 	}
+
+	target := filepath.Join(dir, "target.json")
+	link := filepath.Join(dir, "link.json")
+	if err := os.WriteFile(target, []byte("[]\n"), 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink trust store: %v", err)
+	}
+	if _, err := (&trustStore{path: link}).load(); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("load through symlink error = %v, want symlink rejection", err)
+	}
+}
+
+func TestTrustStoreRejectsSymlinkedParent(t *testing.T) {
+	outside := t.TempDir()
+	linkParent := filepath.Join(t.TempDir(), "store-link")
+	if err := os.Symlink(outside, linkParent); err != nil {
+		t.Fatalf("symlink parent: %v", err)
+	}
+	store := &trustStore{path: filepath.Join(linkParent, "trust.json")}
+	if err := store.save(nil); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("save through parent symlink error = %v, want symlink rejection", err)
+	}
+
+	target := filepath.Join(outside, "trust.json")
+	if err := os.WriteFile(target, []byte("[]\n"), 0o600); err != nil {
+		t.Fatalf("write parent symlink target: %v", err)
+	}
+	if _, err := store.load(); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("load through parent symlink error = %v, want symlink rejection", err)
+	}
 }
 
 func TestDirectoryFetchErrors(t *testing.T) {
@@ -541,6 +579,47 @@ func TestDirectoryFetchErrors(t *testing.T) {
 	}
 	if _, err := fetchDirectoryKey(t.Context(), "http://127.0.0.1:1"); err == nil {
 		t.Fatal("unreachable loopback source should fail")
+	}
+}
+
+func TestDirectoryFetchRejectsUnsafeRedirect(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://not-local.example/keys", http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := fetchDirectoryKey(t.Context(), server.URL+domenvelope.WellKnownPath)
+	if err == nil || !strings.Contains(err.Error(), "directory URL must be https or loopback http") {
+		t.Fatalf("redirect error = %v, want unsafe redirect rejection", err)
+	}
+}
+
+func TestDirectoryFetchAllowsSafeRedirect(t *testing.T) {
+	t.Parallel()
+
+	_, _, pubHex := testTrustKey(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, domenvelope.WellKnownPath, http.StatusFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(domenvelope.Directory{Keys: []domenvelope.DirectoryKey{{
+			KeyID:     testTrustDomain,
+			Algorithm: directoryAlg,
+			PublicKey: pubHex,
+			Use:       directoryUse,
+		}}})
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := fetchDirectoryKey(t.Context(), server.URL+"/redirect")
+	if err != nil {
+		t.Fatalf("fetch through safe redirect: %v", err)
+	}
+	if got != pubHex {
+		t.Fatalf("redirect key = %q, want %q", got, pubHex)
 	}
 }
 
@@ -605,6 +684,21 @@ func TestActorAndRequestHelpers(t *testing.T) {
 	if _, _, err := readHTTPRequest(strings.NewReader(oversize)); err == nil || !strings.Contains(err.Error(), "request body exceeds") {
 		t.Fatalf("oversize request error = %v, want body cap", err)
 	}
+	oversizeHeader := "GET / HTTP/1.1\r\nHost: example.test\r\nX-Large: " +
+		strings.Repeat("a", maxVerifyRawRequestBytes) + "\r\n\r\n"
+	if _, _, err := readHTTPRequest(strings.NewReader(oversizeHeader)); err == nil || !strings.Contains(err.Error(), "request exceeds") {
+		t.Fatalf("oversize header error = %v, want raw request cap", err)
+	}
+	brokenBody := &chunkErrorReader{
+		chunks: []string{
+			"POST / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 7\r\n\r\n",
+			"part",
+		},
+		err: errors.New("body broke"),
+	}
+	if _, _, err := readHTTPRequest(brokenBody); err == nil || !strings.Contains(err.Error(), "reading request body") {
+		t.Fatalf("broken body error = %v, want body read failure", err)
+	}
 }
 
 func TestLocalHTTPSource(t *testing.T) {
@@ -666,6 +760,25 @@ func signedTrustVerifyRequest(t *testing.T, priv ed25519.PrivateKey, keyID, acto
 
 func runEnvelopeCmd(args ...string) (string, error) {
 	return runEnvelopeCmdWithInput("", args...)
+}
+
+type chunkErrorReader struct {
+	chunks []string
+	err    error
+}
+
+func (r *chunkErrorReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, r.err
+	}
+	chunk := r.chunks[0]
+	n := copy(p, chunk)
+	if n == len(chunk) {
+		r.chunks = r.chunks[1:]
+		return n, nil
+	}
+	r.chunks[0] = chunk[n:]
+	return n, nil
 }
 
 func runEnvelopeCmdWithInput(input string, args ...string) (string, error) {

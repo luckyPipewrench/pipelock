@@ -13,6 +13,8 @@ import (
 )
 
 const (
+	testClineEnvValue = "test"
+
 	testClineStdioConfig = `{
   "mcpServers": {
     "my-server": {
@@ -71,7 +73,10 @@ const (
 
 // testClineHTTPConfigSecretHeader is built at init from a split bearer-token
 // value so gosec G101 does not flag the fixture as a hardcoded credential.
-var testClineHTTPConfigSecretHeader = `{
+var (
+	testClineWorkspaceToken = "ws-cli-" + "tok"
+
+	testClineHTTPConfigSecretHeader = `{
   "mcpServers": {
     "remote": {
       "url": "https://api.example.com/mcp",
@@ -79,6 +84,7 @@ var testClineHTTPConfigSecretHeader = `{
     }
   }
 }`
+)
 
 // writeClineFile writes a config string to a temp dir and returns the path.
 func writeClineFile(t *testing.T, body string) string {
@@ -194,7 +200,7 @@ func TestClineInstall_StdioServerWithImplicitType(t *testing.T) {
 	}
 
 	env, ok := server["env"].(map[string]interface{})
-	if !ok || env["MY_VAR"] != "test" {
+	if !ok || env["MY_VAR"] != testClineEnvValue {
 		t.Errorf("env block not preserved: %v", server["env"])
 	}
 
@@ -275,7 +281,7 @@ func TestClineInstall_HTTPServerWithImplicitType(t *testing.T) {
 	if !meta.TypeOmitted {
 		t.Error("Cline HTTP wrap must record TypeOmitted=true so remove restores a typeless entry")
 	}
-	if meta.OriginalHeaders["X-Workspace-Id"] != "ws-cli-tok" {
+	if meta.OriginalHeaders["X-Workspace-Id"] != testClineWorkspaceToken {
 		t.Errorf("headers not preserved in metadata: %v", meta.OriginalHeaders)
 	}
 	if meta.HeaderSidecarPath != sidecarPath {
@@ -471,7 +477,7 @@ func TestClineRemove_UnwrapsHTTP(t *testing.T) {
 		t.Errorf("original URL not restored: got %v", server["url"])
 	}
 	headers, ok := server["headers"].(map[string]interface{})
-	if !ok || headers["X-Workspace-Id"] != "ws-cli-tok" {
+	if !ok || headers["X-Workspace-Id"] != testClineWorkspaceToken {
 		t.Errorf("headers not restored: %v", server["headers"])
 	}
 }

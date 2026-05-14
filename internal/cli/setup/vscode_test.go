@@ -1815,8 +1815,8 @@ func TestApplySidecarOps_RollsBackOnPartialWriteFailure(t *testing.T) {
 	impossible := "/dev/null/wrap-headers/second.headers"
 
 	ops := []sidecarOp{
-		{kind: "write", path: first, body: []byte("X-One: a\n")},
-		{kind: "write", path: impossible, body: []byte("X-Two: b\n")},
+		{kind: sidecarOpWrite, path: first, body: []byte("X-One: a\n")},
+		{kind: sidecarOpWrite, path: impossible, body: []byte("X-Two: b\n")},
 	}
 
 	if err := applySidecarOps(ops); err == nil {
@@ -1847,8 +1847,8 @@ func TestApplySidecarOps_DeletesNeverRollBackWrites(t *testing.T) {
 	}
 
 	ops := []sidecarOp{
-		{kind: "delete", path: deletePath},
-		{kind: "write", path: writePath, body: []byte("X: 1\n")},
+		{kind: sidecarOpDelete, path: deletePath},
+		{kind: sidecarOpWrite, path: writePath, body: []byte("X: 1\n")},
 	}
 
 	if err := applySidecarOps(ops); err != nil {
@@ -1881,8 +1881,8 @@ func TestRollbackSidecarWrites_DeletesAllWrites(t *testing.T) {
 	}
 
 	ops := []sidecarOp{
-		{kind: "write", path: one, body: []byte("X-One: a\n")},
-		{kind: "write", path: two, body: []byte("X-Two: b\n")},
+		{kind: sidecarOpWrite, path: one, body: []byte("X-One: a\n")},
+		{kind: sidecarOpWrite, path: two, body: []byte("X-Two: b\n")},
 	}
 	if err := applySidecarOps(ops); err != nil {
 		t.Fatalf("seed applySidecarOps: %v", err)

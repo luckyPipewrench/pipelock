@@ -165,6 +165,17 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 		return claudeResult(cmd, exitCodeMode, claudeHookEventPreToolUse, decisionDeny, "pipelock: invalid JSON input")
 	}
 
+	// Fail-closed on unsupported hook events. Today pipelock only scans PreToolUse;
+	// other Claude Code hook events (UserPromptSubmit, Notification, Stop, SubagentStop,
+	// PostToolUse, PreCompact, SessionStart) have no scanner path. Returning allow for
+	// those would let secrets and injection through unscanned. Empty event name is
+	// treated as PreToolUse for backwards compatibility with configs that pre-date
+	// this check.
+	if payload.HookEventName != "" && payload.HookEventName != claudeHookEventPreToolUse {
+		return claudeResult(cmd, exitCodeMode, payload.HookEventName, decisionDeny,
+			"pipelock: hook event "+payload.HookEventName+" is not supported by pipelock claude hook; remove this hook entry or upgrade pipelock when support lands")
+	}
+
 	// Load or build config (reuses cursor hook config defaults).
 	cfg, err := loadCursorConfig(configFile)
 	if err != nil {

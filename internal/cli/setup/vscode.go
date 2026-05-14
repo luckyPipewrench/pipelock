@@ -71,6 +71,11 @@ type sidecarOp struct {
 	body []byte
 }
 
+const (
+	sidecarOpWrite  = "write"
+	sidecarOpDelete = "delete"
+)
+
 // applySidecarOps performs the writes and deletes described by ops. On a
 // write failure it deletes any sidecars that were successfully written
 // earlier in the same call so callers never observe a partially-applied
@@ -80,7 +85,7 @@ func applySidecarOps(ops []sidecarOp) error {
 	written := make([]string, 0, len(ops))
 	for _, op := range ops {
 		switch op.kind {
-		case "write":
+		case sidecarOpWrite:
 			if err := commitHeaderSidecar(op.path, op.body); err != nil {
 				for _, p := range written {
 					removeHeaderSidecar(p)
@@ -88,7 +93,7 @@ func applySidecarOps(ops []sidecarOp) error {
 				return err
 			}
 			written = append(written, op.path)
-		case "delete":
+		case sidecarOpDelete:
 			removeHeaderSidecar(op.path)
 		}
 	}
@@ -100,7 +105,7 @@ func applySidecarOps(ops []sidecarOp) error {
 // after applySidecarOps has already landed sidecars on disk.
 func rollbackSidecarWrites(ops []sidecarOp) {
 	for _, op := range ops {
-		if op.kind == "write" {
+		if op.kind == sidecarOpWrite {
 			removeHeaderSidecar(op.path)
 		}
 	}
@@ -571,7 +576,7 @@ func wrapVscodeServer(server map[string]interface{}, exe, configFile, targetConf
 				return nil, nil, nil, err
 			}
 			body := []byte(strings.Join(headerLines, "\n") + "\n")
-			plan = &sidecarOp{kind: "write", path: path, body: body}
+			plan = &sidecarOp{kind: sidecarOpWrite, path: path, body: body}
 			meta.HeaderSidecarPath = path
 			sidecarFlags = []string{mcpFlagHeaderFile, path}
 		}
@@ -623,7 +628,7 @@ func unwrapVscodeServer(server map[string]interface{}) (map[string]interface{}, 
 		if err != nil {
 			return nil, nil, err
 		}
-		plan = &sidecarOp{kind: "delete", path: path}
+		plan = &sidecarOp{kind: sidecarOpDelete, path: path}
 	}
 
 	result := make(map[string]interface{})

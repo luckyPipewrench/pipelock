@@ -118,6 +118,7 @@ Quick start:
 		setup.VscodeCmd(),
 		setup.JetbrainsCmd(),
 		setup.CodexCmd(),
+		setup.OpenCodeCmd(),
 		// Signing & integrity
 		clisigning.IntegrityCmd(),
 		clisigning.SignCmd(),

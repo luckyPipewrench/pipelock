@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,8 +115,8 @@ func TestReadToolsList_RoundTrips(t *testing.T) {
 func TestReadToolsList_MissingFileSurfacesNotExist(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	_, err := readToolsList(env)
-	if err == nil {
-		t.Fatal("expected error for missing file")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected missing-file error, got %v", err)
 	}
 }
 
@@ -135,7 +136,10 @@ func TestUpsertToolEntry_InsertsNew(t *testing.T) {
 	if !changed {
 		t.Errorf("expected changed=true on insert")
 	}
-	got, _ := readToolsList(env)
+	got, err := readToolsList(env)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
 	found := false
 	for _, e := range got {
 		if e.name == testRustup && e.target == "/home/pipelock-agent/.cargo/bin/rustup" {
@@ -180,7 +184,10 @@ func TestUpsertToolEntry_UpdatesExistingTarget(t *testing.T) {
 	if !changed {
 		t.Errorf("expected changed=true on target change")
 	}
-	entries, _ := readToolsList(env)
+	entries, err := readToolsList(env)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
 	if entries[0].target != "/usr/local/bin/claude" {
 		t.Errorf("target not updated: %+v", entries)
 	}
@@ -195,7 +202,10 @@ func TestUpsertToolEntry_BootstrapsOnlyRequestedToolWhenMissing(t *testing.T) {
 	if !changed {
 		t.Errorf("expected changed=true on bootstrap")
 	}
-	entries, _ := readToolsList(env)
+	entries, err := readToolsList(env)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
 	if len(entries) != 1 {
 		t.Errorf("entries: %d, want 1", len(entries))
 	}
@@ -245,7 +255,7 @@ func TestStepWriteToolsList_IdempotentReapply(t *testing.T) {
 func TestStepWriteToolsList_PreservesCustomEntries(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	plantResolvableDefaultTools(t, env, "claude")
-	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	custom := renderToolsList([]toolsListEntry{
@@ -276,7 +286,7 @@ func TestStepWriteToolsList_PreservesCustomEntries(t *testing.T) {
 func TestStepWriteToolsList_AddsMissingDefaultWithoutDroppingCustom(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	plantResolvableDefaultTools(t, env, "claude", "codex", "gemini")
-	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(env.toolsListPath, []byte("rustup\t/tmp/rustup\n"), 0o600); err != nil {
@@ -352,7 +362,10 @@ func TestAddTool_RecordsTargetInToolsList(t *testing.T) {
 	if err := runAddTool(context.Background(), env, testRustup, addToolOpts{target: target}); err != nil {
 		t.Fatalf("addTool: %v", err)
 	}
-	entries, _ := readToolsList(env)
+	entries, err := readToolsList(env)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
 	var got *toolsListEntry
 	for i := range entries {
 		if entries[i].name == testRustup {
@@ -428,7 +441,7 @@ func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 	// Seed an allow-list with one entry pointing at /bin/true so we can
 	// exercise the happy path without depending on pipelock-agent's PATH.
 	allowList := "claude\t/bin/true\n"
-	if err := os.WriteFile(toolsListPath, []byte(allowList), 0o644); err != nil { //nolint:gosec // test fixture; mode mirrors production
+	if err := os.WriteFile(toolsListPath, []byte(allowList), 0o600); err != nil {
 		t.Fatalf("write tools.list: %v", err)
 	}
 
@@ -457,7 +470,7 @@ func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Re-seed list before each subtest to undo prior mutations.
-			if err := os.WriteFile(toolsListPath, []byte(allowList), 0o644); err != nil { //nolint:gosec // test fixture
+			if err := os.WriteFile(toolsListPath, []byte(allowList), 0o600); err != nil {
 				t.Fatalf("reseed: %v", err)
 			}
 			if tc.mutate != nil {

@@ -140,9 +140,6 @@ func TestExportPipelockCA_RemovesStaleBeforeExport(t *testing.T) {
 }
 
 func TestRunCARefresh_DryRunIsNonMutating(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("dry-run path includes root check; cover via direct helper")
-	}
 	env, _, _ := newFakeEnv(t)
 	systemBundle := filepath.Join(t.TempDir(), "system.pem")
 	if err := os.WriteFile(systemBundle, []byte("SYS"), 0o600); err != nil {

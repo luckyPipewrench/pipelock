@@ -174,7 +174,7 @@ func TestProbeListedToolTargets_PassWithAgentPathLookup(t *testing.T) {
 		}
 		return os.Stat(path)
 	}
-	if err := os.MkdirAll(agentHomeBin, 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(agentHomeBin, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	writeFakeWrapper(t, filepath.Join(agentHomeBin, "claude"), 0o755)

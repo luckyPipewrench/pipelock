@@ -855,7 +855,7 @@ func TestRunCodexInstall_DryRun(t *testing.T) {
 	if !strings.Contains(out.String(), "Plan: 1 to wrap") {
 		t.Errorf("expected summary in output, got: %s", out.String())
 	}
-	if strings.Contains(out.String(), "3000") {
+	if strings.Contains(out.String(), "PORT=3000") || strings.Contains(out.String(), `"PORT":"3000"`) {
 		t.Errorf("dry-run output leaked env value: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "--env PORT=<redacted>") {

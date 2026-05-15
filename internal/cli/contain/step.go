@@ -52,23 +52,25 @@ func runSteps(ctx context.Context, env *installEnv, w io.Writer, steps []step) (
 	for i, s := range steps {
 		if err := ctx.Err(); err != nil {
 			outcomes = append(outcomes, stepOutcome{name: s.name, desc: s.desc, err: err})
-			rollbackApplied(ctx, env, w, applied)
+			rollbackApplied(context.Background(), env, w, applied)
 			return outcomes, fmt.Errorf("context cancelled before step %d (%s): %w", i+1, s.name, err)
 		}
 
 		didApply, err := s.apply(ctx, env)
 		outcomes = append(outcomes, stepOutcome{name: s.name, desc: s.desc, applied: didApply, err: err})
+		if didApply {
+			applied = append(applied, s)
+		}
 
 		if err != nil {
 			_, _ = fmt.Fprintf(w, "  [FAIL] step %d %s: %v\n", i+1, s.name, err)
-			rollbackApplied(ctx, env, w, applied)
+			rollbackApplied(context.Background(), env, w, applied)
 			return outcomes, fmt.Errorf("step %d (%s): %w", i+1, s.name, err)
 		}
 
 		tag := "[SKIP]"
 		if didApply {
 			tag = "[ OK ]"
-			applied = append(applied, s)
 		}
 		_, _ = fmt.Fprintf(w, "  %s step %d: %s\n", tag, i+1, s.desc)
 	}
@@ -116,7 +118,7 @@ func runUndo(ctx context.Context, env *installEnv, w io.Writer, steps []step) er
 			errs = append(errs, fmt.Errorf("%s: %w", s.name, err))
 			continue
 		}
-		_, _ = fmt.Fprintf(w, "  [ OK ] %s\n", s.desc)
+		_, _ = fmt.Fprintf(w, "  [ OK ] %s\n", s.name)
 	}
 	if len(errs) == 0 {
 		return nil

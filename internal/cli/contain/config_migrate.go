@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"gopkg.in/yaml.v3"
@@ -474,7 +473,7 @@ func cleanupMigratedConfigArtifacts(env *installEnv, artifacts []migratedConfigA
 		var err error
 		if artifact.dir {
 			err = env.removeFile(artifact.path)
-			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTEMPTY) {
+			if errors.Is(err, os.ErrNotExist) || isDirectoryNotEmpty(err) {
 				err = nil
 			}
 		} else {
@@ -485,6 +484,14 @@ func cleanupMigratedConfigArtifacts(env *installEnv, artifacts []migratedConfigA
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func isDirectoryNotEmpty(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "directory not empty") || strings.Contains(msg, "not empty")
 }
 
 func backupAndWriteIfChanged(env *installEnv, path string, contents []byte, mode os.FileMode) (bool, error) {
@@ -588,23 +595,6 @@ func rejectSymlinkComponents(ctx *configMigrationContext, path string) error {
 		}
 	}
 	return nil
-}
-
-func readRegularFileNoFollow(path string) ([]byte, error) {
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
-	if err != nil {
-		return nil, err
-	}
-	f := os.NewFile(uintptr(fd), path) //nolint:gosec // syscall.Open returned a non-negative fd; needed for O_NOFOLLOW root-copy reads.
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	return io.ReadAll(f)
 }
 
 func getMappingPath(root *yaml.Node, path []string) *yaml.Node {

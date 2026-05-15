@@ -202,7 +202,11 @@ func appendInventory(env *installEnv, name string) error {
 	}
 	var inv wrapperInventory
 	data, err := env.readFile(env.wrapperInvPath)
-	if err == nil {
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read inventory %s: %w", env.wrapperInvPath, err)
+		}
+	} else {
 		if err := json.Unmarshal(data, &inv); err != nil {
 			return fmt.Errorf("parse inventory %s: %w", env.wrapperInvPath, err)
 		}

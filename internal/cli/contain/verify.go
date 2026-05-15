@@ -439,7 +439,7 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Run read-only probes against the containment model",
-		Long: `Run eleven read-only probes to verify the workstation containment model
+		Long: `Run twelve read-only probes to verify the workstation containment model
 is installed correctly and the boundary is intact.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
@@ -727,10 +727,44 @@ func chainHasAgentProxyLoopbackAllow(out, chainName string, port int) bool {
 }
 
 func chainHasBroadLoopbackAccept(out, chainName string) bool {
-	return chainHasLine(out, chainName, func(line string) bool {
+	return chainHasLineBeforeSkuidDrop(out, chainName, func(line string) bool {
 		return strings.Contains(line, "accept") &&
 			(strings.Contains(line, `meta oif "lo"`) || strings.Contains(line, "ip daddr 127.0.0.0/8"))
 	})
+}
+
+func chainHasLineBeforeSkuidDrop(out, chainName string, match func(string) bool) bool {
+	inChain := false
+	depth := 0
+	for _, raw := range strings.Split(out, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !inChain && (strings.HasPrefix(line, "chain "+chainName+" ") || line == "chain "+chainName+"{") {
+			inChain = true
+		}
+		if !inChain {
+			continue
+		}
+		if strings.Contains(line, "{") {
+			depth += strings.Count(line, "{")
+		}
+		if strings.Contains(line, "skuid") && strings.Contains(line, "drop") {
+			return false
+		}
+		if match(line) {
+			return true
+		}
+		if strings.Contains(line, "}") {
+			depth -= strings.Count(line, "}")
+			if depth <= 0 {
+				inChain = false
+				depth = 0
+			}
+		}
+	}
+	return false
 }
 
 func chainHasLine(out, chainName string, match func(string) bool) bool {
@@ -784,6 +818,9 @@ func probeWrapperScripts(_ context.Context, env *probeEnv) (string, string) {
 	}
 	var foundNames []string
 	for _, name := range wrappers {
+		if strings.TrimSpace(name) == "" {
+			return statusFail, "wrapper inventory contains empty wrapper name"
+		}
 		p := filepath.Join(env.wrapperDir, name)
 		info, err := os.Stat(filepath.Clean(p))
 		if err != nil {
@@ -791,6 +828,9 @@ func probeWrapperScripts(_ context.Context, env *probeEnv) (string, string) {
 				continue
 			}
 			return statusFail, fmt.Sprintf("%s stat failed: %v", p, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() == 0 {
+			return statusFail, fmt.Sprintf("%s is not a non-empty executable wrapper file", p)
 		}
 		mode := info.Mode().Perm()
 		if mode != 0o755 {

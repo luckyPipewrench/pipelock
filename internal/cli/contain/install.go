@@ -125,6 +125,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("lookup operator user %s: %w", env.operatorUser, err))
 	}
 	if opts.configSource != "" {
+		opts.configSource = filepath.Clean(opts.configSource)
 		if info, err := env.stat(opts.configSource); err != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--config %q: %w", opts.configSource, err))
 		} else if info.IsDir() {
@@ -140,7 +141,9 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 		if err != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("locate pipelock binary: %w", err))
 		}
-		env.pipelockBinary = self
+		env.pipelockBinary = filepath.Clean(self)
+	} else {
+		env.pipelockBinary = filepath.Clean(env.pipelockBinary)
 	}
 	if info, err := env.stat(env.pipelockBinary); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--pipelock-binary %q: %w", env.pipelockBinary, err))
@@ -649,9 +652,18 @@ func stepChownToProxy(label string, pathFn func(*installEnv) string) step {
 // walkAndChown chowns path and every descendant. Used because the runbook
 // runs `chown -R` and the install needs the same recursive ownership.
 func walkAndChown(env *installEnv, root string, uid, gid int) error {
-	return filepath.WalkDir(root, func(p string, _ os.DirEntry, err error) error {
+	root = filepath.Clean(root)
+	return filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err
+			return fmt.Errorf("walk %s: %w", p, err)
+		}
+		p = filepath.Clean(p)
+		rel, err := filepath.Rel(root, p)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("refusing to chown path outside %s: %s", root, p)
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
 		}
 		if err := env.chown(p, uid, gid); err != nil {
 			return fmt.Errorf("chown %s: %w", p, err)

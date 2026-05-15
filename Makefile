@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
-.PHONY: all build build-verifier test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check \
+.PHONY: all build build-verifier test bench bench-egress bench-egress-long bench-egress-release lint clean docker install fmt vet tidy-check fuzz stats docs-check \
 	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check
 
 all: build

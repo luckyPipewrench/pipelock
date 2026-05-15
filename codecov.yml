@@ -9,6 +9,12 @@ coverage:
         target: 75%
 ignore:
   - "tests/ws-helper/**"
+  # Agent-egress overhead benchmark: harness, mocks, and entry binary
+  # orchestrate subprocesses, raw TCP sockets, and live metrics scraping
+  # against a running pipelock process. Go's coverage tool cannot follow
+  # those code paths from the in-tree test process; integration testing
+  # happens via `make bench-egress` instead.
+  - "bench/egress/**"
   - "internal/filesentry/lineage_other.go"  # build-tagged !linux, untestable on Linux CI
   # Sandbox files that run inside forked child processes or require kernel
   # namespace primitives (CLONE_NEWUSER+CLONE_NEWNET). These are exercised by

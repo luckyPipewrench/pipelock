@@ -1,0 +1,62 @@
+# Pipelock bench config: default.
+#
+# Balanced mode with the shipped default DLP patterns. Represents what most
+# operators run. Forward + websocket proxies enabled. Response scanning is
+# OFF in the bench because pipelock's response scanner reads the body fully
+# before forwarding, which converts SSE into a non-streaming round trip and
+# breaks the time-to-first-byte measurement. Operators running pipelock with
+# response_scanning enabled should expect SSE numbers higher than this page
+# reports.
+
+version: 1
+mode: balanced
+
+api_allowlist: []
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  max_response_mb: 10
+  user_agent: "Pipelock Bench/1.0"
+  monitoring:
+    max_url_length: 8192
+    entropy_threshold: 4.5
+    max_requests_per_minute: 10000000
+    blocklist: []
+    subdomain_entropy_exclusions: []
+
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 300
+  idle_timeout_seconds: 120
+  sni_verification: false
+
+websocket_proxy:
+  enabled: true
+  max_message_bytes: 1048576
+  max_concurrent_connections: 128
+  scan_text_frames: true
+  allow_binary_frames: false
+  forward_cookies: false
+  strip_compression: true
+  max_connection_seconds: 3600
+  idle_timeout_seconds: 300
+  origin_policy: rewrite
+
+dlp:
+  scan_env: false
+  include_defaults: true
+  patterns: []
+
+response_scanning:
+  enabled: false
+
+mcp_input_scanning:
+  enabled: true
+
+mcp_tool_scanning:
+  enabled: true
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"

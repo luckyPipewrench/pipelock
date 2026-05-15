@@ -1,0 +1,81 @@
+# Pipelock bench config: full.
+#
+# Strict mode with every scanner enabled: adaptive enforcement, session
+# profiling, address protection, seed-phrase detection. Represents the
+# heaviest configuration we ship and shows the overhead ceiling. Response
+# scanning stays off for the same SSE-streaming reason as default.yaml;
+# turning it on changes streaming results but not single-request latency.
+
+version: 1
+mode: strict
+
+api_allowlist:
+  - "127.0.0.1"
+  - "localhost"
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  max_response_mb: 10
+  user_agent: "Pipelock Bench/1.0"
+  monitoring:
+    max_url_length: 8192
+    entropy_threshold: 3.5
+    max_requests_per_minute: 10000000
+    blocklist: []
+    subdomain_entropy_exclusions: []
+
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 300
+  idle_timeout_seconds: 120
+  sni_verification: false
+
+websocket_proxy:
+  enabled: true
+  max_message_bytes: 1048576
+  max_concurrent_connections: 128
+  scan_text_frames: true
+  allow_binary_frames: false
+  forward_cookies: false
+  strip_compression: true
+  max_connection_seconds: 3600
+  idle_timeout_seconds: 300
+  origin_policy: rewrite
+
+dlp:
+  scan_env: false
+  include_defaults: true
+  patterns: []
+
+response_scanning:
+  enabled: false
+
+mcp_input_scanning:
+  enabled: true
+
+mcp_tool_scanning:
+  enabled: true
+
+request_body_scanning:
+  enabled: true
+  action: warn
+  max_body_bytes: 5242880
+  scan_headers: true
+  header_mode: all
+
+address_protection:
+  enabled: true
+
+seed_phrase_detection:
+  enabled: true
+
+session_profiling:
+  enabled: true
+
+adaptive_enforcement:
+  enabled: true
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"

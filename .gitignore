@@ -1,6 +1,8 @@
 # Binaries
 /pipelock
 /pipelock-static
+/bench-egress
+/bench-mcpstdio
 *.exe
 *.exe~
 *.dll

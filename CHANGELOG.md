@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`pipelock envelope trust` operator CLI.** New `pipelock envelope trust add/list/remove/verify` commands manage a local JSON trust list for operator review, peer onboarding, and manual envelope verification. The runtime proxy verifier still reads trusted keys from `mediation_envelope.verify_inbound.trust_list` in `pipelock.yaml`; the local store does not change runtime admission until runtime trust-store loading is added.
+- **Agent-egress overhead benchmark harness.** New `bench/egress` measures Pipelock overhead across HTTP, SSE, tool-call chains, MCP stdio, and WebSocket using deterministic in-repo mocks, plus cold-start and optional steady-state memory sampling.
+- **Go runtime and process Prometheus collectors.** The metrics registry now exports standard `go_*` and `process_*` metrics, including heap, goroutine, and process RSS gauges, alongside existing `pipelock_*` metrics.
 
 ### Security Hardening
 

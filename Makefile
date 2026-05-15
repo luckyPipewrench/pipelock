@@ -57,6 +57,15 @@ test-cover:
 bench:
 	go test -bench=. -benchmem -count=3 -run=^$$ ./internal/scanner/ ./internal/mcp/
 
+bench-egress:
+	bash bench/egress/run-all.sh
+
+bench-egress-long:
+	bash bench/egress/run-all.sh --long
+
+bench-egress-release:
+	bash bench/egress/run-all.sh --release
+
 fmt:
 	gofumpt -w .
 

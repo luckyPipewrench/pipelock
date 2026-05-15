@@ -1,0 +1,60 @@
+# Pipelock bench config: minimal.
+#
+# Audit mode, no patterns, used as the "fastest startup" arm of the cold-start
+# measurement. Enables forward + websocket proxies because the bench drives
+# traffic through both. ssrf.ip_allowlist exempts 127.0.0.0/8 so the harness's
+# in-process mocks are reachable.
+
+version: 1
+mode: audit
+enforce: false
+
+api_allowlist: []
+
+fetch_proxy:
+  listen: "127.0.0.1:8888"
+  timeout_seconds: 30
+  max_response_mb: 10
+  user_agent: "Pipelock Bench/1.0"
+  monitoring:
+    max_url_length: 8192
+    entropy_threshold: 9.0
+    max_requests_per_minute: 10000000
+    blocklist: []
+    subdomain_entropy_exclusions: []
+
+forward_proxy:
+  enabled: true
+  max_tunnel_seconds: 300
+  idle_timeout_seconds: 120
+  sni_verification: false
+
+websocket_proxy:
+  enabled: true
+  max_message_bytes: 1048576
+  max_concurrent_connections: 128
+  scan_text_frames: true
+  allow_binary_frames: false
+  forward_cookies: false
+  strip_compression: true
+  max_connection_seconds: 3600
+  idle_timeout_seconds: 300
+  origin_policy: rewrite
+
+dlp:
+  scan_env: false
+  include_defaults: false
+  patterns: []
+
+response_scanning:
+  enabled: false
+
+mcp_input_scanning:
+  enabled: false
+
+mcp_tool_scanning:
+  enabled: false
+
+ssrf:
+  ip_allowlist:
+    - "127.0.0.0/8"

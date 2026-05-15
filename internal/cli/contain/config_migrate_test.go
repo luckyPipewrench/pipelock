@@ -551,6 +551,34 @@ func TestCopyConfigFileRejectsBadSources(t *testing.T) {
 	}
 }
 
+func TestCopyConfigFileRejectsFileChangedDuringMigration(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	filePath := filepath.Join(home, "license.token")
+	otherPath := filepath.Join(home, "other.token")
+	mustWriteFile(t, filePath, "token\n")
+	mustWriteFile(t, otherPath, "other\n")
+	origLstat := env.lstat
+	calls := 0
+	env.lstat = func(path string) (os.FileInfo, error) {
+		if path == filePath {
+			calls++
+			if calls > 2 {
+				return origLstat(otherPath)
+			}
+		}
+		return origLstat(path)
+	}
+	ctx := &configMigrationContext{env: env, operatorHome: home}
+	err := copyConfigFile(ctx, filePath, filepath.Join(env.configDir, "license.token"), modeConfigSecret)
+	if err == nil {
+		t.Fatal("expected changed-file rejection")
+	}
+	if !strings.Contains(err.Error(), "changed during migration") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
 func TestSmallYAMLHelpers(t *testing.T) {
 	root, err := parseSingleYAMLDocument([]byte("enabled: true\nname: old\n"))
 	if err != nil {

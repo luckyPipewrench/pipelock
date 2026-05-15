@@ -96,6 +96,32 @@ func TestPrivilegedWritesRejectSymlinkTargets(t *testing.T) {
 	}
 }
 
+func TestBackupAndWriteIfChangedRejectsUnchangedSymlinkTarget(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	target := filepath.Join(env.configDir, "target")
+	link := filepath.Join(env.configDir, "link")
+	if err := os.WriteFile(target, []byte("same"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	applied, err := backupAndWriteIfChanged(env, link, []byte("same"), modeAllowListReadable)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink rejection, got applied=%v err=%v", applied, err)
+	}
+	if applied {
+		t.Fatal("symlink rejection must not report applied")
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("symlink target mode changed: got %s want 0o600", got)
+	}
+}
+
 func TestWriteFileAtomicWritesModeAndReportsBadParent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "atomic.txt")
@@ -174,6 +200,54 @@ func TestBackupAndWriteRejectsSymlinkBackup(t *testing.T) {
 	err := backupAndWrite(env, path, []byte("new"), 0o600)
 	if err == nil || !strings.Contains(err.Error(), "symlink backup") {
 		t.Fatalf("expected symlink backup rejection, got %v", err)
+	}
+}
+
+func TestRestoreBackupRejectsSymlinkBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.conf")
+	const current = "restore-backup-current"
+	if err := os.WriteFile(path, []byte(current), 0o600); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere"), path+".bak"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	err := restoreBackup(env, path)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink backup rejection, got %v", err)
+	}
+	got, err := os.ReadFile(path) //nolint:gosec // tmpdir-scoped test path
+	if err != nil {
+		t.Fatalf("read current: %v", err)
+	}
+	if string(got) != current {
+		t.Fatalf("current file changed: %q", got)
+	}
+}
+
+func TestRestoreBackupIfPresentRejectsSymlinkBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.conf")
+	const current = "restore-if-present-current"
+	if err := os.WriteFile(path, []byte(current), 0o600); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "elsewhere"), path+".bak"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	err := restoreBackupIfPresent(env, path)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected symlink backup rejection, got %v", err)
+	}
+	got, err := os.ReadFile(path) //nolint:gosec // tmpdir-scoped test path
+	if err != nil {
+		t.Fatalf("read current: %v", err)
+	}
+	if string(got) != current {
+		t.Fatalf("current file changed: %q", got)
 	}
 }
 

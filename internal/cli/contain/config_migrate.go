@@ -397,6 +397,13 @@ func copyConfigFile(ctx *configMigrationContext, src, dest string, mode os.FileM
 	if err != nil {
 		return fmt.Errorf("read source %s: %w", src, err)
 	}
+	after, err := ctx.env.lstat(src)
+	if err != nil {
+		return fmt.Errorf("stat source %s after read: %w", src, err)
+	}
+	if !os.SameFile(info, after) || !after.Mode().IsRegular() {
+		return fmt.Errorf("source %s changed during migration; retry after quiescing config writes", src)
+	}
 	if err := ensureMigratedDir(ctx, filepath.Dir(dest), migrationDirMode(ctx.env, filepath.Dir(dest))); err != nil {
 		return err
 	}
@@ -502,17 +509,28 @@ func isDirectoryNotEmpty(err error) bool {
 }
 
 func backupAndWriteIfChanged(env *installEnv, path string, contents []byte, mode os.FileMode) (bool, error) {
-	if existing, err := env.readFile(path); err == nil {
+	clean := filepath.Clean(path)
+	if info, err := env.lstat(clean); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return false, fmt.Errorf("%s is a symlink; refusing privileged write", clean)
+		}
+		if info.IsDir() {
+			return false, fmt.Errorf("%s is a directory", clean)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("stat existing %s: %w", clean, err)
+	}
+	if existing, err := env.readFile(clean); err == nil {
 		if bytesEqual(existing, contents) {
-			if err := env.chmod(path, mode); err != nil {
-				return false, fmt.Errorf("chmod %s: %w", path, err)
+			if err := env.chmod(clean, mode); err != nil {
+				return false, fmt.Errorf("chmod %s: %w", clean, err)
 			}
 			return false, nil
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("read existing %s: %w", path, err)
+		return false, fmt.Errorf("read existing %s: %w", clean, err)
 	}
-	if err := backupAndWrite(env, path, contents, mode); err != nil {
+	if err := backupAndWrite(env, clean, contents, mode); err != nil {
 		return false, err
 	}
 	return true, nil

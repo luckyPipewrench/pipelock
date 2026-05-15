@@ -150,23 +150,23 @@ const (
 	defaultSystemCABundle    = "/etc/ssl/certs/ca-bundle.crt"
 
 	// File modes. The model is "pipelock-agent UID must be able to read every
-	// file the wrappers depend on at runtime, but cannot read secrets
-	// (config, integrity pin)." pipelock-agent reads CA bundles, the runtime
-	// allow-list, and the wrapper inventory; everything else stays
-	// pipelock-proxy/root scoped.
-	modeCAReadable        os.FileMode = 0o644 // /etc/pipelock/{ca,combined-ca}.pem — pipelock-agent reads
-	modeAllowListReadable os.FileMode = 0o644 // /etc/pipelock/contain/{tools.list,wrappers.json} — pipelock-agent reads
+	// non-secret file the wrappers depend on at runtime, but cannot read
+	// secrets (config, integrity pin)." The CA files contain public
+	// certificates only; the runtime allow-list and wrapper inventory contain
+	// tool names/paths only. Mutation remains gated by root-owned directories.
+	modeCAReadable        os.FileMode = 0o644 // public CA certs, read by pipelock-agent
+	modeAllowListReadable os.FileMode = 0o644 // runtime policy metadata, read by pipelock-agent
 	modeConfigSecret      os.FileMode = 0o640 // /etc/pipelock/pipelock.yaml — pipelock-proxy reads, pipelock-agent denied
 	modePinSecret         os.FileMode = 0o600 // integrity pin — pipelock-proxy only
 	modeSudoers           os.FileMode = 0o440 // /etc/sudoers.d/*
-	modeWrapperExec       os.FileMode = 0o755 // /usr/local/bin/plk-*
+	modeWrapperExec       os.FileMode = 0o755 // /usr/local/bin/plk-* wrappers, executed by operator
 	modeUnitFile          os.FileMode = 0o644
 	modeNFTFile           os.FileMode = 0o644
 	modeNFTMainConfig     os.FileMode = 0o600
-	// Directory modes. modeDirTraversable applies to dirs pipelock-agent must
-	// walk into (/etc/pipelock, /etc/pipelock/contain); modeDirPrivate is
-	// for dirs containing only pipelock-proxy-readable secrets (integrity
-	// pin, captures).
+	// Directory modes. modeDirTraversable is intentionally world-traversable
+	// because pipelock-agent is a separate UID and must walk into
+	// /etc/pipelock/contain; modeDirPrivate is for dirs containing only
+	// pipelock-proxy-readable secrets (integrity pin, captures).
 	modeDirTraversable os.FileMode = 0o755
 	modeDirPrivate     os.FileMode = 0o750
 	// modeDirSystem is retained for callers that don't yet distinguish
@@ -309,18 +309,24 @@ func ensureSafeDirectory(env *installEnv, path string) error {
 // remove path (the install created it fresh). Errors that don't matter for
 // rollback (target already gone) are swallowed.
 func restoreBackup(env *installEnv, path string) error {
-	bak := path + ".bak"
-	if _, err := env.stat(bak); err == nil {
+	clean := filepath.Clean(path)
+	bak := clean + ".bak"
+	if info, err := env.lstat(bak); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("backup %s is a symlink; refusing restore", bak)
+		}
 		// Best-effort cleanup of any non-bak file first; rename below
 		// then atomically promotes the backup.
-		_ = env.removeFile(path)
-		if err := env.rename(bak, path); err != nil {
-			return fmt.Errorf("restore %s from %s: %w", path, bak, err)
+		_ = env.removeFile(clean)
+		if err := env.rename(bak, clean); err != nil {
+			return fmt.Errorf("restore %s from %s: %w", clean, bak, err)
 		}
 		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", bak, err)
 	}
-	if err := env.removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %s: %w", path, err)
+	if err := env.removeFile(clean); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", clean, err)
 	}
 	return nil
 }
@@ -330,16 +336,21 @@ func restoreBackup(env *installEnv, path string) error {
 // files such as /etc/sysconfig/nftables.conf where deleting the file on
 // rollback would be worse than leaving a harmless managed include absent.
 func restoreBackupIfPresent(env *installEnv, path string) error {
-	bak := path + ".bak"
-	if _, err := env.stat(bak); err != nil {
+	clean := filepath.Clean(path)
+	bak := clean + ".bak"
+	info, err := env.lstat(bak)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("stat %s: %w", bak, err)
 	}
-	_ = env.removeFile(path)
-	if err := env.rename(bak, path); err != nil {
-		return fmt.Errorf("restore %s from %s: %w", path, bak, err)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("backup %s is a symlink; refusing restore", bak)
+	}
+	_ = env.removeFile(clean)
+	if err := env.rename(bak, clean); err != nil {
+		return fmt.Errorf("restore %s from %s: %w", clean, bak, err)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GO_VERSION := $(shell go version | awk '{print $$3}')
 LICENSE_PUBLIC_KEY ?=
+RULES_KEYRING_HEX ?=
 LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cliutil.Version=$(VERSION) \
 	-X $(MODULE)/internal/cliutil.BuildDate=$(BUILD_DATE) \
@@ -12,7 +13,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/cliutil.GoVersion=$(GO_VERSION) \
 	-X $(MODULE)/internal/proxy.Version=$(VERSION) \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
-	-X $(MODULE)/internal/rules.KeyringHex=$(LICENSE_PUBLIC_KEY)"
+	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
 .PHONY: all build build-verifier test bench lint clean docker install fmt vet tidy-check fuzz stats docs-check \
 	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check
@@ -89,6 +90,7 @@ docker:
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg LICENSE_PUBLIC_KEY=$(LICENSE_PUBLIC_KEY) \
+		--build-arg RULES_KEYRING_HEX=$(RULES_KEYRING_HEX) \
 		-t $(BINARY):$(VERSION) -t $(BINARY):latest .
 
 fuzz:

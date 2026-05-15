@@ -131,7 +131,7 @@ func TestStepWritePipelockConfig_SkipsWhenIdentical(t *testing.T) {
 		t.Fatalf("write src: %v", err)
 	}
 	dst := filepath.Join(env.configDir, "pipelock.yaml")
-	if err := os.MkdirAll(env.configDir, 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(dst, body, 0o600); err != nil {
@@ -154,7 +154,7 @@ func TestStepWritePipelockConfig_OverwritesAndWarnsOnDifference(t *testing.T) {
 		t.Fatalf("write src: %v", err)
 	}
 	dst := filepath.Join(env.configDir, "pipelock.yaml")
-	if err := os.MkdirAll(env.configDir, 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(env.configDir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(dst, []byte("mode: balanced\n"), 0o600); err != nil {
@@ -723,7 +723,7 @@ func TestActionDisablePipelockService_SkipsWhenAbsent(t *testing.T) {
 
 func TestActionRemoveNFTRules_DropsAndCleans(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(env.nftRulesPath), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(env.nftRulesPath, []byte("rules"), 0o600); err != nil {

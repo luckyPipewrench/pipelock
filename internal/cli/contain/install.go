@@ -1074,6 +1074,7 @@ func stepInstallNFTRules() step {
 					return false, fmt.Errorf("nft load failed: %w", err)
 				}
 			}
+			captureNFTPreState(ctx, env)
 			if err := runOrErr(ctx, env, "systemctl", "enable", "nftables.service"); err != nil {
 				return false, fmt.Errorf("enable nftables.service: %w", err)
 			}

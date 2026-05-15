@@ -273,6 +273,50 @@ flight_recorder:
 	}
 }
 
+func TestEnsureFlightRecorderSigningKeyUsesExistingTarget(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dest := filepath.Join(env.configDir, "keys", "flight-recorder-signing.key")
+	mustWriteSigningKey(t, dest)
+	ctx := &configMigrationContext{env: env}
+	if err := ensureFlightRecorderSigningKey(ctx, dest); err != nil {
+		t.Fatalf("ensure existing: %v", err)
+	}
+	if len(ctx.artifacts) != 0 {
+		t.Fatalf("existing key should not add artifacts: %+v", ctx.artifacts)
+	}
+	info, err := os.Stat(dest)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	if got := info.Mode().Perm(); got != modePinSecret {
+		t.Fatalf("mode=%s want %s", got, modePinSecret)
+	}
+}
+
+func TestEnsureFlightRecorderSigningKeyRejectsBadExistingTargets(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	ctx := &configMigrationContext{env: env}
+	dirDest := filepath.Join(env.configDir, "keys", "as-dir")
+	if err := os.MkdirAll(dirDest, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := ensureFlightRecorderSigningKey(ctx, dirDest); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("dir err: %v", err)
+	}
+	badKey := filepath.Join(env.configDir, "keys", "bad.key")
+	mustWriteFile(t, badKey, "not a key")
+	if err := ensureFlightRecorderSigningKey(ctx, badKey); err == nil || !strings.Contains(err.Error(), "validate existing signing key") {
+		t.Fatalf("bad key err: %v", err)
+	}
+	link := filepath.Join(env.configDir, "keys", "link.key")
+	if err := os.Symlink(badKey, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := ensureFlightRecorderSigningKey(ctx, link); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink err: %v", err)
+	}
+}
+
 func TestCopyConfigDirCopiesNestedFiles(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	home := t.TempDir()
@@ -464,6 +508,46 @@ func TestResolveMigratablePathVariants(t *testing.T) {
 	ctx.operatorHome = ""
 	if _, ok := ctx.resolveMigratablePath("~/token"); ok {
 		t.Fatal("expected no migration when operator home is empty")
+	}
+}
+
+func TestOperatorHomeDirErrors(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.operatorUser = ""
+	if _, err := operatorHomeDir(env); err == nil || !strings.Contains(err.Error(), "operator user not set") {
+		t.Fatalf("empty operator err: %v", err)
+	}
+	env.operatorUser = containInstallOperatorUser
+	env.lookupUser = func(string) (*user.User, error) {
+		return nil, user.UnknownUserError("missing")
+	}
+	if _, err := operatorHomeDir(env); err == nil {
+		t.Fatal("expected lookup error")
+	}
+}
+
+func TestCopyConfigFileRejectsBadSources(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	ctx := &configMigrationContext{env: env, operatorHome: home}
+	missing := filepath.Join(home, "missing.token")
+	if err := copyConfigFile(ctx, missing, filepath.Join(env.configDir, "missing.token"), modeConfigSecret); err == nil || !strings.Contains(err.Error(), "stat source") {
+		t.Fatalf("missing err: %v", err)
+	}
+	dirSrc := filepath.Join(home, "dir-source")
+	if err := os.MkdirAll(dirSrc, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := copyConfigFile(ctx, dirSrc, filepath.Join(env.configDir, "dir-source"), modeConfigSecret); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("dir err: %v", err)
+	}
+	fileSrc := filepath.Join(home, "token")
+	mustWriteFile(t, fileSrc, "token")
+	env.readFile = func(string) ([]byte, error) {
+		return nil, stringError("read denied")
+	}
+	if _, err := backupAndWriteIfChanged(env, filepath.Join(env.configDir, "token"), []byte("token"), modeConfigSecret); err == nil || !strings.Contains(err.Error(), "read existing") {
+		t.Fatalf("read existing err: %v", err)
 	}
 }
 

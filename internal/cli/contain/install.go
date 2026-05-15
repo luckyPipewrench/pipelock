@@ -401,7 +401,7 @@ func upsertToolEntry(env *installEnv, name, target string) (bool, error) {
 	if err != nil {
 		// Missing file: start fresh with the defaults plus this entry.
 		if errors.Is(err, os.ErrNotExist) {
-			entries = nil
+			entries = resolvableDefaultToolEntries(env)
 		} else {
 			return false, fmt.Errorf("read tools.list: %w", err)
 		}
@@ -787,6 +787,7 @@ func ensureIntegrityOwnership(env *installEnv) error {
 // ---------------------------------------------------------------------------
 
 func stepStopUserService() step {
+	var stopped bool
 	return step{
 		name: "stop-user-pipelock",
 		desc: "stop the operator's user-mode pipelock.service (if running)",
@@ -799,18 +800,20 @@ func stepStopUserService() step {
 			if strings.TrimSpace(out) != systemctlActive {
 				return false, nil
 			}
-			return true, runOrErr(ctx, env, "systemctl", "--user", "-M", env.operatorUser+"@.host", "disable", "--now", "pipelock")
+			if err := runOrErr(ctx, env, "systemctl", "--user", "-M", env.operatorUser+"@.host", "stop", "pipelock"); err != nil {
+				return true, err
+			}
+			stopped = true
+			return true, nil
 		},
-		// undo re-enables the user-mode service so a mid-install failure
-		// never leaves the operator with pipelock fully off. apply only
-		// returns true (and so undo only runs) when it actually stopped a
-		// running user service — meaning enable --now is safe and
-		// expected to succeed.
+		// undo restarts only when this install attempt actually stopped
+		// the operator service. It deliberately does not enable/disable
+		// the unit, preserving the operator's previous enablement state.
 		undo: func(ctx context.Context, env *installEnv) error {
-			if env.operatorUser == "" {
+			if env.operatorUser == "" || !stopped {
 				return nil
 			}
-			return runOrErr(ctx, env, "systemctl", "--user", "-M", env.operatorUser+"@.host", "enable", "--now", "pipelock")
+			return runOrErr(ctx, env, "systemctl", "--user", "-M", env.operatorUser+"@.host", "start", "pipelock")
 		},
 	}
 }
@@ -831,8 +834,12 @@ func stepWriteSystemUnit() step {
 			}
 			return true, backupAndWrite(env, env.systemUnitPath, []byte(body), modeUnitFile)
 		},
-		undo: func(_ context.Context, env *installEnv) error {
-			return restoreBackup(env, env.systemUnitPath)
+		undo: func(ctx context.Context, env *installEnv) error {
+			if err := restoreBackup(env, env.systemUnitPath); err != nil {
+				return err
+			}
+			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+			return nil
 		},
 	}
 }
@@ -884,6 +891,9 @@ func renderSystemUnit(env *installEnv) string {
 // ---------------------------------------------------------------------------
 
 func stepEnableSystemUnit() step {
+	var preStateKnown bool
+	var wasActive bool
+	var wasEnabled bool
 	return step{
 		name: "enable-system-pipelock",
 		desc: "systemctl daemon-reload + enable --now pipelock.service",
@@ -893,7 +903,10 @@ func stepEnableSystemUnit() step {
 			}
 			activeOut, _, _ := env.runCmd(ctx, "systemctl", "is-active", "pipelock")
 			enabledOut, _, _ := env.runCmd(ctx, "systemctl", "is-enabled", "pipelock")
-			if strings.TrimSpace(activeOut) == systemctlActive && strings.TrimSpace(enabledOut) == systemctlEnabled {
+			wasActive = strings.TrimSpace(activeOut) == systemctlActive
+			wasEnabled = strings.TrimSpace(enabledOut) == systemctlEnabled
+			preStateKnown = true
+			if wasActive && wasEnabled {
 				// Re-issuing enable when already enabled is a no-op anyway,
 				// but skip to keep the dry-run/run output clean.
 				return false, nil
@@ -901,10 +914,19 @@ func stepEnableSystemUnit() step {
 			return true, runOrErr(ctx, env, "systemctl", "enable", "--now", "pipelock")
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			// Best-effort: disable and stop. If the unit file was removed
-			// already by a sibling undo, systemctl reports an error we can
-			// safely ignore.
-			_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", "pipelock")
+			if !preStateKnown {
+				// Explicit rollback command path: no apply pre-state exists,
+				// so remove the containment-managed system service.
+				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "--now", "pipelock")
+				_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+				return nil
+			}
+			if !wasEnabled {
+				_, _, _ = env.runCmd(ctx, "systemctl", "disable", "pipelock")
+			}
+			if !wasActive {
+				_, _, _ = env.runCmd(ctx, "systemctl", "stop", "pipelock")
+			}
 			_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
 			return nil
 		},

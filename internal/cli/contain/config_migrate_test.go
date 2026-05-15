@@ -196,7 +196,7 @@ func TestMigratePipelockConfigForContain_RejectsSymlinkSource(t *testing.T) {
 		return origLookup(name)
 	}
 	configDir := filepath.Join(home, ".config", "pipelock")
-	if err := os.MkdirAll(configDir, 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(configDir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	target := filepath.Join(configDir, "real.token")
@@ -483,7 +483,7 @@ flight_recorder:
 
 func mustWriteFile(t *testing.T, path, body string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -493,7 +493,7 @@ func mustWriteFile(t *testing.T, path, body string) {
 
 func mustWriteSigningKey(t *testing.T, path string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // tmpdir
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
 	_, priv, err := signing.GenerateKeyPair()

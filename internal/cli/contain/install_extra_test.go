@@ -231,14 +231,14 @@ func TestStepStopUserService_StopsWhenActive(t *testing.T) {
 	if !applied {
 		t.Errorf("expected applied=true when active")
 	}
-	var sawDisable bool
+	var sawStop bool
 	for _, c := range runner.calls {
-		if c.name == testSystemctl && containsArg(c.args, "disable") {
-			sawDisable = true
+		if c.name == testSystemctl && containsArg(c.args, "stop") {
+			sawStop = true
 		}
 	}
-	if !sawDisable {
-		t.Errorf("expected systemctl disable, got %v", runner.calls)
+	if !sawStop {
+		t.Errorf("expected systemctl stop, got %v", runner.calls)
 	}
 }
 
@@ -312,6 +312,72 @@ func TestStepEnableSystemUnit_UndoDisables(t *testing.T) {
 	}
 	if !sawDisable {
 		t.Errorf("expected systemctl disable in undo, got %v", runner.calls)
+	}
+}
+
+func TestStepEnableSystemUnit_UndoRestoresPreviouslyEnabledInactive(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "inactive\n", 3, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "enabled\n", 0, nil)
+	s := stepEnableSystemUnit()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected apply")
+	}
+	if err := s.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	var sawStop, sawDisable bool
+	for _, c := range runner.calls {
+		if c.name == testSystemctl && len(c.args) > 0 && c.args[0] == "stop" {
+			sawStop = true
+		}
+		if c.name == testSystemctl && len(c.args) > 0 && c.args[0] == "disable" {
+			sawDisable = true
+		}
+	}
+	if !sawStop {
+		t.Fatalf("expected undo to stop previously inactive unit, calls=%v", runner.calls)
+	}
+	if sawDisable {
+		t.Fatalf("undo disabled previously enabled unit, calls=%v", runner.calls)
+	}
+}
+
+func TestStepEnableSystemUnit_UndoRestoresPreviouslyActiveDisabled(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
+	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "disabled\n", 1, nil)
+	s := stepEnableSystemUnit()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected apply")
+	}
+	if err := s.undo(context.Background(), env); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	var sawDisable, sawStop bool
+	for _, c := range runner.calls {
+		if c.name == testSystemctl && len(c.args) > 0 && c.args[0] == "disable" {
+			sawDisable = true
+		}
+		if c.name == testSystemctl && len(c.args) > 0 && c.args[0] == "stop" {
+			sawStop = true
+		}
+	}
+	if !sawDisable {
+		t.Fatalf("expected undo to disable previously disabled unit, calls=%v", runner.calls)
+	}
+	if sawStop {
+		t.Fatalf("undo stopped previously active unit, calls=%v", runner.calls)
 	}
 }
 

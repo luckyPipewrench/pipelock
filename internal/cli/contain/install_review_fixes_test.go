@@ -13,25 +13,39 @@ import (
 )
 
 // Tests covering review blockers found during contain install hardening:
-//   - stepStopUserService must have an undo that re-enables the user service
+//   - stepStopUserService must have an undo that restarts the user service without changing enablement
 //   - plk-launch must validate $TOOL against the runtime allow-list
 //   - per-tool wrappers must use `sudo -n` for fail-fast
 //   - --target must be honored at runtime (baked into tools.list)
 
-func TestStepStopUserService_UndoReenablesUserService(t *testing.T) {
+func TestStepStopUserService_UndoRestartsStoppedUserService(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	runner.on(argvFor(testSystemctl, "--user", "-M", "operator@.host", "is-active", "pipelock"), "active\n", 0, nil)
 	s := stepStopUserService()
+	applied, err := s.apply(context.Background(), env)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !applied {
+		t.Fatal("expected apply")
+	}
 	if err := s.undo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
 	}
-	var sawEnable bool
+	var sawStart, sawEnable bool
 	for _, c := range runner.calls {
+		if c.name == testSystemctl && containsArg(c.args, "start") && containsArg(c.args, "pipelock") {
+			sawStart = true
+		}
 		if c.name == testSystemctl && containsArg(c.args, "enable") && containsArg(c.args, "pipelock") {
 			sawEnable = true
 		}
 	}
-	if !sawEnable {
-		t.Errorf("undo did not re-enable user pipelock, calls=%v", runner.calls)
+	if !sawStart {
+		t.Errorf("undo did not restart user pipelock, calls=%v", runner.calls)
+	}
+	if sawEnable {
+		t.Errorf("undo changed user service enablement, calls=%v", runner.calls)
 	}
 }
 
@@ -193,8 +207,9 @@ func TestUpsertToolEntry_UpdatesExistingTarget(t *testing.T) {
 	}
 }
 
-func TestUpsertToolEntry_BootstrapsOnlyRequestedToolWhenMissing(t *testing.T) {
+func TestUpsertToolEntry_BootstrapsDefaultsWhenMissing(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
+	plantResolvableDefaultTools(t, env, "claude", "codex")
 	changed, err := upsertToolEntry(env, testRustup, "/usr/local/bin/rustup")
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -206,8 +221,14 @@ func TestUpsertToolEntry_BootstrapsOnlyRequestedToolWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Errorf("entries: %d, want 1", len(entries))
+	names := map[string]bool{}
+	for _, entry := range entries {
+		names[entry.name] = true
+	}
+	for _, want := range []string{"claude", "codex", testRustup} {
+		if !names[want] {
+			t.Fatalf("tools.list missing %q after bootstrap: %+v", want, entries)
+		}
 	}
 }
 
@@ -322,9 +343,9 @@ func plantResolvableDefaultTools(t *testing.T, env *installEnv, names ...string)
 	t.Helper()
 	targets := make(map[string]string, len(names))
 	for _, name := range names {
-		target := filepath.Join(t.TempDir(), name)
-		if err := os.WriteFile(target, []byte("x"), 0o755); err != nil { //nolint:gosec // tmpdir
-			t.Fatalf("plant target %s: %v", name, err)
+		target, err := os.Executable()
+		if err != nil {
+			t.Fatalf("locate test executable: %v", err)
 		}
 		targets["/usr/local/bin/"+name] = target
 	}
@@ -343,11 +364,16 @@ func plantResolvableDefaultTools(t *testing.T, env *installEnv, names ...string)
 	}
 }
 
+func writeScriptFixture(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write script fixture %s: %v", path, err)
+	}
+}
+
 func TestAddTool_RecordsTargetInToolsList(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
-	if err := os.WriteFile(filepath.Join(env.wrapperDir, "plk-launch"), []byte("#!/bin/bash\n"), 0o755); err != nil { //nolint:gosec // tmpdir
-		t.Fatalf("plant: %v", err)
-	}
+	writeScriptFixture(t, filepath.Join(env.wrapperDir, "plk-launch"), "#!/bin/bash\n")
 	// Seed default tools.list so we observe append behaviour, not bootstrap.
 	if err := os.MkdirAll(filepath.Dir(env.toolsListPath), 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -355,9 +381,9 @@ func TestAddTool_RecordsTargetInToolsList(t *testing.T) {
 	if err := os.WriteFile(env.toolsListPath, []byte(renderDefaultToolsList()), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	target := filepath.Join(t.TempDir(), testRustup)
-	if err := os.WriteFile(target, []byte("x"), 0o755); err != nil { //nolint:gosec // tmpdir
-		t.Fatalf("plant target: %v", err)
+	target, err := os.Executable()
+	if err != nil {
+		t.Fatalf("locate test executable: %v", err)
 	}
 	if err := runAddTool(context.Background(), env, testRustup, addToolOpts{target: target}); err != nil {
 		t.Fatalf("addTool: %v", err)
@@ -411,9 +437,7 @@ func TestRenderedCCLaunch_ParsesUnderBash(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	tmp := t.TempDir()
 	scriptPath := filepath.Join(tmp, "plk-launch")
-	if err := os.WriteFile(scriptPath, []byte(renderLaunchWrapper(env)), 0o755); err != nil { //nolint:gosec // test fixture
-		t.Fatalf("write: %v", err)
-	}
+	writeScriptFixture(t, scriptPath, renderLaunchWrapper(env))
 	// bash -n parses without executing. Any syntax error fails the test.
 	cmd := exec_realCommand(t, "/bin/bash", "-n", scriptPath)
 	if cmd.exit != 0 {
@@ -435,9 +459,7 @@ func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 	scriptPath := filepath.Join(tmp, "plk-launch")
 	toolsListPath := filepath.Join(tmp, "tools.list")
 	env.toolsListPath = toolsListPath
-	if err := os.WriteFile(scriptPath, []byte(renderLaunchWrapper(env)), 0o755); err != nil { //nolint:gosec // test fixture
-		t.Fatalf("write script: %v", err)
-	}
+	writeScriptFixture(t, scriptPath, renderLaunchWrapper(env))
 	// Seed an allow-list with one entry pointing at /bin/true so we can
 	// exercise the happy path without depending on pipelock-agent's PATH.
 	allowList := "claude\t/bin/true\n"

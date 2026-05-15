@@ -168,6 +168,15 @@ while IFS= read -r workflow; do
 	fi
 done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 
+note "release audit: checking build-time trust roots"
+
+if rg_search -n 'rules\.KeyringHex=.*LICENSE_PUBLIC_KEY|rules\.KeyringHex=\{\{\.Env\.LICENSE_PUBLIC_KEY\}\}' Makefile Dockerfile .goreleaser.yaml; then
+	if [[ -n "$rg_output" ]]; then
+		fail "rules.KeyringHex must not be sourced from LICENSE_PUBLIC_KEY; rule bundles and licenses use separate trust roots"
+		note "$rg_output"
+	fi
+fi
+
 if [[ "$errors" -ne 0 ]]; then
 	exit 1
 fi

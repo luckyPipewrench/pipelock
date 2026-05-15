@@ -66,14 +66,49 @@ jobs:
       - name: Set GOVERSION
         run: echo "GOVERSION=$(go env GOVERSION)" >> "$GITHUB_ENV"
 
-      - name: Verify embedded license public key is configured
+      - name: Verify embedded public keys are configured
         env:
           LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
+          RULES_KEYRING_HEX: ${{ secrets.RULES_KEYRING_HEX }}
         run: |
           test -n "$LICENSE_PUBLIC_KEY" || {
             echo "::error::LICENSE_PUBLIC_KEY secret is required for release builds"
             exit 1
           }
+          test -n "$RULES_KEYRING_HEX" || {
+            echo "::error::RULES_KEYRING_HEX secret is required for release builds"
+            exit 1
+          }
+          case "$LICENSE_PUBLIC_KEY" in
+            *[!0123456789abcdefABCDEF]*)
+              echo "::error::LICENSE_PUBLIC_KEY must be a raw Ed25519 public key encoded as hex"
+              exit 1
+              ;;
+          esac
+          test "${#LICENSE_PUBLIC_KEY}" -eq 64 || {
+            echo "::error::LICENSE_PUBLIC_KEY must be 64 hex characters"
+            exit 1
+          }
+          if [[ ! "$RULES_KEYRING_HEX" =~ ^[0-9A-Fa-f]{64}(,[0-9A-Fa-f]{64})*$ ]]; then
+            echo "::error::RULES_KEYRING_HEX must be one or more 64-hex Ed25519 public keys separated by commas"
+            exit 1
+          fi
+          license_public_key_normalized="${LICENSE_PUBLIC_KEY,,}"
+          IFS=',' read -r -a rules_keys <<< "$RULES_KEYRING_HEX"
+          for key in "${rules_keys[@]}"; do
+            test -n "$key" || {
+              echo "::error::RULES_KEYRING_HEX contains an empty key entry"
+              exit 1
+            }
+            test "${#key}" -eq 64 || {
+              echo "::error::RULES_KEYRING_HEX entries must be 64 hex characters"
+              exit 1
+            }
+            test "${key,,}" != "$license_public_key_normalized" || {
+              echo "::error::LICENSE_PUBLIC_KEY must not appear in RULES_KEYRING_HEX"
+              exit 1
+            }
+          done
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7.2.1
@@ -86,6 +121,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           GOVERSION: ${{ env.GOVERSION }}
           LICENSE_PUBLIC_KEY: ${{ secrets.LICENSE_PUBLIC_KEY }}
+          RULES_KEYRING_HEX: ${{ secrets.RULES_KEYRING_HEX }}
 
       - name: Generate SBOM
         run: |

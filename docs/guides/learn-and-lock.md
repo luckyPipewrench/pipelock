@@ -100,6 +100,16 @@ Promotion is a two-phase commit. The CLI emits a signed `contract_promote_intent
 
 No symlinks. No plain pointers. Every active swap is signed; every accepted manifest is immutable.
 
+### Tombstone enforcement (v2.5)
+
+A tombstone is a signed withdrawal marker — operator-emitted proof that a specific contract hash must never be enforced again. v2.4 wrote tombstones as evidence markers but didn't enforce them at activation time. **v2.5 closes that gap.** The active-manifest store now cross-checks tombstones in three places:
+
+1. **Promotion-time check.** `Store.ValidateEnvelope` rejects any `promote-intent` whose target hash has a matching tombstone. The runtime refuses to swap to a tombstoned contract.
+2. **Accepted-load chain walk.** When the runtime rebuilds the accepted history during startup or missed-promote recovery, the chain walk refuses to load a contract whose hash is tombstoned — even if a partial swap had already begun.
+3. **Audit emission.** Every attempted re-promote of a tombstoned contract emits a high-severity `contract_promote_intent` audit event with `denied: tombstoned` so the operator sees the attempt regardless of who initiated it.
+
+The combination means a tombstoned contract is operationally dead: it cannot be re-introduced by editing config, by replaying a signed envelope, or by a poisoned `prior_manifest_hash`. Red-team tests prove enforcement at both the promotion-time and accepted-load surfaces.
+
 ## Capture metadata hardening
 
 Every capture record carries a fixed metadata header so an offline `pipelock learn compile` or `pipelock learn shadow` run reproduces the live decision exactly: `session_id`, `event_kind`, `type: capture`, `surface`, `subsurface`, `config_hash`, `profile`, `agent`, `effective_action`, and `outcome`. The capture pipeline stamps these at every observer call site (forward, intercept, reverse, fetch, MCP HTTP, MCP stdio) so a record's policy provenance is unambiguous regardless of which transport produced it.

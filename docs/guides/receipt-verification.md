@@ -157,6 +157,79 @@ These hardenings are transparent to verifiers — the wire format is
 unchanged. They protect the emitter side from bugs and tampering that
 would have produced broken or forgeable chains at restart.
 
+## Standalone `pipelock-verifier` CLI
+
+As of v2.5.0, Pipelock ships a standalone `pipelock-verifier` binary under
+`cmd/pipelock-verifier/`. It verifies Audit Packet receipts and chains
+without running the proxy — auditors and SIEMs can drop it next to the
+agent platform without inheriting any of Pipelock's runtime surface.
+
+```bash
+# Verify an individual receipt
+pipelock-verifier receipt receipt.json
+
+# Verify a full chain
+pipelock-verifier chain evidence-proxy-0.jsonl
+
+# Verify an Audit Packet directory or packet.json file
+pipelock-verifier audit-packet ./audit-packet
+```
+
+The standalone binary reads the same Audit Packet v0 schema and receipt
+signing conventions as the in-tree `pipelock verify-receipt` subcommand. It
+returns exit 0 for valid evidence, exit 1 for invalid evidence, exit 2 for
+runtime errors, and exit 64 for CLI usage errors. Use this binary in
+post-incident review and nightly audit jobs.
+
+## Language-portable verifier packages
+
+Pipelock v2.5.0 publishes first-party verifier libraries for three runtimes,
+all of which validate the same canonical conformance vectors used by the
+Go reference verifier. Pick whichever fits your downstream audit pipeline:
+
+| Runtime | Path | Use case |
+|---|---|---|
+| Go (in-tree reference) | `sdk/audit-packet/` and `cmd/pipelock-verifier/` | Server-side audit pipelines, CI workflows |
+| TypeScript | [`sdk/verifiers/ts/`](../../sdk/verifiers/ts/) | Node-based audit / SIEM, browser-side evidence inspection |
+| Rust | [`sdk/verifiers/rust/`](../../sdk/verifiers/rust/) | Embedded use, audit-platform sidecars, no-runtime environments |
+| Python (companion) | [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) | Python-based audit pipelines and Jupyter analysis. v1 chains today; EvidenceReceipt v2 envelopes after the prepared 0.2.0 release. |
+
+The TypeScript and Rust verifiers ship with their own test suites that
+exercise the canonical vectors from the Go schema package, so a schema
+change that breaks any verifier fails the release before the tag. The
+verifier-CI workflow runs these tests on every PR.
+
+## Audit Packet v0 schema
+
+The canonical packet schema lives at [`sdk/audit-packet/`](../../sdk/audit-packet/).
+It defines the evidence bundle around a receipt chain: run identity, observed
+policy hashes, verdict totals, verifier trust state, posture claims, and
+artifact paths. Downstream verifiers in any language read the same schema, so
+a verifier you write against the schema today keeps working as long as the
+schema major version (`v0`) stays stable.
+
+The schema covers:
+
+- **Run identity.** Provider, repository, workflow, ref, SHA, agent identity,
+  and run timestamps.
+- **Policy evidence.** Sorted policy hashes observed in receipts plus optional
+  config snapshot digest.
+- **Receipt summary.** Eight verdict buckets (`allow`, `block`, `warn`, `ask`,
+  `strip`, `forward`, `redirect`, `other`), transport counts, blocked-layer
+  counts, domains touched, and optional inline receipt summaries.
+- **Verifier trust.** `valid` evidence must be tied to a pinned signer key;
+  `self_consistent_only` proves hash-chain consistency but not signer
+  provenance.
+- **Posture claims.** Runtime status for raw sockets, Docker socket exposure,
+  DNS/UDP, browser proxying, WebSocket frame scanning, and explicit
+  unsupported paths.
+- **Artifact containment.** Packet artifact paths are relative, non-empty, and
+  cannot escape the packet directory.
+
+The Go bindings under `sdk/audit-packet/` are the language reference;
+they ship the canonical conformance vectors that every other verifier
+implementation tests against.
+
 ## Cross-implementation conformance suite
 
 The `sdk/conformance/` directory contains golden test vectors for any
@@ -189,6 +262,12 @@ go test ./sdk/conformance/ -run TestGenerateGoldenFiles -update
 
 A reference Python verifier is available at
 [pipelock-verify-python](https://github.com/luckyPipewrench/pipelock-verify-python).
+First-party TypeScript and Rust verifiers ship in-tree under
+`sdk/verifiers/ts/` and `sdk/verifiers/rust/`; the standalone
+`pipelock-verifier` Go CLI ships under `cmd/pipelock-verifier/`. The Go,
+TypeScript, and Rust implementations validate the same canonical conformance
+vectors; the Python companion continues to cover the v1 chain surface noted
+above.
 
 ## See also
 

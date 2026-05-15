@@ -31,6 +31,9 @@ An honest feature matrix and guidance on when to use what.
 | **Hot-reload** | Yes (fsnotify + SIGHUP) | No | No | No |
 | **CI/CD friendly** | Yes (exit codes, JSON output) | Yes | Limited | Yes |
 | **Testing depth** | Thousands of tests, 88%+ coverage, private adversarial suite | Public unit tests | Public unit tests | Public unit tests |
+| **Independent verifier SDKs** | First-party Go, TypeScript, Rust verifiers + standalone `pipelock-verifier` CLI + Python companion. Auditors verify signed receipts without running the firewall. | Not applicable | Not applicable | Not applicable |
+| **Host containment lifecycle** | `pipelock contain install / verify / rollback / add-tool / ca-refresh` — 3-UID kernel-enforced separation with nftables owner-match and TOFU binary-integrity pinning | No | Kernel-level, no install lifecycle | OS sandbox per session |
+| **Cross-org federation** | Inbound mediation-envelope verification, strict-default SPIFFE actors, RFC 9421 well-known signing-key directory, replay-protected nonce cache, operator trust CLI | No | No | No |
 
 ## When to Use What
 

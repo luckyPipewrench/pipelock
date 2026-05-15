@@ -133,6 +133,23 @@ Organizations can create and sign their own bundles. Add their public key to `tr
 
 The `--allow-unsigned` flag skips signature verification during install. Use this only for local testing. Unsigned bundles log a warning at startup.
 
+### Bundle keyring separated from the license key
+
+As of v2.5.0 the bundle-signing keyring is stored and loaded independently from the license key. Rotating one does not force rotating the other. The migration is automatic on first load; bundles signed under the prior layout verify unchanged. Operators running a custom `trusted_keys` list are unaffected.
+
+## Multi-bundle layout
+
+The `pipelock-rules` repo ships a multi-bundle directory layout so each bundle is signed and versioned independently. A bundle is identified by name and tier, not by file location, so operators can install only the bundles they need. Install several bundles side by side; each one runs in addition to the core and standard tiers:
+
+```bash
+pipelock rules install pipelock-community
+pipelock rules install --source https://example.com/finance-pii/bundle.yaml finance-pii
+```
+
+`pipelock rules list` shows every installed bundle with its tier, version, and rule counts. Bundles are additive — they cannot override or disable the core or standard tiers, and they cannot override each other; identical rules across bundles dedupe at load time.
+
+> The `healthcare-phi-pii` community bundle is staged and pending CLA before publication. It will appear in the official bundle list once the contributor agreement lands.
+
 ## Verifying Signatures
 
 ```bash

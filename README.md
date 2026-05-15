@@ -27,7 +27,7 @@
 
 **Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 48 credential patterns, and 25 injection patterns with 6-pass normalization.
 
-**Works with:** Claude Code · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
+**Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
 [Quick Start](#quick-start) · [What It Does](#what-it-does) · [Docs](docs/) · [Blog](https://pipelab.org/blog/) · [Ask Dosu](https://app.dosu.dev/bcccd1cf-be85-4c0e-ae05-edeb0ff50b59/ask)
 
@@ -220,6 +220,9 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Block-Reason Header** (v2.4) | `X-Pipelock-Block-Reason` response header on every HTTP-capable block path (forward / intercept / fetch / reverse / MCP HTTP / WebSocket close-frame payload) with a fixed reason vocabulary, severity tier, and retry hint. MCP-internal JSON-RPC blocks (`tool_poisoning`, `tool_chain_blocked`, MCP stdio) carry the same reason vocabulary on the JSON-RPC error metadata where there is no HTTP response surface. Lets agents react intelligently to a block without parsing the body. See [block-reason header](docs/guides/block-reason-header.md). |
 | **Wedge-Detection Watchdog** (v2.4) | `health_watchdog` returns `/health` 503 when a subsystem heartbeat goes stale (proxy hot path, MCP listeners, rules-engine reload watcher), so cluster liveness probes detect a wedged scanner automatically. Optional `expose_subsystems: true` adds a per-subsystem map for operator dashboards. See [health endpoint guide](docs/guides/health.md). |
 | **Redaction Provider Plugin Shape** (v2.4) | First-party redaction parsers ship for Anthropic, OpenAI, and Gemini chat APIs. The provider-plugin shape (`internal/redact/providers.go::DefaultProviderSpecs()`) lets a third-party LLM provider register a body parser without forking the redact package. Wired through forward / intercept / reverse / WebSocket transports. |
+| **Audit Packet v0 Schema + Verifiers** (v2.5) | First-party canonical Audit Packet schema with Go, TypeScript, and Rust verifier implementations, plus a standalone [`pipelock-verifier`](cmd/pipelock-verifier/) CLI. Auditors, SIEMs, and procurement reviewers validate signed evidence without running Pipelock. Schema lives under [`sdk/audit-packet/`](sdk/audit-packet/); verifier packages live under [`sdk/verifiers/`](sdk/verifiers/). |
+| **Host Containment Lifecycle** (v2.5) | `pipelock contain install / verify / rollback / add-tool / ca-refresh` manages a 3-UID containment model (operator / pipelock-proxy / pipelock-agent) end to end. nftables owner-match rules force every agent process through Pipelock on loopback; install pins the binary hash for TOFU integrity checks. See [`docs/contain-cli.md`](docs/contain-cli.md). |
+| **Federation Strict Mode** (v2.5) | Inbound mediation-envelope verification now requires SPIFFE-format actors by default, contract tombstones are enforced at activation and accepted-load time, and a new `pipelock envelope trust add/list/remove/verify` operator CLI manages the local trust list. See [federation guide](docs/guides/federation.md). |
 | **Media Policy** | Controls media response handling: strips steganographic metadata from JPEG/PNG (byte-level surgery, pixel-identical output), rejects audio/video by default, hardens SVG active content (foreignObject, event handlers, external hrefs), and enforces image size limits against decompression bombs. |
 | **Compliance Mappings** | OWASP MCP Top 10, OWASP Agentic Top 15, NIST 800-53, EU AI Act, SOC 2 coverage documentation |
 
@@ -343,6 +346,8 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 - **[Claude Code](docs/guides/claude-code.md):** MCP proxy setup, `.claude.json` configuration
 - **[OpenAI Codex](docs/guides/codex.md):** MCP proxy wrapping, forward proxy, sandbox integration
+- **[Cline](docs/guides/cline.md):** MCP proxy wrapping for Cline's `mcp.json`
+- **[OpenCode](docs/guides/opencode.md):** MCP proxy wrapping for OpenCode's local and remote MCP servers
 - **[OpenAI Agents SDK](docs/guides/openai-agents.md):** `MCPServerStdio`, multi-agent handoffs
 - **[Google ADK](docs/guides/google-adk.md):** `McpToolset`, `StdioConnectionParams`
 - **[AutoGen](docs/guides/autogen.md):** `StdioServerParams`, `mcp_server_tools()`
@@ -470,12 +475,13 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Policy Spec v0.1](docs/policy-spec-v0.1.md) | Portable agent firewall policy format |
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
-| [Receipt Verification](docs/guides/receipt-verification.md) | verify-receipt CLI, conformance suite, chain integrity |
+| [Receipt Verification](docs/guides/receipt-verification.md) | `pipelock verify-receipt`, standalone `pipelock-verifier`, conformance suite, chain integrity |
 | [Receipt Transport Coverage](docs/guides/receipt-transports.md) | Receipt emission matrix across fetch, forward, CONNECT/TLS, WebSocket, MCP, and A2A paths |
 | [Learn-and-Lock](docs/guides/learn-and-lock.md) | Per-agent behavioral contracts: observe, compile, shadow, ratify, promote (v2.4) |
 | [Federation](docs/guides/federation.md) | Inbound mediation envelope verification, SPIFFE actor format, RFC 9421 well-known directory (v2.4) |
 | [Block-Reason Header](docs/guides/block-reason-header.md) | `X-Pipelock-Block-Reason` schema, reason vocabulary, retry hints (v2.4) |
 | [Health Endpoint](docs/guides/health.md) | `/health` 503 wedge detection, subsystem heartbeats, operator dashboard config (v2.4) |
+| [Host Containment](docs/contain-cli.md) | `pipelock contain install / verify / rollback / add-tool / ca-refresh` for 3-UID kernel-enforced agent containment (v2.5) |
 | [Posture Capsule](docs/guides/posture-capsule.md) | Signed posture snapshots, `posture verify` CLI, CI gate, scoring model |
 | [`pipelock init sidecar`](docs/cli/init-sidecar.md) | Generate enforced Kubernetes companion-proxy manifests (strategic-merge, Kustomize, Helm values) |
 | [`pipelock session`](docs/cli/session.md) | Operator CLI for airlock inspection and recovery (list, inspect, explain, release, terminate, recover) |

@@ -192,7 +192,16 @@ This registers pipelock as a `PreToolUse` hook for security-relevant tools:
 | `Bash\|WebFetch\|Write\|Edit` | Built-in tools | Commands, URLs, file content for DLP and policy |
 | `mcp__.*` | All MCP tools | Tool arguments for DLP and injection |
 
-Unknown tools (Read, Glob, Grep, Agent, etc.) are allowed by default.
+### Fail-closed defaults
+
+The hook fails closed (denies) on every supported input path it cannot positively classify as safe. Concretely:
+
+- **Unsupported hook events** — any `hook_event_name` outside the supported set deny rather than fall through to allow.
+- **Malformed payloads** — missing or unparseable JSON returns a deny verdict.
+
+The closed default applies in both `JSON-decision` mode (`permissionDecision: "deny"`) and `--exit-code` mode (exit 2). The black-box pen-test suite covers both decision modes for the unsupported-event paths.
+
+> **Pending v2.5 closeout:** unknown `tool_name` values still allow by default on this branch. #525 closes that sibling fall-through path; replace this note before tagging v2.5.0.
 
 The hook reads JSON from stdin and returns allow/deny decisions. An `--exit-code`
 mode is also available (exit 0 for allow, exit 2 for deny):

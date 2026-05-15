@@ -345,8 +345,8 @@ func TestStepExportPipelockCAUndoAndErrorBranches(t *testing.T) {
 	if err := step.undo(context.Background(), env); err != nil {
 		t.Fatalf("undo: %v", err)
 	}
-	if _, err := os.Stat(env.caExportPath); !os.IsNotExist(err) {
-		t.Fatalf("CA export should be removed, stat err=%v", err)
+	if _, err := os.Stat(env.caExportPath); err != nil {
+		t.Fatalf("CA export should be preserved on skipped apply, stat err=%v", err)
 	}
 }
 

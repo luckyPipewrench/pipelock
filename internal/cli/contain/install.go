@@ -943,10 +943,12 @@ func stepEnableSystemUnit() step {
 // ---------------------------------------------------------------------------
 
 func stepExportPipelockCA() step {
+	wrote := false
 	return step{
 		name: "export-pipelock-ca",
 		desc: "export pipelock TLS-MITM CA to /etc/pipelock/ca.pem",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			wrote = false
 			if pathExists(env, env.caExportPath) {
 				return false, nil
 			}
@@ -958,9 +960,13 @@ func stepExportPipelockCA() step {
 			if err := exportPipelockCA(ctx, env); err != nil {
 				return false, err
 			}
+			wrote = true
 			return true, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
+			if !wrote {
+				return nil
+			}
 			if err := env.removeFile(env.caExportPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove %s: %w", env.caExportPath, err)
 			}

@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 )
 
 // installEnv is the OS-facing dependency surface used by every mutating
@@ -197,6 +198,11 @@ func writeFileAtomic(path string, contents []byte, mode os.FileMode) error {
 		cleanup()
 		return fmt.Errorf("chmod %s: %w", tmpName, err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("sync %s: %w", tmpName, err)
+	}
 	if err := tmp.Close(); err != nil {
 		cleanup()
 		return fmt.Errorf("close %s: %w", tmpName, err)
@@ -204,6 +210,31 @@ func writeFileAtomic(path string, contents []byte, mode os.FileMode) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		cleanup()
 		return fmt.Errorf("rename %s -> %s: %w", tmpName, path, err)
+	}
+	if err := syncDir(dir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncDir(dir string) error {
+	clean := filepath.Clean(dir)
+	dirFile, err := os.Open(clean) //nolint:gosec // G304: parent dir is derived from the already-opened temp file target and used only for fsync.
+	if err != nil {
+		return fmt.Errorf("open dir %s: %w", clean, err)
+	}
+	syncErr := dirFile.Sync()
+	closeErr := dirFile.Close()
+	if syncErr != nil {
+		// Some platforms/filesystems reject directory fsync. The temp file
+		// itself was already fsynced; keep atomic writes portable there.
+		if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) {
+			return nil
+		}
+		return fmt.Errorf("sync dir %s: %w", clean, syncErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close dir %s: %w", clean, closeErr)
 	}
 	return nil
 }

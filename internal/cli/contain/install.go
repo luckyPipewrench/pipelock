@@ -520,8 +520,11 @@ func stepCreateDir(label string, pathFn func(*installEnv) string, mode os.FileMo
 		desc: "create " + label + " directory",
 		apply: func(_ context.Context, env *installEnv) (bool, error) {
 			path := pathFn(env)
-			info, err := env.stat(path)
+			info, err := env.lstat(path)
 			if err == nil {
+				if info.Mode()&os.ModeSymlink != 0 {
+					return false, fmt.Errorf("%s is a symlink; refusing to create install directory", path)
+				}
 				if !info.IsDir() {
 					return false, fmt.Errorf("%s exists and is not a directory", path)
 				}
@@ -533,6 +536,9 @@ func stepCreateDir(label string, pathFn func(*installEnv) string, mode os.FileMo
 			}
 			if !errors.Is(err, os.ErrNotExist) {
 				return false, fmt.Errorf("stat %s: %w", path, err)
+			}
+			if err := rejectSymlinkParents(env, path); err != nil {
+				return false, err
 			}
 			if err := env.mkdirAll(path, mode); err != nil {
 				return false, fmt.Errorf("mkdir %s: %w", path, err)
@@ -1033,6 +1039,7 @@ func stepInstallNFTRules() step {
 				return false, fmt.Errorf("nft persistence validation failed: %w", err)
 			}
 			if tableLoaded && (rulesChanged || liveRulesDrifted) {
+				captureNFTPreState(ctx, env)
 				// nft -f merges into an existing table. Drop our managed table
 				// first so stale rules from an older contain install cannot
 				// survive beside the new ruleset.
@@ -1040,6 +1047,7 @@ func stepInstallNFTRules() step {
 				tableLoaded = false
 			}
 			if !tableLoaded || rulesChanged || liveRulesDrifted {
+				captureNFTPreState(ctx, env)
 				if err := runOrErr(ctx, env, "nft", "-f", env.nftRulesPath); err != nil {
 					return false, fmt.Errorf("nft load failed: %w", err)
 				}
@@ -1050,15 +1058,57 @@ func stepInstallNFTRules() step {
 			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
-			// Drop the table best-effort, then remove the file, then leave
-			// nftables.service alone (it may have been enabled before).
+			// Drop the managed table best-effort, restore any previous live
+			// table captured during this install attempt, then restore files.
 			_, _, _ = env.runCmd(ctx, "nft", "delete", "table", "inet", env.nftTableOrDefault())
+			if err := restorePreviousNFTState(ctx, env); err != nil {
+				return err
+			}
 			if err := restoreBackup(env, env.nftRulesPath); err != nil {
 				return err
 			}
-			return restoreOrRemoveNFTMainInclude(env)
+			if err := restoreOrRemoveNFTMainInclude(env); err != nil {
+				return err
+			}
+			if env.prevNftablesStateKnown && !env.prevNftablesEnabled {
+				if err := runOrErr(ctx, env, "systemctl", "disable", "nftables.service"); err != nil {
+					return fmt.Errorf("restore nftables.service disabled state: %w", err)
+				}
+			}
+			return nil
 		},
 	}
+}
+
+func captureNFTPreState(ctx context.Context, env *installEnv) {
+	if env.prevNFTTableDump == "" {
+		out, code, err := env.runCmd(ctx, "nft", "list", "table", "inet", env.nftTableOrDefault())
+		if err == nil && code == 0 {
+			env.prevNFTTableDump = out
+		}
+	}
+	if !env.prevNftablesStateKnown {
+		_, code, err := env.runCmd(ctx, "systemctl", "is-enabled", "nftables.service")
+		if err == nil {
+			env.prevNftablesEnabled = code == 0
+			env.prevNftablesStateKnown = true
+		}
+	}
+}
+
+func restorePreviousNFTState(ctx context.Context, env *installEnv) error {
+	if strings.TrimSpace(env.prevNFTTableDump) == "" {
+		return nil
+	}
+	restorePath := env.nftRulesPath + ".restore"
+	if err := env.writeFile(restorePath, []byte(env.prevNFTTableDump), modeConfigSecret); err != nil {
+		return fmt.Errorf("write nft restore file %s: %w", restorePath, err)
+	}
+	defer func() { _ = env.removeFile(restorePath) }()
+	if err := runOrErr(ctx, env, "nft", "-f", restorePath); err != nil {
+		return fmt.Errorf("restore previous nft table: %w", err)
+	}
+	return nil
 }
 
 func liveNFTContainmentMatches(out, chainName string, proxyPort int) bool {

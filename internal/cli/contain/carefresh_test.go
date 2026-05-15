@@ -139,6 +139,100 @@ func TestExportPipelockCA_RemovesStaleBeforeExport(t *testing.T) {
 	}
 }
 
+func TestExportPipelockCAInitializesMissingCAThenRetries(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	var showCalls int
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		runner.mu.Lock()
+		runner.calls = append(runner.calls, fakeCall{name: name, args: append([]string(nil), args...)})
+		runner.mu.Unlock()
+		if name == testSudoCmd && containsArg(args, "show-ca") {
+			showCalls++
+			if showCalls == 1 {
+				return "missing ca", 1, nil
+			}
+			return testPEMCA, 0, nil
+		}
+		if name == testSudoCmd && containsArg(args, "init") {
+			return "initialized", 0, nil
+		}
+		return "", 0, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(env.caExportPath), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := exportPipelockCA(context.Background(), env); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	got, err := os.ReadFile(env.caExportPath)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	if string(got) != testPEMCA {
+		t.Fatalf("exported CA: %q", got)
+	}
+	if showCalls != 2 {
+		t.Fatalf("show-ca calls: got %d want 2", showCalls)
+	}
+	var sawInit bool
+	for _, c := range runner.calls {
+		if containsArg(c.args, "init") {
+			sawInit = true
+		}
+	}
+	if !sawInit {
+		t.Fatalf("tls init not called, calls=%v", runner.calls)
+	}
+}
+
+func TestExportPipelockCARejectsNonPEMOutput(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name == testSudoCmd && containsArg(args, "show-ca") {
+			return "not a certificate", 0, nil
+		}
+		return "", 0, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(env.caExportPath), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	err := exportPipelockCA(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected non-PEM rejection")
+	}
+	if !strings.Contains(err.Error(), "non-PEM") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
+func TestRunShowCAPropagatesExecError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+		return "boom", 0, stringError("sudo unavailable")
+	}
+	_, _, err := runShowCA(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "sudo unavailable") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
+func TestRebuildCombinedBundleReportsMissingInputs(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	system := filepath.Join(t.TempDir(), "system.pem")
+	if err := rebuildCombinedBundle(env, system); err == nil || !strings.Contains(err.Error(), "read system CA bundle") {
+		t.Fatalf("missing system err: %v", err)
+	}
+	if err := os.WriteFile(system, []byte("SYSTEM\n"), 0o600); err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	if err := rebuildCombinedBundle(env, system); err == nil || !strings.Contains(err.Error(), "read pipelock CA") {
+		t.Fatalf("missing pipelock err: %v", err)
+	}
+}
+
 func TestRunCARefresh_DryRunIsNonMutating(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	systemBundle := filepath.Join(t.TempDir(), "system.pem")

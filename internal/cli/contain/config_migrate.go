@@ -512,13 +512,19 @@ func backupAndWriteIfChanged(env *installEnv, path string, contents []byte, mode
 }
 
 func ensureMigratedDir(ctx *configMigrationContext, path string, mode os.FileMode) error {
-	if info, err := ctx.env.stat(path); err == nil {
+	if info, err := ctx.env.lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink; refusing to create migrated directory", path)
+		}
 		if !info.IsDir() {
 			return fmt.Errorf("%s exists and is not a directory", path)
 		}
 		return ctx.env.chmod(path, mode)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if err := rejectSymlinkParents(ctx.env, path); err != nil {
+		return err
 	}
 	for _, dir := range missingDirs(ctx, path) {
 		ctx.artifacts = append(ctx.artifacts, migratedConfigArtifact{path: dir, dir: true})
@@ -528,6 +534,27 @@ func ensureMigratedDir(ctx *configMigrationContext, path string, mode os.FileMod
 	}
 	if err := ctx.env.chmod(path, mode); err != nil {
 		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
+}
+
+func rejectSymlinkParents(env *installEnv, path string) error {
+	clean := filepath.Clean(path)
+	parent := filepath.Dir(clean)
+	for parent != "." && parent != string(os.PathSeparator) {
+		info, err := env.lstat(parent)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("path %s has symlink parent %s; refusing to create as root", clean, parent)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat parent %s: %w", parent, err)
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			break
+		}
+		parent = next
 	}
 	return nil
 }

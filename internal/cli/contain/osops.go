@@ -82,6 +82,10 @@ type installEnv struct {
 	pipelockBinary string // source binary path passed to --pipelock-binary
 	pipelockTarget string // destination, default /usr/local/bin/pipelock
 	proxyPort      int
+
+	prevNFTTableDump       string
+	prevNftablesEnabled    bool
+	prevNftablesStateKnown bool
 }
 
 // defaultInstallEnv wires installEnv to the real OS. Callers fill in
@@ -231,6 +235,11 @@ func sha256HexOfFile(path string) (string, error) {
 func backupAndWrite(env *installEnv, path string, contents []byte, mode os.FileMode) error {
 	if _, err := env.stat(path); err == nil {
 		bak := path + ".bak"
+		if _, err := env.stat(bak); err == nil {
+			return fmt.Errorf("refusing to overwrite existing backup %s; resolve manually before re-running install", bak)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat %s: %w", bak, err)
+		}
 		if err := env.rename(path, bak); err != nil {
 			return fmt.Errorf("backup %s -> %s: %w", path, bak, err)
 		}

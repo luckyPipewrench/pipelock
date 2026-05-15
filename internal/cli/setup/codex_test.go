@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -855,7 +856,8 @@ func TestRunCodexInstall_DryRun(t *testing.T) {
 	if !strings.Contains(out.String(), "Plan: 1 to wrap") {
 		t.Errorf("expected summary in output, got: %s", out.String())
 	}
-	if strings.Contains(out.String(), "PORT=3000") || strings.Contains(out.String(), `"PORT":"3000"`) {
+	leakedEnv := regexp.MustCompile(`PORT=3000|"PORT"\s*:\s*"3000"`)
+	if leakedEnv.MatchString(out.String()) {
 		t.Errorf("dry-run output leaked env value: %s", out.String())
 	}
 	if !strings.Contains(out.String(), "--env PORT=<redacted>") {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 )
 
 // Metrics collects Prometheus counters and histograms for the fetch proxy.
@@ -176,6 +177,14 @@ func New() *Metrics {
 	m.registerCaptureMetrics(reg)
 	m.registerLearnMetrics(reg)
 	m.registerEnvelopeMetrics(reg)
+
+	// Built-in Go runtime + process collectors. These expose
+	// go_memstats_heap_alloc_bytes, go_goroutines, process_resident_memory_bytes,
+	// and friends. Useful for operators capacity-planning pipelock and for the
+	// agent-egress benchmark to record runtime memory alongside RSS without
+	// adding a separate /debug/vars endpoint.
+	reg.MustRegister(collectors.NewGoCollector())
+	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 
 	return m
 }

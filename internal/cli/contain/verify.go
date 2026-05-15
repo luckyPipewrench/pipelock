@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -27,14 +28,14 @@ import (
 )
 
 // Probe environment defaults. These match the layout produced by
-// the future `pipelock contain install` subcommand. Operators who
-// installed the model elsewhere can override via flags.
+// `pipelock contain install`. Operators who installed the model
+// elsewhere can override via flags.
 const (
 	defaultProxyPort    = 8888
 	defaultProxyUser    = "pipelock-proxy"
-	defaultAgentUser    = "cc-agent"
+	defaultAgentUser    = "pipelock-agent"
 	defaultWrapperDir   = "/usr/local/bin"
-	defaultLaunchScript = "/usr/local/bin/cc-launch"
+	defaultLaunchScript = "/usr/local/bin/plk-launch"
 	defaultCABundlePath = "/etc/pipelock/combined-ca.pem"
 	defaultServiceName  = "pipelock.service"
 	defaultNFTTable     = "pipelock_containment"
@@ -61,16 +62,15 @@ const (
 	maxCmdOutputBytes = 64 << 10
 )
 
-// expectedNoProxy is the exact NO_PROXY value the cc-launch wrapper must
+// expectedNoProxy is the exact NO_PROXY value the plk-launch wrapper must
 // set per the 2026-05-04 decision in the runbook's open questions
 // (cluster traffic flows through Pipelock, so NO_PROXY is limited to
 // loopback). Any deviation is a policy regression.
 const expectedNoProxy = "NO_PROXY=127.0.0.1,localhost"
 
-// defaultToolWrappers is the v0.1 fixed list checked by probe 4. The
-// design doc tracks the eventual move to a wrapper inventory file
-// produced by `pipelock contain add-tool`.
-var defaultToolWrappers = []string{"cc-claude", "cc-codex", "cc-gemini", "cc-playwright"}
+// defaultToolWrappers is the fallback wrapper list used when the inventory
+// file has not been written yet.
+var defaultToolWrappers = []string{"plk-claude", "plk-codex", "plk-gemini", "plk-playwright"}
 
 // runCommand is the function shape used by probes that shell out.
 // Factored as a type so tests can inject canned outputs without
@@ -96,21 +96,30 @@ type lookupUserFunc func(name string) (*user.User, error)
 // addressable from outside the package so tests can populate it
 // directly without going through the cobra layer.
 type probeEnv struct {
-	port          int
-	operatorUser  string
-	proxyUserName string
-	agentUserName string
-	wrapperDir    string
-	toolWrappers  []string
-	caBundlePath  string
-	launchPath    string
-	nftTable      string
-	nftChain      string
-	serviceName   string
+	port           int
+	operatorUser   string
+	proxyUserName  string
+	agentUserName  string
+	wrapperDir     string
+	toolWrappers   []string
+	caBundlePath   string
+	launchPath     string
+	nftTable       string
+	nftChain       string
+	nftRulesPath   string
+	nftMainPath    string
+	serviceName    string
+	pinPath        string
+	wrapperInvPath string
+	toolsListPath  string
 
 	runCmd     runCommand
 	dialCtx    dialFunc
 	lookupUser lookupUserFunc
+	stat       func(path string) (os.FileInfo, error)
+	readFile   func(path string) ([]byte, error)
+	selfPath   func() (string, error)
+	hashFile   func(path string) (string, error)
 }
 
 // defaultProbeEnv returns the production environment. The operator user
@@ -119,20 +128,29 @@ type probeEnv struct {
 // directly. See probe 9 implementation for the runtime branch.
 func defaultProbeEnv() *probeEnv {
 	return &probeEnv{
-		port:          defaultProxyPort,
-		operatorUser:  os.Getenv("SUDO_USER"),
-		proxyUserName: defaultProxyUser,
-		agentUserName: defaultAgentUser,
-		wrapperDir:    defaultWrapperDir,
-		toolWrappers:  append([]string(nil), defaultToolWrappers...),
-		caBundlePath:  defaultCABundlePath,
-		launchPath:    defaultLaunchScript,
-		nftTable:      defaultNFTTable,
-		nftChain:      defaultNFTChain,
-		serviceName:   defaultServiceName,
-		runCmd:        realRunCommand,
-		dialCtx:       realDial,
-		lookupUser:    user.Lookup,
+		port:           defaultProxyPort,
+		operatorUser:   os.Getenv("SUDO_USER"),
+		proxyUserName:  defaultProxyUser,
+		agentUserName:  defaultAgentUser,
+		wrapperDir:     defaultWrapperDir,
+		toolWrappers:   append([]string(nil), defaultToolWrappers...),
+		caBundlePath:   defaultCABundlePath,
+		launchPath:     defaultLaunchScript,
+		nftTable:       defaultNFTTable,
+		nftChain:       defaultNFTChain,
+		nftRulesPath:   defaultNFTRulesPath,
+		nftMainPath:    defaultNFTMainConfigPath,
+		serviceName:    defaultServiceName,
+		pinPath:        defaultIntegrityPin,
+		wrapperInvPath: defaultWrapperInvPath,
+		toolsListPath:  defaultToolsListPath,
+		runCmd:         realRunCommand,
+		dialCtx:        realDial,
+		lookupUser:     user.Lookup,
+		stat:           os.Stat,
+		readFile:       os.ReadFile,
+		selfPath:       os.Executable,
+		hashFile:       sha256HexOfFile,
 	}
 }
 
@@ -214,10 +232,178 @@ func allProbes() []probe {
 		{4, "wrapper_scripts_installed", "wrapper scripts installed", probeWrapperScripts},
 		{5, "ca_bundle_present", "pipelock CA bundle readable", probeCABundle},
 		{6, "pipelock_listening_loopback", "pipelock listening on loopback", probeLoopbackListen},
-		{7, "no_proxy_env_correct", "NO_PROXY in cc-launch matches policy", probeNoProxyEnv},
-		{8, "cc_agent_egress_denied", "cc-agent cannot reach the internet directly", probeCCAgentEgressDenied},
+		{7, "no_proxy_env_correct", "NO_PROXY in plk-launch matches policy", probeNoProxyEnv},
+		{8, "cc_agent_egress_denied", "pipelock-agent cannot reach the internet directly", probeCCAgentEgressDenied},
 		{9, "operator_egress_reachable", "operator user can still reach the internet", probeOperatorEgress},
+		{10, "binary_integrity_pin", "installed pipelock binary matches TOFU pin", probeBinaryIntegrity},
+		{11, "cc_launch_allow_list_enforced", "plk-launch rejects tools missing from the allow-list", probeCCLaunchAllowList},
+		{12, "listed_tool_targets_resolvable", "tools.list entries resolve for pipelock-agent", probeListedToolTargets},
 	}
+}
+
+func probeListedToolTargets(_ context.Context, env *probeEnv) (string, string) {
+	data, err := env.readFile(env.toolsListPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusSkip, fmt.Sprintf("tools.list missing at %s (install never ran)", env.toolsListPath)
+		}
+		return statusFail, fmt.Sprintf("read %s: %v", env.toolsListPath, err)
+	}
+	entries := parseToolsList(data)
+	if len(entries) == 0 {
+		return statusFail, fmt.Sprintf("%s has no tool entries", env.toolsListPath)
+	}
+
+	agentPath := agentExecPath(env.agentUserName)
+	var bad []string
+	for _, entry := range entries {
+		target := entry.target
+		if target == "" {
+			var ok bool
+			target, ok = resolveToolInPath(env, entry.name, agentPath)
+			if !ok {
+				bad = append(bad, fmt.Sprintf("%s not found in pipelock-agent PATH", entry.name))
+				continue
+			}
+		}
+		if !filepath.IsAbs(target) {
+			bad = append(bad, fmt.Sprintf("%s target %q is not absolute", entry.name, target))
+			continue
+		}
+		info, err := env.stat(target)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s target %s: %v", entry.name, target, err))
+			continue
+		}
+		if info.IsDir() {
+			bad = append(bad, fmt.Sprintf("%s target %s is a directory", entry.name, target))
+			continue
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			bad = append(bad, fmt.Sprintf("%s target %s is not executable", entry.name, target))
+		}
+	}
+	if len(bad) > 0 {
+		return statusFail, strings.Join(bad, "; ")
+	}
+	return statusPass, fmt.Sprintf("%d allow-listed tool target(s) resolvable via %s", len(entries), agentPath)
+}
+
+func agentExecPath(agentUserName string) string {
+	return "/home/" + agentUserName + "/.local/bin:/usr/local/bin:/usr/bin:/bin"
+}
+
+func resolveToolInPath(env *probeEnv, name, pathList string) (string, bool) {
+	for _, dir := range filepath.SplitList(pathList) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := env.stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+// probeCCLaunchAllowList runs `plk-launch <something-not-installed>` as
+// pipelock-agent and asserts the script exits 5 — "tool not in allow-list".
+// This exercises the full read path: sudoers grants no-password to
+// plk-launch, /etc/pipelock is directory-traversable for pipelock-agent,
+// /etc/pipelock/contain is traversable, /etc/pipelock/contain/tools.list
+// is readable, and the bash script's allow-list lookup is intact.
+//
+// We use a sentinel tool name (random + obviously not a real tool) so
+// that even on a system where the operator's `pipelock contain add-tool`
+// invocations accidentally collide with real binaries, this probe still
+// exercises the denial branch.
+//
+// Exit code mapping (matches install.go renderLaunchWrapper):
+//   - 0  unexpected — the sentinel was somehow accepted and executed
+//   - 1  sudo refused (NOPASSWD rule missing) → skip
+//   - 3  tool-name regex rejected — sentinel chosen wrong
+//   - 4  tools.list unreadable — fail, this breaks the launcher boundary
+//   - 5  tool not in allow-list — PASS
+//   - 6  in allow-list but PATH lookup failed — unexpected
+func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string) {
+	const sentinelTool = "pipelock-probe-sentinel-not-a-real-tool"
+
+	out, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--",
+		env.launchPath, sentinelTool)
+	if err != nil {
+		return statusSkip, fmt.Sprintf("plk-launch invocation failed: %v", err)
+	}
+	if isSudoUserMissing(out) {
+		return statusSkip, "pipelock-agent user missing (install never ran)"
+	}
+	if isSudoRefusal(out) {
+		return statusSkip, "sudo -n refused (no NOPASSWD rule for operator -> pipelock-agent)"
+	}
+	if isSudoTargetCommandMissing(out) {
+		return statusSkip, fmt.Sprintf("plk-launch missing at %s (install never ran)", env.launchPath)
+	}
+
+	switch code {
+	case 5:
+		return statusPass, "allow-list correctly rejected sentinel tool"
+	case 4:
+		return statusFail, fmt.Sprintf("tools.list unreadable by pipelock-agent (exit 4): %s", oneLine(out))
+	case 0:
+		return statusFail, fmt.Sprintf("sentinel tool %q was unexpectedly allowed; allow-list bypass", sentinelTool)
+	default:
+		// Anything else is unexpected. Report the exit code + first
+		// stderr line so the operator can map it back to the wrapper's
+		// exit-code table.
+		return statusFail, fmt.Sprintf("plk-launch exit %d (expected 5): %s", code, oneLine(out))
+	}
+}
+
+// probeBinaryIntegrity reads the integrity pin written at install time and
+// compares it against the SHA-256 of the currently-running binary.
+// Skipped when the pin file is missing (install never happened) or
+// unreadable to this user (run as root to verify). Failure means either
+// the binary was swapped after install OR a different pipelock binary is
+// being used to run verify than the one that was installed.
+func probeBinaryIntegrity(_ context.Context, env *probeEnv) (string, string) {
+	data, err := env.readFile(env.pinPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return statusSkip, fmt.Sprintf("no pin at %s (install never ran or skipped)", env.pinPath)
+		}
+		return statusSkip, fmt.Sprintf("read %s: %v (rerun as root)", env.pinPath, err)
+	}
+	pinned := strings.TrimSpace(string(data))
+	if pinned == "" {
+		return statusFail, fmt.Sprintf("%s is empty (corrupted pin)", env.pinPath)
+	}
+	if _, err := hex.DecodeString(pinned); err != nil || len(pinned) != sha256HexLen {
+		return statusFail, fmt.Sprintf("%s contains malformed SHA-256 pin (length %d)", env.pinPath, len(pinned))
+	}
+
+	self, err := env.selfPath()
+	if err != nil {
+		return statusFail, fmt.Sprintf("resolve self path: %v", err)
+	}
+	got, err := env.hashFile(self)
+	if err != nil {
+		return statusFail, fmt.Sprintf("hash %s: %v", self, err)
+	}
+	if got != pinned {
+		// Truncate for readability; full hashes are 64 chars.
+		return statusFail, fmt.Sprintf("binary hash mismatch: pin=%s got=%s (binary swapped after install or different binary running verify)",
+			shortHash(pinned), shortHash(got))
+	}
+	return statusPass, fmt.Sprintf("binary hash %s matches pin", shortHash(pinned))
+}
+
+const sha256HexLen = 64
+
+func shortHash(s string) string {
+	if len(s) <= 12 {
+		return s
+	}
+	return s[:12] + "…"
 }
 
 // probeRecord is one JSON record per probe in --json output.
@@ -253,13 +439,16 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Run read-only probes against the containment model",
-		Long: `Run nine read-only probes to verify the workstation containment model
+		Long: `Run eleven read-only probes to verify the workstation containment model
 is installed correctly and the boundary is intact.
 
 Probes inspect system users, the pipelock systemd unit, nftables rules,
 wrapper scripts, the CA bundle, the pipelock loopback bind, the NO_PROXY
-policy, and run two egress canaries (cc-agent must NOT reach the
-internet directly; the operator user must still reach the internet).
+policy, run two egress canaries (pipelock-agent must NOT reach the internet
+directly; the operator user must still reach the internet), verify the
+installed binary matches the TOFU integrity pin written at install
+time, and exercise plk-launch end-to-end with a sentinel tool to confirm
+the allow-list enforcement path actually fires.
 
 verify never mutates state. Probes that require root visibility
 (nft list ruleset) record skip when run unprivileged.
@@ -494,11 +683,57 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 	if !chainHasSkuidDrop(out, env.nftChain) {
 		return statusFail, "chain present but skuid-drop rule missing"
 	}
-	return statusPass, fmt.Sprintf("table inet %s has chain %s with skuid drop rule",
+	if !chainHasAgentProxyLoopbackAllow(out, env.nftChain, env.port) {
+		return statusFail, fmt.Sprintf("chain present but pipelock-agent loopback allow is not limited to 127.0.0.1:%d", env.port)
+	}
+	if chainHasBroadLoopbackAccept(out, env.nftChain) {
+		return statusFail, "chain contains broad loopback accept before agent drop"
+	}
+	if env.nftMainPath != "" && env.nftRulesPath != "" {
+		if err := verifyNFTPersistence(env); err != nil {
+			return statusFail, err.Error()
+		}
+	}
+	return statusPass, fmt.Sprintf("table inet %s has chain %s with skuid drop rule, proxy-only loopback allow, and persistence include",
 		env.nftTable, env.nftChain)
 }
 
+func verifyNFTPersistence(env *probeEnv) error {
+	data, err := env.readFile(env.nftMainPath)
+	if err != nil {
+		return fmt.Errorf("read nftables persistence config %s: %w", env.nftMainPath, err)
+	}
+	includeLine := nftRulesIncludeLine(env.nftRulesPath)
+	if !nftMainHasInclude(string(data), includeLine) {
+		return fmt.Errorf("%s missing persistence include %q", env.nftMainPath, includeLine)
+	}
+	return nil
+}
+
 func chainHasSkuidDrop(out, chainName string) bool {
+	return chainHasLine(out, chainName, func(line string) bool {
+		return strings.Contains(line, "skuid") && strings.Contains(line, "drop")
+	})
+}
+
+func chainHasAgentProxyLoopbackAllow(out, chainName string, port int) bool {
+	portText := strconv.Itoa(port)
+	return chainHasLine(out, chainName, func(line string) bool {
+		return strings.Contains(line, "skuid") &&
+			strings.Contains(line, "ip daddr 127.0.0.1") &&
+			strings.Contains(line, "tcp dport "+portText) &&
+			strings.Contains(line, "accept")
+	})
+}
+
+func chainHasBroadLoopbackAccept(out, chainName string) bool {
+	return chainHasLine(out, chainName, func(line string) bool {
+		return strings.Contains(line, "accept") &&
+			(strings.Contains(line, `meta oif "lo"`) || strings.Contains(line, "ip daddr 127.0.0.0/8"))
+	})
+}
+
+func chainHasLine(out, chainName string, match func(string) bool) bool {
 	inChain := false
 	depth := 0
 	for _, raw := range strings.Split(out, "\n") {
@@ -515,7 +750,7 @@ func chainHasSkuidDrop(out, chainName string) bool {
 		if strings.Contains(line, "{") {
 			depth += strings.Count(line, "{")
 		}
-		if strings.Contains(line, "skuid") && strings.Contains(line, "drop") {
+		if match(line) {
 			return true
 		}
 		if strings.Contains(line, "}") {
@@ -543,8 +778,12 @@ func probeWrapperScripts(_ context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("%s has perm 0o%03o, want 0o755", env.launchPath, mode)
 	}
 
+	wrappers, err := wrappersForVerify(env)
+	if err != nil {
+		return statusFail, err.Error()
+	}
 	var foundNames []string
-	for _, name := range env.toolWrappers {
+	for _, name := range wrappers {
 		p := filepath.Join(env.wrapperDir, name)
 		info, err := os.Stat(filepath.Clean(p))
 		if err != nil {
@@ -561,10 +800,31 @@ func probeWrapperScripts(_ context.Context, env *probeEnv) (string, string) {
 	}
 	if len(foundNames) == 0 {
 		return statusFail, fmt.Sprintf("no tool wrappers found in %s (expected one of %v)",
-			env.wrapperDir, env.toolWrappers)
+			env.wrapperDir, wrappers)
 	}
-	return statusPass, fmt.Sprintf("cc-launch + %d tool wrapper(s): %s",
+	return statusPass, fmt.Sprintf("plk-launch + %d tool wrapper(s): %s",
 		len(foundNames), strings.Join(foundNames, ","))
+}
+
+func wrappersForVerify(env *probeEnv) ([]string, error) {
+	if env.wrapperInvPath == "" {
+		return append([]string(nil), env.toolWrappers...), nil
+	}
+	data, err := env.readFile(env.wrapperInvPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return append([]string(nil), env.toolWrappers...), nil
+		}
+		return nil, fmt.Errorf("read wrapper inventory %s: %w", env.wrapperInvPath, err)
+	}
+	var inv wrapperInventory
+	if err := json.Unmarshal(data, &inv); err != nil {
+		return nil, fmt.Errorf("parse wrapper inventory %s: %w", env.wrapperInvPath, err)
+	}
+	if len(inv.Wrappers) == 0 {
+		return nil, fmt.Errorf("wrapper inventory %s is empty", env.wrapperInvPath)
+	}
+	return append([]string(nil), inv.Wrappers...), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -794,7 +1054,7 @@ func isSudoRefusal(out string) bool {
 }
 
 // isSudoUserMissing detects sudo's "unknown user" failure mode. If the
-// target user (cc-agent or the operator) does not exist on the system,
+// target user (pipelock-agent or the operator) does not exist on the system,
 // sudo exits non-zero before invoking the target command. Probes 8
 // and 9 must treat this as skip rather than fail, otherwise an
 // uninstalled containment model would falsely report PASS on the

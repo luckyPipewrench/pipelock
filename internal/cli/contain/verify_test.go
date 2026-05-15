@@ -34,13 +34,26 @@ import (
 
 const (
 	testProxyUser    = "pipelock-proxy"
-	testAgentUser    = "cc-agent"
+	testAgentUser    = "pipelock-agent"
 	testTable        = "pipelock_containment"
 	testChain        = "output_filter"
 	testService      = "pipelock.service"
 	testSudoCmd      = "sudo"
 	testOperatorUser = "operator"
+	testSystemctl    = "systemctl"
+	testNFT          = "nft"
+	testUserDel      = "userdel"
+	testRustup       = "rustup"
+	testSudoNeedsPwd = "sudo: a password is required"
 )
+
+const goodNFTContainmentOutput = `table inet pipelock_containment {
+	chain output_filter {
+		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		meta skuid 987 drop
+	}
+}
+`
 
 // fakeRunResult is a canned subprocess response keyed by the leading
 // argv element (the command name). Tests pre-populate the map with
@@ -106,17 +119,23 @@ func makeProbeEnv(t *testing.T, opts ...func(*probeEnv)) *probeEnv {
 		proxyUserName: testProxyUser,
 		agentUserName: testAgentUser,
 		wrapperDir:    t.TempDir(),
-		toolWrappers:  []string{"cc-claude", "cc-codex"},
+		toolWrappers:  []string{"plk-claude", "plk-codex"},
 		caBundlePath:  filepath.Join(t.TempDir(), "combined-ca.pem"),
 		launchPath:    "", // populated below
 		nftTable:      testTable,
 		nftChain:      testChain,
 		serviceName:   testService,
+		pinPath:       filepath.Join(t.TempDir(), "binary-pin.sha256"),
+		toolsListPath: filepath.Join(t.TempDir(), "tools.list"),
 		runCmd:        rejectAllRun,
 		dialCtx:       rejectAllDial,
 		lookupUser:    rejectAllLookup,
+		stat:          os.Stat,
+		readFile:      rejectAllReadFile,
+		selfPath:      rejectAllSelfPath,
+		hashFile:      rejectAllHashFile,
 	}
-	env.launchPath = filepath.Join(env.wrapperDir, "cc-launch")
+	env.launchPath = filepath.Join(env.wrapperDir, "plk-launch")
 	for _, opt := range opts {
 		opt(env)
 	}
@@ -133,6 +152,18 @@ func rejectAllDial(_ context.Context, _, address string, _ time.Duration) (net.C
 
 func rejectAllLookup(name string) (*user.User, error) {
 	return nil, fmt.Errorf("unstubbed lookup: %s", name)
+}
+
+func rejectAllReadFile(path string) ([]byte, error) {
+	return nil, fmt.Errorf("unstubbed readFile: %s", path)
+}
+
+func rejectAllSelfPath() (string, error) {
+	return "", fmt.Errorf("unstubbed selfPath")
+}
+
+func rejectAllHashFile(path string) (string, error) {
+	return "", fmt.Errorf("unstubbed hashFile: %s", path)
 }
 
 // Probe 1: system_users_exist ------------------------------------------------
@@ -152,7 +183,7 @@ func TestProbeSystemUsers(t *testing.T) {
 			proxy:      &user.User{Uid: "988", Username: testProxyUser},
 			agent:      &user.User{Uid: "987", Username: testAgentUser},
 			wantStatus: statusPass,
-			wantDetail: "pipelock-proxy uid=988, cc-agent uid=987",
+			wantDetail: "pipelock-proxy uid=988, pipelock-agent uid=987",
 		},
 		{
 			name:       "proxy missing",
@@ -166,7 +197,7 @@ func TestProbeSystemUsers(t *testing.T) {
 			proxy:      &user.User{Uid: "988", Username: testProxyUser},
 			agentErr:   user.UnknownUserError(testAgentUser),
 			wantStatus: statusFail,
-			wantDetail: "cc-agent missing",
+			wantDetail: "pipelock-agent missing",
 		},
 		{
 			name:       "both missing",
@@ -254,7 +285,7 @@ func TestProbeSystemdUnit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := makeProbeEnv(t, func(e *probeEnv) {
 				e.runCmd = func(_ context.Context, name string, _ ...string) (string, int, error) {
-					if name != "systemctl" {
+					if name != testSystemctl {
 						return "", -1, fmt.Errorf("unexpected cmd %q", name)
 					}
 					return tc.stdout, tc.code, tc.runErr
@@ -290,15 +321,6 @@ func TestParseSystemdShow(t *testing.T) {
 // Probe 3: nftables_containment_ruleset --------------------------------------
 
 func TestProbeNFTContainment(t *testing.T) {
-	goodOutput := `table inet pipelock_containment {
-	chain output_filter {
-		type filter hook output priority filter; policy accept;
-		meta oif "lo" accept
-		meta skuid 987 drop
-	}
-}
-`
-
 	tests := []struct {
 		name       string
 		stdout     string
@@ -309,7 +331,7 @@ func TestProbeNFTContainment(t *testing.T) {
 	}{
 		{
 			name:       "happy path",
-			stdout:     goodOutput,
+			stdout:     goodNFTContainmentOutput,
 			code:       0,
 			wantStatus: statusPass,
 			wantDetail: "skuid drop rule",
@@ -344,23 +366,49 @@ func TestProbeNFTContainment(t *testing.T) {
 		{
 			name: "no skuid drop rule",
 			stdout: `table inet pipelock_containment {
-	chain output_filter {
-		meta oif "lo" accept
+		chain output_filter {
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		}
 	}
-}
-`,
+	`,
 			code:       0,
 			wantStatus: statusFail,
 			wantDetail: "skuid-drop rule missing",
 		},
 		{
+			name: "broad loopback accept",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta oif "lo" accept
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "broad loopback accept",
+		},
+		{
+			name: "missing proxy port allow",
+			stdout: `table inet pipelock_containment {
+		chain output_filter {
+			meta skuid 987 drop
+		}
+	}
+	`,
+			code:       0,
+			wantStatus: statusFail,
+			wantDetail: "loopback allow",
+		},
+		{
 			name: "skuid and drop outside target chain",
 			stdout: `table inet pipelock_containment {
-	chain output_filter {
-		meta oif "lo" accept
-	}
-	chain decoy {
-		meta skuid 987 drop
+		chain output_filter {
+			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
+		}
+		chain decoy {
+			meta skuid 987 drop
 	}
 }
 `,
@@ -388,19 +436,67 @@ func TestProbeNFTContainment(t *testing.T) {
 	}
 }
 
+func TestProbeNFTContainment_ChecksPersistenceInclude(t *testing.T) {
+	tmp := t.TempDir()
+	mainPath := filepath.Join(tmp, "nftables.conf")
+	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
+	if err := os.WriteFile(mainPath, []byte(nftRulesIncludeLine(rulesPath)+"\n"), 0o600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.nftRulesPath = rulesPath
+		e.nftMainPath = mainPath
+		e.readFile = os.ReadFile
+		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+			return goodNFTContainmentOutput, 0, nil
+		}
+	})
+	gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
+	if gotStatus != statusPass {
+		t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
+	}
+	if !strings.Contains(gotDetail, "persistence include") {
+		t.Fatalf("detail: got %q, want persistence include", gotDetail)
+	}
+}
+
+func TestProbeNFTContainment_FailsWhenPersistenceIncludeMissing(t *testing.T) {
+	tmp := t.TempDir()
+	mainPath := filepath.Join(tmp, "nftables.conf")
+	rulesPath := filepath.Join(tmp, "50-pipelock-containment.nft")
+	if err := os.WriteFile(mainPath, []byte("flush ruleset\n"), 0o600); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	env := makeProbeEnv(t, func(e *probeEnv) {
+		e.nftRulesPath = rulesPath
+		e.nftMainPath = mainPath
+		e.readFile = os.ReadFile
+		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+			return goodNFTContainmentOutput, 0, nil
+		}
+	})
+	gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
+	if gotStatus != statusFail {
+		t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+	}
+	if !strings.Contains(gotDetail, "missing persistence include") {
+		t.Fatalf("detail: got %q, want missing persistence include", gotDetail)
+	}
+}
+
 // Probe 4: wrapper_scripts_installed -----------------------------------------
 
 func TestProbeWrapperScripts(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		env := makeProbeEnv(t)
 		writeFakeWrapper(t, env.launchPath, 0o755)
-		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "cc-claude"), 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
 		if gotStatus != statusPass {
 			t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
 		}
-		if !strings.Contains(gotDetail, "cc-claude") {
-			t.Fatalf("detail: got %q, want substring cc-claude", gotDetail)
+		if !strings.Contains(gotDetail, "plk-claude") {
+			t.Fatalf("detail: got %q, want substring plk-claude", gotDetail)
 		}
 	})
 
@@ -410,8 +506,8 @@ func TestProbeWrapperScripts(t *testing.T) {
 		if gotStatus != statusFail {
 			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
 		}
-		if !strings.Contains(gotDetail, "cc-launch") {
-			t.Fatalf("detail: got %q, want cc-launch", gotDetail)
+		if !strings.Contains(gotDetail, "plk-launch") {
+			t.Fatalf("detail: got %q, want plk-launch", gotDetail)
 		}
 	})
 
@@ -442,13 +538,54 @@ func TestProbeWrapperScripts(t *testing.T) {
 	t.Run("tool wrapper wrong mode", func(t *testing.T) {
 		env := makeProbeEnv(t)
 		writeFakeWrapper(t, env.launchPath, 0o755)
-		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "cc-claude"), 0o644)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o644)
 		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
 		if gotStatus != statusFail {
 			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
 		}
 		if !strings.Contains(gotDetail, "want 0o755") {
 			t.Fatalf("detail: got %q, want wrapper mode failure", gotDetail)
+		}
+	})
+
+	t.Run("uses wrapper inventory when present", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
+		env.readFile = os.ReadFile
+		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-rustup"), 0o755)
+		body, err := json.Marshal(wrapperInventory{Wrappers: []string{"plk-rustup"}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(env.wrapperInvPath, append(body, '\n'), 0o600); err != nil {
+			t.Fatalf("write inventory: %v", err)
+		}
+
+		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
+		if gotStatus != statusPass {
+			t.Fatalf("status: got %q, want pass (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "plk-rustup") {
+			t.Fatalf("detail: got %q, want custom wrapper", gotDetail)
+		}
+	})
+
+	t.Run("malformed wrapper inventory fails", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
+		env.readFile = os.ReadFile
+		writeFakeWrapper(t, env.launchPath, 0o755)
+		if err := os.WriteFile(env.wrapperInvPath, []byte("{"), 0o600); err != nil {
+			t.Fatalf("write inventory: %v", err)
+		}
+
+		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "parse wrapper inventory") {
+			t.Fatalf("detail: got %q, want parse failure", gotDetail)
 		}
 	})
 }
@@ -716,7 +853,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 		},
 		{
 			name:       "sudo no password",
-			stdout:     "sudo: a password is required\n",
+			stdout:     testSudoNeedsPwd + "\n",
 			code:       1,
 			wantStatus: statusSkip,
 			wantDetail: "configure NOPASSWD",
@@ -742,8 +879,8 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 			wantDetail: "sudo/curl unavailable",
 		},
 		{
-			name:       "cc-agent user missing",
-			stdout:     "sudo: unknown user cc-agent\nsudo: error initializing audit plugin sudoers_audit\n",
+			name:       "pipelock-agent user missing",
+			stdout:     "sudo: unknown user pipelock-agent\nsudo: error initializing audit plugin sudoers_audit\n",
 			code:       1,
 			wantStatus: statusSkip,
 			wantDetail: "install containment model first",
@@ -764,7 +901,7 @@ func TestProbeCCAgentEgressDenied(t *testing.T) {
 					if name != testSudoCmd {
 						t.Fatalf("unexpected cmd %q", name)
 					}
-					// Sanity: confirm we drop to cc-agent.
+					// Sanity: confirm we drop to pipelock-agent.
 					joined := strings.Join(args, " ")
 					if !strings.Contains(joined, "-u "+testAgentUser) {
 						t.Fatalf("argv missing -u %s: %v", testAgentUser, args)
@@ -842,7 +979,7 @@ func TestProbeOperatorEgress(t *testing.T) {
 		env := makeProbeEnv(t, func(e *probeEnv) {
 			e.operatorUser = testOperatorUser
 			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
-				return "sudo: a password is required", 1, nil
+				return testSudoNeedsPwd, 1, nil
 			}
 		})
 		gotStatus, _ := probeOperatorEgress(context.Background(), env)
@@ -1037,10 +1174,10 @@ func TestRunVerify_TextOutput_AllPass(t *testing.T) {
 	if !strings.HasPrefix(out, "pipelock contain verify") {
 		t.Errorf("missing header: %q", out)
 	}
-	if strings.Count(out, "[PASS]") != 9 {
-		t.Errorf("want 9 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
+	if strings.Count(out, "[PASS]") != 12 {
+		t.Errorf("want 12 [PASS] lines, got %d in %q", strings.Count(out, "[PASS]"), out)
 	}
-	if !strings.Contains(out, "9 PASS / 0 FAIL / 0 SKIP") {
+	if !strings.Contains(out, "12 PASS / 0 FAIL / 0 SKIP") {
 		t.Errorf("missing aggregate: %q", out)
 	}
 }
@@ -1057,10 +1194,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 	}
 
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 10 {
-		t.Fatalf("expected 10 JSON records (9 probes + aggregate), got %d: %q", len(lines), buf.String())
+	if len(lines) != 13 {
+		t.Fatalf("expected 13 JSON records (12 probes + aggregate), got %d: %q", len(lines), buf.String())
 	}
-	for i := 0; i < 9; i++ {
+	for i := 0; i < 12; i++ {
 		var rec probeRecord
 		if err := json.Unmarshal([]byte(lines[i]), &rec); err != nil {
 			t.Fatalf("line %d: parse: %v (line=%q)", i, err, lines[i])
@@ -1073,10 +1210,10 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 		}
 	}
 	var agg aggregateRecord
-	if err := json.Unmarshal([]byte(lines[9]), &agg); err != nil {
-		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[9])
+	if err := json.Unmarshal([]byte(lines[12]), &agg); err != nil {
+		t.Fatalf("aggregate: parse: %v (line=%q)", err, lines[12])
 	}
-	if agg.Aggregate.Pass != 9 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
+	if agg.Aggregate.Pass != 12 || agg.Aggregate.Fail != 0 || agg.Aggregate.Skip != 0 {
 		t.Errorf("aggregate counts: %+v", agg.Aggregate)
 	}
 	if agg.Aggregate.ExitCode != cliutil.ExitOK {
@@ -1086,9 +1223,12 @@ func TestRunVerify_JSONOutput_AllPass(t *testing.T) {
 
 func TestRunVerify_FailExitCode(t *testing.T) {
 	env := allPassEnv(t)
-	// Force one probe to fail by making the egress canary "succeed".
+	// Force the egress canary (probe 8) to fail by reporting curl success.
+	// Probe 11 also uses sudo + pipelock-agent; distinguish by checking for the
+	// curl path in argv. Without this guard, probe 11 would short-circuit
+	// here and the test would observe an unrelated failure.
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		if name == testSudoCmd && containsArg(args, testAgentUser) {
+		if name == testSudoCmd && containsArg(args, testAgentUser) && containsArg(args, curlPath) {
 			return "200", 0, nil
 		}
 		return defaultRunForAllPass(name, args)
@@ -1116,8 +1256,10 @@ func TestRunVerify_SkipExitCode(t *testing.T) {
 	// security canary must not return exit 0, or CI can mistake an
 	// incomplete verification for a clean containment boundary.
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		if name == testSudoCmd && containsArg(args, testAgentUser) {
-			return "sudo: a password is required", 1, nil
+		// Match probe 8 (curl) only — probe 11 (plk-launch) needs the
+		// default canned response so it doesn't also skip.
+		if name == testSudoCmd && containsArg(args, testAgentUser) && containsArg(args, curlPath) {
+			return testSudoNeedsPwd, 1, nil
 		}
 		return defaultRunForAllPass(name, args)
 	}
@@ -1170,7 +1312,15 @@ func TestVerifyCmd_InvalidPort(t *testing.T) {
 	}
 }
 
-func TestStubSubcommands(t *testing.T) {
+// TestMutatingSubcommandsRequireRoot covers the precondition gate every
+// mutating subcommand runs first: a non-root invocation must exit ExitConfig
+// with a clear "must be run as root" message. This test exists so a future
+// refactor can't accidentally turn the root gate into a no-op (which would
+// let unprivileged callers attempt mutations and fail mid-step).
+func TestMutatingSubcommandsRequireRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("test must run as non-root to exercise the precondition")
+	}
 	cases := []struct {
 		subcmd string
 		args   []string
@@ -1189,13 +1339,13 @@ func TestStubSubcommands(t *testing.T) {
 			}
 			err := sub.RunE(sub, tc.args)
 			if err == nil {
-				t.Fatalf("stub %s returned nil; want ExitError", tc.subcmd)
+				t.Fatalf("%s as non-root returned nil; want ExitError", tc.subcmd)
 			}
 			if code := cliutil.ExitCodeOf(err); code != cliutil.ExitConfig {
-				t.Errorf("stub %s exit code: got %d, want %d", tc.subcmd, code, cliutil.ExitConfig)
+				t.Errorf("%s exit code: got %d, want %d (ExitConfig)", tc.subcmd, code, cliutil.ExitConfig)
 			}
-			if !strings.Contains(err.Error(), "not yet implemented") {
-				t.Errorf("stub %s error: got %q, want substring 'not yet implemented'", tc.subcmd, err)
+			if !strings.Contains(err.Error(), "must be run as root") {
+				t.Errorf("%s error: got %q, want substring 'must be run as root'", tc.subcmd, err)
 			}
 		})
 	}
@@ -1213,10 +1363,7 @@ func TestAddToolNameValidation(t *testing.T) {
 				t.Fatalf("add-tool %q returned nil; want validation error", name)
 			}
 			if !strings.Contains(err.Error(), "invalid tool name") {
-				// Pattern allows up to 31 chars; a 32-char name should be rejected too.
-				if !strings.Contains(err.Error(), "not yet implemented") {
-					t.Errorf("add-tool %q: got error %q", name, err)
-				}
+				t.Errorf("add-tool %q: got error %q, want 'invalid tool name'", name, err)
 			}
 		})
 	}
@@ -1276,14 +1423,37 @@ func allPassEnv(t *testing.T) *probeEnv {
 		return defaultRunForAllPass(name, args)
 	}
 
-	// Filesystem state for probes 4, 5, 7.
+	// Filesystem state for probes 4, 5, 7, 12.
 	writeFakeWrapper(t, env.launchPath, 0o755)
-	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "cc-claude"), 0o755)
+	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
+	toolTarget := filepath.Join(t.TempDir(), "claude")
+	writeFakeWrapper(t, toolTarget, 0o755)
 	body := "#!/bin/bash\nexec env NO_PROXY=127.0.0.1,localhost HTTPS_PROXY=http://127.0.0.1:8888 sh\n"
 	if err := os.WriteFile(env.launchPath, []byte(body), 0o755); err != nil { //nolint:gosec // wrapper script must be executable in test
 		t.Fatalf("rewrite launch: %v", err)
 	}
 	writeFakePEMBundle(t, env.caBundlePath, "Pipelock Test CA")
+
+	// Probe 10: binary integrity. allPassEnv emits matching pin + hash so
+	// the probe returns pass. Tests that want to exercise mismatch override
+	// hashFile or readFile after calling allPassEnv.
+	const allPassHash = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+	env.readFile = func(path string) ([]byte, error) {
+		if path == env.pinPath {
+			return []byte(allPassHash + "\n"), nil
+		}
+		if path == env.toolsListPath {
+			return []byte("claude\t" + toolTarget + "\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected readFile %s", path)
+	}
+	env.selfPath = func() (string, error) { return "/usr/local/bin/pipelock", nil }
+	env.hashFile = func(path string) (string, error) {
+		if path == "/usr/local/bin/pipelock" {
+			return allPassHash, nil
+		}
+		return "", fmt.Errorf("unexpected hashFile %s", path)
+	}
 
 	return env
 }
@@ -1292,17 +1462,17 @@ func allPassEnv(t *testing.T) *probeEnv {
 // every probe should pass.
 func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	switch name {
-	case "systemctl":
+	case testSystemctl:
 		return "ActiveState=active\nSubState=running\nUser=pipelock-proxy\nType=simple\n", 0, nil
-	case "nft":
-		return `table inet pipelock_containment {
-	chain output_filter {
-		meta skuid 987 drop
-	}
-}
-`, 0, nil
+	case testNFT:
+		return goodNFTContainmentOutput, 0, nil
 	case testSudoCmd:
-		// Either cc-agent (probe 8) or operator (probe 9). Match by argv.
+		// Probe 11: plk-launch allow-list probe invokes plk-launch with a
+		// sentinel tool name. Expect exit 5 = denial.
+		if containsArg(args, "plk-launch") || containsArg(args, "pipelock-probe-sentinel-not-a-real-tool") {
+			return "plk-launch: tool pipelock-probe-sentinel-not-a-real-tool not in pipelock contain allow-list", 5, nil
+		}
+		// Either pipelock-agent (probe 8) or operator (probe 9). Match by argv.
 		if containsArg(args, testAgentUser) {
 			return "curl: (7) Failed to connect", 7, nil
 		}
@@ -1331,7 +1501,7 @@ func TestOneLine(t *testing.T) {
 
 func TestIsSudoUserMissing(t *testing.T) {
 	yes := []string{
-		"sudo: unknown user cc-agent",
+		"sudo: unknown user pipelock-agent",
 		"sudo: unknown user: pipelock-proxy",
 		"SUDO: UNKNOWN USER FOO",
 	}
@@ -1341,7 +1511,7 @@ func TestIsSudoUserMissing(t *testing.T) {
 		}
 	}
 	no := []string{
-		"sudo: a password is required",
+		testSudoNeedsPwd,
 		"curl: (7) Failed to connect",
 		"",
 	}
@@ -1364,7 +1534,7 @@ func TestIsSudoTargetCommandMissing(t *testing.T) {
 	}
 	no := []string{
 		"curl: (7) Failed to connect",
-		"sudo: a password is required",
+		testSudoNeedsPwd,
 		"",
 	}
 	for _, s := range no {
@@ -1410,9 +1580,18 @@ func TestDefaultProbeEnv(t *testing.T) {
 	if len(env.toolWrappers) != len(defaultToolWrappers) {
 		t.Errorf("toolWrappers: got %d, want %d", len(env.toolWrappers), len(defaultToolWrappers))
 	}
-	if env.runCmd == nil || env.dialCtx == nil || env.lookupUser == nil {
-		t.Errorf("hooks: runCmd=%v dialCtx=%v lookupUser=%v",
-			env.runCmd != nil, env.dialCtx != nil, env.lookupUser != nil)
+	if env.wrapperInvPath != defaultWrapperInvPath {
+		t.Errorf("wrapperInvPath: got %q, want %q", env.wrapperInvPath, defaultWrapperInvPath)
+	}
+	if env.nftRulesPath != defaultNFTRulesPath {
+		t.Errorf("nftRulesPath: got %q, want %q", env.nftRulesPath, defaultNFTRulesPath)
+	}
+	if env.nftMainPath != defaultNFTMainConfigPath {
+		t.Errorf("nftMainPath: got %q, want %q", env.nftMainPath, defaultNFTMainConfigPath)
+	}
+	if env.runCmd == nil || env.dialCtx == nil || env.lookupUser == nil || env.readFile == nil {
+		t.Errorf("hooks: runCmd=%v dialCtx=%v lookupUser=%v readFile=%v",
+			env.runCmd != nil, env.dialCtx != nil, env.lookupUser != nil, env.readFile != nil)
 	}
 }
 
@@ -1454,7 +1633,7 @@ func TestVerifyCmdExecute(t *testing.T) {
 
 func TestIsSudoRefusal(t *testing.T) {
 	yes := []string{
-		"sudo: a password is required",
+		testSudoNeedsPwd,
 		"User operator may not run sudo",
 		"not allowed to execute",
 		"sudo: no tty present and no askpass program specified",

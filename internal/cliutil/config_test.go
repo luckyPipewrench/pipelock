@@ -22,7 +22,7 @@ func TestDiscoverConfigPath_PipelockConfigEnvWins(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", "/dev/null")
 
-	got := DiscoverConfigPath()
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != override {
 		t.Errorf("PIPELOCK_CONFIG override not honored: got %q, want %q", got, override)
 	}
@@ -54,7 +54,7 @@ func TestDiscoverConfigPath_PipelockConfigEnvReturnsAbsolute(t *testing.T) {
 	t.Setenv("HOME", "/dev/null")
 
 	want := filepath.Join(dir, "relative.yaml")
-	got := DiscoverConfigPath()
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != want {
 		t.Errorf("relative PIPELOCK_CONFIG not made absolute: got %q, want %q", got, want)
 	}
@@ -78,7 +78,7 @@ func TestDiscoverConfigPath_XDGFallback(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", xdgDir)
 	t.Setenv("HOME", "/dev/null")
 
-	got := DiscoverConfigPath()
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != cfg {
 		t.Errorf("XDG fallback not honored: got %q, want %q", got, cfg)
 	}
@@ -100,7 +100,7 @@ func TestDiscoverConfigPath_HomeFallback(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", home)
 
-	got := DiscoverConfigPath()
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != cfg {
 		t.Errorf("HOME fallback not honored: got %q, want %q", got, cfg)
 	}
@@ -114,7 +114,7 @@ func TestDiscoverConfigPath_NoMatch(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", t.TempDir())
 
-	got := DiscoverConfigPath()
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != "" {
 		t.Errorf("expected empty string when no candidate exists, got %q", got)
 	}
@@ -137,7 +137,7 @@ func TestDiscoverConfigPath_NonRegularRejected(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("HOME", home)
 
-	got := DiscoverConfigPath()
+	got := discoverConfigPath(filepath.Join(t.TempDir(), "system.yaml"))
 	if got != "" {
 		t.Errorf("non-regular candidate must not be returned, got %q", got)
 	}

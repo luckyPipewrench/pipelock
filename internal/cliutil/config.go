@@ -39,6 +39,10 @@ func LoadConfigOrDefault(path string) (*config.Config, error) {
 // wrapped argv so the spawned subprocess loads the same config as the
 // operator's main pipelock service.
 func DiscoverConfigPath() string {
+	return discoverConfigPath("/etc/pipelock/pipelock.yaml")
+}
+
+func discoverConfigPath(systemPath string) string {
 	candidates := []string{}
 
 	if env := os.Getenv("PIPELOCK_CONFIG"); env != "" {
@@ -50,7 +54,9 @@ func DiscoverConfigPath() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		candidates = append(candidates, filepath.Join(home, ".config", "pipelock", "pipelock.yaml"))
 	}
-	candidates = append(candidates, "/etc/pipelock/pipelock.yaml")
+	if systemPath != "" {
+		candidates = append(candidates, systemPath)
+	}
 
 	for _, c := range candidates {
 		clean, err := filepath.Abs(filepath.Clean(c))

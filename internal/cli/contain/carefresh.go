@@ -108,8 +108,10 @@ func validateCARefreshPaths(env *installEnv, systemBundle string) error {
 	if !filepath.IsAbs(systemBundle) {
 		return fmt.Errorf("--system-bundle %q must be absolute", systemBundle)
 	}
-	if info, err := env.stat(systemBundle); err != nil {
+	if info, err := env.lstat(systemBundle); err != nil {
 		return fmt.Errorf("--system-bundle %q: %w", systemBundle, err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("--system-bundle %q is a symlink; pass the resolved bundle path", systemBundle)
 	} else if info.IsDir() {
 		return fmt.Errorf("--system-bundle %q is a directory", systemBundle)
 	}

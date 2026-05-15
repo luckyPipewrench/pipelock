@@ -317,6 +317,14 @@ func TestValidateCARefreshPathsRejectsUnsafeInputs(t *testing.T) {
 	if err := validateCARefreshPaths(env, systemBundle); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("symlink output err: %v", err)
 	}
+	env.caExportPath = filepath.Join(env.configDir, "ca.pem")
+	bundleLink := filepath.Join(t.TempDir(), "bundle-link.pem")
+	if err := os.Symlink(systemBundle, bundleLink); err != nil {
+		t.Fatalf("bundle symlink: %v", err)
+	}
+	if err := validateCARefreshPaths(env, bundleLink); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink bundle err: %v", err)
+	}
 }
 
 func TestValidateSingleCAPEMRejectsExtraDataAndNonCA(t *testing.T) {

@@ -275,6 +275,24 @@ func TestAddToolCmd_Wiring(t *testing.T) {
 	}
 }
 
+func TestAddToolCmdRejectsInvalidNameBeforeRootCheck(t *testing.T) {
+	cmd := addToolCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"bad/name", "--dry-run"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid tool name error")
+	}
+	if cliutil.ExitCodeOf(err) != cliutil.ExitConfig {
+		t.Fatalf("exit code: got %d want %d", cliutil.ExitCodeOf(err), cliutil.ExitConfig)
+	}
+	if !strings.Contains(err.Error(), "invalid tool name") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
 func TestAddTool_RejectsMissingTarget(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	missing := filepath.Join(t.TempDir(), "nope")

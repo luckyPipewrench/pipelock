@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -187,5 +188,98 @@ func TestProbeListedToolTargets_PassWithAgentPathLookup(t *testing.T) {
 	status, detail := probeListedToolTargets(context.Background(), env)
 	if status != statusPass {
 		t.Fatalf("status: %s detail=%s", status, detail)
+	}
+}
+
+func TestProbeListedToolTargets_EdgeFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		plant      func(t *testing.T, env *probeEnv) string
+		readErr    error
+		wantStatus string
+		wantDetail string
+	}{
+		{
+			name:       "missing tools list skips",
+			readErr:    os.ErrNotExist,
+			wantStatus: statusSkip,
+			wantDetail: "install never ran",
+		},
+		{
+			name:       "read error fails",
+			readErr:    errors.New("permission denied"),
+			wantStatus: statusFail,
+			wantDetail: "permission denied",
+		},
+		{
+			name:       "malformed tools list fails",
+			body:       "not-a-valid-line\n",
+			wantStatus: statusFail,
+			wantDetail: "malformed tools.list",
+		},
+		{
+			name:       "empty tools list fails",
+			body:       "# no tools\n\n",
+			wantStatus: statusFail,
+			wantDetail: "no tool entries",
+		},
+		{
+			name: "directory target fails",
+			body: "claude\tTARGET\n",
+			plant: func(t *testing.T, _ *probeEnv) string {
+				t.Helper()
+				return t.TempDir()
+			},
+			wantStatus: statusFail,
+			wantDetail: "is a directory",
+		},
+		{
+			name: "non-executable target fails",
+			body: "claude\tTARGET\n",
+			plant: func(t *testing.T, _ *probeEnv) string {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "claude")
+				if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+					t.Fatalf("write target: %v", err)
+				}
+				return target
+			},
+			wantStatus: statusFail,
+			wantDetail: "not executable",
+		},
+		{
+			name:       "missing explicit target fails",
+			body:       "claude\t/no/such/target\n",
+			wantStatus: statusFail,
+			wantDetail: "no such",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := makeProbeEnv(t)
+			body := tc.body
+			if tc.plant != nil {
+				body = strings.ReplaceAll(body, "TARGET", tc.plant(t, env))
+			}
+			env.readFile = func(path string) ([]byte, error) {
+				if path != env.toolsListPath {
+					return nil, fmt.Errorf("unexpected readFile %s", path)
+				}
+				if tc.readErr != nil {
+					return nil, tc.readErr
+				}
+				return []byte(body), nil
+			}
+
+			status, detail := probeListedToolTargets(context.Background(), env)
+			if status != tc.wantStatus {
+				t.Fatalf("status: got %s want %s detail=%s", status, tc.wantStatus, detail)
+			}
+			if !strings.Contains(detail, tc.wantDetail) {
+				t.Fatalf("detail: got %q want substring %q", detail, tc.wantDetail)
+			}
+		})
 	}
 }

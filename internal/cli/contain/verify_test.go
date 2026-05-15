@@ -588,6 +588,80 @@ func TestProbeWrapperScripts(t *testing.T) {
 			t.Fatalf("detail: got %q, want parse failure", gotDetail)
 		}
 	})
+
+	t.Run("empty wrapper inventory entry fails", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
+		env.readFile = os.ReadFile
+		writeFakeWrapper(t, env.launchPath, 0o755)
+		body, err := json.Marshal(wrapperInventory{Wrappers: []string{""}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(env.wrapperInvPath, append(body, '\n'), 0o600); err != nil {
+			t.Fatalf("write inventory: %v", err)
+		}
+
+		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "empty wrapper name") {
+			t.Fatalf("detail: got %q, want empty wrapper failure", gotDetail)
+		}
+	})
+
+	t.Run("directory wrapper inventory entry fails", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
+		env.readFile = os.ReadFile
+		writeFakeWrapper(t, env.launchPath, 0o755)
+		dirWrapper := filepath.Join(env.wrapperDir, "plk-dir")
+		if err := os.Mkdir(dirWrapper, 0o750); err != nil {
+			t.Fatalf("mkdir wrapper dir: %v", err)
+		}
+		body, err := json.Marshal(wrapperInventory{Wrappers: []string{"plk-dir"}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(env.wrapperInvPath, append(body, '\n'), 0o600); err != nil {
+			t.Fatalf("write inventory: %v", err)
+		}
+
+		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "non-empty executable wrapper file") {
+			t.Fatalf("detail: got %q, want regular-file failure", gotDetail)
+		}
+	})
+
+	t.Run("empty wrapper file fails", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
+		env.readFile = os.ReadFile
+		writeFakeWrapper(t, env.launchPath, 0o755)
+		emptyWrapper := filepath.Join(env.wrapperDir, "plk-empty")
+		if err := os.WriteFile(emptyWrapper, nil, 0o755); err != nil { //nolint:gosec // executable mode mirrors production wrapper contract.
+			t.Fatalf("write empty wrapper: %v", err)
+		}
+		body, err := json.Marshal(wrapperInventory{Wrappers: []string{"plk-empty"}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(env.wrapperInvPath, append(body, '\n'), 0o600); err != nil {
+			t.Fatalf("write inventory: %v", err)
+		}
+
+		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, "non-empty executable wrapper file") {
+			t.Fatalf("detail: got %q, want empty wrapper failure", gotDetail)
+		}
+	})
 }
 
 func writeFakeWrapper(t *testing.T, path string, mode os.FileMode) {

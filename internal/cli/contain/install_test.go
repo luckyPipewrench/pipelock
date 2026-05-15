@@ -364,6 +364,52 @@ func TestRunInstall_DryRunPrintsPlan(t *testing.T) {
 	t.Skip("root path covered in TestRunInstall_EndToEnd")
 }
 
+func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
+	env, runner, buf := newFakeEnv(t)
+	binDir := t.TempDir()
+	for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture required for preflight PATH lookup.
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+
+	// Let the default allow-list find one agent tool without depending on
+	// host-global /usr/local/bin contents.
+	origStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		if path == "/usr/local/bin/claude" {
+			return origStat(env.pipelockBinary)
+		}
+		return origStat(path)
+	}
+	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+		t.Fatalf("write ca export: %v", err)
+	}
+
+	if err := runInstall(context.Background(), env, installOpts{}); err != nil {
+		t.Fatalf("runInstall: %v\noutput:\n%s\ncalls:%+v", err, buf.String(), runner.calls)
+	}
+	for _, path := range []string{
+		env.pipelockTarget,
+		env.integrityPin,
+		env.systemUnitPath,
+		env.nftRulesPath,
+		filepath.Join(env.wrapperDir, "plk-launch"),
+		filepath.Join(env.wrapperDir, "plk-claude"),
+		env.wrapperInvPath,
+		env.sudoersPath,
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected install artifact %s: %v", path, err)
+		}
+	}
+	if !strings.Contains(buf.String(), "install complete") {
+		t.Fatalf("missing success output:\n%s", buf.String())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // step-level idempotency and rollback
 // ---------------------------------------------------------------------------
@@ -381,6 +427,43 @@ func TestStepCreateUser_SkipsWhenExists(t *testing.T) {
 	if len(runner.calls) != 0 {
 		t.Errorf("expected no useradd shell-out, got %v", runner.calls)
 	}
+}
+
+func TestStepPreflightChecksRequiredBinaries(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	s := stepPreflight(installOpts{})
+
+	t.Run("success", func(t *testing.T) {
+		binDir := t.TempDir()
+		for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
+			path := filepath.Join(binDir, name)
+			if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture required for preflight PATH lookup.
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		t.Setenv("PATH", binDir)
+		applied, err := s.apply(context.Background(), env)
+		if err != nil {
+			t.Fatalf("preflight: %v", err)
+		}
+		if !applied {
+			t.Fatal("preflight should report applied=true")
+		}
+	})
+
+	t.Run("missing binary", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		applied, err := s.apply(context.Background(), env)
+		if err == nil {
+			t.Fatal("expected missing executable error")
+		}
+		if applied {
+			t.Fatal("missing executable must not report applied")
+		}
+		if !strings.Contains(err.Error(), "required executable") {
+			t.Fatalf("err: %v", err)
+		}
+	})
 }
 
 func TestStepCreateUser_CallsUseradd(t *testing.T) {
@@ -1182,6 +1265,24 @@ func TestInstallCmd_Wiring(t *testing.T) {
 	}
 	if cmd.Flag("proxy-port") == nil {
 		t.Errorf("--proxy-port flag missing")
+	}
+}
+
+func TestInstallCmdRejectsInvalidPortBeforeRootCheck(t *testing.T) {
+	cmd := installCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--dry-run", "--proxy-port", "0", "--operator-user", containInstallOperatorUser})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid port error")
+	}
+	if cliutil.ExitCodeOf(err) != cliutil.ExitConfig {
+		t.Fatalf("exit code: got %d want %d", cliutil.ExitCodeOf(err), cliutil.ExitConfig)
+	}
+	if !strings.Contains(err.Error(), "--port") {
+		t.Fatalf("err: %v", err)
 	}
 }
 

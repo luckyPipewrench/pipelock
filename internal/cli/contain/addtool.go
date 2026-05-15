@@ -104,15 +104,20 @@ func runAddTool(ctx context.Context, env *installEnv, name string, opts addToolO
 		}
 		target = strings.TrimSpace(out)
 	}
+	target = strings.TrimSpace(target)
 	if target == "" {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("could not resolve target for %q", name))
 	}
+	target = filepath.Clean(target)
 	if !filepath.IsAbs(target) {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("target %q must be an absolute path", target))
 	}
-	info, err := env.stat(target)
+	info, err := env.lstat(target)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("target %q: %w", target, err))
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("target %q is a symlink; pass the resolved executable path", target))
 	}
 	if info.IsDir() {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("target %q is a directory", target))
@@ -135,7 +140,7 @@ func runAddTool(ctx context.Context, env *installEnv, name string, opts addToolO
 		return nil
 	}
 
-	allowListTarget := opts.target
+	allowListTarget := target
 	if readErr == nil && string(existing) == desiredBody && alreadyInInventory && toolEntryMatches(env, name, allowListTarget) {
 		_, _ = fmt.Fprintf(env.out, "wrapper %s already installed and inventoried — nothing to do.\n", wrapperPath)
 		return nil
@@ -194,11 +199,15 @@ func wrapperInInventory(env *installEnv, name string) bool {
 // appendInventory adds name to the inventory file if not already present.
 // Creates the file (and its directory) if missing.
 func appendInventory(env *installEnv, name string) error {
-	if err := env.mkdirAll(filepath.Dir(env.wrapperInvPath), modeDirTraversable); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(env.wrapperInvPath), err)
+	dir := filepath.Dir(env.wrapperInvPath)
+	if err := ensureSafeDirectory(env, dir); err != nil {
+		return err
 	}
-	if err := env.chmod(filepath.Dir(env.wrapperInvPath), modeDirTraversable); err != nil {
-		return fmt.Errorf("chmod %s: %w", filepath.Dir(env.wrapperInvPath), err)
+	if err := env.mkdirAll(dir, modeDirTraversable); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := env.chmod(dir, modeDirTraversable); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
 	}
 	var inv wrapperInventory
 	data, err := env.readFile(env.wrapperInvPath)

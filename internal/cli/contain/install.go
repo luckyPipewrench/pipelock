@@ -333,48 +333,53 @@ type toolsListEntry struct {
 	target string // empty = resolve via pipelock-agent PATH at runtime
 }
 
-// readToolsList parses the runtime allow-list. Unrecognized lines (blank,
-// comment, malformed) are silently skipped — the file is root-owned and
-// pre-validated by the install/add-tool path, so a malformed line at
-// runtime is a programmer error worth reporting via plk-launch's stderr
-// rather than blowing up the Go caller.
+// readToolsList parses the runtime allow-list. Blank and comment lines
+// are ignored, but malformed policy lines fail closed: tools.list is an
+// enforcement artifact, so corruption must be visible to install/verify.
 func readToolsList(env *installEnv) ([]toolsListEntry, error) {
 	data, err := env.readFile(env.toolsListPath)
 	if err != nil {
 		return nil, err
 	}
-	return parseToolsList(data), nil
+	return parseToolsList(data)
 }
 
-func parseToolsList(data []byte) []toolsListEntry {
+func parseToolsList(data []byte) ([]toolsListEntry, error) {
 	var entries []toolsListEntry
-	for _, line := range strings.Split(string(data), "\n") {
+	for lineNo, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimRight(line, "\r")
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		parts := strings.SplitN(line, "\t", 2)
-		name := strings.TrimSpace(parts[0])
-		if name == "" {
-			continue
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("malformed tools.list line %d: missing tab separator", lineNo+1)
 		}
-		target := ""
-		if len(parts) == 2 {
-			target = strings.TrimSpace(parts[1])
+		name := strings.TrimSpace(parts[0])
+		if !addToolNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("malformed tools.list line %d: invalid tool name %q", lineNo+1, name)
+		}
+		target := strings.TrimSpace(parts[1])
+		if target != "" && !filepath.IsAbs(target) {
+			return nil, fmt.Errorf("malformed tools.list line %d: target %q is not absolute", lineNo+1, target)
 		}
 		entries = append(entries, toolsListEntry{name: name, target: target})
 	}
-	return entries
+	return entries, nil
 }
 
 // writeToolsList renders entries back to disk preserving the header
 // comments produced by renderDefaultToolsList. Used by add-tool.
 func writeToolsList(env *installEnv, entries []toolsListEntry) error {
-	if err := env.mkdirAll(filepath.Dir(env.toolsListPath), modeDirTraversable); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(env.toolsListPath), err)
+	dir := filepath.Dir(env.toolsListPath)
+	if err := ensureSafeDirectory(env, dir); err != nil {
+		return err
 	}
-	if err := env.chmod(filepath.Dir(env.toolsListPath), modeDirTraversable); err != nil {
-		return fmt.Errorf("chmod %s: %w", filepath.Dir(env.toolsListPath), err)
+	if err := env.mkdirAll(dir, modeDirTraversable); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	if err := env.chmod(dir, modeDirTraversable); err != nil {
+		return fmt.Errorf("chmod %s: %w", dir, err)
 	}
 	return backupAndWrite(env, env.toolsListPath, []byte(renderToolsList(entries)), modeAllowListReadable)
 }
@@ -1345,8 +1350,18 @@ func renderLaunchWrapper(env *installEnv) string {
 		`# at runtime via the pipelock-agent PATH".`,
 		`TARGET=""`,
 		`FOUND=0`,
-		`while IFS=$'\t' read -r name target; do`,
-		`    case "$name" in ''|'#'*) continue ;; esac`,
+		`while IFS= read -r line; do`,
+		`    case "$line" in ''|'#'*) continue ;; esac`,
+		`    if [[ "$line" != *$'\t'* ]]; then`,
+		`        echo "plk-launch: malformed allow-list entry missing tab separator" >&2`,
+		`        exit 9`,
+		`    fi`,
+		`    IFS=$'\t' read -r name target <<< "$line"`,
+		`    case "$name" in *[!a-z0-9_-]*|"") echo "plk-launch: malformed allow-list entry for $name" >&2; exit 9 ;; esac`,
+		`    if [[ -n "$target" && "$target" != /* ]]; then`,
+		`        echo "plk-launch: malformed allow-list target $target for $name" >&2`,
+		`        exit 9`,
+		`    fi`,
 		`    if [[ "$name" == "$TOOL" ]]; then`,
 		`        TARGET="$target"`,
 		`        FOUND=1`,

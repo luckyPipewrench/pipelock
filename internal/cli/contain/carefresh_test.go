@@ -6,16 +6,44 @@ package contain
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// testPEMCA is a minimal PEM-shaped string for stubbing pipelock tls
-// show-ca output. Tests don't validate the certificate, only that the
-// pipeline accepts a PEM and rejects non-PEM.
-const testPEMCA = "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKvHM6vHM6vHMA0GCSqGSIb3DQEBCwUAMA0xCzAJBgNVBAYTAlVT\n-----END CERTIFICATE-----\n"
+func testPEMCA(t *testing.T) string {
+	return testPEMCert(t, true)
+}
+
+func testPEMCert(t *testing.T, isCA bool) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "Pipelock Test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  isCA,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
 
 func TestRunCARefresh_FullSuccessPath(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
@@ -23,7 +51,7 @@ func TestRunCARefresh_FullSuccessPath(t *testing.T) {
 	// env.caExportPath; the fake just supplies the bytes.
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name == testSudoCmd && containsArg(args, "show-ca") {
-			return testPEMCA, 0, nil
+			return testPEMCA(t), 0, nil
 		}
 		return "", 0, nil
 	}
@@ -102,7 +130,7 @@ func TestExportPipelockCA_RemovesStaleBeforeExport(t *testing.T) {
 		runner.calls = append(runner.calls, fakeCall{name: name, args: append([]string(nil), args...)})
 		runner.mu.Unlock()
 		if name == testSudoCmd && containsArg(args, "show-ca") {
-			return testPEMCA, 0, nil
+			return testPEMCA(t), 0, nil
 		}
 		return "", 0, nil
 	}
@@ -121,7 +149,7 @@ func TestExportPipelockCA_RemovesStaleBeforeExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read after export: %v", err)
 	}
-	if string(got) != testPEMCA {
+	if !strings.Contains(string(got), "BEGIN CERTIFICATE") {
 		t.Errorf("export wrote wrong content: %q", got)
 	}
 	if len(runner.calls) != 1 {
@@ -151,7 +179,7 @@ func TestExportPipelockCAInitializesMissingCAThenRetries(t *testing.T) {
 			if showCalls == 1 {
 				return "missing ca", 1, nil
 			}
-			return testPEMCA, 0, nil
+			return testPEMCA(t), 0, nil
 		}
 		if name == testSudoCmd && containsArg(args, "init") {
 			return "initialized", 0, nil
@@ -168,7 +196,7 @@ func TestExportPipelockCAInitializesMissingCAThenRetries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read export: %v", err)
 	}
-	if string(got) != testPEMCA {
+	if !strings.Contains(string(got), "BEGIN CERTIFICATE") {
 		t.Fatalf("exported CA: %q", got)
 	}
 	if showCalls != 2 {
@@ -200,7 +228,7 @@ func TestExportPipelockCARejectsNonPEMOutput(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected non-PEM rejection")
 	}
-	if !strings.Contains(err.Error(), "non-PEM") {
+	if !strings.Contains(err.Error(), "invalid CA PEM") {
 		t.Fatalf("err: %v", err)
 	}
 }
@@ -248,6 +276,58 @@ func TestRunCARefresh_DryRunIsNonMutating(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "ca-refresh") || !strings.Contains(out, "planned") {
 		t.Errorf("dry-run output: %q", out)
+	}
+}
+
+func TestRunCARefresh_DryRunValidatesPaths(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	systemBundle := filepath.Join(t.TempDir(), "system.pem")
+	if err := os.WriteFile(systemBundle, []byte("system"), 0o600); err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	env.caExportPath = filepath.Join(t.TempDir(), "outside-ca.pem")
+	err := runCARefresh(context.Background(), env, caRefreshOpts{dryRun: true, systemBundle: systemBundle})
+	if err == nil {
+		t.Fatal("expected output path rejection")
+	}
+	if !strings.Contains(err.Error(), "must stay under") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
+func TestValidateCARefreshPathsRejectsUnsafeInputs(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := validateCARefreshPaths(env, "relative.pem"); err == nil || !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("relative bundle err: %v", err)
+	}
+	systemBundle := filepath.Join(t.TempDir(), "system.pem")
+	if err := os.WriteFile(systemBundle, []byte("system"), 0o600); err != nil {
+		t.Fatalf("write system: %v", err)
+	}
+	env.caBundlePath = filepath.Join(t.TempDir(), "combined-ca.pem")
+	if err := validateCARefreshPaths(env, systemBundle); err == nil || !strings.Contains(err.Error(), "must stay under") {
+		t.Fatalf("outside output err: %v", err)
+	}
+	env.caBundlePath = filepath.Join(env.configDir, "combined-ca.pem")
+	link := filepath.Join(env.configDir, "ca-link.pem")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "target.pem"), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	env.caExportPath = link
+	if err := validateCARefreshPaths(env, systemBundle); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink output err: %v", err)
+	}
+}
+
+func TestValidateSingleCAPEMRejectsExtraDataAndNonCA(t *testing.T) {
+	if err := validateSingleCAPEM([]byte(testPEMCA(t) + "junk")); err == nil || !strings.Contains(err.Error(), "extra data") {
+		t.Fatalf("extra data err: %v", err)
+	}
+	if err := validateSingleCAPEM([]byte(testPEMCert(t, false))); err == nil || !strings.Contains(err.Error(), "not a CA") {
+		t.Fatalf("non-CA err: %v", err)
+	}
+	if err := validateSingleCAPEM([]byte("-----BEGIN PIPELOCK TEST BLOCK-----\nAA==\n-----END PIPELOCK TEST BLOCK-----\n")); err == nil || !strings.Contains(err.Error(), "unexpected PEM") {
+		t.Fatalf("wrong block err: %v", err)
 	}
 }
 

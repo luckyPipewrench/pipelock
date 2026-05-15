@@ -233,20 +233,75 @@ func sha256HexOfFile(path string) (string, error) {
 //
 // If path doesn't exist, no .bak is created; the new file is written as-is.
 func backupAndWrite(env *installEnv, path string, contents []byte, mode os.FileMode) error {
-	if _, err := env.stat(path); err == nil {
-		bak := path + ".bak"
-		if _, err := env.stat(bak); err == nil {
+	clean := filepath.Clean(path)
+	if err := ensureSafeWriteTarget(env, clean); err != nil {
+		return err
+	}
+	if _, err := env.lstat(clean); err == nil {
+		bak := clean + ".bak"
+		if info, err := env.lstat(bak); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to overwrite symlink backup %s", bak)
+			}
 			return fmt.Errorf("refusing to overwrite existing backup %s; resolve manually before re-running install", bak)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("stat %s: %w", bak, err)
 		}
-		if err := env.rename(path, bak); err != nil {
-			return fmt.Errorf("backup %s -> %s: %w", path, bak, err)
+		if err := env.rename(clean, bak); err != nil {
+			return fmt.Errorf("backup %s -> %s: %w", clean, bak, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat %s: %w", path, err)
+		return fmt.Errorf("stat %s: %w", clean, err)
 	}
-	return env.writeFile(path, contents, mode)
+	return env.writeFile(clean, contents, mode)
+}
+
+func ensureSafeWriteTarget(env *installEnv, path string) error {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return fmt.Errorf("%s is not an absolute path", clean)
+	}
+	if err := ensureSafeDirectory(env, filepath.Dir(clean)); err != nil {
+		return err
+	}
+	info, err := env.lstat(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", clean, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing privileged write", clean)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", clean)
+	}
+	return nil
+}
+
+func ensureSafeDirectory(env *installEnv, path string) error {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		return fmt.Errorf("%s is not an absolute path", clean)
+	}
+	if err := rejectSymlinkParents(env, clean); err != nil {
+		return err
+	}
+	info, err := env.lstat(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", clean, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refusing privileged write", clean)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s exists and is not a directory", clean)
+	}
+	return nil
 }
 
 // restoreBackup is the inverse of backupAndWrite, used by undo functions.

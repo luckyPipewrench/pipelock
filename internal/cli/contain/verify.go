@@ -249,7 +249,10 @@ func probeListedToolTargets(_ context.Context, env *probeEnv) (string, string) {
 		}
 		return statusFail, fmt.Sprintf("read %s: %v", env.toolsListPath, err)
 	}
-	entries := parseToolsList(data)
+	entries, err := parseToolsList(data)
+	if err != nil {
+		return statusFail, fmt.Sprintf("parse %s: %v", env.toolsListPath, err)
+	}
 	if len(entries) == 0 {
 		return statusFail, fmt.Sprintf("%s has no tool entries", env.toolsListPath)
 	}

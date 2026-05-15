@@ -410,7 +410,7 @@ func TestStepExportPipelockCA_ExportsViaSudo(t *testing.T) {
 		runner.calls = append(runner.calls, fakeCall{name: name, args: append([]string(nil), args...)})
 		runner.mu.Unlock()
 		if name == testSudoCmd && containsArg(args, "show-ca") {
-			return testPEMCA, 0, nil
+			return testPEMCA(t), 0, nil
 		}
 		return "", 0, nil
 	}

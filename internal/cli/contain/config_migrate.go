@@ -457,6 +457,13 @@ func copyConfigDir(ctx *configMigrationContext, src, dest string) error {
 		if err != nil {
 			return fmt.Errorf("read %s: %w", path, err)
 		}
+		after, err := ctx.env.lstat(path)
+		if err != nil {
+			return fmt.Errorf("stat source %s after read: %w", path, err)
+		}
+		if !os.SameFile(info, after) || !after.Mode().IsRegular() {
+			return fmt.Errorf("source %s changed during migration; retry after quiescing config writes", path)
+		}
 		if wrote, err := backupAndWriteIfChanged(ctx.env, target, data, modeConfigSecret); err != nil {
 			return err
 		} else if wrote {

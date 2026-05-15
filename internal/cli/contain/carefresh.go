@@ -4,11 +4,14 @@
 package contain
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -77,6 +80,12 @@ func runCARefresh(ctx context.Context, env *installEnv, opts caRefreshOpts) erro
 	if systemBundle == "" {
 		systemBundle = defaultSystemCABundle
 	}
+	systemBundle = filepath.Clean(systemBundle)
+	env.caExportPath = filepath.Clean(env.caExportPath)
+	env.caBundlePath = filepath.Clean(env.caBundlePath)
+	if err := validateCARefreshPaths(env, systemBundle); err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
+	}
 
 	if opts.dryRun {
 		_, _ = fmt.Fprintln(env.out, "pipelock contain ca-refresh — planned:")
@@ -95,6 +104,32 @@ func runCARefresh(ctx context.Context, env *installEnv, opts caRefreshOpts) erro
 	return nil
 }
 
+func validateCARefreshPaths(env *installEnv, systemBundle string) error {
+	if !filepath.IsAbs(systemBundle) {
+		return fmt.Errorf("--system-bundle %q must be absolute", systemBundle)
+	}
+	if info, err := env.stat(systemBundle); err != nil {
+		return fmt.Errorf("--system-bundle %q: %w", systemBundle, err)
+	} else if info.IsDir() {
+		return fmt.Errorf("--system-bundle %q is a directory", systemBundle)
+	}
+	for flag, path := range map[string]string{
+		"--ca-output":     env.caExportPath,
+		"--bundle-output": env.caBundlePath,
+	} {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("%s %q must be absolute", flag, path)
+		}
+		if !pathWithin(env.configDir, path) {
+			return fmt.Errorf("%s %q must stay under %s", flag, path, env.configDir)
+		}
+		if err := ensureSafeWriteTarget(env, path); err != nil {
+			return fmt.Errorf("%s %q: %w", flag, path, err)
+		}
+	}
+	return nil
+}
+
 // exportPipelockCA writes pipelock-proxy's TLS-MITM CA to env.caExportPath.
 //
 // pipelock stores the CA under each user's $HOME/.pipelock/ — on a fresh
@@ -108,6 +143,9 @@ func runCARefresh(ctx context.Context, env *installEnv, opts caRefreshOpts) erro
 // written to disk. There is no --output flag on the underlying CLI; the
 // runbook's `--output` reference was speculative and never shipped.
 func exportPipelockCA(ctx context.Context, env *installEnv) error {
+	if err := ensureSafeWriteTarget(env, env.caExportPath); err != nil {
+		return fmt.Errorf("validate CA export path %s: %w", env.caExportPath, err)
+	}
 	// Drop any stale on-disk export so a partial write can't fool the
 	// combined-bundle step into reading old bytes.
 	_ = env.removeFile(env.caExportPath)
@@ -125,24 +163,45 @@ func exportPipelockCA(ctx context.Context, env *installEnv) error {
 			env.pipelockTarget, "tls", "init",
 		)
 		if initErr != nil {
-			return fmt.Errorf("exec sudo pipelock tls init: %w (out: %s)", initErr, truncateForErr(initOut))
+			return fmt.Errorf("exec sudo pipelock tls init: %w (captured %d bytes of output)", initErr, len(initOut))
 		}
 		if initCode != 0 {
-			return fmt.Errorf("pipelock tls init exited %d: %s", initCode, truncateForErr(initOut))
+			return fmt.Errorf("pipelock tls init exited %d (captured %d bytes of output)", initCode, len(initOut))
 		}
 		out, code, err = runShowCA(ctx, env)
 		if err != nil {
 			return err
 		}
 		if code != 0 {
-			return fmt.Errorf("pipelock tls show-ca after init exited %d: %s", code, truncateForErr(out))
+			return fmt.Errorf("pipelock tls show-ca after init exited %d (captured %d bytes of output)", code, len(out))
 		}
 	}
 
-	if !strings.Contains(out, "-----BEGIN CERTIFICATE-----") {
-		return fmt.Errorf("pipelock tls show-ca returned non-PEM output: %s", truncateForErr(out))
+	if err := validateSingleCAPEM([]byte(out)); err != nil {
+		return fmt.Errorf("pipelock tls show-ca returned invalid CA PEM: %w", err)
 	}
 	return env.writeFile(env.caExportPath, []byte(out), modeCAReadable)
+}
+
+func validateSingleCAPEM(data []byte) error {
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return errors.New("no PEM certificate block")
+	}
+	if block.Type != "CERTIFICATE" {
+		return fmt.Errorf("unexpected PEM block type %q", block.Type)
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return errors.New("extra data after certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return fmt.Errorf("parse certificate: %w", err)
+	}
+	if !cert.IsCA {
+		return errors.New("certificate is not a CA")
+	}
+	return nil
 }
 
 // runShowCA shells out to `sudo -n -u pipelock-proxy pipelock tls show-ca`

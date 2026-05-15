@@ -313,6 +313,31 @@ func TestCopyConfigDirRejectsSymlinkChild(t *testing.T) {
 	}
 }
 
+func TestCopyConfigDirRejectsFileChangedDuringMigration(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	src := filepath.Join(home, "rules")
+	filePath := filepath.Join(src, "bundle.yaml")
+	otherPath := filepath.Join(src, "other.yaml")
+	mustWriteFile(t, filePath, "rules\n")
+	mustWriteFile(t, otherPath, "other\n")
+	origLstat := env.lstat
+	env.lstat = func(path string) (os.FileInfo, error) {
+		if path == filePath {
+			return origLstat(otherPath)
+		}
+		return origLstat(path)
+	}
+	ctx := &configMigrationContext{env: env, operatorHome: home}
+	err := copyConfigDir(ctx, src, filepath.Join(env.configDir, "rules"))
+	if err == nil {
+		t.Fatal("expected changed-file rejection")
+	}
+	if !strings.Contains(err.Error(), "changed during migration") {
+		t.Fatalf("err: %v", err)
+	}
+}
+
 func TestEnsureMigratedDirRejectsSymlinkTarget(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	root := t.TempDir()
@@ -401,6 +426,71 @@ func TestIsDirectoryNotEmpty(t *testing.T) {
 	}
 	if !isDirectoryNotEmpty(&os.PathError{Op: "remove", Path: "/tmp/x", Err: stringError("directory not empty")}) {
 		t.Fatal("expected directory-not-empty message to match")
+	}
+}
+
+func TestResolveMigratablePathVariants(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	home := t.TempDir()
+	ctx := &configMigrationContext{
+		env:          env,
+		configDir:    filepath.Join(home, ".config", "pipelock"),
+		operatorHome: home,
+	}
+	tests := []struct {
+		name string
+		raw  string
+		ok   bool
+		want string
+	}{
+		{name: "tilde home", raw: "~", ok: true, want: home},
+		{name: "tilde child", raw: "~/token", ok: true, want: filepath.Join(home, "token")},
+		{name: "relative config", raw: "license.token", ok: true, want: filepath.Join(ctx.configDir, "license.token")},
+		{name: "outside", raw: "/etc/passwd", ok: false, want: "/etc/passwd"},
+		{name: "unsupported user tilde", raw: "~other/token", ok: false},
+		{name: "empty", raw: "  ", ok: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ctx.resolveMigratablePath(tc.raw)
+			if ok != tc.ok {
+				t.Fatalf("ok=%v want %v (path %q)", ok, tc.ok, got)
+			}
+			if tc.want != "" && got != filepath.Clean(tc.want) {
+				t.Fatalf("path=%q want %q", got, filepath.Clean(tc.want))
+			}
+		})
+	}
+	ctx.operatorHome = ""
+	if _, ok := ctx.resolveMigratablePath("~/token"); ok {
+		t.Fatal("expected no migration when operator home is empty")
+	}
+}
+
+func TestSmallYAMLHelpers(t *testing.T) {
+	root, err := parseSingleYAMLDocument([]byte("enabled: true\nname: old\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	mapping := documentMapping(root)
+	if scalarValue(getMappingPath(mapping, []string{"missing"})) != "" {
+		t.Fatal("missing scalar should be empty")
+	}
+	if !yamlBool(getMappingPath(mapping, []string{"enabled"})) {
+		t.Fatal("enabled should parse true")
+	}
+	if yamlBool(nil) {
+		t.Fatal("nil bool should be false")
+	}
+	setMappingScalar(mapping, "name", "new")
+	setMappingScalar(mapping, "added", "value")
+	out, err := encodeYAML(root)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	text := string(out)
+	if !strings.Contains(text, "name: new") || !strings.Contains(text, "added: value") {
+		t.Fatalf("encoded yaml missing updated fields:\n%s", text)
 	}
 }
 

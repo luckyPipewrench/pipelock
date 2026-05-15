@@ -11,11 +11,11 @@ import (
 func Cmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "contain",
-		Short: "Workstation containment for AI agents",
+		Short: "Host containment for AI coding agents",
 		Long: `Install, verify, and roll back a kernel-enforced containment model
-for AI agents on Fedora workstations.
+for AI coding agents on Linux hosts.
 
-The model splits a single workstation into three system users
+The model splits a single host into three system users
 (operator / pipelock-proxy / pipelock-agent) and uses nftables owner-match
 rules to force every agent process through the Pipelock proxy.
 

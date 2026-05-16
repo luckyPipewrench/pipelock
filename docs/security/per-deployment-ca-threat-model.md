@@ -42,7 +42,7 @@ After regeneration, restart agent processes and MCP wrappers that already loaded
 
 Kubernetes sidecars and other non-contain deployments use separate CA material and must follow their deployment-specific CA rotation runbooks. For custom TLS paths outside the contain-managed layout, remove the existing CA material under the configured TLS path, re-run `pipelock tls init` to generate a fresh root, and then update the relevant trust store by running the commands printed by `pipelock tls install-ca`. The integrator's snapshot orchestration is responsible for invoking the regeneration. Automated snapshot detection is not part of the current binary. Until regeneration runs, treat any snapshot-derived host as carrying a compromised CA: the snapshot's CA key is now reachable from a second running instance, and the integrator cannot tell from outside whether the snapshot was captured before or after a compromise.
 
-The `.prerotate.*` backups are rollback material and include CA private keys. Keep them under the same access controls as the active key and prune them after the rollback window expires, for example by removing `/etc/pipelock/tls/*.prerotate.*` files older than the operator's retention period.
+The `.prerotate.*` backups are rollback material and include CA private keys. Keep them under the same access controls as the active key and prune them after the rollback window expires, for example by removing `.prerotate.*` files from the contain-managed TLS directory once they exceed the operator's retention period.
 
 ## Backup and disaster recovery
 

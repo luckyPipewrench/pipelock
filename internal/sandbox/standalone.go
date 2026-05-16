@@ -12,6 +12,10 @@ import (
 // (with bridge proxy, unlike MCP mode which uses syscall.Exec).
 const standaloneInitEnv = "__PIPELOCK_SANDBOX_STANDALONE"
 
+// sandboxSocketEnv carries the parent Unix socket path used by sandbox
+// bridge mode. The child-side loopback proxy forwards connections there.
+const sandboxSocketEnv = "__PIPELOCK_SANDBOX_SOCKET"
+
 // IsStandaloneInitMode returns true if the current process is a re-exec'd
 // standalone sandbox child.
 func IsStandaloneInitMode() bool {

@@ -23,9 +23,11 @@ type LaunchConfig struct {
 	Strict     bool
 	BestEffort bool
 	ExtraEnv   []string
-	Stdin      io.Reader
-	Stdout     io.Writer
-	Stderr     io.Writer
+	// BridgeSocketPath is Linux-only.
+	BridgeSocketPath string
+	Stdin            io.Reader
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.

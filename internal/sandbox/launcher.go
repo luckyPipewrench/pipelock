@@ -45,6 +45,12 @@ type LaunchConfig struct {
 	// ExtraEnv contains additional KEY=VALUE pairs to pass to the child.
 	ExtraEnv []string
 
+	// BridgeSocketPath enables namespace-to-proxy bridge mode. When set,
+	// sandbox-init keeps a child-side loopback proxy alive, injects
+	// HTTP(S)_PROXY for the wrapped command, and forwards those connections
+	// to this parent Unix socket path.
+	BridgeSocketPath string
+
 	// Stdin, Stdout, Stderr are connected to the child process.
 	Stdin  io.Reader
 	Stdout io.Writer
@@ -114,6 +120,9 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 		initEnvKey + "=1",
 		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
 		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
+	}
+	if cfg.BridgeSocketPath != "" {
+		cmd.Env = append(cmd.Env, sandboxSocketEnv+"="+cfg.BridgeSocketPath)
 	}
 	if cfg.Strict {
 		cmd.Env = append(cmd.Env, strictEnvKey+"=1")

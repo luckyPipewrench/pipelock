@@ -1722,13 +1722,20 @@ If `filesystem` is omitted, the default Landlock policy is used (safe for Python
 
 **Containment layers:**
 - **Landlock LSM:** Restricts filesystem access to declared paths. Allowlist model. Protected directories (`~/.ssh`, `~/.aws`, `~/.kube`, etc.) are denied. Only dirs that exist on the system are checked.
-- **Network namespaces:** Agent runs in an isolated network namespace. All traffic is kernel-forced through pipelock's bridge proxy. Raw socket bypass is impossible. For MCP (stdio), no network is needed.
+- **Network namespaces:** Agent runs in an isolated network namespace. All HTTP/HTTPS traffic is kernel-confined to the namespace and routed through pipelock's bridge proxy. Raw socket direct egress is impossible. MCP stdio servers that act as HTTP bridges receive `HTTP_PROXY`/`HTTPS_PROXY` pointing at the in-namespace bridge, so upstream calls still traverse Pipelock's forward-proxy scanner.
 - **Seccomp BPF:** Syscall allowlist (~130 safe syscalls for Go/Python/Node.js). Blocks ptrace, mount, module loading, kexec (KILL). io_uring returns EPERM (allows runtimes like Node.js 22 to fall back to epoll). Clone flags filtered to prevent namespace escape.
+
+For sandboxed MCP stdio servers on Linux, the bridge enables forward-proxy handling internally even when `forward_proxy.enabled` is false in YAML. This is scoped to the sandbox bridge only and does not expose the normal forward proxy listener.
+
+In `--best-effort` mode (for containers without user-namespace support), the bridge still scans traffic but network enforcement is cooperative: a child process that clears `HTTP_PROXY` / `HTTPS_PROXY` can bypass Pipelock.
 
 **Usage:**
 ```bash
 # Sandbox an MCP server
 pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
+
+# Sandbox a bridge-style MCP server; its outbound HTTP(S) goes through Pipelock
+pipelock mcp proxy --sandbox --config pipelock.yaml -- npx -y @upstash/context7-mcp
 
 # Sandbox a standalone command
 pipelock sandbox --config pipelock.yaml -- python agent.py

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -991,6 +992,24 @@ signed action receipts for MCP decisions.`,
 					if err := mcp.VerifyBinaryIntegrity(serverCmd, &cfg.MCPBinaryIntegrity, cmd.ErrOrStderr()); err != nil {
 						return err
 					}
+				}
+
+				var bridge *mcpSandboxBridge
+				if runtime.GOOS == "linux" {
+					var bridgeErr error
+					bridge, bridgeErr = startMCPSandboxBridge(ctx, cfg, ks, auditLogger, mcpMetrics, receiptEmitter, envEmitter)
+					if bridgeErr != nil {
+						return bridgeErr
+					}
+					defer bridge.Close()
+					launchCfg.BridgeSocketPath = bridge.SocketPath()
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"pipelock: MCP sandbox egress bridge enabled; forward_proxy forced on for sandboxed MCP egress (child loopback -> parent scanner)\n")
+				} else {
+					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+						"pipelock: WARNING: MCP sandbox egress bridge is Linux-only; bridge-style MCP servers on %s may need separate egress controls to ensure upstream HTTP(S) traverses pipelock. "+
+							"Configure the MCP server to use pipelock's forward proxy listener via HTTPS_PROXY and disable any built-in proxy bypass.\n",
+						runtime.GOOS)
 				}
 
 				sandboxCmd, sErr := sandbox.PrepareSandboxCmd(launchCfg)

@@ -164,7 +164,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		standaloneInitEnv + "=1",
 		"__PIPELOCK_SANDBOX_WORKSPACE=" + cfg.Workspace,
 		"__PIPELOCK_SANDBOX_COMMAND=" + strings.Join(cfg.Command, "\x1f"),
-		"__PIPELOCK_SANDBOX_SOCKET=" + socketPath,
+		sandboxSocketEnv + "=" + socketPath,
 	}
 	if cfg.Strict {
 		cmd.Env = append(cmd.Env, strictEnvKey+"=1")

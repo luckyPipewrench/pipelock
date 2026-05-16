@@ -26,7 +26,7 @@ Some tooling does not honour the standard proxy environment variables. Examples 
 
 MCP servers spoken to over a child-process stdio pipe are not on the network. Pipelock's MCP scanning runs through the `pipelock mcp proxy --` wrapper, which executes the MCP server as a subprocess and inspects messages on the JSON-RPC boundary. An MCP server invoked directly by the agent host, without the wrapper, is not inspected.
 
-**Integrator action.** Every MCP server invocation must run through `pipelock mcp proxy -- COMMAND ARGS`. The `pipelock claude install`, `pipelock cursor install`, and `pipelock jetbrains install` subcommands rewrite first-party agent host configuration to insert the wrapper. For agent hosts that are not first-party, the operator inserts the wrapper by editing the host configuration directly.
+**Integrator action.** Every MCP server invocation must run through `pipelock mcp proxy -- COMMAND ARGS`. The `pipelock claude install`, `pipelock cursor install`, and `pipelock jetbrains install` subcommands rewrite first-party agent host configuration to insert the wrapper. For agent hosts that are not first-party, the operator inserts the wrapper by editing the host configuration directly. When `--sandbox` is enabled for a wrapped stdio server on Linux, bridge-style MCP servers that make their own HTTP(S) upstream calls are routed through Pipelock's in-namespace bridge and parent forward-proxy scanner.
 
 ## UDP and direct DNS egress
 

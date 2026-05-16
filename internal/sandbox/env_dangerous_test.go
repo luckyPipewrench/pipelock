@@ -22,6 +22,9 @@ func TestIsDangerousEnvKey(t *testing.T) {
 		{name: "BASH_ENV", key: "BASH_ENV", want: true},
 		{name: "ENV", key: "ENV", want: true},
 		{name: "CDPATH", key: "CDPATH", want: true},
+		{name: "HTTP_PROXY", key: "HTTP_PROXY", want: true},
+		{name: "mixed-case proxy", key: "Http_Proxy", want: true},
+		{name: "NO_PROXY", key: "NO_PROXY", want: true},
 
 		// Safe keys that should NOT be flagged.
 		{name: "PATH is safe", key: "PATH", want: false},
@@ -33,7 +36,7 @@ func TestIsDangerousEnvKey(t *testing.T) {
 		{name: "empty string is safe", key: "", want: false},
 		{name: "OPENAI_API_KEY is safe", key: "OPENAI_API_KEY", want: false},
 
-		// Case sensitivity: map keys are exact match.
+		// Non-proxy injection keys are exact match.
 		{name: "lowercase ld_preload is safe", key: "ld_preload", want: false},
 		{name: "mixed case Node_Options is safe", key: "Node_Options", want: false},
 	}

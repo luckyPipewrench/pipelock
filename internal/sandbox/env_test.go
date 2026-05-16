@@ -222,6 +222,43 @@ func TestSyntheticEnv_AllowsSafeExtraEnv(t *testing.T) {
 	}
 }
 
+func TestAppendBridgeProxyEnvRemovesExistingProxyVars(t *testing.T) {
+	env := []string{
+		"HTTP_PROXY=http://attacker",
+		"Http_Proxy=http://attacker",
+		"HTTPS_proxy=http://attacker",
+		"https_proxy=http://attacker",
+		"ALL_PROXY=socks5://attacker",
+		"NO_proxy=*",
+		"CUSTOM_PROXY=http://attacker",
+		"SAFE=value",
+	}
+
+	got := appendBridgeProxyEnv(env, "127.0.0.1:8888")
+
+	if envValue(got, "HTTP_PROXY") != "http://127.0.0.1:8888" {
+		t.Fatalf("HTTP_PROXY = %q", envValue(got, "HTTP_PROXY"))
+	}
+	if envValue(got, "https_proxy") != "http://127.0.0.1:8888" {
+		t.Fatalf("https_proxy = %q", envValue(got, "https_proxy"))
+	}
+	if envValue(got, "ALL_PROXY") != "" {
+		t.Fatalf("ALL_PROXY should be removed, got %q", envValue(got, "ALL_PROXY"))
+	}
+	if envValue(got, "NO_proxy") != "" {
+		t.Fatalf("NO_proxy should be removed, got %q", envValue(got, "NO_proxy"))
+	}
+	if envValue(got, "Http_Proxy") != "" {
+		t.Fatalf("Http_Proxy should be removed, got %q", envValue(got, "Http_Proxy"))
+	}
+	if envValue(got, "CUSTOM_PROXY") != "" {
+		t.Fatalf("CUSTOM_PROXY should be removed, got %q", envValue(got, "CUSTOM_PROXY"))
+	}
+	if envValue(got, "SAFE") != "value" {
+		t.Fatalf("SAFE = %q", envValue(got, "SAFE"))
+	}
+}
+
 // envValue extracts the value of a key from an env slice.
 func envValue(env []string, key string) string {
 	prefix := key + "="

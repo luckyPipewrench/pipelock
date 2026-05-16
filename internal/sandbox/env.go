@@ -27,7 +27,11 @@ var safePassthroughKeys = []string{
 // injecting code before the agent process starts.
 // IsDangerousEnvKey returns true if the key could subvert sandbox containment.
 func IsDangerousEnvKey(key string) bool {
-	return dangerousEnvKeys[key]
+	if dangerousEnvKeys[key] {
+		return true
+	}
+	upper := strings.ToUpper(key)
+	return strings.HasSuffix(upper, "_PROXY")
 }
 
 var dangerousEnvKeys = map[string]bool{

@@ -28,7 +28,7 @@ import (
 func RunStandaloneInit() {
 	workspace := os.Getenv("__PIPELOCK_SANDBOX_WORKSPACE")
 	commandStr := os.Getenv("__PIPELOCK_SANDBOX_COMMAND")
-	socketPath := os.Getenv("__PIPELOCK_SANDBOX_SOCKET")
+	socketPath := os.Getenv(sandboxSocketEnv)
 	extraEnvStr := os.Getenv("__PIPELOCK_SANDBOX_EXTRA_ENV")
 
 	if workspace == "" || commandStr == "" || socketPath == "" {
@@ -68,6 +68,12 @@ func RunStandaloneInit() {
 	policy.AllowRWDirs = append(policy.AllowRWDirs, sandboxDir)
 	// The socket's parent dir must be accessible for the bridge proxy.
 	if socketPath != "" {
+		// Bridge mode grants RW to a fresh 0o700 per-invocation dir so the
+		// child can connect to proxy.sock. The parent owns the bound socket
+		// inode for this session and removes the whole dir on teardown.
+		// A malicious child can create files in the dir, but the parent never
+		// reopens proxy.sock after binding it, so replacement affects no future
+		// parent listener and dies with the per-invocation directory.
 		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Dir(socketPath))
 	}
 	llStatus, llErr := ApplyLandlock(policy)
@@ -151,19 +157,13 @@ func RunStandaloneInit() {
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 
 	// Add HTTP_PROXY/HTTPS_PROXY to agent's environment.
-	proxyURL := "http://" + bridge.Addr()
-	env = append(env,
-		"HTTP_PROXY="+proxyURL,
-		"HTTPS_PROXY="+proxyURL,
-		"http_proxy="+proxyURL,
-		"https_proxy="+proxyURL,
-	)
+	env = appendBridgeProxyEnv(env, bridge.Addr())
 
 	// Clean sandbox env vars.
 	for _, key := range []string{
 		standaloneInitEnv, initEnvKey,
 		"__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
-		"__PIPELOCK_SANDBOX_SOCKET", "__PIPELOCK_SANDBOX_EXTRA_ENV",
+		sandboxSocketEnv, "__PIPELOCK_SANDBOX_EXTRA_ENV",
 		"__PIPELOCK_SANDBOX_POLICY", noNetNSEnvKey,
 	} {
 		env = removeEnvKey(env, key)

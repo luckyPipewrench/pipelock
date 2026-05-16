@@ -32,10 +32,11 @@ type LaunchConfig struct {
 	// no effect on macOS (sandbox-exec doesn't use namespaces).
 	BestEffort bool
 
-	ExtraEnv []string
-	Stdin    io.Reader
-	Stdout   io.Writer
-	Stderr   io.Writer
+	ExtraEnv         []string
+	BridgeSocketPath string // Linux-only; ignored by sandbox-exec.
+	Stdin            io.Reader
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 // StandaloneLaunchConfig configures the standalone sandbox launcher.

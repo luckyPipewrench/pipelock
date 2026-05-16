@@ -11,8 +11,13 @@
 package sandbox
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 )
@@ -24,6 +29,7 @@ func RunInit() {
 	workspace := os.Getenv("__PIPELOCK_SANDBOX_WORKSPACE")
 	commandStr := os.Getenv("__PIPELOCK_SANDBOX_COMMAND")
 	extraEnvStr := os.Getenv("__PIPELOCK_SANDBOX_EXTRA_ENV")
+	socketPath := os.Getenv(sandboxSocketEnv)
 
 	if workspace == "" || commandStr == "" {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] missing workspace or command env vars\n")
@@ -66,6 +72,15 @@ func RunInit() {
 	// this prevents cross-sandbox data leakage via temp files.
 	policy := resolvePolicy(workspace)
 	policy.AllowRWDirs = append(policy.AllowRWDirs, sandboxDir)
+	if socketPath != "" {
+		// Bridge mode grants RW to a fresh 0o700 per-invocation dir so the
+		// child can connect to proxy.sock. The parent owns the bound socket
+		// inode for this session and removes the whole dir on teardown.
+		// A malicious child can create files in the dir, but the parent never
+		// reopens proxy.sock after binding it, so replacement affects no future
+		// parent listener and dies with the per-invocation directory.
+		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Dir(socketPath))
+	}
 	llStatus, llErr := ApplyLandlock(policy)
 	reportLayer(os.Stderr, llStatus, llErr)
 
@@ -103,6 +118,14 @@ func RunInit() {
 				"For kernel-enforced isolation, run under a user namespace (CLONE_NEWUSER) or use the companion-proxy topology from `pipelock init sidecar`.\n")
 	} else {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] network: ACTIVE (isolated namespace)\n")
+		if socketPath != "" {
+			// MCP stdio servers only need loopback when the bridge is wired.
+			// Keeping it down otherwise preserves the empty-netns posture.
+			if err := bringUpLoopback(); err != nil {
+				_, _ = fmt.Fprintf(os.Stderr, "[sandbox] loopback: %v\n", err)
+				os.Exit(1)
+			}
+		}
 	}
 
 	// Report summary.
@@ -119,11 +142,16 @@ func RunInit() {
 		os.Exit(1)
 	}
 
+	if socketPath != "" {
+		runInitWithBridge(command, env, workspace, socketPath)
+		return
+	}
+
 	// Clear sandbox env vars.
 	for _, key := range []string{
 		initEnvKey, "__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
 		"__PIPELOCK_SANDBOX_EXTRA_ENV", "__PIPELOCK_SANDBOX_POLICY",
-		noNetNSEnvKey,
+		sandboxSocketEnv, noNetNSEnvKey,
 	} {
 		env = removeEnvKey(env, key)
 	}
@@ -143,4 +171,81 @@ func RunInit() {
 	err = syscall.Exec(binary, command, env) //nolint:gosec // G204: intentional exec of user-specified command
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] exec failed: %v\n", err)
 	os.Exit(1)
+}
+
+func runInitWithBridge(command, env []string, workspace, socketPath string) {
+	noNetNS := IsNoNetNS()
+	bridgeAddr := ""
+	if noNetNS {
+		bridgeAddr = "127.0.0.1:0"
+	}
+	bridge, err := NewBridgeProxy(socketPath, bridgeAddr)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	go bridge.Serve(ctx)
+	defer bridge.Close()
+
+	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
+
+	env = appendBridgeProxyEnv(env, bridge.Addr())
+
+	for _, key := range []string{
+		initEnvKey, "__PIPELOCK_SANDBOX_WORKSPACE", "__PIPELOCK_SANDBOX_COMMAND",
+		"__PIPELOCK_SANDBOX_EXTRA_ENV", "__PIPELOCK_SANDBOX_POLICY",
+		sandboxSocketEnv, noNetNSEnvKey,
+	} {
+		env = removeEnvKey(env, key)
+	}
+
+	binary, err := lookPathIn(command[0], env)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
+		os.Exit(127)
+	}
+
+	childCmd := exec.CommandContext(ctx, binary, command[1:]...) //nolint:gosec // G204: user-specified MCP server command
+	childCmd.Stdin = os.Stdin
+	childCmd.Stdout = os.Stdout
+	childCmd.Stderr = os.Stderr
+	childCmd.Env = env
+	childCmd.Dir = workspace
+
+	if err := childCmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.ExitCode())
+		}
+		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func appendBridgeProxyEnv(env []string, addr string) []string {
+	env = removeProxyEnvKeys(env)
+	// addr comes from BridgeProxy.Addr(), so it is a listener-backed host:port.
+	proxyURL := "http://" + addr
+	return append(env,
+		"HTTP_PROXY="+proxyURL,
+		"HTTPS_PROXY="+proxyURL,
+		"http_proxy="+proxyURL,
+		"https_proxy="+proxyURL,
+	)
+}
+
+func removeProxyEnvKeys(env []string) []string {
+	result := make([]string, 0, len(env))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && strings.HasSuffix(strings.ToUpper(key), "_PROXY") {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return result
 }

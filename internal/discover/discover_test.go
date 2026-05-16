@@ -107,7 +107,7 @@ func TestConfigPathsContainExpectedClients(t *testing.T) {
 		clients[p.Client] = true
 	}
 
-	expected := []string{"claude-code", "claude-desktop", "cursor", "vscode", "cline", "continue", "junie"}
+	expected := []string{"claude-code", "claude-desktop", "cursor", "vscode", "cline", "continue", "junie", "zed", "zed-preview", "zed-flatpak", "zed-preview-flatpak"}
 	for _, c := range expected {
 		if !clients[c] {
 			t.Errorf("missing expected client %q", c)
@@ -231,6 +231,98 @@ func TestDiscoverMultipleClients(t *testing.T) {
 	}
 	if report.Summary.TotalServers != 2 {
 		t.Errorf("total_servers = %d, want 2", report.Summary.TotalServers)
+	}
+}
+
+// TestDiscoverFindsZedAllChannels covers every Zed config path that
+// discover knows about: native stable, native preview, Flatpak stable,
+// and Flatpak preview. Each channel uses the `context_servers` top-level
+// key (not `mcpServers`), and discover must enumerate servers from all
+// four so an operator running multiple channels gets a complete report.
+func TestDiscoverFindsZedAllChannels(t *testing.T) {
+	home := t.TempDir()
+
+	zedConfig := `{"context_servers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}`
+
+	channels := []struct {
+		name string
+		path string
+	}{
+		{"native stable", filepath.Join(home, ".config", "zed", "settings.json")},
+		{"native preview", filepath.Join(home, ".config", "zed-preview", "settings.json")},
+		{"flatpak stable", filepath.Join(home, ".var", "app", "dev.zed.Zed", "config", "zed", "settings.json")},
+		{"flatpak preview", filepath.Join(home, ".var", "app", "dev.zed.Zed.Preview", "config", "zed-preview", "settings.json")},
+	}
+	for _, ch := range channels {
+		if err := os.MkdirAll(filepath.Dir(ch.path), 0o750); err != nil {
+			t.Fatalf("%s mkdir: %v", ch.name, err)
+		}
+		if err := os.WriteFile(ch.path, []byte(zedConfig), 0o600); err != nil {
+			t.Fatalf("%s write: %v", ch.name, err)
+		}
+	}
+
+	report, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Summary.TotalClients != 4 {
+		t.Errorf("total_clients = %d, want 4 (zed + zed-preview + zed-flatpak + zed-preview-flatpak)", report.Summary.TotalClients)
+	}
+	if report.Summary.TotalServers != 4 {
+		t.Errorf("total_servers = %d, want 4 (one filesystem server per channel)", report.Summary.TotalServers)
+	}
+
+	wantClients := map[string]bool{
+		"zed":                 false,
+		"zed-preview":         false,
+		"zed-flatpak":         false,
+		"zed-preview-flatpak": false,
+	}
+	for _, server := range report.Servers {
+		if _, ok := wantClients[server.Client]; ok {
+			wantClients[server.Client] = true
+		}
+	}
+	for client, found := range wantClients {
+		if !found {
+			t.Errorf("discover did not report client %q", client)
+		}
+	}
+}
+
+// TestDiscoverZedWrappedShowsProtected covers the case where Zed's
+// settings.json carries a pipelock-wrapped context_server entry: discover
+// must classify it as ProtectedPipelock, matching what it does for other
+// IDEs that share the same wrap shape (command=pipelock, args contain mcp
+// and proxy).
+func TestDiscoverZedWrappedShowsProtected(t *testing.T) {
+	home := t.TempDir()
+
+	wrapped := `{"context_servers":{"filesystem":{"type":"stdio","command":"pipelock","args":["mcp","proxy","--config","/etc/pipelock/pipelock.yaml","--","npx","-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}`
+	zedPath := filepath.Join(home, ".config", "zed", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(zedPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zedPath, []byte(wrapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(report.Servers) != 1 {
+		t.Fatalf("expected exactly 1 server, got %d", len(report.Servers))
+	}
+	got := report.Servers[0]
+	if got.Client != "zed" {
+		t.Errorf("client = %q, want zed", got.Client)
+	}
+	if got.Protection != ProtectedPipelock {
+		t.Errorf("protection = %q, want %q", got.Protection, ProtectedPipelock)
 	}
 }
 

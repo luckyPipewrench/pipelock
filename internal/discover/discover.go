@@ -278,10 +278,45 @@ func configPaths(home string) []clientPath {
 			Key:    "mcpServers",
 			Scope:  "user",
 		},
-		// Note: project-local .junie/mcp/mcp.json is not scanned here.
-		// Discover(home) must be deterministic from its inputs. Project-local
-		// scanning requires an explicit project root parameter (future work).
-		// Consistent with VS Code (.vscode/mcp.json also not scanned).
+		// Zed stores config under ~/.config/zed/ on both Linux and macOS
+		// per zed.dev/docs (it does not follow the macOS Application Support
+		// convention). The settings.json top-level key is "context_servers"
+		// rather than "mcpServers" or "servers".
+		{
+			Client: "zed",
+			Path:   filepath.Join(home, ".config", "zed", "settings.json"),
+			Key:    "context_servers",
+			Scope:  "user",
+		},
+		// Zed Preview is a separate binary that ships ahead of stable; its
+		// config dir is "zed-preview" rather than "zed". Users who run both
+		// channels need both wraps detected.
+		{
+			Client: "zed-preview",
+			Path:   filepath.Join(home, ".config", "zed-preview", "settings.json"),
+			Key:    "context_servers",
+			Scope:  "user",
+		},
+		// Flatpak-sandboxed Zed lives under $HOME/.var/app/<app-id>/config/.
+		// Inside the sandbox Zed sees its own XDG_CONFIG_HOME pointing at
+		// that dir, but from outside (where discover runs) the path is fixed.
+		{
+			Client: "zed-flatpak",
+			Path:   filepath.Join(home, ".var", "app", "dev.zed.Zed", "config", "zed", "settings.json"),
+			Key:    "context_servers",
+			Scope:  "user",
+		},
+		{
+			Client: "zed-preview-flatpak",
+			Path:   filepath.Join(home, ".var", "app", "dev.zed.Zed.Preview", "config", "zed-preview", "settings.json"),
+			Key:    "context_servers",
+			Scope:  "user",
+		},
+		// Note: project-local .junie/mcp/mcp.json and project-local
+		// .zed/settings.json are not scanned here. Discover(home) must be
+		// deterministic from its inputs. Project-local scanning requires
+		// an explicit project root parameter (future work). Consistent
+		// with VS Code (.vscode/mcp.json also not scanned).
 	}
 }
 

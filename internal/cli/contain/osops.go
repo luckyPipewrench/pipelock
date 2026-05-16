@@ -59,7 +59,8 @@ type installEnv struct {
 	hashFile func(path string) (string, error)
 
 	// Output sink for human progress lines. cmd.OutOrStdout() in production.
-	out io.Writer
+	out    io.Writer
+	errOut io.Writer
 
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
@@ -111,6 +112,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		selfPath:       os.Executable,
 		hashFile:       sha256HexOfFile,
 		out:            out,
+		errOut:         os.Stderr,
 		operatorUser:   os.Getenv("SUDO_USER"),
 		proxyUserName:  defaultProxyUser,
 		agentUserName:  defaultAgentUser,

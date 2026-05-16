@@ -1234,30 +1234,19 @@ func newInterceptHandler(
 			return
 		}
 
-		// SSE streaming: scan events inline using A2A field-aware scanning
-		// (when the request is A2A) or generic per-event DLP + injection
-		// scanning for any other text/event-stream response (OpenAI,
-		// Anthropic, Kilo Gateway, generic LLM SSE). Clean events flush
-		// immediately; detection terminates in block mode and logs in
-		// warn/exempt mode. Must run before the buffered scan path so
-		// streaming LLM responses are not silently downgraded to a buffered
-		// path.
+		// SSE streaming: activate on Content-Type alone. The dispatcher's
+		// passthrough branches honor each child Enabled flag and keep
+		// chunk-by-chunk flushing when scanning is opted out, so streaming
+		// UX is preserved instead of being downgraded to the buffered
+		// io.ReadAll below. Mirrors the forward proxy fix for transport
+		// parity.
 		//
-		// Defense-in-depth: explicitly reject compressed SSE streams even
-		// though the general compression guard above catches them. This
-		// guarantees the streaming scanner never sees compressed data even
-		// if the code is restructured.
+		// Block-mode detection still terminates the stream. The
+		// compressed-SSE fail-closed below still applies regardless of
+		// scanning state, because pipelock must never forward
+		// inspection-resistant bytes through a security boundary.
 		interceptRespExempt := isResponseScanExempt(r.URL.Hostname(), ic.Config.ResponseScanning.ExemptDomains)
-		// Enforcement gate: an operator who disabled the parent scanner
-		// (A2A or generic response scanning) must NOT see new behavior
-		// from this branch — including the compressed-SSE fail-closed
-		// block. When disabled, fall through to the existing buffered
-		// path so SSE behavior matches the pre-PR semantics.
-		sseScanningEnabled := ic.Config.ResponseScanning.Enabled
-		if isA2A {
-			sseScanningEnabled = ic.Config.A2AScanning.Enabled
-		}
-		if IsSSEContentType(resp.Header.Get("Content-Type")) && sseScanningEnabled {
+		if IsSSEContentType(resp.Header.Get("Content-Type")) {
 			if ic.Scanner.ResponseScanningEnabled() && interceptRespExempt {
 				ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 				ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)

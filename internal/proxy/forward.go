@@ -1546,24 +1546,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportForward)
 	}
 
-	// SSE streaming: scan events inline using A2A field-aware scanning (when
-	// the request is A2A) or generic per-event DLP + injection scanning for
-	// any other text/event-stream response (OpenAI, Anthropic, Kilo Gateway,
-	// generic LLM SSE). Clean events flush immediately; detection terminates
-	// the stream in block mode and logs in warn/exempt mode. Must run before
-	// the buffered response scan path so streaming LLM responses are not
-	// silently downgraded to a buffered 1MB cap.
+	// SSE streaming: activate on Content-Type alone. The dispatcher's
+	// passthrough branches honor each child Enabled flag and keep
+	// chunk-by-chunk flushing when scanning is opted out, so streaming UX
+	// is preserved instead of being silently downgraded to a buffered read
+	// by the MediaPolicy/BrowserShield arms of the OR gate below.
+	// MediaPolicy.IsEnabled() defaults true, so parent-disabled response
+	// scanning still reached the buffered path before this branch became
+	// Content-Type-driven.
 	//
-	// Enforcement gate: an operator who disabled the parent scanner (A2A or
-	// generic response scanning) must NOT see new behavior introduced by
-	// this branch — including the compressed-SSE fail-closed block. When
-	// disabled, fall through to the existing buffered/relay path so SSE
-	// behavior matches the pre-PR semantics for opted-out configs.
-	sseScanningEnabled := cfg.ResponseScanning.Enabled
-	if isA2A {
-		sseScanningEnabled = cfg.A2AScanning.Enabled
-	}
-	if IsSSEContentType(resp.Header.Get("Content-Type")) && sseScanningEnabled {
+	// Block-mode detection still terminates the stream. The compressed-SSE
+	// fail-closed below still applies regardless of scanning state, because
+	// pipelock must never forward inspection-resistant bytes through a
+	// security boundary.
+	if IsSSEContentType(resp.Header.Get("Content-Type")) {
 		sseOpts := SSEDispatchOptions{
 			IsA2A:      isA2A,
 			A2A:        &cfg.A2AScanning,
@@ -1706,7 +1702,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// performance would otherwise stream raw media past the policy and
 	// lose image metadata stripping, audio/video blocks, and exposure
 	// events.
-	if sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled() {
+	//
+	// SSE responses are excluded: the streaming branch above is the
+	// authoritative path for text/event-stream, and the exclusion here
+	// is defense-in-depth that protects SSE TTFB if future refactors
+	// reorder the blocks. MediaPolicy/BrowserShield have no work to do on
+	// text/event-stream payloads — both target images/audio/video/HTML
+	// content types.
+	if !IsSSEContentType(resp.Header.Get("Content-Type")) &&
+		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
 		// Fail-closed on compressed responses: regex can't match compressed content.
 		if hasNonIdentityEncoding(resp.Header.Get("Content-Encoding")) {
 			p.logger.LogBlocked(actx, "response_scan", "compressed response cannot be scanned")

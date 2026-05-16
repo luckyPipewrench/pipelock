@@ -49,7 +49,7 @@ The cold-start measurement uses three configs that ship in this directory:
 
 All three set `ssrf.ip_allowlist: ["127.0.0.0/8"]` so the harness's localhost mocks are reachable. Real deployments do not exempt 127.0.0.0/8.
 
-**Response scanning is OFF in every bench config.** Pipelock's response scanner reads the full body before forwarding, which converts streaming SSE into a one-shot round trip and breaks the TTFB measurement. Operators running pipelock with `response_scanning.enabled: true` should expect SSE numbers higher than this page reports. The cold-start configs preserve this trade-off so the three numbers are comparable.
+**Response scanning is OFF in every bench config.** The bench's SSE mock emits content-free events, so the bench keeps scanning off to avoid measuring scanner work that has nothing meaningful to scan. SSE TTFB is streaming-path latency in either state: the activation gate is driven by `Content-Type: text/event-stream` alone, and the per-event scanner uses the same chunked-flush dispatcher when scanning is on. Operators who turn response scanning on for real LLM SSE should expect a small per-event scan cost on top of these numbers, not the buffered-body downgrade pre-v2.5 builds exhibited.
 
 ## JSON schema
 

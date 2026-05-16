@@ -529,9 +529,14 @@ func (ct *ContextTracker) touchOrderLocked(id string) {
 // - Compressed responses must be rejected BEFORE calling this function.
 func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher http.Flusher, sc *scanner.Scanner, cfg *config.A2AScanning) error {
 	if cfg == nil || !cfg.Enabled {
-		// A2A scanning disabled — pass through raw.
-		_, err := io.Copy(w, body)
-		return err
+		// A2A scanning disabled: share the generic-SSE chunked
+		// passthrough so per-read flushing preserves SSE TTFB. After the
+		// SSE-streaming activation gate was decoupled from
+		// response_scanning.enabled, this branch is now reachable for
+		// disabled-A2A SSE responses; bare io.Copy would let the server's
+		// bufio.Writer batch chunks and reintroduce the TTFB stall the
+		// decoupling was meant to fix.
+		return passthroughSSE(ctx, body, w, flusher)
 	}
 
 	reader := transport.NewSSEReader(body)

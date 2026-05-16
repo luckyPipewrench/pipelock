@@ -120,7 +120,7 @@ func ScanGenericSSEStreamWithOptions(
 	opts GenericSSEScanOptions,
 ) error {
 	if cfg == nil || !cfg.Enabled {
-		return passthroughGenericSSE(ctx, body, w, flusher)
+		return passthroughSSE(ctx, body, w, flusher)
 	}
 
 	maxEventBytes := cfg.MaxEventBytes
@@ -270,10 +270,14 @@ func ScanGenericSSEStreamWithOptions(
 	}
 }
 
-// passthroughGenericSSE forwards body to w in small chunks, flushing
-// after every successful read so the client sees bytes as soon as they
-// arrive even when scanning is opt-out.
-func passthroughGenericSSE(ctx context.Context, body io.Reader, w io.Writer, flusher http.Flusher) error {
+// passthroughSSE forwards body to w in small chunks, flushing after
+// every successful read so the client sees bytes as soon as they arrive
+// even when scanning is opt-out. Used by both the generic-SSE and A2A
+// disabled-mode branches so SSE TTFB stays in microseconds whenever an
+// operator turns scanning off. Bare io.Copy here would batch in the
+// server's bufio.Writer until the chunk threshold trips and break the
+// "still stream when SSE scanning is off" contract.
+func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher http.Flusher) error {
 	buf := make([]byte, passthroughChunkSize)
 	for {
 		select {

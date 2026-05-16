@@ -2,11 +2,12 @@
 #
 # Balanced mode with the shipped default DLP patterns. Represents what most
 # operators run. Forward + websocket proxies enabled. Response scanning is
-# OFF in the bench because pipelock's response scanner reads the body fully
-# before forwarding, which converts SSE into a non-streaming round trip and
-# breaks the time-to-first-byte measurement. Operators running pipelock with
-# response_scanning enabled should expect SSE numbers higher than this page
-# reports.
+# OFF here because the bench's mock backend emits content-free events;
+# turning scanning on adds noise without measuring anything useful. SSE
+# TTFB stays in single-digit milliseconds proxied regardless of scanner
+# state. The activation gate is driven by Content-Type, not by
+# response_scanning.enabled, so the scanner-on path uses the same
+# per-event flushing dispatcher.
 
 version: 1
 mode: balanced

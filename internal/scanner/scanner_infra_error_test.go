@@ -94,8 +94,18 @@ func TestScanURL_DNSFailure_ClassifiedAsInfrastructureError(t *testing.T) {
 	if !result.IsInfrastructureError() {
 		t.Errorf("DNS failure must be classified as ClassInfrastructureError; got class=%d reason=%q", result.Class, result.Reason)
 	}
-	if result.DNSErrorKind != DNSErrorNoSuchHost {
-		t.Errorf("DNS failure kind = %q, want %q", result.DNSErrorKind, DNSErrorNoSuchHost)
+	// Live resolver integration: a healthy resolver returns NXDOMAIN on
+	// .invalid, but a degraded CI resolver can legitimately surface
+	// timeout or resolver_error for the same request. Per-kind
+	// classification is pinned by the synthetic *net.DNSError table in
+	// dns_error_test.go; here we only assert that the kind landed on one
+	// of the valid infra subtypes so the test is not flaky on CI runners
+	// with unreliable DNS.
+	switch result.DNSErrorKind {
+	case DNSErrorNoSuchHost, DNSErrorTimeout, DNSErrorResolver:
+		// expected on the SSRF DNS failure path
+	default:
+		t.Errorf("DNS failure kind = %q, want one of (no_such_host, timeout, resolver_error)", result.DNSErrorKind)
 	}
 	if !result.IsAdaptiveNeutral() {
 		t.Error("ClassInfrastructureError must return IsAdaptiveNeutral()=true")

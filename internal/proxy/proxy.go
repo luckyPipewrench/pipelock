@@ -124,6 +124,7 @@ const (
 	browserShieldPattern           = "browser_shield_rewrite"
 	browserShieldSeverity          = config.SeverityInfo
 	browserShieldAdaptiveSignalCap = 1
+	shieldReceiptRedacted          = "__redacted__"
 )
 
 var (
@@ -2309,10 +2310,34 @@ func shieldReceiptTarget(target string) string {
 	if target == "" {
 		return target
 	}
-	u, err := url.Parse(target)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return target
+	if !strings.ContainsAny(target, "/?#") {
+		host, port, err := net.SplitHostPort(target)
+		if err == nil && host != "" {
+			if strings.Contains(host, "@") {
+				return shieldReceiptRedacted
+			}
+			return net.JoinHostPort(host, port)
+		}
 	}
+	u, err := url.Parse(target)
+	if err == nil && u.Host != "" {
+		return shieldReceiptURL(u)
+	}
+	if err == nil && u.Scheme == "" {
+		if strings.Contains(u.Path, "@") {
+			return shieldReceiptRedacted
+		}
+		path := shieldReceiptPath(u.Path)
+		if path == "" {
+			return shieldReceiptRedacted
+		}
+		return path
+	}
+
+	return shieldReceiptRedacted
+}
+
+func shieldReceiptURL(u *url.URL) string {
 	u.User = nil
 	u.RawQuery = ""
 	u.Fragment = ""

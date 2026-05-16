@@ -1217,6 +1217,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 						Method:         resp.Request.Method,
 						Target:         shieldReceiptTarget(resp.Request.URL.String()),
 						RequestID:      requestID,
+						Agent:          agent,
 					})
 				}
 			}
@@ -1224,8 +1225,8 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 	if shieldChanged {
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-		resp.Header.Del("Etag")
-		resp.Header.Del("Content-Md5")
+		resp.Header.Del("ETag")
+		resp.Header.Del("Content-MD5")
 		resp.Header.Del("Digest")
 	}
 

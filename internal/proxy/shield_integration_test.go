@@ -499,6 +499,31 @@ func TestShieldReceiptTargetDropsURLSecrets(t *testing.T) {
 			in:   "https://example.com/artifacts/0123456789abcdef0123456789abcdef/download",
 			want: "https://example.com/artifacts/__redacted_token__/download",
 		},
+		{
+			name: "network path reference",
+			in:   "//user:" + "s3cret" + "@example.com/page;jsessionid=ABCDEF?access_token=secret#id_token=secret",
+			want: "//example.com/page;jsessionid=__redacted__",
+		},
+		{
+			name: "relative target drops query and scrubs path",
+			in:   "example.com/page;jsessionid=ABCDEF?access_token=secret#id_token=secret",
+			want: "example.com/page;jsessionid=__redacted__",
+		},
+		{
+			name: "authority form without userinfo",
+			in:   "example.com:443",
+			want: "example.com:443",
+		},
+		{
+			name: "authority form with userinfo",
+			in:   "user:" + "s3cret" + "@example.com:443",
+			want: "__redacted__",
+		},
+		{
+			name: "malformed absolute url",
+			in:   "https://[::1",
+			want: "__redacted__",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

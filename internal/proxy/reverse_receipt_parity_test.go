@@ -84,6 +84,9 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 	cfg.BrowserShield.StripExtensionProbing = true
 	upstream := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("ETag", `"upstream-etag"`)
+		w.Header().Set("Digest", "sha-256=upstream")
+		w.Header().Set("Content-MD5", "upstream-md5")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`))
 	}
@@ -93,6 +96,7 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
+	req.Header.Set(AgentHeader, "reverse-agent")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -100,6 +104,11 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for shielded reverse response, got %d", resp.StatusCode)
+	}
+	for _, name := range []string{"ETag", "Digest", "Content-MD5"} {
+		if got := resp.Header.Get(name); got != "" {
+			t.Fatalf("%s survived reverse shield rewrite: %q", name, got)
+		}
 	}
 
 	waitForReceiptOrTimeout(t, dir)
@@ -124,6 +133,9 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 	}
 	if r.ActionRecord.Shield.AdaptiveSignalMaxPerBody != browserShieldAdaptiveSignalCap {
 		t.Fatalf("reverse adaptive_signal_max_per_body = %d, want %d", r.ActionRecord.Shield.AdaptiveSignalMaxPerBody, browserShieldAdaptiveSignalCap)
+	}
+	if r.ActionRecord.Actor != "reverse-agent" {
+		t.Fatalf("reverse shield receipt actor = %q, want reverse-agent", r.ActionRecord.Actor)
 	}
 	if strings.Contains(r.ActionRecord.Target, "access_token") || strings.Contains(r.ActionRecord.Target, "secret") {
 		t.Fatalf("reverse shield receipt target was not scrubbed: %q", r.ActionRecord.Target)

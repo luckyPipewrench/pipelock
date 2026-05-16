@@ -32,7 +32,7 @@ func TestPickAttribution(t *testing.T) {
 				ChainPatternName: "tool-bounce",
 				ChainSeverity:    config.SeverityCritical,
 			},
-			wantLayer:    "mcp_chain_detection",
+			wantLayer:    mcpReceiptLayerChain,
 			wantPattern:  "tool-bounce",
 			wantSeverity: config.SeverityCritical,
 		},
@@ -41,7 +41,7 @@ func TestPickAttribution(t *testing.T) {
 			eval: MCPInputEvaluation{
 				PolicyVerdict: policy.Verdict{Matched: true, Rules: []string{"dangerous-shell"}},
 			},
-			wantLayer:    "mcp_tool_policy",
+			wantLayer:    mcpReceiptLayerPolicy,
 			wantPattern:  "dangerous-shell",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -50,7 +50,7 @@ func TestPickAttribution(t *testing.T) {
 			eval: MCPInputEvaluation{
 				BindingReason: "session_binding:unknown_tool",
 			},
-			wantLayer:    "mcp_session_binding",
+			wantLayer:    mcpReceiptLayerSessionBind,
 			wantPattern:  "session_binding:unknown_tool",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -65,7 +65,7 @@ func TestPickAttribution(t *testing.T) {
 					},
 				},
 			},
-			wantLayer:    "mcp_tool_taint",
+			wantLayer:    mcpReceiptLayerTaint,
 			wantPattern:  "protected_write_after_untrusted_external_exposure",
 			wantSeverity: config.SeverityCritical,
 		},
@@ -80,7 +80,7 @@ func TestPickAttribution(t *testing.T) {
 					}},
 				},
 			},
-			wantLayer:    "mcp_input_scanning",
+			wantLayer:    mcpReceiptLayerInput,
 			wantPattern:  "anthropic-key",
 			wantSeverity: config.SeverityCritical,
 		},
@@ -90,7 +90,7 @@ func TestPickAttribution(t *testing.T) {
 				BlockingGate: blockingGateA2ABody,
 				A2AResult:    A2AScanResult{Reason: "embedded prompt injection"},
 			},
-			wantLayer:    "mcp_a2a_scanning",
+			wantLayer:    mcpReceiptLayerA2A,
 			wantPattern:  "embedded prompt injection",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -100,7 +100,7 @@ func TestPickAttribution(t *testing.T) {
 				BlockingGate: blockingGateDoW,
 				DoWReason:    "budget_exceeded",
 			},
-			wantLayer:    "mcp_denial_of_wallet",
+			wantLayer:    mcpReceiptLayerDoW,
 			wantPattern:  "budget_exceeded",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -110,7 +110,7 @@ func TestPickAttribution(t *testing.T) {
 				BlockingGate:   blockingGateFrozenTool,
 				FrozenToolName: "exec",
 			},
-			wantLayer:    "mcp_tool_inventory",
+			wantLayer:    mcpReceiptLayerToolInventory,
 			wantPattern:  "exec",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -120,7 +120,7 @@ func TestPickAttribution(t *testing.T) {
 				BlockingGate:   blockingGateParseError,
 				ContentVerdict: InputVerdict{Error: "malformed JSON"},
 			},
-			wantLayer:    "mcp_input_scanning",
+			wantLayer:    mcpReceiptLayerInput,
 			wantPattern:  "malformed JSON",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -135,7 +135,7 @@ func TestPickAttribution(t *testing.T) {
 					},
 				},
 			},
-			wantLayer:    "mcp_tool_taint",
+			wantLayer:    mcpReceiptLayerTaint,
 			wantPattern:  "high_risk_pending_approval",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -144,7 +144,7 @@ func TestPickAttribution(t *testing.T) {
 			eval: MCPInputEvaluation{
 				A2AResult: A2AScanResult{Clean: false, Reason: "tool_poisoning"},
 			},
-			wantLayer:    "mcp_a2a_scanning",
+			wantLayer:    mcpReceiptLayerA2A,
 			wantPattern:  "tool_poisoning",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -155,7 +155,7 @@ func TestPickAttribution(t *testing.T) {
 				DoWAllowed: false,
 				DoWReason:  "ratelimit_exceeded",
 			},
-			wantLayer:    "mcp_denial_of_wallet",
+			wantLayer:    mcpReceiptLayerDoW,
 			wantPattern:  "ratelimit_exceeded",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -166,7 +166,7 @@ func TestPickAttribution(t *testing.T) {
 					Inject: []scanner.ResponseMatch{{PatternName: "ignore-previous"}},
 				},
 			},
-			wantLayer:    "mcp_input_scanning",
+			wantLayer:    mcpReceiptLayerInput,
 			wantPattern:  "ignore-previous",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -177,7 +177,7 @@ func TestPickAttribution(t *testing.T) {
 					AddressFindings: []addressprotect.Finding{{Explanation: "swapped_btc_addr"}},
 				},
 			},
-			wantLayer:    "mcp_input_scanning",
+			wantLayer:    mcpReceiptLayerInput,
 			wantPattern:  "address:swapped_btc_addr",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -186,7 +186,7 @@ func TestPickAttribution(t *testing.T) {
 			eval: MCPInputEvaluation{
 				ContentVerdict: InputVerdict{Error: "scan_failed"},
 			},
-			wantLayer:    "mcp_input_scanning",
+			wantLayer:    mcpReceiptLayerInput,
 			wantPattern:  "scan_failed",
 			wantSeverity: config.SeverityHigh,
 		},
@@ -220,7 +220,7 @@ func TestPickAttribution(t *testing.T) {
 func TestRedactionBlockAttribution(t *testing.T) {
 	t.Parallel()
 	layer, pattern, severity := redactionBlockAttribution(&redact.BlockError{Reason: redact.ReasonOverflow})
-	if layer != "mcp_input_redaction" {
+	if layer != mcpReceiptLayerRedaction {
 		t.Fatalf("layer = %q, want mcp_input_redaction", layer)
 	}
 	if pattern != string(redact.ReasonOverflow) {
@@ -245,7 +245,7 @@ func TestEmitMCPToolReceiptIncludesAttribution(t *testing.T) {
 		MCPMethod: methodToolsCall,
 		ToolName:  "shell",
 		Verdict:   config.ActionBlock,
-		Layer:     "mcp_tool_policy",
+		Layer:     mcpReceiptLayerPolicy,
 		Pattern:   "dangerous-shell",
 		Severity:  config.SeverityHigh,
 		Decision: taintDecision{
@@ -262,7 +262,7 @@ func TestEmitMCPToolReceiptIncludesAttribution(t *testing.T) {
 		t.Fatalf("receipts = %d, want 1", len(receipts))
 	}
 	record := receipts[0].ActionRecord
-	if record.Layer != "mcp_tool_policy" {
+	if record.Layer != mcpReceiptLayerPolicy {
 		t.Fatalf("layer = %q, want mcp_tool_policy", record.Layer)
 	}
 	if record.Pattern != "dangerous-shell" {

@@ -18,12 +18,12 @@ import (
 // is scanned bidirectionally by pipelock. Zed's MCP config shape is identical
 // to Cline's (no `type` field; transport inferred from `command` vs `url`),
 // so the install path delegates to wrapClineServer. What is unique is that
-// Zed supports two settings.json locations simultaneously: a user-level file
-// (~/.config/zed/settings.json, honoring $XDG_CONFIG_HOME) and a project-level
-// file (<project>/.zed/settings.json). The installer scans both by default so
-// an operator's project MCP servers and global MCP servers are wrapped in one
-// command. Use --path to operate on a single explicit file (parity with the
-// other installers).
+// Zed supports settings.json in multiple scopes and install channels:
+// project-local, native stable, native Preview, Flatpak stable, and Flatpak
+// Preview. The installer scans all of them by default so an operator's
+// project MCP servers and global MCP servers are wrapped in one command. Use
+// --path to operate on a single explicit file (parity with the other
+// installers).
 
 const (
 	zedConfigFilename       = "settings.json"
@@ -47,9 +47,8 @@ Zed is MCP-native, so install rewrites the settings.json file so that every
 context server runs through pipelock's MCP proxy. All tool calls, responses,
 and descriptions are scanned bidirectionally.
 
-By default install scans both the user-level settings.json
-($XDG_CONFIG_HOME/zed/settings.json or ~/.config/zed/settings.json) and the
-project-level .zed/settings.json in the current directory, wrapping every
+By default install scans project-local, native stable, native Preview,
+Flatpak stable, and Flatpak Preview settings.json locations, wrapping every
 existing file. Use --path to target a single explicit file.
 
 The install subcommand rewrites settings.json to route MCP servers through
@@ -104,7 +103,7 @@ fields in settings.json are preserved.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&path, "path", "", "single settings.json to operate on (default: scan user + project)")
+	cmd.Flags().StringVar(&path, "path", "", "single settings.json to operate on (default: scan project, native, and Flatpak)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "path to pipelock config file for --config passthrough")
 
@@ -133,7 +132,7 @@ specific file.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&path, "path", "", "single settings.json to operate on (default: scan user + project)")
+	cmd.Flags().StringVar(&path, "path", "", "single settings.json to operate on (default: scan project, native, and Flatpak)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be written without modifying files")
 
 	return cmd

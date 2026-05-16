@@ -121,7 +121,7 @@ values never appear in `/proc/<pid>/cmdline`.
 | Direction | What | Scanning |
 |-----------|------|----------|
 | Zed → MCP server | Tool call arguments | DLP (secrets, credentials, env vars), injection patterns |
-| MCP server → Zed | Tool results, descriptions | Prompt injection (19 patterns, 6-pass normalization) |
+| MCP server → Zed | Tool results, descriptions | Prompt injection (default response patterns, 6-pass normalization) |
 | Tool definitions | `tools/list` responses | Poisoned descriptions, schema injection, rug-pull detection |
 | Tool sequences | Multi-call patterns | Chain detection (read-then-exfil, persist-then-callback) |
 

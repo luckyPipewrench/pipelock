@@ -35,6 +35,8 @@ func TestSeverityFor_FullVocabulary(t *testing.T) {
 		// critical
 		blockreason.DomainBlocklist:        blockreason.SeverityCritical,
 		blockreason.SSRFPrivateIP:          blockreason.SeverityCritical,
+		blockreason.SSRFMetadata:           blockreason.SeverityCritical,
+		blockreason.SSRFDNSRebind:          blockreason.SeverityCritical,
 		blockreason.DLPMatch:               blockreason.SeverityCritical,
 		blockreason.PromptInjection:        blockreason.SeverityCritical,
 		blockreason.RedactionFailure:       blockreason.SeverityCritical,

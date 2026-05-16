@@ -1,0 +1,15 @@
+title: Test rule with regex on URL (lands in DLP bucket)
+id: ATR-2026-09002
+status: stable
+detection_tier: pattern
+severity: medium
+tags:
+  category: data-poisoning
+  scan_target: mcp
+  confidence: high
+detection:
+  condition: any
+  conditions:
+    - field: url
+      operator: regex
+      value: "(?i)attacker\\.example\\.com"

@@ -1,0 +1,17 @@
+title: Multi-condition AND rule, skipped because boolean composition is needed
+id: ATR-2026-09005
+status: stable
+detection_tier: pattern
+severity: high
+tags:
+  category: tool-poisoning
+  scan_target: mcp
+detection:
+  condition: all
+  conditions:
+    - field: content
+      operator: regex
+      value: "(?i)token"
+    - field: content
+      operator: regex
+      value: "(?i)leak"

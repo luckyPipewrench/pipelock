@@ -1,0 +1,14 @@
+title: Behavioral rule, skipped because tier is not pattern
+id: ATR-2026-09004
+status: stable
+detection_tier: behavioral
+severity: high
+tags:
+  category: agent-manipulation
+  scan_target: mcp
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: similarity
+      value: "0.9"

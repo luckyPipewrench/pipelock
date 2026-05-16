@@ -1,0 +1,18 @@
+title: Test rule with two regex conditions on content
+id: ATR-2026-09001
+status: stable
+detection_tier: pattern
+severity: high
+tags:
+  category: prompt-injection
+  scan_target: llm
+  confidence: high
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: "(?i)ignore previous instructions"
+    - field: content
+      operator: regex
+      value: "(?i)reveal your system prompt"

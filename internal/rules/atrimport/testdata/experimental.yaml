@@ -1,0 +1,14 @@
+title: Experimental rule, skipped unless opted in
+id: ATR-2026-09003
+status: experimental
+detection_tier: pattern
+severity: high
+tags:
+  category: prompt-injection
+  scan_target: llm
+detection:
+  condition: any
+  conditions:
+    - field: content
+      operator: regex
+      value: "(?i)experimental probe"

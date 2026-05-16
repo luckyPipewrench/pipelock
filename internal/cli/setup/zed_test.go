@@ -1117,8 +1117,14 @@ func TestZedInstall_DefaultEnumeratesAllPathsInHint(t *testing.T) {
 		"/.var/app/dev.zed.Zed/config/zed/settings.json",                 // flatpak stable
 		"/.var/app/dev.zed.Zed.Preview/config/zed-preview/settings.json", // flatpak preview
 	}
+	// Normalize the captured stdout for cross-platform path comparison. The
+	// installer renders paths with the platform's filepath separator, so on
+	// Windows the hint contains backslashes; assertions written against
+	// '/'-separated fragments would false-fail there. Other tests in the
+	// codebase use filepath.ToSlash for the same reason.
+	stdoutSlash := filepath.ToSlash(stdout)
 	for _, s := range wantSubstrings {
-		if !strings.Contains(stdout, s) {
+		if !strings.Contains(stdoutSlash, s) {
 			t.Errorf("friendly hint missing expected path fragment %q\nfull stdout:\n%s", s, stdout)
 		}
 	}
@@ -1145,7 +1151,7 @@ func TestZedDefaultCandidates_OrderingIsStable(t *testing.T) {
 		"/.var/app/dev.zed.Zed.Preview/config/zed-preview/settings.json", // flatpak preview (last)
 	}
 	for i, suf := range wantSuffixes {
-		if !strings.HasSuffix(got[i], suf) {
+		if !strings.HasSuffix(filepath.ToSlash(got[i]), suf) {
 			t.Errorf("candidate[%d] = %q, want suffix %q", i, got[i], suf)
 		}
 	}
@@ -1166,10 +1172,10 @@ func TestZedFlatpakConfigPath_HonorsAppID(t *testing.T) {
 	if stable == preview {
 		t.Errorf("stable and preview flatpak paths must differ, both = %q", stable)
 	}
-	if !strings.Contains(stable, "dev.zed.Zed/config/zed/") {
+	if !strings.Contains(filepath.ToSlash(stable), "dev.zed.Zed/config/zed/") {
 		t.Errorf("stable flatpak path missing expected app id, got %q", stable)
 	}
-	if !strings.Contains(preview, "dev.zed.Zed.Preview/config/zed-preview/") {
+	if !strings.Contains(filepath.ToSlash(preview), "dev.zed.Zed.Preview/config/zed-preview/") {
 		t.Errorf("preview flatpak path missing expected app id, got %q", preview)
 	}
 }

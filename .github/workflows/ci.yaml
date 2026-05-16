@@ -61,6 +61,7 @@ jobs:
             docs/scan-api.md
             docs/guides/deployment-recipes.md
             docs/guides/tls-interception.md
+            docs/guides/zed.md
             examples/demo-readme.sh
             examples/sample-events.jsonl
             examples/quickstart/

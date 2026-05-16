@@ -275,6 +275,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						RequestID: requestID,
 						Layer:     "media_policy",
 						Pattern:   mediaResult.BlockReason,
+						Severity:  config.SeverityHigh,
 					},
 				}); emitErr != nil {
 					_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)
@@ -575,6 +576,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					RequestID: requestID,
 					Layer:     "mcp_response_scan",
 					Pattern:   pattern,
+					Severity:  config.SeverityHigh,
 				},
 			}); emitErr != nil {
 				_, _ = fmt.Fprintf(logW, "pipelock: receipt emission failed: %v\n", emitErr)

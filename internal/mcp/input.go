@@ -281,10 +281,14 @@ func ForwardScannedInput(
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, reason)
 			recordAdaptiveSignal(session.SignalBlock)
 			if pendingActionID != "" && receiptEmitter != nil {
+				layer, pattern, severity := redactionBlockAttribution(redactErr)
 				_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
 					Receipt: receipt.EmitOpts{
 						ActionID:         pendingActionID,
 						Verdict:          config.ActionBlock,
+						Layer:            layer,
+						Pattern:          pattern,
+						Severity:         severity,
 						RedactionProfile: redactionCfg.Profile,
 						Transport:        opts.Transport,
 						Target:           pendingToolCallName,
@@ -420,7 +424,25 @@ func ForwardScannedInput(
 		emitToolReceipt := func(receiptVerdict string, contractGate ...mcpContractGateOutput) {
 			// Delegate to the shared helper so stdio and HTTP/WS emit
 			// tool receipts through the same EmitMCPDecision entry.
-			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, verdict.Method, toolCallName, receiptVerdict, taintDecision, redactionReport, contractGate...)
+			layer, pattern, severity := pickAttribution(eval)
+			receiptOpts := mcpToolReceiptOpts{
+				Emitter:          receiptEmitter,
+				Transport:        opts.Transport,
+				RedactionProfile: redactionCfg.Profile,
+				ActionID:         actionID,
+				MCPMethod:        verdict.Method,
+				ToolName:         toolCallName,
+				Verdict:          receiptVerdict,
+				Layer:            layer,
+				Pattern:          pattern,
+				Severity:         severity,
+				Decision:         taintDecision,
+				Report:           redactionReport,
+			}
+			if len(contractGate) > 0 {
+				receiptOpts.ContractGate = &contractGate[0]
+			}
+			emitMCPToolReceipt(receiptOpts)
 		}
 
 		logTaintDecision := func() {

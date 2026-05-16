@@ -333,13 +333,27 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		Result:    session.PolicyDecisionResult{Decision: session.PolicyAllow, Reason: taintReasonDisabled},
 	}
 	receiptVerdict := ""
+	receiptLayer := ""
+	receiptPattern := ""
+	receiptSeverity := ""
 	var receiptContractGate *mcpContractGateOutput
 	defer func() {
-		if receiptContractGate != nil {
-			emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport, *receiptContractGate)
-			return
+		receiptOpts := mcpToolReceiptOpts{
+			Emitter:          receiptEmitter,
+			Transport:        opts.Transport,
+			RedactionProfile: redactionCfg.Profile,
+			ActionID:         actionID,
+			MCPMethod:        mcpMethod,
+			ToolName:         toolName,
+			Verdict:          receiptVerdict,
+			Layer:            receiptLayer,
+			Pattern:          receiptPattern,
+			Severity:         receiptSeverity,
+			Decision:         taintEval,
+			Report:           redactionReport,
+			ContractGate:     receiptContractGate,
 		}
-		emitMCPToolReceipt(receiptEmitter, opts.Transport, redactionCfg.Profile, actionID, mcpMethod, toolName, receiptVerdict, taintEval, redactionReport)
+		emitMCPToolReceipt(receiptOpts)
 	}()
 
 	// Parse the inbound frame once. Every gate below reads ID / Method /
@@ -402,6 +416,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", reason)
 		recordAdaptiveSignal(session.SignalBlock)
+		receiptLayer, receiptPattern, receiptSeverity = redactionBlockAttribution(redactErr)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
 			ID:             frame.ID,
@@ -443,6 +458,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	eval := EvaluateMCPInputGates(inputScanCtx, frame, msg, sessionKey, opts, action, onParseError, scanEnabled)
 	verdict := eval.ContentVerdict
 	policyVerdict := eval.PolicyVerdict
+	receiptLayer, receiptPattern, receiptSeverity = pickAttribution(eval)
 
 	mcpMethod = verdict.Method
 	if verdict.Method == methodToolsCall {

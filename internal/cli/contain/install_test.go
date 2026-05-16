@@ -146,6 +146,7 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			return hex.EncodeToString(h[:]), nil
 		},
 		out:            out,
+		errOut:         out,
 		operatorUser:   containInstallOperatorUser,
 		proxyUserName:  "pipelock-proxy",
 		agentUserName:  "pipelock-agent",

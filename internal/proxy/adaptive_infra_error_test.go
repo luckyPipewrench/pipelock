@@ -17,11 +17,12 @@ import (
 // ClassInfrastructureError tag is what adaptive enforcement keys off of.
 func infraErrorResult() scanner.Result {
 	return scanner.Result{
-		Allowed: false,
-		Reason:  "SSRF check failed: DNS resolution error for example.test: lookup example.test: i/o timeout",
-		Scanner: scanner.ScannerSSRF,
-		Score:   1.0,
-		Class:   scanner.ClassInfrastructureError,
+		Allowed:      false,
+		Reason:       "DNS lookup for example.test timed out",
+		Scanner:      scanner.ScannerSSRF,
+		Score:        1.0,
+		Class:        scanner.ClassInfrastructureError,
+		DNSErrorKind: scanner.DNSErrorTimeout,
 	}
 }
 

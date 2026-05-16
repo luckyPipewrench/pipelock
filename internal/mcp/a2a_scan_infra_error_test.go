@@ -13,11 +13,12 @@ import (
 // the SSRF layer emits for each classification tier.
 func a2aInfraResult() scanner.Result {
 	return scanner.Result{
-		Allowed: false,
-		Reason:  "SSRF check failed: DNS resolution error for extensions.test: lookup extensions.test: i/o timeout",
-		Scanner: scanner.ScannerSSRF,
-		Score:   1.0,
-		Class:   scanner.ClassInfrastructureError,
+		Allowed:      false,
+		Reason:       "DNS lookup for extensions.test timed out",
+		Scanner:      scanner.ScannerSSRF,
+		Score:        1.0,
+		Class:        scanner.ClassInfrastructureError,
+		DNSErrorKind: scanner.DNSErrorTimeout,
 	}
 }
 

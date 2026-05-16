@@ -94,6 +94,9 @@ func TestScanURL_DNSFailure_ClassifiedAsInfrastructureError(t *testing.T) {
 	if !result.IsInfrastructureError() {
 		t.Errorf("DNS failure must be classified as ClassInfrastructureError; got class=%d reason=%q", result.Class, result.Reason)
 	}
+	if result.DNSErrorKind != DNSErrorNoSuchHost {
+		t.Errorf("DNS failure kind = %q, want %q", result.DNSErrorKind, DNSErrorNoSuchHost)
+	}
 	if !result.IsAdaptiveNeutral() {
 		t.Error("ClassInfrastructureError must return IsAdaptiveNeutral()=true")
 	}

@@ -80,12 +80,14 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
 	ActionID              string
+	ParentActionID        string
 	Verdict               string
 	Layer                 string
 	Pattern               string
 	Severity              string
 	RedactionProfile      string
 	RedactionReport       *redact.Report
+	Shield                *ShieldSummary
 	Transport             string
 	Method                string
 	Target                string
@@ -151,6 +153,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	ar := ActionRecord{
 		Version:               ActionRecordVersion,
 		ActionID:              opts.ActionID,
+		ParentActionID:        opts.ParentActionID,
 		ActionType:            actionType,
 		Timestamp:             time.Now().UTC(),
 		Principal:             e.principal,
@@ -184,6 +187,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Pattern:               opts.Pattern,
 		Severity:              opts.Severity,
 		Redaction:             redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
+		Shield:                cloneShieldSummary(opts.Shield),
 		RequestID:             opts.RequestID,
 		ChainPrevHash:         e.chainPrevHash,
 		ChainSeq:              e.chainSeq,
@@ -358,6 +362,14 @@ func redactionSummaryFromReport(profile string, report *redact.Report) *Redactio
 		TotalRedactions: report.TotalRedactions,
 		ByClass:         byClass,
 	}
+}
+
+func cloneShieldSummary(summary *ShieldSummary) *ShieldSummary {
+	if summary == nil {
+		return nil
+	}
+	clone := *summary
+	return &clone
 }
 
 func (e *Emitter) resumeChain() error {

@@ -20,6 +20,7 @@ var allSignals = []session.SignalType{
 	session.SignalEntropyBudget,
 	session.SignalFragmentDLP,
 	session.SignalStrip,
+	session.SignalShieldRewrite,
 }
 
 func TestSignalPoints_AllSignalsPresent(t *testing.T) {
@@ -47,6 +48,7 @@ func TestSignalPoints_Values(t *testing.T) {
 		{session.SignalEntropyBudget, 2.0, "SignalEntropyBudget"},
 		{session.SignalFragmentDLP, 3.0, "SignalFragmentDLP"},
 		{session.SignalStrip, 2.0, "SignalStrip"},
+		{session.SignalShieldRewrite, 0.25, "SignalShieldRewrite"},
 	}
 
 	for _, tt := range tests {

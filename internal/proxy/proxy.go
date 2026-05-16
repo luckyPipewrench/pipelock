@@ -119,6 +119,17 @@ const (
 	// 10,000 sessions at 64KB each = ~640MB worst case. In practice, most
 	// deployments have <100 concurrent sessions.
 	maxCEESessions = 10000
+
+	browserShieldLayer             = "browser_shield"
+	browserShieldPattern           = "browser_shield_rewrite"
+	browserShieldSeverity          = config.SeverityInfo
+	browserShieldAdaptiveSignalCap = 1
+	shieldReceiptRedacted          = "__redacted__"
+)
+
+var (
+	shieldReceiptTokenPathSegmentRe = regexp.MustCompile(`(?i)^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,}$`)
+	shieldReceiptOpaquePathTokenRe  = regexp.MustCompile(`(?i)^[A-F0-9]{32,}$|^[A-Za-z0-9_-]{40,}$`)
 )
 
 // requestCounter provides monotonic request IDs.
@@ -2053,21 +2064,19 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	return SessionResult{Level: level}
 }
 
-// applyShield runs the Browser Shield rewriter on a response body when enabled
-// and the hostname is not exempt. Handles max_shield_bytes, oversize_action, and
-// exempt_domains config knobs. Returns the (possibly rewritten) body.
-// applyShield runs Browser Shield rewriting on a response body. Returns the
-// (possibly rewritten) body and a blocked flag. When blocked is true, the
-// caller must return 403 to the client (oversize response with block action).
-func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport string) ([]byte, bool) {
+// applyShield runs Browser Shield rewriting on a response body when enabled
+// and the hostname is not exempt. Returns the possibly rewritten body, an
+// optional rewrite summary, and a blocked flag. When blocked is true, the
+// caller must return 403 to the client.
+func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) ([]byte, *receipt.ShieldSummary, bool) {
 	if p.shieldEngine == nil || !cfg.BrowserShield.Enabled {
-		return body, false
+		return body, nil, false
 	}
 
 	// Exempt domains: skip shield entirely.
 	if isShieldExempt(hostname, cfg.BrowserShield.ExemptDomains) {
 		p.metrics.RecordShieldSkipped("exempt_domain")
-		return body, false
+		return body, nil, false
 	}
 
 	// Content-type gate: skip shield entirely for non-shieldable media
@@ -2085,7 +2094,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 	}
 	if shield.DetectPipeline(contentType, body[:prefixLen]) == shield.PipelineNone {
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
-		return body, false
+		return body, nil, false
 	}
 
 	// Max shield bytes: enforce oversize action. Only runs for content the
@@ -2096,22 +2105,35 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		case config.ShieldOversizeScanHead:
 			// Rewrite only the head; append the unshielded tail so the full
 			// response body is returned intact.
-			head := p.runShieldPipeline(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, cfg, actx, clientIP, requestID, transport)
-			return append(head, body[cfg.BrowserShield.MaxShieldBytes:]...), false
+			head, summary := p.runShieldPipelineResult(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
+			if summary != nil {
+				summary.BodyBytes = len(body)
+				summary.ScannedBytes = cfg.BrowserShield.MaxShieldBytes
+				summary.Partial = true
+				p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID)
+			}
+			return append(head, body[cfg.BrowserShield.MaxShieldBytes:]...), summary, false
 		case config.ShieldOversizeWarn:
 			p.logger.LogAnomaly(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d", len(body), cfg.BrowserShield.MaxShieldBytes), 0)
-			return body, false
+			return body, nil, false
 		default: // block: fail-closed, return 403
 			p.logger.LogBlocked(actx, "shield_oversize", fmt.Sprintf("response body %d bytes exceeds max_shield_bytes %d (action: block)", len(body), cfg.BrowserShield.MaxShieldBytes))
-			return nil, true
+			return nil, nil, true
 		}
 	}
 
-	return p.runShieldPipeline(body, contentType, respHeaders, cfg, actx, clientIP, requestID, transport), false
+	rewritten, summary := p.runShieldPipelineResult(body, contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
+	if summary != nil {
+		summary.BodyBytes = len(body)
+		summary.ScannedBytes = len(body)
+		p.recordShieldIntervention(summary, cfg, hostname, actx, clientIP, requestID, transport, parentActionID)
+	}
+	return rewritten, summary, false
 }
 
-// runShieldPipeline applies the shield detection and rewrite pipeline to body bytes.
-func (p *Proxy) runShieldPipeline(body []byte, contentType string, respHeaders http.Header, cfg *config.Config, actx audit.LogContext, clientIP, requestID, transport string) []byte {
+// runShieldPipelineResult applies Browser Shield and returns an optional
+// summary for receipts and adaptive scoring when the response changed.
+func (p *Proxy) runShieldPipelineResult(body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, actx audit.LogContext, clientIP, requestID, transport string) ([]byte, *receipt.ShieldSummary) {
 	shieldStart := time.Now()
 	prefixLen := len(body)
 	if prefixLen > 512 {
@@ -2119,44 +2141,41 @@ func (p *Proxy) runShieldPipeline(body []byte, contentType string, respHeaders h
 	}
 	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
 	if pipeline == shield.PipelineNone {
-		return body
+		return body, nil
 	}
 	// Extract CSP nonce from response headers (preferred over body extraction).
 	headerNonce := shield.ExtractCSPNonce(respHeaders)
-	shieldResult := p.shieldEngine.RewriteWithNonce(string(body), pipeline, &cfg.BrowserShield, headerNonce)
+	shieldResult := p.shieldEngine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
 	if shieldResult.Rewritten {
 		body = []byte(shieldResult.Content)
 		if shieldResult.ExtensionHits > 0 {
-			p.metrics.RecordShieldRewrite("extension", transport)
+			m.RecordShieldRewrite("extension", transport)
 			p.logger.LogShieldRewrite("extension", shieldResult.ExtensionHits, transport, actx.URL(), clientIP, requestID)
 		}
 		if shieldResult.TrackingHits > 0 {
-			p.metrics.RecordShieldRewrite("tracking", transport)
+			m.RecordShieldRewrite("tracking", transport)
 			p.logger.LogShieldRewrite("tracking", shieldResult.TrackingHits, transport, actx.URL(), clientIP, requestID)
 		}
 		if shieldResult.TrapHits > 0 {
-			p.metrics.RecordShieldRewrite("trap", transport)
+			m.RecordShieldRewrite("trap", transport)
 			p.logger.LogShieldRewrite("trap", shieldResult.TrapHits, transport, actx.URL(), clientIP, requestID)
 		}
 		if shieldResult.ShimInjected {
-			p.metrics.RecordShieldShimInjected(transport)
+			m.RecordShieldShimInjected(transport)
 		}
 	}
-	p.metrics.RecordShieldLatency(transport, time.Since(shieldStart))
-	return body
+	m.RecordShieldLatency(transport, time.Since(shieldStart))
+	return body, shieldSummaryFromResult(shieldResult)
 }
 
-// runShieldPipelineShared is the shared Browser Shield pipeline usable by
-// both Proxy and ReverseProxyHandler. Extracts CSP nonce from response
-// headers and runs the full rewrite + metrics pipeline.
-func runShieldPipelineShared(engine *shield.Engine, body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) []byte {
+func runShieldPipelineSharedResult(engine *shield.Engine, body []byte, contentType string, respHeaders http.Header, cfg *config.BrowserShield, m *metrics.Metrics, transport string) ([]byte, *receipt.ShieldSummary) {
 	prefixLen := len(body)
 	if prefixLen > 512 {
 		prefixLen = 512
 	}
 	pipeline := shield.DetectPipeline(contentType, body[:prefixLen])
 	if pipeline == shield.PipelineNone {
-		return body
+		return body, nil
 	}
 	headerNonce := shield.ExtractCSPNonce(respHeaders)
 	shieldResult := engine.RewriteWithNonce(string(body), pipeline, cfg, headerNonce)
@@ -2175,7 +2194,223 @@ func runShieldPipelineShared(engine *shield.Engine, body []byte, contentType str
 			m.RecordShieldShimInjected(transport)
 		}
 	}
-	return body
+	return body, shieldSummaryFromResult(shieldResult)
+}
+
+func shieldSummaryFromResult(result shield.Result) *receipt.ShieldSummary {
+	if !result.Rewritten {
+		return nil
+	}
+	total := result.ExtensionHits +
+		result.TrackingHits +
+		result.TrapHits +
+		result.SVGForeignObjectHits +
+		result.SVGEventHandlerHits +
+		result.SVGXlinkExternalHits +
+		result.SVGHiddenTextHits +
+		result.SVGAnimationInjectionHits
+	if result.ShimInjected {
+		total++
+	}
+	return &receipt.ShieldSummary{
+		Pipeline:                shieldPipelineLabel(result.PipelineUsed),
+		TotalRewrites:           total,
+		ExtensionProbes:         result.ExtensionHits,
+		TrackingBeacons:         result.TrackingHits,
+		AgentTraps:              result.TrapHits,
+		FingerprintShimInjected: result.ShimInjected,
+		SVGForeignObjects:       result.SVGForeignObjectHits,
+		SVGEventHandlers:        result.SVGEventHandlerHits,
+		SVGExternalReferences:   result.SVGXlinkExternalHits,
+		SVGHiddenText:           result.SVGHiddenTextHits,
+		SVGAnimationInjections:  result.SVGAnimationInjectionHits,
+	}
+}
+
+func shieldPipelineLabel(pipeline shield.PipelineType) string {
+	switch pipeline {
+	case shield.PipelineHTML:
+		return "html"
+	case shield.PipelineJS:
+		return "javascript"
+	case shield.PipelineSVG:
+		return "svg"
+	default:
+		return "none"
+	}
+}
+
+func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *config.Config, hostname string, actx audit.LogContext, clientIP, requestID, transport, parentActionID string) {
+	if summary == nil {
+		return
+	}
+	signals := 0
+	if cfg != nil && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
+		signals = summary.TotalRewrites
+		if signals > browserShieldAdaptiveSignalCap {
+			signals = browserShieldAdaptiveSignalCap
+		}
+		if signals < 0 {
+			signals = 0
+		}
+	}
+	summary.AdaptiveSignalsRecorded = signals
+	summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
+
+	target := actx.URL()
+	if target == "" {
+		target = actx.Target()
+	}
+	if target == "" {
+		target = hostname
+	}
+	target = shieldReceiptTarget(target)
+	p.emitReceipt(receipt.EmitOpts{
+		ActionID:       receipt.NewActionID(),
+		ParentActionID: parentActionID,
+		Verdict:        config.ActionAllow,
+		Layer:          browserShieldLayer,
+		Pattern:        browserShieldPattern,
+		Severity:       browserShieldSeverity,
+		Shield:         summary,
+		Transport:      transport,
+		Method:         actx.Method(),
+		Target:         target,
+		RequestID:      requestID,
+		Agent:          actx.Agent(),
+	})
+
+	if signals == 0 {
+		return
+	}
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		return
+	}
+	sessionKey := clientIP
+	if agent := actx.Agent(); agent != "" && agent != agentAnonymous {
+		sessionKey = agent + "|" + clientIP
+	}
+	sess := sm.GetOrCreate(sessionKey)
+	for i := 0; i < signals; i++ {
+		if decide.RecordSignal(sess, session.SignalShieldRewrite, decide.EscalationParams{
+			Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
+			Logger:    p.logger,
+			Metrics:   p.metrics,
+			Session:   sessionKey,
+			ClientIP:  clientIP,
+			RequestID: requestID,
+		}) {
+			sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock)
+		}
+	}
+}
+
+func shieldReceiptTarget(target string) string {
+	if target == "" {
+		return target
+	}
+	if !strings.ContainsAny(target, "/?#") {
+		host, port, err := net.SplitHostPort(target)
+		if err == nil && host != "" {
+			if strings.Contains(host, "@") {
+				return shieldReceiptRedacted
+			}
+			return net.JoinHostPort(host, port)
+		}
+	}
+	u, err := url.Parse(target)
+	if err == nil && u.Host != "" {
+		return shieldReceiptURL(u)
+	}
+	if err == nil && u.Scheme == "" {
+		if strings.Contains(u.Path, "@") {
+			return shieldReceiptRedacted
+		}
+		path := shieldReceiptPath(u.Path)
+		if path == "" {
+			return shieldReceiptRedacted
+		}
+		return path
+	}
+
+	return shieldReceiptRedacted
+}
+
+func shieldReceiptURL(u *url.URL) string {
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.Path = shieldReceiptPath(u.Path)
+	u.RawPath = ""
+	return u.String()
+}
+
+func shieldReceiptPath(path string) string {
+	if path == "" || path == "/" {
+		return path
+	}
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		segments[i] = shieldReceiptPathSegment(segment)
+	}
+	return strings.Join(segments, "/")
+}
+
+func shieldReceiptPathSegment(segment string) string {
+	if segment == "" {
+		return segment
+	}
+
+	base, params, hasParams := strings.Cut(segment, ";")
+	if shieldReceiptLooksLikeToken(base) {
+		base = "__redacted_token__"
+	}
+	if !hasParams {
+		return base
+	}
+
+	parts := strings.Split(params, ";")
+	for i, part := range parts {
+		key, value, hasValue := strings.Cut(part, "=")
+		keyLower := strings.ToLower(key)
+		if shieldReceiptPathParamKeySensitive(keyLower) {
+			if hasValue {
+				parts[i] = key + "=__redacted__"
+			} else {
+				parts[i] = key
+			}
+			continue
+		}
+		if hasValue && shieldReceiptLooksLikeToken(value) {
+			parts[i] = key + "=__redacted_token__"
+		}
+	}
+	return base + ";" + strings.Join(parts, ";")
+}
+
+func shieldReceiptPathParamKeySensitive(key string) bool {
+	switch key {
+	case "access_token", "id_token", "refresh_token", "token", "jwt",
+		"session", "sessionid", "jsessionid", "sid",
+		"api_key", "apikey", "authorization", "auth":
+		return true
+	default:
+		return false
+	}
+}
+
+func shieldReceiptLooksLikeToken(value string) bool {
+	if len(value) < 12 {
+		return false
+	}
+	if strings.HasPrefix(value, "eyJ") {
+		return true
+	}
+	if shieldReceiptTokenPathSegmentRe.MatchString(value) {
+		return true
+	}
+	return shieldReceiptOpaquePathTokenRe.MatchString(value)
 }
 
 // ShieldEngine returns the proxy's browser shield engine for sharing with
@@ -3452,7 +3687,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Use the final response origin (after redirects), not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
-	body, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch)
+	body, _, shieldBlocked := p.applyShield(body, contentType, shieldHost, resp.Header, cfg, actx, clientIP, requestID, TransportFetch, actionID)
 	if shieldBlocked {
 		p.metrics.RecordBlocked(parsed.Hostname(), "shield_oversize", time.Since(start), agentLabel)
 		p.emitReceipt(receipt.EmitOpts{

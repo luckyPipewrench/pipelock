@@ -1188,13 +1188,46 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	}
 
 	// Browser Shield on reverse proxy responses — uses shared pipeline.
+	shieldChanged := false
 	if rp.shieldEngine != nil && cfg.BrowserShield.Enabled {
 		revHost := resp.Request.URL.Hostname()
 		if !isShieldExempt(revHost, cfg.BrowserShield.ExemptDomains) {
 			if cfg.BrowserShield.MaxShieldBytes <= 0 || len(body) <= cfg.BrowserShield.MaxShieldBytes {
-				body = runShieldPipelineShared(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
+				originalBodyBytes := len(body)
+				var summary *receipt.ShieldSummary
+				body, summary = runShieldPipelineSharedResult(rp.shieldEngine, body, resp.Header.Get("Content-Type"), resp.Header, &cfg.BrowserShield, rp.metrics, "reverse")
+				if summary != nil {
+					shieldChanged = true
+					summary.BodyBytes = originalBodyBytes
+					summary.ScannedBytes = originalBodyBytes
+					// Reverse proxy currently has no session manager
+					// context, so it reports the configured cap but
+					// records zero adaptive signals.
+					summary.AdaptiveSignalsRecorded = 0
+					summary.AdaptiveSignalMaxPerBody = browserShieldAdaptiveSignalCap
+					rp.emitReceipt(receipt.EmitOpts{
+						ActionID:       receipt.NewActionID(),
+						ParentActionID: actionID,
+						Verdict:        config.ActionAllow,
+						Layer:          browserShieldLayer,
+						Pattern:        browserShieldPattern,
+						Severity:       browserShieldSeverity,
+						Shield:         summary,
+						Transport:      "reverse",
+						Method:         resp.Request.Method,
+						Target:         shieldReceiptTarget(resp.Request.URL.String()),
+						RequestID:      requestID,
+						Agent:          agent,
+					})
+				}
 			}
 		}
+	}
+	if shieldChanged {
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		resp.Header.Del("ETag")
+		resp.Header.Del("Content-MD5")
+		resp.Header.Del("Digest")
 	}
 
 	// Scan the response text for injection patterns.

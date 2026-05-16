@@ -219,7 +219,7 @@ func TestWriteBlockedError_SetsHeadersBeforeStatus(t *testing.T) {
 	if got := w.Header().Get(blockreason.HeaderSeverity); got != "critical" {
 		t.Errorf("HeaderSeverity = %q, want critical", got)
 	}
-	if got := w.Header().Get(blockreason.HeaderRetry); got != "none" {
+	if got := w.Header().Get(blockreason.HeaderRetry); got != string(blockreason.RetryNone) {
 		t.Errorf("HeaderRetry = %q, want none", got)
 	}
 	if got := w.Header().Get(blockreason.HeaderLayer); got != dlpLayerLabel {

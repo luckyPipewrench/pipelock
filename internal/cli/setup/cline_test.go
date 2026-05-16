@@ -13,6 +13,7 @@ import (
 )
 
 const (
+	testClineEnvKey   = "MY_VAR"
 	testClineEnvValue = "test"
 
 	testClineStdioConfig = `{
@@ -190,17 +191,17 @@ func TestClineInstall_StdioServerWithImplicitType(t *testing.T) {
 
 	foundEnv := false
 	for i, a := range args {
-		if a == codexFlagEnv && i+1 < len(args) && args[i+1] == "MY_VAR" {
+		if a == codexFlagEnv && i+1 < len(args) && args[i+1] == testClineEnvKey {
 			foundEnv = true
 			break
 		}
 	}
 	if !foundEnv {
-		t.Errorf("expected --env MY_VAR passthrough in args: %v", args)
+		t.Errorf("expected --env %s passthrough in args: %v", testClineEnvKey, args)
 	}
 
 	env, ok := server["env"].(map[string]interface{})
-	if !ok || env["MY_VAR"] != testClineEnvValue {
+	if !ok || env[testClineEnvKey] != testClineEnvValue {
 		t.Errorf("env block not preserved: %v", server["env"])
 	}
 
@@ -236,7 +237,7 @@ func TestClineInstall_HTTPServerWithImplicitType(t *testing.T) {
 	args := interfaceSliceToStrings(server["args"])
 	foundUpstream := false
 	for i, a := range args {
-		if a == "--upstream" && i+1 < len(args) {
+		if a == codexFlagUpstream && i+1 < len(args) {
 			if args[i+1] != testExampleURL {
 				t.Errorf("upstream URL mismatch: got %q, want %q", args[i+1], testExampleURL)
 			}

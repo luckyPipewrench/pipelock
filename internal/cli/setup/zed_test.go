@@ -219,7 +219,7 @@ func TestZedInstall_StdioServerWithImplicitType(t *testing.T) {
 
 	foundEnv := false
 	for i, a := range args {
-		if a == codexFlagEnv && i+1 < len(args) && args[i+1] == "MY_VAR" {
+		if a == codexFlagEnv && i+1 < len(args) && args[i+1] == testClineEnvKey {
 			foundEnv = true
 			break
 		}
@@ -229,7 +229,7 @@ func TestZedInstall_StdioServerWithImplicitType(t *testing.T) {
 	}
 
 	env, ok := server["env"].(map[string]interface{})
-	if !ok || env["MY_VAR"] != testZedEnvValue {
+	if !ok || env[testClineEnvKey] != testZedEnvValue {
 		t.Errorf("env block not preserved: %v", server["env"])
 	}
 
@@ -255,7 +255,7 @@ func TestZedInstall_HTTPServerWithImplicitType(t *testing.T) {
 	args := interfaceSliceToStrings(server["args"])
 	foundUpstream := false
 	for i, a := range args {
-		if a == "--upstream" && i+1 < len(args) {
+		if a == codexFlagUpstream && i+1 < len(args) {
 			if args[i+1] != testExampleURL {
 				t.Errorf("upstream URL mismatch: got %q, want %q", args[i+1], testExampleURL)
 			}
@@ -805,6 +805,31 @@ func TestResolveZedTargets_DefaultProbesBoth(t *testing.T) {
 		t.Errorf("existingPaths should hold user path %q, got %q", userPath, got.existingPaths[0])
 	}
 	_ = cwd
+}
+
+func TestResolveZedTargets_DefaultStatError(t *testing.T) {
+	home := t.TempDir()
+	xdg := filepath.Join(home, ".config")
+	zedDir := filepath.Join(xdg, zedUserConfigSubdir)
+	if err := os.MkdirAll(zedDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	chdirIsolated(t)
+
+	if err := os.Chmod(zedDir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { restoreDirPerms(zedDir) })
+
+	_, err := resolveZedTargets("")
+	if err == nil {
+		t.Fatal("expected inaccessible default path to fail target discovery")
+	}
+	if !strings.Contains(err.Error(), "checking Zed settings path") {
+		t.Fatalf("error should name failed stat probe, got: %v", err)
+	}
 }
 
 func TestZedInstall_DefaultScansBothPathsWhenBothExist(t *testing.T) {

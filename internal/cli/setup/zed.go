@@ -5,6 +5,7 @@ package setup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -197,7 +198,10 @@ func resolveZedTargets(override string) (zedDiscoveryResult, error) {
 	for _, p := range candidates {
 		info, statErr := os.Stat(p)
 		if statErr != nil {
-			continue
+			if errors.Is(statErr, os.ErrNotExist) {
+				continue
+			}
+			return zedDiscoveryResult{}, fmt.Errorf("checking Zed settings path %s: %w", p, statErr)
 		}
 		if info.IsDir() {
 			continue

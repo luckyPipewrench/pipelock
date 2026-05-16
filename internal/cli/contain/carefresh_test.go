@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -19,7 +20,12 @@ import (
 	"time"
 )
 
-const testCARegeneratedOutput = "regenerated"
+const (
+	testCARegeneratedOutput = "regenerated"
+	testCAInitDeniedOutput  = "denied"
+	testCAInitializedOutput = "initialized"
+	testCAMissingOutput     = "missing"
+)
 
 func testPEMCA(t *testing.T) string {
 	return testPEMCert(t, true)
@@ -61,6 +67,15 @@ func plantManagedTLSCA(t *testing.T, env *installEnv) (certPath, keyPath string)
 		t.Fatalf("write managed key: %v", err)
 	}
 	return certPath, keyPath
+}
+
+func plantSystemBundle(t *testing.T) string {
+	t.Helper()
+	systemBundle := filepath.Join(t.TempDir(), "system.pem")
+	if err := os.WriteFile(systemBundle, []byte("SYS\n"), 0o600); err != nil {
+		t.Fatalf("write system bundle: %v", err)
+	}
+	return systemBundle
 }
 
 func TestRunCARefresh_FullSuccessPath(t *testing.T) {
@@ -284,12 +299,89 @@ func TestRunCARefresh_RegenerateOnSnapshotRestoreForceAllowsImmediateRepeat(t *t
 	}
 }
 
+func TestRunCARefresh_ReportsMutationFailures(t *testing.T) {
+	t.Run("regenerate", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		plantManagedTLSCA(t, env)
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "init") && containsArg(args, "--force") {
+				return testCAInitDeniedOutput, 9, nil
+			}
+			return "", 0, nil
+		}
+		err := runCARefresh(context.Background(), env, caRefreshOpts{
+			regenerateOnSnapshotRestore: true,
+			systemBundle:                plantSystemBundle(t),
+		})
+		if err == nil || !strings.Contains(err.Error(), "tls init --force exited 9") {
+			t.Fatalf("regenerate err: %v", err)
+		}
+	})
+
+	t.Run("marker", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		plantManagedTLSCA(t, env)
+		origWriteFile := env.writeFile
+		env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+			if path == snapshotRefreshMarkerPath(env) {
+				return stringError("marker denied")
+			}
+			return origWriteFile(path, contents, mode)
+		}
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "init") && containsArg(args, "--force") {
+				return testCARegeneratedOutput, 0, nil
+			}
+			return "", 0, nil
+		}
+		err := runCARefresh(context.Background(), env, caRefreshOpts{
+			regenerateOnSnapshotRestore: true,
+			systemBundle:                plantSystemBundle(t),
+		})
+		if err == nil || !strings.Contains(err.Error(), "marker denied") {
+			t.Fatalf("marker err: %v", err)
+		}
+	})
+
+	t.Run("export", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
+			return "show failed", -1, stringError("sudo unavailable")
+		}
+		err := runCARefresh(context.Background(), env, caRefreshOpts{systemBundle: plantSystemBundle(t)})
+		if err == nil || !strings.Contains(err.Error(), "sudo unavailable") {
+			t.Fatalf("export err: %v", err)
+		}
+	})
+
+	t.Run("rebuild", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "show-ca") {
+				return testPEMCA(t), 0, nil
+			}
+			return "", 0, nil
+		}
+		origReadFile := env.readFile
+		env.readFile = func(path string) ([]byte, error) {
+			if path == env.caExportPath {
+				return nil, stringError("export vanished")
+			}
+			return origReadFile(path)
+		}
+		err := runCARefresh(context.Background(), env, caRefreshOpts{systemBundle: plantSystemBundle(t)})
+		if err == nil || !strings.Contains(err.Error(), "export vanished") {
+			t.Fatalf("rebuild err: %v", err)
+		}
+	})
+}
+
 func TestRegeneratePipelockCAReportsFailure(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	plantManagedTLSCA(t, env)
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name == testSudoCmd && containsArg(args, "init") && containsArg(args, "--force") {
-			return "denied", 7, nil
+			return testCAInitDeniedOutput, 7, nil
 		}
 		return "", 0, nil
 	}
@@ -318,6 +410,144 @@ func TestRegeneratePipelockCAReportsExecError(t *testing.T) {
 	if !strings.Contains(err.Error(), "exec denied") {
 		t.Fatalf("err: %v", err)
 	}
+}
+
+func TestValidateSnapshotRegenerationPreconditionsEdges(t *testing.T) {
+	t.Run("symlink certificate", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		certPath, keyPath := plantManagedTLSCA(t, env)
+		if err := os.Remove(certPath); err != nil {
+			t.Fatalf("remove cert: %v", err)
+		}
+		if err := os.Symlink(keyPath, certPath); err != nil {
+			t.Fatalf("symlink cert: %v", err)
+		}
+		err := validateSnapshotRegenerationPreconditions(env, caRefreshOpts{}, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("symlink err: %v", err)
+		}
+	})
+
+	t.Run("directory private key", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		_, keyPath := plantManagedTLSCA(t, env)
+		if err := os.Remove(keyPath); err != nil {
+			t.Fatalf("remove key: %v", err)
+		}
+		if err := os.Mkdir(keyPath, 0o700); err != nil {
+			t.Fatalf("mkdir key path: %v", err)
+		}
+		err := validateSnapshotRegenerationPreconditions(env, caRefreshOpts{}, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "directory") {
+			t.Fatalf("directory err: %v", err)
+		}
+	})
+
+	t.Run("invalid marker", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		plantManagedTLSCA(t, env)
+		if err := os.MkdirAll(filepath.Dir(snapshotRefreshMarkerPath(env)), 0o750); err != nil {
+			t.Fatalf("mkdir marker dir: %v", err)
+		}
+		if err := os.WriteFile(snapshotRefreshMarkerPath(env), []byte("not-a-time"), 0o600); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		err := validateSnapshotRegenerationPreconditions(env, caRefreshOpts{}, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "parse snapshot CA regeneration marker") {
+			t.Fatalf("parse err: %v", err)
+		}
+	})
+
+	t.Run("old marker allowed", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		plantManagedTLSCA(t, env)
+		now := time.Now().UTC()
+		if err := writeSnapshotRefreshMarker(env, now.Add(-snapshotCARepeatGuard-time.Second)); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		if err := validateSnapshotRegenerationPreconditions(env, caRefreshOpts{}, now); err != nil {
+			t.Fatalf("old marker should pass: %v", err)
+		}
+	})
+}
+
+func TestWriteSnapshotWarningsHandleNilWriters(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.out = nil
+	env.errOut = nil
+	writeSnapshotCAWarning(env)
+	writeSnapshotForceWarning(env, time.Now().UTC())
+}
+
+func TestBackupSnapshotCAFileEdges(t *testing.T) {
+	t.Run("read failure", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		err := backupSnapshotCAFile(env, filepath.Join(env.configDir, "tls", "missing.pem"), modeCAReadable, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "read CA material") {
+			t.Fatalf("read err: %v", err)
+		}
+	})
+
+	t.Run("existing backup", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		certPath, _ := plantManagedTLSCA(t, env)
+		now := time.Date(2026, 5, 16, 18, 0, 0, 0, time.UTC)
+		backup := fmt.Sprintf("%s.prerotate.%s", certPath, now.Format("20060102T150405.000000000Z"))
+		if err := os.WriteFile(backup, []byte("old backup"), 0o600); err != nil {
+			t.Fatalf("write backup: %v", err)
+		}
+		err := backupSnapshotCAFile(env, certPath, modeCAReadable, now)
+		if err == nil || !strings.Contains(err.Error(), "refusing to overwrite existing CA backup") {
+			t.Fatalf("existing backup err: %v", err)
+		}
+	})
+
+	t.Run("write failure", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		certPath, _ := plantManagedTLSCA(t, env)
+		env.writeFile = func(string, []byte, os.FileMode) error {
+			return stringError("write denied")
+		}
+		err := backupSnapshotCAFile(env, certPath, modeCAReadable, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "write denied") {
+			t.Fatalf("write err: %v", err)
+		}
+	})
+}
+
+func TestWriteSnapshotRefreshMarkerReportsHookErrors(t *testing.T) {
+	t.Run("mkdir", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.mkdirAll = func(string, os.FileMode) error {
+			return stringError("mkdir denied")
+		}
+		err := writeSnapshotRefreshMarker(env, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "mkdir denied") {
+			t.Fatalf("mkdir err: %v", err)
+		}
+	})
+
+	t.Run("chmod", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.chmod = func(string, os.FileMode) error {
+			return stringError("chmod denied")
+		}
+		err := writeSnapshotRefreshMarker(env, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "chmod denied") {
+			t.Fatalf("chmod err: %v", err)
+		}
+	})
+
+	t.Run("write", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.writeFile = func(string, []byte, os.FileMode) error {
+			return stringError("write denied")
+		}
+		err := writeSnapshotRefreshMarker(env, time.Now().UTC())
+		if err == nil || !strings.Contains(err.Error(), "write denied") {
+			t.Fatalf("write err: %v", err)
+		}
+	})
 }
 
 func TestRebuildCombinedBundle_ConcatenatesSourceAndPipelock(t *testing.T) {
@@ -430,7 +660,7 @@ func TestExportPipelockCAInitializesMissingCAThenRetries(t *testing.T) {
 			return testPEMCA(t), 0, nil
 		}
 		if name == testSudoCmd && containsArg(args, "init") {
-			return "initialized", 0, nil
+			return testCAInitializedOutput, 0, nil
 		}
 		return "", 0, nil
 	}
@@ -459,6 +689,117 @@ func TestExportPipelockCAInitializesMissingCAThenRetries(t *testing.T) {
 	if !sawInit {
 		t.Fatalf("tls init not called, calls=%v", runner.calls)
 	}
+}
+
+func TestExportPipelockCAInitializesManagedCAMaterial(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	managedCert, _ := plantManagedTLSCA(t, env)
+	var showCalls int
+	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		runner.mu.Lock()
+		runner.calls = append(runner.calls, fakeCall{name: name, args: append([]string(nil), args...)})
+		runner.mu.Unlock()
+		if name == testSudoCmd && containsArg(args, "show-ca") {
+			showCalls++
+			if showCalls == 1 {
+				return "missing ca", 1, nil
+			}
+			return testPEMCA(t), 0, nil
+		}
+		if name == testSudoCmd && containsArg(args, "init") {
+			return testCAInitializedOutput, 0, nil
+		}
+		return "", 0, nil
+	}
+	if err := exportPipelockCA(context.Background(), env); err != nil {
+		t.Fatalf("export: %v", err)
+	}
+	if len(runner.calls) != 3 {
+		t.Fatalf("calls: got %d want 3: %v", len(runner.calls), runner.calls)
+	}
+	if !containsArg(runner.calls[1].args, "--out") || !containsArg(runner.calls[1].args, filepath.Dir(managedCert)) {
+		t.Fatalf("managed init should target managed TLS dir: %v", runner.calls[1])
+	}
+}
+
+func TestExportPipelockCAReportsRetryFailures(t *testing.T) {
+	t.Run("init exec", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "show-ca") {
+				return testCAMissingOutput, 1, nil
+			}
+			if name == testSudoCmd && containsArg(args, "init") {
+				return testCAInitDeniedOutput, -1, stringError("exec denied")
+			}
+			return "", 0, nil
+		}
+		err := exportPipelockCA(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "exec denied") {
+			t.Fatalf("init exec err: %v", err)
+		}
+	})
+
+	t.Run("init exit", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "show-ca") {
+				return testCAMissingOutput, 1, nil
+			}
+			if name == testSudoCmd && containsArg(args, "init") {
+				return testCAInitDeniedOutput, 5, nil
+			}
+			return "", 0, nil
+		}
+		err := exportPipelockCA(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "tls init exited 5") {
+			t.Fatalf("init exit err: %v", err)
+		}
+	})
+
+	t.Run("retry exec", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		var showCalls int
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "show-ca") {
+				showCalls++
+				if showCalls == 1 {
+					return testCAMissingOutput, 1, nil
+				}
+				return "boom", -1, stringError("retry denied")
+			}
+			if name == testSudoCmd && containsArg(args, "init") {
+				return testCAInitializedOutput, 0, nil
+			}
+			return "", 0, nil
+		}
+		err := exportPipelockCA(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "retry denied") {
+			t.Fatalf("retry exec err: %v", err)
+		}
+	})
+
+	t.Run("retry exit", func(t *testing.T) {
+		env, _, _ := newFakeEnv(t)
+		var showCalls int
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name == testSudoCmd && containsArg(args, "show-ca") {
+				showCalls++
+				if showCalls == 1 {
+					return testCAMissingOutput, 1, nil
+				}
+				return "still missing", 2, nil
+			}
+			if name == testSudoCmd && containsArg(args, "init") {
+				return testCAInitializedOutput, 0, nil
+			}
+			return "", 0, nil
+		}
+		err := exportPipelockCA(context.Background(), env)
+		if err == nil || !strings.Contains(err.Error(), "show-ca after init exited 2") {
+			t.Fatalf("retry exit err: %v", err)
+		}
+	})
 }
 
 func TestExportPipelockCARejectsNonPEMOutput(t *testing.T) {
@@ -587,6 +928,24 @@ func TestRunCARefresh_ResolvesSystemBundleSymlink(t *testing.T) {
 	}
 }
 
+func TestResolveSystemBundlePathEdges(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if got, err := resolveSystemBundlePath(env, "relative.pem"); err != nil || got != "relative.pem" {
+		t.Fatalf("relative: got %q err %v", got, err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	if got, err := resolveSystemBundlePath(env, missing); err != nil || got != missing {
+		t.Fatalf("missing: got %q err %v", got, err)
+	}
+	link := filepath.Join(t.TempDir(), "broken-link.pem")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "missing-target.pem"), link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if _, err := resolveSystemBundlePath(env, link); err == nil || !strings.Contains(err.Error(), "resolve --system-bundle") {
+		t.Fatalf("broken symlink err: %v", err)
+	}
+}
+
 func TestValidateCARefreshPathsRejectsUnsafeInputs(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	if err := validateCARefreshPaths(env, "relative.pem"); err == nil || !strings.Contains(err.Error(), "must be absolute") {
@@ -616,6 +975,23 @@ func TestValidateCARefreshPathsRejectsUnsafeInputs(t *testing.T) {
 	}
 	if err := validateCARefreshPaths(env, bundleLink); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("symlink bundle err: %v", err)
+	}
+}
+
+func TestValidateCARefreshPathsRejectsMoreUnsafeInputs(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	if err := validateCARefreshPaths(env, missing); err == nil || !strings.Contains(err.Error(), "--system-bundle") {
+		t.Fatalf("missing bundle err: %v", err)
+	}
+	dir := t.TempDir()
+	if err := validateCARefreshPaths(env, dir); err == nil || !strings.Contains(err.Error(), "directory") {
+		t.Fatalf("directory bundle err: %v", err)
+	}
+	systemBundle := plantSystemBundle(t)
+	env.caExportPath = "relative-ca.pem"
+	if err := validateCARefreshPaths(env, systemBundle); err == nil || !strings.Contains(err.Error(), "must be absolute") {
+		t.Fatalf("relative output err: %v", err)
 	}
 }
 

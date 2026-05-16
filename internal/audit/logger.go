@@ -555,9 +555,74 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 	}
 }
 
-// LogBlocked logs a blocked request with the reason.
+// BlockDetail carries the optional Result.Class and DNSErrorKind off the
+// scanner package without forcing audit to depend on the scanner package.
+// Empty values are tolerated: a zero BlockDetail behaves exactly like the
+// existing LogBlocked call shape (ClassThreat, no DNS kind, MITRE technique
+// drives off the scanner label as before).
+//
+// The only consumers today are the SSRF DNS resolution path (Class set to
+// "infrastructure_error", DNSErrorKind set to one of timeout / no_such_host /
+// resolver_error). Other Class values map onto display behavior the same way
+// the canonical scanner package documents them: ClassProtective and
+// ClassConfigMismatch suppress the MITRE technique because the block is not
+// threat evidence, ClassThreat keeps it.
+type BlockDetail struct {
+	// Class mirrors scanner.Result.Class as a string. Empty defaults to
+	// the threat class so the audit stream behaves exactly like the
+	// pre-existing LogBlocked output.
+	Class string
+	// DNSErrorKind mirrors scanner.Result.DNSErrorKind on the SSRF DNS
+	// resolution path. Empty when the block was not produced by a DNS
+	// resolver failure. When set, it is also surfaced as a display label
+	// so SIEMs can pivot on dns_timeout / dns_no_such_host /
+	// dns_resolver_error directly.
+	DNSErrorKind string
+}
+
+// Class string constants kept in lockstep with internal/scanner ResultClass.
+// Audit stays string-typed to avoid an audit -> scanner import edge.
+const (
+	BlockClassThreat              = "threat"
+	BlockClassProtective          = "protective"
+	BlockClassConfigMismatch      = "config_mismatch"
+	BlockClassInfrastructureError = "infrastructure_error"
+	BlockClassStructuralExemption = "structural_exemption"
+)
+
+// LogBlocked logs a blocked request with the reason. Equivalent to
+// LogBlockedDetail with a zero BlockDetail (threat class, no DNS kind).
 func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
+	l.LogBlockedDetail(ctx, scanner, reason, BlockDetail{})
+}
+
+// LogBlockedDetail is the class-aware variant of LogBlocked. When the block
+// was classified as infrastructure_error on the SSRF DNS path, the audit
+// stream drops the misleading mitre_technique tag (a resolver wobble is not
+// MITRE T1046) and surfaces a dns_* display label so SIEM consumers can
+// alert on resolver health distinctly from real SSRF probes. Scanner stays
+// canonical ("ssrf") for suppression / metrics / receipts; only the
+// presentation changes.
+func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail BlockDetail) {
 	technique := TechniqueForScanner(scanner)
+	displayLabel := ""
+	// Suppress mitre_technique on non-threat classes. A protective block
+	// (rate limit, data budget), a config-mismatch block (api_allowlist gap),
+	// and an infrastructure-error block (DNS resolver wobble) are not
+	// adversarial behavior, so attaching a MITRE ATT&CK technique to them
+	// would poison SIEM dashboards that aggregate on the technique field.
+	switch detail.Class {
+	case BlockClassInfrastructureError:
+		technique = ""
+		// Surface the DNS subtype as the audit display label so a SIEM
+		// query for dns_timeout vs dns_no_such_host vs dns_resolver_error
+		// works without parsing the reason text.
+		if detail.DNSErrorKind != "" {
+			displayLabel = "dns_" + detail.DNSErrorKind
+		}
+	case BlockClassProtective, BlockClassConfigMismatch:
+		technique = ""
+	}
 
 	// If the block came from a content-matching scanner, the URL/target
 	// likely contains the very bytes that triggered the match. Emit the
@@ -584,6 +649,7 @@ func (l *Logger) LogBlocked(ctx LogContext, scanner, reason string) {
 		str("scanner", scanner).
 		str("reason", reason).
 		optStr("agent", ctx.agent).
+		optStr("display_label", displayLabel).
 		optStr("mitre_technique", technique)
 
 	// includeBlocked gates local audit log only — external emission always fires

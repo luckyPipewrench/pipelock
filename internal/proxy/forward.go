@@ -263,7 +263,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 		}
 		if cfg.EnforceEnabled() {
-			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason)
+			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
@@ -293,7 +293,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			p.logger.LogBlocked(targetCtx, result.Scanner, result.Reason+" (escalated)")
+			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			writeBlockedError(w, blockInfo(result.Scanner),
 				"CONNECT blocked: "+result.Reason+" (escalated)", status)
@@ -844,7 +844,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 		}
 		if cfg.EnforceEnabled() {
-			p.logger.LogBlocked(actx, result.Scanner, result.Reason)
+			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
@@ -875,7 +875,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			p.logger.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
+			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfo(result.Scanner),

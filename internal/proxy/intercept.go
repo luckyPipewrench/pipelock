@@ -582,7 +582,7 @@ func newInterceptHandler(
 				default:
 					interceptRecordSignal(ic, session.SignalBlock)
 				}
-				ic.Logger.LogBlocked(actx, urlResult.Scanner, urlResult.Reason)
+				ic.Logger.LogBlockedDetail(actx, urlResult.Scanner, urlResult.Reason, auditDetailFromResult(urlResult))
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
 				interceptEmitReceipt(ic, receipt.EmitOpts{
 					ActionID:  actionID,
@@ -622,7 +622,7 @@ func newInterceptHandler(
 				default:
 					interceptRecordSignal(ic, session.SignalBlock)
 				}
-				ic.Logger.LogBlocked(actx, urlResult.Scanner, urlResult.Reason+" (escalated)")
+				ic.Logger.LogBlockedDetail(actx, urlResult.Scanner, urlResult.Reason+" (escalated)", auditDetailFromResult(urlResult))
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
 				interceptEmitReceipt(ic, receipt.EmitOpts{
 					ActionID:  actionID,

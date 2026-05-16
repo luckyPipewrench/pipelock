@@ -260,7 +260,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 		}
 		if cfg.EnforceEnabled() {
-			log.LogBlocked(actx, result.Scanner, result.Reason)
+			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),
@@ -290,7 +290,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			log.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
+			log.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:  receipt.NewActionID(),

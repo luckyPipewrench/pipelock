@@ -619,7 +619,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					// operators *which* scanner made the decision
 					// instead of reporting every denial as a generic
 					// "redirect" block.
-					logger.LogBlocked(actx, result.Scanner, fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason))
+					logger.LogBlockedDetail(actx, result.Scanner, fmt.Sprintf("redirect from %s blocked: %s", originalURL, result.Reason), auditDetailFromResult(result))
 					return newRedirectBlockedRequest(result.Scanner, result.Reason)
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
@@ -2940,7 +2940,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	if !result.Allowed {
 		if cfg.EnforceEnabled() {
-			log.LogBlocked(actx, result.Scanner, result.Reason)
+			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:            actionID,
@@ -3000,7 +3000,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			}
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
-			log.LogBlocked(actx, result.Scanner, result.Reason+" (escalated)")
+			log.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),

@@ -96,15 +96,39 @@ type WarnMatch struct {
 	Severity    string `json:"severity"`
 }
 
+// DNSErrorKind tags the specific DNS resolver failure mode that produced a
+// ClassInfrastructureError result. The kind drives audit-time display labels
+// and metric subdivision but never changes the verdict: every DNS failure
+// still fails closed. Empty when the Result was not produced by the DNS
+// resolution path.
+type DNSErrorKind string
+
+const (
+	// DNSErrorTimeout reports an i/o timeout from the resolver. The resolver
+	// produced no answer, so the proxy has no information about whether the
+	// target would resolve to an internal address. Classifying as ssrf would
+	// assert a finding the scanner cannot support.
+	DNSErrorTimeout DNSErrorKind = "timeout"
+	// DNSErrorNoSuchHost reports an authoritative NXDOMAIN or no-records
+	// answer. The resolver answered; the absence is informative but is not a
+	// signal of an SSRF probe.
+	DNSErrorNoSuchHost DNSErrorKind = "no_such_host"
+	// DNSErrorResolver covers other resolver-side failures (refused, format
+	// error, server failure) that produce no usable IP. Kept distinct from
+	// timeout because operator alerting may want different treatment.
+	DNSErrorResolver DNSErrorKind = "resolver_error"
+)
+
 // Result describes the outcome of scanning a URL.
 type Result struct {
-	Allowed     bool        `json:"allowed"`
-	Reason      string      `json:"reason,omitempty"`
-	Scanner     string      `json:"scanner,omitempty"` // which scanner triggered
-	Hint        string      `json:"hint,omitempty"`    // actionable guidance when blocked
-	Score       float64     `json:"score"`             // anomaly score 0.0-1.0
-	Class       ResultClass `json:"-"`                 // internal: threat vs protective classification
-	WarnMatches []WarnMatch `json:"warn_matches,omitempty"`
+	Allowed      bool         `json:"allowed"`
+	Reason       string       `json:"reason,omitempty"`
+	Scanner      string       `json:"scanner,omitempty"` // which scanner triggered
+	Hint         string       `json:"hint,omitempty"`    // actionable guidance when blocked
+	Score        float64      `json:"score"`             // anomaly score 0.0-1.0
+	Class        ResultClass  `json:"-"`                 // internal: threat vs protective classification
+	DNSErrorKind DNSErrorKind `json:"-"`                 // internal: DNS resolver failure subtype (set only when Class == ClassInfrastructureError on the DNS path)
+	WarnMatches  []WarnMatch  `json:"warn_matches,omitempty"`
 }
 
 // IsProtective reports whether this result represents protective enforcement
@@ -1079,12 +1103,22 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 		// classification, a burst of DNS timeouts accumulates
 		// SignalBlock points until the session is pushed into airlock
 		// lockdown.
+		//
+		// Split the resolver failure mode into a DNSErrorKind so the
+		// audit emit path can drop the misleading mitre_technique=T1046
+		// tag (and the "SSRF check failed" reason text) on
+		// non-adversarial DNS errors. The label fix is presentational;
+		// Scanner stays ScannerSSRF so existing suppression rules, layer
+		// header values, and metrics keyed on the canonical label keep
+		// working for operators that already consume them.
+		kind, reason := classifyDNSError(hostname, err)
 		return Result{
-			Allowed: false,
-			Reason:  fmt.Sprintf("SSRF check failed: DNS resolution error for %s: %v", hostname, err),
-			Scanner: ScannerSSRF,
-			Score:   1.0,
-			Class:   ClassInfrastructureError,
+			Allowed:      false,
+			Reason:       reason,
+			Scanner:      ScannerSSRF,
+			Score:        1.0,
+			Class:        ClassInfrastructureError,
+			DNSErrorKind: kind,
 		}
 	}
 

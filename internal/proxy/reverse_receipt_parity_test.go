@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 // reverseReceiptParitySetup wires the same plumbing as reverseTestSetup
@@ -29,6 +30,11 @@ import (
 // server, the recorder dir, and the recorder so the test can flush+
 // extract receipts after exercising a block path.
 func reverseReceiptParitySetup(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc) (proxySrv *httptest.Server, dir string, closeRecorder func()) {
+	t.Helper()
+	return reverseReceiptParitySetupWithShield(t, cfg, upstreamHandler, nil)
+}
+
+func reverseReceiptParitySetupWithShield(t *testing.T, cfg *config.Config, upstreamHandler http.HandlerFunc, se *shield.Engine) (proxySrv *httptest.Server, dir string, closeRecorder func()) {
 	t.Helper()
 
 	upstream := newIPv4Server(t, upstreamHandler)
@@ -53,7 +59,7 @@ func reverseReceiptParitySetup(t *testing.T, cfg *config.Config, upstreamHandler
 	m := metrics.New()
 	ks := killswitch.New(cfg)
 
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, se)
 
 	dir = t.TempDir()
 	emitter, rec, _ := newCoverageEmitter(t, dir)
@@ -68,6 +74,80 @@ func reverseReceiptParitySetup(t *testing.T, cfg *config.Config, upstreamHandler
 		if err := rec.Close(); err != nil {
 			t.Fatalf("recorder close: %v", err)
 		}
+	}
+}
+
+func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
+	cfg.BrowserShield.StripExtensionProbing = true
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("ETag", `"upstream-etag"`)
+		w.Header().Set("Digest", "sha-256=upstream")
+		w.Header().Set("Content-MD5", "upstream-md5")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`))
+	}
+	proxySrv, dir, closeRec := reverseReceiptParitySetupWithShield(t, cfg, upstream, shield.NewEngine(nil))
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, proxySrv.URL+"/oauth/callback;jsessionid=ABCDEF/users/eyJhbGc.iJSUzI/profile?access_token=secret&state=ok", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set(AgentHeader, "reverse-agent")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for shielded reverse response, got %d", resp.StatusCode)
+	}
+	for _, name := range []string{"ETag", "Digest", "Content-MD5"} {
+		if got := resp.Header.Get(name); got != "" {
+			t.Fatalf("%s survived reverse shield rewrite: %q", name, got)
+		}
+	}
+
+	waitForReceiptOrTimeout(t, dir)
+	closeRec()
+
+	receipts := extractReceiptsFromDir(t, dir)
+	r := findReceiptByLayer(t, receipts, browserShieldLayer)
+	if r.ActionRecord.Transport != TransportReverse {
+		t.Errorf("Transport = %q, want %q", r.ActionRecord.Transport, TransportReverse)
+	}
+	if r.ActionRecord.ParentActionID == "" {
+		t.Fatal("ParentActionID empty on reverse shield receipt")
+	}
+	if r.ActionRecord.ParentActionID == r.ActionRecord.ActionID {
+		t.Fatal("ParentActionID should link to the request action, not duplicate the shield action ID")
+	}
+	if r.ActionRecord.Shield == nil {
+		t.Fatal("reverse shield receipt missing shield summary")
+	}
+	if r.ActionRecord.Shield.AdaptiveSignalsRecorded != 0 {
+		t.Fatalf("reverse adaptive_signals_recorded = %d, want 0", r.ActionRecord.Shield.AdaptiveSignalsRecorded)
+	}
+	if r.ActionRecord.Shield.AdaptiveSignalMaxPerBody != browserShieldAdaptiveSignalCap {
+		t.Fatalf("reverse adaptive_signal_max_per_body = %d, want %d", r.ActionRecord.Shield.AdaptiveSignalMaxPerBody, browserShieldAdaptiveSignalCap)
+	}
+	if r.ActionRecord.Actor != "reverse-agent" {
+		t.Fatalf("reverse shield receipt actor = %q, want reverse-agent", r.ActionRecord.Actor)
+	}
+	if strings.Contains(r.ActionRecord.Target, "access_token") || strings.Contains(r.ActionRecord.Target, "secret") {
+		t.Fatalf("reverse shield receipt target was not scrubbed: %q", r.ActionRecord.Target)
+	}
+	if strings.Contains(r.ActionRecord.Target, "ABCDEF") || strings.Contains(r.ActionRecord.Target, "eyJhbGc") {
+		t.Fatalf("reverse shield receipt target retained path-borne token: %q", r.ActionRecord.Target)
+	}
+	if strings.Contains(r.ActionRecord.Target, "?") {
+		t.Fatalf("reverse shield receipt target retained query string: %q", r.ActionRecord.Target)
+	}
+	if !strings.Contains(r.ActionRecord.Target, "__redacted") {
+		t.Fatalf("reverse shield receipt target did not include path redaction marker: %q", r.ActionRecord.Target)
 	}
 }
 

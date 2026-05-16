@@ -1733,13 +1733,20 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// Browser Shield on forward proxy responses. Use post-redirect host
 		// so exempt_domains checks match the actual response origin.
 		var shieldBlocked bool
-		respBody, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward)
+		var shieldSummary *receipt.ShieldSummary
+		respBody, shieldSummary, shieldBlocked = p.applyShield(respBody, resp.Header.Get("Content-Type"), fwdRespHost, resp.Header, cfg, actx, clientIP, requestID, TransportForward, actionID)
 		if shieldBlocked {
 			p.metrics.RecordBlocked(fwdRespHost, "shield_oversize", time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfoFor(blockreason.BrowserShieldOversize, "shield_oversize"),
 				"blocked: response body exceeds browser shield size limit", http.StatusForbidden)
 			return
+		}
+		if shieldSummary != nil {
+			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
+			resp.Header.Del("ETag")
+			resp.Header.Del("Digest")
+			resp.Header.Del("Content-MD5")
 		}
 
 		// Media policy: strip metadata from allowed images, block unused

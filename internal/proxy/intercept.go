@@ -1393,9 +1393,9 @@ func newInterceptHandler(
 
 		// Browser Shield on intercepted response body.
 		if ic.Proxy != nil {
-			originalLen := len(respBody)
 			var shieldBlocked bool
-			respBody, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect)
+			var shieldSummary *receipt.ShieldSummary
+			respBody, shieldSummary, shieldBlocked = ic.Proxy.applyShield(respBody, resp.Header.Get("Content-Type"), ic.TargetHost, resp.Header, ic.Config, actx, ic.ClientIP, ic.RequestID, TransportConnect, actionID)
 			if shieldBlocked {
 				ic.Metrics.RecordTLSResponseBlocked("shield_oversize")
 				writeBlockedError(w,
@@ -1404,12 +1404,13 @@ func newInterceptHandler(
 				return
 			}
 			// If shield modified the body, update Content-Length to prevent
-			// browser/client mismatch. Remove ETag and Digest since the
-			// body is no longer the original.
-			if len(respBody) != originalLen {
+			// browser/client mismatch. Remove body-derived validators since
+			// the body is no longer the original.
+			if shieldSummary != nil {
 				resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
 				resp.Header.Del("ETag")
 				resp.Header.Del("Digest")
+				resp.Header.Del("Content-MD5")
 			}
 		}
 

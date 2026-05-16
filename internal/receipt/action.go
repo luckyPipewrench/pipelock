@@ -107,9 +107,10 @@ type ActionRecord struct {
 	Version int `json:"version"`
 
 	// Identity
-	ActionID   string     `json:"action_id"`
-	ActionType ActionType `json:"action_type"`
-	Timestamp  time.Time  `json:"timestamp"`
+	ActionID       string     `json:"action_id"`
+	ParentActionID string     `json:"parent_action_id,omitempty"`
+	ActionType     ActionType `json:"action_type"`
+	Timestamp      time.Time  `json:"timestamp"`
 
 	// Authority context (minimal ledger fields)
 	Principal       string   `json:"principal"`
@@ -159,6 +160,7 @@ type ActionRecord struct {
 	Pattern   string            `json:"pattern,omitempty"`
 	Severity  string            `json:"severity,omitempty"`
 	Redaction *RedactionSummary `json:"redaction,omitempty"`
+	Shield    *ShieldSummary    `json:"shield,omitempty"`
 	RequestID string            `json:"request_id,omitempty"`
 
 	// Chain integrity — links receipts into a tamper-evident sequence.
@@ -185,6 +187,28 @@ type RedactionSummary struct {
 	TotalRedactions   int            `json:"total_redactions,omitempty"`
 	ByClass           map[string]int `json:"by_class,omitempty"`
 	CacheBoundaryKept bool           `json:"cache_boundary_kept,omitempty"`
+}
+
+// ShieldSummary captures Browser Shield response-side rewrites for an allowed
+// response. Present only when the shield actually changed browser-visible
+// content.
+type ShieldSummary struct {
+	Pipeline                 string `json:"pipeline,omitempty"`
+	TotalRewrites            int    `json:"total_rewrites,omitempty"`
+	ExtensionProbes          int    `json:"extension_probes,omitempty"`
+	TrackingBeacons          int    `json:"tracking_beacons,omitempty"`
+	AgentTraps               int    `json:"agent_traps,omitempty"`
+	FingerprintShimInjected  bool   `json:"fingerprint_shim_injected,omitempty"`
+	SVGForeignObjects        int    `json:"svg_foreign_objects,omitempty"`
+	SVGEventHandlers         int    `json:"svg_event_handlers,omitempty"`
+	SVGExternalReferences    int    `json:"svg_external_references,omitempty"`
+	SVGHiddenText            int    `json:"svg_hidden_text,omitempty"`
+	SVGAnimationInjections   int    `json:"svg_animation_injections,omitempty"`
+	BodyBytes                int    `json:"body_bytes,omitempty"`
+	ScannedBytes             int    `json:"scanned_bytes,omitempty"`
+	Partial                  bool   `json:"partial,omitempty"`
+	AdaptiveSignalsRecorded  int    `json:"adaptive_signals_recorded,omitempty"`
+	AdaptiveSignalMaxPerBody int    `json:"adaptive_signal_max_per_body,omitempty"`
 }
 
 // Validate checks that required fields are populated and the action type is valid.

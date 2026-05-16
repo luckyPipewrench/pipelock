@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -3348,6 +3349,56 @@ func TestForwardHTTP_ShieldOversizeTransportParity(t *testing.T) {
 			t.Errorf("shieldable HTML over MaxShieldBytes must still block via forward proxy (fail-closed); got status %d", resp.StatusCode)
 		}
 	})
+}
+
+func TestForwardHTTP_ShieldRewriteClearsBodyValidators(t *testing.T) {
+	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("ETag", `"upstream-etag"`)
+		w.Header().Set("Digest", "sha-256=upstream")
+		w.Header().Set("Content-MD5", "upstream-md5")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer backend.Close()
+
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+	cfg.DLP.Patterns = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+
+	proxyAddr, cleanup := startProxyOnFreePort(t, cfg)
+	defer cleanup()
+
+	resp := doGet(t, proxyClient(proxyAddr), backend.URL+"/shield.html")
+	defer resp.Body.Close() //nolint:errcheck // test
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, got)
+	}
+	if bytes.Equal(got, body) {
+		t.Fatal("forward shield should rewrite the extension probe")
+	}
+	if resp.Header.Get("ETag") != "" {
+		t.Fatalf("ETag should be cleared after shield rewrite, got %q", resp.Header.Get("ETag"))
+	}
+	if resp.Header.Get("Digest") != "" {
+		t.Fatalf("Digest should be cleared after shield rewrite, got %q", resp.Header.Get("Digest"))
+	}
+	if resp.Header.Get("Content-MD5") != "" {
+		t.Fatalf("Content-MD5 should be cleared after shield rewrite, got %q", resp.Header.Get("Content-MD5"))
+	}
+	if resp.ContentLength != int64(len(got)) {
+		t.Fatalf("Content-Length = %d, want rewritten body length %d", resp.ContentLength, len(got))
+	}
 }
 
 // TestForwardHTTP_CompressedSSE_GzipFailsClosed locks down the fix for

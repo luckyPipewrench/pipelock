@@ -24,6 +24,7 @@ const (
 	SignalEntropyBudget                   // +2 — CEE entropy exceeded
 	SignalFragmentDLP                     // +3 — CEE fragment reassembly found secret
 	SignalStrip                           // +2 — active mitigation, repeated stripping = sustained attack
+	SignalShieldRewrite                   // +0.25 — Browser Shield rewrote browser-side probes/traps
 )
 
 // SignalPoints maps signal types to their score contribution.
@@ -34,6 +35,7 @@ var SignalPoints = map[SignalType]float64{
 	SignalEntropyBudget: 2.0,
 	SignalFragmentDLP:   3.0,
 	SignalStrip:         2.0,
+	SignalShieldRewrite: 0.25,
 }
 
 // escalationLabels maps escalation levels to human-readable names.

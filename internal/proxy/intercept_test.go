@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 const (
@@ -3354,4 +3355,119 @@ func TestInterceptTunnel_ShieldOversizeTransportParity(t *testing.T) {
 			t.Errorf("shieldable HTML over MaxShieldBytes must still block via TLS intercept (fail-closed); got status %d", resp.StatusCode)
 		}
 	})
+}
+
+func TestInterceptTunnel_ShieldRewriteClearsBodyValidators(t *testing.T) {
+	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script></body></html>`)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("ETag", `"upstream-etag"`)
+		w.Header().Set("Digest", "sha-256=upstream")
+		w.Header().Set("Content-MD5", "upstream-md5")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.DLP.Patterns = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	testLogger, _ := audit.New("json", "stdout", "", false, false)
+	p, err := New(cfg, testLogger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/shield.html", nil)
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, got)
+	}
+	if bytes.Equal(got, body) {
+		t.Fatal("intercept shield should rewrite the extension probe")
+	}
+	if resp.Header.Get("ETag") != "" {
+		t.Fatalf("ETag should be cleared after shield rewrite, got %q", resp.Header.Get("ETag"))
+	}
+	if resp.Header.Get("Digest") != "" {
+		t.Fatalf("Digest should be cleared after shield rewrite, got %q", resp.Header.Get("Digest"))
+	}
+	if resp.Header.Get("Content-MD5") != "" {
+		t.Fatalf("Content-MD5 should be cleared after shield rewrite, got %q", resp.Header.Get("Content-MD5"))
+	}
+	if resp.ContentLength != int64(len(got)) {
+		t.Fatalf("Content-Length = %d, want rewritten body length %d", resp.ContentLength, len(got))
+	}
+}
+
+func TestInterceptTunnel_SameLengthShieldRewriteClearsBodyValidators(t *testing.T) {
+	shimLen := len("<script>" + shield.ExtensionProbeShim + "</script>")
+	extPrefix := "chrome-extension://"
+	if shimLen <= len(extPrefix) {
+		t.Fatalf("test invariant broken: shim length %d <= prefix length %d", shimLen, len(extPrefix))
+	}
+	extURL := extPrefix + strings.Repeat("a", shimLen-len(extPrefix))
+	body := []byte(`<html><head></head><body><script>fetch("` + extURL + `")</script></body></html>`)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("ETag", `"upstream-etag"`)
+		w.Header().Set("Digest", "sha-256=upstream")
+		w.Header().Set("Content-MD5", "upstream-md5")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.DLP.Patterns = nil
+	cfg.ResponseScanning.Enabled = false
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.StripExtensionProbing = true
+	cfg.BrowserShield.StripHiddenTraps = false
+	cfg.BrowserShield.StripTrackingPixels = false
+	cfg.BrowserShield.InjectFingerprintShims = false
+	testLogger, _ := audit.New("json", "stdout", "", false, false)
+	p, err := New(cfg, testLogger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+
+	addr := upstream.Listener.Addr().String()
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/shield.html", nil)
+	resp := interceptAndRequestWithProxy(t, upstream, cache, pool, cfg, sc, logger, m, req, p)
+	defer func() { _ = resp.Body.Close() }()
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", resp.StatusCode, got)
+	}
+	if len(got) != len(body) {
+		t.Fatalf("test must exercise same-length rewrite: got body len %d, original %d", len(got), len(body))
+	}
+	if bytes.Equal(got, body) {
+		t.Fatal("intercept shield should rewrite the extension probe")
+	}
+	if resp.Header.Get("ETag") != "" {
+		t.Fatalf("ETag should be cleared after same-length shield rewrite, got %q", resp.Header.Get("ETag"))
+	}
+	if resp.Header.Get("Digest") != "" {
+		t.Fatalf("Digest should be cleared after same-length shield rewrite, got %q", resp.Header.Get("Digest"))
+	}
+	if resp.Header.Get("Content-MD5") != "" {
+		t.Fatalf("Content-MD5 should be cleared after same-length shield rewrite, got %q", resp.Header.Get("Content-MD5"))
+	}
+	if resp.ContentLength != int64(len(got)) {
+		t.Fatalf("Content-Length = %d, want rewritten body length %d", resp.ContentLength, len(got))
+	}
 }

@@ -2194,6 +2194,62 @@ When enabled, the envelope carries these wire fields:
 
 **Well-known key directory:** A signing proxy exposes its current envelope public key at `/.well-known/http-message-signatures-directory` with short cache headers. Unsigned envelope configurations return 404.
 
+## Browser Shield
+
+Browser Shield is opt-in. By default, `browser_shield.enabled` is `false`.
+The other Browser Shield defaults are populated so operators can enable the
+feature with a small config change instead of defining every rewrite knob.
+
+Browser Shield rewrites shieldable HTML, JavaScript, and SVG responses before
+they reach the agent browser. It strips browser-extension probes, hidden
+agent-trap content, tracking pixels/beacons, and SVG active content covered by
+the shield pipeline. It does not attempt to solve CAPTCHAs, bypass bot
+management, forge browser integrity telemetry, or make unsupported websites
+accessible to automation.
+
+```yaml
+browser_shield:
+  enabled: true
+  strictness: standard
+  max_shield_bytes: 5242880
+  oversize_action: block
+  exempt_domains:
+    - challenges.cloudflare.com
+    - hcaptcha.com
+    - www.recaptcha.net
+  strip_extension_probing: true
+  strip_hidden_traps: true
+  strip_tracking_pixels: true
+  inject_fingerprint_shims: false
+  tracking_domains: []
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch for response rewriting |
+| `strictness` | string | `standard` | Rewrite posture: `minimal`, `standard`, or `aggressive` |
+| `max_shield_bytes` | int | `5242880` (5 MiB) | Maximum shieldable response body size before `oversize_action` applies |
+| `oversize_action` | string | `block` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
+| `exempt_domains` | []string | challenge providers | Hostnames that bypass Browser Shield entirely |
+| `strip_extension_probing` | bool | `true` | Remove browser-extension probing URLs and runtime probes |
+| `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content |
+| `strip_tracking_pixels` | bool | `true` | Remove tracking pixels and beacon-style calls |
+| `inject_fingerprint_shims` | bool | `false` | Inject browser fingerprinting defense shims where supported |
+| `tracking_domains` | []string | `[]` | Additional tracking hostnames for the shield engine |
+
+For production soak, start with:
+
+```yaml
+browser_shield:
+  enabled: true
+  strictness: minimal
+  oversize_action: warn
+```
+
+Then monitor shield receipts, response rewrite metrics, adaptive session score
+movement, block deltas, and application breakage before moving to the standard
+fail-closed posture.
+
 ## Media Policy (v2.1)
 
 Controls how media responses (image, audio, video Content-Type) are handled. Pipelock cannot inspect pixels or audio frames for embedded instructions, so this section reduces exposure by stripping unused media types, enforcing size limits, surgically removing metadata from allowed images, and emitting exposure events.

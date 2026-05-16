@@ -632,6 +632,31 @@ func TestLargeContent(t *testing.T) {
 	}
 }
 
+func TestLargePaddedPayloadRewrite(t *testing.T) {
+	e := NewEngine(nil)
+	cfg := defaultShieldCfg()
+	cfg.InjectFingerprintShims = false
+
+	// Padding must not let risky content hide beyond the initial sniff window
+	// when the caller already classified the response as HTML.
+	filler := strings.Repeat("A", 5*1024*1024)
+	input := testHTMLPrefix + filler +
+		`<script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script>` +
+		testCommentTrap +
+		testHTMLSuffix
+	res := e.Rewrite(input, PipelineHTML, cfg)
+
+	if !res.Rewritten {
+		t.Fatal("expected rewrite on padded HTML payload")
+	}
+	if strings.Contains(res.Content, "chrome-extension://") {
+		t.Error("extension probe survived padded payload")
+	}
+	if strings.Contains(strings.ToLower(res.Content), "ignore previous instructions") {
+		t.Error("comment trap survived padded payload")
+	}
+}
+
 func TestRewritePreservesOriginal(t *testing.T) {
 	e := NewEngine(nil)
 	cfg := defaultShieldCfg()

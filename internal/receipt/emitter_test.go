@@ -307,6 +307,70 @@ func TestEmitter_Emit_RedactionSummary(t *testing.T) {
 	}
 }
 
+func TestEmitter_Emit_ShieldSummary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	pub, priv := generateTestKey(t)
+	rec := newTestRecorder(t, dir, priv)
+
+	e := NewEmitter(EmitterConfig{
+		Recorder:   rec,
+		PrivKey:    priv,
+		ConfigHash: testConfigHash,
+		Principal:  testPrincipal,
+		Actor:      testActor,
+	})
+
+	err := e.Emit(EmitOpts{
+		ActionID:       NewActionID(),
+		ParentActionID: "parent-action-id",
+		Target:         testTarget,
+		Verdict:        config.ActionAllow,
+		Transport:      testTransport,
+		Method:         http.MethodGet,
+		Layer:          "browser_shield",
+		Pattern:        "browser_shield_rewrite",
+		Severity:       config.SeverityInfo,
+		Shield: &ShieldSummary{
+			Pipeline:                 "html",
+			TotalRewrites:            4,
+			ExtensionProbes:          1,
+			TrackingBeacons:          1,
+			AgentTraps:               1,
+			FingerprintShimInjected:  true,
+			BodyBytes:                2048,
+			ScannedBytes:             1024,
+			Partial:                  true,
+			AdaptiveSignalsRecorded:  1,
+			AdaptiveSignalMaxPerBody: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Emit() error: %v", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatalf("recorder.Close() error: %v", err)
+	}
+
+	got := readReceiptFromDir(t, dir, pub)
+	if got.ActionRecord.Shield == nil {
+		t.Fatal("expected shield summary in receipt")
+	}
+	if got.ActionRecord.Shield.Pipeline != "html" {
+		t.Fatalf("pipeline = %q, want html", got.ActionRecord.Shield.Pipeline)
+	}
+	if got.ActionRecord.Shield.TotalRewrites != 4 {
+		t.Fatalf("total_rewrites = %d, want 4", got.ActionRecord.Shield.TotalRewrites)
+	}
+	if got.ActionRecord.ParentActionID != "parent-action-id" {
+		t.Fatalf("parent_action_id = %q, want parent-action-id", got.ActionRecord.ParentActionID)
+	}
+	if got.ActionRecord.Shield.AdaptiveSignalsRecorded != 1 {
+		t.Fatalf("adaptive_signals_recorded = %d, want 1", got.ActionRecord.Shield.AdaptiveSignalsRecorded)
+	}
+}
+
 func TestEmitter_Emit_NilRedactionReportOmitted(t *testing.T) {
 	t.Parallel()
 

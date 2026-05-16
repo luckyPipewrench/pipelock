@@ -185,11 +185,12 @@ func runInitWithBridge(command, env []string, workspace, socketPath string) {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
 
 	go bridge.Serve(ctx)
-	defer bridge.Close()
 
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 
@@ -205,25 +206,62 @@ func runInitWithBridge(command, env []string, workspace, socketPath string) {
 
 	binary, err := lookPathIn(command[0], env)
 	if err != nil {
+		cancel()
+		bridge.Close()
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command not found: %s (%v)\n", command[0], err)
 		os.Exit(127)
 	}
 
-	childCmd := exec.CommandContext(ctx, binary, command[1:]...) //nolint:gosec // G204: user-specified MCP server command
+	childCmd := exec.CommandContext(context.Background(), binary, command[1:]...) //nolint:gosec // G204: user-specified MCP server command; signal lifecycle is handled explicitly below.
 	childCmd.Stdin = os.Stdin
 	childCmd.Stdout = os.Stdout
 	childCmd.Stderr = os.Stderr
 	childCmd.Env = env
 	childCmd.Dir = workspace
 
-	if err := childCmd.Run(); err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			os.Exit(exitErr.ExitCode())
-		}
+	if err := childCmd.Start(); err != nil {
+		cancel()
+		bridge.Close()
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		os.Exit(1)
 	}
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- childCmd.Wait()
+	}()
+
+	for {
+		select {
+		case sig := <-sigCh:
+			if sig != nil && childCmd.Process != nil {
+				_ = childCmd.Process.Signal(sig)
+			}
+		case err := <-waitCh:
+			cancel()
+			bridge.Close()
+			exitBridgeChild(err)
+			return
+		}
+	}
+}
+
+func exitBridgeChild(err error) {
+	if err == nil {
+		return
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			sig := status.Signal()
+			signal.Reset(sig)
+			_ = syscall.Kill(syscall.Getpid(), sig)
+			os.Exit(128 + int(sig))
+		}
+		os.Exit(exitErr.ExitCode())
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
+	os.Exit(1)
 }
 
 func appendBridgeProxyEnv(env []string, addr string) []string {

@@ -209,6 +209,12 @@ func TestSyntheticEnv_BlocksDangerousExtraEnv(t *testing.T) {
 			t.Errorf("expected error for dangerous env key %q, got nil", key)
 		}
 	}
+	for _, key := range []string{"HTTP_PROXY", "Http_Proxy", "HTTPS_proxy", "NO_proxy", "CUSTOM_PROXY"} {
+		_, err := SyntheticEnv(dir, dir, []string{key + "=http://attacker"})
+		if err == nil {
+			t.Errorf("expected error for proxy env key %q, got nil", key)
+		}
+	}
 }
 
 func TestSyntheticEnv_AllowsSafeExtraEnv(t *testing.T) {

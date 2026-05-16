@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+type startMCPSandboxBridgeFunc func(
+	context.Context,
+	*config.Config,
+	*killswitch.Controller,
+	*audit.Logger,
+	*metrics.Metrics,
+	*receipt.Emitter,
+	*envelope.Emitter,
+) (*mcpSandboxBridge, error)
+
 type mcpSandboxBridge struct {
 	dir        string
 	socketPath string
@@ -34,6 +45,37 @@ type mcpSandboxBridge struct {
 	mu         sync.Mutex
 	conns      map[net.Conn]struct{}
 	closed     bool
+}
+
+func setupMCPSandboxBridge(
+	ctx context.Context,
+	goos string,
+	cfg *config.Config,
+	ks *killswitch.Controller,
+	log *audit.Logger,
+	m *metrics.Metrics,
+	receiptEmitter *receipt.Emitter,
+	envEmitter *envelope.Emitter,
+	stderr io.Writer,
+	launchCfg *sandbox.LaunchConfig,
+	startBridge startMCPSandboxBridgeFunc,
+) (func(), error) {
+	if goos != "linux" {
+		_, _ = fmt.Fprintf(stderr,
+			"pipelock: WARNING: MCP sandbox egress bridge is Linux-only; bridge-style MCP servers on %s may need separate egress controls to ensure upstream HTTP(S) traverses pipelock. "+
+				"Configure the MCP server to use pipelock's forward proxy listener via HTTPS_PROXY and disable any built-in proxy bypass.\n",
+			goos)
+		return func() {}, nil
+	}
+
+	bridge, err := startBridge(ctx, cfg, ks, log, m, receiptEmitter, envEmitter)
+	if err != nil {
+		return nil, err
+	}
+	launchCfg.BridgeSocketPath = bridge.SocketPath()
+	_, _ = fmt.Fprintf(stderr,
+		"pipelock: MCP sandbox egress bridge enabled; forward_proxy forced on for sandboxed MCP egress (child loopback -> parent scanner)\n")
+	return bridge.Close, nil
 }
 
 func startMCPSandboxBridge(
@@ -108,7 +150,7 @@ func startMCPSandboxBridge(
 				return
 			}
 			bridge.connWg.Add(1)
-			go func() {
+			go func(conn net.Conn) {
 				defer bridge.connWg.Done()
 				defer bridge.untrackConn(conn)
 				srv := &http.Server{
@@ -117,7 +159,7 @@ func startMCPSandboxBridge(
 					IdleTimeout:       30 * time.Second,
 				}
 				_ = srv.Serve(&singleConnListener{conn: conn})
-			}()
+			}(conn)
 		}
 	}()
 

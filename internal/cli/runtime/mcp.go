@@ -994,23 +994,14 @@ signed action receipts for MCP decisions.`,
 					}
 				}
 
-				var bridge *mcpSandboxBridge
-				if runtime.GOOS == "linux" {
-					var bridgeErr error
-					bridge, bridgeErr = startMCPSandboxBridge(ctx, cfg, ks, auditLogger, mcpMetrics, receiptEmitter, envEmitter)
-					if bridgeErr != nil {
-						return bridgeErr
-					}
-					defer bridge.Close()
-					launchCfg.BridgeSocketPath = bridge.SocketPath()
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-						"pipelock: MCP sandbox egress bridge enabled; forward_proxy forced on for sandboxed MCP egress (child loopback -> parent scanner)\n")
-				} else {
-					_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
-						"pipelock: WARNING: MCP sandbox egress bridge is Linux-only; bridge-style MCP servers on %s may need separate egress controls to ensure upstream HTTP(S) traverses pipelock. "+
-							"Configure the MCP server to use pipelock's forward proxy listener via HTTPS_PROXY and disable any built-in proxy bypass.\n",
-						runtime.GOOS)
+				closeBridge, bridgeErr := setupMCPSandboxBridge(
+					ctx, runtime.GOOS, cfg, ks, auditLogger, mcpMetrics, receiptEmitter, envEmitter,
+					cmd.ErrOrStderr(), &launchCfg, startMCPSandboxBridge,
+				)
+				if bridgeErr != nil {
+					return bridgeErr
 				}
+				defer closeBridge()
 
 				sandboxCmd, sErr := sandbox.PrepareSandboxCmd(launchCfg)
 				if sErr != nil {

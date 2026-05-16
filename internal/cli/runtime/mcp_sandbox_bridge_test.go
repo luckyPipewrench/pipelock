@@ -5,7 +5,9 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,8 +19,152 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
+
+func TestSetupMCPSandboxBridge_LinuxStartsBridge(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	ks := killswitch.New(cfg)
+	var stderr bytes.Buffer
+	launchCfg := sandbox.LaunchConfig{}
+	started := false
+
+	closeBridge, err := setupMCPSandboxBridge(
+		context.Background(),
+		"linux",
+		cfg,
+		ks,
+		audit.NewNop(),
+		nil,
+		nil,
+		nil,
+		&stderr,
+		&launchCfg,
+		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
+			started = true
+			return &mcpSandboxBridge{socketPath: "/tmp/pl-mcp-test/proxy.sock"}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("setupMCPSandboxBridge: %v", err)
+	}
+	if !started {
+		t.Fatal("bridge starter was not called")
+	}
+	if launchCfg.BridgeSocketPath != "/tmp/pl-mcp-test/proxy.sock" {
+		t.Fatalf("BridgeSocketPath = %q", launchCfg.BridgeSocketPath)
+	}
+	if got := stderr.String(); !strings.Contains(got, "MCP sandbox egress bridge enabled") {
+		t.Fatalf("stderr = %q, want bridge enabled message", got)
+	}
+	closeBridge()
+}
+
+func TestSetupMCPSandboxBridge_StartError(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	wantErr := errors.New("bridge unavailable")
+	launchCfg := sandbox.LaunchConfig{}
+
+	closeBridge, err := setupMCPSandboxBridge(
+		context.Background(),
+		"linux",
+		cfg,
+		killswitch.New(cfg),
+		audit.NewNop(),
+		nil,
+		nil,
+		nil,
+		io.Discard,
+		&launchCfg,
+		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
+			return nil, wantErr
+		},
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if closeBridge != nil {
+		t.Fatal("closeBridge should be nil on start error")
+	}
+	if launchCfg.BridgeSocketPath != "" {
+		t.Fatalf("BridgeSocketPath = %q, want empty", launchCfg.BridgeSocketPath)
+	}
+}
+
+func TestSetupMCPSandboxBridge_NonLinuxWarns(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	var stderr bytes.Buffer
+	launchCfg := sandbox.LaunchConfig{}
+	started := false
+
+	closeBridge, err := setupMCPSandboxBridge(
+		context.Background(),
+		"darwin",
+		cfg,
+		killswitch.New(cfg),
+		audit.NewNop(),
+		nil,
+		nil,
+		nil,
+		&stderr,
+		&launchCfg,
+		func(context.Context, *config.Config, *killswitch.Controller, *audit.Logger, *metrics.Metrics, *receipt.Emitter, *envelope.Emitter) (*mcpSandboxBridge, error) {
+			started = true
+			return nil, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("setupMCPSandboxBridge: %v", err)
+	}
+	if started {
+		t.Fatal("bridge starter should not run on non-Linux")
+	}
+	if launchCfg.BridgeSocketPath != "" {
+		t.Fatalf("BridgeSocketPath = %q, want empty", launchCfg.BridgeSocketPath)
+	}
+	got := stderr.String()
+	if !strings.Contains(got, "Linux-only") || !strings.Contains(got, "HTTPS_PROXY") {
+		t.Fatalf("stderr = %q, want actionable non-Linux warning", got)
+	}
+	closeBridge()
+}
+
+func TestMCPSandboxBridgeHelpers_NilAndClosed(t *testing.T) {
+	t.Parallel()
+
+	var nilBridge *mcpSandboxBridge
+	if nilBridge.SocketPath() != "" {
+		t.Fatal("nil bridge SocketPath should be empty")
+	}
+	nilBridge.Close()
+
+	trackedConn, peerConn := net.Pipe()
+	t.Cleanup(func() { _ = peerConn.Close() })
+
+	bridge := &mcpSandboxBridge{
+		conns: map[net.Conn]struct{}{
+			trackedConn: {},
+		},
+	}
+	conns := bridge.markClosed()
+	if len(conns) != 1 || conns[0] != trackedConn {
+		t.Fatalf("markClosed tracked %d conn(s), want original tracked conn", len(conns))
+	}
+	if bridge.trackConn(peerConn) {
+		t.Fatal("trackConn succeeded after bridge was marked closed")
+	}
+	bridge.Close()
+}
 
 func TestStartMCPSandboxBridge_ForcesForwardProxyIntoScanner(t *testing.T) {
 	t.Parallel()
@@ -216,6 +362,7 @@ func TestStartMCPSandboxBridge_KillSwitchBlocks(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.Defaults()
+	cfg.Internal = nil
 	cfg.KillSwitch.Enabled = true
 	cfg.KillSwitch.Message = "bridge denied"
 	cfg.ForwardProxy.Enabled = false

@@ -55,26 +55,14 @@ func reasonFromScanner(label string) blockreason.Reason {
 	}
 }
 
-// severityFromReason delegates to the canonical
-// blockreason.SeverityFor table. The local wrapper used to maintain its own
-// switch, which silently drifted from the canonical mapping (BlockReasonOverflow,
-// for example, was returning SeverityCritical here while the canonical
-// helper returned SeverityWarn). Delegating keeps blockheaders.go correct
-// against any future vocabulary addition without a per-call-site update.
-func severityFromReason(r blockreason.Reason) blockreason.Severity {
-	return blockreason.SeverityFor(r)
-}
-
-// retryFromReason delegates to the canonical blockreason.RetryFor table for
-// the same reason as severityFromReason: drift between local and canonical
-// mappings was a latent bug class. The canonical helper is the single source
-// of truth used by NewForReason, the spec doc, and the matrix tests.
-func retryFromReason(r blockreason.Reason) blockreason.Retry {
-	return blockreason.RetryFor(r)
-}
-
 // blockInfo builds a complete blockreason.Info from a scanner label.
 // Used by transports whose block decision came from the URL/header pipeline.
+//
+// Severity and retry come from the canonical blockreason.SeverityFor and
+// RetryFor tables; the local wrappers that used to live here silently
+// drifted from the canonical mapping (BlockReasonOverflow was returning
+// SeverityCritical locally while the canonical helper returned
+// SeverityWarn), so all callers now go through the single source of truth.
 //
 // Uses the non-panicking blockreason.New so a missing reason-vocabulary
 // update fails closed (returning a fallback ParseError Info) instead of
@@ -84,7 +72,7 @@ func retryFromReason(r blockreason.Reason) blockreason.Retry {
 // alphabet) leaves the optional Layer slot unset.
 func blockInfo(scannerLabel string) blockreason.Info {
 	r := reasonFromScanner(scannerLabel)
-	info, err := blockreason.New(r, severityFromReason(r), retryFromReason(r))
+	info, err := blockreason.New(r, blockreason.SeverityFor(r), blockreason.RetryFor(r))
 	if err != nil {
 		info = parseErrorFallback()
 	}
@@ -103,7 +91,7 @@ func blockInfo(scannerLabel string) blockreason.Info {
 // Uses blockreason.New rather than MustNew so a missing reason-vocabulary
 // update fails closed instead of panicking on the request path.
 func blockInfoFor(reason blockreason.Reason, layer string) blockreason.Info {
-	info, err := blockreason.New(reason, severityFromReason(reason), retryFromReason(reason))
+	info, err := blockreason.New(reason, blockreason.SeverityFor(reason), blockreason.RetryFor(reason))
 	if err != nil {
 		info = parseErrorFallback()
 	}

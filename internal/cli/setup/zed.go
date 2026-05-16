@@ -26,11 +26,14 @@ import (
 // other installers).
 
 const (
-	zedConfigFilename   = "settings.json"
-	zedUserConfigSubdir = "zed"
-	zedProjectConfigDir = ".zed"
-	zedServersKey       = "context_servers"
-	zedDefaultConfigDir = ".config" // joined under HOME when XDG_CONFIG_HOME is unset
+	zedConfigFilename       = "settings.json"
+	zedUserConfigSubdir     = "zed"
+	zedPreviewConfigSubdir  = "zed-preview"
+	zedProjectConfigDir     = ".zed"
+	zedServersKey           = "context_servers"
+	zedDefaultConfigDir     = ".config" // joined under HOME when XDG_CONFIG_HOME is unset
+	zedFlatpakAppStableDir  = "dev.zed.Zed"
+	zedFlatpakAppPreviewDir = "dev.zed.Zed.Preview"
 )
 
 // ZedCmd returns the `pipelock zed` command tree.
@@ -79,14 +82,18 @@ stdio with --upstream. Header values, if present, land in a 0o600
 header sidecar file referenced via --header-file so secrets never
 appear in /proc/<pid>/cmdline.
 
-Default discovery scans both:
-  - $XDG_CONFIG_HOME/zed/settings.json (or ~/.config/zed/settings.json)
-  - <cwd>/.zed/settings.json
+Default discovery scans:
+  - <cwd>/.zed/settings.json                                     (project)
+  - $XDG_CONFIG_HOME/zed/settings.json                           (native stable)
+  - $XDG_CONFIG_HOME/zed-preview/settings.json                   (native preview)
+  - ~/.var/app/dev.zed.Zed/config/zed/settings.json              (Flatpak stable)
+  - ~/.var/app/dev.zed.Zed.Preview/config/zed-preview/settings.json (Flatpak preview)
 
 Each file that exists is wrapped independently with its own .bak backup.
-If neither exists, install prints a friendly hint and exits 0. Use --path
-to target a single specific file, in which case the file is created if
-it does not exist (matching the behavior of pipelock cline install).
+If none exist, install prints a friendly hint listing every probed path
+and exits 0. Use --path to target a single specific file, in which case
+the file is created if it does not exist (matching the behavior of
+pipelock cline install).
 
 Already-wrapped servers are skipped (idempotent). Non-server top-level
 fields in settings.json are preserved.`,
@@ -132,19 +139,58 @@ specific file.`,
 	return cmd
 }
 
-// zedUserConfigPath returns the user-level settings.json location, honoring
-// $XDG_CONFIG_HOME when set. Zed uses the same path on Linux and macOS per
-// Zed's official docs (https://zed.dev/docs/configuring-zed): the legacy
-// macOS path under ~/Library/Application Support is not the current default.
-func zedUserConfigPath() (string, error) {
+// xdgConfigDir returns $XDG_CONFIG_HOME when set, otherwise $HOME/.config.
+// This is the convention used by Zed (and most XDG-aware Linux apps) for the
+// native install. Flatpak Zed uses a separate per-app config root that is NOT
+// affected by the operator's outer XDG_CONFIG_HOME (see zedFlatpakConfigPath).
+func xdgConfigDir() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		return filepath.Join(xdg, zedUserConfigSubdir, zedConfigFilename), nil
+		return xdg, nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("finding home directory: %w", err)
 	}
-	return filepath.Join(home, zedDefaultConfigDir, zedUserConfigSubdir, zedConfigFilename), nil
+	return filepath.Join(home, zedDefaultConfigDir), nil
+}
+
+// zedUserConfigPath returns the native-install user-level settings.json
+// location (stable channel). Zed uses the same path on Linux and macOS per
+// Zed's official docs (https://zed.dev/docs/configuring-zed); the legacy
+// macOS path under ~/Library/Application Support is not the current default.
+func zedUserConfigPath() (string, error) {
+	root, err := xdgConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, zedUserConfigSubdir, zedConfigFilename), nil
+}
+
+// zedUserPreviewConfigPath returns the native-install Zed Preview channel
+// settings.json location. Zed Preview is a separate binary that ships ahead
+// of the stable channel and stores its config under "zed-preview" rather
+// than "zed"; users who follow both channels need both wraps.
+func zedUserPreviewConfigPath() (string, error) {
+	root, err := xdgConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, zedPreviewConfigSubdir, zedConfigFilename), nil
+}
+
+// zedFlatpakConfigPath returns the Flatpak-sandboxed settings.json location
+// for the given Flatpak app id and channel-config subdir. Flatpak apps store
+// config under $HOME/.var/app/<app-id>/config/ regardless of the operator's
+// outer $XDG_CONFIG_HOME, because the sandbox rewrites XDG paths inside the
+// container. The operator running `pipelock zed install` is OUTSIDE the
+// sandbox, so we have to spell out the Flatpak path explicitly; the outer
+// XDG_CONFIG_HOME does not apply to it.
+func zedFlatpakConfigPath(appID, channelSubdir string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("finding home directory: %w", err)
+	}
+	return filepath.Join(home, ".var", "app", appID, "config", channelSubdir, zedConfigFilename), nil
 }
 
 // zedProjectConfigPath returns <cwd>/.zed/settings.json. The path is always
@@ -167,12 +213,46 @@ type zedDiscoveryResult struct {
 	existingPaths  []string
 }
 
+// zedDefaultCandidates returns the ordered list of settings.json paths the
+// default-discovery flow probes. The ordering is deliberate: project scope
+// first (most-specific) so the friendly output names the local override
+// before the user-level config; then the native channels (stable, preview);
+// then the Flatpak channels (stable, preview). Each path is reported in the
+// "no Zed settings.json found" message even when absent so the operator can
+// see what was looked for.
+func zedDefaultCandidates() ([]string, error) {
+	project, err := zedProjectConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	userStable, err := zedUserConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	userPreview, err := zedUserPreviewConfigPath()
+	if err != nil {
+		return nil, err
+	}
+	flatpakStable, err := zedFlatpakConfigPath(zedFlatpakAppStableDir, zedUserConfigSubdir)
+	if err != nil {
+		return nil, err
+	}
+	flatpakPreview, err := zedFlatpakConfigPath(zedFlatpakAppPreviewDir, zedPreviewConfigSubdir)
+	if err != nil {
+		return nil, err
+	}
+	return []string{project, userStable, userPreview, flatpakStable, flatpakPreview}, nil
+}
+
 // resolveZedTargets returns the paths the command should operate on. When
 // override is set, only that path is returned (and is treated as required,
 // even if missing — install creates it, remove no-ops on it). When override
-// is empty, both default paths are probed; only the ones that exist are
-// returned in existingPaths, but candidatePaths always carries both so the
-// "no settings.json found" message can name what was looked for.
+// is empty, every default-discovery candidate is probed; only the ones that
+// exist are returned in existingPaths, but candidatePaths always carries
+// every probed location so the "no settings.json found" message can name
+// what was looked for. Stat errors other than os.ErrNotExist surface as an
+// error so a permission-denied probe on the operator's settings.json never
+// silently leaves MCP servers unwrapped.
 func resolveZedTargets(override string) (zedDiscoveryResult, error) {
 	if override != "" {
 		clean := filepath.Clean(override)
@@ -182,18 +262,10 @@ func resolveZedTargets(override string) (zedDiscoveryResult, error) {
 		}, nil
 	}
 
-	user, err := zedUserConfigPath()
+	candidates, err := zedDefaultCandidates()
 	if err != nil {
 		return zedDiscoveryResult{}, err
 	}
-	project, err := zedProjectConfigPath()
-	if err != nil {
-		return zedDiscoveryResult{}, err
-	}
-
-	// Order: project first so that when both exist the more-specific scope
-	// is processed (and shown in output) before the broader scope.
-	candidates := []string{project, user}
 	existing := make([]string, 0, len(candidates))
 	for _, p := range candidates {
 		info, statErr := os.Stat(p)
@@ -222,12 +294,15 @@ func runZedInstall(cmd *cobra.Command, override string, dryRun bool, configFile 
 	}
 	paths := targets.existingPaths
 	if override == "" && len(paths) == 0 {
-		// Default discovery with neither file present: name what was looked
-		// for so the operator can decide whether to point --path at a custom
-		// location or to bootstrap one of the defaults.
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-			"No Zed settings.json found at any default location:\n  %s\n  %s\nRun `pipelock zed install --path <file>` to create one explicitly.\n",
-			targets.candidatePaths[0], targets.candidatePaths[1])
+		// Default discovery with no file present: name every path we probed
+		// so the operator can decide whether to point --path at a custom
+		// location, install Zed in a different channel, or bootstrap one
+		// of the defaults.
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No Zed settings.json found at any default location:")
+		for _, p := range targets.candidatePaths {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", p)
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Run `pipelock zed install --path <file>` to create one explicitly.")
 		return nil
 	}
 
@@ -338,9 +413,10 @@ func runZedRemove(cmd *cobra.Command, override string, dryRun bool) error {
 	}
 	paths := targets.existingPaths
 	if override == "" && len(paths) == 0 {
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-			"No Zed settings.json found at any default location:\n  %s\n  %s\n",
-			targets.candidatePaths[0], targets.candidatePaths[1])
+		_, _ = fmt.Fprintln(cmd.OutOrStdout(), "No Zed settings.json found at any default location:")
+		for _, p := range targets.candidatePaths {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", p)
+		}
 		return nil
 	}
 

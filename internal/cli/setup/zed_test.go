@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -153,6 +154,20 @@ func chdirIsolated(t *testing.T) string {
 	return dir
 }
 
+// requirePOSIXPermissions skips the test on Windows (no POSIX mode bits) and
+// when running as uid 0 (root bypasses chmod-based access checks, so a test
+// that depends on EACCES from a chmod 0 dir gets a false-pass under root).
+// Permission-manipulating tests should call this first.
+func requirePOSIXPermissions(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("permission test skipped on Windows: no POSIX mode bits")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission test skipped under root: uid 0 bypasses chmod-based access checks")
+	}
+}
+
 func TestZedInstall_DryRun(t *testing.T) {
 	path := writeZedFile(t, testZedStdioConfig)
 
@@ -212,6 +227,9 @@ func TestZedInstall_StdioServerWithImplicitType(t *testing.T) {
 	}
 	if dashIdx < 0 {
 		t.Fatal("no -- separator in wrapped args")
+	}
+	if dashIdx+1 >= len(args) {
+		t.Fatalf("-- separator at end of args with no original command following: %v", args)
 	}
 	if args[dashIdx+1] != testOriginalCmd {
 		t.Errorf("expected original command after --, got %q", args[dashIdx+1])
@@ -795,8 +813,8 @@ func TestResolveZedTargets_DefaultProbesBoth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.candidatePaths) != 2 {
-		t.Errorf("expected 2 candidates, got %d: %v", len(got.candidatePaths), got.candidatePaths)
+	if len(got.candidatePaths) != 5 {
+		t.Errorf("expected 5 candidates (project + native stable + native preview + flatpak stable + flatpak preview), got %d: %v", len(got.candidatePaths), got.candidatePaths)
 	}
 	if len(got.existingPaths) != 1 {
 		t.Fatalf("expected only user path to be present, got %d", len(got.existingPaths))
@@ -808,6 +826,7 @@ func TestResolveZedTargets_DefaultProbesBoth(t *testing.T) {
 }
 
 func TestResolveZedTargets_DefaultStatError(t *testing.T) {
+	requirePOSIXPermissions(t)
 	home := t.TempDir()
 	xdg := filepath.Join(home, ".config")
 	zedDir := filepath.Join(xdg, zedUserConfigSubdir)
@@ -993,6 +1012,168 @@ func TestZedRemove_DefaultNoFilesPrintsHint(t *testing.T) {
 	}
 }
 
+// TestZedInstall_DefaultWrapsZedPreviewChannel covers users who run Zed
+// Preview alongside the stable channel: the installer must wrap both
+// channels' settings.json files when both exist.
+func TestZedInstall_DefaultWrapsZedPreviewChannel(t *testing.T) {
+	home := isolateHome(t)
+	chdirIsolated(t)
+
+	previewPath := filepath.Join(home, ".config", zedPreviewConfigSubdir, zedConfigFilename)
+	if err := os.MkdirAll(filepath.Dir(previewPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previewPath, []byte(testZedStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runZedCmd(t, "install"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	cfg, _, err := readMCPConfig(previewPath, zedServersKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isWrapped(cfg.Servers["my-server"]) {
+		t.Error("Zed Preview channel settings.json should have been wrapped")
+	}
+}
+
+// TestZedInstall_DefaultWrapsFlatpakStable proves the Flatpak-sandboxed
+// settings.json (~/.var/app/dev.zed.Zed/config/zed/settings.json) is in the
+// default-discovery list. Operators who install Zed from Flathub keep their
+// MCP config there; the installer must reach it without --path.
+func TestZedInstall_DefaultWrapsFlatpakStable(t *testing.T) {
+	home := isolateHome(t)
+	chdirIsolated(t)
+
+	flatpakPath := filepath.Join(home, ".var", "app", zedFlatpakAppStableDir, "config", zedUserConfigSubdir, zedConfigFilename)
+	if err := os.MkdirAll(filepath.Dir(flatpakPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(flatpakPath, []byte(testZedStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runZedCmd(t, "install"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	cfg, _, err := readMCPConfig(flatpakPath, zedServersKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isWrapped(cfg.Servers["my-server"]) {
+		t.Error("Flatpak Zed stable settings.json should have been wrapped")
+	}
+}
+
+// TestZedInstall_DefaultWrapsFlatpakPreview covers Zed Preview installed via
+// Flatpak. Different app id (dev.zed.Zed.Preview) and channel subdir
+// (zed-preview) than the stable Flatpak.
+func TestZedInstall_DefaultWrapsFlatpakPreview(t *testing.T) {
+	home := isolateHome(t)
+	chdirIsolated(t)
+
+	flatpakPath := filepath.Join(home, ".var", "app", zedFlatpakAppPreviewDir, "config", zedPreviewConfigSubdir, zedConfigFilename)
+	if err := os.MkdirAll(filepath.Dir(flatpakPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(flatpakPath, []byte(testZedStdioConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runZedCmd(t, "install"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	cfg, _, err := readMCPConfig(flatpakPath, zedServersKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isWrapped(cfg.Servers["my-server"]) {
+		t.Error("Flatpak Zed Preview settings.json should have been wrapped")
+	}
+}
+
+// TestZedInstall_DefaultEnumeratesAllPathsInHint locks in that the
+// "no Zed settings.json found" message lists every default candidate (not
+// just the first two), so operators on Flatpak or Preview can see why the
+// installer didn't find their config.
+func TestZedInstall_DefaultEnumeratesAllPathsInHint(t *testing.T) {
+	isolateHome(t)
+	chdirIsolated(t)
+
+	stdout, _, err := runZedCmdOutput(t, "install")
+	if err != nil {
+		t.Fatalf("install with no files: %v", err)
+	}
+
+	wantSubstrings := []string{
+		"/.zed/settings.json",                                            // project
+		"/.config/zed/settings.json",                                     // native stable
+		"/.config/zed-preview/settings.json",                             // native preview
+		"/.var/app/dev.zed.Zed/config/zed/settings.json",                 // flatpak stable
+		"/.var/app/dev.zed.Zed.Preview/config/zed-preview/settings.json", // flatpak preview
+	}
+	for _, s := range wantSubstrings {
+		if !strings.Contains(stdout, s) {
+			t.Errorf("friendly hint missing expected path fragment %q\nfull stdout:\n%s", s, stdout)
+		}
+	}
+}
+
+func TestZedDefaultCandidates_OrderingIsStable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(home)
+
+	got, err := zedDefaultCandidates()
+	if err != nil {
+		t.Fatalf("zedDefaultCandidates: %v", err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("expected 5 candidates, got %d: %v", len(got), got)
+	}
+	wantSuffixes := []string{
+		"/.zed/settings.json",                                            // project (first)
+		"/.config/zed/settings.json",                                     // native stable
+		"/.config/zed-preview/settings.json",                             // native preview
+		"/.var/app/dev.zed.Zed/config/zed/settings.json",                 // flatpak stable
+		"/.var/app/dev.zed.Zed.Preview/config/zed-preview/settings.json", // flatpak preview (last)
+	}
+	for i, suf := range wantSuffixes {
+		if !strings.HasSuffix(got[i], suf) {
+			t.Errorf("candidate[%d] = %q, want suffix %q", i, got[i], suf)
+		}
+	}
+}
+
+func TestZedFlatpakConfigPath_HonorsAppID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	stable, err := zedFlatpakConfigPath(zedFlatpakAppStableDir, zedUserConfigSubdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := zedFlatpakConfigPath(zedFlatpakAppPreviewDir, zedPreviewConfigSubdir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stable == preview {
+		t.Errorf("stable and preview flatpak paths must differ, both = %q", stable)
+	}
+	if !strings.Contains(stable, "dev.zed.Zed/config/zed/") {
+		t.Errorf("stable flatpak path missing expected app id, got %q", stable)
+	}
+	if !strings.Contains(preview, "dev.zed.Zed.Preview/config/zed-preview/") {
+		t.Errorf("preview flatpak path missing expected app id, got %q", preview)
+	}
+}
+
 func TestZedInstall_DefaultUserOnly(t *testing.T) {
 	home := isolateHome(t)
 	chdirIsolated(t)
@@ -1072,6 +1253,7 @@ func TestZedInstall_DefaultIgnoresDirectoryNamedSettings(t *testing.T) {
 // short-circuits on IsNotExist and the MkdirAll call is the first thing that
 // actually touches the filesystem under the unwritable root.
 func TestZedInstall_MkdirAllError(t *testing.T) {
+	requirePOSIXPermissions(t)
 	root := t.TempDir()
 	if err := os.Chmod(root, os.ModeDir|0o500); err != nil {
 		t.Fatal(err)
@@ -1089,6 +1271,7 @@ func TestZedInstall_MkdirAllError(t *testing.T) {
 // a read-only dir, so backup is skipped (nothing to back up) and the temp
 // rename inside vscodeAtomicWrite is the first write that fails.
 func TestZedInstall_AtomicWriteErrorOnNewFile(t *testing.T) {
+	requirePOSIXPermissions(t)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, os.ModeDir|0o500); err != nil {
 		t.Fatal(err)
@@ -1105,6 +1288,7 @@ func TestZedInstall_AtomicWriteErrorOnNewFile(t *testing.T) {
 // after seeding settings.json so the temp-file rename inside vscodeAtomicWrite
 // cannot land. The wrap loop should surface the I/O error.
 func TestZedInstall_AtomicWriteError(t *testing.T) {
+	requirePOSIXPermissions(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	if err := os.WriteFile(path, []byte(testZedStdioConfig), 0o600); err != nil {
@@ -1123,6 +1307,7 @@ func TestZedInstall_AtomicWriteError(t *testing.T) {
 // TestZedRemove_AtomicWriteError mirrors the install error-path test for the
 // unwrap loop.
 func TestZedRemove_AtomicWriteError(t *testing.T) {
+	requirePOSIXPermissions(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
 	if err := os.WriteFile(path, []byte(testZedStdioConfig), 0o600); err != nil {

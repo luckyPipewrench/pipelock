@@ -25,8 +25,9 @@ func DiscoverCmd() *cobra.Command {
 		Use:   "discover",
 		Short: "Scan for AI agent configs and report MCP server protection status",
 		Long: `Scan the local machine for AI agent client configurations (Claude Code,
-Claude Desktop, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie) and report which MCP
-servers are configured, their protection status, and risk level.
+Claude Desktop, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie, Zed
+stable, Zed Preview, Flatpak Zed stable, Flatpak Zed Preview) and report
+which MCP servers are configured, their protection status, and risk level.
 
 Exit codes:
   0  All servers protected (or none found)

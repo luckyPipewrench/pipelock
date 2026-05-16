@@ -225,7 +225,7 @@ func TestZedInstall_StdioServerWithImplicitType(t *testing.T) {
 		}
 	}
 	if !foundEnv {
-		t.Errorf("expected --env MY_VAR passthrough in args: %v", args)
+		t.Errorf("expected --env %s passthrough in args: %v", testClineEnvKey, args)
 	}
 
 	env, ok := server["env"].(map[string]interface{})

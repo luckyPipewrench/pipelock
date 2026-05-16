@@ -89,7 +89,7 @@ to target a single specific file, in which case the file is created if
 it does not exist (matching the behavior of pipelock cline install).
 
 Already-wrapped servers are skipped (idempotent). Non-server top-level
-fields in settings.json are preserved byte-for-byte.`,
+fields in settings.json are preserved.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {

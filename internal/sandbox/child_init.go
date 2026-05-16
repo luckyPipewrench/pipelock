@@ -254,9 +254,7 @@ func exitBridgeChild(err error) {
 	if errors.As(err, &exitErr) {
 		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 			sig := status.Signal()
-			signal.Reset(sig)
-			_ = syscall.Kill(syscall.Getpid(), sig)
-			os.Exit(128 + int(sig))
+			terminateSelfWithSignal(sig)
 		}
 		os.Exit(exitErr.ExitCode())
 	}

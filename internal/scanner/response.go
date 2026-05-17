@@ -32,12 +32,19 @@ type ResponseMatch struct {
 	BundleVersion string `json:"bundle_version,omitempty"`
 }
 
+type responseMatchSet struct {
+	matches []ResponseMatch
+	content string
+}
+
 // ScanResponse checks fetched content for prompt injection patterns.
 // If scanning is disabled, returns Clean=true immediately.
 // Zero-width Unicode characters are stripped before scanning to prevent
 // evasion via invisible character insertion.
 // For "strip" action, replaces matches with [REDACTED: PatternName].
 func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScanResult {
+	original := content
+
 	// Fail-closed: if context is already canceled, block immediately.
 	if ctx != nil && ctx.Err() != nil {
 		return ResponseScanResult{
@@ -51,40 +58,41 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 
 	// Core response patterns run FIRST — immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreMatches := s.ScanCoreResponse(ctx, content); len(coreMatches) > 0 {
-		coreMatches = filterEducationalQuotedResponseMatches(content, coreMatches)
+	if coreSet := s.scanCoreResponse(ctx, original); len(coreSet.matches) > 0 {
+		coreMatches := filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches)
 		if len(coreMatches) == 0 {
-			return ResponseScanResult{Clean: true}
-		}
-		result := ResponseScanResult{
-			Clean:   false,
-			Matches: coreMatches,
-		}
-		// Support strip/ask actions on core matches so callers that
-		// configured strip still get TransformedContent.
-		if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
-			transformed := normalize.ForMatching(content)
-			for _, p := range s.core.responsePatterns {
-				replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
-				transformed = p.re.ReplaceAllString(transformed, replacement)
+			if !s.responseEnabled {
+				return ResponseScanResult{Clean: true}
 			}
-			if transformed != normalize.ForMatching(content) {
-				result.TransformedContent = transformed
+		} else {
+			result := ResponseScanResult{
+				Clean:   false,
+				Matches: coreMatches,
 			}
+			// Support strip/ask actions on core matches so callers that
+			// configured strip still get TransformedContent.
+			if s.responseAction == config.ActionStrip || s.responseAction == config.ActionAsk {
+				transformed := normalize.ForMatching(content)
+				for _, p := range s.core.responsePatterns {
+					replacement := fmt.Sprintf("[REDACTED: %s]", p.name)
+					transformed = p.re.ReplaceAllString(transformed, replacement)
+				}
+				if transformed != normalize.ForMatching(content) {
+					result.TransformedContent = transformed
+				}
+			}
+			return result
 		}
-		return result
 	}
 
 	if !s.responseEnabled {
 		return ResponseScanResult{Clean: true}
 	}
 
-	// Save original for secondary pass before normalization.
-	original := content
-
 	// Primary: drop invisible chars, then normalize. Catches mid-word ZW insertion
 	// where the attacker splits a keyword: "igno\u200bre" → "ignore" (detected).
 	content = normalize.ForMatching(content)
+	matchContent := content
 
 	// Primary: run response patterns whose keywords appear in content.
 	// Pre-filter checks are per-pass: each normalized variant gets its
@@ -102,6 +110,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 		if spaced != content {
 			matches = s.matchResponsePatternsPreFiltered(spaced)
 			if len(matches) > 0 {
+				matchContent = spaced
 				content = spaced // use spaced version for strip action
 			}
 		}
@@ -113,6 +122,9 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 		leeted := normalize.Leetspeak(content)
 		if leeted != content {
 			matches = s.matchResponsePatternsPreFiltered(leeted)
+			if len(matches) > 0 {
+				matchContent = leeted
+			}
 		}
 	}
 
@@ -122,6 +134,9 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	// Standard \s+ patterns fail on zero whitespace; \s* variants match.
 	if len(matches) == 0 && len(s.responseOptSpacePatterns) > 0 {
 		matches = matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, content)
+		if len(matches) > 0 {
+			matchContent = content
+		}
 	}
 
 	// Quinary: vowel-folded matching. Catches confusable-vowel attacks where
@@ -132,6 +147,9 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 		folded := normalize.FoldVowels(content)
 		if folded != content {
 			matches = matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)
+			if len(matches) > 0 {
+				matchContent = folded
+			}
 		}
 	}
 
@@ -140,7 +158,11 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
 	if len(matches) == 0 && hasEncodedRun(content) {
-		matches = s.matchDecodedResponse(content)
+		decodedSet := s.matchDecodedResponse(content)
+		matches = decodedSet.matches
+		if len(matches) > 0 {
+			matchContent = decodedSet.content
+		}
 	}
 
 	// Post-scan context check: if context expired during scanning, fail closed.
@@ -157,7 +179,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	if len(matches) == 0 {
 		return ResponseScanResult{Clean: true}
 	}
-	matches = filterEducationalQuotedResponseMatches(original, matches)
+	matches = filterEducationalQuotedResponseMatches(matchContent, matches)
 	if len(matches) == 0 {
 		return ResponseScanResult{Clean: true}
 	}
@@ -198,14 +220,13 @@ func filterEducationalQuotedResponseMatches(content string, matches []ResponseMa
 		return matches
 	}
 
-	normalized := normalize.ForMatching(content)
 	filtered := matches[:0]
 	for _, match := range matches {
 		if isSystemPromptDisclosureMatch(match) {
 			filtered = append(filtered, match)
 			continue
 		}
-		if isQuotedResponseExampleMatch(normalized, match) {
+		if isQuotedResponseExampleMatch(content, match) {
 			continue
 		}
 		filtered = append(filtered, match)
@@ -352,14 +373,14 @@ const responseDecodeMaxDepth = 5
 // result for injection patterns. Recurses up to responseDecodeMaxDepth to catch
 // multi-layer chains (e.g., base64(hex(injection))). Two strategies per layer:
 // whole-content decode and segment-level decode.
-func (s *Scanner) matchDecodedResponse(content string) []ResponseMatch {
+func (s *Scanner) matchDecodedResponse(content string) responseMatchSet {
 	return s.matchDecodedResponseRecursive(content, 0)
 }
 
 // matchDecodedResponseRecursive is the recursive implementation of matchDecodedResponse.
-func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) []ResponseMatch {
+func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
-		return nil
+		return responseMatchSet{}
 	}
 
 	// Strategy 1: whole-content decode.
@@ -376,41 +397,41 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) []Res
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
-			if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
 			// Always recurse on successful decode. The depth limit is the
 			// safety bound; gating on hasEncodedRun lets attackers bypass
 			// by splitting or punctuating the inner encoded layer.
-			if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
-		if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
-			return matches
+		if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+			return decodedSet
 		}
-		if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-			return matches
+		if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+			return decodedSet
 		}
 	}
 
 	// Strategy 2: segment-level decode with recursion.
-	if matches := s.matchDecodedSegmentsRecursive(content, depth); len(matches) > 0 {
-		return matches
+	if decodedSet := s.matchDecodedSegmentsRecursive(content, depth); len(decodedSet.matches) > 0 {
+		return decodedSet
 	}
 
-	return nil
+	return responseMatchSet{}
 }
 
 // matchDecodedSegmentsRecursive extracts contiguous base64-alphabet runs from
 // content, decodes each individually, and checks for injection patterns.
 // Recurses on decoded segments to catch multi-layer encoding.
-func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) []ResponseMatch {
+func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
-		return nil
+		return responseMatchSet{}
 	}
 	segments := extractEncodedRuns(content, minSegmentDecodeLen)
 	for _, seg := range segments {
@@ -420,25 +441,25 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) []Res
 		} {
 			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
-				if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
-					return matches
+				if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+					return decodedSet
 				}
-				if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-					return matches
+				if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+					return decodedSet
 				}
 			}
 		}
 		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
-			if matches := s.matchDecodedNormalized(d); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedNormalized(d); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
-			if matches := s.matchDecodedResponseRecursive(d, depth+1); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
 		}
 	}
-	return nil
+	return responseMatchSet{}
 }
 
 // extractEncodedRuns finds contiguous runs of base64/hex alphabet characters
@@ -520,25 +541,25 @@ func isPrintableText(data []byte) bool {
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,
 // vowel-fold) against decoded content. Without this, encoded payloads carrying
 // vowel-substituted or zero-width-separated injection would bypass detection.
-func (s *Scanner) matchDecodedNormalized(decoded string) []ResponseMatch {
+func (s *Scanner) matchDecodedNormalized(decoded string) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
 	if matches := matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized); len(matches) > 0 {
-		return matches
+		return responseMatchSet{matches: matches, content: normalized}
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
 		if matches := matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized); len(matches) > 0 {
-			return matches
+			return responseMatchSet{matches: matches, content: normalized}
 		}
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
 			if matches := matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded); len(matches) > 0 {
-				return matches
+				return responseMatchSet{matches: matches, content: folded}
 			}
 		}
 	}
-	return nil
+	return responseMatchSet{}
 }
 
 // ResponseScanningEnabled returns whether response scanning is active.

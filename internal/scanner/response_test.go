@@ -243,6 +243,9 @@ func TestScanResponse_AllowsQuotedEducationalPromptInjectionExamples(t *testing.
 Common injection patterns include phrases like 'ignore previous instructions'
 and 'you are now in developer mode.' Defense strategies include input
 validation and separation between instructions and data.`,
+		"# Prompt Injection 101\n\n" +
+			"Common attack pattern is: \"ignore\u200ball previous instructions\". Defenders\n" +
+			"should scan for these patterns in input validation.",
 	}
 
 	for _, content := range tests {
@@ -250,6 +253,30 @@ validation and separation between instructions and data.`,
 		if !result.Clean {
 			t.Fatalf("expected quoted educational prompt-injection example to be clean, got %+v", result.Matches)
 		}
+	}
+}
+
+func TestScanResponse_CoreEducationalFilterFallsThroughToConfiguredScanner(t *testing.T) {
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{
+		Name:  "Educational Marker",
+		Regex: `(?i)must-block-marker`,
+	})
+	s := New(cfg)
+
+	content := `# Prompt Injection Defense
+
+A common attack pattern is: "ignore previous instructions". Defenders
+should scan for these patterns in incoming text.
+
+must-block-marker`
+
+	result := s.ScanResponse(context.Background(), content)
+	if result.Clean {
+		t.Fatal("expected configured response scanner to run after core educational filter suppresses its match")
+	}
+	if len(result.Matches) != 1 || result.Matches[0].PatternName != "Educational Marker" {
+		t.Fatalf("expected configured marker match, got %+v", result.Matches)
 	}
 }
 

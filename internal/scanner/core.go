@@ -284,14 +284,18 @@ func initCoreScanner() *compiledCoreScanner {
 // Returns matches found by core patterns only; the caller should run the main
 // response scanner separately if enabled.
 func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []ResponseMatch {
+	return s.scanCoreResponse(ctx, content).matches
+}
+
+func (s *Scanner) scanCoreResponse(ctx context.Context, content string) responseMatchSet {
 	if s.core == nil {
-		return nil
+		return responseMatchSet{}
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return []ResponseMatch{{
+		return responseMatchSet{matches: []ResponseMatch{{
 			PatternName: "context_canceled",
 			MatchText:   ctx.Err().Error(),
-		}}
+		}}, content: normalize.ForMatching(content)}
 	}
 
 	original := content
@@ -299,14 +303,14 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 
 	// Primary pass.
 	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, content); len(matches) > 0 {
-		return matches
+		return responseMatchSet{matches: matches, content: content}
 	}
 
 	// Secondary: replace invisible chars with spaces.
 	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
 	if spaced != content {
 		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced); len(matches) > 0 {
-			return matches
+			return responseMatchSet{matches: matches, content: spaced}
 		}
 	}
 
@@ -314,14 +318,14 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 	leeted := normalize.Leetspeak(content)
 	if leeted != content {
 		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted); len(matches) > 0 {
-			return matches
+			return responseMatchSet{matches: matches, content: leeted}
 		}
 	}
 
 	// Quaternary: optional-whitespace matching.
 	if len(s.core.responseOptSpacePatterns) > 0 {
 		if matches := matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, content); len(matches) > 0 {
-			return matches
+			return responseMatchSet{matches: matches, content: content}
 		}
 	}
 
@@ -330,33 +334,33 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 		folded := normalize.FoldVowels(content)
 		if folded != content {
 			if matches := matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded); len(matches) > 0 {
-				return matches
+				return responseMatchSet{matches: matches, content: folded}
 			}
 		}
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
 	if hasEncodedRun(content) {
-		if matches := s.matchDecodedCoreResponse(content); len(matches) > 0 {
-			return matches
+		if decodedSet := s.matchDecodedCoreResponse(content); len(decodedSet.matches) > 0 {
+			return decodedSet
 		}
 	}
 
-	return nil
+	return responseMatchSet{}
 }
 
 // matchDecodedCoreResponse tries base64/hex decoding content and checks the
 // decoded result against core response patterns. Entry point for the senary pass.
-func (s *Scanner) matchDecodedCoreResponse(content string) []ResponseMatch {
+func (s *Scanner) matchDecodedCoreResponse(content string) responseMatchSet {
 	return s.matchDecodedCoreResponseRecursive(content, 0)
 }
 
 // matchDecodedCoreResponseRecursive is the recursive implementation of
 // matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
 // but uses only core response patterns.
-func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) []ResponseMatch {
+func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
-		return nil
+		return responseMatchSet{}
 	}
 
 	// Strategy 1: whole-content decode (strip whitespace first).
@@ -373,23 +377,21 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) [
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
-			normalized := normalize.ForMatching(d)
-			if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
-			if matches := s.matchDecodedCoreResponseRecursive(d, depth+1); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
-		normalized := normalize.ForMatching(d)
-		if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
-			return matches
+		if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+			return decodedSet
 		}
-		if matches := s.matchDecodedCoreResponseRecursive(d, depth+1); len(matches) > 0 {
-			return matches
+		if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+			return decodedSet
 		}
 	}
 
@@ -402,28 +404,34 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int) [
 		} {
 			if decoded, err := enc.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
-				normalized := normalize.ForMatching(d)
-				if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
-					return matches
+				if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+					return decodedSet
 				}
-				if matches := s.matchDecodedCoreResponseRecursive(d, depth+1); len(matches) > 0 {
-					return matches
+				if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+					return decodedSet
 				}
 			}
 		}
 		if decoded, err := hex.DecodeString(seg); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
-			normalized := normalize.ForMatching(d)
-			if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedCoreNormalized(d); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
-			if matches := s.matchDecodedCoreResponseRecursive(d, depth+1); len(matches) > 0 {
-				return matches
+			if decodedSet := s.matchDecodedCoreResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+				return decodedSet
 			}
 		}
 	}
 
-	return nil
+	return responseMatchSet{}
+}
+
+func (s *Scanner) matchDecodedCoreNormalized(decoded string) responseMatchSet {
+	normalized := normalize.ForMatching(decoded)
+	if matches := matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized); len(matches) > 0 {
+		return responseMatchSet{matches: matches, content: normalized}
+	}
+	return responseMatchSet{}
 }
 
 // scanCoreDLP runs core DLP patterns against text. Returns matches found by

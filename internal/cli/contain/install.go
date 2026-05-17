@@ -110,6 +110,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	env.archivedBackups = make(map[string][]string)
 	if opts.operatorUser != "" {
 		env.operatorUser = opts.operatorUser
 	}
@@ -243,13 +244,19 @@ func stepWriteToolsList() step {
 				if !errors.Is(err, os.ErrNotExist) {
 					return false, fmt.Errorf("read tools.list: %w", err)
 				}
-				return true, writeToolsList(env, defaults)
+				if err := writeToolsList(env, defaults); err != nil {
+					return false, err
+				}
+				return true, nil
 			}
 			merged, changed := mergeDefaultToolEntries(entries, defaults)
 			if !changed {
 				return false, nil
 			}
-			return true, writeToolsList(env, merged)
+			if err := writeToolsList(env, merged); err != nil {
+				return false, err
+			}
+			return true, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
 			return restoreBackup(env, env.toolsListPath)
@@ -837,7 +844,10 @@ func stepWriteSystemUnit() step {
 			if existing, err := env.readFile(env.systemUnitPath); err == nil && string(existing) == body {
 				return false, nil
 			}
-			return true, backupAndWrite(env, env.systemUnitPath, []byte(body), modeUnitFile)
+			if err := backupAndWrite(env, env.systemUnitPath, []byte(body), modeUnitFile); err != nil {
+				return false, err
+			}
+			return true, nil
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			if err := restoreBackup(env, env.systemUnitPath); err != nil {
@@ -1001,7 +1011,10 @@ func stepWriteCombinedCABundle() step {
 			if existing, err := env.readFile(env.caBundlePath); err == nil && string(existing) == string(bundle) {
 				return false, nil
 			}
-			return true, backupAndWrite(env, env.caBundlePath, bundle, modeCAReadable)
+			if err := backupAndWrite(env, env.caBundlePath, bundle, modeCAReadable); err != nil {
+				return false, err
+			}
+			return true, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
 			return restoreBackup(env, env.caBundlePath)
@@ -1472,8 +1485,11 @@ func stepWriteToolWrappers() step {
 				}
 				path := filepath.Join(env.wrapperDir, wrapper)
 				if _, err := env.stat(path); err == nil {
-					if err := env.rename(path, path+".bak"); err != nil {
+					if _, err := backupCurrentToBak(env, path); err != nil {
 						return restoreTouched(fmt.Errorf("backup stale wrapper %s: %w", path, err))
+					}
+					if err := env.removeFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+						return restoreTouched(fmt.Errorf("remove stale wrapper %s: %w", path, err))
 					}
 					touched = append(touched, path)
 				} else if !errors.Is(err, os.ErrNotExist) {
@@ -1559,7 +1575,10 @@ func stepWriteWrapperInventory() step {
 				if err != nil {
 					return false, err
 				}
-				return true, backupAndWrite(env, env.wrapperInvPath, out, modeAllowListReadable)
+				if err := backupAndWrite(env, env.wrapperInvPath, out, modeAllowListReadable); err != nil {
+					return false, err
+				}
+				return true, nil
 			}
 			var inv wrapperInventory
 			if err := json.Unmarshal(data, &inv); err != nil {
@@ -1572,7 +1591,10 @@ func stepWriteWrapperInventory() step {
 			if err != nil {
 				return false, err
 			}
-			return true, backupAndWrite(env, env.wrapperInvPath, out, modeAllowListReadable)
+			if err := backupAndWrite(env, env.wrapperInvPath, out, modeAllowListReadable); err != nil {
+				return false, err
+			}
+			return true, nil
 		},
 		undo: func(_ context.Context, env *installEnv) error {
 			return restoreBackup(env, env.wrapperInvPath)

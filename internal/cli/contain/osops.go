@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // installEnv is the OS-facing dependency surface used by every mutating
@@ -88,6 +89,7 @@ type installEnv struct {
 	prevNFTTableDump       string
 	prevNftablesEnabled    bool
 	prevNftablesStateKnown bool
+	archivedBackups        map[string][]string
 }
 
 // defaultInstallEnv wires installEnv to the real OS. Callers fill in
@@ -178,6 +180,12 @@ const (
 	modeDirReadable os.FileMode = 0o755
 )
 
+const backupArchiveTimeFormat = "2006-01-02T15:04:05.000000000Z"
+
+var backupArchiveNow = func() time.Time {
+	return time.Now().UTC()
+}
+
 // writeFileAtomic writes path by creating a sibling .tmp and renaming it
 // into place. This makes installs robust to crash mid-write: either the
 // previous content stays intact, or the new content is fully present.
@@ -262,31 +270,157 @@ func sha256HexOfFile(path string) (string, error) {
 // backupAndWrite writes a new version of path while preserving the old
 // content as path.bak. The .bak is created via atomic rename so a crash
 // mid-backup either leaves the original in place or has fully moved it
-// aside. Step undo functions look for path.bak and restore it.
+// aside. If path.bak already exists, it is archived instead of overwritten;
+// step undo functions look for path.bak and restore it.
 //
 // If path doesn't exist, no .bak is created; the new file is written as-is.
 func backupAndWrite(env *installEnv, path string, contents []byte, mode os.FileMode) error {
 	clean := filepath.Clean(path)
-	if err := ensureSafeWriteTarget(env, clean); err != nil {
+	backedUp, err := backupCurrentToBak(env, clean)
+	if err != nil {
 		return err
 	}
-	if _, err := env.lstat(clean); err == nil {
-		bak := clean + ".bak"
-		if info, err := env.lstat(bak); err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("refusing to overwrite symlink backup %s", bak)
-			}
-			return fmt.Errorf("refusing to overwrite existing backup %s; resolve manually before re-running install", bak)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stat %s: %w", bak, err)
+	if err := env.writeFile(clean, contents, mode); err != nil {
+		var restoreErr error
+		if backedUp {
+			restoreErr = restoreBackup(env, clean)
+		} else if removeErr := env.removeFile(clean); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			restoreErr = fmt.Errorf("remove failed write %s: %w", clean, removeErr)
 		}
-		if err := env.rename(clean, bak); err != nil {
-			return fmt.Errorf("backup %s -> %s: %w", clean, bak, err)
+		if restoreErr != nil {
+			return errors.Join(fmt.Errorf("write %s: %w", clean, err), restoreErr)
 		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat %s: %w", clean, err)
+		return fmt.Errorf("write %s: %w", clean, err)
 	}
-	return env.writeFile(clean, contents, mode)
+	return nil
+}
+
+// backupCurrentToBak ensures path.bak contains path's current content. If a
+// prior path.bak exists and differs, it is rotated to
+// path.bak.archived-<RFC3339 UTC timestamp> first so upgrades keep history
+// without blocking reinstall. If the existing backup already equals the
+// current file, it is left in place and the caller can overwrite/remove path.
+func backupCurrentToBak(env *installEnv, path string) (bool, error) {
+	clean := filepath.Clean(path)
+	if err := ensureSafeWriteTarget(env, clean); err != nil {
+		return false, err
+	}
+	info, err := env.lstat(clean)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat %s: %w", clean, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("%s is a symlink; refusing privileged write", clean)
+	}
+	current, err := env.readFile(clean)
+	if err != nil {
+		return false, fmt.Errorf("read %s for backup: %w", clean, err)
+	}
+
+	bak := clean + ".bak"
+	archive, err := rotateBackupIfNeeded(env, bak, current)
+	if err != nil {
+		return false, err
+	}
+	if archive == "" {
+		if bakData, err := env.readFile(bak); err == nil && bytesEqual(bakData, current) {
+			return true, nil
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("read backup %s: %w", bak, err)
+		}
+	}
+
+	if err := env.rename(clean, bak); err != nil {
+		if archive != "" {
+			if restoreErr := env.rename(archive, bak); restoreErr != nil {
+				return false, errors.Join(
+					fmt.Errorf("backup %s -> %s: %w", clean, bak, err),
+					fmt.Errorf("restore archived backup %s -> %s: %w", archive, bak, restoreErr),
+				)
+			}
+			forgetArchivedBackup(env, bak, archive)
+		}
+		return false, fmt.Errorf("backup %s -> %s: %w", clean, bak, err)
+	}
+	return true, nil
+}
+
+func rotateBackupIfNeeded(env *installEnv, bak string, current []byte) (string, error) {
+	info, err := env.lstat(bak)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat %s: %w", bak, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to overwrite symlink backup %s", bak)
+	}
+	bakData, err := env.readFile(bak)
+	if err != nil {
+		return "", fmt.Errorf("read backup %s: %w", bak, err)
+	}
+	if bytesEqual(bakData, current) {
+		return "", nil
+	}
+	archive, err := nextBackupArchivePath(env, bak, backupArchiveNow())
+	if err != nil {
+		return "", err
+	}
+	if err := env.rename(bak, archive); err != nil {
+		return "", fmt.Errorf("archive backup %s -> %s: %w", bak, archive, err)
+	}
+	rememberArchivedBackup(env, bak, archive)
+	return archive, nil
+}
+
+func nextBackupArchivePath(env *installEnv, bak string, now time.Time) (string, error) {
+	base := fmt.Sprintf("%s.archived-%s", filepath.Clean(bak), now.UTC().Format(backupArchiveTimeFormat))
+	for i := 0; ; i++ {
+		candidate := base
+		if i > 0 {
+			candidate = fmt.Sprintf("%s.%d", base, i)
+		}
+		if info, err := env.lstat(candidate); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				continue
+			}
+			continue
+		} else if errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		} else {
+			return "", fmt.Errorf("stat archive backup %s: %w", candidate, err)
+		}
+	}
+}
+
+func rememberArchivedBackup(env *installEnv, bak, archive string) {
+	if env.archivedBackups == nil {
+		env.archivedBackups = make(map[string][]string)
+	}
+	env.archivedBackups[bak] = append(env.archivedBackups[bak], archive)
+}
+
+func forgetArchivedBackup(env *installEnv, bak, archive string) {
+	if len(env.archivedBackups) == 0 {
+		return
+	}
+	archives := env.archivedBackups[bak]
+	for i := len(archives) - 1; i >= 0; i-- {
+		if archives[i] != archive {
+			continue
+		}
+		archives = append(archives[:i], archives[i+1:]...)
+		if len(archives) == 0 {
+			delete(env.archivedBackups, bak)
+			return
+		}
+		env.archivedBackups[bak] = archives
+		return
+	}
 }
 
 func ensureSafeWriteTarget(env *installEnv, path string) error {
@@ -354,7 +488,7 @@ func restoreBackup(env *installEnv, path string) error {
 		if err := env.rename(bak, clean); err != nil {
 			return fmt.Errorf("restore %s from %s: %w", clean, bak, err)
 		}
-		return nil
+		return restoreLatestArchivedBackup(env, bak)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat %s: %w", bak, err)
 	}
@@ -385,7 +519,46 @@ func restoreBackupIfPresent(env *installEnv, path string) error {
 	if err := env.rename(bak, clean); err != nil {
 		return fmt.Errorf("restore %s from %s: %w", clean, bak, err)
 	}
+	return restoreLatestArchivedBackup(env, bak)
+}
+
+func restoreLatestArchivedBackup(env *installEnv, bak string) error {
+	archive := popArchivedBackup(env, filepath.Clean(bak))
+	if archive == "" {
+		return nil
+	}
+	info, err := env.lstat(archive)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat archived backup %s: %w", archive, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("archived backup %s is a symlink; refusing restore", archive)
+	}
+	if err := env.rename(archive, bak); err != nil {
+		return fmt.Errorf("restore archived backup %s -> %s: %w", archive, bak, err)
+	}
 	return nil
+}
+
+func popArchivedBackup(env *installEnv, bak string) string {
+	if len(env.archivedBackups) == 0 {
+		return ""
+	}
+	archives := env.archivedBackups[bak]
+	if len(archives) == 0 {
+		return ""
+	}
+	archive := archives[len(archives)-1]
+	archives = archives[:len(archives)-1]
+	if len(archives) == 0 {
+		delete(env.archivedBackups, bak)
+	} else {
+		env.archivedBackups[bak] = archives
+	}
+	return archive
 }
 
 // resolveUIDs returns the numeric UIDs for the configured proxy and agent

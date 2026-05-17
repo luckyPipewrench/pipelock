@@ -644,7 +644,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	cfg := s.currentConfig()
-	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock v%s starting\n", cliutil.Version)
+	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock %s starting\n", cliutil.DisplayVersion())
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Mode:   %s\n", cfg.Mode)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", cfg.FetchProxy.Listen)

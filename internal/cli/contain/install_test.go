@@ -17,9 +17,21 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
+
+type fakeFileInfo struct {
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	env := defaultInstallEnv(io.Discard)
@@ -367,14 +379,7 @@ func TestRunInstall_DryRunPrintsPlan(t *testing.T) {
 
 func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 	env, runner, buf := newFakeEnv(t)
-	binDir := t.TempDir()
-	for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
-		path := filepath.Join(binDir, name)
-		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture required for preflight PATH lookup.
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-	t.Setenv("PATH", binDir)
+	installContainCommandFixtures(t)
 
 	// Let the default allow-list find one agent tool without depending on
 	// host-global /usr/local/bin contents.
@@ -409,6 +414,231 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 	if !strings.Contains(buf.String(), "install complete") {
 		t.Fatalf("missing success output:\n%s", buf.String())
 	}
+}
+
+func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	installContainCommandFixtures(t)
+
+	cfgDir := t.TempDir()
+	cfg1 := filepath.Join(cfgDir, "pipelock-1.yaml")
+	cfg2 := filepath.Join(cfgDir, "pipelock-2.yaml")
+	if err := os.WriteFile(cfg1, []byte("mode: balanced\n"), 0o600); err != nil {
+		t.Fatalf("write cfg1: %v", err)
+	}
+	if err := os.WriteFile(cfg2, []byte("mode: strict\n"), 0o600); err != nil {
+		t.Fatalf("write cfg2: %v", err)
+	}
+
+	enabledTools := map[string]bool{"claude": true}
+	origStat := env.stat
+	env.stat = func(path string) (os.FileInfo, error) {
+		for _, tool := range defaultToolNames() {
+			for _, dir := range filepath.SplitList(agentExecPath(env.agentUserName)) {
+				if path != filepath.Join(dir, tool) {
+					continue
+				}
+				if enabledTools[tool] {
+					return origStat(env.pipelockBinary)
+				}
+				return nil, os.ErrNotExist
+			}
+		}
+		return origStat(path)
+	}
+
+	origLookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		switch name {
+		case "operator2":
+			return &user.User{Uid: "1001", Gid: "1001", Username: name, HomeDir: "/home/operator2"}, nil
+		case "pipelock-agent2":
+			return &user.User{Uid: "986", Gid: "986", Username: name, HomeDir: "/home/pipelock-agent2"}, nil
+		default:
+			return origLookup(name)
+		}
+	}
+
+	systemBundle := []byte("# system bundle v1\n")
+	origReadFile := env.readFile
+	env.readFile = func(path string) ([]byte, error) {
+		if path == defaultSystemCABundle {
+			return append([]byte(nil), systemBundle...), nil
+		}
+		return origReadFile(path)
+	}
+
+	if err := os.WriteFile(env.caExportPath, []byte(testPEMCA(t)), 0o600); err != nil {
+		t.Fatalf("write ca export: %v", err)
+	}
+
+	configPath := filepath.Join(env.configDir, "pipelock.yaml")
+	tracked := []string{
+		configPath,
+		env.pipelockTarget,
+		env.integrityPin,
+		env.systemUnitPath,
+		env.caBundlePath,
+		env.nftRulesPath,
+		env.toolsListPath,
+		filepath.Join(env.wrapperDir, "plk-launch"),
+		filepath.Join(env.wrapperDir, "plk-claude"),
+		env.wrapperInvPath,
+		env.sudoersPath,
+	}
+	legacyBodies := map[string][]byte{
+		env.toolsListPath:  []byte("custom\t/usr/bin/custom\n"),
+		env.wrapperInvPath: []byte("{\"wrappers\":[\"plk-old\"]}\n"),
+	}
+	seedLegacyInstallFiles(t, tracked, legacyBodies)
+
+	if err := runInstall(context.Background(), env, installOpts{configSource: cfg1}); err != nil {
+		t.Fatalf("first runInstall: %v\noutput:\n%s\ncalls:%+v", err, envOutput(env), runner.calls)
+	}
+
+	firstLive := readInstallFiles(t, tracked)
+	firstBackupMode := statBackupModes(t, tracked)
+	for _, path := range tracked {
+		assertFileContents(t, path+".bak", legacyBody(path, legacyBodies))
+	}
+
+	if err := os.WriteFile(env.pipelockBinary, []byte("fake pipelock binary v2"), 0o755); err != nil { //nolint:gosec // test binary fixture must be executable
+		t.Fatalf("write second source binary: %v", err)
+	}
+	systemBundle = []byte("# system bundle v2\n")
+	enabledTools["codex"] = true
+	env.proxyPort = 9999
+	env.dataDir += "-v2"
+	env.agentUserName = "pipelock-agent2"
+
+	if err := runInstall(context.Background(), env, installOpts{configSource: cfg2, operatorUser: "operator2", proxyPort: 9999}); err != nil {
+		t.Fatalf("second runInstall: %v\noutput:\n%s\ncalls:%+v", err, envOutput(env), runner.calls)
+	}
+
+	for _, path := range tracked {
+		assertFileContents(t, path+".bak", firstLive[path])
+		archives := backupArchives(t, path)
+		if len(archives) != 1 {
+			t.Fatalf("archives for %s: got %d want 1 (%v)", path, len(archives), archives)
+		}
+		assertFileContents(t, archives[0], legacyBody(path, legacyBodies))
+		info, err := os.Stat(archives[0])
+		if err != nil {
+			t.Fatalf("stat archive %s: %v", archives[0], err)
+		}
+		if got := info.Mode().Perm(); got != firstBackupMode[path] {
+			t.Fatalf("archive mode for %s: got %s want %s", path, got, firstBackupMode[path])
+		}
+		live, err := os.ReadFile(path) //nolint:gosec // tmpdir-scoped test path
+		if err != nil {
+			t.Fatalf("read live %s: %v", path, err)
+		}
+		if bytesEqual(live, firstLive[path]) {
+			t.Fatalf("live file did not update on second install: %s", path)
+		}
+	}
+}
+
+func TestRunInstallResetsArchiveTrackingPerInvocation(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.archivedBackups = map[string][]string{
+		env.integrityPin + ".bak": {env.integrityPin + ".bak.archived-old"},
+	}
+	err := runInstall(context.Background(), env, installOpts{operatorUser: "ghost"})
+	if err == nil {
+		t.Fatal("expected invalid operator error")
+	}
+	if len(env.archivedBackups) != 0 {
+		t.Fatalf("archive tracking not reset: %+v", env.archivedBackups)
+	}
+}
+
+func legacyBody(path string, overrides map[string][]byte) []byte {
+	if override, ok := overrides[path]; ok {
+		return override
+	}
+	return []byte("legacy:" + filepath.Base(path) + "\n")
+}
+
+func installContainCommandFixtures(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	for _, name := range []string{"useradd", "userdel", "systemctl", "nft", "visudo"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { //nolint:gosec // executable fixture required for preflight PATH lookup.
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	t.Setenv("PATH", binDir)
+}
+
+func seedLegacyInstallFiles(t *testing.T, paths []string, overrides map[string][]byte) {
+	t.Helper()
+	for _, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		body := []byte("legacy:" + filepath.Base(path) + "\n")
+		if override, ok := overrides[path]; ok {
+			body = override
+		}
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatalf("seed %s: %v", path, err)
+		}
+	}
+}
+
+func readInstallFiles(t *testing.T, paths []string) map[string][]byte {
+	t.Helper()
+	out := make(map[string][]byte, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path) //nolint:gosec // tmpdir-scoped test path
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		out[path] = data
+	}
+	return out
+}
+
+func statBackupModes(t *testing.T, paths []string) map[string]os.FileMode {
+	t.Helper()
+	out := make(map[string]os.FileMode, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path + ".bak")
+		if err != nil {
+			t.Fatalf("stat %s.bak: %v", path, err)
+		}
+		out[path] = info.Mode().Perm()
+	}
+	return out
+}
+
+func assertFileContents(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path) //nolint:gosec // tmpdir-scoped test path
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !bytesEqual(got, want) {
+		t.Fatalf("%s contents: got %q want %q", path, got, want)
+	}
+}
+
+func backupArchives(t *testing.T, path string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(path + ".bak.archived-*")
+	if err != nil {
+		t.Fatalf("glob archives for %s: %v", path, err)
+	}
+	return matches
+}
+
+func envOutput(env *installEnv) string {
+	if buf, ok := env.out.(*bytes.Buffer); ok {
+		return buf.String()
+	}
+	return ""
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,7 +1667,7 @@ func TestBackupAndWrite_ExistingPromotesToBak(t *testing.T) {
 	}
 }
 
-func TestBackupAndWriteRefusesExistingBackup(t *testing.T) {
+func TestBackupAndWriteRotatesExistingBackup(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "host.conf")
@@ -1447,26 +1677,422 @@ func TestBackupAndWriteRefusesExistingBackup(t *testing.T) {
 	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
 		t.Fatalf("seed backup: %v", err)
 	}
-	err := backupAndWrite(env, path, []byte("new"), 0o600)
-	if err == nil {
-		t.Fatal("expected existing backup guard")
-	}
-	if !strings.Contains(err.Error(), "refusing to overwrite existing backup") {
-		t.Fatalf("err: %v", err)
+	if err := backupAndWrite(env, path, []byte("new"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
 	}
 	got, err := env.readFile(path)
 	if err != nil {
 		t.Fatalf("read current: %v", err)
 	}
-	if string(got) != "current" {
-		t.Fatalf("current file changed: %q", got)
+	if string(got) != "new" {
+		t.Fatalf("current file: %q", got)
 	}
 	bak, err := env.readFile(path + ".bak")
 	if err != nil {
 		t.Fatalf("read backup: %v", err)
 	}
-	if string(bak) != "original" {
-		t.Fatalf("backup changed: %q", bak)
+	if string(bak) != "current" {
+		t.Fatalf("backup: %q", bak)
+	}
+	archives := backupArchives(t, path)
+	if len(archives) != 1 {
+		t.Fatalf("archives: got %d want 1 (%v)", len(archives), archives)
+	}
+	archived, err := env.readFile(archives[0])
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	if string(archived) != "original" {
+		t.Fatalf("archive: %q", archived)
+	}
+}
+
+func TestBackupAndWriteSkipsRotationWhenBackupMatchesCurrent(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	if err := backupAndWrite(env, path, []byte("new"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	assertFileContents(t, path, []byte("new"))
+	assertFileContents(t, path+".bak", []byte("current"))
+	if archives := backupArchives(t, path); len(archives) != 0 {
+		t.Fatalf("unexpected archives: %v", archives)
+	}
+}
+
+func TestBackupAndWriteArchiveNameCollisionUsesDistinctNames(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.conf")
+	now := time.Date(2026, 5, 17, 16, 53, 0, 123, time.UTC)
+	origNow := backupArchiveNow
+	backupArchiveNow = func() time.Time { return now }
+	t.Cleanup(func() { backupArchiveNow = origNow })
+
+	if err := os.WriteFile(path, []byte("current-1"), 0o600); err != nil {
+		t.Fatalf("seed current 1: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original-1"), 0o600); err != nil {
+		t.Fatalf("seed backup 1: %v", err)
+	}
+	if err := backupAndWrite(env, path, []byte("new-1"), 0o600); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	if err := backupAndWrite(env, path, []byte("new-2"), 0o600); err != nil {
+		t.Fatalf("write 2: %v", err)
+	}
+
+	archives := backupArchives(t, path)
+	if len(archives) != 2 {
+		t.Fatalf("archives: got %d want 2 (%v)", len(archives), archives)
+	}
+	if archives[0] == archives[1] {
+		t.Fatalf("archive names collided: %v", archives)
+	}
+	assertFileContents(t, archives[0], []byte("original-1"))
+	assertFileContents(t, archives[1], []byte("current-1"))
+	assertFileContents(t, path+".bak", []byte("new-1"))
+	assertFileContents(t, path, []byte("new-2"))
+}
+
+func TestBackupAndWriteRestoresRotatedBackupOnWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	env.writeFile = func(string, []byte, os.FileMode) error {
+		return stringError("disk full")
+	}
+	err := backupAndWrite(env, path, []byte("new"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("expected write failure, got %v", err)
+	}
+	assertFileContents(t, path, []byte("current"))
+	assertFileContents(t, path+".bak", []byte("original"))
+	if archives := backupArchives(t, path); len(archives) != 0 {
+		t.Fatalf("archive should be restored after failed write: %v", archives)
+	}
+}
+
+func TestBackupAndWriteRemovesNewFileAfterWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "new-file")
+	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {
+		if err := os.WriteFile(path, contents, mode); err != nil {
+			return err
+		}
+		return stringError("late write failure")
+	}
+	err := backupAndWrite(env, path, []byte("partial"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "late write failure") {
+		t.Fatalf("expected write failure, got %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed new file should be removed, stat err=%v", err)
+	}
+}
+
+func TestBackupAndWriteReportsRemoveFailureAfterNewFileWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "new-file")
+	env.writeFile = func(string, []byte, os.FileMode) error {
+		return stringError("write denied")
+	}
+	env.removeFile = func(string) error {
+		return stringError("remove denied")
+	}
+	err := backupAndWrite(env, path, []byte("partial"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "write denied") || !strings.Contains(err.Error(), "remove denied") {
+		t.Fatalf("expected joined write/remove error, got %v", err)
+	}
+}
+
+func TestBackupAndWriteReportsRestoreFailureAfterWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	env.writeFile = func(string, []byte, os.FileMode) error {
+		return stringError("write denied")
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if oldPath == path+".bak" && newPath == path {
+			return stringError("restore denied")
+		}
+		return origRename(oldPath, newPath)
+	}
+	err := backupAndWrite(env, path, []byte("new"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "write denied") || !strings.Contains(err.Error(), "restore denied") {
+		t.Fatalf("expected joined write/restore error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsCurrentStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	origLstat := env.lstat
+	var currentStats int
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == path {
+			currentStats++
+			if currentStats == 1 {
+				return nil, os.ErrNotExist
+			}
+			return nil, stringError("stat denied")
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "stat denied") {
+		t.Fatalf("expected stat error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsCurrentReadError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	env.readFile = func(string) ([]byte, error) {
+		return nil, stringError("read denied")
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "read denied") {
+		t.Fatalf("expected read error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakRejectsCurrentSymlinkAfterPrecheck(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	origLstat := env.lstat
+	var pathStats int
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == path {
+			pathStats++
+			if pathStats == 2 {
+				return fakeFileInfo{mode: os.ModeSymlink}, nil
+			}
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected late symlink rejection, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsBackupStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	origLstat := env.lstat
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == path+".bak" {
+			return nil, stringError("backup stat denied")
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "backup stat denied") {
+		t.Fatalf("expected backup stat error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsBackupReadError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origReadFile := env.readFile
+	env.readFile = func(p string) ([]byte, error) {
+		if p == path+".bak" {
+			return nil, stringError("backup read denied")
+		}
+		return origReadFile(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "backup read denied") {
+		t.Fatalf("expected backup read error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsSecondBackupReadError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origReadFile := env.readFile
+	var backupReads int
+	env.readFile = func(p string) ([]byte, error) {
+		if p == path+".bak" {
+			backupReads++
+			if backupReads == 2 {
+				return nil, stringError("second backup read denied")
+			}
+		}
+		return origReadFile(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "second backup read denied") {
+		t.Fatalf("expected second backup read error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsArchiveStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origLstat := env.lstat
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if strings.Contains(p, ".bak.archived-") {
+			return nil, stringError("archive stat denied")
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "archive stat denied") {
+		t.Fatalf("expected archive stat error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsArchiveRenameFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if oldPath == path+".bak" && strings.Contains(newPath, ".bak.archived-") {
+			return stringError("archive rename denied")
+		}
+		return origRename(oldPath, newPath)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "archive rename denied") {
+		t.Fatalf("expected archive rename error, got %v", err)
+	}
+}
+
+func TestNextBackupArchivePathSkipsSymlinkCollision(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	bak := filepath.Join(dir, "host.conf.bak")
+	now := time.Date(2026, 5, 17, 16, 53, 0, 123, time.UTC)
+	first := fmt.Sprintf("%s.archived-%s", bak, now.Format(backupArchiveTimeFormat))
+	if err := os.Symlink(filepath.Join(dir, "elsewhere"), first); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	got, err := nextBackupArchivePath(env, bak, now)
+	if err != nil {
+		t.Fatalf("next archive path: %v", err)
+	}
+	if got != first+".1" {
+		t.Fatalf("archive path = %q, want %q", got, first+".1")
+	}
+}
+
+func TestBackupCurrentToBakRestoresArchiveWhenPromoteFails(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if oldPath == path && newPath == path+".bak" {
+			return stringError("promote denied")
+		}
+		return origRename(oldPath, newPath)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "promote denied") {
+		t.Fatalf("expected promote error, got %v", err)
+	}
+	assertFileContents(t, path, []byte("current"))
+	assertFileContents(t, path+".bak", []byte("original"))
+	if len(env.archivedBackups[path+".bak"]) != 0 {
+		t.Fatalf("archive tracking not cleared: %+v", env.archivedBackups)
+	}
+}
+
+func TestBackupCurrentToBakReportsArchiveRestoreFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		switch {
+		case oldPath == path && newPath == path+".bak":
+			return stringError("promote denied")
+		case strings.Contains(oldPath, ".bak.archived-") && newPath == path+".bak":
+			return stringError("archive restore denied")
+		default:
+			return origRename(oldPath, newPath)
+		}
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "promote denied") || !strings.Contains(err.Error(), "archive restore denied") {
+		t.Fatalf("expected joined promote/archive restore error, got %v", err)
+	}
+}
+
+func TestForgetArchivedBackupHandlesEmptyAndMiddleEntries(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	forgetArchivedBackup(env, "missing.bak", "archive")
+
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	env.archivedBackups = map[string][]string{
+		bak: {"first", "second"},
+	}
+	forgetArchivedBackup(env, bak, "first")
+	if got := env.archivedBackups[bak]; len(got) != 1 || got[0] != "second" {
+		t.Fatalf("archives = %#v, want second retained", got)
 	}
 }
 
@@ -1502,6 +2128,62 @@ func TestRestoreBackupIfPresentRestoresOnlyWhenBakExists(t *testing.T) {
 	}
 }
 
+func TestRestoreLatestArchivedBackupIgnoresMissingArchive(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	archive := bak + ".archived-2026-05-17T16:53:00.000000000Z"
+	env.archivedBackups = map[string][]string{bak: {archive}}
+	if err := restoreLatestArchivedBackup(env, bak); err != nil {
+		t.Fatalf("restore missing archive: %v", err)
+	}
+	if len(env.archivedBackups) != 0 {
+		t.Fatalf("archive tracking not popped: %+v", env.archivedBackups)
+	}
+}
+
+func TestRestoreLatestArchivedBackupReportsStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	archive := bak + ".archived-2026-05-17T16:53:00.000000000Z"
+	env.archivedBackups = map[string][]string{bak: {archive}}
+	origLstat := env.lstat
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == archive {
+			return nil, stringError("archive stat denied")
+		}
+		return origLstat(p)
+	}
+	err := restoreLatestArchivedBackup(env, bak)
+	if err == nil || !strings.Contains(err.Error(), "archive stat denied") {
+		t.Fatalf("expected archive stat error, got %v", err)
+	}
+}
+
+func TestRestoreLatestArchivedBackupReportsRenameError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	archive := bak + ".archived-2026-05-17T16:53:00.000000000Z"
+	if err := os.WriteFile(archive, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed archive: %v", err)
+	}
+	env.archivedBackups = map[string][]string{bak: {archive}}
+	env.rename = func(string, string) error {
+		return stringError("archive restore denied")
+	}
+	err := restoreLatestArchivedBackup(env, bak)
+	if err == nil || !strings.Contains(err.Error(), "archive restore denied") {
+		t.Fatalf("expected archive restore error, got %v", err)
+	}
+}
+
+func TestPopArchivedBackupMissingKey(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.archivedBackups = map[string][]string{"other.bak": {"archive"}}
+	if got := popArchivedBackup(env, "missing.bak"); got != "" {
+		t.Fatalf("pop missing key = %q, want empty", got)
+	}
+}
+
 func TestRestoreBackup_PromotesBak(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	dir := t.TempDir()
@@ -1518,6 +2200,81 @@ func TestRestoreBackup_PromotesBak(t *testing.T) {
 	got, _ := os.ReadFile(path) //nolint:gosec // tmpdir-scoped test path
 	if string(got) != "backup" {
 		t.Errorf("restored: %q", got)
+	}
+}
+
+func TestRestoreBackupRestoresLatestArchivedBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("pre-upgrade"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original-backup"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	if err := backupAndWrite(env, path, []byte("new"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := restoreBackup(env, path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	assertFileContents(t, path, []byte("pre-upgrade"))
+	assertFileContents(t, path+".bak", []byte("original-backup"))
+	if archives := backupArchives(t, path); len(archives) != 0 {
+		t.Fatalf("archive should be promoted back to .bak: %v", archives)
+	}
+}
+
+func TestRestoreBackupUsesRunArchiveStackOrder(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	now := time.Date(2026, 5, 17, 16, 53, 0, 123, time.UTC)
+	origNow := backupArchiveNow
+	backupArchiveNow = func() time.Time { return now }
+	t.Cleanup(func() { backupArchiveNow = origNow })
+
+	if err := os.WriteFile(path, []byte("current-0"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	for i := 1; i <= 12; i++ {
+		if err := backupAndWrite(env, path, []byte(fmt.Sprintf("current-%d", i)), 0o600); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+	}
+	if err := restoreBackup(env, path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	assertFileContents(t, path, []byte("current-11"))
+	assertFileContents(t, path+".bak", []byte("current-10"))
+}
+
+func TestRestoreBackupRejectsArchivedSymlinkBackup(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f")
+	if err := os.WriteFile(path, []byte("new"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("pre-upgrade"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	archive := path + ".bak.archived-2026-05-17T16:53:00.000000000Z"
+	if err := os.Symlink(filepath.Join(dir, "elsewhere"), archive); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	rememberArchivedBackup(env, path+".bak", archive)
+	err := restoreBackup(env, path)
+	if err == nil || !strings.Contains(err.Error(), "archived backup") {
+		t.Fatalf("expected archived symlink rejection, got %v", err)
+	}
+	assertFileContents(t, path, []byte("pre-upgrade"))
+	if _, err := os.Lstat(path + ".bak"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf(".bak should have been promoted before archive rejection, stat err=%v", err)
 	}
 }
 

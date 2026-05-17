@@ -22,6 +22,17 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
 
+type fakeFileInfo struct {
+	mode os.FileMode
+}
+
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return 0 }
+func (f fakeFileInfo) Mode() os.FileMode  { return f.mode }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f fakeFileInfo) Sys() any           { return nil }
+
 func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	env := defaultInstallEnv(io.Discard)
 	if env.runCmd == nil || env.stat == nil || env.lstat == nil || env.writeFile == nil || env.lookupUser == nil {
@@ -1793,6 +1804,298 @@ func TestBackupAndWriteRemovesNewFileAfterWriteFailure(t *testing.T) {
 	}
 }
 
+func TestBackupAndWriteReportsRemoveFailureAfterNewFileWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "new-file")
+	env.writeFile = func(string, []byte, os.FileMode) error {
+		return stringError("write denied")
+	}
+	env.removeFile = func(string) error {
+		return stringError("remove denied")
+	}
+	err := backupAndWrite(env, path, []byte("partial"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "write denied") || !strings.Contains(err.Error(), "remove denied") {
+		t.Fatalf("expected joined write/remove error, got %v", err)
+	}
+}
+
+func TestBackupAndWriteReportsRestoreFailureAfterWriteFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	env.writeFile = func(string, []byte, os.FileMode) error {
+		return stringError("write denied")
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if oldPath == path+".bak" && newPath == path {
+			return stringError("restore denied")
+		}
+		return origRename(oldPath, newPath)
+	}
+	err := backupAndWrite(env, path, []byte("new"), 0o600)
+	if err == nil || !strings.Contains(err.Error(), "write denied") || !strings.Contains(err.Error(), "restore denied") {
+		t.Fatalf("expected joined write/restore error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsCurrentStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	origLstat := env.lstat
+	var currentStats int
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == path {
+			currentStats++
+			if currentStats == 1 {
+				return nil, os.ErrNotExist
+			}
+			return nil, stringError("stat denied")
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "stat denied") {
+		t.Fatalf("expected stat error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsCurrentReadError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	env.readFile = func(string) ([]byte, error) {
+		return nil, stringError("read denied")
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "read denied") {
+		t.Fatalf("expected read error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakRejectsCurrentSymlinkAfterPrecheck(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	origLstat := env.lstat
+	var pathStats int
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == path {
+			pathStats++
+			if pathStats == 2 {
+				return fakeFileInfo{mode: os.ModeSymlink}, nil
+			}
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected late symlink rejection, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsBackupStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	origLstat := env.lstat
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == path+".bak" {
+			return nil, stringError("backup stat denied")
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "backup stat denied") {
+		t.Fatalf("expected backup stat error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsBackupReadError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origReadFile := env.readFile
+	env.readFile = func(p string) ([]byte, error) {
+		if p == path+".bak" {
+			return nil, stringError("backup read denied")
+		}
+		return origReadFile(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "backup read denied") {
+		t.Fatalf("expected backup read error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsSecondBackupReadError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origReadFile := env.readFile
+	var backupReads int
+	env.readFile = func(p string) ([]byte, error) {
+		if p == path+".bak" {
+			backupReads++
+			if backupReads == 2 {
+				return nil, stringError("second backup read denied")
+			}
+		}
+		return origReadFile(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "second backup read denied") {
+		t.Fatalf("expected second backup read error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsArchiveStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origLstat := env.lstat
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if strings.Contains(p, ".bak.archived-") {
+			return nil, stringError("archive stat denied")
+		}
+		return origLstat(p)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "archive stat denied") {
+		t.Fatalf("expected archive stat error, got %v", err)
+	}
+}
+
+func TestBackupCurrentToBakReportsArchiveRenameFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if oldPath == path+".bak" && strings.Contains(newPath, ".bak.archived-") {
+			return stringError("archive rename denied")
+		}
+		return origRename(oldPath, newPath)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "archive rename denied") {
+		t.Fatalf("expected archive rename error, got %v", err)
+	}
+}
+
+func TestNextBackupArchivePathSkipsSymlinkCollision(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	dir := t.TempDir()
+	bak := filepath.Join(dir, "host.conf.bak")
+	now := time.Date(2026, 5, 17, 16, 53, 0, 123, time.UTC)
+	first := fmt.Sprintf("%s.archived-%s", bak, now.Format(backupArchiveTimeFormat))
+	if err := os.Symlink(filepath.Join(dir, "elsewhere"), first); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	got, err := nextBackupArchivePath(env, bak, now)
+	if err != nil {
+		t.Fatalf("next archive path: %v", err)
+	}
+	if got != first+".1" {
+		t.Fatalf("archive path = %q, want %q", got, first+".1")
+	}
+}
+
+func TestBackupCurrentToBakRestoresArchiveWhenPromoteFails(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		if oldPath == path && newPath == path+".bak" {
+			return stringError("promote denied")
+		}
+		return origRename(oldPath, newPath)
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "promote denied") {
+		t.Fatalf("expected promote error, got %v", err)
+	}
+	assertFileContents(t, path, []byte("current"))
+	assertFileContents(t, path+".bak", []byte("original"))
+	if len(env.archivedBackups[path+".bak"]) != 0 {
+		t.Fatalf("archive tracking not cleared: %+v", env.archivedBackups)
+	}
+}
+
+func TestBackupCurrentToBakReportsArchiveRestoreFailure(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	path := filepath.Join(t.TempDir(), "host.conf")
+	if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+		t.Fatalf("seed current: %v", err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed backup: %v", err)
+	}
+	origRename := env.rename
+	env.rename = func(oldPath, newPath string) error {
+		switch {
+		case oldPath == path && newPath == path+".bak":
+			return stringError("promote denied")
+		case strings.Contains(oldPath, ".bak.archived-") && newPath == path+".bak":
+			return stringError("archive restore denied")
+		default:
+			return origRename(oldPath, newPath)
+		}
+	}
+	_, err := backupCurrentToBak(env, path)
+	if err == nil || !strings.Contains(err.Error(), "promote denied") || !strings.Contains(err.Error(), "archive restore denied") {
+		t.Fatalf("expected joined promote/archive restore error, got %v", err)
+	}
+}
+
+func TestForgetArchivedBackupHandlesEmptyAndMiddleEntries(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	forgetArchivedBackup(env, "missing.bak", "archive")
+
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	env.archivedBackups = map[string][]string{
+		bak: {"first", "second"},
+	}
+	forgetArchivedBackup(env, bak, "first")
+	if got := env.archivedBackups[bak]; len(got) != 1 || got[0] != "second" {
+		t.Fatalf("archives = %#v, want second retained", got)
+	}
+}
+
 func TestRestoreBackupIfPresentRestoresOnlyWhenBakExists(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	dir := t.TempDir()
@@ -1822,6 +2125,62 @@ func TestRestoreBackupIfPresentRestoresOnlyWhenBakExists(t *testing.T) {
 	}
 	if string(got) != "backup" {
 		t.Fatalf("restored: got %q want backup", got)
+	}
+}
+
+func TestRestoreLatestArchivedBackupIgnoresMissingArchive(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	archive := bak + ".archived-2026-05-17T16:53:00.000000000Z"
+	env.archivedBackups = map[string][]string{bak: {archive}}
+	if err := restoreLatestArchivedBackup(env, bak); err != nil {
+		t.Fatalf("restore missing archive: %v", err)
+	}
+	if len(env.archivedBackups) != 0 {
+		t.Fatalf("archive tracking not popped: %+v", env.archivedBackups)
+	}
+}
+
+func TestRestoreLatestArchivedBackupReportsStatError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	archive := bak + ".archived-2026-05-17T16:53:00.000000000Z"
+	env.archivedBackups = map[string][]string{bak: {archive}}
+	origLstat := env.lstat
+	env.lstat = func(p string) (os.FileInfo, error) {
+		if p == archive {
+			return nil, stringError("archive stat denied")
+		}
+		return origLstat(p)
+	}
+	err := restoreLatestArchivedBackup(env, bak)
+	if err == nil || !strings.Contains(err.Error(), "archive stat denied") {
+		t.Fatalf("expected archive stat error, got %v", err)
+	}
+}
+
+func TestRestoreLatestArchivedBackupReportsRenameError(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	bak := filepath.Join(t.TempDir(), "host.conf.bak")
+	archive := bak + ".archived-2026-05-17T16:53:00.000000000Z"
+	if err := os.WriteFile(archive, []byte("original"), 0o600); err != nil {
+		t.Fatalf("seed archive: %v", err)
+	}
+	env.archivedBackups = map[string][]string{bak: {archive}}
+	env.rename = func(string, string) error {
+		return stringError("archive restore denied")
+	}
+	err := restoreLatestArchivedBackup(env, bak)
+	if err == nil || !strings.Contains(err.Error(), "archive restore denied") {
+		t.Fatalf("expected archive restore error, got %v", err)
+	}
+}
+
+func TestPopArchivedBackupMissingKey(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.archivedBackups = map[string][]string{"other.bak": {"archive"}}
+	if got := popArchivedBackup(env, "missing.bak"); got != "" {
+		t.Fatalf("pop missing key = %q, want empty", got)
 	}
 }
 

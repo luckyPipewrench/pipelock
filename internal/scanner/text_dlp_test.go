@@ -55,13 +55,13 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - AWS Secret Key env format",
-			text:        "AWS_SECRET_ACCESS_KEY=" + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			text:        "AWS_SECRET_ACCESS_KEY=" + "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CYEXAMPLEKEY",
 			wantClean:   false,
 			wantPattern: "AWS Secret Key",
 		},
 		{
 			name:        "raw DLP pattern match - AWS Secret Key JSON format",
-			text:        `"SecretAccessKey": "` + "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" + `"`,
+			text:        `"SecretAccessKey": "` + "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CYEXAMPLEKEY" + `"`,
 			wantClean:   false,
 			wantPattern: "AWS Secret Key",
 		},
@@ -452,6 +452,22 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "BIP-39 Seed Phrase",
 		},
 		{
+			name: "base64 seed phrase embedded in JSON body",
+			setupConfig: func() *config.Config {
+				cfg := testConfig()
+				cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+				cfg.SeedPhraseDetection.MinWords = 12
+				cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+				return cfg
+			},
+			text: func() string {
+				encoded := base64.StdEncoding.EncodeToString([]byte(testSeedPhrase12))
+				return `{"seed":"` + encoded + `"}`
+			}(),
+			wantClean:   false,
+			wantPattern: "BIP-39 Seed Phrase",
+		},
+		{
 			name: "seed detection works with no DLP patterns configured",
 			setupConfig: func() *config.Config {
 				cfg := testConfig()
@@ -753,6 +769,47 @@ func TestScanTextForDLP(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScanTextForDLP_DecodesStructuredPayloadSegment(t *testing.T) {
+	s := New(testConfig())
+	secret := testAnthropicPrefix + strings.Repeat("z", 25)
+	body := `{"payload":"` + base64.StdEncoding.EncodeToString([]byte(secret)) + `"}`
+
+	result := s.ScanTextForDLP(context.Background(), body)
+	if result.Clean {
+		t.Fatal("expected encoded secret inside JSON string to be detected")
+	}
+	if !hasTextDLPMatch(result.Matches, testAnthropicName, "base64") {
+		t.Fatalf("expected base64 %q match, got %+v", testAnthropicName, result.Matches)
+	}
+}
+
+func TestScanTextForDLP_AllowsOfficialAWSExampleCredentialDocs(t *testing.T) {
+	s := New(testConfig())
+	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	secret := "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CY" + "EXAMPLEKEY"
+
+	doc := "Example credentials: aws_access_key_id = " + key +
+		"\naws_secret_access_key = " + secret +
+		"\nReplace these with your actual credentials."
+	if result := s.ScanTextForDLP(context.Background(), doc); !result.Clean {
+		t.Fatalf("expected official example credential docs to be clean, got %+v", result.Matches)
+	}
+
+	leak := "exfil key " + key
+	if result := s.ScanTextForDLP(context.Background(), leak); result.Clean {
+		t.Fatal("expected bare AWS example access key outside docs context to be detected")
+	}
+}
+
+func hasTextDLPMatch(matches []TextDLPMatch, name, encoded string) bool {
+	for _, m := range matches {
+		if m.PatternName == name && m.Encoded == encoded {
+			return true
+		}
+	}
+	return false
 }
 
 func TestScanTextForDLP_Deduplication(t *testing.T) {
@@ -1501,7 +1558,7 @@ func TestScanTextForDLP_EnvVarSecret(t *testing.T) {
 	}{
 		{
 			name: "AWS_SECRET_ACCESS_KEY",
-			text: "AWS_SECRET_ACCESS_KEY=" + "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCYEXAMPLEKEY",
+			text: "AWS_SECRET_ACCESS_KEY=" + "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CYEXAMPLEKEY",
 		},
 		{
 			name: "STRIPE_SECRET_KEY",

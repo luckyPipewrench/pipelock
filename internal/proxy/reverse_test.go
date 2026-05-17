@@ -1738,9 +1738,10 @@ func TestProxy_ConfigPtrAndScannerPtr(t *testing.T) {
 func TestReverseProxy_SuppressedInjectionPassesThrough(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.ResponseScanning.Action = config.ActionBlock
-	// Suppress the injection pattern for all URLs.
+	// Suppress both injection-family core patterns for all URLs.
 	cfg.Suppress = []config.SuppressEntry{
 		{Rule: "Prompt Injection", Path: "*", Reason: "test suppression"},
+		{Rule: "System Prompt Disclosure", Path: "*", Reason: "test suppression"},
 	}
 
 	upstream := func(w http.ResponseWriter, _ *http.Request) {

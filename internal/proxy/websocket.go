@@ -949,6 +949,11 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 	currDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(msg))
 
 	crossDLP, crossWarns := wsCrossMessageDLPMatches(combinedDLP, prevDLP, currDLP)
+	if joined, ok := joinLabeledWSCrossMessageSuffixes(tail, msg); ok {
+		joinedDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(joined))
+		crossDLP = append(crossDLP, joinedDLP.Matches...)
+		crossWarns = append(crossWarns, joinedDLP.InformationalMatches...)
+	}
 	if len(crossWarns) > 0 {
 		r.scanner.EmitTextDLPWarnMatches(ctx, crossWarns)
 	}
@@ -986,6 +991,53 @@ func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Log
 	}
 
 	return r.handleClientTextFindings(log, crossDLP, crossAddr)
+}
+
+func joinLabeledWSCrossMessageSuffixes(prev, current []byte) ([]byte, bool) {
+	prevSuffix, okPrev := labeledWSSuffix(prev)
+	currSuffix, okCurr := labeledWSSuffix(current)
+	if !okPrev || !okCurr {
+		return nil, false
+	}
+	joined := make([]byte, 0, len(prevSuffix)+len(currSuffix))
+	joined = append(joined, prevSuffix...)
+	joined = append(joined, currSuffix...)
+	return joined, true
+}
+
+func labeledWSSuffix(msg []byte) ([]byte, bool) {
+	text := strings.TrimSpace(string(msg))
+	idx := strings.IndexByte(text, ':')
+	if idx <= 0 || idx+1 >= len(text) {
+		return nil, false
+	}
+	label := strings.ToLower(strings.TrimSpace(text[:idx]))
+	if len(label) > 32 || !isFragmentLabel(label) {
+		return nil, false
+	}
+	suffix := strings.TrimSpace(text[idx+1:])
+	if len(suffix) < 6 {
+		return nil, false
+	}
+	return []byte(suffix), true
+}
+
+func isFragmentLabel(label string) bool {
+	hasFragmentWord := strings.Contains(label, "part") ||
+		strings.Contains(label, "chunk") ||
+		strings.Contains(label, "fragment") ||
+		strings.Contains(label, "segment") ||
+		strings.Contains(label, "piece")
+	if !hasFragmentWord {
+		return false
+	}
+	for _, r := range label {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == ' ' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scanner.TextDLPMatch, addrFindings []addressprotect.Finding) (blocked bool) {
@@ -1631,6 +1683,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			crossMsgTail = updateWSCrossMessageTail(prevTail, msg)
 			if !redactionEnabled {
 				if len(scanInput) > 0 && r.scanClientText(ctx, log, scanInput) {
+					blocked = true
+					return
+				}
+				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, msg); ok && r.scanClientText(ctx, log, joined) {
 					blocked = true
 					return
 				}

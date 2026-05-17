@@ -1855,6 +1855,42 @@ func TestWSProxy_CrossMessageDLP_SplitKey(t *testing.T) {
 	}
 }
 
+func TestWSProxy_CrossMessageDLP_LabeledSplitKey(t *testing.T) {
+	joined, ok := joinLabeledWSCrossMessageSuffixes(
+		[]byte("part1: AKIAIOS"),
+		[]byte("part2: FODNN7"+testWSExample),
+	)
+	if !ok {
+		t.Fatal("expected labeled WebSocket fragments to join")
+	}
+	if string(joined) != "AKIAIOSFODNN7"+testWSExample {
+		t.Fatalf("joined labeled fragments = %q", joined)
+	}
+
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("part1: AKIAIOS")); err != nil {
+		t.Fatalf("write msg1: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatalf("read msg1: %v (first labeled half should pass)", err)
+	}
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("part2: FODNN7"+testWSExample)); err != nil {
+		t.Fatalf("write msg2: %v", err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err == nil {
+		t.Fatal("expected connection closed on labeled split key")
+	}
+}
+
 func TestWSProxy_CrossMessageDLP_ThreeWaySplit(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

@@ -52,6 +52,10 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	// Core response patterns run FIRST — immutable safety floor.
 	// These run regardless of response_scanning.enabled.
 	if coreMatches := s.ScanCoreResponse(ctx, content); len(coreMatches) > 0 {
+		coreMatches = filterEducationalQuotedResponseMatches(content, coreMatches)
+		if len(coreMatches) == 0 {
+			return ResponseScanResult{Clean: true}
+		}
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreMatches,
@@ -153,6 +157,10 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	if len(matches) == 0 {
 		return ResponseScanResult{Clean: true}
 	}
+	matches = filterEducationalQuotedResponseMatches(original, matches)
+	if len(matches) == 0 {
+		return ResponseScanResult{Clean: true}
+	}
 
 	result := ResponseScanResult{
 		Clean:   false,
@@ -183,6 +191,87 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 	}
 
 	return result
+}
+
+func filterEducationalQuotedResponseMatches(content string, matches []ResponseMatch) []ResponseMatch {
+	if len(matches) == 0 || !hasEducationalPromptInjectionContext(content) {
+		return matches
+	}
+
+	normalized := normalize.ForMatching(content)
+	filtered := matches[:0]
+	for _, match := range matches {
+		if isSystemPromptDisclosureMatch(match) {
+			filtered = append(filtered, match)
+			continue
+		}
+		if isQuotedResponseExampleMatch(normalized, match) {
+			continue
+		}
+		filtered = append(filtered, match)
+	}
+	return filtered
+}
+
+// isSystemPromptDisclosureMatch identifies matches from the immutable
+// "System Prompt Disclosure" core pattern, which targets system prompt,
+// tool definition, and developer instruction disclosure directives. The
+// pattern itself enforces the verb + target structure via its regex; the
+// name check alone is sufficient. Inspecting match.MatchText would be
+// unsafe — matchPatternsPreFiltered truncates MatchText at 100 runes and
+// an attacker can fill the regex's 80-char gap to push the target past
+// the truncation cap.
+func isSystemPromptDisclosureMatch(match ResponseMatch) bool {
+	return match.PatternName == "System Prompt Disclosure"
+}
+
+func hasEducationalPromptInjectionContext(content string) bool {
+	lower := strings.ToLower(normalize.ForMatching(content))
+	if !strings.Contains(lower, "prompt injection") {
+		return false
+	}
+
+	metaContext := strings.Contains(lower, "common injection pattern") ||
+		strings.Contains(lower, "common attack pattern") ||
+		strings.Contains(lower, "attack pattern is") ||
+		strings.Contains(lower, "include phrases like")
+	defensiveContext := strings.Contains(lower, "defense") ||
+		strings.Contains(lower, "defenders") ||
+		strings.Contains(lower, "input validation") ||
+		strings.Contains(lower, "scan for these patterns")
+	return metaContext && defensiveContext
+}
+
+func isQuotedResponseExampleMatch(content string, match ResponseMatch) bool {
+	start := match.Position
+	end := start + len(match.MatchText)
+	if start < 0 || end > len(content) || start >= end {
+		return false
+	}
+	if !strings.HasPrefix(content[start:], match.MatchText) {
+		return false
+	}
+	return isASCIIQuotedSpan(content, start, end, '\'') || isASCIIQuotedSpan(content, start, end, '"')
+}
+
+func isASCIIQuotedSpan(content string, start, end int, quote byte) bool {
+	left := strings.LastIndexByte(content[:start], quote)
+	if left < 0 {
+		return false
+	}
+	lineStart := strings.LastIndexAny(content[:left], "\r\n") + 1
+	if strings.Count(content[lineStart:left], string(rune(quote)))%2 != 0 {
+		return false
+	}
+	nextAfterLeft := strings.IndexByte(content[left+1:], quote)
+	if nextAfterLeft < 0 {
+		return false
+	}
+	closing := left + 1 + nextAfterLeft
+	if closing < end {
+		return false
+	}
+	return !strings.ContainsAny(content[left+1:closing], "\r\n")
 }
 
 // matchPatternsAgainst runs a pattern set against content and returns matches.

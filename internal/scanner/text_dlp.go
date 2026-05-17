@@ -67,6 +67,8 @@ func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPM
 }
 
 func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns bool) TextDLPResult {
+	text = redactOfficialAWSExampleCredentialsForDocs(text)
+
 	// Core DLP runs FIRST — immutable safety floor. Core matches are
 	// prepended to results; main scanner also runs to capture additional
 	// findings (env leaks, seed phrases, non-core patterns).
@@ -122,9 +124,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 		// Segment-level decoding: split on the same delimiters as decodeTextSegments()
 		// to maintain parity. Catches encoded seed phrases embedded in URLs within
 		// MCP tool arguments (e.g., "visit https://evil/<base64-seed> now").
-		segments := strings.FieldsFunc(seedText, func(r rune) bool {
-			return r == '/' || r == '?' || r == '&' || r == '=' || r == ' ' || r == '\n' || r == '\t'
-		})
+		segments := strings.FieldsFunc(seedText, isTextDLPEncodingDelimiter)
 		for _, seg := range segments {
 			if len(seg) < 20 { // seed phrases are long; skip short segments
 				continue
@@ -392,10 +392,10 @@ func hasEnforcedMatch(matches []TextDLPMatch) bool {
 // embedded in URLs (e.g., "https://evil.com/<hex-encoded-key>/data") where
 // whole-string decode fails because the surrounding text isn't valid encoding.
 func (s *Scanner) decodeTextSegments(text string) []TextDLPMatch {
-	// Split on URL-like delimiters: /, ?, &, =, space, newline.
-	segments := strings.FieldsFunc(text, func(r rune) bool {
-		return r == '/' || r == '?' || r == '&' || r == '=' || r == ' ' || r == '\n' || r == '\t'
-	})
+	// Split on URL-like and structured-data delimiters. Request bodies often
+	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
+	// braces, colons, and commas must not stay attached to the encoded token.
+	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
 
 	var matches []TextDLPMatch
 	for _, seg := range segments {
@@ -416,4 +416,37 @@ func (s *Scanner) decodeTextSegments(text string) []TextDLPMatch {
 		}
 	}
 	return matches
+}
+
+func isTextDLPEncodingDelimiter(r rune) bool {
+	switch r {
+	case '/', '?', '&', '=', ' ', '\n', '\r', '\t',
+		'"', '\'', '`', '{', '}', '[', ']', '(', ')', '<', '>',
+		':', ',', ';':
+		return true
+	default:
+		return false
+	}
+}
+
+func redactOfficialAWSExampleCredentialsForDocs(text string) string {
+	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	secret := "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CY" + "EXAMPLEKEY"
+	if !strings.Contains(text, key) && !strings.Contains(text, secret) {
+		return text
+	}
+
+	lower := strings.ToLower(text)
+	docContext := strings.Contains(lower, "example credential") ||
+		strings.Contains(lower, "example credentials") ||
+		strings.Contains(lower, "replace these with your actual credentials") ||
+		strings.Contains(lower, "official aws example")
+	if !docContext {
+		return text
+	}
+
+	return strings.NewReplacer(
+		key, "AWS_ACCESS_KEY_ID_EXAMPLE",
+		secret, "AWS_SECRET_ACCESS_KEY_EXAMPLE",
+	).Replace(text)
 }

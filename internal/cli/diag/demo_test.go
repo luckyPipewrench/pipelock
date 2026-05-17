@@ -77,8 +77,23 @@ func TestDemoCmd(t *testing.T) {
 	})
 
 	t.Run("injection_detail", func(t *testing.T) {
-		if !strings.Contains(output, "Prompt Injection detected") {
-			t.Error("expected prompt injection detection detail")
+		// The demo content matches both "Prompt Injection" and the
+		// "System Prompt Disclosure" core patterns; the joined pattern list
+		// inserts ", System Prompt Disclosure" between the name and "detected".
+		var detailLine string
+		for _, line := range strings.Split(output, "\n") {
+			if strings.Contains(line, "[BLOCKED]") && strings.Contains(line, "Prompt Injection") {
+				detailLine = line
+				break
+			}
+		}
+		if detailLine == "" {
+			t.Fatalf("expected prompt injection detection detail, got:\n%s", output)
+		}
+		if !strings.Contains(detailLine, "Prompt Injection") ||
+			!strings.Contains(detailLine, "System Prompt Disclosure") ||
+			!strings.Contains(detailLine, "detected (action: block)") {
+			t.Errorf("expected prompt injection detection detail, got %q", detailLine)
 		}
 	})
 

@@ -27,7 +27,7 @@
 
 **Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 48 credential patterns, and 25 injection patterns with 6-pass normalization.
 
-**Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
+**Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
 [Quick Start](#quick-start) · [What It Does](#what-it-does) · [Docs](docs/) · [Blog](https://pipelab.org/blog/) · [Ask Dosu](https://app.dosu.dev/bcccd1cf-be85-4c0e-ae05-edeb0ff50b59/ask)
 
@@ -215,7 +215,7 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Denial-of-Wallet** | Per-agent budgets for retries, fan-out, and concurrent tool calls. Catches loop storms and amplification attacks. |
 | **Taint Escalation** | Exposure-based policy escalation across MCP + task boundaries. Sessions that recently observed untrusted content get elevated scanning on protected operations until trust is explicitly restored. |
 | **Mediation Envelope** | RFC 8941 sideband metadata on forwarded HTTP requests and MCP `_meta`, carrying action type, verdict, actor identity, policy hash, taint context, and receipt correlation ID. v2.4 adds inbound verification with replay protection, SPIFFE actor format, and an RFC 9421 well-known signing-key directory at `/.well-known/http-message-signatures-directory`. See [federation guide](docs/guides/federation.md). |
-| **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) plus the reference Python verifier ([pipelock-verify-python](https://github.com/luckyPipewrench/pipelock-verify-python)), so receipts can be verified outside the Go implementation. v2.4 adds `EvidenceReceipt v2` for learn-and-lock lifecycle and shadow evidence; the Go reference verifies v2 receipts today, and a prepared `pipelock-verify-python` 0.2.0 update adds v1 chains plus individual v2 receipts once published. v2 chain verification remains a follow-up. |
+| **Receipt Conformance** | Cross-implementation receipt verification suite (`sdk/conformance/`) plus the reference Python verifier ([pipelock-verify-python](https://github.com/luckyPipewrench/pipelock-verify-python)), so receipts can be verified outside the Go implementation. v2.4 adds `EvidenceReceipt v2` for learn-and-lock lifecycle and shadow evidence; the Go reference verifies v2 receipts today. v2.5 adds first-party Go, TypeScript, and Rust verifiers for Audit Packet v0. Python Audit Packet verification and EvidenceReceipt v2 chain verification remain follow-up work. |
 | **Learn-and-Lock** (v2.4) | Per-agent behavioral contracts: observe an agent's real traffic, compile a signed candidate contract, replay captured observations in shadow, ratify per rule, promote the signed active manifest, and **enforce live** on every URL-bearing transport plus the MCP tool-call surface (forward, reverse + redirect, intercept, /fetch, WebSocket, MCP HTTP, MCP stdio bridge, MCP stdio subprocess). Lifecycle, shadow, and runtime `proxy_decision` receipts use `EvidenceReceipt v2`, chained to the active manifest hash. Scanner block always wins over contract allow on every gated path. See [learn-and-lock guide](docs/guides/learn-and-lock.md). |
 | **Block-Reason Header** (v2.4) | `X-Pipelock-Block-Reason` response header on every HTTP-capable block path (forward / intercept / fetch / reverse / MCP HTTP / WebSocket close-frame payload) with a fixed reason vocabulary, severity tier, and retry hint. MCP-internal JSON-RPC blocks (`tool_poisoning`, `tool_chain_blocked`, MCP stdio) carry the same reason vocabulary on the JSON-RPC error metadata where there is no HTTP response surface. Lets agents react intelligently to a block without parsing the body. See [block-reason header](docs/guides/block-reason-header.md). |
 | **Wedge-Detection Watchdog** (v2.4) | `health_watchdog` returns `/health` 503 when a subsystem heartbeat goes stale (proxy hot path, MCP listeners, rules-engine reload watcher), so cluster liveness probes detect a wedged scanner automatically. Optional `expose_subsystems: true` adds a per-subsystem map for operator dashboards. See [health endpoint guide](docs/guides/health.md). |
@@ -348,6 +348,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[OpenAI Codex](docs/guides/codex.md):** MCP proxy wrapping, forward proxy, sandbox integration
 - **[Cline](docs/guides/cline.md):** MCP proxy wrapping for Cline's `mcp.json`
 - **[OpenCode](docs/guides/opencode.md):** MCP proxy wrapping for OpenCode's local and remote MCP servers
+- **[Zed](docs/guides/zed.md):** MCP proxy wrapping for Zed's `context_servers` block in `settings.json`
 - **[OpenAI Agents SDK](docs/guides/openai-agents.md):** `MCPServerStdio`, multi-agent handoffs
 - **[Google ADK](docs/guides/google-adk.md):** `McpToolset`, `StdioConnectionParams`
 - **[AutoGen](docs/guides/autogen.md):** `StdioServerParams`, `mcp_server_tools()`
@@ -465,7 +466,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Metrics Reference](docs/metrics.md) | Prometheus metric families, labels, JSON stats, and alert rules |
 | [Community Rules](docs/rules.md) | Install, configure, and create signed rule bundles |
 | [Security Assurance](docs/security-assurance.md) | Security model, trust boundaries, supply chain |
-| [Security Documents](docs/security/) | Disclosure policy, unsupported paths, key rotation, TLS CA threat model |
+| [Security Documents](docs/security/) | Disclosure policy, unsupported paths, key rotation, TLS CA and Audit Packet threat models |
 | [Finding Suppression](docs/guides/suppression.md) | Rule names, path matching, inline comments |
 | [Transport Modes](docs/guides/transport-modes.md) | All proxy modes and their scanning capabilities |
 | [OWASP MCP Top 10](docs/compliance/owasp-mcp-top10.md) | OWASP MCP Top 10 coverage |
@@ -476,6 +477,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Mediation Envelope](docs/guides/mediation-envelope.md) | Sideband metadata headers, config, interaction with receipts |
 | [Media Policy](docs/guides/media-policy.md) | Stego stripping, SVG hardening, allowed types, size limits |
 | [Receipt Verification](docs/guides/receipt-verification.md) | `pipelock verify-receipt`, standalone `pipelock-verifier`, conformance suite, chain integrity |
+| [Audit Packet Threat Model](docs/security/audit-packet-threat-model.md) | What verified Audit Packets prove, what they do not prove, and the trust assumptions relying parties must pin |
 | [Receipt Transport Coverage](docs/guides/receipt-transports.md) | Receipt emission matrix across fetch, forward, CONNECT/TLS, WebSocket, MCP, and A2A paths |
 | [Learn-and-Lock](docs/guides/learn-and-lock.md) | Per-agent behavioral contracts: observe, compile, shadow, ratify, promote (v2.4) |
 | [Federation](docs/guides/federation.md) | Inbound mediation envelope verification, SPIFFE actor format, RFC 9421 well-known directory (v2.4) |

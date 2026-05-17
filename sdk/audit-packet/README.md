@@ -14,6 +14,8 @@ This directory holds the locked v0 spec.
 | `audit_packet.go` | Go bindings (struct tags match `v0.json` field names).              |
 | `CHANGELOG.md`| Schema-version history. Independent of pipelock binary versions.        |
 
+The threat model that governs how to read a packet, including what a verified verdict does and does not prove, lives in [`docs/security/audit-packet-threat-model.md`](../../docs/security/audit-packet-threat-model.md).
+
 ## Where packets come from
 
 The first packet producer is the

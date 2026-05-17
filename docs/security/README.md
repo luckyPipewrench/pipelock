@@ -9,6 +9,7 @@ This directory holds policy and threat-model documents that integrators and proc
 | [key-rotation-runbook.md](key-rotation-runbook.md) | Operational procedure for rotating Ed25519 signing keys without breaking the live-lock roster. |
 | [coordinated-disclosure.md](coordinated-disclosure.md) | Vulnerability disclosure policy, response SLA, embargo handling, and CVE process. |
 | [per-deployment-ca-threat-model.md](per-deployment-ca-threat-model.md) | Threat model for the per-deployment TLS interception CA, including snapshot-restoration and root-compromise blast radius. |
+| [audit-packet-threat-model.md](audit-packet-threat-model.md) | Threat model for the Audit Packet evidence bundle. What a verified packet proves, what it does not prove, and the trust assumptions a relying party should pin before treating a `valid` verdict as provenance. |
 
 These documents describe what the current binary enforces today. Behaviour planned for later versions is tracked in the project roadmap and is out of scope here.
 

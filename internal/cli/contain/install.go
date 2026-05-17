@@ -110,6 +110,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	env.archivedBackups = make(map[string][]string)
 	if opts.operatorUser != "" {
 		env.operatorUser = opts.operatorUser
 	}

@@ -528,6 +528,20 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 	}
 }
 
+func TestRunInstallResetsArchiveTrackingPerInvocation(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	env.archivedBackups = map[string][]string{
+		env.integrityPin + ".bak": {env.integrityPin + ".bak.archived-old"},
+	}
+	err := runInstall(context.Background(), env, installOpts{operatorUser: "ghost"})
+	if err == nil {
+		t.Fatal("expected invalid operator error")
+	}
+	if len(env.archivedBackups) != 0 {
+		t.Fatalf("archive tracking not reset: %+v", env.archivedBackups)
+	}
+}
+
 func legacyBody(path string, overrides map[string][]byte) []byte {
 	if override, ok := overrides[path]; ok {
 		return override

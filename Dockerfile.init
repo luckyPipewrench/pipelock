@@ -9,6 +9,6 @@
 #       volumeMounts:
 #         - name: shared-bin
 #           mountPath: /shared-bin
-FROM alpine:3.21@sha256:c3f8e73fdb79deaebaa2037150150191b9dcbfba68b4a46d70103204c53f4709
+FROM alpine:3.23@sha256:5b10f432ef3da1b8d4c7eb6c487f2f5a8f096bc91145e68878dd4a5019afde11
 COPY pipelock /pipelock
 USER 65534

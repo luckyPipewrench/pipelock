@@ -3,6 +3,8 @@
 
 package cliutil
 
+import "strings"
+
 // Build metadata, set at build time via ldflags. Defaults are used when
 // building with plain "go build" (without the Makefile).
 var (
@@ -11,3 +13,11 @@ var (
 	GitCommit = "unknown"
 	GoVersion = "unknown"
 )
+
+// DisplayVersion normalizes build metadata for human-facing banners.
+func DisplayVersion() string {
+	if Version == "" {
+		return "dev"
+	}
+	return "v" + strings.TrimPrefix(Version, "v")
+}

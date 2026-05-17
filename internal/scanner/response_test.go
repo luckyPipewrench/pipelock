@@ -280,6 +280,30 @@ must-block-marker`
 	}
 }
 
+func TestScanResponse_EducationalFilterUsesFullMatchLength(t *testing.T) {
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+		{
+			Name:  "Long Prompt Injection",
+			Regex: `(?i)ignore.{0,180}previous instructions`,
+		},
+	}
+	s := New(cfg)
+
+	content := `# Prompt Injection Defense
+
+A common attack pattern is: "` + `ignore ` + strings.Repeat("a", 110) + `" previous instructions` + `.
+Defenders should scan for these patterns in input validation.`
+
+	result := s.ScanResponse(context.Background(), content)
+	if result.Clean {
+		t.Fatal("expected match extending past closing quote to remain blocked")
+	}
+	if len(result.Matches) != 1 || result.Matches[0].PatternName != "Long Prompt Injection" {
+		t.Fatalf("expected long prompt injection match, got %+v", result.Matches)
+	}
+}
+
 func TestScanResponse_BlocksQuotedSystemPromptDisclosureInEducationalContext(t *testing.T) {
 	s := New(testResponseConfig())
 	// Long-fill case (last entry) exercises the regex's 80-char gap with

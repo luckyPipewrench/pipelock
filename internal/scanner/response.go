@@ -30,6 +30,7 @@ type ResponseMatch struct {
 	Position      int    `json:"position"`
 	Bundle        string `json:"bundle,omitempty"`
 	BundleVersion string `json:"bundle_version,omitempty"`
+	matchLength   int
 }
 
 type responseMatchSet struct {
@@ -265,7 +266,11 @@ func hasEducationalPromptInjectionContext(content string) bool {
 
 func isQuotedResponseExampleMatch(content string, match ResponseMatch) bool {
 	start := match.Position
-	end := start + len(match.MatchText)
+	matchLength := match.matchLength
+	if matchLength == 0 {
+		matchLength = len(match.MatchText)
+	}
+	end := start + matchLength
 	if start < 0 || end > len(content) || start >= end {
 		return false
 	}
@@ -312,6 +317,7 @@ func matchPatternsAgainst(patterns []*compiledPattern, content string) []Respons
 				Position:      loc[0],
 				Bundle:        p.bundle,
 				BundleVersion: p.bundleVersion,
+				matchLength:   loc[1] - loc[0],
 			})
 		}
 	}
@@ -354,6 +360,7 @@ func matchPatternsPreFiltered(pf *responsePreFilter, patterns []*compiledPattern
 				Position:      loc[0],
 				Bundle:        p.bundle,
 				BundleVersion: p.bundleVersion,
+				matchLength:   loc[1] - loc[0],
 			})
 		}
 	}

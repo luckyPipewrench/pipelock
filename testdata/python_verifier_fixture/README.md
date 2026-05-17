@@ -43,9 +43,10 @@ of noise and gives reproducible installs across developer machines and
 CI. See `CONTRIBUTING.md` Python dependencies section for the full
 rule.
 
-Dependabot watches the `pip` ecosystem at this directory and at
+Renovate watches the `pip` ecosystem at this directory and at
 `.github/`; it auto-opens PRs to bump pinned versions when a new
-advisory drops.
+advisory drops. Routine updates wait out a 10-day cooldown;
+security-fix releases fast-track.
 
 ## CI integration
 

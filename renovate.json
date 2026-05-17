@@ -1,0 +1,85 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":maintainLockFilesWeekly"
+  ],
+  "minimumReleaseAge": "10 days",
+  "internalChecksFilter": "strict",
+  "labels": ["dependencies"],
+  "prHourlyLimit": 4,
+  "prConcurrentLimit": 10,
+  "vulnerabilityAlerts": {
+    "labels": ["security", "fast-track"],
+    "minimumReleaseAge": "0 days",
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "pinDigests": true,
+      "commitMessagePrefix": "ci:",
+      "addLabels": ["ci"],
+      "groupName": "ci-actions"
+    },
+    {
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "pinDigests": true,
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["docker"],
+      "groupName": "docker-base-images"
+    },
+    {
+      "matchManagers": ["kubernetes", "helm-values", "helmv3"],
+      "pinDigests": true,
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["k8s"],
+      "groupName": "k8s-images"
+    },
+    {
+      "matchManagers": ["gomod"],
+      "commitMessagePrefix": "deps:",
+      "groupName": "go-deps"
+    },
+    {
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": ["testdata/python_verifier_fixture/**"],
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["python"],
+      "groupName": "verifier-fixture"
+    },
+    {
+      "matchManagers": ["pip_requirements"],
+      "matchFileNames": [".github/**"],
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["python"],
+      "groupName": "pr-review-deps"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchFileNames": ["sdk/verifiers/ts/**"],
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["javascript"],
+      "groupName": "ts-verifier"
+    },
+    {
+      "matchManagers": ["cargo"],
+      "matchFileNames": ["sdk/verifiers/rust/**"],
+      "commitMessagePrefix": "deps:",
+      "addLabels": ["rust"],
+      "groupName": "rust-verifier"
+    },
+    {
+      "matchManagers": ["pre-commit"],
+      "commitMessagePrefix": "ci:",
+      "addLabels": ["ci"],
+      "groupName": "pre-commit-hooks"
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-update", "needs-review"],
+      "automerge": false
+    }
+  ]
+}

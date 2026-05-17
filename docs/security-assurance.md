@@ -114,6 +114,6 @@ The suite is updated alongside every release and whenever new evasion classes ar
 ### Static Analysis and Supply Chain
 
 - **Static analysis:** CodeQL (security-and-quality) and golangci-lint with gosec
-- **Dependency monitoring:** Dependabot alerts, govulncheck in CI
+- **Dependency monitoring:** Renovate (10-day cooldown for routine updates, security fast-track for vulnerability alerts) plus govulncheck in CI
 - **Signed releases:** Cosign signatures, SLSA provenance attestations, CycloneDX SBOM
 - **Vulnerability disclosure:** Responsible disclosure via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories)

@@ -61,7 +61,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 - **Workspace integrity monitoring:** SHA256 manifests detect any file modification, addition, or removal in the workspace. A compromised plugin that modifies config files is detected.
 - **Ed25519 signing:** files and manifests can be signed for tamper-evident verification.
 
-**Coverage: Partial.** Detects poisoned MCP tool descriptions and workspace file tampering. Does not scan software dependencies or verify model provenance. For dependency scanning, see [Trivy](https://github.com/aquasecurity/trivy) or Dependabot.
+**Coverage: Partial.** Detects poisoned MCP tool descriptions and workspace file tampering. Does not scan software dependencies or verify model provenance. For dependency scanning, see [Trivy](https://github.com/aquasecurity/trivy) or [Renovate](https://github.com/renovatebot/renovate).
 
 ---
 

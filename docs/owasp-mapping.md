@@ -90,7 +90,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **MCP tool scanning:** `tools/list` responses are scanned for poisoned tool descriptions (hidden instructions, file exfiltration directives, cross-tool manipulation). SHA256 baseline detects rug-pull changes to tool definitions mid-session.
 - **Ed25519 signing:** files and manifests can be signed for tamper-evident verification. Unsigned or re-signed files are flagged.
 
-**Gap:** No dependency scanning (use [Trivy](https://github.com/aquasecurity/trivy) or Dependabot for that). No MCP server identity verification yet.
+**Gap:** No dependency scanning (use [Trivy](https://github.com/aquasecurity/trivy) or [Renovate](https://github.com/renovatebot/renovate) for that). No MCP server identity verification yet.
 
 ---
 

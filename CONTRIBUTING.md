@@ -131,9 +131,10 @@ fixture), use `pip-compile` from `pip-tools` with a source `.in` file.
 See `testdata/python_verifier_fixture/README.md` for the regen
 command.
 
-Dependabot covers both Python paths and auto-opens PRs to bump the
-locks when a new advisory drops or a fresh patch ships. Merge those
-PRs after CI is green.
+Renovate watches both Python paths and auto-opens PRs to bump the
+locks when a new advisory drops or a fresh patch ships. Routine
+bumps wait out a 10-day cooldown; vulnerability-fix releases
+fast-track. Merge those PRs after CI is green.
 
 CI lint enforces the rule: `scripts/check-python-pins.sh` runs in the
 `lint` job and exits non-zero on any `requirements*.txt` line that

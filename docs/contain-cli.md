@@ -28,7 +28,7 @@ The agent runs with reduced capabilities (no privileged ports, no raw sockets, n
 
 Run as root (typically via `sudo`):
 
-```
+```bash
 sudo pipelock contain install \
   --config /etc/pipelock/pipelock.yaml \
   --pipelock-binary /usr/local/bin/pipelock
@@ -66,7 +66,7 @@ Exit codes:
 
 Verify is read-only. It walks 12 probes in order and prints pass / fail / skip per probe. It does not require root.
 
-```
+```bash
 pipelock contain verify
 ```
 
@@ -98,7 +98,7 @@ Exit code is 0 if every probe passed, 1 if any probe failed, and 2 if verificati
 
 Idempotently undoes `install`. Safe to re-run on a partial install — every step checks state before mutating.
 
-```
+```bash
 sudo pipelock contain rollback
 ```
 
@@ -117,7 +117,7 @@ Flags:
 
 Registers an additional tool wrapper without rerunning `install`. Useful when adding a new agent-callable tool after the initial install.
 
-```
+```bash
 sudo pipelock contain add-tool claude
 ```
 
@@ -134,7 +134,7 @@ Flags:
 
 Rebuilds `/etc/pipelock/combined-ca.pem` after the Pipelock CA has rotated, or after the system trust store has changed.
 
-```
+```bash
 sudo pipelock contain ca-refresh
 ```
 
@@ -156,4 +156,4 @@ Flags:
 - **Dry-run is honest.** `--dry-run` prints exactly the commands install would run, with the same arguments. CI can dry-run an install change and review the diff before applying it.
 - **Rollback uses guarded backups.** Managed file writes preserve prior content as `path.bak` when prior content existed. Rollback restores those backups where applicable, then removes managed artifacts.
 
-For the deployment-tier threat model see [`docs/security/per-deployment-ca-threat-model.md`](security/per-deployment-ca-threat-model.md). For the current unsupported-paths surface (raw sockets, browsers without explicit proxy config, processes that ignore CA bundle env vars) see [`docs/security/current-unsupported-paths.md`](security/current-unsupported-paths.md).
+For the deployment-tier threat model see [`security/per-deployment-ca-threat-model.md`](security/per-deployment-ca-threat-model.md). For the current unsupported-paths surface (raw sockets, browsers without explicit proxy config, processes that ignore CA bundle env vars) see [`security/current-unsupported-paths.md`](security/current-unsupported-paths.md).

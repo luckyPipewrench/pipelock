@@ -161,11 +161,17 @@ For enforced cluster deployments, generate a companion-proxy topology and point 
 pipelock init sidecar \
   --inject-spec agent-deployment.yaml \
   --mcp-upstream http://openclaw-gateway:3000/mcp \
+  --mcp-server-name openclaw \
   --output enforced.yaml
 kubectl apply -f enforced.yaml
 ```
 
-The generated agent workload gets `HTTPS_PROXY` and `HTTP_PROXY` for HTTP egress plus `PIPELOCK_MCP_PROXY_URL=http://<pipelock-service>:8889` for MCP client configuration. Configure your agent or launcher to use that MCP URL. The generated NetworkPolicy limits the agent pod to DNS plus the Pipelock HTTP and MCP proxy ports, so direct egress to the OpenClaw gateway is outside the generated agent boundary.
+The generated agent workload gets `HTTPS_PROXY` and `HTTP_PROXY` for HTTP egress, plus two MCP launcher inputs:
+
+- `PIPELOCK_MCP_PROXY_URL=http://<pipelock-service>:8889`
+- `PIPELOCK_MCP_CONFIG=/etc/pipelock/mcp/mcp.json`
+
+The mounted `mcp.json` contains an `mcpServers.openclaw` entry whose URL points at Pipelock's MCP listener. Configure your agent launcher to read `PIPELOCK_MCP_CONFIG`, or configure the MCP client directly from `PIPELOCK_MCP_PROXY_URL`. The generated NetworkPolicy limits the agent pod to DNS plus the Pipelock HTTP and MCP proxy ports, so direct egress to the OpenClaw gateway is outside the generated agent boundary.
 
 Same-pod sidecar wiring is still useful for local prototypes, but it relies on the agent honoring proxy settings and is not the generated enforced topology:
 

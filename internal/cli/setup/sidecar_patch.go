@@ -8,6 +8,9 @@
 package setup
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -21,15 +24,18 @@ import (
 
 // Fixed names and values for companion-proxy generation.
 const (
-	proxyContainerName   = "pipelock"
-	sidecarContainerName = proxyContainerName // legacy alias for pre-companion tests/helpers
-	sidecarConfigVolume  = "pipelock-config"
-	sidecarConfigMount   = "/etc/pipelock"
-	sidecarConfigFile    = "pipelock.yaml"
-	sidecarHealthPath    = "/health"
-	sidecarHealthPort    = 8888
-	sidecarMCPPort       = 8889
-	sidecarMetricsPort   = 9091
+	proxyContainerName     = "pipelock"
+	sidecarContainerName   = proxyContainerName // legacy alias for pre-companion tests/helpers
+	sidecarConfigVolume    = "pipelock-config"
+	sidecarConfigMount     = "/etc/pipelock"
+	sidecarConfigFile      = "pipelock.yaml"
+	sidecarMCPConfigVolume = "pipelock-mcp-config"
+	sidecarMCPConfigMount  = "/etc/pipelock/mcp"
+	sidecarMCPConfigFile   = "mcp.json"
+	sidecarHealthPath      = "/health"
+	sidecarHealthPort      = 8888
+	sidecarMCPPort         = 8889
+	sidecarMetricsPort     = 9091
 
 	// defaultImage is the GHCR image with the current version tag.
 	// Overridden by --image flag.
@@ -40,6 +46,7 @@ const (
 	envHTTPProxy  = "HTTP_PROXY"
 	envNoProxy    = "NO_PROXY"
 	envMCPProxy   = "PIPELOCK_MCP_PROXY_URL"
+	envMCPConfig  = "PIPELOCK_MCP_CONFIG"
 	noProxyValue  = "localhost,127.0.0.1,.svc,.cluster.local"
 
 	proxyReplicaCount = 2
@@ -54,8 +61,14 @@ const (
 	managedProxyServiceAnnotation = "pipelock.dev/proxy-service"
 	managedMCPProxyAnnotation     = "pipelock.dev/mcp-proxy-service"
 	managedMCPUpstreamAnnotation  = "pipelock.dev/mcp-upstream"
+	managedMCPUpstreamHash        = "pipelock.dev/mcp-upstream-sha256"
+	managedMCPConfigAnnotation    = "pipelock.dev/mcp-config"
+	managedMCPServerAnnotation    = "pipelock.dev/mcp-server-name"
 	managedTopologyCompanion      = "companion-proxy"
 	managedByLabelValue           = "pipelock-init-sidecar"
+	managedAnnotationEnabled      = "true"
+
+	defaultMCPServerName = "pipelock"
 )
 
 // sidecarPatchResult holds the generated patch and related artifacts.
@@ -68,6 +81,8 @@ type sidecarPatchResult struct {
 	Config *config.Config
 	// ConfigMapYAML is the standalone ConfigMap for the companion proxy.
 	ConfigMapYAML string
+	// MCPConfigMapYAML is the optional MCP client config mounted into the agent workload.
+	MCPConfigMapYAML string
 	// DeploymentYAML is the companion proxy Deployment.
 	DeploymentYAML string
 	// ServiceYAML is the companion proxy Service.
@@ -88,6 +103,10 @@ type sidecarPatchResult struct {
 	MCPUpstream string
 	// MCPProxyURL is the companion Service MCP URL injected into the agent workload.
 	MCPProxyURL string
+	// MCPConfigPath is the mounted MCP client config path exposed to launchers.
+	MCPConfigPath string
+	// MCPServerName is the generated mcpServers entry name.
+	MCPServerName string
 	// AgentSelectorLabels identify the protected agent pods.
 	AgentSelectorLabels map[string]string
 	// ProxySelectorLabels identify the companion proxy pods.
@@ -116,22 +135,38 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 	proxyName := resolveProxyName(manifest.Raw, manifest.Name)
 	proxyURL := proxyServiceURL(proxyName)
 	mcpProxyURL := ""
+	mcpConfigPath := ""
+	mcpConfigName := ""
+	mcpServerName := ""
 	if opts.mcpUpstream != "" {
 		mcpProxyURL = proxyMCPServiceURL(proxyName)
+		mcpConfigPath = sidecarMCPConfigPath()
+		mcpConfigName = mcpClientConfigMapName(proxyName)
+		mcpServerName = resolveMCPServerName(opts.mcpServerName)
 	}
 	proxyLabels := proxySelectorLabels(proxyName)
 
-	if err := annotateManagedWorkload(patched, manifest.Kind, proxyName, mcpProxyURL, opts.mcpUpstream); err != nil {
+	if err := annotateManagedWorkload(patched, manifest.Kind, proxyName, mcpProxyURL, opts.mcpUpstream, mcpConfigPath, mcpServerName); err != nil {
 		return nil, fmt.Errorf("annotating workload: %w", err)
 	}
-	if err := injectProxyEnvs(podSpec, proxyURL, mcpProxyURL); err != nil {
+	if err := injectProxyEnvs(podSpec, proxyURL, mcpProxyURL, mcpConfigPath); err != nil {
 		return nil, fmt.Errorf("injecting proxy env: %w", err)
+	}
+	if err := configureMCPClientConfigMount(podSpec, mcpConfigName, mcpConfigPath); err != nil {
+		return nil, fmt.Errorf("configuring MCP client config mount: %w", err)
 	}
 
 	proxyCfg := buildProxyConfig(opts.preset, agentIdentity)
 	configMapYAML, err := renderConfigMap(proxyCfg, opts.preset, namespace, proxyName, proxyLabels)
 	if err != nil {
 		return nil, fmt.Errorf("rendering ConfigMap: %w", err)
+	}
+	mcpConfigMapYAML := ""
+	if opts.mcpUpstream != "" {
+		mcpConfigMapYAML, err = renderMCPClientConfigMap(namespace, mcpConfigName, proxyLabels, mcpServerName, mcpProxyURL, opts.mcpUpstream)
+		if err != nil {
+			return nil, fmt.Errorf("rendering MCP client ConfigMap: %w", err)
+		}
 	}
 	deploymentYAML, err := renderProxyDeployment(namespace, proxyName, resolveImage(opts), proxyLabels, opts.mcpUpstream)
 	if err != nil {
@@ -159,6 +194,7 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 		PatchedManifest:         patched,
 		Config:                  proxyCfg,
 		ConfigMapYAML:           configMapYAML,
+		MCPConfigMapYAML:        mcpConfigMapYAML,
 		DeploymentYAML:          deploymentYAML,
 		ServiceYAML:             serviceYAML,
 		AgentNetworkPolicyYAML:  agentNetworkPolicyYAML,
@@ -169,6 +205,8 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 		ProxyURL:                proxyURL,
 		MCPUpstream:             opts.mcpUpstream,
 		MCPProxyURL:             mcpProxyURL,
+		MCPConfigPath:           mcpConfigPath,
+		MCPServerName:           mcpServerName,
 		AgentSelectorLabels:     selectorLabels,
 		ProxySelectorLabels:     proxyLabels,
 	}, nil
@@ -184,9 +222,9 @@ func buildProxyConfig(preset, agentIdentity string) *config.Config {
 	return cfg
 }
 
-// injectProxyEnvs adds HTTPS_PROXY, HTTP_PROXY, NO_PROXY to agent containers.
+// injectProxyEnvs adds HTTP and MCP proxy contract env vars to agent containers.
 // Existing conflicting proxy env vars are rejected instead of silently preserved.
-func injectProxyEnvs(podSpec map[string]interface{}, proxyURL, mcpProxyURL string) error {
+func injectProxyEnvs(podSpec map[string]interface{}, proxyURL, mcpProxyURL, mcpConfigPath string) error {
 	containers, ok := podSpec["containers"].([]interface{})
 	if !ok {
 		return nil
@@ -218,16 +256,173 @@ func injectProxyEnvs(podSpec map[string]interface{}, proxyURL, mcpProxyURL strin
 			if err != nil {
 				return fmt.Errorf("container %q: %w", containerName, err)
 			}
+			existing, err = upsertProxyEnv(existing, envMCPConfig, mcpConfigPath)
+			if err != nil {
+				return fmt.Errorf("container %q: %w", containerName, err)
+			}
 		} else {
 			// Scrub stale MCP env when the operator re-runs without
 			// --mcp-upstream. Leaving it would point the agent at a Service
-			// port the regenerated companion no longer listens on, turning
-			// a feature disable into a runtime "connection refused" loop.
+			// port and config file the regenerated bundle no longer exposes.
 			existing = removeProxyEnv(existing, envMCPProxy)
+			existing = removeProxyEnv(existing, envMCPConfig)
 		}
 		cMap["env"] = existing
 	}
 	return nil
+}
+
+func configureMCPClientConfigMount(podSpec map[string]interface{}, configMapName, mcpConfigPath string) error {
+	if mcpConfigPath == "" {
+		removePodSpecVolume(podSpec, sidecarMCPConfigVolume)
+		removeContainerVolumeMounts(podSpec, sidecarMCPConfigVolume)
+		return nil
+	}
+	if err := upsertConfigMapVolume(podSpec, sidecarMCPConfigVolume, configMapName); err != nil {
+		return err
+	}
+	return upsertContainerVolumeMounts(podSpec, sidecarMCPConfigVolume, sidecarMCPConfigMount)
+}
+
+func upsertConfigMapVolume(podSpec map[string]interface{}, volumeName, configMapName string) error {
+	volumes, _ := podSpec["volumes"].([]interface{})
+	for i, item := range volumes {
+		volume, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := volume["name"].(string)
+		if name != volumeName {
+			continue
+		}
+		configMap, ok := volume["configMap"].(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("volume %q already exists and is not a ConfigMap", volumeName)
+		}
+		existingName, _ := configMap["name"].(string)
+		if existingName != configMapName {
+			return fmt.Errorf("volume %q already uses ConfigMap %q, want %q", volumeName, existingName, configMapName)
+		}
+		volumes[i] = volume
+		podSpec["volumes"] = volumes
+		return nil
+	}
+	podSpec["volumes"] = append(volumes, map[string]interface{}{
+		"name": volumeName,
+		"configMap": map[string]interface{}{
+			"name": configMapName,
+		},
+	})
+	return nil
+}
+
+func removePodSpecVolume(podSpec map[string]interface{}, volumeName string) {
+	volumes, ok := podSpec["volumes"].([]interface{})
+	if !ok {
+		return
+	}
+	out := volumes[:0]
+	for _, item := range volumes {
+		volume, ok := item.(map[string]interface{})
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		if name, _ := volume["name"].(string); name == volumeName {
+			continue
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		delete(podSpec, "volumes")
+		return
+	}
+	podSpec["volumes"] = out
+}
+
+func upsertContainerVolumeMounts(podSpec map[string]interface{}, volumeName, mountPath string) error {
+	containers, ok := podSpec["containers"].([]interface{})
+	if !ok {
+		return nil
+	}
+	for _, item := range containers {
+		container, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		containerName, _ := container["name"].(string)
+		if containerName == proxyContainerName {
+			continue
+		}
+		mounts, _ := container["volumeMounts"].([]interface{})
+		updated, err := upsertVolumeMount(mounts, volumeName, mountPath)
+		if err != nil {
+			return fmt.Errorf("container %q: %w", containerName, err)
+		}
+		container["volumeMounts"] = updated
+	}
+	return nil
+}
+
+func upsertVolumeMount(mounts []interface{}, volumeName, mountPath string) ([]interface{}, error) {
+	for i, item := range mounts {
+		mount, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := mount["name"].(string)
+		existingPath, _ := mount["mountPath"].(string)
+		if name == volumeName {
+			if existingPath != mountPath {
+				return nil, fmt.Errorf("volumeMount %q already uses mountPath %q, want %q", volumeName, existingPath, mountPath)
+			}
+			mount["readOnly"] = true
+			mounts[i] = mount
+			return mounts, nil
+		}
+		if existingPath == mountPath {
+			return nil, fmt.Errorf("mountPath %q already used by volumeMount %q", mountPath, name)
+		}
+	}
+	return append(mounts, map[string]interface{}{
+		"name":      volumeName,
+		"mountPath": mountPath,
+		"readOnly":  true,
+	}), nil
+}
+
+func removeContainerVolumeMounts(podSpec map[string]interface{}, volumeName string) {
+	containers, ok := podSpec["containers"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, item := range containers {
+		container, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		mounts, ok := container["volumeMounts"].([]interface{})
+		if !ok {
+			continue
+		}
+		out := mounts[:0]
+		for _, mountItem := range mounts {
+			mount, ok := mountItem.(map[string]interface{})
+			if !ok {
+				out = append(out, mountItem)
+				continue
+			}
+			if name, _ := mount["name"].(string); name == volumeName {
+				continue
+			}
+			out = append(out, mountItem)
+		}
+		if len(out) == 0 {
+			delete(container, "volumeMounts")
+			continue
+		}
+		container["volumeMounts"] = out
+	}
 }
 
 // removeProxyEnv strips an env entry by name. Returns the input unchanged
@@ -313,6 +508,49 @@ func renderConfigMap(cfg *config.Config, preset, namespace, proxyName string, pr
 		},
 		"data": map[string]interface{}{
 			sidecarConfigFile: header + string(configData),
+		},
+	}
+
+	out, err := yaml.Marshal(cm)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func renderMCPClientConfigMap(namespace, configMapName string, proxyLabels map[string]string, serverName, mcpProxyURL, mcpUpstream string) (string, error) {
+	config := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			serverName: map[string]interface{}{
+				"type": "http",
+				"url":  mcpProxyURL,
+			},
+		},
+	}
+	configData, err := json.MarshalIndent(config, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling MCP client config: %w", err)
+	}
+	configData = append(configData, '\n')
+
+	labels := managedProxyResourceLabels(proxyLabels, "mcp-client-config")
+	cm := map[string]interface{}{
+		"apiVersion": "v1",
+		"kind":       "ConfigMap",
+		"metadata": map[string]interface{}{
+			"name":      configMapName,
+			"namespace": namespace,
+			"labels":    labelsToInterfaceMap(labels),
+			"annotations": map[string]interface{}{
+				managedMCPProxyAnnotation:    mcpProxyURL,
+				managedMCPUpstreamAnnotation: managedAnnotationEnabled,
+				managedMCPUpstreamHash:       mcpUpstreamFingerprint(mcpUpstream),
+				managedMCPConfigAnnotation:   sidecarMCPConfigPath(),
+				managedMCPServerAnnotation:   serverName,
+			},
+		},
+		"data": map[string]interface{}{
+			sidecarMCPConfigFile: string(configData),
 		},
 	}
 
@@ -635,6 +873,27 @@ func proxyMCPListenAddr() string {
 	return fmt.Sprintf("0.0.0.0:%d", sidecarMCPPort)
 }
 
+func sidecarMCPConfigPath() string {
+	return sidecarMCPConfigMount + "/" + sidecarMCPConfigFile
+}
+
+func mcpClientConfigMapName(proxyName string) string {
+	return kubeResourceName(proxyName, "mcp-config")
+}
+
+func resolveMCPServerName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return defaultMCPServerName
+	}
+	return name
+}
+
+func mcpUpstreamFingerprint(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
 func mcpUpstreamPolicyPort(raw string) int {
 	if raw == "" {
 		return 0
@@ -685,7 +944,7 @@ func managedComponentLabels(component string) map[string]string {
 	}
 }
 
-func annotateManagedWorkload(raw map[string]interface{}, kind, proxyName, mcpProxyURL, mcpUpstream string) error {
+func annotateManagedWorkload(raw map[string]interface{}, kind, proxyName, mcpProxyURL, mcpUpstream, mcpConfigPath, mcpServerName string) error {
 	annotations := map[string]string{
 		managedTopologyAnnotation:     managedTopologyCompanion,
 		managedProxyNameAnnotation:    proxyName,
@@ -698,9 +957,12 @@ func annotateManagedWorkload(raw map[string]interface{}, kind, proxyName, mcpPro
 	var removeKeys []string
 	if mcpProxyURL != "" {
 		annotations[managedMCPProxyAnnotation] = mcpProxyURL
-		annotations[managedMCPUpstreamAnnotation] = mcpUpstream
+		annotations[managedMCPUpstreamAnnotation] = managedAnnotationEnabled
+		annotations[managedMCPUpstreamHash] = mcpUpstreamFingerprint(mcpUpstream)
+		annotations[managedMCPConfigAnnotation] = mcpConfigPath
+		annotations[managedMCPServerAnnotation] = mcpServerName
 	} else {
-		removeKeys = append(removeKeys, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation)
+		removeKeys = append(removeKeys, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation, managedMCPUpstreamHash, managedMCPConfigAnnotation, managedMCPServerAnnotation)
 	}
 	if err := setAnnotationsAtPath(raw, []string{"metadata", "annotations"}, annotations); err != nil {
 		return err

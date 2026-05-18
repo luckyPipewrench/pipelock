@@ -33,6 +33,7 @@ type sidecarOptions struct {
 	jsonOutput    bool
 	agentIdentity string
 	mcpUpstream   string
+	mcpServerName string
 }
 
 // sidecarResult holds the outcome of each phase for JSON reporting.
@@ -54,6 +55,8 @@ type sidecarPatchSummary struct {
 	OutputPath    string `json:"output_path,omitempty"`
 	AgentIdentity string `json:"agent_identity"`
 	MCPProxyURL   string `json:"mcp_proxy_url,omitempty"`
+	MCPConfigPath string `json:"mcp_config_path,omitempty"`
+	MCPServerName string `json:"mcp_server_name,omitempty"`
 	Written       bool   `json:"written"`
 	DryRun        bool   `json:"dry_run"`
 }
@@ -83,7 +86,7 @@ Examples:
   pipelock init sidecar --inject-spec deployment.yaml --emit kustomize --output ./pipelock-overlay
   pipelock init sidecar --inject-spec statefulset.yaml --emit helm-values --output ./pipelock-helm-bundle
   pipelock init sidecar --inject-spec cronjob.yaml --preset strict --agent-identity my-team/bot
-  pipelock init sidecar --inject-spec deployment.yaml --mcp-upstream http://openclaw:3000/mcp`,
+  pipelock init sidecar --inject-spec deployment.yaml --mcp-upstream http://openclaw:3000/mcp --mcp-server-name openclaw`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -103,6 +106,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "machine-readable JSON output")
 	cmd.Flags().StringVar(&opts.agentIdentity, "agent-identity", "", "default agent identity (default: <kind>/<name>)")
 	cmd.Flags().StringVar(&opts.mcpUpstream, "mcp-upstream", "", "upstream MCP HTTP/SSE URL to expose through the companion proxy")
+	cmd.Flags().StringVar(&opts.mcpServerName, "mcp-server-name", defaultMCPServerName, "server name for generated mcp.json when --mcp-upstream is set")
 
 	_ = cmd.MarkFlagRequired("inject-spec")
 
@@ -132,6 +136,9 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 	if err := validateSidecarMCPUpstream(opts.mcpUpstream); err != nil {
 		return cliutil.ExitCodeError(initExitError, err)
 	}
+	if err := validateSidecarMCPServerName(opts.mcpServerName); err != nil {
+		return cliutil.ExitCodeError(initExitError, err)
+	}
 
 	result := &sidecarResult{}
 
@@ -149,6 +156,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 	}
 
 	alreadyPatched := hasPipelockTopology(manifest.Raw)
+	mcpContractChanged := alreadyPatched && sidecarMCPContractChanged(manifest.Raw, opts)
 
 	result.Detect = &sidecarDetectResult{
 		Kind:           manifest.Kind,
@@ -160,7 +168,11 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		_, _ = fmt.Fprintf(w, "  Kind: %s\n", manifest.Kind)
 		_, _ = fmt.Fprintf(w, "  Name: %s\n", manifest.Name)
 		if alreadyPatched {
-			_, _ = fmt.Fprintln(w, "  Status: already patched (companion proxy annotations found)")
+			if mcpContractChanged {
+				_, _ = fmt.Fprintln(w, "  Status: already patched (MCP contract update requested)")
+			} else {
+				_, _ = fmt.Fprintln(w, "  Status: already patched (companion proxy annotations found)")
+			}
 		}
 		_, _ = fmt.Fprintln(w)
 	}
@@ -181,6 +193,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		_, _ = fmt.Fprintf(w, "  Proxy URL: %s\n", patchResult.ProxyURL)
 		if patchResult.MCPProxyURL != "" {
 			_, _ = fmt.Fprintf(w, "  MCP proxy URL: %s -> %s\n", patchResult.MCPProxyURL, patchResult.MCPUpstream)
+			_, _ = fmt.Fprintf(w, "  MCP config: %s (server %q)\n", patchResult.MCPConfigPath, patchResult.MCPServerName)
 		}
 		_, _ = fmt.Fprintf(w, "  Image: %s\n", resolveImage(opts))
 		_, _ = fmt.Fprintf(w, "  Preset: %s\n\n", opts.preset)
@@ -189,7 +202,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 	// Phase 3: Preview
 	if !opts.jsonOutput {
 		_, _ = fmt.Fprintln(w, "[3/7] Diff preview:")
-		if alreadyPatched {
+		if alreadyPatched && !mcpContractChanged {
 			_, _ = fmt.Fprintln(w, "  No changes (manifest already patched).")
 		} else {
 			diff, err := renderDiff(manifest, patchResult)
@@ -212,6 +225,8 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		OutputPath:    opts.output,
 		AgentIdentity: patchResult.AgentIdentity,
 		MCPProxyURL:   patchResult.MCPProxyURL,
+		MCPConfigPath: patchResult.MCPConfigPath,
+		MCPServerName: patchResult.MCPServerName,
 		DryRun:        opts.dryRun,
 	}
 
@@ -220,7 +235,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintf(w, "  Dry run: would emit %s format\n\n", opts.emit)
 		}
-	} else if alreadyPatched {
+	} else if alreadyPatched && !mcpContractChanged {
 		patchSummary.Written = false
 		if !opts.jsonOutput {
 			_, _ = fmt.Fprintln(w, "  Skipped: manifest already patched.")
@@ -333,6 +348,114 @@ func validateSidecarMCPUpstream(raw string) error {
 	return nil
 }
 
+// maxMCPServerNameLen caps the operator-supplied mcpServers entry name.
+// Server names appear inside the generated mcp.json and as ConfigMap
+// annotations; pathologically long values would bloat the file and the
+// annotation set without serving any downstream client. 64 matches the
+// k8s DNS-label upper bound and is well beyond any real-world MCP server
+// identifier.
+const maxMCPServerNameLen = 64
+
+func validateSidecarMCPServerName(raw string) error {
+	name := strings.TrimSpace(raw)
+	if name == "" {
+		return fmt.Errorf("--mcp-server-name must not be empty")
+	}
+	if len(name) > maxMCPServerNameLen {
+		return fmt.Errorf("--mcp-server-name %q exceeds maximum length %d", raw, maxMCPServerNameLen)
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_', r == '.':
+		default:
+			return fmt.Errorf("--mcp-server-name %q may contain only letters, digits, '.', '_' or '-'", raw)
+		}
+	}
+	return nil
+}
+
+func sidecarMCPContractChanged(raw map[string]interface{}, opts sidecarOptions) bool {
+	existingProxy := extractAnnotation(raw, managedMCPProxyAnnotation)
+	existingUpstream := extractAnnotation(raw, managedMCPUpstreamAnnotation)
+	existingUpstreamHash := extractAnnotation(raw, managedMCPUpstreamHash)
+	existingConfig := extractAnnotation(raw, managedMCPConfigAnnotation)
+	existingServerName := extractAnnotation(raw, managedMCPServerAnnotation)
+	if opts.mcpUpstream == "" {
+		// Annotations are the primary source of truth, but they can drift
+		// from the actual workload state if an operator manually edits
+		// them. Fall back to inspecting env vars and the MCP ConfigMap
+		// volume so a disable run always emits a scrubbed manifest when
+		// MCP state is present, even if the annotations are gone.
+		if existingProxy != "" || existingUpstream != "" || existingUpstreamHash != "" || existingConfig != "" || existingServerName != "" {
+			return true
+		}
+		return rawWorkloadHasMCPState(raw)
+	}
+	return existingProxy == "" ||
+		existingUpstream != managedAnnotationEnabled ||
+		existingUpstreamHash != mcpUpstreamFingerprint(opts.mcpUpstream) ||
+		existingConfig != sidecarMCPConfigPath() ||
+		existingServerName != resolveMCPServerName(opts.mcpServerName)
+}
+
+// rawWorkloadHasMCPState reports whether the manifest's pod spec still
+// carries any MCP launcher-contract artifact: PIPELOCK_MCP_PROXY_URL or
+// PIPELOCK_MCP_CONFIG env entries, or the MCP client ConfigMap volume /
+// mount. Used as a safety net for annotation drift.
+func rawWorkloadHasMCPState(raw map[string]interface{}) bool {
+	kind, _ := raw["kind"].(string)
+	podSpec, err := getPodSpec(raw, kind)
+	if err != nil || podSpec == nil {
+		return false
+	}
+	if containers, ok := podSpec["containers"].([]interface{}); ok {
+		for _, item := range containers {
+			c, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if envList, ok := c["env"].([]interface{}); ok {
+				for _, envItem := range envList {
+					envMap, ok := envItem.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					name, _ := envMap["name"].(string)
+					if name == envMCPProxy || name == envMCPConfig {
+						return true
+					}
+				}
+			}
+			if mounts, ok := c["volumeMounts"].([]interface{}); ok {
+				for _, m := range mounts {
+					mountMap, ok := m.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					if n, _ := mountMap["name"].(string); n == sidecarMCPConfigVolume {
+						return true
+					}
+				}
+			}
+		}
+	}
+	if volumes, ok := podSpec["volumes"].([]interface{}); ok {
+		for _, v := range volumes {
+			vMap, ok := v.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if n, _ := vMap["name"].(string); n == sidecarMCPConfigVolume {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func mcpUpstreamHostHasMalformedPort(host string) bool {
 	if strings.HasSuffix(host, ":") {
 		return true
@@ -386,6 +509,7 @@ func renderDiff(manifest *workloadManifest, patchResult *sidecarPatchResult) (st
 		_, _ = fmt.Fprintln(&sb, "  + proxy NetworkPolicy: agent ingress + web-only egress")
 		if patchResult.MCPProxyURL != "" {
 			_, _ = fmt.Fprintf(&sb, "  + MCP proxy contract: PIPELOCK_MCP_PROXY_URL=%s\n", patchResult.MCPProxyURL)
+			_, _ = fmt.Fprintf(&sb, "  + MCP launcher config: %s (%s)\n", patchResult.MCPConfigPath, patchResult.MCPServerName)
 		}
 		_, _ = fmt.Fprintln(&sb, "  + companion PodDisruptionBudget: minAvailable=1")
 	}
@@ -405,6 +529,7 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 	_, _ = fmt.Fprintf(w, "  Agent identity:  %s\n", result.Patch.AgentIdentity)
 	if result.Patch.MCPProxyURL != "" {
 		_, _ = fmt.Fprintf(w, "  MCP proxy URL:   %s\n", result.Patch.MCPProxyURL)
+		_, _ = fmt.Fprintf(w, "  MCP config:      %s (%s)\n", result.Patch.MCPConfigPath, result.Patch.MCPServerName)
 	}
 	_, _ = fmt.Fprintf(w, "  Emit format:     %s\n", result.Patch.EmitFormat)
 
@@ -446,7 +571,7 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 		_, _ = fmt.Fprintf(w, "  pipelock init sidecar --inject-spec %s\n", opts.injectSpec)
 	}
 	if result.Patch.MCPProxyURL != "" {
-		_, _ = fmt.Fprintln(w, "  Configure the agent MCP client to use PIPELOCK_MCP_PROXY_URL for MCP traffic.")
+		_, _ = fmt.Fprintln(w, "  Configure the agent MCP launcher to read PIPELOCK_MCP_CONFIG, or use PIPELOCK_MCP_PROXY_URL directly.")
 	}
 	switch result.Patch.EmitFormat {
 	case emitKustomize:

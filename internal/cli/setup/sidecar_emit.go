@@ -49,13 +49,21 @@ func emitPatchFormat(w io.Writer, result *sidecarPatchResult, opts sidecarOption
 		return fmt.Errorf("marshaling patched manifest: %w", err)
 	}
 
-	output := string(data) +
-		"---\n" + result.ConfigMapYAML +
-		"---\n" + result.DeploymentYAML +
-		"---\n" + result.ServiceYAML +
-		"---\n" + result.AgentNetworkPolicyYAML +
-		"---\n" + result.ProxyNetworkPolicyYAML +
-		"---\n" + result.PodDisruptionBudgetYAML
+	parts := []string{
+		string(data),
+		result.ConfigMapYAML,
+	}
+	if result.MCPConfigMapYAML != "" {
+		parts = append(parts, result.MCPConfigMapYAML)
+	}
+	parts = append(parts,
+		result.DeploymentYAML,
+		result.ServiceYAML,
+		result.AgentNetworkPolicyYAML,
+		result.ProxyNetworkPolicyYAML,
+		result.PodDisruptionBudgetYAML,
+	)
+	output := strings.Join(parts, "---\n")
 
 	return writeOutput(w, []byte(output), opts.output, opts.force)
 }
@@ -85,44 +93,53 @@ func emitKustomizeFormat(result *sidecarPatchResult, opts sidecarOptions) error 
 	if err := writeOutput(nil, []byte(result.ConfigMapYAML), cmPath, opts.force); err != nil {
 		return fmt.Errorf("writing %s: %w", cmPath, err)
 	}
+	resources := []interface{}{
+		"agent-workload.yaml",
+		"pipelock-configmap.yaml",
+	}
+
+	if result.MCPConfigMapYAML != "" {
+		mcpConfigPath := filepath.Join(cleanDir, "pipelock-mcp-configmap.yaml")
+		if err := writeOutput(nil, []byte(result.MCPConfigMapYAML), mcpConfigPath, opts.force); err != nil {
+			return fmt.Errorf("writing %s: %w", mcpConfigPath, err)
+		}
+		resources = append(resources, "pipelock-mcp-configmap.yaml")
+	}
 
 	deployPath := filepath.Join(cleanDir, "pipelock-deployment.yaml")
 	if err := writeOutput(nil, []byte(result.DeploymentYAML), deployPath, opts.force); err != nil {
 		return fmt.Errorf("writing %s: %w", deployPath, err)
 	}
+	resources = append(resources, "pipelock-deployment.yaml")
 
 	servicePath := filepath.Join(cleanDir, "pipelock-service.yaml")
 	if err := writeOutput(nil, []byte(result.ServiceYAML), servicePath, opts.force); err != nil {
 		return fmt.Errorf("writing %s: %w", servicePath, err)
 	}
+	resources = append(resources, "pipelock-service.yaml")
 
 	agentPolicyPath := filepath.Join(cleanDir, "agent-networkpolicy.yaml")
 	if err := writeOutput(nil, []byte(result.AgentNetworkPolicyYAML), agentPolicyPath, opts.force); err != nil {
 		return fmt.Errorf("writing %s: %w", agentPolicyPath, err)
 	}
+	resources = append(resources, "agent-networkpolicy.yaml")
 
 	proxyPolicyPath := filepath.Join(cleanDir, "pipelock-networkpolicy.yaml")
 	if err := writeOutput(nil, []byte(result.ProxyNetworkPolicyYAML), proxyPolicyPath, opts.force); err != nil {
 		return fmt.Errorf("writing %s: %w", proxyPolicyPath, err)
 	}
+	resources = append(resources, "pipelock-networkpolicy.yaml")
 
 	pdbPath := filepath.Join(cleanDir, "pipelock-pdb.yaml")
 	if err := writeOutput(nil, []byte(result.PodDisruptionBudgetYAML), pdbPath, opts.force); err != nil {
 		return fmt.Errorf("writing %s: %w", pdbPath, err)
 	}
+	resources = append(resources, "pipelock-pdb.yaml")
 
 	kustomization := map[string]interface{}{
 		"apiVersion": "kustomize.config.k8s.io/v1beta1",
 		"kind":       "Kustomization",
-		"resources": []interface{}{
-			"agent-workload.yaml",
-			"pipelock-configmap.yaml",
-			"pipelock-deployment.yaml",
-			"pipelock-service.yaml",
-			"agent-networkpolicy.yaml",
-			"pipelock-networkpolicy.yaml",
-			"pipelock-pdb.yaml",
-		},
+		"resources":  resources,
 	}
 	kustomizationData, err := yaml.Marshal(kustomization)
 	if err != nil {
@@ -230,6 +247,12 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 	if err := writeOutput(nil, agentData, filepath.Join(cleanDir, "agent-workload.yaml"), opts.force); err != nil {
 		return err
 	}
+	if result.MCPConfigMapYAML != "" {
+		mcpConfigPath := filepath.Join(cleanDir, "pipelock-mcp-configmap.yaml")
+		if err := writeOutput(nil, []byte(result.MCPConfigMapYAML), mcpConfigPath, opts.force); err != nil {
+			return fmt.Errorf("writing %s: %w", mcpConfigPath, err)
+		}
+	}
 	if err := writeOutput(nil, []byte(result.AgentNetworkPolicyYAML), filepath.Join(cleanDir, "agent-networkpolicy.yaml"), opts.force); err != nil {
 		return err
 	}
@@ -240,12 +263,17 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 		return err
 	}
 
-	readme := fmt.Sprintf("helm upgrade --install %s pipelock/pipelock -f %s\nkubectl rollout status deployment/%s\nkubectl apply -f %s -f %s\nkubectl apply -f %s\nkubectl apply -f %s\n",
+	mcpApply := ""
+	if result.MCPConfigMapYAML != "" {
+		mcpApply = fmt.Sprintf("kubectl apply -f %s\n", filepath.Join(cleanDir, "pipelock-mcp-configmap.yaml"))
+	}
+	readme := fmt.Sprintf("helm upgrade --install %s pipelock/pipelock -f %s\nkubectl rollout status deployment/%s\nkubectl apply -f %s -f %s\n%skubectl apply -f %s\nkubectl apply -f %s\n",
 		result.ProxyName,
 		filepath.Join(cleanDir, "values.yaml"),
 		result.ProxyName,
 		filepath.Join(cleanDir, "pipelock-networkpolicy.yaml"),
 		filepath.Join(cleanDir, "pipelock-pdb.yaml"),
+		mcpApply,
 		filepath.Join(cleanDir, "agent-networkpolicy.yaml"),
 		filepath.Join(cleanDir, "agent-workload.yaml"),
 	)

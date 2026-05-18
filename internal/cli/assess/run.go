@@ -289,6 +289,11 @@ func runPrimitiveVerifyInstall(cfg *config.Config, evidenceDir, configFile strin
 		verifyCfg.ResponseScanning.Action = config.ActionBlock
 		verifyCfg.MCPInputScanning.Enabled = true
 		verifyCfg.MCPInputScanning.Action = config.ActionBlock
+		cleanup, prepErr := diag.EnableDefaultVerifyProofs(&verifyCfg)
+		if prepErr != nil {
+			return prepErr
+		}
+		defer cleanup()
 	}
 
 	// Start mock upstream server.

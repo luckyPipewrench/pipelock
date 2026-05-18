@@ -187,6 +187,30 @@ func TestEmitPatchFormat(t *testing.T) {
 	}
 }
 
+func TestEmitPatchFormat_MCPConfigMap(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "patch-output.yaml")
+	result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced, mcpUpstream: "http://openclaw:3000/mcp"})
+
+	if err := emitPatchFormat(nil, result, sidecarOptions{output: outPath, emit: emitPatch}); err != nil {
+		t.Fatalf("emitPatchFormat: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(outPath))
+	if err != nil {
+		t.Fatalf("reading output: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "name: my-agent-pipelock-mcp-config") {
+		t.Fatalf("patch output missing MCP client ConfigMap:\n%s", content)
+	}
+	if !strings.Contains(content, sidecarMCPConfigFile+":") || !strings.Contains(content, result.MCPProxyURL) {
+		t.Fatalf("patch output missing MCP client config content:\n%s", content)
+	}
+}
+
 func TestEmitKustomizeFormat(t *testing.T) {
 	t.Parallel()
 
@@ -253,6 +277,29 @@ func TestEmitKustomizeFormat(t *testing.T) {
 		if !found {
 			t.Fatalf("kustomization resources missing %s", name)
 		}
+	}
+}
+
+func TestEmitKustomizeFormat_MCPConfigMap(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "kustomize-output")
+	result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced, mcpUpstream: "http://openclaw:3000/mcp"})
+
+	if err := emitKustomizeFormat(result, sidecarOptions{output: outDir, emit: emitKustomize}); err != nil {
+		t.Fatalf("emitKustomizeFormat: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(outDir, "pipelock-mcp-configmap.yaml")); err != nil {
+		t.Fatalf("expected pipelock-mcp-configmap.yaml: %v", err)
+	}
+	kustomData, err := os.ReadFile(filepath.Clean(filepath.Join(outDir, "kustomization.yaml")))
+	if err != nil {
+		t.Fatalf("reading kustomization.yaml: %v", err)
+	}
+	if !strings.Contains(string(kustomData), "pipelock-mcp-configmap.yaml") {
+		t.Fatalf("kustomization missing MCP config resource:\n%s", kustomData)
 	}
 }
 
@@ -418,6 +465,16 @@ func TestEmitHelmValuesFormat_MCPUpstream(t *testing.T) {
 	}
 	if mcpMap["listen"] != proxyMCPListenAddr() {
 		t.Fatalf("mcp.listen = %v, want %s", mcpMap["listen"], proxyMCPListenAddr())
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "pipelock-mcp-configmap.yaml")); err != nil {
+		t.Fatalf("expected MCP config map in helm bundle: %v", err)
+	}
+	readme, err := os.ReadFile(filepath.Clean(filepath.Join(outDir, "README.txt")))
+	if err != nil {
+		t.Fatalf("reading README.txt: %v", err)
+	}
+	if !strings.Contains(string(readme), "pipelock-mcp-configmap.yaml") {
+		t.Fatalf("README.txt should apply MCP config map:\n%s", readme)
 	}
 }
 

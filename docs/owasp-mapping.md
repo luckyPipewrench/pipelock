@@ -173,7 +173,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 **Pipelock coverage:**
 
 - **Principle of least privilege:** the agent only reaches allowed API domains. Everything else is blocked.
-- **Capability separation:** the agent process has no direct network access. Only the proxy (which holds no agent secrets) can reach the internet. Deployment enforces the network boundary.
+- **Capability separation:** in an enforced deployment, the agent process has no direct network access. Only the proxy (which holds no agent secrets) can reach the internet. Deployment enforces the network boundary.
 - **Configurable enforcement modes:** strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (detect and log without blocking).
 - **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
 - **Rate limiting:** per-domain sliding window prevents bulk data transfer even to allowed domains.

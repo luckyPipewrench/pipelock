@@ -1,6 +1,6 @@
 # `pipelock contain` — host containment lifecycle
 
-`pipelock contain` is the operator CLI for installing, verifying, and rolling back a kernel-enforced containment model on a single Linux host. It splits one workstation into three roles — the operator account, `pipelock-proxy`, and `pipelock-agent` — and uses nftables owner-match rules to force every agent process through the Pipelock proxy. The install is idempotent and rolls back applied steps to a known state on any failed step.
+`pipelock contain` is the operator CLI for installing, verifying, and rolling back a kernel-enforced containment model on a single Linux host. It splits one workstation into three roles — the operator account, `pipelock-proxy`, and `pipelock-agent` — and uses nftables owner-match rules to force processes running as the contained agent user through the Pipelock proxy. The install is idempotent and rolls back applied steps to a known state on any failed step.
 
 The subcommands are:
 
@@ -10,6 +10,8 @@ The subcommands are:
 | `verify` | Read-only probes that report pass / fail / skip for the 12 invariants below | no |
 | `rollback` | Idempotently undo `install`. Restores the prior state and removes wrappers, users, unit, rules | yes (root only) |
 | `add-tool` | Register an additional tool wrapper under `/usr/local/bin/plk-<name>` after install | yes (root only) |
+| `grant-workspace` | Grant the contained agent user ACL access to one project workspace | yes (root only) |
+| `revoke-workspace` | Revoke a previously granted workspace ACL and clean unused parent traversal ACLs | yes (root only) |
 | `ca-refresh` | Rebuild the combined CA bundle at `/etc/pipelock/combined-ca.pem` after a CA rotation | yes (root only) |
 
 Each mutating subcommand accepts `--dry-run` to print the planned actions without touching state.
@@ -130,6 +132,48 @@ Flags:
 | `--dry-run` | false | Print planned actions without mutating state. |
 | `--target` | resolved from `pipelock-agent` PATH | Pin an explicit absolute executable path for the tool. |
 
+## `pipelock contain grant-workspace`
+
+Grants `pipelock-agent` access to one project directory after containment is installed. This is the normal fix for a contained tool that launches correctly through `plk-*` but cannot read or edit the operator's repo.
+
+```bash
+sudo pipelock contain grant-workspace /home/alice/src/my-project
+```
+
+By default the command grants execute-only traversal on parent directories and read-only access inside the workspace. Use `--mode read-write` only when the contained agent should edit files in place.
+
+```bash
+sudo pipelock contain grant-workspace /home/alice/src/my-project --mode read-write
+```
+
+The command resolves symlinks, requires the target to be an existing directory, rejects protected system prefixes such as `/`, `/etc`, `/usr`, `/var`, `/proc`, `/sys`, and `/root` by default, and records the grant in `/etc/pipelock/contain/workspaces.json` so later revocation knows which parent traversal ACLs are still needed.
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dry-run` | false | Print planned ACL commands without mutating state. |
+| `--mode` | `read-only` | Workspace ACL mode: `read-only` or `read-write`. |
+| `--agent-user` | `pipelock-agent` | Contained agent user to grant access to. |
+| `--allow-system-path` | false | Allow grants under protected system path prefixes. Use only for deliberate admin workflows. |
+
+## `pipelock contain revoke-workspace`
+
+Revokes ACL access previously granted with `grant-workspace`.
+
+```bash
+sudo pipelock contain revoke-workspace /home/alice/src/my-project
+```
+
+The command removes the workspace ACL and removes execute-only parent traversal ACLs that are no longer needed by any other tracked workspace. It can revoke a recorded workspace even if the workspace directory was deleted after the grant.
+
+Flags:
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--dry-run` | false | Print planned ACL commands without mutating state. |
+| `--agent-user` | `pipelock-agent` | Contained agent user to revoke access from. |
+
 ## `pipelock contain ca-refresh`
 
 Rebuilds `/etc/pipelock/combined-ca.pem` after the Pipelock CA has rotated, or after the system trust store has changed.
@@ -153,6 +197,7 @@ Flags:
 
 - **Binary integrity is TOFU.** The first `install` pins the binary hash. Verify compares the installed binary against that pin on every run. To install a new pipelock binary, run `install` again with `--pipelock-binary <new path>`; install rewrites the pin atomically.
 - **The agent never gets `NET_ADMIN`.** Even if the agent runs as root inside a namespace, the host nftables ruleset blocks its egress. The proxy is the only egress path.
+- **Workspace ACLs are explicit.** `install` does not automatically grant the agent user access to every repo the operator can read. Grant only the workspace needed for the current agent task, prefer read-only when possible, and revoke the grant when the work ends.
 - **Dry-run is honest.** `--dry-run` prints exactly the commands install would run, with the same arguments. CI can dry-run an install change and review the diff before applying it.
 - **Rollback uses guarded backups.** Managed file writes preserve prior content as `path.bak` when prior content existed. Rollback restores those backups where applicable, then removes managed artifacts.
 

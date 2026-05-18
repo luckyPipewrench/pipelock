@@ -201,7 +201,7 @@ The hook fails closed (denies) on every supported input path it cannot positivel
 
 The closed default applies in both `JSON-decision` mode (`permissionDecision: "deny"`) and `--exit-code` mode (exit 2). The black-box pen-test suite covers both decision modes for the unsupported-event paths.
 
-> **Pending v2.5 closeout:** unknown `tool_name` values still allow by default on this branch. #525 closes that sibling fall-through path; replace this note before tagging v2.5.0.
+> **Known limitation:** unknown `tool_name` values are not yet routed through the generic tool-use scanner. Configure explicit hook matchers for the tools you rely on, and keep MCP tools covered through the `mcp__.*` matcher.
 
 The hook reads JSON from stdin and returns allow/deny decisions. An `--exit-code`
 mode is also available (exit 0 for allow, exit 2 for deny):

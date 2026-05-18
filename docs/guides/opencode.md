@@ -1,6 +1,6 @@
 # Using Pipelock with OpenCode
 
-OpenCode is sst's coding agent — a terminal-first agent with native MCP server support, deep IDE adapters, and a Plans-and-Tasks workflow. Pipelock wraps its MCP traffic and HTTP egress so every tool call and every outbound request gets scanned before it leaves the machine.
+OpenCode is sst's coding agent — a terminal-first agent with native MCP server support, deep IDE adapters, and a Plans-and-Tasks workflow. Pipelock wraps OpenCode's MCP traffic and scans HTTP egress that is routed through the proxy before it leaves the machine.
 
 ## Why OpenCode Needs an Agent Firewall
 
@@ -49,7 +49,7 @@ export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=127.0.0.1,localhost
 ```
 
-This adds full DLP / SSRF / response-injection scanning to every outbound HTTP request OpenCode's tool calls make through the shell.
+This adds DLP / SSRF / response-injection scanning to outbound HTTP requests from OpenCode tool calls that honor the proxy settings. Use containment or another network boundary for tools that ignore proxy environment variables or open raw sockets directly.
 
 ## Choosing a Config
 
@@ -64,7 +64,7 @@ Start in `balanced.yaml` to surface false positives in audit mode. Promote to a 
 
 ## Containment for Local Multi-User Hosts
 
-If you run OpenCode on a shared host, layer the [`pipelock contain`](../contain-cli.md) lifecycle on top of MCP wrapping. `pipelock contain install` splits the host into `operator` / `pipelock-proxy` / `pipelock-agent` users and uses nftables owner-match to force every agent process through Pipelock on loopback — even if a tool call escapes via raw socket. The two layers compose: MCP wrapping covers JSON-RPC scanning; containment covers the underlying egress path.
+If you run OpenCode on a shared host, layer the [`pipelock contain`](../contain-cli.md) lifecycle on top of MCP wrapping. `pipelock contain install` splits the host into `operator` / `pipelock-proxy` / `pipelock-agent` users and uses nftables owner-match to force the contained agent user through Pipelock on loopback, including tools that try raw sockets. The two layers compose: MCP wrapping covers JSON-RPC scanning; containment covers the underlying egress path.
 
 ## Troubleshooting
 

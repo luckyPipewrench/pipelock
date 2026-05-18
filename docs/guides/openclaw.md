@@ -1,6 +1,6 @@
 # OpenClaw + Pipelock Deployment Guide
 
-Pipelock sits between your AI agent and the OpenClaw gateway, scanning all MCP traffic for secret exfiltration, prompt injection, and tool poisoning. This guide covers deploying pipelock as a security layer for OpenClaw.
+Pipelock sits between your AI agent and the OpenClaw gateway when the agent's MCP client is configured to use the Pipelock wrapper or generated MCP launcher contract. It scans that mediated MCP traffic for secret exfiltration, prompt injection, and tool poisoning. This guide covers deploying pipelock as a security layer for OpenClaw.
 
 ## Why
 
@@ -39,7 +39,7 @@ pipelock generate mcporter -i servers.json -o wrapped.json
 pipelock generate mcporter -i servers.json --in-place --backup
 ```
 
-**3. Restart your agent.** All MCP traffic now routes through pipelock.
+**3. Restart your agent.** MCP traffic from that wrapped config now routes through pipelock.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ pipelock generate mcporter -i servers.json --in-place --backup
 └─────────────────────────────────────────────────────────┘
 ```
 
-The agent has secrets but no direct network access. Pipelock has no agent secrets but full network access. Deployment (Docker networking, K8s NetworkPolicy) enforces this boundary. This capability separation prevents a compromised agent from exfiltrating secrets directly.
+In an enforced deployment, the agent has secrets but no direct network access. Pipelock has no agent secrets but full network access. Deployment controls such as Docker networking, host containment, firewall rules, or K8s NetworkPolicy enforce this boundary. This capability separation prevents a compromised agent from exfiltrating secrets directly.
 
 ## Two Protection Layers
 
@@ -223,7 +223,9 @@ spec:
           emptyDir: {}
 ```
 
-Add a NetworkPolicy to restrict the agent container's egress to only the pipelock sidecar:
+If you keep a same-pod prototype, do not treat a pod-level NetworkPolicy as a container-level wall between containers in that same pod. Kubernetes NetworkPolicy selects pods, not individual containers, so it cannot stop one container from reaching destinations another container in the same pod can reach. For enforced cluster isolation, prefer the generated companion-proxy topology above, where the agent pod and Pipelock service are separate policy subjects.
+
+For a separate-agent-pod topology, a NetworkPolicy should restrict the agent pod's egress to DNS and the Pipelock Service:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -243,12 +245,11 @@ spec:
       ports:
         - port: 53
           protocol: UDP
-    # Allow traffic only to the pipelock sidecar (localhost in same pod).
-    # This prevents the agent from making direct external connections.
+    # Allow traffic only to pods selected as the Pipelock proxy Service backend.
     - to:
         - podSelector:
             matchLabels:
-              app: agent
+              app: pipelock
       ports:
         - port: 8888
 ```
@@ -267,7 +268,7 @@ Mapped to the CVE-2026-25253 attack chain:
 | Read-then-exfil tool sequences | Chain detection catches multi-step patterns | MCP proxy |
 | Outbound HTTP exfiltration | 11-layer URL scanning, DLP on request URLs | HTTP proxy |
 
-Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning all traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
+Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning the mediated traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
 
 ## TLS Interception
 

@@ -1,6 +1,6 @@
 # Using Pipelock with Cline
 
-Cline is an open-source coding agent that runs natively in VS Code with first-class MCP server support. Like every other agent surface Pipelock wraps, Cline talks to MCP servers and to upstream LLM APIs — pipelock scans both directions before content reaches the agent or its tools.
+Cline is an open-source coding agent that runs natively in VS Code with first-class MCP server support. Like every other agent surface Pipelock wraps, Cline talks to MCP servers and to upstream LLM APIs. Pipelock scans wrapped MCP traffic in both directions and scans HTTP traffic that is routed through the proxy.
 
 ## Why Cline Needs an Agent Firewall
 
@@ -50,7 +50,7 @@ export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=127.0.0.1,localhost
 ```
 
-Combined with MCP wrapping, this gives full coverage of every egress surface a Cline session uses.
+Combined with MCP wrapping, this covers Cline MCP traffic and HTTP clients that honor the proxy settings. Use `pipelock contain`, sandboxing, or another network boundary for tools that ignore proxy environment variables or open raw sockets directly.
 
 ## Choosing a Config
 

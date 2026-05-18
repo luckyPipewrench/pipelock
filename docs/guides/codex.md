@@ -4,9 +4,10 @@ Codex is the coding agent you hand a real repository. It can review PRs,
 trace large codebases, research dependencies, and operate MCP tools. That
 means it sees secrets, calls tools, and follows links in untrusted content.
 
-Pipelock sits between Codex and those surfaces, scanning outbound requests,
-inbound content, and tool traffic before anything reaches the model or
-leaves your machine.
+Pipelock sits between Codex and those surfaces when MCP servers are wrapped
+and HTTP clients are routed through the proxy. It scans mediated outbound
+requests, inbound content, and tool traffic before anything reaches the model
+or leaves your machine.
 
 ## Why Codex Needs an Agent Firewall
 
@@ -119,9 +120,11 @@ export HTTP_PROXY=http://127.0.0.1:8888
 export NO_PROXY=127.0.0.1,localhost
 ```
 
-This scans all outbound HTTP traffic for DLP, SSRF, and URL-based
-exfiltration. Response content is scanned for prompt injection before
-reaching the agent.
+This scans outbound HTTP traffic that honors the proxy settings for DLP,
+SSRF, and URL-based exfiltration. Response content is scanned for prompt
+injection before reaching the agent. Use `pipelock contain`, sandboxing, or
+another network boundary for tools that ignore proxy environment variables or
+open raw sockets directly.
 
 ## Running an Assessment First
 

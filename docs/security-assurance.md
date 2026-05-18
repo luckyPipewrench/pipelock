@@ -26,9 +26,9 @@ Pipelock is designed to be deployed in a capability-separated architecture:
 +-----------------------+          +------------------------+          +----------+
 ```
 
-**Trust boundary 1: Agent → Proxy.** All outbound HTTP traffic passes through the fetch proxy. The agent cannot reach the network directly (enforced by container networking, firewall rules, or OS-level restrictions).
+**Trust boundary 1: Agent → Proxy.** In an enforced deployment, outbound agent HTTP traffic is routed through the fetch, forward, reverse, WebSocket, sidecar, or sandbox proxy path. The agent cannot reach the network directly because container networking, host containment, firewall rules, NetworkPolicy, or OS-level restrictions enforce that boundary.
 
-**Trust boundary 2: MCP Client → MCP Server.** The MCP proxy sits between the agent and any MCP server, scanning both directions. Client requests are checked for DLP leaks and injection. Server responses are checked for prompt injection and poisoned tool descriptions.
+**Trust boundary 2: MCP Client → MCP Server.** The MCP proxy sits between the agent and any MCP server that is launched through `pipelock mcp proxy` or reached through a Pipelock MCP listener. Client requests are checked for DLP leaks and injection. Server responses are checked for prompt injection and poisoned tool descriptions.
 
 **Trust boundary 3: Tool call → Execution.** The tool call policy engine evaluates MCP `tools/call` requests against configurable rules before they reach the server. Destructive operations can be blocked regardless of how the agent was tricked into requesting them.
 
@@ -77,6 +77,7 @@ Honest assessment of limitations:
 - **Encrypted or steganographic exfiltration:** Data hidden within legitimate-looking content (e.g., encoded in image pixels or timing channels) is beyond pattern-based detection.
 - **Insider threats:** If the agent operator intentionally configures Pipelock to be permissive, the tool respects that configuration.
 - **Attacks that don't cross a boundary:** If an agent and its tools run in the same process with no proxy, Pipelock has nothing to inspect.
+- **Deployment paths that are configured but not consumed:** Pipelock can generate proxy variables, MCP launcher configs, sidecar manifests, and NetworkPolicies, but the agent launcher and cluster CNI must actually consume/enforce them.
 
 ## Compliance Mappings
 
@@ -96,6 +97,8 @@ Security claims are verified through four testing layers, static analysis, and s
 2. **Evasion test suite:** Encoding chains (base64, hex, base32, double-encoding), Unicode confusables (Cyrillic, Greek, Armenian, Cherokee), combining marks, control character insertion, field splitting, and whitespace manipulation tested against all scanner layers.
 3. **Black-box binary tests:** End-to-end tests run against a built binary, exercising the full proxy and scanner pipeline through real HTTP, WebSocket, and MCP requests.
 4. **Private adversarial corpus:** A separate adversarial test suite covers real-world evasion and attack classes against the production binary. This corpus is private for the same reason mature security vendors do not publish every regression: a test suite should improve defense, not double as an attacker playbook.
+
+`pipelock doctor` complements the test layers by checking configured-vs-enforceable status for the local deployment. It reports when a protection is enabled in YAML but still needs a readable file, a wrapper proof, TLS visibility, telemetry configuration, or a direct-egress boundary before it can be claimed as enforcing.
 
 The adversarial suite covers:
 

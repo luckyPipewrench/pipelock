@@ -129,7 +129,7 @@ fetch_proxy:
 
 ## Forward Proxy
 
-Standard HTTP CONNECT tunneling. Agents set `HTTPS_PROXY=http://127.0.0.1:8888` and all traffic flows through pipelock. Zero code changes needed.
+Standard HTTP CONNECT tunneling. Agents set `HTTPS_PROXY=http://127.0.0.1:8888`, and HTTP clients that honor proxy settings flow through pipelock. Pair this with containment, sandboxing, or deployment policy when non-cooperative tools are in scope.
 
 ```yaml
 forward_proxy:

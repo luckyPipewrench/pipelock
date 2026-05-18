@@ -1912,13 +1912,44 @@ func newTLSInterceptTransport(
 // no existing caller captures it; if a future caller needs the result, switch
 // to the full function rather than widening this wrapper.
 func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, result scanner.Result, cfg *config.Config, log *audit.Logger, deferClean bool) {
-	p.recordSessionActivityWithUserAgent(clientIP, agent, hostname, requestID, "", result, cfg, log, deferClean)
+	p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:   clientIP,
+		Agent:      agent,
+		Hostname:   hostname,
+		RequestID:  requestID,
+		Result:     result,
+		Config:     cfg,
+		Logger:     log,
+		DeferClean: deferClean,
+	})
+}
+
+type sessionActivityOptions struct {
+	ClientIP   string
+	Agent      string
+	Hostname   string
+	RequestID  string
+	UserAgent  string
+	Result     scanner.Result
+	Config     *config.Config
+	Logger     *audit.Logger
+	DeferClean bool
 }
 
 // Returns a SessionResult with Blocked set when the request should be rejected
 // due to a session anomaly in block mode, and Level set to the current
 // escalation level for downstream use by UpgradeAction().
-func (p *Proxy) recordSessionActivityWithUserAgent(clientIP, agent, hostname, requestID, userAgent string, result scanner.Result, cfg *config.Config, log *audit.Logger, deferClean bool) SessionResult {
+func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) SessionResult {
+	clientIP := opts.ClientIP
+	agent := opts.Agent
+	hostname := opts.Hostname
+	requestID := opts.RequestID
+	userAgent := opts.UserAgent
+	result := opts.Result
+	cfg := opts.Config
+	log := opts.Logger
+	deferClean := opts.DeferClean
+
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil || !cfg.SessionProfiling.Enabled {
 		return SessionResult{}
@@ -2927,7 +2958,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// so RecordClean is NOT applied inside recordSessionActivity: header DLP,
 	// CEE, and response scanning may still find something after this point, and
 	// a clean decay before those stages would incorrectly counteract a later signal.
-	sr := p.recordSessionActivityWithUserAgent(clientIP, agent, parsed.Hostname(), requestID, r.UserAgent(), result, cfg, log, true)
+	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:   clientIP,
+		Agent:      agent,
+		Hostname:   parsed.Hostname(),
+		RequestID:  requestID,
+		UserAgent:  r.UserAgent(),
+		Result:     result,
+		Config:     cfg,
+		Logger:     log,
+		DeferClean: true,
+	})
 
 	// Look up the live session recorder for Fix 4+5: use EscalationLevel() at
 	// each enforcement point (not the snapshot in sr.Level) so mid-request CEE

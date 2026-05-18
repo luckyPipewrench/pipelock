@@ -21,6 +21,9 @@ var allSignals = []session.SignalType{
 	session.SignalFragmentDLP,
 	session.SignalStrip,
 	session.SignalShieldRewrite,
+	session.SignalIPDomainAnomaly,
+	session.SignalDomainAnomalyCooperative,
+	session.SignalIPDomainAnomalyCooperative,
 }
 
 func TestSignalPoints_AllSignalsPresent(t *testing.T) {
@@ -49,6 +52,9 @@ func TestSignalPoints_Values(t *testing.T) {
 		{session.SignalFragmentDLP, 3.0, "SignalFragmentDLP"},
 		{session.SignalStrip, 2.0, "SignalStrip"},
 		{session.SignalShieldRewrite, 0.25, "SignalShieldRewrite"},
+		{session.SignalIPDomainAnomaly, 3.0, "SignalIPDomainAnomaly"},
+		{session.SignalDomainAnomalyCooperative, 0.4, "SignalDomainAnomalyCooperative"},
+		{session.SignalIPDomainAnomalyCooperative, 0.6, "SignalIPDomainAnomalyCooperative"},
 	}
 
 	for _, tt := range tests {

@@ -96,6 +96,7 @@ type Metrics struct {
 	shieldBytesStripped     *prometheus.CounterVec
 	shieldShimsInjected     *prometheus.CounterVec
 	shieldSkipped           *prometheus.CounterVec
+	shieldOversizeScanHead  *prometheus.CounterVec
 	shieldLatency           *prometheus.HistogramVec
 	responseScanExemptTotal *prometheus.CounterVec
 

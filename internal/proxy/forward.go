@@ -234,9 +234,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// so session profiling tracks the domain but neither escalation signals nor
 		// clean-decay fire. Blocked exempt traffic is score-neutral.
 		if isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
-			p.recordSessionActivity(clientIP, agent, host, requestID, scanner.Result{Allowed: true}, cfg, p.logger, true)
+			p.recordSessionActivityWithUserAgent(clientIP, agent, host, requestID, r.UserAgent(), scanner.Result{Allowed: true}, cfg, p.logger, true)
 		} else {
-			p.recordSessionActivity(clientIP, agent, host, requestID, scanner.Result{Allowed: false, Score: 0.9}, cfg, p.logger, false)
+			p.recordSessionActivityWithUserAgent(clientIP, agent, host, requestID, r.UserAgent(), scanner.Result{Allowed: false, Score: 0.9}, cfg, p.logger, false)
 		}
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
@@ -249,7 +249,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so a warn-only header or CEE finding on the same CONNECT request does not
 	// get offset by a clean decay from the URL stage.
-	sr := p.recordSessionActivity(clientIP, agent, host, requestID, result, cfg, p.logger, true)
+	sr := p.recordSessionActivityWithUserAgent(clientIP, agent, host, requestID, r.UserAgent(), result, cfg, p.logger, true)
 	// hasFinding excludes IsAdaptiveNeutral (protective enforcement + infrastructure
 	// errors) so resolver wobble doesn't taint downstream "finding" behavior like
 	// clean-decay suppression or CEE signal recording. Fail-closed enforcement
@@ -810,7 +810,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so later request/response findings on the same round trip do not get
 	// offset by an early clean decay from the URL stage.
-	sr := p.recordSessionActivity(clientIP, agent, r.URL.Hostname(), requestID, result, cfg, p.logger, true)
+	sr := p.recordSessionActivityWithUserAgent(clientIP, agent, r.URL.Hostname(), requestID, r.UserAgent(), result, cfg, p.logger, true)
 
 	forwardSessionKey := CeeSessionKey(agent, clientIP)
 	var forwardRec session.Recorder

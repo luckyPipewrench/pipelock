@@ -109,6 +109,7 @@ Quick start:
 		runtime.InternalRedirectCmd(),
 		runtime.HealthcheckCmd(),
 		// Session admin (airlock recovery)
+		session.AdaptiveCmd(),
 		session.Cmd(),
 		// Setup (IDE integrations)
 		setup.InitCmd(),

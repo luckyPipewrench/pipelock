@@ -282,12 +282,22 @@ func Defaults() *Config {
 			MaxConnections: 100,
 		},
 		SessionProfiling: SessionProfiling{
+			AnomalyAction:          ActionWarn,
+			DomainBurst:            5,
+			WindowMinutes:          5,
+			VolumeSpikeRatio:       3.0,
 			MaxSessions:            1000,
 			SessionTTLMinutes:      30,
 			CleanupIntervalSeconds: 60,
 		},
+		AdaptiveEnforcement: AdaptiveEnforcement{
+			CooperativeToolDownweight: true,
+		},
 		TLSInterception: TLSInterception{
-			Enabled:          false,
+			Enabled: false,
+			PassthroughDomains: []string{
+				"*.googlevideo.com",
+			},
 			CertTTL:          DefaultCertTTL,
 			CertCacheSize:    10000,
 			MaxResponseBytes: 5 * 1024 * 1024, // 5MB
@@ -408,13 +418,19 @@ func Defaults() *Config {
 		BrowserShield: BrowserShield{
 			Strictness:            ShieldStrictnessStandard,
 			MaxShieldBytes:        5 * 1024 * 1024, // 5MB
-			OversizeAction:        ShieldOversizeBlock,
+			OversizeAction:        ShieldOversizeScanHead,
 			StripExtensionProbing: true,
 			StripHiddenTraps:      true,
 			StripTrackingPixels:   true,
 			ExemptDomains: []string{
 				"challenges.cloudflare.com",
+				"developer.mozilla.org",
+				"docs.github.com",
+				"github.dev",
+				"go.dev",
 				"hcaptcha.com",
+				"pkg.go.dev",
+				"vscode.dev",
 				"www.recaptcha.net",
 			},
 		},

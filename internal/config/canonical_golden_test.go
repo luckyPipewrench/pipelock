@@ -78,7 +78,15 @@ const (
 	// of plural ".aws/credentials" files, covert exfil verbs including
 	// exfiltrate/leak/stream/transmit/relay/forward/smuggle). See
 	// TestSkillPoisoningCorpus for the six-vector regression suite.
-	goldenHashDefaults = "ecb13adaa7ab0d2686ca1944a9ded8c265a082a77ba859378934ec787f4b9fb9"
+	// Re-bumped for production-readiness tuning: Browser Shield
+	// oversize handling now defaults to scan_head, TLS passthrough has a
+	// googlevideo baseline, Browser Shield has a small large-site exempt
+	// baseline, and adaptive enforcement defaults to downweighting
+	// cooperative tool burst anomalies.
+	// Re-bumped to include the effective session-profiling defaults in
+	// Defaults() itself, so programmatic enablement gets the same domain
+	// burst/window/volume baselines as YAML-loaded configs.
+	goldenHashDefaults = "0bee03ac400bdca8104e0e4dc4921516580c25f471d848fbfa154a85c8963888"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -109,7 +117,9 @@ const (
 	// goldenHashDefaults note. The rich fixture inherits the response
 	// scanning pattern set from Defaults(), so the hash shifts in
 	// lockstep.
-	goldenHashRichConfig = "6589f303225d574e76472bc069c532bb0e60e044e4e02f382672384fc1abd8a0"
+	// Re-bumped for production-readiness tuning: see
+	// goldenHashDefaults note.
+	goldenHashRichConfig = "80e42dfc77b047fc1fc52a6086f4f07d87ef27471aebd297073d2f6a16db96e5"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

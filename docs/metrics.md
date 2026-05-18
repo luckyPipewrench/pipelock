@@ -192,6 +192,7 @@ integrations. Disabled by default; set `scan_api.listen` to enable.
 | `pipelock_shield_bytes_stripped_total` | counter | `category` | Bytes stripped by browser shield. |
 | `pipelock_shield_shims_injected_total` | counter | `transport` | Shim injections by transport. |
 | `pipelock_shield_skipped_total` | counter | `reason` | Shield skips by reason. |
+| `pipelock_shield_oversize_scan_head_total` | counter | `transport` | Oversized shieldable responses handled with `oversize_action: scan_head`. |
 | `pipelock_shield_latency_seconds` | histogram | `transport` | Browser shield latency. |
 
 ## Reverse Proxy Metrics

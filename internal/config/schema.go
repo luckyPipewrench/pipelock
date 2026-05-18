@@ -546,11 +546,12 @@ type SessionProfiling struct {
 // Score accumulates from DLP near-misses and blocks. When threshold is exceeded,
 // the session's enforcement level escalates (audit->warn or warn->block).
 type AdaptiveEnforcement struct {
-	Enabled              bool             `yaml:"enabled"`
-	EscalationThreshold  float64          `yaml:"escalation_threshold"`    // points before escalation
-	DecayPerCleanRequest float64          `yaml:"decay_per_clean_request"` // score reduction per clean request
-	Levels               EscalationLevels `yaml:"levels"`
-	ExemptDomains        []string         `yaml:"exempt_domains"` // DLP findings on these hosts skip escalation scoring and action upgrades
+	Enabled                   bool             `yaml:"enabled"`
+	EscalationThreshold       float64          `yaml:"escalation_threshold"`        // points before escalation
+	DecayPerCleanRequest      float64          `yaml:"decay_per_clean_request"`     // score reduction per clean request
+	CooperativeToolDownweight bool             `yaml:"cooperative_tool_downweight"` // downweight burst anomalies from known cooperative tool UAs
+	Levels                    EscalationLevels `yaml:"levels"`
+	ExemptDomains             []string         `yaml:"exempt_domains"` // DLP findings on these hosts skip escalation scoring and action upgrades
 }
 
 // EscalationLevels configures per-level enforcement behavior.

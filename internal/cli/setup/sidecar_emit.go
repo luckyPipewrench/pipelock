@@ -190,6 +190,11 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 			"default_agent_identity":      result.AgentIdentity,
 			"bind_default_agent_identity": true,
 		},
+		"mcp": map[string]interface{}{
+			"enabled":  result.MCPUpstream != "",
+			"upstream": result.MCPUpstream,
+			"listen":   proxyMCPListenAddr(),
+		},
 		"networkPolicy": map[string]interface{}{
 			"enabled": false,
 		},

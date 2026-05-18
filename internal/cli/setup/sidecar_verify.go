@@ -70,8 +70,20 @@ func runSidecarVerify(w io.Writer, result *sidecarPatchResult, opts sidecarOptio
 	if !strings.Contains(result.AgentNetworkPolicyYAML, fmt.Sprintf("port: %d", sidecarHealthPort)) {
 		failed = append(failed, "agent NetworkPolicy does not allow proxy port")
 	}
+	if result.MCPUpstream != "" && !strings.Contains(result.AgentNetworkPolicyYAML, fmt.Sprintf("port: %d", sidecarMCPPort)) {
+		failed = append(failed, "agent NetworkPolicy does not allow MCP proxy port")
+	}
 	if !strings.Contains(result.ProxyNetworkPolicyYAML, fmt.Sprintf("port: %d", sidecarHealthPort)) {
 		failed = append(failed, "proxy NetworkPolicy does not allow agent ingress on proxy port")
+	}
+	if result.MCPUpstream != "" {
+		if !strings.Contains(result.ProxyNetworkPolicyYAML, fmt.Sprintf("port: %d", sidecarMCPPort)) {
+			failed = append(failed, "proxy NetworkPolicy does not allow agent ingress on MCP proxy port")
+		}
+		if upstreamPort := mcpUpstreamPolicyPort(result.MCPUpstream); upstreamPort != 0 &&
+			!strings.Contains(result.ProxyNetworkPolicyYAML, fmt.Sprintf("port: %d", upstreamPort)) {
+			failed = append(failed, fmt.Sprintf("proxy NetworkPolicy does not allow MCP upstream port %d", upstreamPort))
+		}
 	}
 	if !strings.Contains(result.ProxyNetworkPolicyYAML, "port: 80") || !strings.Contains(result.ProxyNetworkPolicyYAML, "port: 443") {
 		failed = append(failed, "proxy NetworkPolicy does not allow web egress")

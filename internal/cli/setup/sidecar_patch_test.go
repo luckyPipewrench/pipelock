@@ -354,6 +354,168 @@ func TestGenerateSidecarPatch_CustomImage(t *testing.T) {
 	}
 }
 
+func TestGenerateSidecarPatch_MCPUpstream(t *testing.T) {
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+
+	const mcpUpstream = "http://openclaw:3000/mcp"
+	result, err := generateSidecarPatch(manifest, sidecarOptions{
+		preset:      config.ModeBalanced,
+		mcpUpstream: mcpUpstream,
+	})
+	if err != nil {
+		t.Fatalf("generateSidecarPatch: %v", err)
+	}
+
+	if result.MCPUpstream != mcpUpstream {
+		t.Fatalf("MCPUpstream = %q, want %q", result.MCPUpstream, mcpUpstream)
+	}
+	if result.MCPProxyURL != "http://my-agent-pipelock:8889" {
+		t.Fatalf("MCPProxyURL = %q, want %q", result.MCPProxyURL, "http://my-agent-pipelock:8889")
+	}
+
+	podSpec, err := getPodSpec(result.PatchedManifest, kindDeployment)
+	if err != nil {
+		t.Fatalf("getPodSpec: %v", err)
+	}
+	containers := podSpec["containers"].([]interface{})
+	agentContainer := containers[0].(map[string]interface{})
+	envList := agentContainer["env"].([]interface{})
+	if got := envValue(t, envList, envMCPProxy); got != result.MCPProxyURL {
+		t.Fatalf("%s = %q, want %q", envMCPProxy, got, result.MCPProxyURL)
+	}
+
+	metadata := result.PatchedManifest["metadata"].(map[string]interface{})
+	annotations := metadata["annotations"].(map[string]interface{})
+	if annotations[managedMCPProxyAnnotation] != result.MCPProxyURL {
+		t.Fatalf("metadata.annotations[%q] = %v, want %q", managedMCPProxyAnnotation, annotations[managedMCPProxyAnnotation], result.MCPProxyURL)
+	}
+
+	var deployment map[string]interface{}
+	if err := yaml.Unmarshal([]byte(result.DeploymentYAML), &deployment); err != nil {
+		t.Fatalf("parsing DeploymentYAML: %v", err)
+	}
+	deploySpec := deployment["spec"].(map[string]interface{})
+	template := deploySpec["template"].(map[string]interface{})
+	templateSpec := template["spec"].(map[string]interface{})
+	proxyContainer := templateSpec["containers"].([]interface{})[0].(map[string]interface{})
+	args := proxyContainer["args"].([]interface{})
+	if !containsInterfaceString(args, "--mcp-listen") || !containsInterfaceString(args, proxyMCPListenAddr()) ||
+		!containsInterfaceString(args, "--mcp-upstream") || !containsInterfaceString(args, mcpUpstream) {
+		t.Fatalf("proxy args missing MCP listener contract: %v", args)
+	}
+	ports := proxyContainer["ports"].([]interface{})
+	if !portsContainName(ports, "mcp") {
+		t.Fatalf("proxy container ports missing mcp: %v", ports)
+	}
+
+	var service map[string]interface{}
+	if err := yaml.Unmarshal([]byte(result.ServiceYAML), &service); err != nil {
+		t.Fatalf("parsing ServiceYAML: %v", err)
+	}
+	serviceSpec := service["spec"].(map[string]interface{})
+	if !portsContainName(serviceSpec["ports"].([]interface{}), "mcp") {
+		t.Fatalf("service ports missing mcp: %v", serviceSpec["ports"])
+	}
+
+	if !strings.Contains(result.AgentNetworkPolicyYAML, "port: 8889") {
+		t.Fatal("agent NetworkPolicy should allow egress to the MCP proxy port")
+	}
+	if !strings.Contains(result.ProxyNetworkPolicyYAML, "port: 8889") {
+		t.Fatal("proxy NetworkPolicy should allow agent ingress on the MCP proxy port")
+	}
+	if !strings.Contains(result.ProxyNetworkPolicyYAML, "port: 3000") {
+		t.Fatal("proxy NetworkPolicy should allow the configured MCP upstream port")
+	}
+}
+
+func TestGenerateSidecarPatch_MCPUpstreamRecordsAnnotation(t *testing.T) {
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+	const mcpUpstream = "http://openclaw:3000/mcp"
+	result, err := generateSidecarPatch(manifest, sidecarOptions{
+		preset:      config.ModeBalanced,
+		mcpUpstream: mcpUpstream,
+	})
+	if err != nil {
+		t.Fatalf("generateSidecarPatch: %v", err)
+	}
+	metadata := result.PatchedManifest["metadata"].(map[string]interface{})
+	annotations := metadata["annotations"].(map[string]interface{})
+	if annotations[managedMCPUpstreamAnnotation] != mcpUpstream {
+		t.Fatalf("annotations[%q] = %v, want %q",
+			managedMCPUpstreamAnnotation, annotations[managedMCPUpstreamAnnotation], mcpUpstream)
+	}
+}
+
+func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
+	// Re-running init sidecar without --mcp-upstream after a prior run with
+	// it must remove the agent-side contract entirely. Otherwise the agent
+	// keeps PIPELOCK_MCP_PROXY_URL pointed at a Service port the
+	// regenerated companion no longer exposes — a silent feature drift.
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+	first, err := generateSidecarPatch(manifest, sidecarOptions{
+		preset:      config.ModeBalanced,
+		mcpUpstream: "http://openclaw:3000/mcp",
+	})
+	if err != nil {
+		t.Fatalf("first generate: %v", err)
+	}
+
+	// Treat the already-patched manifest as fresh input for the disable run.
+	second, err := generateSidecarPatch(&workloadManifest{
+		Raw:  first.PatchedManifest,
+		Kind: manifest.Kind,
+		Name: manifest.Name,
+	}, sidecarOptions{
+		preset: config.ModeBalanced,
+	})
+	if err != nil {
+		t.Fatalf("disable generate: %v", err)
+	}
+
+	metadata := second.PatchedManifest["metadata"].(map[string]interface{})
+	annotations, _ := metadata["annotations"].(map[string]interface{})
+	if _, ok := annotations[managedMCPProxyAnnotation]; ok {
+		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPProxyAnnotation, annotations)
+	}
+	if _, ok := annotations[managedMCPUpstreamAnnotation]; ok {
+		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPUpstreamAnnotation, annotations)
+	}
+
+	podSpec, err := getPodSpec(second.PatchedManifest, kindDeployment)
+	if err != nil {
+		t.Fatalf("getPodSpec: %v", err)
+	}
+	containers := podSpec["containers"].([]interface{})
+	envList := containers[0].(map[string]interface{})["env"].([]interface{})
+	for _, e := range envList {
+		eMap := e.(map[string]interface{})
+		if name, _ := eMap["name"].(string); name == envMCPProxy {
+			t.Fatalf("expected %s env to be scrubbed on disable: %+v", envMCPProxy, envList)
+		}
+	}
+
+	// Template annotations on the pod spec must also be scrubbed so newly
+	// rolled pods do not inherit the stale contract.
+	template := second.PatchedManifest["spec"].(map[string]interface{})["template"].(map[string]interface{})
+	tmplMeta, _ := template["metadata"].(map[string]interface{})
+	if tmplMeta != nil {
+		if tmplAnn, _ := tmplMeta["annotations"].(map[string]interface{}); tmplAnn != nil {
+			if _, ok := tmplAnn[managedMCPProxyAnnotation]; ok {
+				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
+			}
+		}
+	}
+}
+
 func TestGenerateSidecarPatch_CustomIdentity(t *testing.T) {
 	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
 	if err != nil {
@@ -374,6 +536,28 @@ func TestGenerateSidecarPatch_CustomIdentity(t *testing.T) {
 	}
 }
 
+func containsInterfaceString(items []interface{}, want string) bool {
+	for _, item := range items {
+		if got, ok := item.(string); ok && got == want {
+			return true
+		}
+	}
+	return false
+}
+
+func portsContainName(ports []interface{}, want string) bool {
+	for _, port := range ports {
+		portMap, ok := port.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := portMap["name"].(string); name == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestInjectProxyEnvs_RejectsConflictingProxy(t *testing.T) {
 	podSpec := map[string]interface{}{
 		"containers": []interface{}{
@@ -386,7 +570,7 @@ func TestInjectProxyEnvs_RejectsConflictingProxy(t *testing.T) {
 		},
 	}
 
-	err := injectProxyEnvs(podSpec, "http://expected-proxy:8888")
+	err := injectProxyEnvs(podSpec, "http://expected-proxy:8888", "")
 	if err == nil {
 		t.Fatal("expected conflict error")
 	}
@@ -493,13 +677,13 @@ func TestNetworkPolicySelectorLabels_FallsBackToTemplateLabels(t *testing.T) {
 }
 
 func TestRenderAgentNetworkPolicy_EmptySelectorError(t *testing.T) {
-	if _, err := renderAgentNetworkPolicy("default", "agent", nil, map[string]string{"app": "proxy"}); err == nil {
+	if _, err := renderAgentNetworkPolicy("default", "agent", nil, map[string]string{"app": "proxy"}, false); err == nil {
 		t.Fatal("expected error for empty agent selector labels")
 	}
 }
 
 func TestRenderProxyNetworkPolicy_EmptySelectorError(t *testing.T) {
-	if _, err := renderProxyNetworkPolicy("default", "proxy", map[string]string{"app": "proxy"}, nil); err == nil {
+	if _, err := renderProxyNetworkPolicy("default", "proxy", map[string]string{"app": "proxy"}, nil, ""); err == nil {
 		t.Fatal("expected error for empty agent selector labels")
 	}
 }

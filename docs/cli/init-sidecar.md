@@ -16,6 +16,7 @@ pipelock init sidecar --inject-spec <manifest>
   [--skip-verify]
   [--json]
   [--agent-identity <name>]
+  [--mcp-upstream <http-url>]
 ```
 
 ## Description
@@ -31,6 +32,8 @@ The generated bundle includes:
 - An agent NetworkPolicy that limits agent pod egress to DNS plus the pipelock proxy
 - A proxy NetworkPolicy that allows agent ingress and standard web egress for the pipelock proxy pods
 - A PodDisruptionBudget that keeps at least one proxy replica available during voluntary disruptions
+
+When `--mcp-upstream` is set, the bundle also exposes the companion proxy's MCP listener on port `8889`, injects `PIPELOCK_MCP_PROXY_URL` into the agent workload, and updates NetworkPolicies so the agent can reach only the Pipelock MCP listener while the proxy can reach the configured upstream MCP endpoint.
 
 This is not same-pod sidecar injection. The enforcement boundary comes from pod-scoped NetworkPolicies plus a separate pipelock proxy workload, not from trusting application containers to honor proxy environment variables on their own.
 
@@ -51,6 +54,7 @@ The command runs 7 phases: detect, generate, preview, emit, verify, canary, and 
 | `--skip-verify` | false | Skip static topology verification |
 | `--json` | false | Machine-readable JSON output (`--output` required unless `--dry-run`) |
 | `--agent-identity` | `<kind>/<name>` | Default agent identity for attribution |
+| `--mcp-upstream` | unset | Optional upstream MCP HTTP/SSE URL. When set, the companion proxy exposes `PIPELOCK_MCP_PROXY_URL=http://<proxy>:8889` for agent MCP client configuration. |
 
 ## Supported Workload Kinds
 
@@ -143,6 +147,17 @@ pipelock init sidecar --inject-spec statefulset.yaml --preset strict --output en
 pipelock init sidecar --inject-spec job.yaml --agent-identity ci-team/nightly-scan
 ```
 
+### OpenClaw or Cluster MCP Gateway
+
+```bash
+pipelock init sidecar \
+  --inject-spec deployment.yaml \
+  --mcp-upstream http://openclaw-gateway:3000/mcp \
+  --output enforced.yaml
+```
+
+The generated workload receives `PIPELOCK_MCP_PROXY_URL=http://<proxy-service>:8889`. Configure the agent's MCP client or launcher to use that URL. The NetworkPolicy limits the agent pod to DNS plus the Pipelock HTTP and MCP proxy ports, so direct HTTP egress to the upstream MCP gateway is not part of the generated agent boundary.
+
 ### CronJob with kustomize output
 
 ```bash
@@ -174,6 +189,7 @@ The verify phase is static. It confirms the generated topology has the expected 
 
 - forward proxy mode enabled
 - cluster-reachable proxy listeners
+- optional MCP listener and NetworkPolicy ports when `--mcp-upstream` is set
 - agent NetworkPolicy allows DNS plus the pipelock proxy port only
 - proxy NetworkPolicy allows agent ingress and standard web egress
 
@@ -189,11 +205,18 @@ Within a cluster that enforces egress NetworkPolicies, the agent pods are limite
 
 - DNS
 - The pipelock companion Service on port `8888`
+- The pipelock companion Service on port `8889` when `--mcp-upstream` is set
 
 Direct `80/443` web egress is reserved for the pipelock companion pods, not the agent workload.
 
 DNS egress is intentionally left unrestricted at the NetworkPolicy layer for cluster portability. This command does not block DNS tunneling by policy alone.
 
+`--mcp-upstream` does not rewrite arbitrary application MCP client settings by itself. It creates the enforced cluster path and exposes the `PIPELOCK_MCP_PROXY_URL` contract; the agent image, launcher, or config must consume that value for MCP traffic to traverse Pipelock.
+
+The proxy NetworkPolicy egress rule for the upstream port has no destination selector. Vanilla Kubernetes NetworkPolicies cannot express "only this hostname." If the upstream port is shared with unrelated services in any namespace the proxy can reach, the rule technically allows the proxy to talk to them too. For tighter scoping, edit the generated `proxy-network-policy.yaml` to add a `to:` clause matching the upstream namespace and pod labels.
+
 ## Idempotency
 
 Running `pipelock init sidecar` against a manifest already managed by this command is safe. The workload annotations preserve the generated proxy identity, the command reports the manifest as already patched, and verification can still be rerun against the derived topology.
+
+Re-running against a manifest previously generated with `--mcp-upstream`, but without the flag this time, scrubs the prior `PIPELOCK_MCP_PROXY_URL` env entry and the `pipelock.dev/mcp-proxy-service` / `pipelock.dev/mcp-upstream` annotations so the agent does not advertise a contract the regenerated Service no longer fulfills.

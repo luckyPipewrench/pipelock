@@ -92,6 +92,98 @@ func TestRunSidecar_JSON(t *testing.T) {
 	}
 }
 
+func TestRunSidecar_JSONMCPUpstream(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cmd := SidecarCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--inject-spec", testdataPath(t, "deployment.yaml"),
+		"--dry-run",
+		"--json",
+		"--mcp-upstream", "http://openclaw:3000/mcp",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result sidecarResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+	}
+	if result.Patch == nil {
+		t.Fatal("patch field should not be nil")
+	}
+	if result.Patch.MCPProxyURL != "http://my-agent-pipelock:8889" {
+		t.Fatalf("patch.mcp_proxy_url = %q, want %q", result.Patch.MCPProxyURL, "http://my-agent-pipelock:8889")
+	}
+}
+
+func TestRunSidecar_MCPUpstreamSummaryReminder(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	cmd := SidecarCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"--inject-spec", testdataPath(t, "deployment.yaml"),
+		"--dry-run",
+		"--mcp-upstream", "http://openclaw:3000/mcp",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "MCP proxy URL:") {
+		t.Fatalf("summary missing MCP proxy URL:\n%s", output)
+	}
+	if !strings.Contains(output, "Configure the agent MCP client to use PIPELOCK_MCP_PROXY_URL") {
+		t.Fatalf("summary missing agent MCP wiring reminder:\n%s", output)
+	}
+}
+
+func TestRunSidecar_InvalidMCPUpstream(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		raw     string
+		wantSub string
+	}{
+		{name: "bad scheme", raw: "ws://openclaw:3000/mcp", wantSub: "must use http:// or https://"},
+		{name: "no host", raw: "http:///mcp", wantSub: "must include http:// or https:// and a host"},
+		{name: "port out of range high", raw: "http://openclaw:99999/mcp", wantSub: "must be 1-65535"},
+		{name: "port zero", raw: "http://openclaw:0/mcp", wantSub: "must be 1-65535"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			cmd := SidecarCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs([]string{
+				"--inject-spec", testdataPath(t, "deployment.yaml"),
+				"--dry-run",
+				"--mcp-upstream", tc.raw,
+			})
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatalf("expected invalid --mcp-upstream error for %q", tc.raw)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
 func TestRunSidecar_AllKinds(t *testing.T) {
 	t.Parallel()
 

@@ -369,6 +369,10 @@ func TestEmitHelmValuesFormat(t *testing.T) {
 	if enabled, _ := forwardProxy["enabled"].(bool); !enabled {
 		t.Fatal("pipelock.forward_proxy.enabled should be true")
 	}
+	mcpMap := values["mcp"].(map[string]interface{})
+	if enabled, _ := mcpMap["enabled"].(bool); enabled {
+		t.Fatal("mcp.enabled should default to false")
+	}
 
 	readme, err := os.ReadFile(filepath.Clean(filepath.Join(outDir, "README.txt")))
 	if err != nil {
@@ -382,6 +386,38 @@ func TestEmitHelmValuesFormat(t *testing.T) {
 	}
 	if !strings.Contains(string(readme), "pipelock-pdb.yaml") {
 		t.Fatal("README.txt should include the PDB apply command")
+	}
+}
+
+func TestEmitHelmValuesFormat_MCPUpstream(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	outDir := filepath.Join(dir, "helm-bundle")
+	const mcpUpstream = "http://openclaw:3000/mcp"
+	result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced, mcpUpstream: mcpUpstream})
+
+	if err := emitHelmValuesFormat(nil, result, sidecarOptions{output: outDir, emit: emitHelmValues, preset: config.ModeBalanced}); err != nil {
+		t.Fatalf("emitHelmValuesFormat: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(outDir, "values.yaml")))
+	if err != nil {
+		t.Fatalf("reading values.yaml: %v", err)
+	}
+	var values map[string]interface{}
+	if err := yaml.Unmarshal(data, &values); err != nil {
+		t.Fatalf("parsing helm values: %v", err)
+	}
+	mcpMap := values["mcp"].(map[string]interface{})
+	if enabled, _ := mcpMap["enabled"].(bool); !enabled {
+		t.Fatal("mcp.enabled should be true")
+	}
+	if mcpMap["upstream"] != mcpUpstream {
+		t.Fatalf("mcp.upstream = %v, want %q", mcpMap["upstream"], mcpUpstream)
+	}
+	if mcpMap["listen"] != proxyMCPListenAddr() {
+		t.Fatalf("mcp.listen = %v, want %s", mcpMap["listen"], proxyMCPListenAddr())
 	}
 }
 

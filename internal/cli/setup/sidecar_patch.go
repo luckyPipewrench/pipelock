@@ -9,6 +9,8 @@ package setup
 
 import (
 	"fmt"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +28,7 @@ const (
 	sidecarConfigFile    = "pipelock.yaml"
 	sidecarHealthPath    = "/health"
 	sidecarHealthPort    = 8888
+	sidecarMCPPort       = 8889
 	sidecarMetricsPort   = 9091
 
 	// defaultImage is the GHCR image with the current version tag.
@@ -36,6 +39,7 @@ const (
 	envHTTPSProxy = "HTTPS_PROXY"
 	envHTTPProxy  = "HTTP_PROXY"
 	envNoProxy    = "NO_PROXY"
+	envMCPProxy   = "PIPELOCK_MCP_PROXY_URL"
 	noProxyValue  = "localhost,127.0.0.1,.svc,.cluster.local"
 
 	proxyReplicaCount = 2
@@ -48,6 +52,8 @@ const (
 	managedTopologyAnnotation     = "pipelock.dev/topology"
 	managedProxyNameAnnotation    = "pipelock.dev/proxy-name"
 	managedProxyServiceAnnotation = "pipelock.dev/proxy-service"
+	managedMCPProxyAnnotation     = "pipelock.dev/mcp-proxy-service"
+	managedMCPUpstreamAnnotation  = "pipelock.dev/mcp-upstream"
 	managedTopologyCompanion      = "companion-proxy"
 	managedByLabelValue           = "pipelock-init-sidecar"
 )
@@ -78,6 +84,10 @@ type sidecarPatchResult struct {
 	ProxyName string
 	// ProxyURL is the Service URL injected into the agent workload.
 	ProxyURL string
+	// MCPUpstream is the operator-configured upstream MCP endpoint, if enabled.
+	MCPUpstream string
+	// MCPProxyURL is the companion Service MCP URL injected into the agent workload.
+	MCPProxyURL string
 	// AgentSelectorLabels identify the protected agent pods.
 	AgentSelectorLabels map[string]string
 	// ProxySelectorLabels identify the companion proxy pods.
@@ -105,12 +115,16 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 
 	proxyName := resolveProxyName(manifest.Raw, manifest.Name)
 	proxyURL := proxyServiceURL(proxyName)
+	mcpProxyURL := ""
+	if opts.mcpUpstream != "" {
+		mcpProxyURL = proxyMCPServiceURL(proxyName)
+	}
 	proxyLabels := proxySelectorLabels(proxyName)
 
-	if err := annotateManagedWorkload(patched, manifest.Kind, proxyName); err != nil {
+	if err := annotateManagedWorkload(patched, manifest.Kind, proxyName, mcpProxyURL, opts.mcpUpstream); err != nil {
 		return nil, fmt.Errorf("annotating workload: %w", err)
 	}
-	if err := injectProxyEnvs(podSpec, proxyURL); err != nil {
+	if err := injectProxyEnvs(podSpec, proxyURL, mcpProxyURL); err != nil {
 		return nil, fmt.Errorf("injecting proxy env: %w", err)
 	}
 
@@ -119,19 +133,19 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 	if err != nil {
 		return nil, fmt.Errorf("rendering ConfigMap: %w", err)
 	}
-	deploymentYAML, err := renderProxyDeployment(namespace, proxyName, resolveImage(opts), proxyLabels)
+	deploymentYAML, err := renderProxyDeployment(namespace, proxyName, resolveImage(opts), proxyLabels, opts.mcpUpstream)
 	if err != nil {
 		return nil, fmt.Errorf("rendering Deployment: %w", err)
 	}
-	serviceYAML, err := renderProxyService(namespace, proxyName, proxyLabels)
+	serviceYAML, err := renderProxyService(namespace, proxyName, proxyLabels, opts.mcpUpstream != "")
 	if err != nil {
 		return nil, fmt.Errorf("rendering Service: %w", err)
 	}
-	agentNetworkPolicyYAML, err := renderAgentNetworkPolicy(namespace, manifest.Name, selectorLabels, proxyLabels)
+	agentNetworkPolicyYAML, err := renderAgentNetworkPolicy(namespace, manifest.Name, selectorLabels, proxyLabels, opts.mcpUpstream != "")
 	if err != nil {
 		return nil, fmt.Errorf("rendering agent NetworkPolicy: %w", err)
 	}
-	proxyNetworkPolicyYAML, err := renderProxyNetworkPolicy(namespace, proxyName, proxyLabels, selectorLabels)
+	proxyNetworkPolicyYAML, err := renderProxyNetworkPolicy(namespace, proxyName, proxyLabels, selectorLabels, opts.mcpUpstream)
 	if err != nil {
 		return nil, fmt.Errorf("rendering proxy NetworkPolicy: %w", err)
 	}
@@ -153,6 +167,8 @@ func generateSidecarPatch(manifest *workloadManifest, opts sidecarOptions) (*sid
 		AgentIdentity:           agentIdentity,
 		ProxyName:               proxyName,
 		ProxyURL:                proxyURL,
+		MCPUpstream:             opts.mcpUpstream,
+		MCPProxyURL:             mcpProxyURL,
 		AgentSelectorLabels:     selectorLabels,
 		ProxySelectorLabels:     proxyLabels,
 	}, nil
@@ -170,7 +186,7 @@ func buildProxyConfig(preset, agentIdentity string) *config.Config {
 
 // injectProxyEnvs adds HTTPS_PROXY, HTTP_PROXY, NO_PROXY to agent containers.
 // Existing conflicting proxy env vars are rejected instead of silently preserved.
-func injectProxyEnvs(podSpec map[string]interface{}, proxyURL string) error {
+func injectProxyEnvs(podSpec map[string]interface{}, proxyURL, mcpProxyURL string) error {
 	containers, ok := podSpec["containers"].([]interface{})
 	if !ok {
 		return nil
@@ -197,9 +213,41 @@ func injectProxyEnvs(podSpec map[string]interface{}, proxyURL string) error {
 		if err != nil {
 			return fmt.Errorf("container %q: %w", containerName, err)
 		}
+		if mcpProxyURL != "" {
+			existing, err = upsertProxyEnv(existing, envMCPProxy, mcpProxyURL)
+			if err != nil {
+				return fmt.Errorf("container %q: %w", containerName, err)
+			}
+		} else {
+			// Scrub stale MCP env when the operator re-runs without
+			// --mcp-upstream. Leaving it would point the agent at a Service
+			// port the regenerated companion no longer listens on, turning
+			// a feature disable into a runtime "connection refused" loop.
+			existing = removeProxyEnv(existing, envMCPProxy)
+		}
 		cMap["env"] = existing
 	}
 	return nil
+}
+
+// removeProxyEnv strips an env entry by name. Returns the input unchanged
+// when the entry is absent. valueFrom entries are also removed so the
+// disable path is total: the operator does not need to inspect the
+// patched manifest to confirm the contract is gone.
+func removeProxyEnv(envList []interface{}, name string) []interface{} {
+	out := envList[:0]
+	for _, e := range envList {
+		eMap, ok := e.(map[string]interface{})
+		if !ok {
+			out = append(out, e)
+			continue
+		}
+		if n, _ := eMap["name"].(string); n == name {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 func upsertProxyEnv(envList []interface{}, name, value string) ([]interface{}, error) {
@@ -275,7 +323,20 @@ func renderConfigMap(cfg *config.Config, preset, namespace, proxyName string, pr
 	return string(out), nil
 }
 
-func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[string]string) (string, error) {
+func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[string]string, mcpUpstream string) (string, error) {
+	args := []interface{}{"run", "--config", sidecarConfigMount + "/" + sidecarConfigFile}
+	ports := []interface{}{
+		map[string]interface{}{"name": "http", "containerPort": sidecarHealthPort, "protocol": "TCP"},
+	}
+	if mcpUpstream != "" {
+		args = append(args,
+			"--mcp-listen", proxyMCPListenAddr(),
+			"--mcp-upstream", mcpUpstream,
+		)
+		ports = append(ports, map[string]interface{}{"name": "mcp", "containerPort": sidecarMCPPort, "protocol": "TCP"})
+	}
+	ports = append(ports, map[string]interface{}{"name": "metrics", "containerPort": sidecarMetricsPort, "protocol": "TCP"})
+
 	deploy := map[string]interface{}{
 		"apiVersion": "apps/v1",
 		"kind":       "Deployment",
@@ -319,12 +380,9 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 						map[string]interface{}{
 							"name":            proxyContainerName,
 							"image":           image,
-							"args":            []interface{}{"run", "--config", sidecarConfigMount + "/" + sidecarConfigFile},
+							"args":            args,
 							"imagePullPolicy": "IfNotPresent",
-							"ports": []interface{}{
-								map[string]interface{}{"name": "http", "containerPort": sidecarHealthPort, "protocol": "TCP"},
-								map[string]interface{}{"name": "metrics", "containerPort": sidecarMetricsPort, "protocol": "TCP"},
-							},
+							"ports":           ports,
 							"volumeMounts": []interface{}{
 								map[string]interface{}{
 									"name":      sidecarConfigVolume,
@@ -376,7 +434,15 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 	return string(out), nil
 }
 
-func renderProxyService(namespace, proxyName string, proxyLabels map[string]string) (string, error) {
+func renderProxyService(namespace, proxyName string, proxyLabels map[string]string, mcpEnabled bool) (string, error) {
+	ports := []interface{}{
+		map[string]interface{}{"name": "http", "port": sidecarHealthPort, "targetPort": "http", "protocol": "TCP"},
+	}
+	if mcpEnabled {
+		ports = append(ports, map[string]interface{}{"name": "mcp", "port": sidecarMCPPort, "targetPort": "mcp", "protocol": "TCP"})
+	}
+	ports = append(ports, map[string]interface{}{"name": "metrics", "port": sidecarMetricsPort, "targetPort": "metrics", "protocol": "TCP"})
+
 	svc := map[string]interface{}{
 		"apiVersion": "v1",
 		"kind":       "Service",
@@ -388,10 +454,7 @@ func renderProxyService(namespace, proxyName string, proxyLabels map[string]stri
 		"spec": map[string]interface{}{
 			"type":     "ClusterIP",
 			"selector": labelsToInterfaceMap(proxyLabels),
-			"ports": []interface{}{
-				map[string]interface{}{"name": "http", "port": sidecarHealthPort, "targetPort": "http", "protocol": "TCP"},
-				map[string]interface{}{"name": "metrics", "port": sidecarMetricsPort, "targetPort": "metrics", "protocol": "TCP"},
-			},
+			"ports":    ports,
 		},
 	}
 	out, err := yaml.Marshal(svc)
@@ -401,9 +464,15 @@ func renderProxyService(namespace, proxyName string, proxyLabels map[string]stri
 	return string(out), nil
 }
 
-func renderAgentNetworkPolicy(namespace, workloadName string, agentLabels, proxyLabels map[string]string) (string, error) {
+func renderAgentNetworkPolicy(namespace, workloadName string, agentLabels, proxyLabels map[string]string, mcpEnabled bool) (string, error) {
 	if len(agentLabels) == 0 || len(proxyLabels) == 0 {
 		return "", fmt.Errorf("agent and proxy selector labels must not be empty")
+	}
+	proxyPorts := []interface{}{
+		map[string]interface{}{"port": sidecarHealthPort, "protocol": "TCP"},
+	}
+	if mcpEnabled {
+		proxyPorts = append(proxyPorts, map[string]interface{}{"port": sidecarMCPPort, "protocol": "TCP"})
 	}
 	np := map[string]interface{}{
 		"apiVersion": "networking.k8s.io/v1",
@@ -433,9 +502,7 @@ func renderAgentNetworkPolicy(namespace, workloadName string, agentLabels, proxy
 							},
 						},
 					},
-					"ports": []interface{}{
-						map[string]interface{}{"port": sidecarHealthPort, "protocol": "TCP"},
-					},
+					"ports": proxyPorts,
 				},
 			},
 		},
@@ -447,9 +514,22 @@ func renderAgentNetworkPolicy(namespace, workloadName string, agentLabels, proxy
 	return string(out), nil
 }
 
-func renderProxyNetworkPolicy(namespace, proxyName string, proxyLabels, agentLabels map[string]string) (string, error) {
+func renderProxyNetworkPolicy(namespace, proxyName string, proxyLabels, agentLabels map[string]string, mcpUpstream string) (string, error) {
 	if len(agentLabels) == 0 || len(proxyLabels) == 0 {
 		return "", fmt.Errorf("agent and proxy selector labels must not be empty")
+	}
+	ingressPorts := []interface{}{
+		map[string]interface{}{"port": sidecarHealthPort, "protocol": "TCP"},
+	}
+	if mcpUpstream != "" {
+		ingressPorts = append(ingressPorts, map[string]interface{}{"port": sidecarMCPPort, "protocol": "TCP"})
+	}
+	webPorts := []interface{}{
+		map[string]interface{}{"port": 80, "protocol": "TCP"},
+		map[string]interface{}{"port": 443, "protocol": "TCP"},
+	}
+	if upstreamPort := mcpUpstreamPolicyPort(mcpUpstream); upstreamPort != 0 && upstreamPort != 80 && upstreamPort != 443 {
+		webPorts = append(webPorts, map[string]interface{}{"port": upstreamPort, "protocol": "TCP"})
 	}
 	np := map[string]interface{}{
 		"apiVersion": "networking.k8s.io/v1",
@@ -473,9 +553,7 @@ func renderProxyNetworkPolicy(namespace, proxyName string, proxyLabels, agentLab
 							},
 						},
 					},
-					"ports": []interface{}{
-						map[string]interface{}{"port": sidecarHealthPort, "protocol": "TCP"},
-					},
+					"ports": ingressPorts,
 				},
 			},
 			"egress": []interface{}{
@@ -486,10 +564,7 @@ func renderProxyNetworkPolicy(namespace, proxyName string, proxyLabels, agentLab
 					},
 				},
 				map[string]interface{}{
-					"ports": []interface{}{
-						map[string]interface{}{"port": 80, "protocol": "TCP"},
-						map[string]interface{}{"port": 443, "protocol": "TCP"},
-					},
+					"ports": webPorts,
 				},
 			},
 		},
@@ -552,6 +627,39 @@ func proxyServiceURL(proxyName string) string {
 	return fmt.Sprintf("http://%s:%d", proxyName, sidecarHealthPort)
 }
 
+func proxyMCPServiceURL(proxyName string) string {
+	return fmt.Sprintf("http://%s:%d", proxyName, sidecarMCPPort)
+}
+
+func proxyMCPListenAddr() string {
+	return fmt.Sprintf("0.0.0.0:%d", sidecarMCPPort)
+}
+
+func mcpUpstreamPolicyPort(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return 0
+	}
+	if parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil {
+			return 0
+		}
+		return port
+	}
+	switch parsed.Scheme {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	default:
+		return 0
+	}
+}
+
 func proxySelectorLabels(proxyName string) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":      "pipelock",
@@ -577,20 +685,58 @@ func managedComponentLabels(component string) map[string]string {
 	}
 }
 
-func annotateManagedWorkload(raw map[string]interface{}, kind, proxyName string) error {
+func annotateManagedWorkload(raw map[string]interface{}, kind, proxyName, mcpProxyURL, mcpUpstream string) error {
 	annotations := map[string]string{
 		managedTopologyAnnotation:     managedTopologyCompanion,
 		managedProxyNameAnnotation:    proxyName,
 		managedProxyServiceAnnotation: proxyServiceURL(proxyName),
 	}
+	// Remove any prior MCP annotations when this generation has no upstream
+	// configured. Otherwise re-running without --mcp-upstream after a prior
+	// run with it would leave the agent advertising a proxy URL that the
+	// regenerated Service no longer exposes: a silent contract drift.
+	var removeKeys []string
+	if mcpProxyURL != "" {
+		annotations[managedMCPProxyAnnotation] = mcpProxyURL
+		annotations[managedMCPUpstreamAnnotation] = mcpUpstream
+	} else {
+		removeKeys = append(removeKeys, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation)
+	}
 	if err := setAnnotationsAtPath(raw, []string{"metadata", "annotations"}, annotations); err != nil {
 		return err
+	}
+	if len(removeKeys) > 0 {
+		if err := removeAnnotationsAtPath(raw, []string{"metadata", "annotations"}, removeKeys); err != nil {
+			return err
+		}
 	}
 	templatePath := []string{"spec", "template", "metadata", "annotations"}
 	if kind == kindCronJob {
 		templatePath = []string{"spec", "jobTemplate", "spec", "template", "metadata", "annotations"}
 	}
-	return setAnnotationsAtPath(raw, templatePath, annotations)
+	if err := setAnnotationsAtPath(raw, templatePath, annotations); err != nil {
+		return err
+	}
+	if len(removeKeys) > 0 {
+		return removeAnnotationsAtPath(raw, templatePath, removeKeys)
+	}
+	return nil
+}
+
+// removeAnnotationsAtPath deletes the named annotation keys from the
+// annotations map at the given workload path. It is a no-op if the path
+// or the keys are absent. Used to scrub MCP-proxy annotations when an
+// operator re-runs init sidecar without --mcp-upstream after a prior
+// run had it enabled.
+func removeAnnotationsAtPath(raw map[string]interface{}, path []string, keys []string) error {
+	current, err := ensureMapAtPath(raw, path)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		delete(current, key)
+	}
+	return nil
 }
 
 func setAnnotationsAtPath(raw map[string]interface{}, path []string, annotations map[string]string) error {

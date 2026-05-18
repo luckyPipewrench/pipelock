@@ -155,7 +155,19 @@ The generator is idempotent. Running it twice produces identical output. Servers
 
 ## Kubernetes Sidecar Deployment
 
-Run pipelock as a sidecar container alongside your agent. The init container copies the pipelock binary into a shared volume so the agent can use it for MCP stdio wrapping:
+For enforced cluster deployments, generate a companion-proxy topology and point it at the OpenClaw MCP endpoint:
+
+```bash
+pipelock init sidecar \
+  --inject-spec agent-deployment.yaml \
+  --mcp-upstream http://openclaw-gateway:3000/mcp \
+  --output enforced.yaml
+kubectl apply -f enforced.yaml
+```
+
+The generated agent workload gets `HTTPS_PROXY` and `HTTP_PROXY` for HTTP egress plus `PIPELOCK_MCP_PROXY_URL=http://<pipelock-service>:8889` for MCP client configuration. Configure your agent or launcher to use that MCP URL. The generated NetworkPolicy limits the agent pod to DNS plus the Pipelock HTTP and MCP proxy ports, so direct egress to the OpenClaw gateway is outside the generated agent boundary.
+
+Same-pod sidecar wiring is still useful for local prototypes, but it relies on the agent honoring proxy settings and is not the generated enforced topology:
 
 ```yaml
 apiVersion: apps/v1

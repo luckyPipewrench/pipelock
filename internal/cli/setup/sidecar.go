@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -30,6 +32,7 @@ type sidecarOptions struct {
 	skipVerify    bool
 	jsonOutput    bool
 	agentIdentity string
+	mcpUpstream   string
 }
 
 // sidecarResult holds the outcome of each phase for JSON reporting.
@@ -50,6 +53,7 @@ type sidecarPatchSummary struct {
 	EmitFormat    string `json:"emit_format"`
 	OutputPath    string `json:"output_path,omitempty"`
 	AgentIdentity string `json:"agent_identity"`
+	MCPProxyURL   string `json:"mcp_proxy_url,omitempty"`
 	Written       bool   `json:"written"`
 	DryRun        bool   `json:"dry_run"`
 }
@@ -78,7 +82,8 @@ Examples:
   pipelock init sidecar --inject-spec deployment.yaml --dry-run
   pipelock init sidecar --inject-spec deployment.yaml --emit kustomize --output ./pipelock-overlay
   pipelock init sidecar --inject-spec statefulset.yaml --emit helm-values --output ./pipelock-helm-bundle
-  pipelock init sidecar --inject-spec cronjob.yaml --preset strict --agent-identity my-team/bot`,
+  pipelock init sidecar --inject-spec cronjob.yaml --preset strict --agent-identity my-team/bot
+  pipelock init sidecar --inject-spec deployment.yaml --mcp-upstream http://openclaw:3000/mcp`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -97,6 +102,7 @@ Examples:
 	cmd.Flags().BoolVar(&opts.skipVerify, "skip-verify", false, "skip static topology verification")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "machine-readable JSON output")
 	cmd.Flags().StringVar(&opts.agentIdentity, "agent-identity", "", "default agent identity (default: <kind>/<name>)")
+	cmd.Flags().StringVar(&opts.mcpUpstream, "mcp-upstream", "", "upstream MCP HTTP/SSE URL to expose through the companion proxy")
 
 	_ = cmd.MarkFlagRequired("inject-spec")
 
@@ -122,6 +128,9 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 	default:
 		return cliutil.ExitCodeError(initExitError,
 			fmt.Errorf("unknown emit format %q: choose patch, kustomize, or helm-values", opts.emit))
+	}
+	if err := validateSidecarMCPUpstream(opts.mcpUpstream); err != nil {
+		return cliutil.ExitCodeError(initExitError, err)
 	}
 
 	result := &sidecarResult{}
@@ -170,6 +179,9 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		_, _ = fmt.Fprintf(w, "  Agent identity: %s\n", patchResult.AgentIdentity)
 		_, _ = fmt.Fprintf(w, "  Proxy name: %s\n", patchResult.ProxyName)
 		_, _ = fmt.Fprintf(w, "  Proxy URL: %s\n", patchResult.ProxyURL)
+		if patchResult.MCPProxyURL != "" {
+			_, _ = fmt.Fprintf(w, "  MCP proxy URL: %s -> %s\n", patchResult.MCPProxyURL, patchResult.MCPUpstream)
+		}
 		_, _ = fmt.Fprintf(w, "  Image: %s\n", resolveImage(opts))
 		_, _ = fmt.Fprintf(w, "  Preset: %s\n\n", opts.preset)
 	}
@@ -199,6 +211,7 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 		EmitFormat:    opts.emit,
 		OutputPath:    opts.output,
 		AgentIdentity: patchResult.AgentIdentity,
+		MCPProxyURL:   patchResult.MCPProxyURL,
 		DryRun:        opts.dryRun,
 	}
 
@@ -285,6 +298,33 @@ func runSidecar(cmd *cobra.Command, opts sidecarOptions) error {
 	return nil
 }
 
+func validateSidecarMCPUpstream(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" {
+		return fmt.Errorf("--mcp-upstream %q must include http:// or https:// and a host", raw)
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("--mcp-upstream %q must use http:// or https://", raw)
+	}
+	// If an explicit port is present it must be a valid TCP port. Otherwise
+	// the rendered NetworkPolicy egress rule would silently drop the
+	// upstream port, the agent's MCP requests would reach the proxy fine,
+	// and the proxy's egress to the upstream would fail with a network
+	// policy rejection: operator-visible only as a runtime symptom.
+	if port := parsed.Port(); port != "" {
+		n, convErr := strconv.Atoi(port)
+		if convErr != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("--mcp-upstream %q has invalid port %q (must be 1-65535)", raw, port)
+		}
+	}
+	return nil
+}
+
 // renderDiff produces a simple before/after comparison.
 func renderDiff(manifest *workloadManifest, patchResult *sidecarPatchResult) (string, error) {
 	patched, err := yaml.Marshal(patchResult.PatchedManifest)
@@ -322,6 +362,9 @@ func renderDiff(manifest *workloadManifest, patchResult *sidecarPatchResult) (st
 		_, _ = fmt.Fprintf(&sb, "  + companion Service: %s\n", patchResult.ProxyName)
 		_, _ = fmt.Fprintln(&sb, "  + agent NetworkPolicy: DNS + proxy-only egress")
 		_, _ = fmt.Fprintln(&sb, "  + proxy NetworkPolicy: agent ingress + web-only egress")
+		if patchResult.MCPProxyURL != "" {
+			_, _ = fmt.Fprintf(&sb, "  + MCP proxy contract: PIPELOCK_MCP_PROXY_URL=%s\n", patchResult.MCPProxyURL)
+		}
 		_, _ = fmt.Fprintln(&sb, "  + companion PodDisruptionBudget: minAvailable=1")
 	}
 
@@ -338,6 +381,9 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 
 	_, _ = fmt.Fprintf(w, "  Workload:        %s/%s\n", result.Detect.Kind, result.Detect.Name)
 	_, _ = fmt.Fprintf(w, "  Agent identity:  %s\n", result.Patch.AgentIdentity)
+	if result.Patch.MCPProxyURL != "" {
+		_, _ = fmt.Fprintf(w, "  MCP proxy URL:   %s\n", result.Patch.MCPProxyURL)
+	}
 	_, _ = fmt.Fprintf(w, "  Emit format:     %s\n", result.Patch.EmitFormat)
 
 	if result.Patch.DryRun {
@@ -376,6 +422,9 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 	_, _ = fmt.Fprintln(w, "Next steps:")
 	if !result.Patch.Written && !result.Detect.AlreadyPatched {
 		_, _ = fmt.Fprintf(w, "  pipelock init sidecar --inject-spec %s\n", opts.injectSpec)
+	}
+	if result.Patch.MCPProxyURL != "" {
+		_, _ = fmt.Fprintln(w, "  Configure the agent MCP client to use PIPELOCK_MCP_PROXY_URL for MCP traffic.")
 	}
 	switch result.Patch.EmitFormat {
 	case emitKustomize:

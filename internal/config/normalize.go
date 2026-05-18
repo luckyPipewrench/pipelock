@@ -127,6 +127,11 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	prov, _ := raw["mcp_tool_provenance"].(map[string]interface{})
 	setBoolDefault(prov, "offline_only", &cfg.MCPToolProvenance.OfflineOnly)
 
+	// Adaptive cooperative-tool burst downweighting defaults on. Operators can
+	// explicitly set false if they want every burst anomaly scored at full weight.
+	adaptive, _ := raw["adaptive_enforcement"].(map[string]interface{})
+	setBoolDefault(adaptive, "cooperative_tool_downweight", &cfg.AdaptiveEnforcement.CooperativeToolDownweight)
+
 	// Behavioral baseline: poison_resistance defaults to true (trimmed-mean scoring).
 	bb, _ := raw["behavioral_baseline"].(map[string]interface{})
 	setBoolDefault(bb, "poison_resistance", &cfg.BehavioralBaseline.PoisonResistance)
@@ -336,6 +341,10 @@ func (c *Config) ApplyDefaults() {
 		}
 	}
 
+	if c.TLSInterception.PassthroughDomains == nil {
+		c.TLSInterception.PassthroughDomains = append([]string(nil), Defaults().TLSInterception.PassthroughDomains...)
+	}
+
 	// Kill switch defaults
 	if c.KillSwitch.Message == "" {
 		c.KillSwitch.Message = "Emergency deny-all active"
@@ -408,6 +417,21 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.TLSInterception.MaxResponseBytes <= 0 {
 		c.TLSInterception.MaxResponseBytes = 5 * 1024 * 1024 // 5MB
+	}
+
+	// Browser Shield defaults are applied even when disabled so enabling
+	// browser_shield with only `enabled: true` yields production-safe knobs.
+	if c.BrowserShield.Strictness == "" {
+		c.BrowserShield.Strictness = ShieldStrictnessStandard
+	}
+	if c.BrowserShield.MaxShieldBytes <= 0 {
+		c.BrowserShield.MaxShieldBytes = 5 * 1024 * 1024 // 5MB
+	}
+	if c.BrowserShield.OversizeAction == "" {
+		c.BrowserShield.OversizeAction = ShieldOversizeScanHead
+	}
+	if c.BrowserShield.ExemptDomains == nil {
+		c.BrowserShield.ExemptDomains = append([]string(nil), Defaults().BrowserShield.ExemptDomains...)
 	}
 
 	// MCP WS listener defaults

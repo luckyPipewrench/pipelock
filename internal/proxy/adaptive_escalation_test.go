@@ -1839,8 +1839,10 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 			scoreAfterDLP, sess.ThreatScore())
 	}
 
-	// Clean request with deferClean=false — SHOULD decay.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "safe.com", "req-clean",
+	// Clean repeat request with deferClean=false — SHOULD decay. Use an
+	// already-seen hostname so this test isolates rate-limit neutrality from
+	// adaptive domain-burst scoring.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-clean",
 		scanner.Result{Allowed: true},
 		cfg, logger, false)
 	if sess.ThreatScore() >= scoreAfterDLP {
@@ -1933,8 +1935,10 @@ func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
 		t.Errorf("ThreatScore = %v, want 0 in audit mode after protective block", sess.ThreatScore())
 	}
 
-	// Clean request — verify no crash and score stays 0.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "safe.com", "req-clean",
+	// Clean repeat request — verify no crash and score stays 0. Use an
+	// already-seen hostname so this test isolates rate-limit neutrality from
+	// adaptive domain-burst scoring.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-clean",
 		scanner.Result{Allowed: true},
 		cfg, logger, false)
 	if sess.ThreatScore() != 0 {

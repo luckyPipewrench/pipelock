@@ -5,6 +5,8 @@ package proxy
 
 import (
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -310,18 +312,30 @@ func TestProxy_ApplyShield_OversizeScanHead(t *testing.T) {
 	p := newTestProxy(t)
 	cfg := config.Defaults()
 	cfg.BrowserShield.Enabled = true
-	cfg.BrowserShield.MaxShieldBytes = 50
+	cfg.BrowserShield.MaxShieldBytes = 160
 	cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
 	actx := audit.LogContext{}
 
-	// Body larger than max, but the head portion is HTML.
-	body := []byte("<html><head></head><body>" + string(make([]byte, 100)) + "</body></html>")
-	result, _, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
+	tail := strings.Repeat("TAIL", 80)
+	body := []byte(`<html><head></head><body><script>fetch("chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/manifest.json")</script>` + tail + `</body></html>`)
+	result, summary, blocked := p.applyShield(body, "text/html", "example.com", nil, cfg, actx, "127.0.0.1", "req1", TransportFetch, "act1")
 	if blocked {
 		t.Error("scan_head should not block")
 	}
 	if result == nil {
 		t.Error("scan_head should return non-nil body")
+	}
+	if !strings.Contains(string(result), tail) {
+		t.Error("scan_head should pass the unscanned tail through")
+	}
+	if summary == nil || !summary.Partial || summary.ScannedBytes != cfg.BrowserShield.MaxShieldBytes || summary.BodyBytes != len(body) {
+		t.Fatalf("scan_head summary = %+v, want partial summary with body/scanned bytes", summary)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	p.metrics.PrometheusHandler().ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `pipelock_shield_oversize_scan_head_total{transport="fetch"} 1`) {
+		t.Errorf("metrics output missing scan_head counter: %s", w.Body.String())
 	}
 }
 

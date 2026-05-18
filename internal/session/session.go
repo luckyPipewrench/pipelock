@@ -18,24 +18,30 @@ import (
 type SignalType int
 
 const (
-	SignalBlock         SignalType = iota // +3 — hard block from any scanner/transport
-	SignalNearMiss                        // +1 — warn-level finding from any scanner/transport
-	SignalDomainAnomaly                   // +2 — domain burst detection
-	SignalEntropyBudget                   // +2 — CEE entropy exceeded
-	SignalFragmentDLP                     // +3 — CEE fragment reassembly found secret
-	SignalStrip                           // +2 — active mitigation, repeated stripping = sustained attack
-	SignalShieldRewrite                   // +0.25 — Browser Shield rewrote browser-side probes/traps
+	SignalBlock                      SignalType = iota // +3 — hard block from any scanner/transport
+	SignalNearMiss                                     // +1 — warn-level finding from any scanner/transport
+	SignalDomainAnomaly                                // +2 — domain burst detection
+	SignalEntropyBudget                                // +2 — CEE entropy exceeded
+	SignalFragmentDLP                                  // +3 — CEE fragment reassembly found secret
+	SignalStrip                                        // +2 — active mitigation, repeated stripping = sustained attack
+	SignalShieldRewrite                                // +0.25 — Browser Shield rewrote browser-side probes/traps
+	SignalIPDomainAnomaly                              // +3 — IP-level domain burst across agent identities
+	SignalDomainAnomalyCooperative                     // +0.4 — downweighted domain burst from cooperative tool UA
+	SignalIPDomainAnomalyCooperative                   // +0.6 — downweighted IP burst from cooperative tool UA
 )
 
 // SignalPoints maps signal types to their score contribution.
 var SignalPoints = map[SignalType]float64{
-	SignalBlock:         3.0,
-	SignalNearMiss:      1.0,
-	SignalDomainAnomaly: 2.0,
-	SignalEntropyBudget: 2.0,
-	SignalFragmentDLP:   3.0,
-	SignalStrip:         2.0,
-	SignalShieldRewrite: 0.25,
+	SignalBlock:                      3.0,
+	SignalNearMiss:                   1.0,
+	SignalDomainAnomaly:              2.0,
+	SignalEntropyBudget:              2.0,
+	SignalFragmentDLP:                3.0,
+	SignalStrip:                      2.0,
+	SignalShieldRewrite:              0.25,
+	SignalIPDomainAnomaly:            3.0,
+	SignalDomainAnomalyCooperative:   0.4,
+	SignalIPDomainAnomalyCooperative: 0.6,
 }
 
 // escalationLabels maps escalation levels to human-readable names.

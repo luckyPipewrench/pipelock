@@ -86,6 +86,7 @@ Quick start:
 		// Mediation envelope trust management
 		clienvelope.Cmd(),
 		// Diagnostics
+		diag.DoctorCmd(),
 		diag.DiagnoseCmd(),
 		diag.DiscoverCmd(),
 		diag.PreflightCmd(),
@@ -109,6 +110,7 @@ Quick start:
 		runtime.InternalRedirectCmd(),
 		runtime.HealthcheckCmd(),
 		// Session admin (airlock recovery)
+		session.AdaptiveCmd(),
 		session.Cmd(),
 		// Setup (IDE integrations)
 		setup.InitCmd(),

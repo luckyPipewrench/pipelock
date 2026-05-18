@@ -117,6 +117,11 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionMaybeDeleteUser(opts, false), // agent
 		actionMaybeRemoveDir(opts, "config", func(e *installEnv) string { return e.configDir }),
 		actionMaybeRemoveDir(opts, "data", func(e *installEnv) string { return e.dataDir }),
+		// Revoke MUST execute (in reverse walk: first) before the agent
+		// user is deleted AND before the config dir removal wipes the
+		// inventory file. List position controls reverse-walk priority,
+		// so revoke sits at a higher index than both blockers.
+		actionRevokeWorkspaceACLs(opts),
 		actionPreserve("pipelock.yaml (kept with --keep-data)"),
 		actionPreserve("config chown (resolved by dir removal)"),
 		actionPreserve("data chown (resolved by dir removal)"),
@@ -130,9 +135,47 @@ func rollbackActions(opts rollbackOpts) []step {
 		actionRemoveNFTRules(),
 		actionRemovePath("plk-launch tools.list", func(e *installEnv) string { return e.toolsListPath }),
 		actionRemoveWrapper("plk-launch", "plk-launch"),
+		actionRemoveWrapper("plk meta-wrapper", "plk"),
 		actionRemoveToolWrappers(),
 		actionRemovePath("wrapper inventory", func(e *installEnv) string { return e.wrapperInvPath }),
 		actionRemoveSudoers(),
+	}
+}
+
+// actionRevokeWorkspaceACLs removes workspace ACLs before rollback deletes
+// pipelock-agent. That prevents orphan numeric ACL entries if the UID is later
+// reused by an unrelated account. The on-disk inventory is preserved when
+// --keep-data is set so a subsequent install + grant-workspace round trip
+// can rebuild ACLs from the saved mapping; otherwise it is removed alongside
+// other rollback artifacts.
+func actionRevokeWorkspaceACLs(opts rollbackOpts) step {
+	return step{
+		name: "revoke-workspace-acls",
+		desc: "revoke workspace ACLs tracked in /etc/pipelock/contain/workspaces.json",
+		undo: func(ctx context.Context, env *installEnv) error {
+			inv, err := loadWorkspaceInventory(env)
+			if err != nil {
+				return err
+			}
+			if len(inv.Workspaces) == 0 {
+				return nil
+			}
+			commands, err := workspaceRevokeAllCommands(env, inv.Workspaces, env.agentUserName)
+			if err != nil {
+				return err
+			}
+			if err := runWorkspaceCommands(ctx, env, commands); err != nil {
+				return err
+			}
+			if opts.keepData {
+				return nil
+			}
+			if err := env.removeFile(env.workspaceInvPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove %s: %w", env.workspaceInvPath, err)
+			}
+			_ = env.removeFile(env.workspaceInvPath + ".bak")
+			return nil
+		},
 	}
 }
 

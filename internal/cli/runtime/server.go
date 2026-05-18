@@ -718,6 +718,9 @@ func (s *Server) Start(ctx context.Context) error {
 		// configured — in that case we skip registration and the
 		// admin routes simply don't exist on the listener.
 		if sessionAPI := s.proxy.SessionAPI(); sessionAPI != nil {
+			apiMux.HandleFunc("/api/v1/adaptive/status", sessionAPI.HandleAdaptiveStatus)
+			apiMux.HandleFunc("/api/v1/adaptive/flush", sessionAPI.HandleAdaptiveFlush)
+			apiMux.HandleFunc("/api/v1/adaptive/whoami", sessionAPI.HandleAdaptiveWhoami)
 			apiMux.HandleFunc("/api/v1/sessions", sessionAPI.HandleList)
 			apiMux.HandleFunc("/api/v1/sessions/", func(w http.ResponseWriter, r *http.Request) {
 				path := r.URL.EscapedPath()

@@ -6,6 +6,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -40,17 +41,43 @@ type Anomaly struct {
 // discarded to bound memory growth on long-lived sessions.
 const maxRecentEvents = 20
 
+const adaptiveClassificationObserve = "observe"
+
+var cooperativeToolUserAgentPattern = regexp.MustCompile(`(?i)^(?:yt-dlp|python-requests|pip|npm|pnpm|apt|dnf|curl|git)/`)
+
+func isCooperativeToolBurstUserAgent(userAgent string) bool {
+	return cooperativeToolUserAgentPattern.MatchString(strings.TrimSpace(userAgent))
+}
+
+func signalForSessionAnomaly(anomalyType string, cooperative bool) (session.SignalType, bool) {
+	switch anomalyType {
+	case "domain_burst":
+		if cooperative {
+			return session.SignalDomainAnomalyCooperative, true
+		}
+		return session.SignalDomainAnomaly, true
+	case "ip_domain_burst":
+		if cooperative {
+			return session.SignalIPDomainAnomalyCooperative, true
+		}
+		return session.SignalIPDomainAnomaly, true
+	default:
+		return 0, false
+	}
+}
+
 // SessionEvent is a structured record of a notable event on a session used
 // by the operator admin API to explain airlock state and recent activity.
 // Events are pushed into a bounded ring buffer on SessionState and read out
 // in chronological order (oldest first).
 type SessionEvent struct {
 	At       time.Time `json:"at"`
-	Kind     string    `json:"kind"`     // e.g. "block", "anomaly", "airlock_enter"
-	Target   string    `json:"target"`   // hostname, tool name, or transport where observed
-	Detail   string    `json:"detail"`   // short human-readable description
-	Severity string    `json:"severity"` // info / warn / critical, mirrors audit severity
-	Score    float64   `json:"score"`    // scanner score at time of event (0 when N/A)
+	Kind     string    `json:"kind"`           // e.g. "block", "anomaly", "airlock_enter"
+	Type     string    `json:"type,omitempty"` // subtype for anomaly/block events
+	Target   string    `json:"target"`         // hostname, tool name, or transport where observed
+	Detail   string    `json:"detail"`         // short human-readable description
+	Severity string    `json:"severity"`       // info / warn / critical, mirrors audit severity
+	Score    float64   `json:"score"`          // scanner score at time of event (0 when N/A)
 }
 
 // SessionState tracks behavioral state for a single agent session.
@@ -551,6 +578,44 @@ type SessionSnapshot struct {
 	TaintLevel       string    `json:"taint_level"`
 	Contaminated     bool      `json:"contaminated"`
 	LastActivity     time.Time `json:"last_activity"`
+}
+
+type AdaptiveTopAnomaly struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+type AdaptiveStatus struct {
+	ActiveSessions     int                  `json:"active_sessions"`
+	MaxEscalationLevel string               `json:"max_escalation_level"`
+	MaxEscalationInt   int                  `json:"max_escalation_level_int"`
+	SessionsByLevel    map[string]int       `json:"sessions_by_level"`
+	AirlockTiers       map[string]int       `json:"airlock_tiers"`
+	RecentSignalCounts map[string]int       `json:"recent_signal_counts"`
+	TopAnomalies       []AdaptiveTopAnomaly `json:"top_anomalies"`
+	LockdownTTLSeconds int64                `json:"lockdown_ttl_seconds"`
+	Sessions           []SessionSnapshot    `json:"sessions,omitempty"`
+}
+
+type AdaptiveFlushResult struct {
+	Flushed              bool `json:"flushed"`
+	IdentitySessions     int  `json:"identity_sessions"`
+	SkippedInvocations   int  `json:"skipped_invocations"`
+	IPDomainStateCleared bool `json:"ip_domain_state_cleared"`
+}
+
+type AdaptiveWhoami struct {
+	ClientIP           string  `json:"client_ip"`
+	Agent              string  `json:"agent,omitempty"`
+	SessionKey         string  `json:"session_key"` //nolint:gosec // Operator-visible session identity, not a credential.
+	Exists             bool    `json:"exists"`
+	Classification     string  `json:"classification"`
+	EscalationLevel    string  `json:"escalation_level"`
+	EscalationLevelInt int     `json:"escalation_level_int"`
+	ThreatScore        float64 `json:"threat_score"`
+	BlockAll           bool    `json:"block_all"`
+	AirlockTier        string  `json:"airlock_tier"`
+	LockdownTTLSeconds int64   `json:"lockdown_ttl_seconds"`
 }
 
 // sessionAdminSnapshot is the internal operator-facing expansion of
@@ -1127,6 +1192,190 @@ func (sm *SessionManager) SnapshotAndResetIfResettable(key string) (preSnap sess
 	}
 
 	return preSnap, true, nil
+}
+
+// ResetAllIdentitySessions clears adaptive state for every identity session
+// and drops IP-domain burst windows. Invocation sessions are left alone
+// because they are ephemeral transport contexts.
+func (sm *SessionManager) ResetAllIdentitySessions() (reset, skipped int) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for key, sess := range sm.sessions {
+		kind, _, _ := classifySessionKey(key)
+		if kind != sessionKindIdentity {
+			skipped++
+			continue
+		}
+		sess.mu.Lock()
+		sess.airlock.mu.Lock()
+		prevLevel := sess.escalationLevel
+		sess.resetWhileLocked()
+		sess.airlock.mu.Unlock()
+		sess.mu.Unlock()
+		if prevLevel > 0 && sm.metrics != nil {
+			sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(prevLevel), -1)
+		}
+		reset++
+	}
+	sm.ipDomains = make(map[string][]domainEntry)
+	sm.ipBurstCooldown = make(map[string]time.Time)
+	return reset, skipped
+}
+
+func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
+	sm.mu.RLock()
+	keys := make([]string, 0, len(sm.sessions))
+	sessions := make([]*SessionState, 0, len(sm.sessions))
+	for key, sess := range sm.sessions {
+		keys = append(keys, key)
+		sessions = append(sessions, sess)
+	}
+	sm.mu.RUnlock()
+
+	status := AdaptiveStatus{
+		SessionsByLevel:    make(map[string]int),
+		AirlockTiers:       make(map[string]int),
+		RecentSignalCounts: make(map[string]int),
+		Sessions:           make([]SessionSnapshot, 0, len(sessions)),
+	}
+	anomalyCounts := make(map[string]int)
+	airlockCfg := sm.AirlockConfig()
+
+	for i, sess := range sessions {
+		sess.mu.Lock()
+		key := keys[i]
+		kind, agent, ip := classifySessionKey(key)
+		levelInt := sess.escalationLevel
+		level := session.EscalationLabel(levelInt)
+		tier := sess.airlock.Tier()
+		enteredAt := sess.airlock.EnteredAt()
+		if tier == "" {
+			tier = config.AirlockTierNone
+		}
+		status.ActiveSessions++
+		status.SessionsByLevel[level]++
+		status.AirlockTiers[tier]++
+		if levelInt > status.MaxEscalationInt {
+			status.MaxEscalationInt = levelInt
+			status.MaxEscalationLevel = level
+		}
+		for _, evt := range sess.recentEvents {
+			if evt.Kind != "" {
+				status.RecentSignalCounts[evt.Kind]++
+			}
+			if evt.Kind == "anomaly" && evt.Type != "" {
+				anomalyCounts[evt.Type]++
+			}
+		}
+		status.Sessions = append(status.Sessions, SessionSnapshot{
+			Key:              key,
+			Agent:            agent,
+			ClientIP:         ip,
+			Kind:             kind,
+			CurrentTaskID:    sess.task.CurrentTaskID,
+			CurrentTaskLabel: sess.task.CurrentTaskLabel,
+			ThreatScore:      sess.threatScore,
+			EscalationLevel:  level,
+			BlockAll:         sess.atBlockAll,
+			AirlockTier:      tier,
+			TaintLevel:       sess.risk.Level.String(),
+			Contaminated:     sess.risk.Contaminated,
+			LastActivity:     sess.lastActivity,
+		})
+		ttl := adaptiveLockdownTTLSeconds(tier, enteredAt, airlockCfg)
+		if ttl > status.LockdownTTLSeconds {
+			status.LockdownTTLSeconds = ttl
+		}
+		sess.mu.Unlock()
+	}
+	if status.MaxEscalationLevel == "" {
+		status.MaxEscalationLevel = session.EscalationLabel(0)
+	}
+	sort.SliceStable(status.Sessions, func(i, j int) bool {
+		if status.Sessions[i].Kind != status.Sessions[j].Kind {
+			return status.Sessions[i].Kind < status.Sessions[j].Kind
+		}
+		return status.Sessions[i].Key < status.Sessions[j].Key
+	})
+	status.TopAnomalies = topAdaptiveAnomalies(anomalyCounts)
+	return status
+}
+
+func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami {
+	key := clientIP
+	if agent != "" && agent != agentAnonymous {
+		key = agent + "|" + clientIP
+	}
+	out := AdaptiveWhoami{
+		ClientIP:        clientIP,
+		Agent:           agent,
+		SessionKey:      key,
+		Classification:  config.ActionAllow,
+		AirlockTier:     config.AirlockTierNone,
+		EscalationLevel: session.EscalationLabel(0),
+	}
+
+	sm.mu.RLock()
+	sess, ok := sm.sessions[key]
+	if !ok {
+		sm.mu.RUnlock()
+		return out
+	}
+	sm.mu.RUnlock()
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	out.Exists = true
+	out.EscalationLevelInt = sess.escalationLevel
+	out.EscalationLevel = session.EscalationLabel(sess.escalationLevel)
+	out.ThreatScore = sess.threatScore
+	out.BlockAll = sess.atBlockAll
+	tier := sess.airlock.Tier()
+	enteredAt := sess.airlock.EnteredAt()
+	if tier == "" {
+		tier = config.AirlockTierNone
+	}
+	out.AirlockTier = tier
+	if sess.atBlockAll || tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
+		out.Classification = config.ActionBlock
+	} else if tier == config.AirlockTierSoft || sess.escalationLevel > 0 {
+		out.Classification = adaptiveClassificationObserve
+	}
+	out.LockdownTTLSeconds = adaptiveLockdownTTLSeconds(tier, enteredAt, sm.AirlockConfig())
+	return out
+}
+
+func adaptiveLockdownTTLSeconds(tier string, enteredAt time.Time, airlockCfg *config.Airlock) int64 {
+	if tier == "" || tier == config.AirlockTierNone || enteredAt.IsZero() || airlockCfg == nil {
+		return 0
+	}
+	d := deescalationDuration(tier, &airlockCfg.Timers)
+	if d <= 0 {
+		return 0
+	}
+	remaining := time.Until(enteredAt.Add(d))
+	if remaining <= 0 {
+		return 0
+	}
+	return int64(remaining.Seconds())
+}
+
+func topAdaptiveAnomalies(counts map[string]int) []AdaptiveTopAnomaly {
+	entries := make([]AdaptiveTopAnomaly, 0, len(counts))
+	for name, count := range counts {
+		entries = append(entries, AdaptiveTopAnomaly{Name: name, Count: count})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Count == entries[j].Count {
+			return entries[i].Name < entries[j].Name
+		}
+		return entries[i].Count > entries[j].Count
+	})
+	if len(entries) > 5 {
+		entries = entries[:5]
+	}
+	return entries
 }
 
 // withMutableIdentitySession looks up a resettable identity session and runs

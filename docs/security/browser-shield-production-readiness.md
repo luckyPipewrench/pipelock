@@ -6,8 +6,8 @@ Pipelock. It is not an anti-bot bypass system, and it does not promise access
 to websites that deliberately deny automation or proxy traffic.
 
 Browser Shield is opt-in. `browser_shield.enabled` defaults to `false`; the
-strictness, size, and rewrite toggles have safe defaults for operators that
-explicitly enable it.
+strictness, size, oversize, exempt-domain, and rewrite toggles have safe
+defaults for operators that explicitly enable it.
 
 ## Current enforcement boundary
 
@@ -28,8 +28,11 @@ This avoids treating large legitimate media responses as shield failures.
 - Shield rewrites are additive to scanning. Response injection scanning still
   runs after shield rewriting on applicable transports.
 - Oversized shieldable responses fail according to `oversize_action`.
-  `block` fails closed. `warn` returns the body unchanged. `scan_head` rewrites
-  only the configured prefix and records the intervention as partial.
+  `scan_head` is the default: it rewrites only the configured prefix and records
+  the intervention as partial. `block` fails closed. `warn` returns the body
+  unchanged and should stay limited to short diagnostics.
+- Common developer documentation and browser IDE hosts are exempt by default to
+  reduce false positives on large rendered reference pages.
 - Signed action receipts include a `shield` summary whenever Browser Shield
   rewrites a response and receipt emission is enabled.
 - Adaptive enforcement records a low-weight `SignalShieldRewrite` signal for
@@ -124,8 +127,8 @@ standard fail-closed posture.
 2. Run the synthetic transport canary across fetch, forward, intercept, and
    reverse paths with receipt signing enabled.
 3. Enable Browser Shield on a small opt-in agent group with
-   `strictness: minimal` and `oversize_action: warn`.
+   `strictness: minimal` and the default `oversize_action: scan_head`.
 4. Monitor shield receipts, validator-clearing behavior, adaptive score
    movement, response scanner deltas, and page breakage.
-5. Move to `strictness: standard` and `oversize_action: block` only after the
-   soak shows stable browsing behavior and no unexpected escalation.
+5. Move to `strictness: standard`, then consider `oversize_action: block` only
+   after the soak shows stable browsing behavior and no unexpected escalation.

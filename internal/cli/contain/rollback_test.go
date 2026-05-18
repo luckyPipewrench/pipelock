@@ -194,6 +194,128 @@ func TestRollbackActions_RemovesWrappersFromInventory(t *testing.T) {
 	}
 }
 
+func TestRollbackActions_RevokesWorkspaceACLsBeforeUserDelete(t *testing.T) {
+	cases := []struct {
+		name           string
+		opts           rollbackOpts
+		wantInventory  bool
+		assertOrdering bool
+	}{
+		{
+			name:           "keep-data preserves inventory",
+			opts:           rollbackOpts{keepData: true},
+			wantInventory:  true,
+			assertOrdering: true,
+		},
+		{
+			name:           "purge removes inventory",
+			opts:           rollbackOpts{keepData: false},
+			wantInventory:  false,
+			assertOrdering: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, _ := newFakeEnv(t)
+			workspace := t.TempDir()
+			if err := writeWorkspaceInventory(env, workspaceInventory{Workspaces: []workspaceGrant{
+				{Path: workspace, Mode: workspaceModeReadOnly},
+			}}); err != nil {
+				t.Fatalf("write workspace inventory: %v", err)
+			}
+			env.lookupUser = func(name string) (*user.User, error) {
+				return &user.User{Uid: "988", Gid: "988", Username: name}, nil
+			}
+
+			actions := rollbackActions(tc.opts)
+			for i := len(actions) - 1; i >= 0; i-- {
+				a := actions[i]
+				if a.undo == nil {
+					continue
+				}
+				_ = a.undo(context.Background(), env)
+			}
+
+			if tc.assertOrdering {
+				revokeIndex, userdelIndex := -1, -1
+				for i, call := range runner.calls {
+					if call.name == testSetfaclCmd && revokeIndex == -1 {
+						revokeIndex = i
+					}
+					if call.name == testUserDel && userdelIndex == -1 {
+						userdelIndex = i
+					}
+				}
+				if revokeIndex == -1 || userdelIndex == -1 || revokeIndex > userdelIndex {
+					t.Fatalf("workspace ACL revoke must happen before userdel; calls=%+v", runner.calls)
+				}
+			}
+
+			_, statErr := os.Stat(env.workspaceInvPath)
+			if tc.wantInventory && statErr != nil {
+				t.Fatalf("inventory must be preserved with keep-data=true: %v", statErr)
+			}
+			if !tc.wantInventory && statErr == nil {
+				t.Fatalf("inventory must be removed with keep-data=false")
+			}
+		})
+	}
+}
+
+func TestRollbackActions_RevokesAncestorsForDeletedWorkspace(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "deleted")
+	if err := writeWorkspaceInventory(env, workspaceInventory{Workspaces: []workspaceGrant{
+		{Path: workspace, Mode: workspaceModeReadOnly},
+	}}); err != nil {
+		t.Fatalf("write workspace inventory: %v", err)
+	}
+	env.lookupUser = func(name string) (*user.User, error) {
+		return &user.User{Uid: "988", Gid: "988", Username: name}, nil
+	}
+
+	actions := rollbackActions(rollbackOpts{keepData: true})
+	for i := len(actions) - 1; i >= 0; i-- {
+		a := actions[i]
+		if a.undo == nil {
+			continue
+		}
+		_ = a.undo(context.Background(), env)
+	}
+
+	var ancestorCleanup bool
+	for _, call := range runner.calls {
+		if call.name == testSetfaclCmd && containsArg(call.args, parent) {
+			ancestorCleanup = true
+		}
+	}
+	if !ancestorCleanup {
+		t.Fatalf("rollback did not clean parent ACL for deleted workspace; calls=%+v", runner.calls)
+	}
+}
+
+func TestRollbackActions_FailsOnMalformedWorkspaceInventory(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := os.MkdirAll(filepath.Dir(env.workspaceInvPath), 0o750); err != nil {
+		t.Fatalf("mkdir inventory dir: %v", err)
+	}
+	if err := os.WriteFile(env.workspaceInvPath, []byte("{nope"), 0o600); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+	actions := rollbackActions(rollbackOpts{keepData: true})
+	for _, a := range actions {
+		if a.name == "revoke-workspace-acls" {
+			err := a.undo(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), "workspaces.json") {
+				t.Fatalf("err = %v, want malformed inventory failure", err)
+			}
+			return
+		}
+	}
+	t.Fatal("revoke-workspace-acls action not found")
+}
+
 func TestRollback_DryRunPrintsPlan(t *testing.T) {
 	actions := rollbackActions(rollbackOpts{keepData: true})
 	var buf bytes.Buffer

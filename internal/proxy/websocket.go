@@ -247,7 +247,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so header DLP findings on the same handshake don't get offset by early decay.
-	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result, cfg, log, true)
+	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:   clientIP,
+		Agent:      agent,
+		Hostname:   parsed.Hostname(),
+		RequestID:  requestID,
+		UserAgent:  r.UserAgent(),
+		Result:     result,
+		Config:     cfg,
+		Logger:     log,
+		DeferClean: true,
+	})
 	// wsHasFinding excludes IsAdaptiveNeutral (protective + infrastructure errors)
 	// so DNS resolver failures don't taint downstream "finding" behavior. Fail-closed
 	// enforcement still fires via !result.Allowed.
@@ -416,7 +426,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 		wsHasFinding = true
 		// Record session activity so adaptive enforcement sees header-DLP hits.
-		headerSR := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, scanner.Result{Allowed: false, Score: 0.9}, cfg, log, false)
+		headerSR := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+			ClientIP:   clientIP,
+			Agent:      agent,
+			Hostname:   parsed.Hostname(),
+			RequestID:  requestID,
+			UserAgent:  r.UserAgent(),
+			Result:     scanner.Result{Allowed: false, Score: 0.9},
+			Config:     cfg,
+			Logger:     log,
+			DeferClean: false,
+		})
 		if cfg.EnforceEnabled() {
 			log.LogWSBlocked(targetURL, audit.DirectionClientToServer, audit.ScannerDLP, reason, clientIP, requestID)
 			p.metrics.RecordWSBlocked()

@@ -490,6 +490,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		env := makeProbeEnv(t)
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
 		if gotStatus != statusPass {
@@ -523,9 +524,23 @@ func TestProbeWrapperScripts(t *testing.T) {
 		}
 	})
 
+	t.Run("meta wrapper missing", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
+		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
+		if gotStatus != statusFail {
+			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
+		}
+		if !strings.Contains(gotDetail, filepath.Join(env.wrapperDir, "plk")) {
+			t.Fatalf("detail: got %q, want plk meta wrapper", gotDetail)
+		}
+	})
+
 	t.Run("no tool wrappers", func(t *testing.T) {
 		env := makeProbeEnv(t)
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
 		if gotStatus != statusFail {
 			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
@@ -538,6 +553,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 	t.Run("tool wrapper wrong mode", func(t *testing.T) {
 		env := makeProbeEnv(t)
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o644)
 		gotStatus, gotDetail := probeWrapperScripts(context.Background(), env)
 		if gotStatus != statusFail {
@@ -553,6 +569,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
 		env.readFile = os.ReadFile
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-rustup"), 0o755)
 		body, err := json.Marshal(wrapperInventory{Wrappers: []string{"plk-rustup"}})
 		if err != nil {
@@ -576,6 +593,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
 		env.readFile = os.ReadFile
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		if err := os.WriteFile(env.wrapperInvPath, []byte("{"), 0o600); err != nil {
 			t.Fatalf("write inventory: %v", err)
 		}
@@ -594,6 +612,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
 		env.readFile = os.ReadFile
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		body, err := json.Marshal(wrapperInventory{Wrappers: []string{""}})
 		if err != nil {
 			t.Fatalf("marshal: %v", err)
@@ -616,6 +635,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
 		env.readFile = os.ReadFile
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		dirWrapper := filepath.Join(env.wrapperDir, "plk-dir")
 		if err := os.Mkdir(dirWrapper, 0o750); err != nil {
 			t.Fatalf("mkdir wrapper dir: %v", err)
@@ -642,6 +662,7 @@ func TestProbeWrapperScripts(t *testing.T) {
 		env.wrapperInvPath = filepath.Join(t.TempDir(), "wrappers.json")
 		env.readFile = os.ReadFile
 		writeFakeWrapper(t, env.launchPath, 0o755)
+		writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 		emptyWrapper := filepath.Join(env.wrapperDir, "plk-empty")
 		if err := os.WriteFile(emptyWrapper, nil, 0o755); err != nil { //nolint:gosec // executable mode mirrors production wrapper contract.
 			t.Fatalf("write empty wrapper: %v", err)
@@ -1499,6 +1520,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 
 	// Filesystem state for probes 4, 5, 7, 12.
 	writeFakeWrapper(t, env.launchPath, 0o755)
+	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk"), 0o755)
 	writeFakeWrapper(t, filepath.Join(env.wrapperDir, "plk-claude"), 0o755)
 	toolTarget := filepath.Join(t.TempDir(), "claude")
 	writeFakeWrapper(t, toolTarget, 0o755)
@@ -1543,8 +1565,8 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	case testSudoCmd:
 		// Probe 11: plk-launch allow-list probe invokes plk-launch with a
 		// sentinel tool name. Expect exit 5 = denial.
-		if containsArg(args, "plk-launch") || containsArg(args, "pipelock-probe-sentinel-not-a-real-tool") {
-			return "plk-launch: tool pipelock-probe-sentinel-not-a-real-tool not in pipelock contain allow-list", 5, nil
+		if containsArg(args, "plk-launch") || containsArg(args, probe11Sentinel) {
+			return "plk-launch: tool " + probe11Sentinel + " not in pipelock contain allow-list", 5, nil
 		}
 		// Either pipelock-agent (probe 8) or operator (probe 9). Match by argv.
 		if containsArg(args, testAgentUser) {

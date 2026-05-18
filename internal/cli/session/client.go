@@ -138,6 +138,33 @@ func (c *Client) Terminate(ctx context.Context, key string) (proxy.SessionTermin
 	return resp, nil
 }
 
+func (c *Client) AdaptiveStatus(ctx context.Context) (proxy.AdaptiveStatus, error) {
+	target := c.base + "/api/v1/adaptive/status"
+	var resp proxy.AdaptiveStatus
+	if err := c.do(ctx, http.MethodGet, target, nil, &resp); err != nil {
+		return proxy.AdaptiveStatus{}, err
+	}
+	return resp, nil
+}
+
+func (c *Client) AdaptiveFlush(ctx context.Context) (proxy.AdaptiveFlushResult, error) {
+	target := c.base + "/api/v1/adaptive/flush"
+	var resp proxy.AdaptiveFlushResult
+	if err := c.do(ctx, http.MethodPost, target, nil, &resp); err != nil {
+		return proxy.AdaptiveFlushResult{}, err
+	}
+	return resp, nil
+}
+
+func (c *Client) AdaptiveWhoami(ctx context.Context) (proxy.AdaptiveWhoami, error) {
+	target := c.base + "/api/v1/adaptive/whoami"
+	var resp proxy.AdaptiveWhoami
+	if err := c.do(ctx, http.MethodGet, target, nil, &resp); err != nil {
+		return proxy.AdaptiveWhoami{}, err
+	}
+	return resp, nil
+}
+
 // do performs the HTTP call with bearer auth, decodes the JSON response
 // into out, and returns a typed APIError for non-2xx statuses so the
 // caller can map each class to a distinct exit code.

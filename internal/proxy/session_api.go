@@ -83,6 +83,7 @@ const (
 	sessionAPIActionInspect   = "inspect"
 	sessionAPIActionExplain   = "explain"
 	sessionAPIActionTerminate = "terminate"
+	sessionAPIActionAdaptive  = "adaptive"
 )
 
 // tierNotQuarantinedReason is the explanation returned for sessions that
@@ -160,6 +161,7 @@ func NewSessionAPIHandler(opts SessionAPIOptions) *SessionAPIHandler {
 			sessionAPIActionInspect:   {windowStart: time.Now()},
 			sessionAPIActionExplain:   {windowStart: time.Now()},
 			sessionAPIActionTerminate: {windowStart: time.Now()},
+			sessionAPIActionAdaptive:  {windowStart: time.Now()},
 		},
 	}
 	// Seed the atomic token pointer from the constructor input. Stored via
@@ -1028,6 +1030,85 @@ func (h *SessionAPIHandler) HandleTerminate(w http.ResponseWriter, r *http.Reque
 		IPStateCleared:  ip != "",
 		CEEStateCleared: ceeCleared,
 	})
+}
+
+// HandleAdaptiveStatus handles GET /api/v1/adaptive/status.
+func (h *SessionAPIHandler) HandleAdaptiveStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+	clientIP, _ := requestMeta(r)
+	h.logSessionAdmin("adaptive_status", clientIP, "", "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sm.AdaptiveStatus())
+}
+
+// HandleAdaptiveFlush handles POST /api/v1/adaptive/flush.
+func (h *SessionAPIHandler) HandleAdaptiveFlush(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+	clientIP, _ := requestMeta(r)
+	if !h.checkRateLimit(sessionAPIActionAdaptive) {
+		h.logSessionAdmin("adaptive_flush_rate_limited", clientIP, "", "rate limit exceeded", http.StatusTooManyRequests)
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+	var empty struct{}
+	if err := decodeJSONBody(r, &empty); err != nil {
+		h.logSessionAdmin("adaptive_flush_bad_body", clientIP, "", err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	reset, skipped := sm.ResetAllIdentitySessions()
+	h.logSessionAdmin("adaptive_flush", clientIP, "", "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(AdaptiveFlushResult{
+		Flushed:              true,
+		IdentitySessions:     reset,
+		SkippedInvocations:   skipped,
+		IPDomainStateCleared: true,
+	})
+}
+
+// HandleAdaptiveWhoami handles GET /api/v1/adaptive/whoami.
+func (h *SessionAPIHandler) HandleAdaptiveWhoami(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authenticate(w, r) {
+		return
+	}
+	sm := h.loadManager(w)
+	if sm == nil {
+		return
+	}
+	clientIP, _ := requestMeta(r)
+	agent := strings.TrimSpace(r.Header.Get("X-Pipelock-Agent"))
+	h.logSessionAdmin("adaptive_whoami", clientIP, "", "ok", http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, agent))
 }
 
 // airlockCfgFromManager fetches the active airlock config from the manager

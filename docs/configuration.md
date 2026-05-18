@@ -160,7 +160,7 @@ tls_interception:
   ca_cert: ""                    # path to CA cert PEM (default: ~/.pipelock/ca.pem)
   ca_key: ""                     # path to CA key PEM (default: ~/.pipelock/ca-key.pem)
   passthrough_domains:           # domains to splice (not intercept)
-    - "*.anthropic.com"
+    - "*.googlevideo.com"
   cert_ttl: "24h"
   cert_cache_size: 10000
   max_response_bytes: 5242880    # 5MB; responses larger than this are blocked
@@ -171,7 +171,7 @@ tls_interception:
 | `enabled` | `false` | Enable TLS interception on CONNECT tunnels |
 | `ca_cert` | `""` | Path to CA certificate PEM. Empty resolves to `~/.pipelock/ca.pem` |
 | `ca_key` | `""` | Path to CA private key PEM. Empty resolves to `~/.pipelock/ca-key.pem` |
-| `passthrough_domains` | `[]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). |
+| `passthrough_domains` | `["*.googlevideo.com"]` | Domains to splice (pass through without interception). Supports `*.example.com` wildcards (also matches apex `example.com`). |
 | `cert_ttl` | `"24h"` | TTL for forged leaf certificates (Go duration string) |
 | `cert_cache_size` | `10000` | Max cached leaf certificates. Evicts oldest when full. |
 | `max_response_bytes` | `5242880` | Max response body to buffer for scanning. Responses exceeding this are blocked (fail-closed). |
@@ -791,6 +791,7 @@ adaptive_enforcement:
   enabled: true
   escalation_threshold: 5.0
   decay_per_clean_request: 0.5
+  cooperative_tool_downweight: true
   levels:
     elevated:
       upgrade_warn: block       # warn→block when session is elevated
@@ -808,6 +809,7 @@ adaptive_enforcement:
 | `enabled` | `false` | Enable adaptive enforcement |
 | `escalation_threshold` | `5.0` | Score before first escalation. Lower values escalate faster. |
 | `decay_per_clean_request` | `0.5` | Score reduction per clean request. Lower values slow trust recovery. |
+| `cooperative_tool_downweight` | `true` | Downweight domain-burst and IP-domain-burst adaptive signals from known cooperative tool user agents such as `yt-dlp`, package managers, `curl`, and `git`. |
 | `levels` | *(see below)* | Per-level enforcement upgrades |
 
 ### Escalation Levels
@@ -858,7 +860,7 @@ When a session is at a `block_all` level, blocked retries do not refresh the ses
 
 ### Domain Burst Scoring
 
-Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own.
+Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own. IP-wide domain bursts are tracked separately to catch agent-identity rotation from a single client IP. When `cooperative_tool_downweight` is enabled, burst signals from known cooperative tool user agents are reduced instead of scored at full browser-like weight.
 
 ## Kill Switch
 
@@ -918,6 +920,9 @@ When `kill_switch.api_token` is configured, the session admin API is available a
 | `/api/v1/sessions/{key}/airlock` | POST | Transition the session's airlock tier (admin override) |
 | `/api/v1/sessions/{key}/task` | POST | Rotate the session's task boundary |
 | `/api/v1/sessions/{key}/trust` | POST | Grant a task-scoped trust override |
+| `/api/v1/adaptive/status` | GET | Summarize adaptive state, escalation counts, recent event counts, and top anomalies |
+| `/api/v1/adaptive/flush` | POST | Reset identity-session adaptive state and clear shared IP-domain burst tracking |
+| `/api/v1/adaptive/whoami` | GET | Show the caller's client-IP/session classification as seen by the proxy |
 
 The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `my-agent%7C10.0.0.1`.
 
@@ -927,7 +932,7 @@ The `{key}` parameter is URL-encoded. For example, `my-agent|10.0.0.1` becomes `
 
 Sessions are classified as `identity` (operator-targetable, e.g. `my-agent|10.0.0.1`) or `invocation` (internal MCP sessions, e.g. `mcp-stdio-42`). Only identity sessions can be reset, mutated, or terminated.
 
-**Operator CLI:** the session admin API is also exposed through `pipelock session <subcommand>` for interactive recovery. See [cli/session.md](cli/session.md) for the full operator reference.
+**Operator CLI:** the session admin API is exposed through `pipelock session <subcommand>` for airlock recovery and `pipelock adaptive <subcommand>` for fleet-level adaptive state. See [cli/session.md](cli/session.md) and [cli/adaptive.md](cli/adaptive.md) for the operator references.
 
 **Token hot-reload:** `kill_switch.api_token` is hot-reloaded on SIGHUP or fsnotify config-file changes. Rotating the token in YAML (or via the `PIPELOCK_KILLSWITCH_API_TOKEN` env var, which wins over YAML) takes effect on the next admin API call without restarting the proxy. The previous bearer credential is revoked atomically: requests in flight at the moment of rotation complete against the token they were issued against; subsequent requests must present the new bearer. Setting `api_token` to the empty string disables the endpoint (HTTP 503) without tearing down the listener, so an operator can revoke access during an incident and restore it later with a second reload.
 
@@ -2219,9 +2224,15 @@ browser_shield:
   enabled: true
   strictness: standard
   max_shield_bytes: 5242880
-  oversize_action: block
+  oversize_action: scan_head
   exempt_domains:
     - challenges.cloudflare.com
+    - developer.mozilla.org
+    - docs.github.com
+    - github.dev
+    - go.dev
+    - pkg.go.dev
+    - vscode.dev
     - hcaptcha.com
     - www.recaptcha.net
   strip_extension_probing: true
@@ -2236,8 +2247,8 @@ browser_shield:
 | `enabled` | bool | `false` | Master switch for response rewriting |
 | `strictness` | string | `standard` | Rewrite posture: `minimal`, `standard`, or `aggressive` |
 | `max_shield_bytes` | int | `5242880` (5 MiB) | Maximum shieldable response body size before `oversize_action` applies |
-| `oversize_action` | string | `block` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
-| `exempt_domains` | []string | challenge providers | Hostnames that bypass Browser Shield entirely |
+| `oversize_action` | string | `scan_head` | Oversize behavior: `block`, `scan_head`, or `warn`; `warn` is only valid with `strictness: minimal` |
+| `exempt_domains` | []string | challenge providers plus common developer documentation/browser IDE hosts | Hostnames that bypass Browser Shield entirely |
 | `strip_extension_probing` | bool | `true` | Remove browser-extension probing URLs and runtime probes |
 | `strip_hidden_traps` | bool | `true` | Remove hidden prompt-trap DOM content |
 | `strip_tracking_pixels` | bool | `true` | Remove tracking pixels and beacon-style calls |
@@ -2250,12 +2261,13 @@ For production soak, start with:
 browser_shield:
   enabled: true
   strictness: minimal
-  oversize_action: warn
+  oversize_action: scan_head
 ```
 
 Then monitor shield receipts, response rewrite metrics, adaptive session score
 movement, block deltas, and application breakage before moving to the standard
-fail-closed posture.
+fail-closed posture. Use `oversize_action: warn` only for short, explicitly
+scoped diagnostics because it returns oversized shieldable bodies unchanged.
 
 ## Media Policy (v2.1)
 

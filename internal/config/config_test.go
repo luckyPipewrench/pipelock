@@ -10973,6 +10973,175 @@ func TestValidate_AdaptiveExemptDomainsNonPrefixWildcard(t *testing.T) {
 	}
 }
 
+func TestProductionTuningDefaults(t *testing.T) {
+	cfg := Defaults()
+	if cfg.BrowserShield.OversizeAction != ShieldOversizeScanHead {
+		t.Fatalf("browser_shield.oversize_action = %q, want %q", cfg.BrowserShield.OversizeAction, ShieldOversizeScanHead)
+	}
+	if !containsString(cfg.BrowserShield.ExemptDomains, "docs.github.com") {
+		t.Fatalf("browser_shield.exempt_domains missing docs.github.com: %v", cfg.BrowserShield.ExemptDomains)
+	}
+	if !containsString(cfg.TLSInterception.PassthroughDomains, "*.googlevideo.com") {
+		t.Fatalf("tls_interception.passthrough_domains missing *.googlevideo.com: %v", cfg.TLSInterception.PassthroughDomains)
+	}
+	if !cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("adaptive_enforcement.cooperative_tool_downweight default = false, want true")
+	}
+}
+
+func TestLoad_ProductionTuningDefaultsWhenOmitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	yaml := []byte(`mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+browser_shield:
+  enabled: true
+`)
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BrowserShield.OversizeAction != ShieldOversizeScanHead {
+		t.Fatalf("browser_shield.oversize_action = %q, want %q", cfg.BrowserShield.OversizeAction, ShieldOversizeScanHead)
+	}
+	if !cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("adaptive_enforcement.cooperative_tool_downweight omitted = false, want true")
+	}
+}
+
+func TestLoad_AdaptiveCooperativeDownweightExplicitFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	yaml := []byte(`mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  cooperative_tool_downweight: false
+`)
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("adaptive_enforcement.cooperative_tool_downweight explicit false was not preserved")
+	}
+}
+
+// TestLoad_AdaptiveCooperativeDownweightExplicitTrue confirms an operator
+// who explicitly sets the field to true is preserved (no normalize override).
+func TestLoad_AdaptiveCooperativeDownweightExplicitTrue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	yaml := []byte(`mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  cooperative_tool_downweight: true
+`)
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("adaptive_enforcement.cooperative_tool_downweight explicit true was not preserved")
+	}
+}
+
+// TestLoad_AdaptiveCooperativeDownweightYAMLNull covers the YAML null/blank
+// state — a section with the key explicitly set to ~. The setBoolDefault
+// helper treats nil as "omitted" and fails-open-to-default-true, mirroring
+// the established security-default pattern.
+func TestLoad_AdaptiveCooperativeDownweightYAMLNull(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	yaml := []byte(`mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  cooperative_tool_downweight: ~
+`)
+	if err := os.WriteFile(path, yaml, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("adaptive_enforcement.cooperative_tool_downweight=null should default to true, got false")
+	}
+}
+
+// TestLoad_AdaptiveCooperativeDownweightReloadFlips covers the hot-reload
+// states for the field: an initial load with explicit false, then a reload
+// that flips it back to true (with change), then a reload that re-applies
+// the same true value (no change). Each load is a fresh Load call, which
+// matches the runtime hot-reload path that re-parses the YAML and re-runs
+// applySecurityDefaults / ApplyDefaults on the new config before the
+// atomic.Pointer swap.
+func TestLoad_AdaptiveCooperativeDownweightReloadFlips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	writeYAML := func(value string) {
+		yaml := []byte(`mode: balanced
+session_profiling:
+  enabled: true
+adaptive_enforcement:
+  enabled: true
+  cooperative_tool_downweight: ` + value + "\n")
+		if err := os.WriteFile(path, yaml, 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	writeYAML("false")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(false): %v", err)
+	}
+	if cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("first load with explicit false should preserve false")
+	}
+
+	// Reload with change: flip to true.
+	writeYAML("true")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load(true): %v", err)
+	}
+	if !cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("reload with explicit true should preserve true (reload-with-change)")
+	}
+
+	// Reload without change: same true value should remain true.
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load(true) second: %v", err)
+	}
+	if !cfg.AdaptiveEnforcement.CooperativeToolDownweight {
+		t.Fatal("idempotent reload with explicit true should preserve true (reload-without-change)")
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 // adaptiveTestConfig returns a minimal config with adaptive enforcement
 // enabled, suitable for validation tests.
 func adaptiveTestConfig() *Config {

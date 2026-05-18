@@ -112,6 +112,7 @@ type probeEnv struct {
 	pinPath        string
 	wrapperInvPath string
 	toolsListPath  string
+	workspacePaths []string
 
 	runCmd     runCommand
 	dialCtx    dialFunc
@@ -241,6 +242,52 @@ func allProbes() []probe {
 	}
 }
 
+func probesForEnv(env *probeEnv) []probe {
+	probes := allProbes()
+	if len(env.workspacePaths) > 0 {
+		probes = append(probes, probe{13, "workspace_access", "pipelock-agent can read configured workspace paths", probeWorkspaceAccess})
+	}
+	return probes
+}
+
+func probeWorkspaceAccess(ctx context.Context, env *probeEnv) (string, string) {
+	var bad []string
+	for _, path := range env.workspacePaths {
+		clean, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s resolve: %v", path, err))
+			continue
+		}
+		info, err := env.stat(clean)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s stat: %v", clean, err))
+			continue
+		}
+		args := []string{"-n", "-u", env.agentUserName, "--", "test", "-r", clean}
+		if info.IsDir() {
+			args = []string{"-n", "-u", env.agentUserName, "--", "test", "-r", clean, "-a", "-x", clean}
+		}
+		out, code, err := env.runCmd(ctx, "sudo", args...)
+		if err != nil {
+			bad = append(bad, fmt.Sprintf("%s check failed: %v", clean, err))
+			continue
+		}
+		if isSudoUserMissing(out) {
+			return statusSkip, "pipelock-agent user missing (install never ran)"
+		}
+		if isSudoRefusal(out) {
+			return statusSkip, "sudo -n refused (no NOPASSWD rule for operator -> pipelock-agent)"
+		}
+		if code != 0 {
+			bad = append(bad, fmt.Sprintf("%s not readable/traversable by %s: %s", clean, env.agentUserName, oneLine(out)))
+		}
+	}
+	if len(bad) > 0 {
+		return statusFail, strings.Join(bad, "; ")
+	}
+	return statusPass, fmt.Sprintf("%d workspace path(s) readable by %s", len(env.workspacePaths), env.agentUserName)
+}
+
 func probeListedToolTargets(_ context.Context, env *probeEnv) (string, string) {
 	data, err := env.readFile(env.toolsListPath)
 	if err != nil {
@@ -330,7 +377,10 @@ func resolveToolInPath(env *probeEnv, name, pathList string) (string, bool) {
 //   - 5  tool not in allow-list — PASS
 //   - 6  in allow-list but PATH lookup failed — unexpected
 func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string) {
-	const sentinelTool = "pipelock-probe-sentinel-not-a-real-tool"
+	// Sentinel must satisfy containToolNameRegex (max 31 chars) so plk-launch
+	// reaches the allow-list rejection path (exit 5) instead of the up-front
+	// name regex (exit 3). "not-a-real-tool" suffix preserves operator intent.
+	const sentinelTool = "pipelock-probe-sentinel-tool"
 
 	out, code, err := env.runCmd(ctx, "sudo", "-n", "-u", env.agentUserName, "--",
 		env.launchPath, sentinelTool)
@@ -432,8 +482,9 @@ type aggregateBody struct {
 
 // verifyOpts collects all flag-derived state for runVerify.
 type verifyOpts struct {
-	jsonOutput bool
-	port       int
+	jsonOutput     bool
+	port           int
+	workspacePaths []string
 }
 
 func verifyCmd() *cobra.Command {
@@ -451,7 +502,9 @@ policy, run two egress canaries (pipelock-agent must NOT reach the internet
 directly; the operator user must still reach the internet), verify the
 installed binary matches the TOFU integrity pin written at install
 time, and exercise plk-launch end-to-end with a sentinel tool to confirm
-the allow-list enforcement path actually fires.
+the allow-list enforcement path actually fires. Pass --workspace to also
+verify that pipelock-agent can read/traverse real project directories before
+making plk wrappers the default entry point.
 
 verify never mutates state. Probes that require root visibility
 (nft list ruleset) record skip when run unprivileged.
@@ -470,12 +523,14 @@ Exit codes:
 			}
 			env := defaultProbeEnv()
 			env.port = opts.port
+			env.workspacePaths = append([]string(nil), opts.workspacePaths...)
 			return runVerify(cmd, env, opts)
 		},
 	}
 
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit newline-delimited JSON instead of text")
 	cmd.Flags().IntVar(&opts.port, "port", defaultProxyPort, "pipelock listen port to probe on loopback")
+	cmd.Flags().StringArrayVar(&opts.workspacePaths, "workspace", nil, "workspace path that pipelock-agent must be able to read/traverse (repeatable)")
 
 	return cmd
 }
@@ -503,7 +558,7 @@ func runVerify(cmd *cobra.Command, env *probeEnv, opts verifyOpts) error {
 		_, _ = fmt.Fprintln(w, "pipelock contain verify")
 	}
 
-	probes := allProbes()
+	probes := probesForEnv(env)
 	var passN, failN, skipN int
 
 	for _, p := range probes {
@@ -815,6 +870,19 @@ func probeWrapperScripts(_ context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("%s has perm 0o%03o, want 0o755", env.launchPath, mode)
 	}
 
+	metaPath := filepath.Join(env.wrapperDir, "plk")
+	info, err = os.Stat(filepath.Clean(metaPath))
+	if err != nil {
+		return statusFail, fmt.Sprintf("%s missing: %v", metaPath, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return statusFail, fmt.Sprintf("%s is not a non-empty executable wrapper file", metaPath)
+	}
+	mode = info.Mode().Perm()
+	if mode != 0o755 {
+		return statusFail, fmt.Sprintf("%s has perm 0o%03o, want 0o755", metaPath, mode)
+	}
+
 	wrappers, err := wrappersForVerify(env)
 	if err != nil {
 		return statusFail, err.Error()
@@ -845,7 +913,7 @@ func probeWrapperScripts(_ context.Context, env *probeEnv) (string, string) {
 		return statusFail, fmt.Sprintf("no tool wrappers found in %s (expected one of %v)",
 			env.wrapperDir, wrappers)
 	}
-	return statusPass, fmt.Sprintf("plk-launch + %d tool wrapper(s): %s",
+	return statusPass, fmt.Sprintf("plk + plk-launch + %d tool wrapper(s): %s",
 		len(foundNames), strings.Join(foundNames, ","))
 }
 

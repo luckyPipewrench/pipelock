@@ -38,6 +38,12 @@ func (m *Metrics) registerShieldMetrics(reg *prometheus.Registry) {
 		Help:      "Total shield processing skips by reason.",
 	}, []string{"reason"})
 
+	m.shieldOversizeScanHead = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "shield_oversize_scan_head_total",
+		Help:      "Oversized shieldable responses handled with scan_head by transport.",
+	}, []string{"transport"})
+
 	m.shieldLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: "pipelock",
 		Name:      "shield_latency_seconds",
@@ -53,7 +59,7 @@ func (m *Metrics) registerShieldMetrics(reg *prometheus.Registry) {
 
 	reg.MustRegister(
 		m.shieldRewrites, m.shieldBytesStripped, m.shieldShimsInjected,
-		m.shieldSkipped, m.shieldLatency,
+		m.shieldSkipped, m.shieldOversizeScanHead, m.shieldLatency,
 		m.responseScanExemptTotal,
 	)
 }
@@ -88,6 +94,14 @@ func (m *Metrics) RecordShieldSkipped(reason string) {
 		return
 	}
 	m.shieldSkipped.WithLabelValues(reason).Inc()
+}
+
+// RecordShieldOversizeScanHead increments the oversize scan_head counter.
+func (m *Metrics) RecordShieldOversizeScanHead(transport string) {
+	if m == nil {
+		return
+	}
+	m.shieldOversizeScanHead.WithLabelValues(transport).Inc()
 }
 
 // RecordShieldLatency observes shield rewriting latency.

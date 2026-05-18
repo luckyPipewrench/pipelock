@@ -1905,10 +1905,51 @@ func newTLSInterceptTransport(
 // scan result; the caller is responsible for calling it after all scanning is
 // complete (fetch uses this to avoid decaying score before header DLP, CEE, and
 // response scanning have run).
+// recordSessionActivity is a backward-compat wrapper for callers (currently
+// only tests) that don't carry a User-Agent. Production handlers should call
+// recordSessionActivityWithUserAgent directly so cooperative-tool burst
+// downweighting can fire. The wrapper drops the SessionResult return because
+// no existing caller captures it; if a future caller needs the result, switch
+// to the full function rather than widening this wrapper.
+func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, result scanner.Result, cfg *config.Config, log *audit.Logger, deferClean bool) {
+	p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:   clientIP,
+		Agent:      agent,
+		Hostname:   hostname,
+		RequestID:  requestID,
+		Result:     result,
+		Config:     cfg,
+		Logger:     log,
+		DeferClean: deferClean,
+	})
+}
+
+type sessionActivityOptions struct {
+	ClientIP   string
+	Agent      string
+	Hostname   string
+	RequestID  string
+	UserAgent  string
+	Result     scanner.Result
+	Config     *config.Config
+	Logger     *audit.Logger
+	DeferClean bool
+}
+
 // Returns a SessionResult with Blocked set when the request should be rejected
 // due to a session anomaly in block mode, and Level set to the current
 // escalation level for downstream use by UpgradeAction().
-func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID string, result scanner.Result, cfg *config.Config, log *audit.Logger, deferClean bool) SessionResult {
+func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) SessionResult {
+	clientIP := opts.ClientIP
+	agent := opts.Agent
+	hostname := opts.Hostname
+	requestID := opts.RequestID
+	userAgent := opts.UserAgent
+	result := opts.Result
+	cfg := opts.Config
+	log := opts.Logger
+	deferClean := opts.DeferClean
+
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil || !cfg.SessionProfiling.Enabled {
 		return SessionResult{}
@@ -1947,9 +1988,11 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 	// slam SetTier(drain) again, and the loop never broke. See
 	// TestAirlockEdgeTrigger_NoPlateauReentry.
 	escalated := false
+	var adaptiveCfg config.AdaptiveEnforcement
+	var ep decide.EscalationParams
 	if cfg.AdaptiveEnforcement.Enabled {
-		adaptiveCfg := cfg.AdaptiveEnforcement
-		ep := decide.EscalationParams{
+		adaptiveCfg = cfg.AdaptiveEnforcement
+		ep = decide.EscalationParams{
 			Threshold: adaptiveCfg.EscalationThreshold,
 			Logger:    log,
 			Metrics:   p.metrics,
@@ -1989,6 +2032,20 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 			// request lifecycle (fetch), so that later scanning stages (header
 			// DLP, CEE, response) can still raise a finding before decay fires.
 			sess.RecordClean(adaptiveCfg.DecayPerCleanRequest)
+		}
+	}
+
+	if cfg.AdaptiveEnforcement.Enabled && !result.IsAdaptiveNeutral() && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
+		cooperativeBurst := cfg.AdaptiveEnforcement.CooperativeToolDownweight && isCooperativeToolBurstUserAgent(userAgent)
+		for _, a := range anomalies {
+			sig, ok := signalForSessionAnomaly(a.Type, cooperativeBurst)
+			if !ok || a.Score <= 0 {
+				continue
+			}
+			if decide.RecordSignal(sess, sig, ep) {
+				escalated = true
+				sess.SetBlockAll(decide.UpgradeAction("", sess.EscalationLevel(), &adaptiveCfg) == config.ActionBlock)
+			}
 		}
 	}
 
@@ -2036,6 +2093,7 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 
 		sess.RecordEvent(SessionEvent{
 			Kind:     "anomaly",
+			Type:     a.Type,
 			Target:   hostname,
 			Detail:   a.Detail,
 			Severity: "warn",
@@ -2103,6 +2161,7 @@ func (p *Proxy) applyShield(body []byte, contentType, hostname string, respHeade
 		p.metrics.RecordShieldSkipped("oversize")
 		switch cfg.BrowserShield.OversizeAction {
 		case config.ShieldOversizeScanHead:
+			p.metrics.RecordShieldOversizeScanHead(transport)
 			// Rewrite only the head; append the unshielded tail so the full
 			// response body is returned intact.
 			head, summary := p.runShieldPipelineResult(body[:cfg.BrowserShield.MaxShieldBytes], contentType, respHeaders, &cfg.BrowserShield, p.metrics, actx, clientIP, requestID, transport)
@@ -2607,6 +2666,9 @@ func (p *Proxy) buildMux() *http.ServeMux {
 	}
 	// Register session admin API routes only when NOT on a separate port.
 	if p.sessionAPI != nil && cfg.KillSwitch.APIListen == "" {
+		mux.HandleFunc("/api/v1/adaptive/status", p.sessionAPI.HandleAdaptiveStatus)
+		mux.HandleFunc("/api/v1/adaptive/flush", p.sessionAPI.HandleAdaptiveFlush)
+		mux.HandleFunc("/api/v1/adaptive/whoami", p.sessionAPI.HandleAdaptiveWhoami)
 		mux.HandleFunc("/api/v1/sessions", p.sessionAPI.HandleList)
 		mux.HandleFunc("/api/v1/sessions/", p.sessionAPIRouter)
 	}
@@ -2896,7 +2958,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// so RecordClean is NOT applied inside recordSessionActivity: header DLP,
 	// CEE, and response scanning may still find something after this point, and
 	// a clean decay before those stages would incorrectly counteract a later signal.
-	sr := p.recordSessionActivity(clientIP, agent, parsed.Hostname(), requestID, result, cfg, log, true)
+	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
+		ClientIP:   clientIP,
+		Agent:      agent,
+		Hostname:   parsed.Hostname(),
+		RequestID:  requestID,
+		UserAgent:  r.UserAgent(),
+		Result:     result,
+		Config:     cfg,
+		Logger:     log,
+		DeferClean: true,
+	})
 
 	// Look up the live session recorder for Fix 4+5: use EscalationLevel() at
 	// each enforcement point (not the snapshot in sr.Level) so mid-request CEE

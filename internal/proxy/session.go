@@ -1290,6 +1290,12 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 	if status.MaxEscalationLevel == "" {
 		status.MaxEscalationLevel = session.EscalationLabel(0)
 	}
+	sort.SliceStable(status.Sessions, func(i, j int) bool {
+		if status.Sessions[i].Kind != status.Sessions[j].Kind {
+			return status.Sessions[i].Kind < status.Sessions[j].Kind
+		}
+		return status.Sessions[i].Key < status.Sessions[j].Key
+	})
 	status.TopAnomalies = topAdaptiveAnomalies(anomalyCounts)
 	return status
 }

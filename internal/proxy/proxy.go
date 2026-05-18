@@ -2004,7 +2004,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(clientIP, agent, hostname, re
 		}
 	}
 
-	if cfg.AdaptiveEnforcement.Enabled && !result.IsAdaptiveNeutral() {
+	if cfg.AdaptiveEnforcement.Enabled && !result.IsAdaptiveNeutral() && !isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains) {
 		cooperativeBurst := cfg.AdaptiveEnforcement.CooperativeToolDownweight && isCooperativeToolBurstUserAgent(userAgent)
 		for _, a := range anomalies {
 			sig, ok := signalForSessionAnomaly(a.Type, cooperativeBurst)

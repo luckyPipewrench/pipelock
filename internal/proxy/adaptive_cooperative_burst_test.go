@@ -101,6 +101,26 @@ func TestAdaptiveCooperativeDownweightCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestAdaptiveExemptDomainBurstDoesNotScore(t *testing.T) {
+	t.Parallel()
+	cfg := cooperativeBurstTestConfig()
+	cfg.AdaptiveEnforcement.ExemptDomains = []string{"www.youtube.com", "youtubei.googleapis.com"}
+	p := newTestProxyWithConfig(t, cfg)
+	logger := audit.NewNop()
+	clientIP := adaptiveSessionKeyLoopback
+
+	p.recordSessionActivityWithUserAgent(clientIP, agentAnonymous, "www.youtube.com", "req-1", "Mozilla/5.0", scanner.Result{Allowed: true}, cfg, logger, true)
+	p.recordSessionActivityWithUserAgent(clientIP, agentAnonymous, "youtubei.googleapis.com", "req-2", "Mozilla/5.0", scanner.Result{Allowed: true}, cfg, logger, true)
+
+	rec := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
+	if rec.ThreatScore() != 0 {
+		t.Fatalf("adaptive-exempt burst scored %.2f, want 0", rec.ThreatScore())
+	}
+	if rec.EscalationLevel() != 0 {
+		t.Fatalf("adaptive-exempt burst escalated to level %d", rec.EscalationLevel())
+	}
+}
+
 func cooperativeBurstTestConfig() *config.Config {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -117,5 +137,7 @@ func cooperativeBurstTestConfig() *config.Config {
 	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
 	cfg.AdaptiveEnforcement.CooperativeToolDownweight = true
 	cfg.ApplyDefaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	return cfg
 }

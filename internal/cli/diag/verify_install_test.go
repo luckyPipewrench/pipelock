@@ -51,7 +51,7 @@ func TestVerifyInstallCmd_AllPass(t *testing.T) {
 	}
 	out := buf.String()
 
-	// All 7 scanning checks should pass.
+	// All scanning and local proof checks should pass.
 	if !strings.Contains(out, "Scanning: verified") {
 		t.Errorf("expected 'Scanning: verified' in output:\n%s", out)
 	}
@@ -61,8 +61,8 @@ func TestVerifyInstallCmd_AllPass(t *testing.T) {
 		if !strings.Contains(out, "Containment: unknown") {
 			t.Errorf("expected 'Containment: unknown' in output:\n%s", out)
 		}
-		if !strings.Contains(out, "7/10 passed") {
-			t.Errorf("expected '7/10 passed' in output:\n%s", out)
+		if !strings.Contains(out, "11/14 passed") {
+			t.Errorf("expected '11/14 passed' in output:\n%s", out)
 		}
 		if !strings.Contains(out, "3 not applicable") {
 			t.Errorf("expected '3 not applicable' in output:\n%s", out)
@@ -95,8 +95,8 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	if report.RunContext != ctx {
 		t.Errorf("expected %s context, got %s", ctx, report.RunContext)
 	}
-	if len(report.Checks) != 10 {
-		t.Errorf("expected 10 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 14 {
+		t.Errorf("expected 14 checks, got %d", len(report.Checks))
 	}
 
 	// Scanning should always be verified with defaults.
@@ -108,8 +108,8 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	}
 
 	if ctx == cliutil.RunContextHost {
-		if report.Summary.Passed != 7 {
-			t.Errorf("expected 7 passed on host, got %d", report.Summary.Passed)
+		if report.Summary.Passed != 11 {
+			t.Errorf("expected 11 passed on host, got %d", report.Summary.Passed)
 		}
 		if report.Summary.NotApplicable != 3 {
 			t.Errorf("expected 3 not_applicable on host, got %d", report.Summary.NotApplicable)
@@ -118,9 +118,9 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 			t.Errorf("expected containment=unknown on host, got %s", report.Summary.Containment)
 		}
 	} else {
-		// In container/pod: at least 7 scanning checks pass.
-		if report.Summary.Passed < 7 {
-			t.Errorf("expected at least 7 passed, got %d", report.Summary.Passed)
+		// In container/pod: at least 11 scanning checks pass.
+		if report.Summary.Passed < 11 {
+			t.Errorf("expected at least 11 passed, got %d", report.Summary.Passed)
 		}
 	}
 
@@ -132,11 +132,18 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	expected := []string{
 		"config_valid", "proxy_health", "fetch_dlp", "forward_blocked",
 		"scanning_dlp", "scanning_injection", "scanning_policy",
+		"browser_shield", "file_sentry", "mcp_binary_integrity_smoke",
+		"mcp_tool_provenance_smoke",
 		"no_direct_http", "no_direct_dns", "no_direct_https",
 	}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing check %q in report", name)
+		}
+	}
+	for _, check := range report.Checks {
+		if check.Name == "fetch_dlp" && !strings.Contains(check.Evidence["reason"], "DLP match") {
+			t.Errorf("fetch_dlp reason = %q, want DLP match evidence", check.Evidence["reason"])
 		}
 	}
 }
@@ -191,7 +198,11 @@ mcp_input_scanning:
 			failedNames[c.Name] = true
 		}
 	}
-	for _, name := range []string{"forward_blocked", "scanning_dlp", "scanning_injection", "scanning_policy"} {
+	for _, name := range []string{
+		"forward_blocked", "scanning_dlp", "scanning_injection",
+		"scanning_policy", "browser_shield", "file_sentry",
+		"mcp_binary_integrity_smoke", "mcp_tool_provenance_smoke",
+	} {
 		if !failedNames[name] {
 			t.Errorf("expected %q to fail with weak config", name)
 		}
@@ -235,8 +246,8 @@ func TestVerifyInstallCmd_OutputFile(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("invalid JSON in output file: %v", err)
 	}
-	if len(report.Checks) != 10 {
-		t.Errorf("expected 10 checks in file, got %d", len(report.Checks))
+	if len(report.Checks) != 14 {
+		t.Errorf("expected 14 checks in file, got %d", len(report.Checks))
 	}
 }
 
@@ -512,6 +523,11 @@ func testScanEnv(t *testing.T) *VerifyEnv {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.MCPInputScanning.Enabled = true
 	cfg.MCPInputScanning.Action = config.ActionBlock
+	cleanup, err := EnableDefaultVerifyProofs(cfg)
+	if err != nil {
+		t.Fatalf("EnableDefaultVerifyProofs: %v", err)
+	}
+	t.Cleanup(cleanup)
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
 	pc := policy.New(cfg.MCPToolPolicy)
@@ -614,6 +630,114 @@ func TestCheckScanningPolicy_Disabled(t *testing.T) {
 	r := checkScanningPolicy(env)
 	if r.Status != verifyStatusFail {
 		t.Errorf("expected fail for disabled tool policy, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckBrowserShield_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.BrowserShield.Enabled = false
+	r := checkBrowserShield(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled Browser Shield, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckBrowserShield_Pass(t *testing.T) {
+	env := testScanEnv(t)
+	r := checkBrowserShield(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass for Browser Shield, got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["extension_hits"] == "0" || r.Evidence["tracking_hits"] == "0" || r.Evidence["trap_hits"] == "0" {
+		t.Errorf("expected Browser Shield hit evidence, got %+v", r.Evidence)
+	}
+}
+
+func TestCheckFileSentry_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.FileSentry.Enabled = false
+	r := checkFileSentry(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled file_sentry, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckFileSentry_ScanContentDisabled(t *testing.T) {
+	env := testScanEnv(t)
+	disabled := false
+	env.Cfg.FileSentry.ScanContent = &disabled
+	r := checkFileSentry(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled file_sentry.scan_content, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckFileSentry_Pass(t *testing.T) {
+	env := testScanEnv(t)
+	r := checkFileSentry(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass for file_sentry, got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["pattern"] == "" {
+		t.Errorf("expected file_sentry pattern evidence, got %+v", r.Evidence)
+	}
+}
+
+func TestCheckMCPBinaryIntegrity_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.MCPBinaryIntegrity.Enabled = false
+	r := checkMCPBinaryIntegrity(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled MCP binary integrity, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckMCPBinaryIntegrity_BadManifest(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.MCPBinaryIntegrity.ManifestPath = filepath.Join(t.TempDir(), "missing.json")
+	r := checkMCPBinaryIntegrity(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for missing MCP integrity manifest, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckMCPBinaryIntegrity_Pass(t *testing.T) {
+	env := testScanEnv(t)
+	r := checkMCPBinaryIntegrity(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass for MCP binary integrity smoke, got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["manifest_entries"] == "" || r.Evidence["hash_prefix"] == "" {
+		t.Errorf("expected MCP binary integrity evidence, got %+v", r.Evidence)
+	}
+}
+
+func TestCheckMCPToolProvenance_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.MCPToolProvenance.Enabled = false
+	r := checkMCPToolProvenance(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled MCP tool provenance, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckMCPToolProvenance_UnsupportedMode(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.MCPToolProvenance.Mode = config.ProvenanceModeSigstore
+	r := checkMCPToolProvenance(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for unsupported provenance smoke mode, got %s: %s", r.Status, r.Detail)
+	}
+}
+
+func TestCheckMCPToolProvenance_Pass(t *testing.T) {
+	env := testScanEnv(t)
+	r := checkMCPToolProvenance(env)
+	if r.Status != verifyStatusPass {
+		t.Errorf("expected pass for MCP tool provenance, got %s: %s", r.Status, r.Detail)
+	}
+	if r.Evidence["status"] != "verified" {
+		t.Errorf("expected verified provenance evidence, got %+v", r.Evidence)
 	}
 }
 

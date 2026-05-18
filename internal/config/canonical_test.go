@@ -246,6 +246,16 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 			mut:  func(c *Config) { c.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"} },
 		},
 		{
+			name: "mcp_binary_integrity.signature_required",
+			mut: func(c *Config) {
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = "/var/lib/pipelock/mcp-integrity.json"
+				c.MCPBinaryIntegrity.Action = ActionBlock
+				c.MCPBinaryIntegrity.RequireSignature = true
+				c.MCPBinaryIntegrity.TrustedSigner = "release"
+			},
+		},
+		{
 			name: "forward_proxy.sni_verification disabled",
 			mut: func(c *Config) {
 				f := false

@@ -114,7 +114,13 @@ func LoadManifest(path string) (*Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading manifest: %w", err)
 	}
+	return ParseManifest(data)
+}
 
+// ParseManifest unmarshals an in-memory manifest blob. Useful for callers
+// that have already read the bytes (e.g. after signature verification) and
+// must avoid a re-read TOCTOU window.
+func ParseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
@@ -179,13 +185,14 @@ func SaveManifest(path string, m *Manifest) error {
 	return nil
 }
 
-// Verify resolves the command binary path, hashes the file, and checks
-// against the manifest. For interpreters it hashes both the interpreter
-// and the script. Returns a VerifyResult describing the outcome.
+// Resolve resolves the command binary path and hashes the file. For
+// interpreters it hashes both the interpreter and the script. It does not
+// compare against a manifest; callers that are building a manifest can use
+// this without manufacturing an empty verification policy.
 //
-// agentWorkDir, when non-empty, triggers suspicious-path detection:
-// a resolved binary inside the agent's working directory is flagged.
-func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, error) {
+// workDir, when non-empty, is used for suspicious-path detection and for
+// resolving relative script arguments the same way the subprocess cwd will.
+func Resolve(command []string, workDir string) (*VerifyResult, error) {
 	if len(command) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
@@ -200,8 +207,8 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 	result.ResolvedPath = resolved
 
 	// Check if binary is inside the agent working directory.
-	if agentWorkDir != "" {
-		result.Suspicious = isInsideDir(resolved, agentWorkDir)
+	if workDir != "" {
+		result.Suspicious = isInsideDir(resolved, workDir)
 	}
 
 	// Hash the binary via fd (mitigates read-after-open races but not
@@ -247,7 +254,7 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 
 			// Hash the script argument (first arg after interpreter) if present.
 			if len(remaining) > 1 {
-				scriptPath, scriptHash, shebangErr := hashScript(remaining[1], agentWorkDir)
+				scriptPath, scriptHash, shebangErr := hashScript(remaining[1], workDir)
 				if shebangErr != nil {
 					return nil, fmt.Errorf("hashing script %q: %w", remaining[1], shebangErr)
 				}
@@ -257,7 +264,7 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 		}
 	} else if result.IsInterpreter && len(command) > 1 {
 		// Standard interpreter invocation: hash the script argument.
-		scriptPath, scriptHash, shebangErr := hashScript(command[1], agentWorkDir)
+		scriptPath, scriptHash, shebangErr := hashScript(command[1], workDir)
 		if shebangErr != nil {
 			return nil, fmt.Errorf("hashing script %q: %w", command[1], shebangErr)
 		}
@@ -288,8 +295,23 @@ func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, 
 		}
 	}
 
+	return result, nil
+}
+
+// Verify resolves the command binary path, hashes the file, and checks
+// against the manifest. For interpreters it hashes both the interpreter
+// and the script. Returns a VerifyResult describing the outcome.
+//
+// agentWorkDir, when non-empty, triggers suspicious-path detection:
+// a resolved binary inside the agent's working directory is flagged.
+func Verify(command []string, cfg *Config, agentWorkDir string) (*VerifyResult, error) {
+	result, err := Resolve(command, agentWorkDir)
+	if err != nil {
+		return nil, err
+	}
+
 	// Verify against manifest. Fail-closed: no manifest = not verified.
-	if cfg.Manifests == nil {
+	if cfg == nil || cfg.Manifests == nil {
 		result.Verified = false
 		result.Reason = "no manifest loaded"
 		result.Reasons = append(result.Reasons, "no manifest loaded")

@@ -49,24 +49,35 @@ func SignFile(path string, privKey ed25519.PrivateKey) ([]byte, error) {
 // VerifyFile reads a file and its detached signature, verifying against pubKey.
 // If sigPath is empty, it defaults to path + SigExtension.
 func VerifyFile(path, sigPath string, pubKey ed25519.PublicKey) error {
+	_, err := LoadAndVerifyFile(path, sigPath, pubKey)
+	return err
+}
+
+// LoadAndVerifyFile reads a file and its detached signature, verifies the
+// signature against pubKey, and returns the bytes that were verified.
+// Callers that intend to parse the file after verifying should use the
+// returned bytes rather than re-reading from disk: re-reading opens a
+// TOCTOU window where the file can be replaced between sig verify and
+// parse. If sigPath is empty, it defaults to path + SigExtension.
+func LoadAndVerifyFile(path, sigPath string, pubKey ed25519.PublicKey) ([]byte, error) {
 	if sigPath == "" {
 		sigPath = path + SigExtension
 	}
 
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return fmt.Errorf("reading file to verify: %w", err)
+		return nil, fmt.Errorf("reading file to verify: %w", err)
 	}
 
 	sig, err := LoadSignature(sigPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if !ed25519.Verify(pubKey, data, sig) {
-		return fmt.Errorf("signature verification failed")
+		return nil, fmt.Errorf("signature verification failed")
 	}
-	return nil
+	return data, nil
 }
 
 // SaveSignature writes a base64-encoded signature to a .sig file.

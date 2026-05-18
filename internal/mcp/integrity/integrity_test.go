@@ -803,6 +803,38 @@ func TestCheckSymlinkRace_BinaryRemoved(t *testing.T) {
 
 // --- ResolveAndHash Tests ---
 
+func TestResolve_InterpreterWithScriptNoManifestPolicy(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("test uses POSIX shell command")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "server.sh")
+	if err := os.WriteFile(script, []byte("echo mcp\n"), 0o600); err != nil {
+		t.Fatalf("writing script: %v", err)
+	}
+
+	result, err := Resolve([]string{"sh", "server.sh"}, dir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if result.ResolvedPath == "" || result.ActualHash == "" {
+		t.Fatalf("Resolve should hash the interpreter: %+v", result)
+	}
+	resolvedScript, err := filepath.EvalSymlinks(script)
+	if err != nil {
+		t.Fatalf("resolving script: %v", err)
+	}
+	if result.ScriptPath != resolvedScript {
+		t.Fatalf("ScriptPath = %q, want %q", result.ScriptPath, resolvedScript)
+	}
+	if result.ScriptHash == "" {
+		t.Fatalf("Resolve should hash the script: %+v", result)
+	}
+	if result.Verified || result.Reason != "" || len(result.Reasons) != 0 {
+		t.Fatalf("Resolve should not perform manifest verification: %+v", result)
+	}
+}
+
 func TestResolveAndHash_ValidBinary(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")

@@ -1605,6 +1605,9 @@ func (c *Config) validateMCPBinaryIntegrity() error {
 	if c.MCPBinaryIntegrity.ManifestPath == "" {
 		return fmt.Errorf("mcp_binary_integrity.manifest_path is required when enabled")
 	}
+	if c.MCPBinaryIntegrity.RequireSignature && c.MCPBinaryIntegrity.TrustedSigner == "" {
+		return fmt.Errorf("mcp_binary_integrity.trusted_signer is required when require_signature is true")
+	}
 	switch c.MCPBinaryIntegrity.Action {
 	case ActionWarn, ActionBlock:
 		// valid

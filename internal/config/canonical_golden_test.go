@@ -86,7 +86,10 @@ const (
 	// Re-bumped to include the effective session-profiling defaults in
 	// Defaults() itself, so programmatic enablement gets the same domain
 	// burst/window/volume baselines as YAML-loaded configs.
-	goldenHashDefaults = "0bee03ac400bdca8104e0e4dc4921516580c25f471d848fbfa154a85c8963888"
+	// Re-bumped for signed MCP binary-integrity manifests:
+	// mcp_binary_integrity now carries signature trust settings that can
+	// make runtime launch fail closed before any MCP traffic is handled.
+	goldenHashDefaults = "f3f79a671fc28e0c2378865cc86d9c4f24aafee24f68bd6fff38daf170c25cd7"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -119,7 +122,9 @@ const (
 	// lockstep.
 	// Re-bumped for production-readiness tuning: see
 	// goldenHashDefaults note.
-	goldenHashRichConfig = "80e42dfc77b047fc1fc52a6086f4f07d87ef27471aebd297073d2f6a16db96e5"
+	// Re-bumped for signed MCP binary-integrity manifests: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "1a8ad9890a58f8af2b76fd4998e221bc5691d590c39b213370e75cec80c47209"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

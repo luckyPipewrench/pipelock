@@ -11489,6 +11489,8 @@ func TestValidate_A2AScanning(t *testing.T) {
 func TestValidate_MCPBinaryIntegrity(t *testing.T) {
 	t.Parallel()
 
+	const testMCPIntegrityManifestPath = "/tmp/manifest.json"
+
 	tests := []struct {
 		name    string
 		cfg     func() *Config
@@ -11518,8 +11520,32 @@ func TestValidate_MCPBinaryIntegrity(t *testing.T) {
 			cfg: func() *Config {
 				c := Defaults()
 				c.MCPBinaryIntegrity.Enabled = true
-				c.MCPBinaryIntegrity.ManifestPath = "/tmp/manifest.json"
+				c.MCPBinaryIntegrity.ManifestPath = testMCPIntegrityManifestPath
 				c.MCPBinaryIntegrity.Action = ActionBlock
+				return c
+			},
+		},
+		{
+			name: "signature_requires_trusted_signer",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = testMCPIntegrityManifestPath
+				c.MCPBinaryIntegrity.Action = ActionBlock
+				c.MCPBinaryIntegrity.RequireSignature = true
+				return c
+			},
+			wantErr: "trusted_signer is required",
+		},
+		{
+			name: "signature_with_trusted_signer",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = testMCPIntegrityManifestPath
+				c.MCPBinaryIntegrity.Action = ActionBlock
+				c.MCPBinaryIntegrity.RequireSignature = true
+				c.MCPBinaryIntegrity.TrustedSigner = "release"
 				return c
 			},
 		},
@@ -11528,7 +11554,7 @@ func TestValidate_MCPBinaryIntegrity(t *testing.T) {
 			cfg: func() *Config {
 				c := Defaults()
 				c.MCPBinaryIntegrity.Enabled = true
-				c.MCPBinaryIntegrity.ManifestPath = "/tmp/manifest.json"
+				c.MCPBinaryIntegrity.ManifestPath = testMCPIntegrityManifestPath
 				c.MCPBinaryIntegrity.Action = ActionAllow
 				return c
 			},

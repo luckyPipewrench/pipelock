@@ -3179,6 +3179,218 @@ func TestVerifyBinaryIntegrity_UsesWorkDirForRelativeScripts(t *testing.T) {
 	}
 }
 
+func TestVerifyBinaryIntegrity_RequiresTrustedManifestSignature(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+	truePath, trueHash, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolving true binary: %v", err)
+	}
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("signer"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	privKey, err := ks.LoadPrivateKey("signer")
+	if err != nil {
+		t.Fatalf("load signer key: %v", err)
+	}
+	mpath := filepath.Join(dir, "manifest.json")
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{
+			truePath: trueHash,
+		},
+	}); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	sig, err := signing.SignFile(mpath, privKey)
+	if err != nil {
+		t.Fatalf("sign manifest: %v", err)
+	}
+	if err := signing.SaveSignature(sig, mpath+signing.SigExtension); err != nil {
+		t.Fatalf("save signature: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:          true,
+		ManifestPath:     mpath,
+		Action:           config.ActionBlock,
+		RequireSignature: true,
+		TrustedSigner:    "signer",
+		Keystore:         ksDir,
+	}
+	var logBuf bytes.Buffer
+	if err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf); err != nil {
+		t.Fatalf("verify signed manifest: %v", err)
+	}
+
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{
+			truePath: strings.Repeat("0", 64),
+		},
+	}); err != nil {
+		t.Fatalf("tamper manifest: %v", err)
+	}
+	err = VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+	if err == nil {
+		t.Fatal("expected signature verification failure for tampered manifest")
+	}
+	if !strings.Contains(err.Error(), "manifest signature") {
+		t.Fatalf("error = %v, want manifest signature", err)
+	}
+}
+
+func TestVerifyBinaryIntegrity_RequireSignatureBlocksInWarnMode(t *testing.T) {
+	// require_signature is fail-closed regardless of action. action=warn
+	// must not relax trust establishment: a tampered manifest under
+	// require_signature must block even when hash-mismatch handling
+	// would otherwise be a warning.
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+	truePath, trueHash, err := integrity.ResolveAndHash("true")
+	if err != nil {
+		t.Fatalf("resolving true binary: %v", err)
+	}
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("signer"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	privKey, err := ks.LoadPrivateKey("signer")
+	if err != nil {
+		t.Fatalf("load signer key: %v", err)
+	}
+	mpath := filepath.Join(dir, "manifest.json")
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{truePath: trueHash},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	sig, err := signing.SignFile(mpath, privKey)
+	if err != nil {
+		t.Fatalf("sign manifest: %v", err)
+	}
+	if err := signing.SaveSignature(sig, mpath+signing.SigExtension); err != nil {
+		t.Fatalf("save signature: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:          true,
+		ManifestPath:     mpath,
+		Action:           config.ActionWarn, // warn — must NOT relax trust
+		RequireSignature: true,
+		TrustedSigner:    "signer",
+		Keystore:         ksDir,
+	}
+
+	// First: untampered manifest verifies fine even under warn.
+	var logBuf bytes.Buffer
+	if err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf); err != nil {
+		t.Fatalf("warn-mode signed manifest should verify: %v", err)
+	}
+
+	// Then: tamper the manifest and confirm warn-mode STILL blocks
+	// because require_signature is independent of action.
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{truePath: strings.Repeat("0", 64)},
+	}); err != nil {
+		t.Fatalf("tamper manifest: %v", err)
+	}
+	if err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf); err == nil {
+		t.Fatal("expected warn-mode + require_signature to block on tampered manifest")
+	} else if !strings.Contains(err.Error(), "manifest signature") {
+		t.Fatalf("error = %v, want manifest signature failure", err)
+	}
+}
+
+func TestVerifyBinaryIntegrity_RequireSignatureMissingSigFile(t *testing.T) {
+	// Missing .sig file under require_signature is fail-closed regardless
+	// of action. Otherwise an operator could remove the signature file to
+	// implicitly downgrade trust without changing config.
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := signing.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("signer"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	mpath := filepath.Join(dir, "manifest.json")
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{"/usr/bin/true": "deadbeef"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	// Note: no signing.SaveSignature call — the .sig file is intentionally absent.
+
+	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
+		icfg := &config.MCPBinaryIntegrity{
+			Enabled:          true,
+			ManifestPath:     mpath,
+			Action:           action,
+			RequireSignature: true,
+			TrustedSigner:    "signer",
+			Keystore:         ksDir,
+		}
+		var logBuf bytes.Buffer
+		err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+		if err == nil {
+			t.Fatalf("action=%s: expected missing-signature failure", action)
+		}
+		if !strings.Contains(err.Error(), "manifest signature") {
+			t.Fatalf("action=%s: error = %v, want manifest signature", action, err)
+		}
+	}
+}
+
+func TestVerifyBinaryIntegrity_RequireSignatureUnknownSigner(t *testing.T) {
+	// Trusted signer not present in keystore must fail-closed regardless
+	// of action: an unresolvable signer cannot establish trust.
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	// Note: keystore exists but is empty — no key generated for "signer".
+	if err := os.MkdirAll(ksDir, 0o700); err != nil {
+		t.Fatalf("mkdir keystore: %v", err)
+	}
+	mpath := filepath.Join(dir, "manifest.json")
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{"/usr/bin/true": "deadbeef"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:          true,
+		ManifestPath:     mpath,
+		Action:           config.ActionWarn,
+		RequireSignature: true,
+		TrustedSigner:    "signer-not-in-keystore",
+		Keystore:         ksDir,
+	}
+	var logBuf bytes.Buffer
+	err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+	if err == nil {
+		t.Fatal("expected unknown-signer failure")
+	}
+	if !strings.Contains(err.Error(), "signer-not-in-keystore") {
+		t.Fatalf("error = %v, want signer name in error", err)
+	}
+}
+
 func TestVerifyBinaryIntegrity_BlockOnVerifyError(t *testing.T) {
 	// Create a valid manifest so LoadManifest succeeds, then pass a
 	// nonexistent binary so integrity.Verify returns an error.

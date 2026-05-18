@@ -47,6 +47,54 @@ pipelock mcp integrity manifest verify \
 The command exits non-zero if any resolved binary or script hash is missing or
 mismatched. Use `--json` for automation.
 
+## Sign and Trust
+
+Sign the manifest after generating or merging entries:
+
+```sh
+pipelock mcp integrity manifest sign \
+  --manifest /etc/pipelock/binary-manifest.json \
+  --signer release
+```
+
+This writes `/etc/pipelock/binary-manifest.json.sig` by default. Verify that
+signature before using the manifest:
+
+```sh
+pipelock mcp integrity manifest verify-signature \
+  --manifest /etc/pipelock/binary-manifest.json \
+  --signer release
+```
+
+The signer is resolved from the Pipelock keystore. For a signer public key
+managed outside the local keystore, trust it first:
+
+```sh
+pipelock trust release /path/to/release.pub
+```
+
+To require a trusted manifest signature at runtime:
+
+```yaml
+mcp_binary_integrity:
+  enabled: true
+  manifest_path: /etc/pipelock/binary-manifest.json
+  action: block
+  require_signature: true
+  trusted_signer: release
+```
+
+`signature_path` defaults to `<manifest_path>.sig`. Set `keystore` only when
+the runtime should use a non-default Pipelock keystore.
+
+`require_signature: true` is fail-closed regardless of `action`. Once you
+assert manifest trust, an unverified, unsigned, or wrong-signer manifest
+blocks subprocess spawn even when `action: warn` is set. The `action` knob
+still governs the response to entry-hash mismatches for trusted manifests;
+it does not relax trust establishment itself. Runtime reads the manifest
+bytes once and verifies the signature against those exact bytes — no
+TOCTOU window between trust check and parse.
+
 ## Operator notes
 
 - **Prefer absolute script paths in your MCP launcher.** If a command uses a

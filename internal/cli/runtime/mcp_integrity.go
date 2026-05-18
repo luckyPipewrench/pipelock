@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	mcpintegrity "github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
+	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 var errMCPIntegrityViolation = errors.New("MCP binary integrity violation")
@@ -25,6 +26,8 @@ type mcpIntegrityReport struct {
 	OK         bool     `json:"ok"`
 	Command    []string `json:"command"`
 	Manifest   string   `json:"manifest,omitempty"`
+	Signature  string   `json:"signature,omitempty"`
+	Signer     string   `json:"signer,omitempty"`
 	WorkDir    string   `json:"workdir,omitempty"`
 	Entries    []string `json:"entries,omitempty"`
 	Reasons    []string `json:"reasons,omitempty"`
@@ -54,6 +57,8 @@ func mcpIntegrityManifestCmd() *cobra.Command {
 	}
 	cmd.AddCommand(mcpIntegrityManifestGenerateCmd())
 	cmd.AddCommand(mcpIntegrityManifestVerifyCmd())
+	cmd.AddCommand(mcpIntegrityManifestSignCmd())
+	cmd.AddCommand(mcpIntegrityManifestVerifySignatureCmd())
 	return cmd
 }
 
@@ -143,6 +148,84 @@ the configured manifest.`,
 	return cmd
 }
 
+func mcpIntegrityManifestSignCmd() *cobra.Command {
+	var manifestPath string
+	var sigPath string
+	var signer string
+	var keystoreDir string
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "sign --manifest manifest.json --signer name",
+		Short: "Sign an MCP binary integrity manifest",
+		Long: `Create a detached Ed25519 signature for an MCP binary integrity
+manifest. The signer is resolved from the Pipelock keystore.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if manifestPath == "" {
+				return fmt.Errorf("--manifest is required")
+			}
+			report, err := signMCPIntegrityManifest(manifestPath, sigPath, signer, keystoreDir)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				return writeMCPIntegrityJSON(cmd.OutOrStdout(), report)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "MCP integrity manifest signed: %s\n", report.Manifest)
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Signature: %s\n", report.Signature)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&manifestPath, "manifest", "", "manifest file path")
+	cmd.Flags().StringVar(&sigPath, "sig", "", "signature file path (default <manifest>.sig)")
+	cmd.Flags().StringVar(&signer, "signer", "", "signer name (or set PIPELOCK_AGENT)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output a machine-readable report")
+	return cmd
+}
+
+func mcpIntegrityManifestVerifySignatureCmd() *cobra.Command {
+	var manifestPath string
+	var sigPath string
+	var signer string
+	var keystoreDir string
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "verify-signature --manifest manifest.json --signer name",
+		Short: "Verify an MCP binary integrity manifest signature",
+		Long: `Verify a detached Ed25519 signature for an MCP binary integrity
+manifest using the configured Pipelock keystore.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if manifestPath == "" {
+				return fmt.Errorf("--manifest is required")
+			}
+			report, err := verifyMCPIntegrityManifestSignature(manifestPath, sigPath, signer, keystoreDir)
+			if jsonOutput {
+				if jsonErr := writeMCPIntegrityJSON(cmd.OutOrStdout(), report); jsonErr != nil {
+					return jsonErr
+				}
+			} else if report.OK {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "MCP integrity manifest signature verified: %s\n", report.Manifest)
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "MCP integrity manifest signature failed: %s\n", strings.Join(report.Reasons, "; "))
+			}
+			if err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&manifestPath, "manifest", "", "manifest file path")
+	cmd.Flags().StringVar(&sigPath, "sig", "", "signature file path (default <manifest>.sig)")
+	cmd.Flags().StringVar(&signer, "signer", "", "signer name (or set PIPELOCK_AGENT)")
+	cmd.Flags().StringVar(&keystoreDir, "keystore", "", "keystore directory (default ~/.pipelock)")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output a machine-readable report")
+	return cmd
+}
+
 func generateMCPIntegrityManifest(outputPath string, command []string, workDir string, mergeExisting bool) (mcpIntegrityReport, error) {
 	entries, result, err := manifestEntriesForCommand(command, workDir)
 	if err != nil {
@@ -180,6 +263,85 @@ func generateMCPIntegrityManifest(outputPath string, command []string, workDir s
 	return reportForResult(true, command, outputPath, workDir, result, sortedEntryPaths(entries), nil), nil
 }
 
+func signMCPIntegrityManifest(manifestPath, sigPath, signer, keystoreDir string) (mcpIntegrityReport, error) {
+	signerName, err := resolveMCPIntegritySigner(signer)
+	if err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	dir, err := cliutil.ResolveKeystoreDir(keystoreDir)
+	if err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	ks := domsigning.NewKeystore(dir)
+	privKey, err := ks.LoadPrivateKey(signerName)
+	if err != nil {
+		return mcpIntegrityReport{}, fmt.Errorf("loading key for signer %q: %w", signerName, err)
+	}
+	sig, err := domsigning.SignFile(manifestPath, privKey)
+	if err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	if sigPath == "" {
+		sigPath = manifestPath + domsigning.SigExtension
+	}
+	if err := domsigning.SaveSignature(sig, sigPath); err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	return mcpIntegrityReport{
+		OK:        true,
+		Manifest:  manifestPath,
+		Signature: sigPath,
+		Signer:    signerName,
+		Reasons:   []string{},
+	}, nil
+}
+
+func verifyMCPIntegrityManifestSignature(manifestPath, sigPath, signer, keystoreDir string) (mcpIntegrityReport, error) {
+	signerName, err := resolveMCPIntegritySigner(signer)
+	if err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	dir, err := cliutil.ResolveKeystoreDir(keystoreDir)
+	if err != nil {
+		return mcpIntegrityReport{}, err
+	}
+	if sigPath == "" {
+		sigPath = manifestPath + domsigning.SigExtension
+	}
+	report := mcpIntegrityReport{
+		Manifest:  manifestPath,
+		Signature: sigPath,
+		Signer:    signerName,
+		Reasons:   []string{},
+	}
+	ks := domsigning.NewKeystore(dir)
+	pubKey, err := ks.ResolvePublicKey(signerName)
+	if err != nil {
+		report.Reasons = append(report.Reasons, err.Error())
+		return report, err
+	}
+	if err := domsigning.VerifyFile(manifestPath, sigPath, pubKey); err != nil {
+		report.Reasons = append(report.Reasons, err.Error())
+		return report, cliutil.ExitCodeError(1, errMCPIntegrityViolation)
+	}
+	report.OK = true
+	return report, nil
+}
+
+func resolveMCPIntegritySigner(explicit string) (string, error) {
+	name := explicit
+	if name == "" {
+		name = os.Getenv("PIPELOCK_AGENT")
+	}
+	if name == "" {
+		return "", fmt.Errorf("signer name required: use --signer or set PIPELOCK_AGENT")
+	}
+	if err := domsigning.ValidateAgentName(name); err != nil {
+		return "", err
+	}
+	return name, nil
+}
+
 func verifyMCPIntegrityManifest(manifestPath string, command []string, workDir string) (mcpIntegrityReport, error) {
 	manifest, err := mcpintegrity.LoadManifest(manifestPath)
 	if err != nil {
@@ -194,7 +356,7 @@ func verifyMCPIntegrityManifest(manifestPath string, command []string, workDir s
 }
 
 func manifestEntriesForCommand(command []string, workDir string) (map[string]string, *mcpintegrity.VerifyResult, error) {
-	result, err := mcpintegrity.Verify(command, &mcpintegrity.Config{Manifests: map[string]string{}}, workDir)
+	result, err := mcpintegrity.Resolve(command, workDir)
 	if err != nil {
 		return nil, nil, err
 	}

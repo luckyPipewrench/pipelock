@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	mcpintegrity "github.com/luckyPipewrench/pipelock/internal/mcp/integrity"
+	domsigning "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const osWindows = "windows"
@@ -200,6 +201,112 @@ func TestMCPIntegrityManifestRequiresPaths(t *testing.T) {
 	}
 }
 
+func TestMCPIntegrityManifestSignAndVerifySignature(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("signer"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{
+			"/bin/example": strings.Repeat("a", 64),
+		},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	signCmd := testMCPRoot()
+	var signOut bytes.Buffer
+	signCmd.SetOut(&signOut)
+	signCmd.SetArgs([]string{
+		"mcp", "integrity", "manifest", "sign",
+		"--manifest", manifestPath,
+		"--signer", "signer",
+		"--keystore", ksDir,
+	})
+	if err := signCmd.Execute(); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	if !strings.Contains(signOut.String(), "Signature:") {
+		t.Fatalf("sign output = %q", signOut.String())
+	}
+
+	verifyCmd := testMCPRoot()
+	var verifyOut bytes.Buffer
+	verifyCmd.SetOut(&verifyOut)
+	verifyCmd.SetArgs([]string{
+		"mcp", "integrity", "manifest", "verify-signature",
+		"--manifest", manifestPath,
+		"--signer", "signer",
+		"--keystore", ksDir,
+	})
+	if err := verifyCmd.Execute(); err != nil {
+		t.Fatalf("verify signature: %v\noutput: %s", err, verifyOut.String())
+	}
+	if !strings.Contains(verifyOut.String(), "signature verified") {
+		t.Fatalf("verify output = %q", verifyOut.String())
+	}
+}
+
+func TestMCPIntegrityManifestVerifySignatureReportsTamper(t *testing.T) {
+	dir := t.TempDir()
+	ksDir := filepath.Join(dir, "keys")
+	ks := domsigning.NewKeystore(ksDir)
+	if _, err := ks.GenerateAgent("signer"); err != nil {
+		t.Fatalf("generate signer: %v", err)
+	}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{
+			"/bin/example": strings.Repeat("a", 64),
+		},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	signReport, err := signMCPIntegrityManifest(manifestPath, "", "signer", ksDir)
+	if err != nil {
+		t.Fatalf("sign manifest: %v", err)
+	}
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{
+			"/bin/example": strings.Repeat("b", 64),
+		},
+	}); err != nil {
+		t.Fatalf("tamper manifest: %v", err)
+	}
+
+	verifyCmd := testMCPRoot()
+	var out bytes.Buffer
+	verifyCmd.SetOut(&out)
+	verifyCmd.SetArgs([]string{
+		"mcp", "integrity", "manifest", "verify-signature",
+		"--manifest", manifestPath,
+		"--sig", signReport.Signature,
+		"--signer", "signer",
+		"--keystore", ksDir,
+		"--json",
+	})
+	err = verifyCmd.Execute()
+	if err == nil {
+		t.Fatal("expected verify-signature failure for tampered manifest")
+	}
+	var report mcpIntegrityReport
+	if jsonErr := json.Unmarshal(out.Bytes(), &report); jsonErr != nil {
+		t.Fatalf("unmarshal report: %v\n%s", jsonErr, out.String())
+	}
+	if report.OK {
+		t.Fatalf("report OK = true, want false: %+v", report)
+	}
+	if len(report.Reasons) == 0 || !strings.Contains(report.Reasons[0], "signature verification failed") {
+		t.Fatalf("reasons = %+v, want signature verification failure", report.Reasons)
+	}
+}
+
 func TestMCPIntegrityManifestGenerateSuppressesSuspiciousFlag(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("test uses POSIX shebang script")
@@ -241,6 +348,35 @@ func TestMCPIntegrityManifestGenerateSuppressesSuspiciousFlag(t *testing.T) {
 	}
 	if !report.OK {
 		t.Fatalf("expected OK=true on successful generate, got %+v", report)
+	}
+}
+
+func TestMCPIntegrityManifestEntriesUseResolveOnly(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("test uses POSIX shell command")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "server.sh")
+	if err := os.WriteFile(script, []byte("echo mcp\n"), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	entries, result, err := manifestEntriesForCommand([]string{"sh", "server.sh"}, dir)
+	if err != nil {
+		t.Fatalf("manifestEntriesForCommand: %v", err)
+	}
+	resolvedScript, err := filepath.EvalSymlinks(script)
+	if err != nil {
+		t.Fatalf("resolve script: %v", err)
+	}
+	if _, ok := entries[result.ResolvedPath]; !ok {
+		t.Fatalf("entries missing resolved interpreter %q: %+v", result.ResolvedPath, entries)
+	}
+	if _, ok := entries[resolvedScript]; !ok {
+		t.Fatalf("entries missing resolved script %q: %+v", resolvedScript, entries)
+	}
+	if result.Verified || result.Reason != "" || len(result.Reasons) != 0 {
+		t.Fatalf("manifest generation should not carry verify failure state: %+v", result)
 	}
 }
 

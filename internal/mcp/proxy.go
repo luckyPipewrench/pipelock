@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // ErrSubprocessExit indicates the wrapped MCP server process exited with a
@@ -1277,13 +1279,18 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 		Action:       icfg.Action,
 	}
 
-	// Load the manifest from disk. Fail-closed: load errors are fatal
-	// when action is "block", logged as warnings otherwise. When the
-	// manifest fails to load, skip Verify (it would only repeat "no
-	// manifest loaded" with less context).
-	manifest, loadErr := integrity.LoadManifest(icfg.ManifestPath)
+	// Load the manifest. When require_signature is set, the manifest
+	// bytes are read once, the detached signature is verified against
+	// those exact bytes, and the in-memory bytes are parsed. Re-reading
+	// the file after verification would open a TOCTOU window where an
+	// attacker with write access to the manifest path could swap the
+	// file between sig-verify and parse. Fail-closed: load errors are
+	// fatal when action is "block", logged as warnings otherwise, EXCEPT
+	// when require_signature=true: trust-establishment failures always
+	// block regardless of action.
+	manifest, loadErr := loadMCPIntegrityManifest(icfg)
 	if loadErr != nil {
-		if icfg.Action == config.ActionBlock {
+		if icfg.RequireSignature || icfg.Action == config.ActionBlock {
 			return fmt.Errorf("binary integrity: loading manifest: %w", loadErr)
 		}
 		_, _ = fmt.Fprintf(logW, "pipelock: binary integrity warning: %v\n", loadErr)
@@ -1309,4 +1316,51 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 	}
 
 	return nil
+}
+
+// loadMCPIntegrityManifest reads the manifest, optionally verifying its
+// detached signature, and returns the parsed manifest. When
+// RequireSignature is true the bytes used for parsing are the exact bytes
+// the signature was verified against — no second os.ReadFile, no TOCTOU
+// window between trust establishment and parse.
+func loadMCPIntegrityManifest(icfg *config.MCPBinaryIntegrity) (*integrity.Manifest, error) {
+	if icfg.RequireSignature {
+		pubKey, sigPath, err := resolveMCPManifestSigner(icfg)
+		if err != nil {
+			return nil, err
+		}
+		data, err := signing.LoadAndVerifyFile(icfg.ManifestPath, sigPath, pubKey)
+		if err != nil {
+			return nil, fmt.Errorf("verifying manifest signature: %w", err)
+		}
+		return integrity.ParseManifest(data)
+	}
+	return integrity.LoadManifest(icfg.ManifestPath)
+}
+
+// resolveMCPManifestSigner loads the trusted signer's public key and
+// resolves the signature path according to the integrity config. The
+// returned signature path is always non-empty.
+func resolveMCPManifestSigner(icfg *config.MCPBinaryIntegrity) (ed25519.PublicKey, string, error) {
+	if icfg.TrustedSigner == "" {
+		return nil, "", fmt.Errorf("trusted signer is required")
+	}
+	keystoreDir := icfg.Keystore
+	if keystoreDir == "" {
+		var err error
+		keystoreDir, err = signing.DefaultKeystorePath()
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	sigPath := icfg.SignaturePath
+	if sigPath == "" {
+		sigPath = icfg.ManifestPath + signing.SigExtension
+	}
+	ks := signing.NewKeystore(keystoreDir)
+	pubKey, err := ks.ResolvePublicKey(icfg.TrustedSigner)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading trusted signer %q: %w", icfg.TrustedSigner, err)
+	}
+	return pubKey, sigPath, nil
 }

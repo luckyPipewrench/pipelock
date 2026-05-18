@@ -4,6 +4,7 @@
 package setup
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -375,6 +376,12 @@ func TestGenerateSidecarPatch_MCPUpstream(t *testing.T) {
 	if result.MCPProxyURL != "http://my-agent-pipelock:8889" {
 		t.Fatalf("MCPProxyURL = %q, want %q", result.MCPProxyURL, "http://my-agent-pipelock:8889")
 	}
+	if result.MCPConfigPath != sidecarMCPConfigPath() {
+		t.Fatalf("MCPConfigPath = %q, want %q", result.MCPConfigPath, sidecarMCPConfigPath())
+	}
+	if result.MCPServerName != defaultMCPServerName {
+		t.Fatalf("MCPServerName = %q, want %q", result.MCPServerName, defaultMCPServerName)
+	}
 
 	podSpec, err := getPodSpec(result.PatchedManifest, kindDeployment)
 	if err != nil {
@@ -386,11 +393,43 @@ func TestGenerateSidecarPatch_MCPUpstream(t *testing.T) {
 	if got := envValue(t, envList, envMCPProxy); got != result.MCPProxyURL {
 		t.Fatalf("%s = %q, want %q", envMCPProxy, got, result.MCPProxyURL)
 	}
+	if got := envValue(t, envList, envMCPConfig); got != result.MCPConfigPath {
+		t.Fatalf("%s = %q, want %q", envMCPConfig, got, result.MCPConfigPath)
+	}
+	if !podSpecHasConfigMapVolume(podSpec, sidecarMCPConfigVolume, mcpClientConfigMapName(result.ProxyName)) {
+		t.Fatalf("podSpec missing %s ConfigMap volume: %+v", sidecarMCPConfigVolume, podSpec["volumes"])
+	}
+	if !podSpecHasVolumeMount(podSpec, sidecarMCPConfigVolume, sidecarMCPConfigMount) {
+		t.Fatalf("agent container missing %s volumeMount: %+v", sidecarMCPConfigVolume, agentContainer["volumeMounts"])
+	}
 
 	metadata := result.PatchedManifest["metadata"].(map[string]interface{})
 	annotations := metadata["annotations"].(map[string]interface{})
 	if annotations[managedMCPProxyAnnotation] != result.MCPProxyURL {
 		t.Fatalf("metadata.annotations[%q] = %v, want %q", managedMCPProxyAnnotation, annotations[managedMCPProxyAnnotation], result.MCPProxyURL)
+	}
+	if annotations[managedMCPConfigAnnotation] != result.MCPConfigPath {
+		t.Fatalf("metadata.annotations[%q] = %v, want %q", managedMCPConfigAnnotation, annotations[managedMCPConfigAnnotation], result.MCPConfigPath)
+	}
+	if annotations[managedMCPServerAnnotation] != result.MCPServerName {
+		t.Fatalf("metadata.annotations[%q] = %v, want %q", managedMCPServerAnnotation, annotations[managedMCPServerAnnotation], result.MCPServerName)
+	}
+
+	var mcpConfigMap map[string]interface{}
+	if err := yaml.Unmarshal([]byte(result.MCPConfigMapYAML), &mcpConfigMap); err != nil {
+		t.Fatalf("parsing MCPConfigMapYAML: %v", err)
+	}
+	if mcpConfigMap["kind"] != "ConfigMap" {
+		t.Fatalf("MCPConfigMapYAML kind = %v, want ConfigMap", mcpConfigMap["kind"])
+	}
+	mcpConfigData := mcpConfigMap["data"].(map[string]interface{})[sidecarMCPConfigFile].(string)
+	var mcpClientConfig map[string]map[string]map[string]string
+	if err := json.Unmarshal([]byte(mcpConfigData), &mcpClientConfig); err != nil {
+		t.Fatalf("MCP client config is not valid JSON: %v\n%s", err, mcpConfigData)
+	}
+	server := mcpClientConfig["mcpServers"][defaultMCPServerName]
+	if server["type"] != testTypeHTTP || server["url"] != result.MCPProxyURL {
+		t.Fatalf("generated MCP server = %+v, want type=http url=%s", server, result.MCPProxyURL)
 	}
 
 	var deployment map[string]interface{}
@@ -450,6 +489,14 @@ func TestGenerateSidecarPatch_MCPUpstreamRecordsAnnotation(t *testing.T) {
 		t.Fatalf("annotations[%q] = %v, want %q",
 			managedMCPUpstreamAnnotation, annotations[managedMCPUpstreamAnnotation], mcpUpstream)
 	}
+	if annotations[managedMCPConfigAnnotation] != sidecarMCPConfigPath() {
+		t.Fatalf("annotations[%q] = %v, want %q",
+			managedMCPConfigAnnotation, annotations[managedMCPConfigAnnotation], sidecarMCPConfigPath())
+	}
+	if annotations[managedMCPServerAnnotation] != defaultMCPServerName {
+		t.Fatalf("annotations[%q] = %v, want %q",
+			managedMCPServerAnnotation, annotations[managedMCPServerAnnotation], defaultMCPServerName)
+	}
 }
 
 func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
@@ -489,6 +536,12 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 	if _, ok := annotations[managedMCPUpstreamAnnotation]; ok {
 		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPUpstreamAnnotation, annotations)
 	}
+	if _, ok := annotations[managedMCPConfigAnnotation]; ok {
+		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPConfigAnnotation, annotations)
+	}
+	if _, ok := annotations[managedMCPServerAnnotation]; ok {
+		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPServerAnnotation, annotations)
+	}
 
 	podSpec, err := getPodSpec(second.PatchedManifest, kindDeployment)
 	if err != nil {
@@ -498,9 +551,15 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 	envList := containers[0].(map[string]interface{})["env"].([]interface{})
 	for _, e := range envList {
 		eMap := e.(map[string]interface{})
-		if name, _ := eMap["name"].(string); name == envMCPProxy {
-			t.Fatalf("expected %s env to be scrubbed on disable: %+v", envMCPProxy, envList)
+		if name, _ := eMap["name"].(string); name == envMCPProxy || name == envMCPConfig {
+			t.Fatalf("expected MCP env to be scrubbed on disable: %+v", envList)
 		}
+	}
+	if podSpecHasConfigMapVolume(podSpec, sidecarMCPConfigVolume, mcpClientConfigMapName(second.ProxyName)) {
+		t.Fatalf("expected %s volume to be scrubbed on disable: %+v", sidecarMCPConfigVolume, podSpec["volumes"])
+	}
+	if podSpecHasVolumeMount(podSpec, sidecarMCPConfigVolume, sidecarMCPConfigMount) {
+		t.Fatalf("expected %s volumeMount to be scrubbed on disable: %+v", sidecarMCPConfigVolume, containers[0].(map[string]interface{})["volumeMounts"])
 	}
 
 	// Template annotations on the pod spec must also be scrubbed so newly
@@ -512,7 +571,52 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 			if _, ok := tmplAnn[managedMCPProxyAnnotation]; ok {
 				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
 			}
+			if _, ok := tmplAnn[managedMCPConfigAnnotation]; ok {
+				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
+			}
+			if _, ok := tmplAnn[managedMCPServerAnnotation]; ok {
+				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
+			}
 		}
+	}
+}
+
+func TestGenerateSidecarPatch_MCPServerName(t *testing.T) {
+	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("detectWorkload: %v", err)
+	}
+
+	result, err := generateSidecarPatch(manifest, sidecarOptions{
+		preset:        config.ModeBalanced,
+		mcpUpstream:   "http://openclaw:3000/mcp",
+		mcpServerName: "openclaw",
+	})
+	if err != nil {
+		t.Fatalf("generateSidecarPatch: %v", err)
+	}
+	if result.MCPServerName != "openclaw" {
+		t.Fatalf("MCPServerName = %q, want openclaw", result.MCPServerName)
+	}
+	metadata := result.PatchedManifest["metadata"].(map[string]interface{})
+	annotations := metadata["annotations"].(map[string]interface{})
+	if annotations[managedMCPServerAnnotation] != "openclaw" {
+		t.Fatalf("annotations[%q] = %v, want openclaw", managedMCPServerAnnotation, annotations[managedMCPServerAnnotation])
+	}
+	if sidecarMCPContractChanged(result.PatchedManifest, sidecarOptions{
+		mcpUpstream:   "http://openclaw:3000/mcp",
+		mcpServerName: "openclaw",
+	}) {
+		t.Fatal("same MCP server name should not mark contract changed")
+	}
+	if !sidecarMCPContractChanged(result.PatchedManifest, sidecarOptions{
+		mcpUpstream:   "http://openclaw:3000/mcp",
+		mcpServerName: "openclaw-v2",
+	}) {
+		t.Fatal("changed MCP server name should mark contract changed")
+	}
+	if !strings.Contains(result.MCPConfigMapYAML, `"openclaw"`) {
+		t.Fatalf("MCPConfigMapYAML missing custom server name:\n%s", result.MCPConfigMapYAML)
 	}
 }
 
@@ -570,7 +674,7 @@ func TestInjectProxyEnvs_RejectsConflictingProxy(t *testing.T) {
 		},
 	}
 
-	err := injectProxyEnvs(podSpec, "http://expected-proxy:8888", "")
+	err := injectProxyEnvs(podSpec, "http://expected-proxy:8888", "", "")
 	if err == nil {
 		t.Fatal("expected conflict error")
 	}

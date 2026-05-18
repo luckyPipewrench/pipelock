@@ -145,6 +145,135 @@ func TestClient_Terminate_HappyPath(t *testing.T) {
 	}
 }
 
+func TestClient_AdaptiveStatus_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Errorf("method: got %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/v1/adaptive/status" {
+			t.Errorf("path: got %q", r.URL.Path)
+		}
+		writeJSONResponse(w, http.StatusOK, proxy.AdaptiveStatus{
+			ActiveSessions:     1,
+			MaxEscalationLevel: "normal",
+			SessionsByLevel:    map[string]int{"normal": 1},
+			AirlockTiers:       map[string]int{"none": 1},
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(endpoint{URL: srv.URL, Token: testToken})
+	resp, err := c.AdaptiveStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ActiveSessions != 1 || resp.MaxEscalationLevel != "normal" {
+		t.Errorf("unexpected adaptive status: %+v", resp)
+	}
+}
+
+func TestClient_AdaptiveFlush_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodPost {
+			t.Errorf("method: got %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/v1/adaptive/flush" {
+			t.Errorf("path: got %q", r.URL.Path)
+		}
+		writeJSONResponse(w, http.StatusOK, proxy.AdaptiveFlushResult{
+			Flushed:            true,
+			IdentitySessions:   2,
+			SkippedInvocations: 1,
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(endpoint{URL: srv.URL, Token: testToken})
+	resp, err := c.AdaptiveFlush(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Flushed || resp.IdentitySessions != 2 || resp.SkippedInvocations != 1 {
+		t.Errorf("unexpected adaptive flush: %+v", resp)
+	}
+}
+
+func TestClient_AdaptiveWhoami_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.Method != http.MethodGet {
+			t.Errorf("method: got %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/v1/adaptive/whoami" {
+			t.Errorf("path: got %q", r.URL.Path)
+		}
+		writeJSONResponse(w, http.StatusOK, proxy.AdaptiveWhoami{
+			ClientIP:       "203.0.113.9",
+			SessionKey:     "agent-a|203.0.113.9",
+			Exists:         true,
+			Classification: "observe",
+		})
+	}))
+	defer srv.Close()
+
+	c := newClient(endpoint{URL: srv.URL, Token: testToken})
+	resp, err := c.AdaptiveWhoami(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.SessionKey != "agent-a|203.0.113.9" || resp.Classification != "observe" {
+		t.Errorf("unexpected adaptive whoami: %+v", resp)
+	}
+}
+
+func TestClient_AdaptiveMethodsReturnAPIError(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *Client) error
+	}{
+		{
+			name: "status",
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.AdaptiveStatus(ctx)
+				return err
+			},
+		},
+		{
+			name: "flush",
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.AdaptiveFlush(ctx)
+				return err
+			},
+		},
+		{
+			name: "whoami",
+			call: func(ctx context.Context, c *Client) error {
+				_, err := c.AdaptiveWhoami(ctx)
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "bad token", http.StatusUnauthorized)
+			}))
+			defer srv.Close()
+
+			c := newClient(endpoint{URL: srv.URL, Token: testToken})
+			err := tt.call(context.Background(), c)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !IsUnauthorized(err) {
+				t.Fatalf("expected unauthorized APIError, got %v", err)
+			}
+		})
+	}
+}
+
 func TestClient_NonSuccessReturnsAPIError(t *testing.T) {
 	tests := []struct {
 		status     int

@@ -41,6 +41,8 @@ type Anomaly struct {
 // discarded to bound memory growth on long-lived sessions.
 const maxRecentEvents = 20
 
+const adaptiveClassificationObserve = "observe"
+
 var cooperativeToolUserAgentPattern = regexp.MustCompile(`(?i)^(?:yt-dlp|python-requests|pip|npm|pnpm|apt|dnf|curl|git)/`)
 
 func isCooperativeToolBurstUserAgent(userAgent string) bool {
@@ -1338,7 +1340,7 @@ func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami 
 	if sess.atBlockAll || tier == config.AirlockTierHard || tier == config.AirlockTierDrain {
 		out.Classification = config.ActionBlock
 	} else if tier == config.AirlockTierSoft || sess.escalationLevel > 0 {
-		out.Classification = "observe"
+		out.Classification = adaptiveClassificationObserve
 	}
 	out.LockdownTTLSeconds = adaptiveLockdownTTLSeconds(tier, enteredAt, sm.AirlockConfig())
 	return out

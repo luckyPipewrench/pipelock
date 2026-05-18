@@ -193,6 +193,31 @@ func TestRecordShieldSkipped_NilReceiver(t *testing.T) {
 	m.RecordShieldSkipped("disabled") // no panic
 }
 
+func TestRecordShieldOversizeScanHead(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		transport string
+	}{
+		{"fetch", "fetch"},
+		{"connect", "connect"},
+		{"reverse", "reverse_proxy"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := New()
+			m.RecordShieldOversizeScanHead(tt.transport)
+		})
+	}
+}
+
+func TestRecordShieldOversizeScanHead_NilReceiver(t *testing.T) {
+	t.Parallel()
+	var m *Metrics
+	m.RecordShieldOversizeScanHead("fetch") // no panic
+}
+
 func TestRecordShieldLatency(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -11,23 +11,30 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+const (
+	cooperativeUAYtDlp          = "yt-dlp/2026.3.17"
+	cooperativeUAPythonRequests = "python-requests/2.32.0"
+	cooperativeUAPip            = "pip/26.0"
+	cooperativeUAMozilla        = "Mozilla/5.0"
+)
+
 func TestIsCooperativeToolBurstUserAgent(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		ua   string
 		want bool
 	}{
-		{"yt-dlp/2026.3.17", true},
-		{"python-requests/2.32.0", true},
-		{"pip/26.0", true},
+		{cooperativeUAYtDlp, true},
+		{cooperativeUAPythonRequests, true},
+		{cooperativeUAPip, true},
 		{"npm/11.0.0", true},
 		{"pnpm/10.0.0", true},
 		{"apt/2.7.0", true},
 		{"dnf/5.2.0", true},
 		{"curl/8.7.1", true},
 		{"git/2.45.0", true},
-		{"Mozilla/5.0", false},
-		{"evil yt-dlp/2026.3.17", false},
+		{cooperativeUAMozilla, false},
+		{"evil " + cooperativeUAYtDlp, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.ua, func(t *testing.T) {
@@ -53,7 +60,7 @@ func TestAdaptiveCooperativeToolBurstDownweightsDomainAnomalies(t *testing.T) {
 	}
 
 	for i, host := range hosts {
-		p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts(host, "req-coop", "yt-dlp/2026.3.17", cfg, logger))
+		p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts(host, "req-coop", cooperativeUAYtDlp, cfg, logger))
 		if i < len(hosts)-1 && p.sessionMgrPtr.Load().GetOrCreate(clientIP).EscalationLevel() > 0 {
 			t.Fatalf("cooperative burst escalated early at host %s", host)
 		}
@@ -75,8 +82,8 @@ func TestAdaptiveNonCooperativeBurstStillEscalates(t *testing.T) {
 	logger := audit.NewNop()
 	clientIP := adaptiveSessionKeyLoopback
 
-	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("www.youtube.com", "req-1", "Mozilla/5.0", cfg, logger))
-	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("youtubei.googleapis.com", "req-2", "Mozilla/5.0", cfg, logger))
+	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("www.youtube.com", "req-1", cooperativeUAMozilla, cfg, logger))
+	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("youtubei.googleapis.com", "req-2", cooperativeUAMozilla, cfg, logger))
 
 	rec := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
 	if rec.EscalationLevel() == 0 {
@@ -92,8 +99,8 @@ func TestAdaptiveCooperativeDownweightCanBeDisabled(t *testing.T) {
 	logger := audit.NewNop()
 	clientIP := adaptiveSessionKeyLoopback
 
-	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("www.youtube.com", "req-1", "yt-dlp/2026.3.17", cfg, logger))
-	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("youtubei.googleapis.com", "req-2", "yt-dlp/2026.3.17", cfg, logger))
+	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("www.youtube.com", "req-1", cooperativeUAYtDlp, cfg, logger))
+	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("youtubei.googleapis.com", "req-2", cooperativeUAYtDlp, cfg, logger))
 
 	rec := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
 	if rec.EscalationLevel() == 0 {
@@ -109,8 +116,8 @@ func TestAdaptiveExemptDomainBurstDoesNotScore(t *testing.T) {
 	logger := audit.NewNop()
 	clientIP := adaptiveSessionKeyLoopback
 
-	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("www.youtube.com", "req-1", "Mozilla/5.0", cfg, logger))
-	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("youtubei.googleapis.com", "req-2", "Mozilla/5.0", cfg, logger))
+	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("www.youtube.com", "req-1", cooperativeUAMozilla, cfg, logger))
+	p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts("youtubei.googleapis.com", "req-2", cooperativeUAMozilla, cfg, logger))
 
 	rec := p.sessionMgrPtr.Load().GetOrCreate(clientIP)
 	if rec.ThreatScore() != 0 {

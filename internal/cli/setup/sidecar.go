@@ -311,6 +311,12 @@ func validateSidecarMCPUpstream(raw string) error {
 	default:
 		return fmt.Errorf("--mcp-upstream %q must use http:// or https://", raw)
 	}
+	if parsed.User != nil {
+		return fmt.Errorf("--mcp-upstream %q must not contain user info or credentials", raw)
+	}
+	if parsed.Hostname() == "" {
+		return fmt.Errorf("--mcp-upstream %q must include http:// or https:// and a host", raw)
+	}
 	// If an explicit port is present it must be a valid TCP port. Otherwise
 	// the rendered NetworkPolicy egress rule would silently drop the
 	// upstream port, the agent's MCP requests would reach the proxy fine,
@@ -321,8 +327,24 @@ func validateSidecarMCPUpstream(raw string) error {
 		if convErr != nil || n < 1 || n > 65535 {
 			return fmt.Errorf("--mcp-upstream %q has invalid port %q (must be 1-65535)", raw, port)
 		}
+	} else if mcpUpstreamHostHasMalformedPort(parsed.Host) {
+		return fmt.Errorf("--mcp-upstream %q has malformed host/port syntax", raw)
 	}
 	return nil
+}
+
+func mcpUpstreamHostHasMalformedPort(host string) bool {
+	if strings.HasSuffix(host, ":") {
+		return true
+	}
+	if strings.HasPrefix(host, "[") {
+		closing := strings.LastIndex(host, "]")
+		if closing == -1 {
+			return true
+		}
+		return strings.Contains(host[closing+1:], ":")
+	}
+	return strings.Contains(host, ":")
 }
 
 // renderDiff produces a simple before/after comparison.

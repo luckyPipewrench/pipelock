@@ -158,8 +158,11 @@ func TestRunSidecar_InvalidMCPUpstream(t *testing.T) {
 	}{
 		{name: "bad scheme", raw: "ws://openclaw:3000/mcp", wantSub: "must use http:// or https://"},
 		{name: "no host", raw: "http:///mcp", wantSub: "must include http:// or https:// and a host"},
+		{name: "userinfo", raw: "http://user@openclaw:3000/mcp", wantSub: "must not contain user info or credentials"},
 		{name: "port out of range high", raw: "http://openclaw:99999/mcp", wantSub: "must be 1-65535"},
 		{name: "port zero", raw: "http://openclaw:0/mcp", wantSub: "must be 1-65535"},
+		{name: "trailing colon", raw: "http://openclaw:/mcp", wantSub: "malformed host/port syntax"},
+		{name: "extra port fragment", raw: "http://openclaw:65536:/mcp", wantSub: "malformed host/port syntax"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

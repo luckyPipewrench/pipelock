@@ -1077,6 +1077,30 @@ func TestClaudePayloadToAction_BadToolInput(t *testing.T) {
 	}
 }
 
+func TestClaudePayloadToAction_NullToolInput(t *testing.T) {
+	tests := []struct {
+		name     string
+		toolName string
+	}{
+		{"bash", "Bash"},
+		{"mcp", "mcp__server__tool"},
+		{"unknown", "NotebookRead"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := claudeCodePayload{
+				ToolName:  tt.toolName,
+				ToolInput: json.RawMessage(` null `),
+			}
+			_, err := claudePayloadToAction(p)
+			if err == nil {
+				t.Fatal("expected error for null tool_input")
+			}
+		})
+	}
+}
+
 func TestClaudeHookCmd_BadToolInputDenies(t *testing.T) {
 	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":"not-an-object","tool_use_id":"t1"}`
 

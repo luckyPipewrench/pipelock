@@ -24,6 +24,10 @@ Subcommands:
   verify      Run read-only probes; report pass/fail/skip.
   rollback    Undo install (idempotent).
   add-tool    Drop a new /usr/local/bin/plk-<name> wrapper.
+  grant-workspace
+              Grant pipelock-agent ACL access to a project directory.
+  revoke-workspace
+              Revoke pipelock-agent ACL access from a project directory.
   ca-refresh  Rebuild the combined CA bundle after a CA rotation.
 
 All mutating subcommands accept --dry-run to print the planned actions
@@ -37,6 +41,8 @@ without touching state.`,
 		installCmd(),
 		rollbackCmd(),
 		addToolCmd(),
+		grantWorkspaceCmd(),
+		revokeWorkspaceCmd(),
 		caRefreshCmd(),
 	)
 

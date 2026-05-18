@@ -66,25 +66,26 @@ type installEnv struct {
 	// Static configuration. These mirror the constants in verify.go so the
 	// two subsystems agree on filesystem layout. Made fields rather than
 	// constants so the install subcommand can accept flag overrides.
-	operatorUser   string
-	proxyUserName  string
-	agentUserName  string
-	configDir      string
-	dataDir        string
-	wrapperDir     string
-	systemUnitPath string
-	nftRulesPath   string
-	nftMainPath    string
-	sudoersPath    string
-	caBundlePath   string
-	caExportPath   string
-	integrityDir   string
-	integrityPin   string
-	wrapperInvPath string
-	toolsListPath  string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
-	pipelockBinary string // source binary path passed to --pipelock-binary
-	pipelockTarget string // destination, default /usr/local/bin/pipelock
-	proxyPort      int
+	operatorUser     string
+	proxyUserName    string
+	agentUserName    string
+	configDir        string
+	dataDir          string
+	wrapperDir       string
+	systemUnitPath   string
+	nftRulesPath     string
+	nftMainPath      string
+	sudoersPath      string
+	caBundlePath     string
+	caExportPath     string
+	integrityDir     string
+	integrityPin     string
+	wrapperInvPath   string
+	toolsListPath    string // plk-launch's runtime allow-list (tab-separated NAME\tTARGET)
+	workspaceInvPath string
+	pipelockBinary   string // source binary path passed to --pipelock-binary
+	pipelockTarget   string // destination, default /usr/local/bin/pipelock
+	proxyPort        int
 
 	prevNFTTableDump       string
 	prevNftablesEnabled    bool
@@ -99,40 +100,41 @@ type installEnv struct {
 // sudo (where $SUDO_USER is empty) and -- no override flag was passed.
 func defaultInstallEnv(out io.Writer) *installEnv {
 	return &installEnv{
-		runCmd:         realRunCommand,
-		stat:           os.Stat,
-		lstat:          os.Lstat,
-		readFile:       os.ReadFile,
-		writeFile:      writeFileAtomic,
-		removeFile:     os.Remove,
-		mkdirAll:       os.MkdirAll,
-		chown:          os.Chown,
-		rename:         os.Rename,
-		chmod:          os.Chmod,
-		symlink:        os.Symlink,
-		lookupUser:     user.Lookup,
-		selfPath:       os.Executable,
-		hashFile:       sha256HexOfFile,
-		out:            out,
-		errOut:         os.Stderr,
-		operatorUser:   os.Getenv("SUDO_USER"),
-		proxyUserName:  defaultProxyUser,
-		agentUserName:  defaultAgentUser,
-		configDir:      defaultConfigDir,
-		dataDir:        defaultDataDir,
-		wrapperDir:     defaultWrapperDir,
-		systemUnitPath: defaultSystemUnitPath,
-		nftRulesPath:   defaultNFTRulesPath,
-		nftMainPath:    defaultNFTMainConfigPath,
-		sudoersPath:    defaultSudoersPath,
-		caBundlePath:   defaultCABundlePath,
-		caExportPath:   defaultCAExportPath,
-		integrityDir:   defaultIntegrityDir,
-		integrityPin:   defaultIntegrityPin,
-		wrapperInvPath: defaultWrapperInvPath,
-		toolsListPath:  defaultToolsListPath,
-		pipelockTarget: defaultPipelockTarget,
-		proxyPort:      defaultProxyPort,
+		runCmd:           realRunCommand,
+		stat:             os.Stat,
+		lstat:            os.Lstat,
+		readFile:         os.ReadFile,
+		writeFile:        writeFileAtomic,
+		removeFile:       os.Remove,
+		mkdirAll:         os.MkdirAll,
+		chown:            os.Chown,
+		rename:           os.Rename,
+		chmod:            os.Chmod,
+		symlink:          os.Symlink,
+		lookupUser:       user.Lookup,
+		selfPath:         os.Executable,
+		hashFile:         sha256HexOfFile,
+		out:              out,
+		errOut:           os.Stderr,
+		operatorUser:     os.Getenv("SUDO_USER"),
+		proxyUserName:    defaultProxyUser,
+		agentUserName:    defaultAgentUser,
+		configDir:        defaultConfigDir,
+		dataDir:          defaultDataDir,
+		wrapperDir:       defaultWrapperDir,
+		systemUnitPath:   defaultSystemUnitPath,
+		nftRulesPath:     defaultNFTRulesPath,
+		nftMainPath:      defaultNFTMainConfigPath,
+		sudoersPath:      defaultSudoersPath,
+		caBundlePath:     defaultCABundlePath,
+		caExportPath:     defaultCAExportPath,
+		integrityDir:     defaultIntegrityDir,
+		integrityPin:     defaultIntegrityPin,
+		wrapperInvPath:   defaultWrapperInvPath,
+		toolsListPath:    defaultToolsListPath,
+		workspaceInvPath: defaultWorkspaceInvPath,
+		pipelockTarget:   defaultPipelockTarget,
+		proxyPort:        defaultProxyPort,
 	}
 }
 
@@ -151,6 +153,7 @@ const (
 	defaultIntegrityPin      = "/etc/pipelock/integrity/binary-pin.sha256"
 	defaultWrapperInvPath    = "/etc/pipelock/contain/wrappers.json"
 	defaultToolsListPath     = "/etc/pipelock/contain/tools.list"
+	defaultWorkspaceInvPath  = "/etc/pipelock/contain/workspaces.json"
 	defaultPipelockTarget    = "/usr/local/bin/pipelock"
 	defaultSystemCABundle    = "/etc/ssl/certs/ca-bundle.crt"
 

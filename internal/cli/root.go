@@ -86,6 +86,7 @@ Quick start:
 		// Mediation envelope trust management
 		clienvelope.Cmd(),
 		// Diagnostics
+		diag.DoctorCmd(),
 		diag.DiagnoseCmd(),
 		diag.DiscoverCmd(),
 		diag.PreflightCmd(),

@@ -297,22 +297,25 @@ func signMCPIntegrityManifest(manifestPath, sigPath, signer, keystoreDir string)
 }
 
 func verifyMCPIntegrityManifestSignature(manifestPath, sigPath, signer, keystoreDir string) (mcpIntegrityReport, error) {
-	signerName, err := resolveMCPIntegritySigner(signer)
-	if err != nil {
-		return mcpIntegrityReport{}, err
-	}
-	dir, err := cliutil.ResolveKeystoreDir(keystoreDir)
-	if err != nil {
-		return mcpIntegrityReport{}, err
-	}
 	if sigPath == "" {
 		sigPath = manifestPath + domsigning.SigExtension
 	}
 	report := mcpIntegrityReport{
 		Manifest:  manifestPath,
 		Signature: sigPath,
-		Signer:    signerName,
+		Signer:    signer,
 		Reasons:   []string{},
+	}
+	signerName, err := resolveMCPIntegritySigner(signer)
+	if err != nil {
+		report.Reasons = append(report.Reasons, err.Error())
+		return report, err
+	}
+	report.Signer = signerName
+	dir, err := cliutil.ResolveKeystoreDir(keystoreDir)
+	if err != nil {
+		report.Reasons = append(report.Reasons, err.Error())
+		return report, err
 	}
 	ks := domsigning.NewKeystore(dir)
 	pubKey, err := ks.ResolvePublicKey(signerName)

@@ -3391,6 +3391,34 @@ func TestVerifyBinaryIntegrity_RequireSignatureUnknownSigner(t *testing.T) {
 	}
 }
 
+func TestVerifyBinaryIntegrity_RequireSignatureRejectsInvalidSignerName(t *testing.T) {
+	dir := t.TempDir()
+	mpath := filepath.Join(dir, "manifest.json")
+	if err := integrity.SaveManifest(mpath, &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{"/usr/bin/true": "deadbeef"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:          true,
+		ManifestPath:     mpath,
+		Action:           config.ActionWarn,
+		RequireSignature: true,
+		TrustedSigner:    "../signer",
+		Keystore:         filepath.Join(dir, "keys"),
+	}
+	var logBuf bytes.Buffer
+	err := VerifyBinaryIntegrity([]string{"true"}, icfg, &logBuf)
+	if err == nil {
+		t.Fatal("expected invalid-signer failure")
+	}
+	if !strings.Contains(err.Error(), "invalid trusted signer") {
+		t.Fatalf("error = %v, want invalid trusted signer", err)
+	}
+}
+
 func TestVerifyBinaryIntegrity_BlockOnVerifyError(t *testing.T) {
 	// Create a valid manifest so LoadManifest succeeds, then pass a
 	// nonexistent binary so integrity.Verify returns an error.

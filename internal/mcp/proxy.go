@@ -1342,8 +1342,11 @@ func loadMCPIntegrityManifest(icfg *config.MCPBinaryIntegrity) (*integrity.Manif
 // resolves the signature path according to the integrity config. The
 // returned signature path is always non-empty.
 func resolveMCPManifestSigner(icfg *config.MCPBinaryIntegrity) (ed25519.PublicKey, string, error) {
-	if icfg.TrustedSigner == "" {
-		return nil, "", fmt.Errorf("trusted signer is required")
+	if err := signing.ValidateAgentName(icfg.TrustedSigner); err != nil {
+		if icfg.TrustedSigner == "" {
+			return nil, "", fmt.Errorf("trusted signer is required")
+		}
+		return nil, "", fmt.Errorf("invalid trusted signer %q: %w", icfg.TrustedSigner, err)
 	}
 	keystoreDir := icfg.Keystore
 	if keystoreDir == "" {

@@ -11538,6 +11538,19 @@ func TestValidate_MCPBinaryIntegrity(t *testing.T) {
 			wantErr: "trusted_signer is required",
 		},
 		{
+			name: "signature_rejects_whitespace_trusted_signer",
+			cfg: func() *Config {
+				c := Defaults()
+				c.MCPBinaryIntegrity.Enabled = true
+				c.MCPBinaryIntegrity.ManifestPath = testMCPIntegrityManifestPath
+				c.MCPBinaryIntegrity.Action = ActionBlock
+				c.MCPBinaryIntegrity.RequireSignature = true
+				c.MCPBinaryIntegrity.TrustedSigner = " \t\n"
+				return c
+			},
+			wantErr: "trusted_signer is required",
+		},
+		{
 			name: "signature_with_trusted_signer",
 			cfg: func() *Config {
 				c := Defaults()

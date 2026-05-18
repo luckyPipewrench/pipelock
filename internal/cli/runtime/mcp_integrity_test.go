@@ -307,6 +307,49 @@ func TestMCPIntegrityManifestVerifySignatureReportsTamper(t *testing.T) {
 	}
 }
 
+func TestMCPIntegrityManifestVerifySignatureReportsSetupError(t *testing.T) {
+	t.Setenv("PIPELOCK_AGENT", "")
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "manifest.json")
+	if err := mcpintegrity.SaveManifest(manifestPath, &mcpintegrity.Manifest{
+		Version: mcpintegrity.ManifestVersion,
+		Entries: map[string]string{
+			"/bin/example": strings.Repeat("a", 64),
+		},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	verifyCmd := testMCPRoot()
+	var out bytes.Buffer
+	verifyCmd.SetOut(&out)
+	verifyCmd.SetArgs([]string{
+		"mcp", "integrity", "manifest", "verify-signature",
+		"--manifest", manifestPath,
+		"--json",
+	})
+	err := verifyCmd.Execute()
+	if err == nil {
+		t.Fatal("expected verify-signature failure without signer")
+	}
+	var report mcpIntegrityReport
+	if jsonErr := json.Unmarshal(out.Bytes(), &report); jsonErr != nil {
+		t.Fatalf("unmarshal report: %v\n%s", jsonErr, out.String())
+	}
+	if report.OK {
+		t.Fatalf("report OK = true, want false: %+v", report)
+	}
+	if report.Manifest != manifestPath {
+		t.Fatalf("Manifest = %q, want %q", report.Manifest, manifestPath)
+	}
+	if report.Signature != manifestPath+domsigning.SigExtension {
+		t.Fatalf("Signature = %q, want default signature path", report.Signature)
+	}
+	if len(report.Reasons) == 0 || !strings.Contains(report.Reasons[0], "signer name required") {
+		t.Fatalf("reasons = %+v, want signer setup error", report.Reasons)
+	}
+}
+
 func TestMCPIntegrityManifestGenerateSuppressesSuspiciousFlag(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("test uses POSIX shebang script")

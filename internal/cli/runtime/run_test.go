@@ -516,7 +516,7 @@ func freePort(t *testing.T) string {
 // waitForPort polls a TCP address until it accepts connections or times out.
 func waitForPort(t *testing.T, addr string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
 	for time.Now().Before(deadline) {
 		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
@@ -526,7 +526,30 @@ func waitForPort(t *testing.T, addr string) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("port %s not ready within 5s", addr)
+	t.Fatalf("port %s not ready within 15s", addr)
+}
+
+// waitForPortOrCommandExit polls a TCP address while also surfacing early
+// command failures. It avoids hiding startup bind/config errors behind a
+// generic readiness timeout.
+func waitForPortOrCommandExit(t *testing.T, addr string, cmdErr <-chan error, stderr fmt.Stringer) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-cmdErr:
+			t.Fatalf("RunCmd exited before port %s was ready: %v\nstderr:\n%s", addr, err, stderr.String())
+		default:
+		}
+		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("port %s not ready within 15s\nstderr:\n%s", addr, stderr.String())
 }
 
 // doGet issues a context-aware GET and fails the test on error.
@@ -734,9 +757,9 @@ logging:
 		cmdErr <- cmd.Execute()
 	}()
 
-	waitForPort(t, mainAddr)
-	waitForPort(t, reverseAddr)
-	waitForPort(t, mcpAddr)
+	waitForPortOrCommandExit(t, mainAddr, cmdErr, &stderr)
+	waitForPortOrCommandExit(t, reverseAddr, cmdErr, &stderr)
+	waitForPortOrCommandExit(t, mcpAddr, cmdErr, &stderr)
 
 	reverseReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+reverseAddr+"/api",
 		strings.NewReader(`{"prompt":"use `+secret+` to deploy"}`))

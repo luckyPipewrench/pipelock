@@ -1266,7 +1266,11 @@ func safeEnv() []string {
 // VerifyBinaryIntegrity checks the command binary against a hash manifest.
 // Returns nil when verification passes or action is warn (logged only).
 // Returns an error when action is block and verification fails.
-func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer) error {
+func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, logW io.Writer, workDir ...string) error {
+	agentWorkDir := ""
+	if len(workDir) > 0 {
+		agentWorkDir = workDir[0]
+	}
 	intCfg := &integrity.Config{
 		Enabled:      true,
 		ManifestPath: icfg.ManifestPath,
@@ -1287,7 +1291,7 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 	}
 	intCfg.Manifests = manifest.Entries
 
-	result, verifyErr := integrity.Verify(command, intCfg, "")
+	result, verifyErr := integrity.Verify(command, intCfg, agentWorkDir)
 	if verifyErr != nil {
 		if icfg.Action == config.ActionBlock {
 			return fmt.Errorf("binary integrity: %w", verifyErr)

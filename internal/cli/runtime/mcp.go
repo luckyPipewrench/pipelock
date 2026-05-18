@@ -268,6 +268,7 @@ Examples:
 
 	cmd.AddCommand(mcpScanCmd())
 	cmd.AddCommand(mcpProxyCmd())
+	cmd.AddCommand(mcpIntegrityCmd())
 	return cmd
 }
 
@@ -987,9 +988,11 @@ signed action receipts for MCP decisions.`,
 				// Binary integrity: verify before sandbox wraps the command.
 				// The sandbox re-execs pipelock as the parent, so checking
 				// after PrepareSandboxCmd would verify pipelock itself, not
-				// the MCP server binary.
+				// the MCP server binary. Pass workspace so relative script
+				// arguments resolve the same way the sandbox child resolves
+				// them after chdir(workspace).
 				if cfg.MCPBinaryIntegrity.Enabled {
-					if err := mcp.VerifyBinaryIntegrity(serverCmd, &cfg.MCPBinaryIntegrity, cmd.ErrOrStderr()); err != nil {
+					if err := mcp.VerifyBinaryIntegrity(serverCmd, &cfg.MCPBinaryIntegrity, cmd.ErrOrStderr(), workspace); err != nil {
 						return err
 					}
 				}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -3134,6 +3135,47 @@ func TestVerifyBinaryIntegrity_WarnOnHashMismatch(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "binary integrity warning") {
 		t.Errorf("expected warning log for hash mismatch, got: %s", logBuf.String())
+	}
+}
+
+func TestVerifyBinaryIntegrity_UsesWorkDirForRelativeScripts(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("hash test requires unix")
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "server.sh")
+	if err := os.WriteFile(script, []byte("echo mcp\n"), 0o600); err != nil {
+		t.Fatalf("writing script: %v", err)
+	}
+
+	result, err := integrity.Verify([]string{"sh", "server.sh"}, &integrity.Config{Manifests: map[string]string{}}, dir)
+	if err != nil {
+		t.Fatalf("resolve command: %v", err)
+	}
+	m := &integrity.Manifest{
+		Version: integrity.ManifestVersion,
+		Entries: map[string]string{
+			result.ResolvedPath: result.ActualHash,
+			result.ScriptPath:   result.ScriptHash,
+		},
+	}
+	mpath := filepath.Join(t.TempDir(), "manifest.json")
+	if err := integrity.SaveManifest(mpath, m); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	icfg := &config.MCPBinaryIntegrity{
+		Enabled:      true,
+		ManifestPath: mpath,
+		Action:       config.ActionBlock,
+	}
+
+	var logBuf bytes.Buffer
+	if err := VerifyBinaryIntegrity([]string{"sh", "server.sh"}, icfg, &logBuf); err == nil {
+		t.Fatal("verify without workDir should fail for relative script outside proxy cwd")
+	}
+	logBuf.Reset()
+	if err := VerifyBinaryIntegrity([]string{"sh", "server.sh"}, icfg, &logBuf, dir); err != nil {
+		t.Fatalf("verify with workDir: %v", err)
 	}
 }
 

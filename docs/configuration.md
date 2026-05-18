@@ -2015,7 +2015,7 @@ mcp_binary_integrity:
 | `manifest_path` | (required if enabled) | Path to JSON hash manifest |
 | `action` | `warn` | Action on hash mismatch: `block` or `warn` |
 
-The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing.
+The manifest is a JSON file mapping binary paths to expected SHA-256 hashes. Pipelock resolves shebangs and versioned interpreters (e.g., `python3.11`) before hashing. Generate and preflight the manifest with `pipelock mcp integrity manifest generate|verify`; see [MCP integrity manifest tooling](cli/mcp-integrity.md).
 
 ## Taint-Aware Policy Escalation (v2.1)
 

@@ -465,6 +465,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | [Scan API](docs/scan-api.md) | Evaluation endpoint for programmatic scanning |
 | [Deployment Recipes](docs/guides/deployment-recipes.md) | Docker Compose, K8s sidecar, iptables, macOS PF |
 | [`pipelock doctor`](docs/cli/doctor.md) | Configured-vs-enforceable deployment diagnostics for proxy, TLS, MCP, file_sentry, telemetry, and containment signals |
+| [`pipelock verify-install`](docs/cli/verify-install.md) | Deterministic scanning, local proof, and direct-egress smoke checks |
 | [Bypass Resistance](docs/bypass-resistance.md) | Known evasion techniques, mitigations, limitations |
 | [Known Attacks Blocked](docs/attacks-blocked.md) | Real attacks with repro snippets |
 | [SIEM Integration](docs/guides/siem-integration.md) | Log schema, forwarding patterns, SIEM queries |

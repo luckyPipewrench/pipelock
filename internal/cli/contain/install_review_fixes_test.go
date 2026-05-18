@@ -69,7 +69,7 @@ func TestRenderLaunchWrapper_EmbedsAllowListLookup(t *testing.T) {
 		env.toolsListPath,
 		"not in pipelock contain allow-list",
 		"refusing non-absolute target",
-		`case "$TOOL" in`, // metacharacter rejection
+		`[[ ! "$TOOL" =~ ` + containToolNameRegex, // shared regex check
 		"set -euo pipefail",
 	}
 	for _, r := range requirements {

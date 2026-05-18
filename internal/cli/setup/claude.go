@@ -245,6 +245,10 @@ func claudeResult(cmd *cobra.Command, exitCodeMode bool, hookEventName, permissi
 // Returns nil action for unknown tools (default allow).
 // Returns error for known tools with unparseable tool_input (fail-closed).
 func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
+	if strings.TrimSpace(string(p.ToolInput)) == "null" {
+		return nil, errors.New("tool_input must not be null")
+	}
+
 	action := decide.Action{Source: "claude-code"}
 
 	switch {

@@ -33,6 +33,13 @@ type installOpts struct {
 
 var containUsernamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
+// containToolNameRegex is the shared regex that both plk-launch and the plk
+// meta-wrapper enforce on operator-supplied tool names. Keeping a single
+// source of truth prevents the two wrappers from drifting and letting a name
+// through one layer that the other rejects. The regex is rendered as a bash
+// =~ pattern in both scripts.
+const containToolNameRegex = "^[a-z0-9][a-z0-9_-]{0,30}$"
+
 // installCmd builds the `pipelock contain install` cobra command.
 func installCmd() *cobra.Command {
 	var opts installOpts
@@ -210,6 +217,7 @@ func installSteps(opts installOpts) []step {
 		stepInstallNFTRules(),
 		stepWriteToolsList(),
 		stepWriteLaunchWrapper(),
+		stepWriteMetaWrapper(),
 		stepWriteToolWrappers(),
 		stepWriteWrapperInventory(),
 		stepInstallSudoers(),
@@ -1353,11 +1361,13 @@ func renderLaunchWrapper(env *installEnv) string {
 		`fi`,
 		`TOOL="$1"; shift`,
 		"",
-		`# Reject tool names with shell metacharacters or path separators up`,
-		`# front. The install-time regex is tighter; this is defense in depth.`,
-		`case "$TOOL" in`,
-		`    *[!a-z0-9_-]*|"") echo "plk-launch: invalid tool name $TOOL" >&2; exit 3 ;;`,
-		`esac`,
+		`# Reject tool names that violate the shared install-time regex.`,
+		`# Same pattern is enforced in the plk meta-wrapper so the two`,
+		`# layers never drift.`,
+		`if [[ ! "$TOOL" =~ ` + containToolNameRegex + ` ]]; then`,
+		`    echo "plk-launch: invalid tool name $TOOL" >&2`,
+		`    exit 3`,
+		`fi`,
 		"",
 		`if [[ ! -r "$TOOLS_LIST" ]]; then`,
 		`    echo "plk-launch: missing allow-list at $TOOLS_LIST (run pipelock contain install)" >&2`,
@@ -1441,6 +1451,53 @@ func shellQuote(s string) string {
 // ---------------------------------------------------------------------------
 // Step 18: write per-tool wrappers for allow-listed tools.
 // ---------------------------------------------------------------------------
+
+func stepWriteMetaWrapper() step {
+	return step{
+		name: "write-plk-meta-wrapper",
+		desc: "write /usr/local/bin/plk (dispatches to plk-launch)",
+		apply: func(_ context.Context, env *installEnv) (bool, error) {
+			body := renderMetaWrapper(env)
+			path := filepath.Join(env.wrapperDir, "plk")
+			if existing, err := env.readFile(path); err == nil && string(existing) == body {
+				_ = env.chmod(path, modeWrapperExec)
+				return false, nil
+			}
+			if err := backupAndWrite(env, path, []byte(body), modeWrapperExec); err != nil {
+				return false, err
+			}
+			return true, nil
+		},
+		undo: func(_ context.Context, env *installEnv) error {
+			path := filepath.Join(env.wrapperDir, "plk")
+			return restoreBackup(env, path)
+		},
+	}
+}
+
+func renderMetaWrapper(env *installEnv) string {
+	return strings.Join([]string{
+		"#!/bin/bash",
+		"# Managed by `pipelock contain install`. Edits are clobbered on next install.",
+		"set -euo pipefail",
+		"",
+		`if [[ $# -lt 1 ]]; then`,
+		`    echo "usage: plk <tool> [args...]" >&2`,
+		`    exit 2`,
+		`fi`,
+		`if [[ ! "$1" =~ ` + containToolNameRegex + ` ]]; then`,
+		`    echo "plk: invalid tool name $1" >&2`,
+		`    exit 3`,
+		`fi`,
+		"TOOLS_LIST=" + shellQuote(env.toolsListPath),
+		`if [[ ! -s "$TOOLS_LIST" ]]; then`,
+		`    echo "plk: missing or empty allow-list at $TOOLS_LIST (run pipelock contain install)" >&2`,
+		`    exit 4`,
+		`fi`,
+		"exec sudo -n -u " + env.agentUserName + " " + filepath.Join(env.wrapperDir, "plk-launch") + ` "$@"`,
+		"",
+	}, "\n")
+}
 
 func stepWriteToolWrappers() step {
 	var touched []string

@@ -157,26 +157,27 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 			h := sha256.Sum256(data)
 			return hex.EncodeToString(h[:]), nil
 		},
-		out:            out,
-		errOut:         out,
-		operatorUser:   containInstallOperatorUser,
-		proxyUserName:  "pipelock-proxy",
-		agentUserName:  "pipelock-agent",
-		configDir:      filepath.Join(root, "etc", "pipelock"),
-		dataDir:        filepath.Join(root, "var", "lib", "pipelock"),
-		wrapperDir:     filepath.Join(root, "usr", "local", "bin"),
-		systemUnitPath: filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
-		nftRulesPath:   filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
-		nftMainPath:    filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
-		sudoersPath:    filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
-		caBundlePath:   filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
-		caExportPath:   filepath.Join(root, "etc", "pipelock", "ca.pem"),
-		integrityDir:   filepath.Join(root, "etc", "pipelock", "integrity"),
-		integrityPin:   filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
-		wrapperInvPath: filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
-		toolsListPath:  filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
-		pipelockTarget: filepath.Join(root, "usr", "local", "bin", "pipelock"),
-		proxyPort:      8888,
+		out:              out,
+		errOut:           out,
+		operatorUser:     containInstallOperatorUser,
+		proxyUserName:    "pipelock-proxy",
+		agentUserName:    "pipelock-agent",
+		configDir:        filepath.Join(root, "etc", "pipelock"),
+		dataDir:          filepath.Join(root, "var", "lib", "pipelock"),
+		wrapperDir:       filepath.Join(root, "usr", "local", "bin"),
+		systemUnitPath:   filepath.Join(root, "etc", "systemd", "system", "pipelock.service"),
+		nftRulesPath:     filepath.Join(root, "etc", "nftables.d", "50-pipelock-containment.nft"),
+		nftMainPath:      filepath.Join(root, "etc", "sysconfig", "nftables.conf"),
+		sudoersPath:      filepath.Join(root, "etc", "sudoers.d", "50-pipelock-agent"),
+		caBundlePath:     filepath.Join(root, "etc", "pipelock", "combined-ca.pem"),
+		caExportPath:     filepath.Join(root, "etc", "pipelock", "ca.pem"),
+		integrityDir:     filepath.Join(root, "etc", "pipelock", "integrity"),
+		integrityPin:     filepath.Join(root, "etc", "pipelock", "integrity", "binary-pin.sha256"),
+		wrapperInvPath:   filepath.Join(root, "etc", "pipelock", "contain", "wrappers.json"),
+		toolsListPath:    filepath.Join(root, "etc", "pipelock", "contain", "tools.list"),
+		workspaceInvPath: filepath.Join(root, "etc", "pipelock", "contain", "workspaces.json"),
+		pipelockTarget:   filepath.Join(root, "usr", "local", "bin", "pipelock"),
+		proxyPort:        8888,
 	}
 
 	// Plant the source binary the install will copy.
@@ -403,6 +404,7 @@ func TestRunInstall_EndToEndWithExistingUsers(t *testing.T) {
 		env.systemUnitPath,
 		env.nftRulesPath,
 		filepath.Join(env.wrapperDir, "plk-launch"),
+		filepath.Join(env.wrapperDir, "plk"),
 		filepath.Join(env.wrapperDir, "plk-claude"),
 		env.wrapperInvPath,
 		env.sudoersPath,
@@ -482,6 +484,7 @@ func TestRunInstall_UpgradeRotatesExistingBackups(t *testing.T) {
 		env.nftRulesPath,
 		env.toolsListPath,
 		filepath.Join(env.wrapperDir, "plk-launch"),
+		filepath.Join(env.wrapperDir, "plk"),
 		filepath.Join(env.wrapperDir, "plk-claude"),
 		env.wrapperInvPath,
 		env.sudoersPath,
@@ -894,6 +897,26 @@ func TestRenderToolWrapper_UsesSudo(t *testing.T) {
 	}
 	if !strings.Contains(body, "plk-launch claude") {
 		t.Errorf("missing plk-launch dispatch: %s", body)
+	}
+}
+
+func TestRenderMetaWrapper_UsesSudoAndDispatchesArgs(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	body := renderMetaWrapper(env)
+	if !strings.Contains(body, "usage: plk <tool> [args...]") {
+		t.Errorf("missing usage: %s", body)
+	}
+	if !strings.Contains(body, "sudo -n -u pipelock-agent") {
+		t.Errorf("missing outer non-interactive sudo: %s", body)
+	}
+	if !strings.Contains(body, `=~ ^[a-z0-9][a-z0-9_-]{0,30}$`) {
+		t.Errorf("missing tool-name regex guard: %s", body)
+	}
+	if !strings.Contains(body, "missing or empty allow-list") {
+		t.Errorf("missing allow-list precheck: %s", body)
+	}
+	if !strings.Contains(body, "plk-launch") || !strings.Contains(body, `"$@"`) {
+		t.Errorf("missing full argv dispatch to plk-launch: %s", body)
 	}
 }
 
@@ -1471,12 +1494,12 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 21 steps total (20 install + 1 tools.list
-	// allow-list). Changing this count is a documented breaking change for
-	// the dry-run / verify probe-4 inventory.
+	// Sanity: the install flow has 22 steps total (20 install + 1 tools.list
+	// allow-list + 1 meta-wrapper). Changing this count is a documented
+	// breaking change for the dry-run / verify probe-4 inventory.
 	steps := installSteps(installOpts{})
-	if len(steps) != 21 {
-		t.Errorf("installSteps count: got %d, want 21", len(steps))
+	if len(steps) != 22 {
+		t.Errorf("installSteps count: got %d, want 22", len(steps))
 	}
 }
 

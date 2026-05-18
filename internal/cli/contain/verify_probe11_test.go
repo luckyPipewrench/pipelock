@@ -18,7 +18,10 @@ import (
 // tests verify the probe's classification of every relevant plk-launch
 // exit code.
 
-const probe11Sentinel = "pipelock-probe-sentinel-not-a-real-tool"
+// Mirrors verify.go's sentinelTool. Must satisfy containToolNameRegex (max 31
+// chars) so plk-launch routes the sentinel to the allow-list rejection path
+// (exit 5), not the early name regex (exit 3).
+const probe11Sentinel = "pipelock-probe-sentinel-tool"
 
 func TestProbeCCLaunchAllowList_PassOnExit5(t *testing.T) {
 	env := makeProbeEnv(t)
@@ -124,6 +127,61 @@ func TestProbeCCLaunchAllowList_SkipOnRunErr(t *testing.T) {
 	if status != statusSkip {
 		t.Errorf("status: %s, want skip", status)
 	}
+}
+
+func TestProbeWorkspaceAccess(t *testing.T) {
+	t.Run("passes for readable path", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		dir := t.TempDir()
+		env.workspacePaths = []string{dir}
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name != "sudo" || !containsArg(args, dir) {
+				t.Fatalf("unexpected command: %s %v", name, args)
+			}
+			return "", 0, nil
+		}
+		status, detail := probeWorkspaceAccess(context.Background(), env)
+		if status != statusPass {
+			t.Fatalf("status: %s detail=%s", status, detail)
+		}
+	})
+
+	t.Run("fails for unreadable path", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		dir := t.TempDir()
+		env.workspacePaths = []string{dir}
+		env.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return "Permission denied", 1, nil
+		}
+		status, detail := probeWorkspaceAccess(context.Background(), env)
+		if status != statusFail {
+			t.Fatalf("status: %s detail=%s", status, detail)
+		}
+		if !strings.Contains(detail, "not readable/traversable") {
+			t.Fatalf("detail: %s", detail)
+		}
+	})
+
+	t.Run("resolves relative path before sudo check", func(t *testing.T) {
+		env := makeProbeEnv(t)
+		cwd := t.TempDir()
+		t.Chdir(cwd)
+		dir := filepath.Join(cwd, "project")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		env.workspacePaths = []string{"project"}
+		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+			if name != "sudo" || !containsArg(args, dir) {
+				t.Fatalf("unexpected command: %s %v, want absolute path %s", name, args, dir)
+			}
+			return "", 0, nil
+		}
+		status, detail := probeWorkspaceAccess(context.Background(), env)
+		if status != statusPass {
+			t.Fatalf("status: %s detail=%s", status, detail)
+		}
+	})
 }
 
 func TestProbeListedToolTargets_PassWithExplicitTarget(t *testing.T) {

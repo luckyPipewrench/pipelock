@@ -248,8 +248,9 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 		return err
 	}
 	if result.MCPConfigMapYAML != "" {
-		if err := writeOutput(nil, []byte(result.MCPConfigMapYAML), filepath.Join(cleanDir, "pipelock-mcp-configmap.yaml"), opts.force); err != nil {
-			return err
+		mcpConfigPath := filepath.Join(cleanDir, "pipelock-mcp-configmap.yaml")
+		if err := writeOutput(nil, []byte(result.MCPConfigMapYAML), mcpConfigPath, opts.force); err != nil {
+			return fmt.Errorf("writing %s: %w", mcpConfigPath, err)
 		}
 	}
 	if err := writeOutput(nil, []byte(result.AgentNetworkPolicyYAML), filepath.Join(cleanDir, "agent-networkpolicy.yaml"), opts.force); err != nil {

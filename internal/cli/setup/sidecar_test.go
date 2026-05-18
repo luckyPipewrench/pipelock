@@ -480,7 +480,7 @@ func TestRunSidecar_MCPDisableRerunEmitsScrubbedWorkload(t *testing.T) {
 		t.Fatalf("reading disabled output: %v", err)
 	}
 	content := string(data)
-	for _, stale := range []string{envMCPProxy, envMCPConfig, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation, managedMCPConfigAnnotation, managedMCPServerAnnotation, sidecarMCPConfigVolume} {
+	for _, stale := range []string{envMCPProxy, envMCPConfig, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation, managedMCPUpstreamHash, managedMCPConfigAnnotation, managedMCPServerAnnotation, sidecarMCPConfigVolume} {
 		if strings.Contains(content, stale) {
 			t.Fatalf("disabled output still contains %q:\n%s", stale, content)
 		}

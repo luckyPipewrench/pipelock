@@ -380,6 +380,7 @@ func validateSidecarMCPServerName(raw string) error {
 func sidecarMCPContractChanged(raw map[string]interface{}, opts sidecarOptions) bool {
 	existingProxy := extractAnnotation(raw, managedMCPProxyAnnotation)
 	existingUpstream := extractAnnotation(raw, managedMCPUpstreamAnnotation)
+	existingUpstreamHash := extractAnnotation(raw, managedMCPUpstreamHash)
 	existingConfig := extractAnnotation(raw, managedMCPConfigAnnotation)
 	existingServerName := extractAnnotation(raw, managedMCPServerAnnotation)
 	if opts.mcpUpstream == "" {
@@ -388,13 +389,14 @@ func sidecarMCPContractChanged(raw map[string]interface{}, opts sidecarOptions) 
 		// them. Fall back to inspecting env vars and the MCP ConfigMap
 		// volume so a disable run always emits a scrubbed manifest when
 		// MCP state is present, even if the annotations are gone.
-		if existingProxy != "" || existingUpstream != "" || existingConfig != "" || existingServerName != "" {
+		if existingProxy != "" || existingUpstream != "" || existingUpstreamHash != "" || existingConfig != "" || existingServerName != "" {
 			return true
 		}
 		return rawWorkloadHasMCPState(raw)
 	}
 	return existingProxy == "" ||
-		existingUpstream != opts.mcpUpstream ||
+		existingUpstream != managedAnnotationEnabled ||
+		existingUpstreamHash != mcpUpstreamFingerprint(opts.mcpUpstream) ||
 		existingConfig != sidecarMCPConfigPath() ||
 		existingServerName != resolveMCPServerName(opts.mcpServerName)
 }

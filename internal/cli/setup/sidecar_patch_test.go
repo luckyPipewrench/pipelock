@@ -396,10 +396,10 @@ func TestGenerateSidecarPatch_MCPUpstream(t *testing.T) {
 	if got := envValue(t, envList, envMCPConfig); got != result.MCPConfigPath {
 		t.Fatalf("%s = %q, want %q", envMCPConfig, got, result.MCPConfigPath)
 	}
-	if !podSpecHasConfigMapVolume(podSpec, sidecarMCPConfigVolume, mcpClientConfigMapName(result.ProxyName)) {
+	if !podSpecHasConfigMapVolume(podSpec, mcpClientConfigMapName(result.ProxyName)) {
 		t.Fatalf("podSpec missing %s ConfigMap volume: %+v", sidecarMCPConfigVolume, podSpec["volumes"])
 	}
-	if !podSpecHasVolumeMount(podSpec, sidecarMCPConfigVolume, sidecarMCPConfigMount) {
+	if !podSpecHasVolumeMount(podSpec) {
 		t.Fatalf("agent container missing %s volumeMount: %+v", sidecarMCPConfigVolume, agentContainer["volumeMounts"])
 	}
 
@@ -475,7 +475,7 @@ func TestGenerateSidecarPatch_MCPUpstreamRecordsAnnotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("detectWorkload: %v", err)
 	}
-	const mcpUpstream = "http://openclaw:3000/mcp"
+	const mcpUpstream = "http://operator@openclaw:3000/mcp?opaque=value"
 	result, err := generateSidecarPatch(manifest, sidecarOptions{
 		preset:      config.ModeBalanced,
 		mcpUpstream: mcpUpstream,
@@ -485,9 +485,13 @@ func TestGenerateSidecarPatch_MCPUpstreamRecordsAnnotation(t *testing.T) {
 	}
 	metadata := result.PatchedManifest["metadata"].(map[string]interface{})
 	annotations := metadata["annotations"].(map[string]interface{})
-	if annotations[managedMCPUpstreamAnnotation] != mcpUpstream {
+	if annotations[managedMCPUpstreamAnnotation] != managedAnnotationEnabled {
 		t.Fatalf("annotations[%q] = %v, want %q",
-			managedMCPUpstreamAnnotation, annotations[managedMCPUpstreamAnnotation], mcpUpstream)
+			managedMCPUpstreamAnnotation, annotations[managedMCPUpstreamAnnotation], managedAnnotationEnabled)
+	}
+	if annotations[managedMCPUpstreamHash] != mcpUpstreamFingerprint(mcpUpstream) {
+		t.Fatalf("annotations[%q] = %v, want %q",
+			managedMCPUpstreamHash, annotations[managedMCPUpstreamHash], mcpUpstreamFingerprint(mcpUpstream))
 	}
 	if annotations[managedMCPConfigAnnotation] != sidecarMCPConfigPath() {
 		t.Fatalf("annotations[%q] = %v, want %q",
@@ -496,6 +500,9 @@ func TestGenerateSidecarPatch_MCPUpstreamRecordsAnnotation(t *testing.T) {
 	if annotations[managedMCPServerAnnotation] != defaultMCPServerName {
 		t.Fatalf("annotations[%q] = %v, want %q",
 			managedMCPServerAnnotation, annotations[managedMCPServerAnnotation], defaultMCPServerName)
+	}
+	if strings.Contains(result.MCPConfigMapYAML, mcpUpstream) {
+		t.Fatalf("MCP ConfigMap YAML should not persist raw upstream URL:\n%s", result.MCPConfigMapYAML)
 	}
 }
 
@@ -536,6 +543,9 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 	if _, ok := annotations[managedMCPUpstreamAnnotation]; ok {
 		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPUpstreamAnnotation, annotations)
 	}
+	if _, ok := annotations[managedMCPUpstreamHash]; ok {
+		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPUpstreamHash, annotations)
+	}
 	if _, ok := annotations[managedMCPConfigAnnotation]; ok {
 		t.Fatalf("expected %s annotation to be scrubbed on disable, got %+v", managedMCPConfigAnnotation, annotations)
 	}
@@ -555,10 +565,10 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 			t.Fatalf("expected MCP env to be scrubbed on disable: %+v", envList)
 		}
 	}
-	if podSpecHasConfigMapVolume(podSpec, sidecarMCPConfigVolume, mcpClientConfigMapName(second.ProxyName)) {
+	if podSpecHasConfigMapVolume(podSpec, mcpClientConfigMapName(second.ProxyName)) {
 		t.Fatalf("expected %s volume to be scrubbed on disable: %+v", sidecarMCPConfigVolume, podSpec["volumes"])
 	}
-	if podSpecHasVolumeMount(podSpec, sidecarMCPConfigVolume, sidecarMCPConfigMount) {
+	if podSpecHasVolumeMount(podSpec) {
 		t.Fatalf("expected %s volumeMount to be scrubbed on disable: %+v", sidecarMCPConfigVolume, containers[0].(map[string]interface{})["volumeMounts"])
 	}
 
@@ -572,6 +582,9 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
 			}
 			if _, ok := tmplAnn[managedMCPConfigAnnotation]; ok {
+				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
+			}
+			if _, ok := tmplAnn[managedMCPUpstreamHash]; ok {
 				t.Fatalf("template annotations not scrubbed: %+v", tmplAnn)
 			}
 			if _, ok := tmplAnn[managedMCPServerAnnotation]; ok {
@@ -615,9 +628,113 @@ func TestGenerateSidecarPatch_MCPServerName(t *testing.T) {
 	}) {
 		t.Fatal("changed MCP server name should mark contract changed")
 	}
-	if !strings.Contains(result.MCPConfigMapYAML, `"openclaw"`) {
-		t.Fatalf("MCPConfigMapYAML missing custom server name:\n%s", result.MCPConfigMapYAML)
+	var mcpConfigMap map[string]interface{}
+	if err := yaml.Unmarshal([]byte(result.MCPConfigMapYAML), &mcpConfigMap); err != nil {
+		t.Fatalf("parsing MCPConfigMapYAML: %v", err)
 	}
+	mcpConfigData := mcpConfigMap["data"].(map[string]interface{})[sidecarMCPConfigFile].(string)
+	var mcpClientConfig map[string]map[string]map[string]string
+	if err := json.Unmarshal([]byte(mcpConfigData), &mcpClientConfig); err != nil {
+		t.Fatalf("MCP client config is not valid JSON: %v\n%s", err, mcpConfigData)
+	}
+	if _, ok := mcpClientConfig["mcpServers"]["openclaw"]; !ok {
+		t.Fatalf("MCP client config missing custom server name: %+v", mcpClientConfig["mcpServers"])
+	}
+}
+
+func TestConfigureMCPClientConfigMount_ConflictsAndDisable(t *testing.T) {
+	t.Parallel()
+
+	t.Run("upsert and disable", func(t *testing.T) {
+		podSpec := map[string]interface{}{
+			"containers": []interface{}{
+				map[string]interface{}{"name": "agent"},
+			},
+		}
+		if err := configureMCPClientConfigMount(podSpec, "agent-mcp-config", sidecarMCPConfigPath()); err != nil {
+			t.Fatalf("configureMCPClientConfigMount enable: %v", err)
+		}
+		if !podSpecHasConfigMapVolume(podSpec, "agent-mcp-config") {
+			t.Fatalf("missing MCP ConfigMap volume: %+v", podSpec["volumes"])
+		}
+		if !podSpecHasVolumeMount(podSpec) {
+			t.Fatalf("missing MCP ConfigMap volumeMount: %+v", podSpec["containers"])
+		}
+
+		if err := configureMCPClientConfigMount(podSpec, "", ""); err != nil {
+			t.Fatalf("configureMCPClientConfigMount disable: %v", err)
+		}
+		if _, ok := podSpec["volumes"]; ok {
+			t.Fatalf("disable should remove empty volumes list: %+v", podSpec["volumes"])
+		}
+		container := podSpec["containers"].([]interface{})[0].(map[string]interface{})
+		if _, ok := container["volumeMounts"]; ok {
+			t.Fatalf("disable should remove empty volumeMounts list: %+v", container["volumeMounts"])
+		}
+	})
+
+	t.Run("wrong existing volume shape", func(t *testing.T) {
+		podSpec := map[string]interface{}{
+			"containers": []interface{}{map[string]interface{}{"name": "agent"}},
+			"volumes": []interface{}{
+				map[string]interface{}{"name": sidecarMCPConfigVolume, "emptyDir": map[string]interface{}{}},
+			},
+		}
+		err := configureMCPClientConfigMount(podSpec, "agent-mcp-config", sidecarMCPConfigPath())
+		if err == nil || !strings.Contains(err.Error(), "is not a ConfigMap") {
+			t.Fatalf("expected non-ConfigMap volume error, got %v", err)
+		}
+	})
+
+	t.Run("wrong existing config map name", func(t *testing.T) {
+		podSpec := map[string]interface{}{
+			"containers": []interface{}{map[string]interface{}{"name": "agent"}},
+			"volumes": []interface{}{
+				map[string]interface{}{
+					"name":      sidecarMCPConfigVolume,
+					"configMap": map[string]interface{}{"name": "other-config"},
+				},
+			},
+		}
+		err := configureMCPClientConfigMount(podSpec, "agent-mcp-config", sidecarMCPConfigPath())
+		if err == nil || !strings.Contains(err.Error(), "already uses ConfigMap") {
+			t.Fatalf("expected wrong ConfigMap name error, got %v", err)
+		}
+	})
+
+	t.Run("mount path conflict", func(t *testing.T) {
+		podSpec := map[string]interface{}{
+			"containers": []interface{}{
+				map[string]interface{}{
+					"name": "agent",
+					"volumeMounts": []interface{}{
+						map[string]interface{}{"name": "other", "mountPath": sidecarMCPConfigMount},
+					},
+				},
+			},
+		}
+		err := configureMCPClientConfigMount(podSpec, "agent-mcp-config", sidecarMCPConfigPath())
+		if err == nil || !strings.Contains(err.Error(), "mountPath") {
+			t.Fatalf("expected mountPath conflict error, got %v", err)
+		}
+	})
+
+	t.Run("existing mount wrong path", func(t *testing.T) {
+		podSpec := map[string]interface{}{
+			"containers": []interface{}{
+				map[string]interface{}{
+					"name": "agent",
+					"volumeMounts": []interface{}{
+						map[string]interface{}{"name": sidecarMCPConfigVolume, "mountPath": "/other"},
+					},
+				},
+			},
+		}
+		err := configureMCPClientConfigMount(podSpec, "agent-mcp-config", sidecarMCPConfigPath())
+		if err == nil || !strings.Contains(err.Error(), "already uses mountPath") {
+			t.Fatalf("expected wrong mountPath error, got %v", err)
+		}
+	})
 }
 
 func TestGenerateSidecarPatch_CustomIdentity(t *testing.T) {

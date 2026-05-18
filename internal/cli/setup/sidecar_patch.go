@@ -8,6 +8,8 @@
 package setup
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -59,10 +61,12 @@ const (
 	managedProxyServiceAnnotation = "pipelock.dev/proxy-service"
 	managedMCPProxyAnnotation     = "pipelock.dev/mcp-proxy-service"
 	managedMCPUpstreamAnnotation  = "pipelock.dev/mcp-upstream"
+	managedMCPUpstreamHash        = "pipelock.dev/mcp-upstream-sha256"
 	managedMCPConfigAnnotation    = "pipelock.dev/mcp-config"
 	managedMCPServerAnnotation    = "pipelock.dev/mcp-server-name"
 	managedTopologyCompanion      = "companion-proxy"
 	managedByLabelValue           = "pipelock-init-sidecar"
+	managedAnnotationEnabled      = "true"
 
 	defaultMCPServerName = "pipelock"
 )
@@ -539,7 +543,8 @@ func renderMCPClientConfigMap(namespace, configMapName string, proxyLabels map[s
 			"labels":    labelsToInterfaceMap(labels),
 			"annotations": map[string]interface{}{
 				managedMCPProxyAnnotation:    mcpProxyURL,
-				managedMCPUpstreamAnnotation: mcpUpstream,
+				managedMCPUpstreamAnnotation: managedAnnotationEnabled,
+				managedMCPUpstreamHash:       mcpUpstreamFingerprint(mcpUpstream),
 				managedMCPConfigAnnotation:   sidecarMCPConfigPath(),
 				managedMCPServerAnnotation:   serverName,
 			},
@@ -884,6 +889,11 @@ func resolveMCPServerName(name string) string {
 	return name
 }
 
+func mcpUpstreamFingerprint(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
 func mcpUpstreamPolicyPort(raw string) int {
 	if raw == "" {
 		return 0
@@ -947,11 +957,12 @@ func annotateManagedWorkload(raw map[string]interface{}, kind, proxyName, mcpPro
 	var removeKeys []string
 	if mcpProxyURL != "" {
 		annotations[managedMCPProxyAnnotation] = mcpProxyURL
-		annotations[managedMCPUpstreamAnnotation] = mcpUpstream
+		annotations[managedMCPUpstreamAnnotation] = managedAnnotationEnabled
+		annotations[managedMCPUpstreamHash] = mcpUpstreamFingerprint(mcpUpstream)
 		annotations[managedMCPConfigAnnotation] = mcpConfigPath
 		annotations[managedMCPServerAnnotation] = mcpServerName
 	} else {
-		removeKeys = append(removeKeys, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation, managedMCPConfigAnnotation, managedMCPServerAnnotation)
+		removeKeys = append(removeKeys, managedMCPProxyAnnotation, managedMCPUpstreamAnnotation, managedMCPUpstreamHash, managedMCPConfigAnnotation, managedMCPServerAnnotation)
 	}
 	if err := setAnnotationsAtPath(raw, []string{"metadata", "annotations"}, annotations); err != nil {
 		return err

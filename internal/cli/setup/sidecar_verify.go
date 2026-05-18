@@ -150,10 +150,10 @@ func verifyMCPLauncherContract(result *sidecarPatchResult, failed *[]string) {
 	if !podSpecHasEnv(podSpec, envMCPConfig, result.MCPConfigPath) {
 		*failed = append(*failed, fmt.Sprintf("agent workload does not set %s", envMCPConfig))
 	}
-	if !podSpecHasConfigMapVolume(podSpec, sidecarMCPConfigVolume, mcpClientConfigMapName(result.ProxyName)) {
+	if !podSpecHasConfigMapVolume(podSpec, mcpClientConfigMapName(result.ProxyName)) {
 		*failed = append(*failed, "agent workload does not mount the MCP client ConfigMap volume")
 	}
-	if !podSpecHasVolumeMount(podSpec, sidecarMCPConfigVolume, sidecarMCPConfigMount) {
+	if !podSpecHasVolumeMount(podSpec) {
 		*failed = append(*failed, "agent container does not mount the MCP client config directory")
 	}
 }
@@ -189,7 +189,7 @@ func podSpecHasEnv(podSpec map[string]interface{}, name, value string) bool {
 	return false
 }
 
-func podSpecHasConfigMapVolume(podSpec map[string]interface{}, volumeName, configMapName string) bool {
+func podSpecHasConfigMapVolume(podSpec map[string]interface{}, configMapName string) bool {
 	volumes, ok := podSpec["volumes"].([]interface{})
 	if !ok {
 		return false
@@ -199,7 +199,7 @@ func podSpecHasConfigMapVolume(podSpec map[string]interface{}, volumeName, confi
 		if !ok {
 			continue
 		}
-		if name, _ := volume["name"].(string); name != volumeName {
+		if name, _ := volume["name"].(string); name != sidecarMCPConfigVolume {
 			continue
 		}
 		configMap, _ := volume["configMap"].(map[string]interface{})
@@ -209,7 +209,7 @@ func podSpecHasConfigMapVolume(podSpec map[string]interface{}, volumeName, confi
 	return false
 }
 
-func podSpecHasVolumeMount(podSpec map[string]interface{}, volumeName, mountPath string) bool {
+func podSpecHasVolumeMount(podSpec map[string]interface{}) bool {
 	containers, ok := podSpec["containers"].([]interface{})
 	if !ok {
 		return false
@@ -230,7 +230,7 @@ func podSpecHasVolumeMount(podSpec map[string]interface{}, volumeName, mountPath
 			}
 			name, _ := mount["name"].(string)
 			path, _ := mount["mountPath"].(string)
-			if name == volumeName && path == mountPath {
+			if name == sidecarMCPConfigVolume && path == sidecarMCPConfigMount {
 				return true
 			}
 		}

@@ -780,6 +780,10 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if action == "" {
 		action = config.ActionBlock
 	}
+	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), cfg)
+	if promptInjectionHardBlock {
+		action = config.ActionBlock
+	}
 
 	// Log the DLP finding.
 	patternNames := dlpMatchNames(result.DLPMatches)
@@ -818,7 +822,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
 		bodyBlockReason = blockreason.PromptInjection
 	}
-	if isFailClosedBodyResult(result, bodyBytes) {
+	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
 		rp.emitReceipt(receipt.EmitOpts{

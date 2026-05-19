@@ -802,6 +802,10 @@ func newInterceptHandler(
 				dlpExempt := scannerLabel == scannerLabelBodyDLP &&
 					len(result.DLPMatches) > 0 &&
 					isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
+				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
+				if promptInjectionHardBlock {
+					action = config.ActionBlock
+				}
 
 				// Adaptive enforcement: upgrade the body action.
 				// Skip upgrade for DLP-exempt destinations — prevents
@@ -825,7 +829,7 @@ func newInterceptHandler(
 				// and redaction gate failures must block regardless of enforce
 				// mode. ActionAsk also has no HITL terminal in intercepted
 				// tunnels, so it fails closed here.
-				if isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+				if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					if !dlpExempt {
 						interceptRecordSignal(ic, session.SignalBlock)
 					}

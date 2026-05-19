@@ -105,6 +105,24 @@ func isResponseScanExempt(hostname string, exemptDomains []string) bool {
 	return isDomainExempt(hostname, exemptDomains)
 }
 
+// shouldHardBlockBodyPromptInjection returns true when a prompt-injection
+// match appears in an outbound request body to a non-provider destination.
+// Prompts sent to the configured response-scan exemption set can naturally
+// discuss injection attempts; non-exempt publish/API destinations should not
+// receive those instructions in warn/balanced mode.
+func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, cfg *config.Config) bool {
+	if len(result.InjectionMatches) == 0 {
+		return false
+	}
+	if cfg == nil {
+		return true
+	}
+	if isResponseScanExempt(hostname, cfg.ResponseScanning.ExemptDomains) {
+		return false
+	}
+	return true
+}
+
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
 	Clean            bool

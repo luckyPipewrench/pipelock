@@ -1356,7 +1356,8 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		reason = "request body contains secret patterns"
 	}
 
-	if isFailClosedBodyResult(result, bodyBytes) {
+	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.hostname, r.cfg)
+	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		r.recordSignal(session.SignalBlock, log)
 		log.LogWSBlocked(r.targetURL, audit.DirectionClientToServer, scannerLabel, reason, r.clientIP, r.requestID)
 		r.proxy.metrics.RecordWSScanHit(scannerLabel)

@@ -66,18 +66,19 @@ handshake latency, and per-request/response blocking.
 |--------|------|--------|-------------|
 | `pipelock_tls_intercept_total` | counter | `outcome` | Total TLS-intercepted CONNECT tunnels. `outcome` is `intercepted` or `handshake_error`. |
 | `pipelock_tls_handshake_duration_seconds` | histogram | `side` | TLS handshake latency. `side` is `client` or `upstream`. Buckets: 1ms to 500ms. |
-| `pipelock_tls_request_blocked_total` | counter | `reason` | Requests blocked inside intercepted tunnels. `reason` is `authority_mismatch`, `body_dlp`, or `header_dlp`. |
+| `pipelock_tls_request_blocked_total` | counter | `reason` | Requests blocked inside intercepted tunnels. `reason` is `authority_mismatch`, `body_dlp`, `body_prompt_injection`, or `header_dlp`. |
 | `pipelock_tls_response_blocked_total` | counter | `reason` | Responses blocked inside intercepted tunnels. `reason` is `compressed`, `read_error`, `oversized`, or `injection`. |
 | `pipelock_tls_cert_cache_size` | gauge | (none) | Current number of cached forged leaf certificates. |
 
 ## Request Scanning Metrics
 
-Request body and header scanning detects secrets in POST/PUT/PATCH bodies,
+Request body and header scanning detects secrets and prompt injection in POST/PUT/PATCH bodies,
 form data, multipart uploads, and HTTP headers on forward-proxy traffic.
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `pipelock_body_dlp_hits_total` | counter | `action`, `agent` | Request body DLP detections. `action` is `warn` or `block`. |
+| `pipelock_body_prompt_injection_hits_total` | counter | `action`, `agent` | Request body prompt-injection detections. `action` is `warn` or `block`. |
 | `pipelock_header_dlp_hits_total` | counter | `action`, `agent` | Request header DLP detections. `action` is `warn` or `block`. |
 | `pipelock_response_scan_exempt_total` | counter | `reason`, `transport` | Response scanning exemptions. `reason` is `exempt_domain` or `suppress`; current emitters use transports such as `fetch`, `forward`, `connect`, `reverse`, and `websocket`. Every skipped response scan is counted so operators can quantify how much traffic bypasses injection scanning. |
 

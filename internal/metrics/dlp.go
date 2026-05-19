@@ -20,6 +20,12 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 		Help:      "Total request header DLP scan detections by action.",
 	}, []string{"action", "agent"})
 
+	m.bodyInjectionHits = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "body_prompt_injection_hits_total",
+		Help:      "Total request body prompt-injection detections by action.",
+	}, []string{"action", "agent"})
+
 	m.dlpWarnMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "dlp_warn_matches_total",
@@ -39,7 +45,7 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 	}, []string{"pattern", "severity", "agent"})
 
 	reg.MustRegister(
-		m.bodyDLPHits, m.headerDLPHits, m.dlpWarnMatches,
+		m.bodyDLPHits, m.bodyInjectionHits, m.headerDLPHits, m.dlpWarnMatches,
 		m.AddressFindings, m.FileSentryFindings,
 	)
 }
@@ -47,6 +53,11 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 // RecordBodyDLP increments the request body DLP scan counter by action.
 func (m *Metrics) RecordBodyDLP(action, agent string) {
 	m.bodyDLPHits.WithLabelValues(action, agent).Inc()
+}
+
+// RecordBodyPromptInjection increments the request body prompt-injection counter by action.
+func (m *Metrics) RecordBodyPromptInjection(action, agent string) {
+	m.bodyInjectionHits.WithLabelValues(action, agent).Inc()
 }
 
 // RecordHeaderDLP increments the request header DLP scan counter by action.

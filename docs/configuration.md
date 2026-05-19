@@ -220,7 +220,7 @@ passthrough_domains:
 
 ## Request Body Scanning
 
-Scans request bodies and headers on the forward proxy path for secret exfiltration. Catches secrets in POST/PUT bodies and Authorization/Cookie headers that bypass URL-level scanning.
+Scans request bodies on the forward proxy path for secret exfiltration and prompt injection. Header scanning covers secret exfiltration in Authorization/Cookie-style headers that bypass URL-level scanning.
 
 **Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests), fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true).
 
@@ -242,7 +242,7 @@ request_body_scanning:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable request body and header DLP scanning |
+| `enabled` | `false` | Enable request body DLP/prompt-injection scanning and request header DLP scanning |
 | `action` | `warn` | `warn` logs only, `block` rejects (requires enforce mode) |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
 | `scan_headers` | `true` | Scan request headers for DLP patterns |
@@ -250,7 +250,7 @@ request_body_scanning:
 | `sensitive_headers` | (see above) | Headers to scan in `sensitive` mode |
 | `ignore_headers` | (hop-by-hop + structural) | Headers to skip in `all` mode |
 
-**Content-type dispatch:** JSON bodies have string values extracted recursively. Form-urlencoded bodies are parsed as key-value pairs. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
+**Content-type dispatch:** JSON bodies have string values and object keys extracted recursively. Form-urlencoded bodies are parsed as ordered key-value pairs so split instruction phrases preserve wire order. Multipart form data scans all part headers plus all part bodies regardless of declared `Content-Type` (max 100 parts), and decodes `Content-Transfer-Encoding: base64` / `quoted-printable` before scanning. Text/* and XML bodies are scanned as raw text. Unknown content types get a fallback raw-text scan (never skipped, preventing `Content-Type` spoofing bypass).
 
 **Fail-closed behaviors** (always blocked regardless of `action` setting):
 - Bodies exceeding `max_body_bytes`

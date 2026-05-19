@@ -37,6 +37,7 @@ import (
 var contentScanners = map[string]struct{}{
 	"dlp":                   {},
 	"body_dlp":              {},
+	"body_prompt_injection": {},
 	"header_dlp":            {},
 	"mcp_input_scanning":    {},
 	"response_scan":         {},
@@ -1286,6 +1287,7 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 // LogBodyScan logs a request body scan hit with a configurable event type.
 // Used to distinguish address_protection from body_dlp in audit output.
 func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string, matchCount int, findingNames []string) {
+	technique := TechniqueForScanner(string(eventType))
 	e := newLogEntry(l.zl.Warn(), eventType).
 		str("method", ctx.method).
 		optStr("url", ctx.url).
@@ -1296,7 +1298,8 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 		optStr("request_id", ctx.requestID).
 		optStr("agent", ctx.agent).
 		intField("match_count", matchCount).
-		strs("findings", findingNames)
+		strs("findings", findingNames).
+		optStr("mitre_technique", technique)
 	e.msg("request body " + string(eventType) + " scan hit")
 
 	if l.emitter != nil {

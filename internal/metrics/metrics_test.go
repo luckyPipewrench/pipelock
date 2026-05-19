@@ -919,6 +919,25 @@ func TestRecordBodyDLP(t *testing.T) {
 	}
 }
 
+func TestRecordBodyPromptInjection(t *testing.T) {
+	m := New()
+	m.RecordBodyPromptInjection("block", testAgent)
+	m.RecordBodyPromptInjection("warn", testAgent)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	if !strings.Contains(text, `pipelock_body_prompt_injection_hits_total{action="block",agent="test-agent"} 1`) {
+		t.Errorf("expected body prompt injection block hit:\n%s", text)
+	}
+	if !strings.Contains(text, `pipelock_body_prompt_injection_hits_total{action="warn",agent="test-agent"} 1`) {
+		t.Errorf("expected body prompt injection warn hit:\n%s", text)
+	}
+}
+
 func TestRecordHeaderDLP(t *testing.T) {
 	m := New()
 	m.RecordHeaderDLP("block", testAgent)

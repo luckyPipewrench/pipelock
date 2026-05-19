@@ -74,6 +74,8 @@ const (
 	// operators reconstructing the enforcement timeline see the same
 	// reason in the audit log, the receipt, and the wire response.
 	scannerPatternUnavailable = "scanner unavailable during reload"
+
+	invalidFormURLEncodedBody = "invalid application/x-www-form-urlencoded body"
 )
 
 // isDomainExempt checks if a hostname matches any pattern in a domain
@@ -163,7 +165,8 @@ type BodyScanRequest struct {
 	Path string
 }
 
-// scanRequestBody reads, buffers, and DLP-scans an HTTP request body.
+// scanRequestBody reads, buffers, and scans an HTTP request body for
+// credential exfiltration and prompt injection.
 // Returns the buffered body bytes (for re-wrapping) and the scan result.
 // Fail-closed: oversized bodies and compressed bodies are always blocked.
 func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScanResult) {
@@ -281,8 +284,22 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		}
 	}
 
-	// Joined scan: catches secrets split across multiple fields.
-	// Sort to ensure deterministic ordering (Go map iteration is random).
+	// Joined scan: catches secrets or instruction phrases split across
+	// multiple fields. Prompt-injection scanning uses source extraction order
+	// first because phrase order matters; DLP still uses a sorted join below
+	// for deterministic split-secret detection.
+	joinedInOrder := strings.Join(texts, "\n")
+	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
+	if !injectionResult.Clean {
+		return buf, BodyScanResult{
+			Clean:            false,
+			InjectionMatches: injectionResult.Matches,
+			RedactionReport:  redactReport,
+		}
+	}
+
+	// Sort to ensure deterministic ordering for DLP (Go map iteration in
+	// non-JSON body parsers and query maps can otherwise vary).
 	sorted := make([]string, len(texts))
 	copy(sorted, texts)
 	sort.Strings(sorted)
@@ -295,7 +312,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 			RedactionReport: redactReport,
 		}
 	}
-	injectionResult := req.Scanner.ScanResponse(ctx, joined)
+	injectionResult = req.Scanner.ScanResponse(ctx, joined)
 	if !injectionResult.Clean {
 		return buf, BodyScanResult{
 			Clean:            false,
@@ -519,7 +536,7 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 		if !json.Valid(body) {
 			return nil, "invalid JSON body"
 		}
-		return extract.AllStringsFromJSON(json.RawMessage(body)), ""
+		return extract.AllStringsFromJSONOrdered(json.RawMessage(body)), ""
 
 	case mediaType == "application/x-www-form-urlencoded":
 		return extractFormURLEncoded(body)
@@ -545,14 +562,28 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 // and extracts both keys and values. Returns an error string on parse failure
 // (fail-closed: caller blocks).
 func extractFormURLEncoded(body []byte) ([]string, string) {
-	values, err := url.ParseQuery(string(body))
-	if err != nil {
-		return nil, "invalid application/x-www-form-urlencoded body"
-	}
+	raw := string(body)
 	var result []string
-	for k, vv := range values {
-		result = append(result, k)
-		result = append(result, vv...)
+	for _, field := range strings.Split(raw, "&") {
+		if field == "" {
+			continue
+		}
+		if strings.Contains(field, ";") {
+			return nil, invalidFormURLEncodedBody
+		}
+		keyPart, valuePart, _ := strings.Cut(field, "=")
+		key, err := url.QueryUnescape(keyPart)
+		if err != nil {
+			return nil, invalidFormURLEncodedBody
+		}
+		result = append(result, key)
+		if valuePart != "" || strings.Contains(field, "=") {
+			value, err := url.QueryUnescape(valuePart)
+			if err != nil {
+				return nil, invalidFormURLEncodedBody
+			}
+			result = append(result, value)
+		}
 	}
 	return result, ""
 }

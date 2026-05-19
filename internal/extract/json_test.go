@@ -40,6 +40,20 @@ func TestAllStringsFromJSON_Arrays(t *testing.T) {
 	}
 }
 
+func TestAllStringsFromJSONOrdered_PreservesSourceOrder(t *testing.T) {
+	raw := json.RawMessage(`{"z":"ignore previous","a":"instructions","nested":{"b":"ignora","a":"las instrucciones anteriores"}}`)
+	result := AllStringsFromJSONOrdered(raw)
+	want := []string{"z", "ignore previous", "a", "instructions", "nested", "b", "ignora", "a", "las instrucciones anteriores"}
+	if len(result) != len(want) {
+		t.Fatalf("len(result) = %d, want %d: %#v", len(result), len(want), result)
+	}
+	for i := range want {
+		if result[i] != want[i] {
+			t.Fatalf("result[%d] = %q, want %q; all=%#v", i, result[i], want[i], result)
+		}
+	}
+}
+
 func TestAllStringsFromJSON_DepthLimit(t *testing.T) {
 	// Build deeply nested JSON: {"a":{"a":{"a":...}}} at 70 levels
 	var b strings.Builder

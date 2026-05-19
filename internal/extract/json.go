@@ -6,7 +6,9 @@
 package extract
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"sort"
 	"strconv"
 )
@@ -57,6 +59,54 @@ func AllStringsFromJSON(raw json.RawMessage) []string {
 	var parsed interface{}
 	if err := json.Unmarshal(raw, &parsed); err == nil {
 		extract(parsed, 0)
+	}
+	return result
+}
+
+// AllStringsFromJSONOrdered extracts string-ish JSON tokens in source order,
+// including object keys. It is intentionally separate from AllStringsFromJSON:
+// split-secret DLP wants deterministic sorted traversal, while prompt
+// injection phrase reconstruction benefits from the sender's original order.
+func AllStringsFromJSONOrdered(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+
+	var result []string
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth > 0 {
+					depth--
+				}
+			}
+		case string:
+			if depth <= maxExtractDepth {
+				result = append(result, v)
+			}
+		case json.Number:
+			if depth <= maxExtractDepth {
+				result = append(result, v.String())
+			}
+		case bool:
+			if depth <= maxExtractDepth {
+				result = append(result, strconv.FormatBool(v))
+			}
+		}
 	}
 	return result
 }

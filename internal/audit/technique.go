@@ -57,8 +57,9 @@ var techniqueMap = map[string]string{
 	"sni_mismatch": "T1090.004", // Proxy: Domain Fronting
 
 	// Request body/header DLP (forward proxy + TLS interception)
-	"body_dlp":   "T1048", // Exfiltration Over Alternative Protocol
-	"header_dlp": "T1048", // Exfiltration via HTTP headers
+	"body_dlp":              "T1048", // Exfiltration Over Alternative Protocol
+	"body_prompt_injection": "T1059", // Command and Scripting Interpreter
+	"header_dlp":            "T1048", // Exfiltration via HTTP headers
 
 	// TLS interception events
 	"tls_intercept":          "T1557",     // Adversary-in-the-Middle

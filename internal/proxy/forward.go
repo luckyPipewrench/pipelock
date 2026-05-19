@@ -1144,6 +1144,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.logger.LogBodyScan(actx, audit.EventAddressProtection, action, len(bodyResult.AddressFindings), addrNames)
 			}
 			if len(bodyResult.InjectionMatches) > 0 {
+				p.metrics.RecordBodyPromptInjection(action, agentLabel)
 				p.logger.LogBodyScan(actx, audit.EventBodyPromptInjection, action, len(bodyResult.InjectionMatches), injectionNames)
 			}
 

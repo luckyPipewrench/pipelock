@@ -2379,6 +2379,24 @@ func TestEmit_LogBodyScanAddressProtection(t *testing.T) {
 	}
 }
 
+func TestEmit_LogBodyPromptInjection(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	logger.LogBodyScan(LogContext{method: "POST", url: "https://api.example.com", clientIP: testClientIP, requestID: "req-body-inj", agent: "agent-a"}, EventBodyPromptInjection, actionBlock, 1, []string{"Prompt Injection"})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != string(EventBodyPromptInjection) {
+		t.Errorf("type = %q, want %s", ev.Type, EventBodyPromptInjection)
+	}
+	if ev.Fields["mitre_technique"] != mitreT1059 {
+		t.Errorf("fields[mitre_technique] = %v, want T1059", ev.Fields["mitre_technique"])
+	}
+}
+
 func TestEmit_LogHeaderDLP(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()

@@ -1,4 +1,4 @@
-FROM gcr.io/oss-fuzz-base/base-builder-go@sha256:803021bd219182072290c9468298ea19a7b474152dd2b537582fb7e8951876bd
+FROM gcr.io/oss-fuzz-base/base-builder-go@sha256:3efcff1afbfc8918df51578ff1cd0e4cfc2ecd5ecd6fe0ec7562a026c01b1651
 COPY . $SRC/pipelock
 WORKDIR $SRC/pipelock
 COPY .clusterfuzzlite/build.sh $SRC/

@@ -89,6 +89,32 @@ func wsEchoServer(t *testing.T) (string, func()) {
 	return ln.Addr().String(), func() { _ = srv.Close() }
 }
 
+// wsAckServer reads one client message and replies with a clean acknowledgement.
+func wsAckServer(t *testing.T) (string, func()) {
+	t.Helper()
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+			if upgradeErr != nil {
+				return
+			}
+			defer conn.Close() //nolint:errcheck // test
+			_, _, _ = wsutil.ReadClientData(conn)
+			_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte("ok"))
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	go func() { _ = srv.Serve(ln) }()
+	return ln.Addr().String(), func() { _ = srv.Close() }
+}
+
 // wsInjectionServer creates a WS server that injects prompt injection in responses.
 func wsInjectionServer(t *testing.T) (string, func()) {
 	t.Helper()
@@ -338,6 +364,55 @@ func TestWSProxyDLPBlocked(t *testing.T) {
 	_, _, err := wsutil.ReadServerData(conn)
 	if err == nil {
 		t.Fatal("expected error (connection should be closed by proxy), got nil")
+	}
+}
+
+func TestWSProxyBodyPromptInjectionHardBlocksNonProviderWarnMode(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	body := trilingualPromptInjectionBody
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(body)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, _, err := wsutil.ReadServerData(conn); err == nil {
+		t.Fatal("expected websocket prompt-injection body to close non-provider connection")
+	}
+}
+
+func TestWSProxyBodyPromptInjectionProviderExemptWarnMode(t *testing.T) {
+	backendAddr, backendCleanup := wsAckServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1", backendAddr)
+	})
+	defer proxyCleanup()
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	body := trilingualPromptInjectionBody
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(body)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read: %v (provider-exempt prompt body should pass in warn mode)", err)
+	}
+	if string(reply) != "ok" {
+		t.Fatalf("reply = %q, want ok", reply)
 	}
 }
 

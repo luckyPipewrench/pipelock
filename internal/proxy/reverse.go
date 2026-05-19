@@ -510,13 +510,17 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if action == "" {
 				action = config.ActionBlock
 			}
+			headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, cfg.EnforceEnabled())
+			if headerHardBlock {
+				action = config.ActionBlock
+			}
 			requestEffectiveAction = action
 			requestScannerVerdict = scannerVerdictForContinuingAction(action, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(headerResult.DLPMatches)
 			rp.logger.LogHeaderDLP(newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, ""), headerResult.HeaderName,
 				action, patternNames, nil)
 
-			if action == config.ActionBlock && cfg.EnforceEnabled() {
+			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
 				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
@@ -780,8 +784,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if action == "" {
 		action = config.ActionBlock
 	}
-	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), cfg)
-	if promptInjectionHardBlock {
+	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, rp.upstream.Hostname(), cfg)
+	dlpHardBlock := shouldHardBlockCriticalDLP(result.DLPMatches, cfg.EnforceEnabled())
+	if promptInjectionHardBlock || dlpHardBlock {
 		action = config.ActionBlock
 	}
 
@@ -822,7 +827,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
 		bodyBlockReason = blockreason.PromptInjection
 	}
-	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
+	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
 		rp.emitReceipt(receipt.EmitOpts{

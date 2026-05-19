@@ -5110,6 +5110,86 @@ func TestSessionProfilingDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_SessionProfilingEnabledBackfillsDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	content := []byte(`mode: balanced
+session_profiling:
+  enabled: true
+`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.SessionProfiling.AnomalyAction != ActionWarn {
+		t.Fatalf("AnomalyAction = %q, want %q", cfg.SessionProfiling.AnomalyAction, ActionWarn)
+	}
+	if cfg.SessionProfiling.DomainBurst != 5 {
+		t.Fatalf("DomainBurst = %d, want 5", cfg.SessionProfiling.DomainBurst)
+	}
+	if cfg.SessionProfiling.WindowMinutes != 5 {
+		t.Fatalf("WindowMinutes = %d, want 5", cfg.SessionProfiling.WindowMinutes)
+	}
+	if cfg.SessionProfiling.VolumeSpikeRatio != 3.0 {
+		t.Fatalf("VolumeSpikeRatio = %f, want 3.0", cfg.SessionProfiling.VolumeSpikeRatio)
+	}
+}
+
+func TestLoad_SessionProfilingReloadBackfillsDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pipelock.yaml")
+	writeYAML := func(body string) {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+	}
+
+	writeYAML(`mode: balanced
+session_profiling:
+  enabled: true
+  anomaly_action: block
+  domain_burst: 9
+  window_minutes: 11
+  volume_spike_ratio: 7.5
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(custom): %v", err)
+	}
+	if cfg.SessionProfiling.DomainBurst != 9 {
+		t.Fatalf("custom DomainBurst = %d, want 9", cfg.SessionProfiling.DomainBurst)
+	}
+
+	writeYAML(`mode: balanced
+session_profiling:
+  enabled: true
+`)
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load(omitted): %v", err)
+	}
+	if cfg.SessionProfiling.DomainBurst != 5 ||
+		cfg.SessionProfiling.WindowMinutes != 5 ||
+		cfg.SessionProfiling.VolumeSpikeRatio != 3.0 ||
+		cfg.SessionProfiling.AnomalyAction != ActionWarn {
+		t.Fatalf("reload defaults not backfilled: %+v", cfg.SessionProfiling)
+	}
+
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load(omitted second): %v", err)
+	}
+	if cfg.SessionProfiling.DomainBurst != 5 ||
+		cfg.SessionProfiling.WindowMinutes != 5 ||
+		cfg.SessionProfiling.VolumeSpikeRatio != 3.0 ||
+		cfg.SessionProfiling.AnomalyAction != ActionWarn {
+		t.Fatalf("idempotent reload defaults not preserved: %+v", cfg.SessionProfiling)
+	}
+}
+
 func TestAdaptiveEnforcementDefaults(t *testing.T) {
 	cfg := Defaults()
 	cfg.AdaptiveEnforcement.Enabled = true
@@ -8871,6 +8951,52 @@ func TestLoad_MCPBinaryIntegrityDefaults(t *testing.T) {
 
 	if cfg.MCPBinaryIntegrity.Action != ActionWarn {
 		t.Errorf("Action = %q, want %q", cfg.MCPBinaryIntegrity.Action, ActionWarn)
+	}
+}
+
+func TestLoad_MCPBinaryIntegrityRequireSignatureStates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "integrity.yaml")
+	load := func(content string) *Config {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load() error: %v", err)
+		}
+		return cfg
+	}
+
+	base := `mode: balanced
+mcp_binary_integrity:
+  enabled: true
+  manifest_path: /tmp/manifest.json
+`
+	if got := load(base).MCPBinaryIntegrity.RequireSignature; got {
+		t.Fatal("omitted require_signature should default false")
+	}
+
+	nullState := base + "  require_signature: null\n"
+	if got := load(nullState).MCPBinaryIntegrity.RequireSignature; got {
+		t.Fatal("null require_signature should default false")
+	}
+
+	falseState := base + "  require_signature: false\n"
+	if got := load(falseState).MCPBinaryIntegrity.RequireSignature; got {
+		t.Fatal("explicit false require_signature should remain false")
+	}
+
+	trueState := base + "  require_signature: true\n  trusted_signer: release\n"
+	if got := load(trueState).MCPBinaryIntegrity.RequireSignature; !got {
+		t.Fatal("explicit true require_signature should remain true")
+	}
+
+	if got := load(falseState).MCPBinaryIntegrity.RequireSignature; got {
+		t.Fatal("reload with change true->false should preserve false")
+	}
+	if got := load(falseState).MCPBinaryIntegrity.RequireSignature; got {
+		t.Fatal("reload without change false should preserve false")
 	}
 }
 

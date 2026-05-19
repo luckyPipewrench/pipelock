@@ -744,6 +744,9 @@ func newInterceptHandler(
 					if bodyAction == "" {
 						bodyAction = ic.Config.RequestBodyScanning.Action
 					}
+					if shouldHardBlockCriticalDLP(result.DLPMatches, ic.Config.EnforceEnabled()) {
+						bodyAction = config.ActionBlock
+					}
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 					Subsurface:        "dlp_body_intercept",
@@ -803,7 +806,8 @@ func newInterceptHandler(
 					len(result.DLPMatches) > 0 &&
 					isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
-				if promptInjectionHardBlock {
+				dlpHardBlock := shouldHardBlockCriticalDLP(result.DLPMatches, ic.Config.EnforceEnabled()) && !dlpExempt
+				if promptInjectionHardBlock || dlpHardBlock {
 					action = config.ActionBlock
 				}
 
@@ -829,7 +833,7 @@ func newInterceptHandler(
 				// and redaction gate failures must block regardless of enforce
 				// mode. ActionAsk also has no HITL terminal in intercepted
 				// tunnels, so it fails closed here.
-				if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+				if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					if !dlpExempt {
 						interceptRecordSignal(ic, session.SignalBlock)
 					}
@@ -959,6 +963,10 @@ func newInterceptHandler(
 				hdrAction := config.ActionAllow
 				if hdrHasFinding {
 					hdrAction = ic.Config.RequestBodyScanning.Action
+					if shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled()) &&
+						!isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains) {
+						hdrAction = config.ActionBlock
+					}
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 					Subsurface:        "dlp_header_intercept",
@@ -980,8 +988,13 @@ func newInterceptHandler(
 			if headerResult != nil && !headerResult.Clean {
 				hasFinding = true
 				action := ic.Config.RequestBodyScanning.Action
+				headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled()) &&
+					!isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
+				if headerHardBlock {
+					action = config.ActionBlock
+				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
-				if action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					ic.Logger.LogBlocked(actx, "header_dlp", "request header contains secret")
 					ic.Metrics.RecordTLSRequestBlocked("header_dlp")
 					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

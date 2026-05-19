@@ -765,6 +765,8 @@ func TestReverseProxy_UpstreamError(t *testing.T) {
 func TestReverseProxy_DLPWarnMode(t *testing.T) {
 	cfg := reverseTestConfig()
 	cfg.RequestBodyScanning.Action = config.ActionWarn
+	enforceOff := false
+	cfg.Enforce = &enforceOff
 
 	var receivedBody string
 	upstream := func(w http.ResponseWriter, r *http.Request) {
@@ -788,6 +790,57 @@ func TestReverseProxy_DLPWarnMode(t *testing.T) {
 	}
 	if receivedBody != body {
 		t.Fatalf("request body not forwarded in warn mode")
+	}
+}
+
+func TestReverseProxy_BodyPromptInjectionHardBlocksNonProviderWarnMode(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+
+	var upstreamHit atomic.Bool
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	body := trilingualPromptInjectionBody
+	resp := testPost(t, proxy.URL+"/api/send", "application/json", body)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (body prompt injection should hard block non-provider reverse upstream)", resp.StatusCode)
+	}
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.PromptInjection) {
+		t.Fatalf("block reason = %q, want %s", got, blockreason.PromptInjection)
+	}
+	if upstreamHit.Load() {
+		t.Fatal("upstream received body prompt injection, want blocked before forwarding")
+	}
+}
+
+func TestReverseProxy_BodyPromptInjectionProviderExemptWarnMode(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.ResponseScanning.ExemptDomains = append(cfg.ResponseScanning.ExemptDomains, "127.0.0.1")
+
+	var upstreamHit atomic.Bool
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		_, _ = fmt.Fprint(w, "ok")
+	}
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	body := trilingualPromptInjectionBody
+	resp := testPost(t, proxy.URL+"/api/send", "application/json", body)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200 (provider exemption should keep warn-mode reverse prompt body non-blocking): %s", resp.StatusCode, bodyBytes)
+	}
+	if !upstreamHit.Load() {
+		t.Fatal("upstream was not reached for provider-exempt warn-mode prompt body")
 	}
 }
 
@@ -1034,6 +1087,8 @@ func TestReverseProxy_HotReload(t *testing.T) {
 	// Simulate hot-reload: switch to warn mode.
 	newCfg := reverseTestConfig()
 	newCfg.RequestBodyScanning.Action = config.ActionWarn
+	enforceOff := false
+	newCfg.Enforce = &enforceOff
 	newSc := scanner.New(newCfg)
 	defer newSc.Close()
 	cfgPtr.Store(newCfg)

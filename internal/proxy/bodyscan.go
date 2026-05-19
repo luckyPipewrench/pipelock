@@ -123,6 +123,25 @@ func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, 
 	return true
 }
 
+// shouldHardBlockCriticalDLP returns true for enforced critical credential
+// detections while the proxy is in enforcement mode. These are high-confidence
+// core exfiltration findings and must fail closed even when request-body
+// scanning is otherwise in warn mode. Explicit audit mode still observes only.
+func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled bool) bool {
+	if !enforceEnabled {
+		return false
+	}
+	for _, match := range matches {
+		if match.Warn {
+			continue
+		}
+		if strings.EqualFold(match.Severity, config.SeverityCritical) {
+			return true
+		}
+	}
+	return false
+}
+
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
 	Clean            bool
@@ -902,13 +921,18 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *con
 		return false, false
 	}
 	action := cfg.RequestBodyScanning.Action
+	headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, cfg.EnforceEnabled()) &&
+		!isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+	if headerHardBlock {
+		action = config.ActionBlock
+	}
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
 	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 
 	logger.LogHeaderDLP(actx, headerResult.HeaderName, action, patternNames, bundleRules)
 	p.metrics.RecordHeaderDLP(action, actx.Agent())
 
-	if action == config.ActionBlock && cfg.EnforceEnabled() {
+	if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 		p.metrics.RecordBlocked(hostname, "header_dlp", time.Since(start), actx.Agent())
 		return true, true
 	}

@@ -808,6 +808,8 @@ func TestEnvelope_ReverseProxyWarnBodyUsesWarnVerdict(t *testing.T) {
 
 	cfg := reverseTestConfig()
 	cfg.RequestBodyScanning.Action = config.ActionWarn
+	enforceOff := false
+	cfg.Enforce = &enforceOff
 	cfg.ApplyDefaults()
 
 	sc := scanner.New(cfg)

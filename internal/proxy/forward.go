@@ -1071,6 +1071,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if bodyAction == "" {
 					bodyAction = cfg.RequestBodyScanning.Action
 				}
+				if shouldHardBlockCriticalDLP(bodyResult.DLPMatches, cfg.EnforceEnabled()) {
+					bodyAction = config.ActionBlock
+				}
 			}
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:        "dlp_body_forward",
@@ -1123,7 +1126,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
-			if promptInjectionHardBlock {
+			fwdBodyExempt := scannerLabel == scannerLabelBodyDLP &&
+				len(bodyResult.DLPMatches) > 0 &&
+				isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
+			dlpHardBlock := shouldHardBlockCriticalDLP(bodyResult.DLPMatches, cfg.EnforceEnabled()) && !fwdBodyExempt
+			if promptInjectionHardBlock || dlpHardBlock {
 				action = config.ActionBlock
 			}
 
@@ -1154,7 +1161,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 			// Fail-closed: if the body cannot be replayed or redaction explicitly
 			// failed closed, never forward the partially-consumed request.
-			if promptInjectionHardBlock || isFailClosedBodyResult(bodyResult, buf) {
+			if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(bodyResult, buf) {
 				p.logger.LogBlocked(actx, scannerLabel, reason)
 				p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
 					ActionID:            actionID,
@@ -1188,9 +1195,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			// adaptive-exempt destinations. Address protection findings and
 			// fail-closed body errors are NOT exempted.
 			originalBodyAction := action
-			fwdBodyExempt := scannerLabel == scannerLabelBodyDLP &&
-				len(bodyResult.DLPMatches) > 0 &&
-				isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
 			if !fwdBodyExempt {
 				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
 			}

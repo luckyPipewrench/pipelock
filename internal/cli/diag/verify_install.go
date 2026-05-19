@@ -420,7 +420,7 @@ func checkProxyHealth(env *VerifyEnv) VerifyResult {
 }
 
 func checkFetchDLP(env *VerifyEnv) VerifyResult {
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	fakeKey := syntheticAWSAccessKey()
 	targetURL := "https://example.com/?token=" + fakeKey
 	fetchURL := env.ProxyURL + "/fetch?url=" + url.QueryEscape(targetURL)
 
@@ -468,11 +468,10 @@ func checkScanningDLP(env *VerifyEnv) VerifyResult {
 		MCP: &decide.MCPPayload{
 			Server:   "test-server",
 			ToolName: "web_search",
-			// AWS canonical example key (AKIA + IOSFODNN7EXAMPLE) avoids
-			// shipping an Anthropic-prefixed string in the public binary
-			// where downstream scanners may flag it as a leaked-looking
-			// credential. Same DLP catch behavior.
-			ToolInput: `{"query": "` + "AKIA" + `IOSFODNN7EXAMPLE"}`,
+			// Build the probe at runtime so the shipped binary does not
+			// contain contiguous key-shaped strings while still exercising
+			// the default DLP path.
+			ToolInput: fmt.Sprintf(`{"query": %q}`, syntheticAWSAccessKey()),
 		},
 	}
 	decision := decide.Decide(context.Background(), env.Cfg, env.Sc, env.PolicyCfg, action)
@@ -602,13 +601,10 @@ func checkFileSentry(env *VerifyEnv) VerifyResult {
 		}
 	}()
 
-	// AWS canonical example key from AWS documentation. Recognized as a
-	// non-secret by GitHub Push Protection, TruffleHog, and other secret
-	// scanners, so the substring is safe to ship inside the pipelock
-	// binary. Still trips the default AKIA DLP pattern, which is what we
-	// need to prove file_sentry is wired. Mirrors the test-vector style
-	// already used in internal/scanner/core_test.go.
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	// Build the probe at runtime so the shipped binary does not contain
+	// contiguous key-shaped strings while still exercising the default DLP
+	// path.
+	secret := syntheticAWSAccessKey()
 	if err := os.WriteFile(filepath.Join(dir, "probe.txt"), []byte(secret), 0o600); err != nil {
 		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("writing file_sentry probe: %v", err)}
 	}

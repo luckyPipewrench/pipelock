@@ -85,7 +85,7 @@ Examples:
 func printDiscoverJSON(cmd *cobra.Command, report *discover.Report) error {
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(report); err != nil {
+	if err := enc.Encode(discover.RedactReportForOutput(report)); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("encoding JSON: %w", err))
 	}
 
@@ -100,19 +100,20 @@ func printDiscoverJSON(cmd *cobra.Command, report *discover.Report) error {
 
 func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 	w := cmd.OutOrStdout()
+	safeReport := discover.RedactReportForOutput(report)
 
 	_, _ = fmt.Fprintln(w, "Pipelock Discovery")
 	_, _ = fmt.Fprintln(w, "==================")
 	_, _ = fmt.Fprintln(w)
 
-	if len(report.Clients) == 0 {
+	if len(safeReport.Clients) == 0 {
 		_, _ = fmt.Fprintln(w, "No AI agent configs found.")
 		_, _ = fmt.Fprintln(w)
 		return
 	}
 
-	_, _ = fmt.Fprintf(w, "Configs found: %d\n", len(report.Clients))
-	for _, c := range report.Clients {
+	_, _ = fmt.Fprintf(w, "Configs found: %d\n", len(safeReport.Clients))
+	for _, c := range safeReport.Clients {
 		if c.ParseError != "" {
 			_, _ = fmt.Fprintf(w, "  %-16s %-50s PARSE ERROR\n", c.Client, c.ConfigPath)
 		} else {
@@ -121,9 +122,9 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 	}
 	_, _ = fmt.Fprintln(w)
 
-	if report.Summary.ParseErrors > 0 {
-		_, _ = fmt.Fprintf(w, "Parse errors: %d config(s) could not be read\n", report.Summary.ParseErrors)
-		for _, c := range report.Clients {
+	if safeReport.Summary.ParseErrors > 0 {
+		_, _ = fmt.Fprintf(w, "Parse errors: %d config(s) could not be read\n", safeReport.Summary.ParseErrors)
+		for _, c := range safeReport.Clients {
 			if c.ParseError != "" {
 				_, _ = fmt.Fprintf(w, "  %s: %s\n", c.ConfigPath, c.ParseError)
 			}
@@ -131,16 +132,16 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 		_, _ = fmt.Fprintln(w)
 	}
 
-	_, _ = fmt.Fprintf(w, "MCP Servers: %d total\n", report.Summary.TotalServers)
-	_, _ = fmt.Fprintf(w, "  Protected (pipelock):  %d\n", report.Summary.ProtectedPipelock)
-	_, _ = fmt.Fprintf(w, "  Protected (other):     %d\n", report.Summary.ProtectedOther)
-	_, _ = fmt.Fprintf(w, "  Unprotected:           %d\n", report.Summary.Unprotected)
-	_, _ = fmt.Fprintf(w, "  Unknown:               %d\n", report.Summary.Unknown)
+	_, _ = fmt.Fprintf(w, "MCP Servers: %d total\n", safeReport.Summary.TotalServers)
+	_, _ = fmt.Fprintf(w, "  Protected (pipelock):  %d\n", safeReport.Summary.ProtectedPipelock)
+	_, _ = fmt.Fprintf(w, "  Protected (other):     %d\n", safeReport.Summary.ProtectedOther)
+	_, _ = fmt.Fprintf(w, "  Unprotected:           %d\n", safeReport.Summary.Unprotected)
+	_, _ = fmt.Fprintf(w, "  Unknown:               %d\n", safeReport.Summary.Unknown)
 	_, _ = fmt.Fprintln(w)
 
 	// List unprotected servers sorted by risk
 	unprotected := false
-	for _, s := range report.Servers {
+	for _, s := range safeReport.Servers {
 		if s.Protection == discover.Unprotected || s.Protection == discover.Unknown {
 			if !unprotected {
 				_, _ = fmt.Fprintln(w, "Unprotected servers:")
@@ -162,7 +163,7 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 	if unprotected {
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintln(w, "Use --generate to print pipelock wrapper suggestions.")
-	} else if report.Summary.TotalServers > 0 {
+	} else if safeReport.Summary.TotalServers > 0 {
 		_, _ = fmt.Fprintln(w, "All servers are protected.")
 	}
 	_, _ = fmt.Fprintln(w, "Use --json for machine-readable output.")
@@ -180,15 +181,17 @@ func printDiscoverGenerate(cmd *cobra.Command, report *discover.Report) {
 			_, _ = fmt.Fprintln(w)
 			_, _ = fmt.Fprintln(w, "Wrapper suggestions:")
 			_, _ = fmt.Fprintln(w, "====================")
+			_, _ = fmt.Fprintln(w, "Sensitive argument and URL values are redacted; copy real values from the local config when applying.")
 			printed = true
 		}
 		_, _ = fmt.Fprintln(w)
+		safeServer := discover.RedactServerForOutput(s)
 		if s.ProjectPath != "" {
 			_, _ = fmt.Fprintf(w, "Server: %s (%s, project: %s)\n", s.ServerName, s.Client, s.ProjectPath)
 		} else {
 			_, _ = fmt.Fprintf(w, "Server: %s (%s)\n", s.ServerName, s.Client)
 		}
-		suggestion := discover.GenerateWrapper(s)
+		suggestion := discover.GenerateWrapper(safeServer)
 		_, _ = fmt.Fprintln(w, suggestion)
 	}
 }

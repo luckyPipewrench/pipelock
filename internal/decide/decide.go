@@ -25,6 +25,11 @@ const (
 	// Claude Code hook event kinds (tool_name values, no "before" prefix).
 	EventWebFetch  EventKind = "WebFetch"
 	EventWriteFile EventKind = "WriteFile"
+
+	// EventToolUse is the generic catch-all for any tool call whose schema
+	// pipelock does not parse specifically. Runs DLP + injection scanning on
+	// every string extracted from tool_input.
+	EventToolUse EventKind = "ToolUse"
 )
 
 // ShellPayload holds fields specific to shell execution events.
@@ -62,6 +67,12 @@ type WritePayload struct {
 	OldString string `json:"old_string,omitempty"`
 }
 
+// ToolUsePayload holds the raw tool_input for generic catch-all scanning.
+type ToolUsePayload struct {
+	ToolName  string `json:"tool_name"`
+	ToolInput string `json:"tool_input"` // escaped JSON string
+}
+
 // Action describes an agent action to be evaluated.
 type Action struct {
 	Source string    // originating IDE (e.g., "cursor")
@@ -73,6 +84,7 @@ type Action struct {
 	File     *FilePayload
 	WebFetch *WebFetchPayload
 	Write    *WritePayload
+	ToolUse  *ToolUsePayload
 }
 
 // Outcome is the decision result: allow or deny.
@@ -115,6 +127,8 @@ func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policy
 		return decideWebFetch(ctx, cfg, sc, action.WebFetch)
 	case EventWriteFile:
 		return decideWrite(cfg, sc, policyCfg, action.Write)
+	case EventToolUse:
+		return decideToolUse(cfg, sc, action.ToolUse)
 	default:
 		return Decision{
 			Outcome:     Deny,
@@ -240,6 +254,48 @@ func decideWrite(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 		return deny("pipelock: missing WriteFile payload")
 	}
 	return decideFileContent(cfg, sc, policyCfg, "write_file", p.FilePath, p.Content)
+}
+
+// decideToolUse is the generic catch-all path for tool calls whose schema
+// pipelock does not parse specifically. It extracts every string from
+// tool_input and runs DLP + injection scanning, so unknown tools cannot
+// silently exfiltrate secrets or relay prompt injection. Malformed JSON is a
+// block-level finding (fail-closed).
+func decideToolUse(cfg *config.Config, sc *scanner.Scanner, p *ToolUsePayload) Decision {
+	if p == nil {
+		return deny("pipelock: missing ToolUse payload")
+	}
+
+	var evidence []Evidence
+	var scanText string
+
+	if p.ToolInput != "" {
+		if !json.Valid([]byte(p.ToolInput)) {
+			evidence = append(evidence, Evidence{
+				Scanner:  "decide",
+				Pattern:  "Malformed Tool Input",
+				Severity: config.SeverityHigh,
+				Detail:   "tool_input is not valid JSON",
+				Action:   config.ActionBlock,
+			})
+			scanText = p.ToolInput
+		} else {
+			argStrings := ExtractAllStringsFromJSON(json.RawMessage(p.ToolInput))
+			scanText = strings.Join(argStrings, " ")
+		}
+	}
+
+	if scanText != "" {
+		dlpResult := sc.ScanTextForDLP(context.Background(), scanText)
+		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
+
+		if cfg.ResponseScanning.Enabled {
+			injResult := sc.ScanResponse(context.Background(), scanText)
+			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
+		}
+	}
+
+	return buildDecision(cfg, evidence)
 }
 
 // decideFileContent is the shared logic for file read and write events.

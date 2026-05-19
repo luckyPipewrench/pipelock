@@ -156,8 +156,8 @@ func TestClaudeHookCmd_EmptyStdin(t *testing.T) {
 	}
 }
 
-func TestClaudeHookCmd_UnknownTool_DefaultsAllow(t *testing.T) {
-	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"SomeNewTool","tool_input":{},"tool_use_id":"t1"}`
+func TestClaudeHookCmd_UnknownTool_CleanInputAllows(t *testing.T) {
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"SomeNewTool","tool_input":{"arg":"hello"},"tool_use_id":"t1"}`
 
 	cmd := ClaudeCmd()
 	cmd.SetArgs([]string{"hook"})
@@ -174,7 +174,53 @@ func TestClaudeHookCmd_UnknownTool_DefaultsAllow(t *testing.T) {
 		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
 	}
 	if resp.HookSpecificOutput.PermissionDecision != decisionAllow {
-		t.Errorf("unknown tool should allow by default, got %s", resp.HookSpecificOutput.PermissionDecision)
+		t.Errorf("unknown tool with clean input should allow, got %s", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestClaudeHookCmd_UnknownTool_SecretInArgsDenies(t *testing.T) {
+	secret := "sk-ant-" + "api03-AABBCCDDEE123456789012345678901234"
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"SomeNewTool","tool_input":{"data":"` + secret + `"},"tool_use_id":"t1"}`
+
+	cmd := ClaudeCmd()
+	cmd.SetArgs([]string{"hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionDeny {
+		t.Errorf("unknown tool with secret in args should deny, got %s", resp.HookSpecificOutput.PermissionDecision)
+	}
+}
+
+func TestClaudeHookCmd_WebSearch_SecretInQueryDenies(t *testing.T) {
+	secret := "ghp_" + "ABCDEFghijklmnopqrstuvwxyz0123456789"
+	input := `{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"WebSearch","tool_input":{"query":"docs ` + secret + `"},"tool_use_id":"t1"}`
+
+	cmd := ClaudeCmd()
+	cmd.SetArgs([]string{"hook"})
+	cmd.SetIn(bytes.NewReader([]byte(input)))
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var resp claudeCodeResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &resp); err != nil {
+		t.Fatalf("output not valid JSON: %v\noutput: %s", err, buf.String())
+	}
+	if resp.HookSpecificOutput.PermissionDecision != decisionDeny {
+		t.Errorf("WebSearch query with secret should deny, got %s", resp.HookSpecificOutput.PermissionDecision)
 	}
 }
 
@@ -348,8 +394,11 @@ func TestMergeClaudeHooks_Fresh(t *testing.T) {
 	merged := mergeClaudeHooks(settings, "/usr/local/bin/pipelock")
 
 	groups := merged.Hooks["PreToolUse"]
-	if len(groups) != 2 {
-		t.Fatalf("expected 2 matcher groups (builtin + MCP), got %d", len(groups))
+	if len(groups) != 1 {
+		t.Fatalf("expected 1 matcher group (.*), got %d", len(groups))
+	}
+	if groups[0].Matcher != claudeToolMatcher {
+		t.Errorf("matcher = %q, want %q", groups[0].Matcher, claudeToolMatcher)
 	}
 }
 
@@ -400,9 +449,9 @@ func TestMergeClaudeHooks_Idempotent(t *testing.T) {
 			}
 		}
 	}
-	// Expect exactly 2 pipelock hook entries (builtin + MCP matchers).
-	if count != 2 {
-		t.Errorf("expected 2 pipelock entries after idempotent merge, got %d", count)
+	// Expect exactly 1 pipelock hook entry (single .* matcher).
+	if count != 1 {
+		t.Errorf("expected 1 pipelock entry after idempotent merge, got %d", count)
 	}
 }
 
@@ -492,7 +541,7 @@ func TestRemoveClaudeHooks_PreservesOthers(t *testing.T) {
 		Hooks: map[string][]claudeMatcherGroup{
 			"PreToolUse": {
 				{Matcher: "Bash", Hooks: []claudeHookEntry{{Type: "command", Command: "other-tool"}}},
-				{Matcher: claudeBuiltinMatcher, Hooks: []claudeHookEntry{{Type: "command", Command: "/usr/bin/pipelock claude hook"}}},
+				{Matcher: claudeToolMatcher, Hooks: []claudeHookEntry{{Type: "command", Command: "/usr/bin/pipelock claude hook"}}},
 			},
 		},
 	}
@@ -617,10 +666,10 @@ func TestClaudeSetupCmd_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Count occurrences of "claude hook" (should be exactly 2: builtin + MCP).
+	// Count occurrences of "claude hook" (should be exactly 1: single .* matcher).
 	count := strings.Count(string(data), "claude hook")
-	if count != 2 {
-		t.Errorf("expected 2 'claude hook' entries after idempotent setup, got %d", count)
+	if count != 1 {
+		t.Errorf("expected 1 'claude hook' entry after idempotent setup, got %d", count)
 	}
 }
 

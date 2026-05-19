@@ -56,6 +56,8 @@ type MCPProxyOpts struct {
 	Approver       *hitl.Approver
 	InputCfg       *InputScanConfig
 	InputCfgFn     func() *InputScanConfig
+	RequestBodyCfg *config.RequestBodyScanning
+	RequestBodyFn  func() *config.RequestBodyScanning
 	ToolCfg        *tools.ToolScanConfig
 	ToolCfgFn      func() *tools.ToolScanConfig
 	PolicyCfg      *policy.Config
@@ -216,6 +218,13 @@ func (o MCPProxyOpts) inputCfg() *InputScanConfig {
 		return o.InputCfgFn()
 	}
 	return o.InputCfg
+}
+
+func (o MCPProxyOpts) requestBodyCfg() *config.RequestBodyScanning {
+	if o.RequestBodyFn != nil {
+		return o.RequestBodyFn()
+	}
+	return o.RequestBodyCfg
 }
 
 func (o MCPProxyOpts) toolCfg() *tools.ToolScanConfig {

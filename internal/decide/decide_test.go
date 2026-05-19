@@ -302,6 +302,7 @@ func TestDecide_NilPayload(t *testing.T) {
 		{"nil file payload", EventReadFile},
 		{"nil WebFetch payload", EventWebFetch},
 		{"nil WriteFile payload", EventWriteFile},
+		{"nil ToolUse payload", EventToolUse},
 	}
 
 	for _, tt := range tests {
@@ -783,6 +784,62 @@ func TestDecide_WriteFile(t *testing.T) {
 				Write:  &WritePayload{FilePath: tt.path, Content: tt.content},
 			}
 			decision := Decide(context.Background(), cfg, sc, pc, action)
+			if decision.Outcome != tt.want {
+				t.Errorf("Decide() outcome = %s, want %s; evidence = %+v", decision.Outcome, tt.want, decision.Evidence)
+			}
+		})
+	}
+}
+
+func TestDecide_ToolUse(t *testing.T) {
+	cfg, sc, _ := testSetup(t)
+
+	tests := []struct {
+		name      string
+		toolName  string
+		toolInput string
+		want      Outcome
+	}{
+		{
+			name:      "clean input allows",
+			toolName:  "WebSearch",
+			toolInput: `{"query":"golang generics tutorial"}`,
+			want:      Allow,
+		},
+		{
+			name:      "secret in input denies",
+			toolName:  "WebSearch",
+			toolInput: `{"query":"docs ` + "sk-ant-" + `api03-AABBCCDDEE123456789012345678901234"}`,
+			want:      Deny,
+		},
+		{
+			name:      "malformed JSON denies",
+			toolName:  "SomeTool",
+			toolInput: `{broken`,
+			want:      Deny,
+		},
+		{
+			name:      "empty input allows",
+			toolName:  "SomeTool",
+			toolInput: "",
+			want:      Allow,
+		},
+		{
+			name:      "secret nested in object denies",
+			toolName:  "Task",
+			toolInput: `{"description":"work","prompt":"use ` + "sk-ant-" + `api03-AABBCCDDEE123456789012345678901234"}`,
+			want:      Deny,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			action := Action{
+				Source:  "claude-code",
+				Kind:    EventToolUse,
+				ToolUse: &ToolUsePayload{ToolName: tt.toolName, ToolInput: tt.toolInput},
+			}
+			decision := Decide(context.Background(), cfg, sc, nil, action)
 			if decision.Outcome != tt.want {
 				t.Errorf("Decide() outcome = %s, want %s; evidence = %+v", decision.Outcome, tt.want, decision.Evidence)
 			}

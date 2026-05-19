@@ -201,10 +201,6 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 		return claudeResult(cmd, exitCodeMode, payload.HookEventName, decisionDeny,
 			"pipelock: "+err.Error())
 	}
-	if action == nil {
-		// Unknown tool: default allow.
-		return claudeResult(cmd, exitCodeMode, payload.HookEventName, decisionAllow, "")
-	}
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
@@ -242,7 +238,10 @@ func claudeResult(cmd *cobra.Command, exitCodeMode bool, hookEventName, permissi
 }
 
 // claudePayloadToAction routes a Claude Code tool_name to a decide.Action.
-// Returns nil action for unknown tools (default allow).
+// Known built-in tools (Bash, WebFetch, Write, Edit) and MCP tools route to
+// their tool-aware scanning pipelines. Everything else falls through to a
+// generic catch-all that runs DLP + injection on every string in tool_input,
+// so unknown or future tools cannot silently exfiltrate secrets.
 // Returns error for known tools with unparseable tool_input (fail-closed).
 func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 	if strings.TrimSpace(string(p.ToolInput)) == "null" {
@@ -313,8 +312,15 @@ func claudePayloadToAction(p claudeCodePayload) (*decide.Action, error) {
 		return &action, nil
 
 	default:
-		// Unknown tool: return nil to signal default allow.
-		return nil, nil //nolint:nilnil // nil,nil signals "unknown tool, allow by default"
+		// Generic catch-all: scan every string in tool_input for DLP +
+		// injection. Closes the fail-open path for tools we don't parse
+		// specifically (WebSearch, Task, NotebookEdit, future tools, etc.).
+		action.Kind = decide.EventToolUse
+		action.ToolUse = &decide.ToolUsePayload{
+			ToolName:  p.ToolName,
+			ToolInput: string(p.ToolInput),
+		}
+		return &action, nil
 	}
 }
 
@@ -357,11 +363,10 @@ type claudeHookEntry struct {
 // claudeHookTimeout is the default timeout (seconds) for pipelock hook entries.
 const claudeHookTimeout = 10
 
-// claudeBuiltinMatcher matches the built-in tools pipelock scans.
-const claudeBuiltinMatcher = "Bash|WebFetch|Write|Edit"
-
-// claudeMCPMatcher matches all MCP tool calls.
-const claudeMCPMatcher = "mcp__.*"
+// claudeToolMatcher matches every tool call. Built-in tools (Bash, WebFetch,
+// Write, Edit) and MCP tools route to tool-aware scanning; all others fall
+// through to a generic DLP + injection catch-all in claudePayloadToAction.
+const claudeToolMatcher = ".*"
 
 // parseClaudeSettings parses the hooks section from settings.json data.
 func parseClaudeSettings(data []byte) (*claudeSettings, error) {
@@ -414,21 +419,15 @@ func mergeClaudeHooks(settings *claudeSettings, exe string) *claudeSettings {
 		}
 	}
 
-	// Add fresh pipelock groups to PreToolUse.
+	// Add fresh pipelock group to PreToolUse. A single .* matcher catches
+	// every tool; dispatch in claudePayloadToAction decides what to scan.
 	quoted := shellQuote(exe)
 	hookCommand := quoted + " claude hook"
 
-	result.Hooks[claudeHookEventPreToolUse] = append(result.Hooks[claudeHookEventPreToolUse],
+	result.Hooks[claudeHookEventPreToolUse] = append(
+		result.Hooks[claudeHookEventPreToolUse],
 		claudeMatcherGroup{
-			Matcher: claudeBuiltinMatcher,
-			Hooks: []claudeHookEntry{{
-				Type:    "command",
-				Command: hookCommand,
-				Timeout: claudeHookTimeout,
-			}},
-		},
-		claudeMatcherGroup{
-			Matcher: claudeMCPMatcher,
+			Matcher: claudeToolMatcher,
 			Hooks: []claudeHookEntry{{
 				Type:    "command",
 				Command: hookCommand,

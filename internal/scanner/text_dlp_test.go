@@ -54,6 +54,13 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "AWS Access ID",
 		},
 		{
+			name:        "whitespace-split AWS Access ID",
+			text:        "My access key is AKIA" + strings.Repeat("A", 4) + " " + strings.Repeat("B", 12),
+			wantClean:   false,
+			wantPattern: "AWS Access ID",
+			wantEncoded: "whitespace",
+		},
+		{
 			name:        "raw DLP pattern match - AWS Secret Key env format",
 			text:        "AWS_SECRET_ACCESS_KEY=" + "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CYEXAMPLEKEY",
 			wantClean:   false,

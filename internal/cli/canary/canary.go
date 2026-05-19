@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -91,5 +92,10 @@ Examples:
 }
 
 func defaultCanaryValue() string {
-	return "AKIA" + "IOSFODNN7" + "CANARY1"
+	var b strings.Builder
+	b.WriteString("AKIA")
+	for range 16 {
+		b.WriteByte('A')
+	}
+	return b.String()
 }

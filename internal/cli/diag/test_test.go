@@ -685,6 +685,45 @@ func TestTestCmd_FailOnGap_NoGaps(t *testing.T) {
 	}
 }
 
+func TestTestCmd_CleanAllowlistDenialsAreSkipped(t *testing.T) {
+	cfg, err := config.Load("../../../configs/hostile-model.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+
+	cmd := testRoot()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+
+	testSub, _, _ := cmd.Find([]string{"test"})
+	if testSub == nil {
+		t.Fatal("test subcommand not found")
+	}
+
+	reportErr := runTests(testSub, cfg, "configs/hostile-model.yaml", buildTestVectors(nil), buildSkipSet(cfg), nil, true, false, true)
+	if reportErr != nil {
+		t.Fatalf("runTests() = %v, want nil for allowlist-skipped clean vectors", reportErr)
+	}
+
+	var report testReport
+	if err := json.Unmarshal([]byte(buf.String()), &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, buf.String())
+	}
+	if report.Failed != 0 {
+		t.Fatalf("failed = %d, want 0", report.Failed)
+	}
+	if report.Skipped != 5 {
+		t.Fatalf("skipped = %d, want 5", report.Skipped)
+	}
+	for _, v := range report.Vectors {
+		if v.Status == statusSkip && !strings.Contains(v.Detail, "allowlist excludes the test domain") {
+			t.Fatalf("unexpected skip reason for %q: %q", v.Name, v.Detail)
+		}
+	}
+}
+
 func TestTestCmd_UnknownCategory(t *testing.T) {
 	cmd := testRoot()
 	buf := &strings.Builder{}

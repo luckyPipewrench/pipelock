@@ -264,7 +264,7 @@ func checkFetchAllowed(proxyURL, mockURL string, _ *config.Config) diagnoseResul
 
 func checkFetchBlocked(proxyURL, mockURL string, _ *config.Config) diagnoseResult {
 	// Split credential at runtime to avoid gosec G101 (hardcoded credentials).
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	fakeKey := syntheticAWSAccessKey()
 	url := proxyURL + "/fetch?url=" + mockURL + "%3Ftoken%3D" + fakeKey
 
 	resp, err := diagnoseGet(url) //nolint:gosec // diagnostic one-shot to local httptest
@@ -294,7 +294,7 @@ func checkFetchHint(proxyURL, mockURL string, cfg *config.Config) diagnoseResult
 		}
 	}
 
-	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	fakeKey := syntheticAWSAccessKey()
 	url := proxyURL + "/fetch?url=" + mockURL + "%3Ftoken%3D" + fakeKey
 
 	resp, err := diagnoseGet(url) //nolint:gosec // diagnostic one-shot to local httptest

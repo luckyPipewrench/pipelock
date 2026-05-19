@@ -459,8 +459,8 @@ func checkDoctorDeploymentBoundary(_ *config.Config) doctorReportCheck {
 		Name:    "direct_egress_boundary",
 		Surface: doctorSurfaceHost,
 		Status:  doctorStatusInfo,
-		Detail:  "proxy env vars are not a wall; child processes can bypass unless contain/network policy blocks raw egress",
-		Next:    "run contain verify or cluster topology smoke tests to prove direct raw egress is blocked",
+		Detail:  "proxy env vars only steer cooperative clients; launch agents through plk/containment or cluster network policy so raw egress is blocked",
+		Next:    "run contain verify or cluster topology smoke tests; agents launched outside that boundary can still use the operator's normal network",
 	}
 }
 

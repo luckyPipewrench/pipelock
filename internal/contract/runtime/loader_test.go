@@ -930,8 +930,12 @@ func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 		if err == nil {
 			t.Fatal("Watch returned nil after directory deletion")
 		}
-		if !strings.Contains(err.Error(), "store directory removed") {
-			t.Fatalf("err = %v, want store-directory-removed", err)
+		// Depending on scheduler timing, the deletion can race with
+		// watcher.Add. Both paths are fail-closed: either Watch observes the
+		// watched directory removal after Add, or Add itself reports
+		// os.ErrNotExist because the directory was already gone.
+		if !strings.Contains(err.Error(), "store directory removed") && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("err = %v, want store-directory-removed or os.ErrNotExist", err)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Watch did not return within 2s after directory deletion")

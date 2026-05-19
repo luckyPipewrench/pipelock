@@ -14,6 +14,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,113 @@ func (sw *sseMessageWriter) Wrote() bool {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	return sw.wrote
+}
+
+var defaultMCPListenerSensitiveHeaders = []string{
+	"Authorization",
+	"Cookie",
+	"X-Api-Key",
+	"X-Token",
+	"Proxy-Authorization",
+	"X-Goog-Api-Key",
+}
+
+type mcpListenerHeaderDLPResult struct {
+	header  string
+	matches []scanner.TextDLPMatch
+}
+
+func scanMCPListenerHeadersForDLP(
+	ctx context.Context,
+	headers http.Header,
+	sc *scanner.Scanner,
+	cfg *config.RequestBodyScanning,
+) *mcpListenerHeaderDLPResult {
+	if sc == nil {
+		return nil
+	}
+
+	headersToScan := mcpListenerHeadersToScan(headers, cfg)
+	allValues := make([]string, 0)
+	for name, values := range headersToScan {
+		if mcpListenerShouldScanHeaderNames(cfg) {
+			result := sc.ScanTextForDLP(ctx, name)
+			if !result.Clean {
+				return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+			}
+			allValues = append(allValues, name)
+		}
+
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			allValues = append(allValues, value)
+			result := sc.ScanTextForDLP(ctx, value)
+			if !result.Clean {
+				return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+			}
+			if mcpListenerShouldScanHeaderNames(cfg) {
+				result = sc.ScanTextForDLP(ctx, name+value)
+				if !result.Clean {
+					return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+				}
+			}
+		}
+	}
+
+	if len(allValues) > 1 {
+		sort.Strings(allValues)
+		result := sc.ScanTextForDLP(ctx, strings.Join(allValues, "\n"))
+		if !result.Clean {
+			return &mcpListenerHeaderDLPResult{header: "(joined)", matches: result.Matches}
+		}
+	}
+	return nil
+}
+
+func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanning) map[string][]string {
+	if cfg == nil || !cfg.Enabled || !cfg.ScanHeaders {
+		return mcpListenerExplicitHeaders(headers, []string{"Authorization"})
+	}
+	if cfg.HeaderMode == config.HeaderModeAll {
+		ignored := make(map[string]struct{}, len(cfg.IgnoreHeaders))
+		for _, name := range cfg.IgnoreHeaders {
+			ignored[http.CanonicalHeaderKey(name)] = struct{}{}
+		}
+		out := make(map[string][]string)
+		for name, values := range headers {
+			canonical := http.CanonicalHeaderKey(name)
+			if _, skip := ignored[canonical]; skip {
+				continue
+			}
+			out[canonical] = values
+		}
+		return out
+	}
+
+	sensitiveHeaders := cfg.SensitiveHeaders
+	if len(sensitiveHeaders) == 0 {
+		sensitiveHeaders = defaultMCPListenerSensitiveHeaders
+	}
+	return mcpListenerExplicitHeaders(headers, sensitiveHeaders)
+}
+
+func mcpListenerExplicitHeaders(headers http.Header, names []string) map[string][]string {
+	out := make(map[string][]string)
+	for _, name := range names {
+		canonical := http.CanonicalHeaderKey(name)
+		values, ok := headers[canonical]
+		if !ok || len(values) == 0 {
+			continue
+		}
+		out[canonical] = values
+	}
+	return out
+}
+
+func mcpListenerShouldScanHeaderNames(cfg *config.RequestBodyScanning) bool {
+	return cfg != nil && cfg.Enabled && cfg.ScanHeaders && cfg.HeaderMode == config.HeaderModeAll
 }
 
 // RunHTTPProxy bridges stdio (client) to an upstream HTTP MCP server with
@@ -1426,36 +1534,33 @@ func RunHTTPListenerProxy(
 		httpWarnCtx := scanner.WithDLPWarnContext(r.Context(), warnCtx)
 		r = r.WithContext(httpWarnCtx)
 
-		// Scan Authorization header for DLP patterns. The body scanner
-		// doesn't see HTTP headers, so an agent could leak credentials
-		// via the Authorization header without triggering DLP.
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			dlpResult := reqScanner.ScanTextForDLP(r.Context(), auth)
-			if !dlpResult.Clean {
-				pattern := patternUnknown
-				if len(dlpResult.Matches) > 0 {
-					pattern = dlpResult.Matches[0].PatternName
-				}
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in Authorization header: %s\n", pattern)
-				if adaptiveCfg != nil && adaptiveCfg.Enabled {
-					decide.RecordSignal(reqRec, session.SignalBlock, decide.EscalationParams{
-						Threshold:     adaptiveCfg.EscalationThreshold,
-						Logger:        opts.AuditLogger,
-						Metrics:       opts.Metrics,
-						ConsoleWriter: safeLogW,
-						Session:       auditSessionKey,
-					})
-				}
-				w.Header().Set("Content-Type", "application/json")
-				rpcID := frame.ID
-				resp, _ := json.Marshal(rpcError{
-					JSONRPC: jsonrpc.Version,
-					ID:      rpcID,
-					Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
-				})
-				_, _ = w.Write(resp)
-				return
+		// Scan configured sensitive listener headers for DLP patterns. The
+		// body scanner doesn't see HTTP headers, so an agent could leak
+		// credentials via MCP listener headers without triggering DLP.
+		if headerResult := scanMCPListenerHeadersForDLP(r.Context(), r.Header, reqScanner, opts.requestBodyCfg()); headerResult != nil {
+			pattern := patternUnknown
+			if len(headerResult.matches) > 0 {
+				pattern = headerResult.matches[0].PatternName
 			}
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: DLP match in %s header: %s\n", headerResult.header, pattern)
+			if adaptiveCfg != nil && adaptiveCfg.Enabled {
+				decide.RecordSignal(reqRec, session.SignalBlock, decide.EscalationParams{
+					Threshold:     adaptiveCfg.EscalationThreshold,
+					Logger:        opts.AuditLogger,
+					Metrics:       opts.Metrics,
+					ConsoleWriter: safeLogW,
+					Session:       auditSessionKey,
+				})
+			}
+			w.Header().Set("Content-Type", "application/json")
+			rpcID := frame.ID
+			resp, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				ID:      rpcID,
+				Error:   rpcErrorDetail{Code: -32001, Message: "pipelock: request blocked by MCP input scanning"},
+			})
+			_, _ = w.Write(resp)
+			return
 		}
 
 		// A2A-Extensions header scanning: each comma-separated URI is

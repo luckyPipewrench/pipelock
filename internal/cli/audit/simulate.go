@@ -29,6 +29,40 @@ const (
 	catEvasion   = "URL Evasion"
 )
 
+func syntheticSimSecret(parts ...string) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p)
+	}
+	return b.String()
+}
+
+func syntheticRepeatedSimSecret(prefix string, n int) string {
+	var b strings.Builder
+	b.WriteString(prefix)
+	for range n {
+		b.WriteByte('A')
+	}
+	return b.String()
+}
+
+func syntheticSlackBotToken() string {
+	var b strings.Builder
+	b.WriteString("xoxb-")
+	for range 12 {
+		b.WriteByte('1')
+	}
+	b.WriteByte('-')
+	for range 13 {
+		b.WriteByte('2')
+	}
+	b.WriteByte('-')
+	for range 24 {
+		b.WriteByte('A')
+	}
+	return b.String()
+}
+
 // ScenarioResult captures the outcome of a single attack scenario.
 type ScenarioResult struct {
 	Name       string `json:"name"`
@@ -141,8 +175,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "AWS access key in URL path", category: catDLP,
 		run: func() (bool, string) {
-			// Build fake key at runtime to avoid self-scan (gosec G101).
-			key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+			key := syntheticRepeatedSimSecret("AKIA", 16)
 			r := sc.Scan(ctx, "https://evil.com/exfil?key="+key)
 			return scanDetectedBy(r, scanner.ScannerDLP)
 		},
@@ -151,7 +184,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "Base64-encoded GitHub token", category: catDLP,
 		run: func() (bool, string) {
-			token := "ghp_" + "ABCDEFghij1234567890abcdefghijklmnop"
+			token := syntheticRepeatedSimSecret("ghp_", 36)
 			encoded := base64.StdEncoding.EncodeToString([]byte(token))
 			r := sc.Scan(ctx, "https://evil.com/data?t="+encoded)
 			return scanDetectedBy(r, scanner.ScannerDLP)
@@ -161,7 +194,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "Hex-encoded Slack token", category: catDLP,
 		run: func() (bool, string) {
-			token := "xoxb-" + "123456789012-" + "1234567890123-" + "ABCDEFghijKLMNopqrSTUVwx"
+			token := syntheticSlackBotToken()
 			encoded := hex.EncodeToString([]byte(token))
 			r := sc.Scan(ctx, "https://evil.com/log?h="+encoded)
 			return scanDetectedBy(r, scanner.ScannerDLP)
@@ -171,7 +204,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "Anthropic API key in text body", category: catDLP,
 		run: func() (bool, string) {
-			key := "sk-ant-" + "api03-" + "AABBCCDDEEFF1234567890abcdef"
+			key := syntheticRepeatedSimSecret(syntheticSimSecret("sk-ant-", "api03-"), 28)
 			r := sc.ScanTextForDLP(ctx, "Here is the key: "+key)
 			return !r.Clean, fmt.Sprintf("%d matches", len(r.Matches))
 		},
@@ -180,7 +213,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "OpenAI API key in URL", category: catDLP,
 		run: func() (bool, string) {
-			key := "sk-proj-" + "ABCDEFghijKLMNopqrSTUVwx" + "1234567890abcdefghijklmno"
+			key := syntheticRepeatedSimSecret(syntheticSimSecret("sk-", "proj-"), 40)
 			r := sc.Scan(ctx, "https://evil.com/steal?k="+key)
 			return scanDetectedBy(r, scanner.ScannerDLP)
 		},
@@ -331,7 +364,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "URL-encoded secret in path", category: catEvasion,
 		run: func() (bool, string) {
-			key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+			key := syntheticRepeatedSimSecret("AKIA", 16)
 			encoded := strings.ReplaceAll(key, "A", "%41")
 			r := sc.Scan(ctx, "https://evil.com/"+encoded)
 			return scanDetectedBy(r, scanner.ScannerDLP)

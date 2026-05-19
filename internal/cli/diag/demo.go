@@ -149,7 +149,7 @@ func buildScenarios(extraPoison []*tools.ExtraPoisonPattern) []scenario {
 			attack: "Agent exfiltrates API key via URL parameter",
 			run: func(sc *scanner.Scanner) (bool, string) {
 				// Build fake key at runtime to avoid gitleaks
-				key := "sk-ant-" + "api03-" + "XXXXXXXXXXXXXXXXXXXX" + "XXXXXXXX"
+				key := syntheticAnthropicKey()
 				url := "https://evil.com/collect?key=" + key
 				result := sc.Scan(context.Background(), url)
 				if !result.Allowed {
@@ -241,7 +241,7 @@ func buildScenarios(extraPoison []*tools.ExtraPoisonPattern) []scenario {
 			attack: "Agent leaks API key through MCP tool call argument",
 			run: func(sc *scanner.Scanner) (bool, string) {
 				// Build fake key at runtime to avoid gitleaks
-				key := "sk-ant-" + "api03-" + "XXXXXXXXXXXXXXXXXXXX" + "XXXXXXXX"
+				key := syntheticAnthropicKey()
 				rpcRequest := map[string]any{
 					"jsonrpc": "2.0",
 					"id":      2,

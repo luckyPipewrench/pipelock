@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -527,5 +528,10 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 // canaryToken returns a synthetic AWS access key ID used for DLP detection testing.
 // Split to avoid triggering DLP scanners on the source file itself.
 func canaryToken() string {
-	return "AKIA" + "IOSFODNN7CANARY1"
+	var b strings.Builder
+	b.WriteString("AKIA")
+	for range 16 {
+		b.WriteByte('A')
+	}
+	return b.String()
 }

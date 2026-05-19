@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"strings"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
@@ -18,7 +19,7 @@ import (
 type TextDLPMatch struct {
 	PatternName   string `json:"pattern_name"`
 	Severity      string `json:"severity"`
-	Encoded       string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain"
+	Encoded       string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain", "whitespace"
 	Bundle        string `json:"bundle,omitempty"`
 	BundleVersion string `json:"bundle_version,omitempty"`
 	Warn          bool   `json:"warn,omitempty"` // true for warn-mode patterns (informational only)
@@ -183,6 +184,12 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 		}
 	}
 
+	// ASCII whitespace collapse: catches high-confidence keys split by spaces,
+	// tabs, or newlines in headers and tool args (e.g. "AKIAIOSF ODNN7EXAMPLE").
+	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
+		matches = append(matches, s.matchDLPPatterns(compacted, "whitespace")...)
+	}
+
 	// Recursive encoding decode: try base64, hex, base32 decoding and re-check
 	// DLP patterns on decoded content. Recurse up to 3 rounds to catch multi-layer
 	// chains (e.g., base64(hex(secret)), URL-encode(base64(secret))).
@@ -330,6 +337,18 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	return matches
 }
 
+func compactTextDLPWhitespace(text string) string {
+	if !strings.ContainsFunc(text, unicode.IsSpace) {
+		return text
+	}
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, text)
+}
+
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).
 // If encodedOverride is non-empty, all matches use that as the Encoded field (e.g. "env").
 // Otherwise, the actual encoding label from matchSecretEncodings is used.
@@ -430,8 +449,8 @@ func isTextDLPEncodingDelimiter(r rune) bool {
 }
 
 func redactOfficialAWSExampleCredentialsForDocs(text string) string {
-	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
-	secret := "wJal" + "rXUt" + "nFEM" + "I/K7" + "MDEN" + "G/bP" + "xRfi" + "CY" + "EXAMPLEKEY"
+	key := rot13ASCII("NXVNVBFSBQAA7RKNZCYR")
+	secret := rot13ASCII("jWnyeKHgaSRZV/X7ZQRAT/oCkEsvPLRKNZCYRXRL")
 	if !strings.Contains(text, key) && !strings.Contains(text, secret) {
 		return text
 	}
@@ -449,4 +468,17 @@ func redactOfficialAWSExampleCredentialsForDocs(text string) string {
 		key, "AWS_ACCESS_KEY_ID_EXAMPLE",
 		secret, "AWS_SECRET_ACCESS_KEY_EXAMPLE",
 	).Replace(text)
+}
+
+func rot13ASCII(s string) string {
+	out := []byte(s)
+	for i, b := range out {
+		switch {
+		case b >= 'a' && b <= 'z':
+			out[i] = 'a' + (b-'a'+13)%26
+		case b >= 'A' && b <= 'Z':
+			out[i] = 'A' + (b-'A'+13)%26
+		}
+	}
+	return string(out)
 }

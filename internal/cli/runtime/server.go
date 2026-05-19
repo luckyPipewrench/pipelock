@@ -970,6 +970,13 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			return c.CanonicalPolicyHash()
 		}
+		mcpRequestBodyFn := func() *config.RequestBodyScanning {
+			c := s.proxy.CurrentConfig()
+			if c == nil {
+				return nil
+			}
+			return &c.RequestBodyScanning
+		}
 
 		mcpErr = make(chan error, 1)
 		go func() {
@@ -981,6 +988,7 @@ func (s *Server) Start(ctx context.Context) error {
 				ScannerFn:           mcpScannerFn,
 				Approver:            mcpApprover,
 				InputCfgFn:          mcpInputCfgFn,
+				RequestBodyFn:       mcpRequestBodyFn,
 				ToolCfgFn:           mcpToolCfgFn,
 				PolicyCfgFn:         s.currentToolPolicyCfg,
 				KillSwitch:          s.killswitch,

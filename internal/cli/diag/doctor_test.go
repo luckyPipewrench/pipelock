@@ -373,7 +373,7 @@ func TestDoctorHumanOutputMentionsConfiguredVsEnforcing(t *testing.T) {
 		t.Fatal("expected warning exit")
 	}
 	out := buf.String()
-	for _, want := range []string{"Pipelock Enforcement Doctor", "direct_egress_boundary", "proxy env vars are not a wall"} {
+	for _, want := range []string{"Pipelock Enforcement Doctor", "direct_egress_boundary", "launch agents through plk/containment"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}

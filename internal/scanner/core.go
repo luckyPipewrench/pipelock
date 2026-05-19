@@ -467,6 +467,12 @@ func (s *Scanner) scanCoreDLP(text string) []TextDLPMatch {
 		}
 	}
 
+	// Whitespace-collapse catches key material split with ordinary spaces,
+	// tabs, or newlines before it reaches the configurable pattern layer.
+	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
+		matches = append(matches, s.matchCoreDLPPatterns(compacted, "whitespace")...)
+	}
+
 	// Recursive encoding decode: try base64, hex, base32 and re-check
 	// core DLP patterns on decoded content. Catches base64(secret), hex(secret).
 	matches = append(matches, s.decodeAndMatchCoreRecursive(cleaned, 0)...)

@@ -2238,6 +2238,105 @@ func TestHTTPListener_AuthHeaderDLP(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_ConfiguredSensitiveHeaderDLP(t *testing.T) {
+	var serverCalled int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&serverCalled, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	reqBodyCfg := config.Defaults().RequestBodyScanning
+	reqBodyCfg.Enabled = true
+	reqBodyCfg.ScanHeaders = true
+	reqBodyCfg.HeaderMode = config.HeaderModeSensitive
+	reqBodyCfg.SensitiveHeaders = []string{"X-Api-Key"}
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	var logBuf bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
+			Scanner: sc, RequestBodyCfg: &reqBodyCfg,
+		})
+	}()
+
+	baseURL := "http://" + addr
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
+		resp, connErr := http.DefaultClient.Do(hReq)
+		if connErr == nil {
+			_ = resp.Body.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Api-Key", mcpSyntheticAWSAccessKey())
+
+	resp, httpErr := http.DefaultClient.Do(req)
+	if httpErr != nil {
+		t.Fatalf("POST: %v", httpErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	var rpc struct {
+		Error struct{ Code int } `json:"error"`
+	}
+	if json.Unmarshal(respBody, &rpc) != nil || rpc.Error.Code != -32001 {
+		t.Errorf("expected error code -32001 (DLP block), got: %s", respBody)
+	}
+	if atomic.LoadInt32(&serverCalled) != 0 {
+		t.Error("upstream should NOT be called when X-Api-Key header has DLP match")
+	}
+	if !strings.Contains(logBuf.String(), "X-Api-Key header") {
+		t.Fatalf("expected X-Api-Key header in log, got: %s", logBuf.String())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Error("timeout")
+	}
+}
+
+func TestMCPListenerHeaderDLP_WhitespaceSplitSensitiveHeader(t *testing.T) {
+	sc := testScannerForHTTP(t)
+	reqBodyCfg := config.Defaults().RequestBodyScanning
+	reqBodyCfg.Enabled = true
+	reqBodyCfg.ScanHeaders = true
+	reqBodyCfg.HeaderMode = config.HeaderModeAll
+	reqBodyCfg.SensitiveHeaders = []string{"X-Token"}
+
+	headers := http.Header{}
+	headers.Set("X-Token", "AKIA"+strings.Repeat("A", 4)+" "+strings.Repeat("B", 12))
+
+	result := scanMCPListenerHeadersForDLP(context.Background(), headers, sc, &reqBodyCfg)
+	if result == nil {
+		t.Fatal("expected whitespace-split sensitive header to be blocked")
+	}
+	if result.header != "X-Token" {
+		t.Fatalf("blocked header = %q, want X-Token", result.header)
+	}
+	if len(result.matches) == 0 || result.matches[0].PatternName != "AWS Access ID" {
+		t.Fatalf("expected AWS Access ID match, got %+v", result.matches)
+	}
+}
+
 func TestHTTPListener_CleanAuthHeader(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

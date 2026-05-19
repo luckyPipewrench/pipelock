@@ -89,7 +89,13 @@ const (
 	// Re-bumped for signed MCP binary-integrity manifests:
 	// mcp_binary_integrity now carries signature trust settings that can
 	// make runtime launch fail closed before any MCP traffic is handled.
-	goldenHashDefaults = "f3f79a671fc28e0c2378865cc86d9c4f24aafee24f68bd6fff38daf170c25cd7"
+	// Re-bumped for Spanish prompt-injection coverage: the default
+	// response-scanning corpus now includes Spanish instruction override
+	// and system-prompt disclosure patterns.
+	// Re-bumped for cross-lingual prompt-injection coverage: the default
+	// response-scanning corpus now includes mixed English/Spanish instruction
+	// override and system-prompt disclosure patterns.
+	goldenHashDefaults = "aa682bb532e53387fc7380b26324856531b8d41b58f8bc2c2d78eb2410bc0922"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -124,7 +130,11 @@ const (
 	// goldenHashDefaults note.
 	// Re-bumped for signed MCP binary-integrity manifests: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "1a8ad9890a58f8af2b76fd4998e221bc5691d590c39b213370e75cec80c47209"
+	// Re-bumped for Spanish prompt-injection coverage: see
+	// goldenHashDefaults note above.
+	// Re-bumped for cross-lingual prompt-injection coverage: see
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "0e1384702d2b96dca932c1f7e304fabc3954d47f7bb7a5f2a2be6bbe25f566f4"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

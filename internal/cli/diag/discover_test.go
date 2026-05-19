@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -70,6 +71,83 @@ func TestDiscoverCmd_JSONWithServers(t *testing.T) {
 	}
 	if report.Summary.TotalServers != 2 {
 		t.Errorf("total_servers = %d, want 2", report.Summary.TotalServers)
+	}
+}
+
+func TestDiscoverCmd_JSONRedactsSensitiveValues(t *testing.T) {
+	home := t.TempDir()
+
+	dbURL := "postgresql://postgres:" + "postgres@127.0.0.1:5432/app"
+	content := `{"mcpServers":{"db":{
+		"command":"npx",
+		"args":["-y","@modelcontextprotocol/server-postgres","` + dbURL + `","--token=abc123"],
+		"env":{"API_TOKEN":"secret-token","BRAIN_DIR":"/data"}
+	}}}`
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := DiscoverCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--json", "--home", home})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected warning exit for unprotected discovered server")
+	}
+
+	out := stdout.String()
+	for _, leaked := range []string{"postgres:postgres", "abc123", "secret-token", `"/data"`} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("discover JSON leaked %q in:\n%s", leaked, out)
+		}
+	}
+
+	var report discover.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out)
+	}
+	if len(report.Servers) != 1 {
+		t.Fatalf("servers = %d, want 1", len(report.Servers))
+	}
+	if report.Servers[0].Env["API_TOKEN"] != "[REDACTED]" {
+		t.Fatalf("env value not redacted: %#v", report.Servers[0].Env)
+	}
+}
+
+func TestDiscoverCmd_HumanAndGenerateRedactSensitiveValues(t *testing.T) {
+	home := t.TempDir()
+	dbURL := "postgresql://postgres:" + "postgres@127.0.0.1:5432/app"
+	content := `{"mcpServers":{"db":{
+		"command":"npx",
+		"args":["-y","@modelcontextprotocol/server-postgres","` + dbURL + `","--password=hunter2"],
+		"env":{"API_TOKEN":"secret-token"}
+	}}}`
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cmd := DiscoverCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--generate", "--home", home})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected warning exit for unprotected discovered server")
+	}
+
+	output := buf.String()
+	for _, leaked := range []string{"postgres:postgres", "hunter2", "secret-token"} {
+		if strings.Contains(output, leaked) {
+			t.Fatalf("discover output leaked %q in:\n%s", leaked, output)
+		}
+	}
+	if !strings.Contains(output, "[REDACTED]") && !strings.Contains(output, "%5BREDACTED%5D") {
+		t.Fatalf("discover output did not show redaction marker:\n%s", output)
 	}
 }
 

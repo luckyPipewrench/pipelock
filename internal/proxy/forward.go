@@ -1098,10 +1098,13 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				action = cfg.RequestBodyScanning.Action
 			}
 
-			// Determine scanner label: address_protection vs body_dlp.
+			// Determine scanner label: address_protection / prompt injection / body_dlp.
 			scannerLabel := scannerLabelBodyDLP
 			if len(bodyResult.AddressFindings) > 0 && len(bodyResult.DLPMatches) == 0 {
 				scannerLabel = scannerLabelAddressProtection
+			}
+			if len(bodyResult.InjectionMatches) > 0 && len(bodyResult.DLPMatches) == 0 && len(bodyResult.AddressFindings) == 0 {
+				scannerLabel = scannerLabelBodyPromptInjection
 			}
 			if bodyResult.RedactionBlockReason != "" {
 				scannerLabel = scannerLabelRedaction
@@ -1109,9 +1112,15 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 			patternNames := dlpMatchNames(bodyResult.DLPMatches)
 			bundleRules := dlpBundleRules(bodyResult.DLPMatches)
+			injectionNames := responseMatchNames(bodyResult.InjectionMatches)
 			reason := bodyResult.Reason
 			if reason == "" {
-				reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+				switch {
+				case len(injectionNames) > 0:
+					reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
+				case len(patternNames) > 0:
+					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+				}
 			}
 
 			// Emit telemetry for both finding types independently.
@@ -1133,6 +1142,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					addrNames[i] = f.Explanation
 				}
 				p.logger.LogBodyScan(actx, audit.EventAddressProtection, action, len(bodyResult.AddressFindings), addrNames)
+			}
+			if len(bodyResult.InjectionMatches) > 0 {
+				p.logger.LogBodyScan(actx, audit.EventBodyPromptInjection, action, len(bodyResult.InjectionMatches), injectionNames)
 			}
 
 			// Fail-closed: if the body cannot be replayed or redaction explicitly
@@ -2114,6 +2126,15 @@ func copyResponseHeaders(dst, src http.Header) {
 
 // dlpMatchNames extracts pattern names from a slice of DLP matches.
 func dlpMatchNames(matches []scanner.TextDLPMatch) []string {
+	names := make([]string, len(matches))
+	for i, m := range matches {
+		names[i] = m.PatternName
+	}
+	return names
+}
+
+// responseMatchNames extracts pattern names from a slice of response scanner matches.
+func responseMatchNames(matches []scanner.ResponseMatch) []string {
 	names := make([]string, len(matches))
 	for i, m := range matches {
 		names[i] = m.PatternName

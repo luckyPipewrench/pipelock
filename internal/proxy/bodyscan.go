@@ -50,6 +50,10 @@ const (
 	// request bodies (secret exfiltration detection).
 	scannerLabelBodyDLP = "body_dlp"
 
+	// scannerLabelBodyPromptInjection is the scanner label for prompt
+	// injection findings in outbound request bodies.
+	scannerLabelBodyPromptInjection = "body_prompt_injection"
+
 	// scannerLabelAddressProtection is the scanner label for address poisoning
 	// findings in logs and metrics, distinguishing from body_dlp (secret exfil).
 	scannerLabelAddressProtection = "address_protection"
@@ -101,12 +105,13 @@ func isResponseScanExempt(hostname string, exemptDomains []string) bool {
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
-	Clean           bool
-	Action          string
-	DLPMatches      []scanner.TextDLPMatch
-	AddressFindings []addressprotect.Finding // crypto address poisoning findings
-	HeaderName      string                   // set when a header triggered the match
-	Reason          string                   // human-readable block reason
+	Clean            bool
+	Action           string
+	DLPMatches       []scanner.TextDLPMatch
+	InjectionMatches []scanner.ResponseMatch
+	AddressFindings  []addressprotect.Finding // crypto address poisoning findings
+	HeaderName       string                   // set when a header triggered the match
+	Reason           string                   // human-readable block reason
 	// RedactionReport is populated when ActionRedact ran against the body.
 	// Nil when the feature is disabled or the body was blocked before
 	// reaching the redaction step. Receipt emitters serialize a summary
@@ -266,6 +271,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 				RedactionReport: redactReport,
 			}
 		}
+		injectionResult := req.Scanner.ScanResponse(ctx, text)
+		if !injectionResult.Clean {
+			return buf, BodyScanResult{
+				Clean:            false,
+				InjectionMatches: injectionResult.Matches,
+				RedactionReport:  redactReport,
+			}
+		}
 	}
 
 	// Joined scan: catches secrets split across multiple fields.
@@ -280,6 +293,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 			Clean:           false,
 			DLPMatches:      result.Matches,
 			RedactionReport: redactReport,
+		}
+	}
+	injectionResult := req.Scanner.ScanResponse(ctx, joined)
+	if !injectionResult.Clean {
+		return buf, BodyScanResult{
+			Clean:            false,
+			InjectionMatches: injectionResult.Matches,
+			RedactionReport:  redactReport,
 		}
 	}
 

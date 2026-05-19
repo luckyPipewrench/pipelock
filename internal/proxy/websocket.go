@@ -1323,6 +1323,12 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		receiptLayer = scannerLabelAddressProtection
 		closeReason = "address poisoning detected"
 	}
+	if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 && len(result.AddressFindings) == 0 {
+		scannerLabel = scannerLabelBodyPromptInjection
+		receiptLayer = scannerLabelBodyPromptInjection
+		closeReason = "prompt injection detected"
+		closeBlockReason = blockreason.PromptInjection
+	}
 	if result.RedactionBlockReason != "" {
 		scannerLabel = scannerLabelRedaction
 		receiptLayer = scannerLabelRedaction
@@ -1339,6 +1345,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 	if reason == "" && len(result.AddressFindings) > 0 {
 		reason = fmt.Sprintf("address poisoning: %s", result.AddressFindings[0].Explanation)
+	}
+	if reason == "" && len(result.InjectionMatches) > 0 {
+		reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(responseMatchNames(result.InjectionMatches), ", "))
 	}
 	if reason == "" && result.RedactionBlockReason != "" {
 		reason = "redaction blocked request: " + string(result.RedactionBlockReason)

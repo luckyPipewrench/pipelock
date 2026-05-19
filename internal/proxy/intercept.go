@@ -771,18 +771,26 @@ func newInterceptHandler(
 					action = ic.Config.RequestBodyScanning.Action
 				}
 
-				// Determine scanner label: address_protection vs body_dlp.
+				// Determine scanner label: address_protection / prompt injection / body_dlp.
 				scannerLabel := scannerLabelBodyDLP
 				if result.RedactionBlockReason != "" {
 					scannerLabel = scannerLabelRedaction
 				} else if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 {
 					scannerLabel = scannerLabelAddressProtection
+				} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
+					scannerLabel = scannerLabelBodyPromptInjection
 				}
 
 				reason := result.Reason
 				if reason == "" {
-					patternNames := dlpMatchNames(result.DLPMatches)
-					reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+					injectionNames := responseMatchNames(result.InjectionMatches)
+					switch {
+					case len(injectionNames) > 0:
+						reason = fmt.Sprintf("request body contains prompt injection: %s", strings.Join(injectionNames, ", "))
+					default:
+						patternNames := dlpMatchNames(result.DLPMatches)
+						reason = fmt.Sprintf("request body contains secret: %s", strings.Join(patternNames, ", "))
+					}
 				}
 
 				// DLP-only exemption: DLP pattern findings on adaptive-exempt

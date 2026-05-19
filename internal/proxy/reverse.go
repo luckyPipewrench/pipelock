@@ -783,7 +783,11 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 
 	// Log the DLP finding.
 	patternNames := dlpMatchNames(result.DLPMatches)
+	injectionNames := responseMatchNames(result.InjectionMatches)
 	reason := result.Reason
+	if reason == "" && len(injectionNames) > 0 {
+		reason = fmt.Sprintf("prompt injection: %s", strings.Join(injectionNames, ", "))
+	}
 	if reason == "" && len(patternNames) > 0 {
 		reason = fmt.Sprintf("DLP: %s", strings.Join(patternNames, ", "))
 	}
@@ -793,17 +797,26 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 	actx := newHTTPAuditContext(rp.logger, r.Method, r.URL.String(), clientIP, requestID, "")
-	rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil)
+	if len(injectionNames) > 0 {
+		rp.logger.LogBodyScan(actx, audit.EventBodyPromptInjection, action, len(injectionNames), injectionNames)
+	}
+	if len(patternNames) > 0 {
+		rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil)
+	}
 
 	// Fail-closed transport errors (consumed-but-unreplayable body) and
 	// redaction gate failures must block regardless of enforce mode.
 	layer := "dlp"
 	if result.RedactionBlockReason != "" {
 		layer = scannerLabelRedaction
+	} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
+		layer = scannerLabelBodyPromptInjection
 	}
 	bodyBlockReason := blockreason.DLPMatch
 	if result.RedactionBlockReason != "" {
 		bodyBlockReason = blockreason.RedactionFailure
+	} else if len(result.InjectionMatches) > 0 && len(result.DLPMatches) == 0 {
+		bodyBlockReason = blockreason.PromptInjection
 	}
 	if isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -820,18 +833,18 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			Agent:     receiptInput.Agent,
 		})
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(bodyBlockReason, scanner.ScannerDLP),
+			blockInfoFor(bodyBlockReason, layer),
 			reason)
 		return true, config.ActionBlock, nil, true
 	}
 
 	if action == config.ActionBlock && cfg.EnforceEnabled() {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
-		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "dlp")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
 		rp.emitReceipt(receipt.EmitOpts{
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
-			Layer:     "dlp",
+			Layer:     layer,
 			Pattern:   reason,
 			Transport: TransportReverse,
 			Method:    r.Method,
@@ -840,7 +853,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			Agent:     receiptInput.Agent,
 		})
 		writeReverseProxyBlock(w, http.StatusForbidden,
-			blockInfoFor(bodyBlockReason, scanner.ScannerDLP),
+			blockInfoFor(bodyBlockReason, layer),
 			reason)
 		return true, config.ActionBlock, nil, true
 	}

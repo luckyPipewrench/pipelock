@@ -101,6 +101,14 @@ func bodyScanToFindings(r BodyScanResult) []capture.Finding {
 			Action:      f.Action,
 		})
 	}
+	for _, m := range r.InjectionMatches {
+		findings = append(findings, capture.Finding{
+			Kind:        capture.KindInjection,
+			PatternName: m.PatternName,
+			MatchText:   m.MatchText,
+			Action:      config.ActionBlock,
+		})
+	}
 	return findings
 }
 

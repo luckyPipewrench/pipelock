@@ -1,0 +1,60 @@
+# Pro / Enterprise install: license token mounted from a Secret, admin API
+# enabled with bearer-token auth, Sentry DSN wired in, and per-agent profiles
+# configured under .pipelock.agents.
+#
+# Prerequisites:
+#   kubectl create secret generic pipelock-license \
+#     --from-file=license.token=./pipelab-master.token
+#   kubectl create secret generic pipelock-admin \
+#     --from-literal=token=$(openssl rand -hex 32)
+#   kubectl create secret generic pipelock-sentry \
+#     --from-literal=dsn=https://...@sentry.io/...
+#
+# Install:
+#   helm install pipelock ./charts/pipelock -f values-pro.yaml
+
+replicaCount: 2
+
+license:
+  enabled: true
+  existingSecret: pipelock-license
+
+sentry:
+  enabled: true
+  dsnSecretRef:
+    name: pipelock-sentry
+    key: dsn
+
+adminApi:
+  enabled: true
+  tokenSecretRef:
+    name: pipelock-admin
+    key: token
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: pipelock
+
+pipelock:
+  mode: strict
+  enforce: true
+  mediation_envelope:
+    actor_format: spiffe
+  health_watchdog:
+    enabled: true
+    expose_subsystems: false
+  agents:
+    - name: claude-code
+      cidr: "10.0.0.0/16"
+      mode: balanced
+    - name: cursor
+      cidr: "10.1.0.0/16"
+      mode: strict

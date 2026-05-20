@@ -1,0 +1,18 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pipelock.fullname" . }}
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+spec:
+  {{- if hasKey .Values.podDisruptionBudget "minAvailable" }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if hasKey .Values.podDisruptionBudget "maxUnavailable" }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "pipelock.selectorLabels" . | nindent 6 }}
+{{- end }}

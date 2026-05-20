@@ -9,4 +9,14 @@ data:
     {{- $cfg := deepCopy .Values.pipelock }}
     {{- $_ := set $cfg "fetch_proxy" (merge (dict "listen" (printf "0.0.0.0:%d" (int .Values.service.port))) (default dict $cfg.fetch_proxy)) }}
     {{- $_ := set $cfg "metrics_listen" (printf "0.0.0.0:%d" (int .Values.service.metricsPort)) }}
+    {{- if .Values.adminApi.enabled }}
+    {{- $ks := merge (dict "api_listen" (printf "0.0.0.0:%d" (int .Values.service.adminPort))) (default dict $cfg.kill_switch) }}
+    {{- if .Values.adminApi.tokenSecretRef.name }}
+    {{- $_ := set $ks "api_token_path" (printf "%s/%s" .Values.adminApi.tokenMountPath .Values.adminApi.tokenSecretRef.key) }}
+    {{- end }}
+    {{- $_ := set $cfg "kill_switch" $ks }}
+    {{- end }}
+    {{- if and .Values.license.enabled .Values.license.existingSecret }}
+    {{- $_ := set $cfg "license_token_path" (printf "%s/%s" .Values.license.mountPath .Values.license.secretKey) }}
+    {{- end }}
     {{- toYaml $cfg | nindent 4 }}

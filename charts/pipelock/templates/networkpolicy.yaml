@@ -24,6 +24,10 @@ spec:
         {{- end }}
         - port: {{ .Values.service.metricsPort }}
           protocol: TCP
+        {{- if .Values.adminApi.enabled }}
+        - port: {{ .Values.service.adminPort }}
+          protocol: TCP
+        {{- end }}
   egress:
     # DNS resolution required for all proxy modes
     - ports:

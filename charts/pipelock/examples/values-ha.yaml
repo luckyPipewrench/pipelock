@@ -1,0 +1,42 @@
+# High-availability install: 3 replicas, PodDisruptionBudget, topology spread,
+# NetworkPolicy, and Prometheus Operator PodMonitor.
+#
+# Install:
+#   helm install pipelock ./charts/pipelock -f values-ha.yaml
+
+replicaCount: 3
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: pipelock
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: pipelock
+
+priorityClassName: system-cluster-critical
+
+networkPolicy:
+  enabled: true
+
+podMonitor:
+  enabled: true
+  interval: 30s
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi

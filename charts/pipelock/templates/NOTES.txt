@@ -1,4 +1,4 @@
-Pipelock {{ .Chart.AppVersion }} deployed.
+Pipelock {{ .Chart.AppVersion }} deployed as release {{ .Release.Name }}.
 
 Proxy endpoint:
   kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
@@ -7,17 +7,45 @@ Test the scanner:
   export HTTPS_PROXY=http://127.0.0.1:{{ .Values.service.port }}
   pipelock simulate --config /etc/pipelock/pipelock.yaml
 
-Health check:
+Health watchdog (used by liveness + readiness):
   curl http://127.0.0.1:{{ .Values.service.port }}/health
+  # 200 = all subsystems healthy
+  # 503 = at least one subsystem wedged (Kubernetes will restart the pod)
 
 Logs:
   kubectl logs -l app.kubernetes.io/name={{ include "pipelock.name" . }},app.kubernetes.io/instance={{ .Release.Name }} --tail=50
+
 {{- if and .Values.mcp.enabled .Values.mcp.upstream }}
 
-MCP proxy:
+MCP proxy (upstream {{ .Values.mcp.upstream }}):
   kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.mcpPort }}:{{ .Values.service.mcpPort }}
 {{- end }}
 
-Metrics (Prometheus):
+Prometheus metrics:
   kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.metricsPort }}:{{ .Values.service.metricsPort }}
   curl http://127.0.0.1:{{ .Values.service.metricsPort }}/metrics
+{{- if .Values.podMonitor.enabled }}
+  # PodMonitor is enabled. Prometheus Operator scrapes this endpoint every {{ .Values.podMonitor.interval }} automatically.
+{{- end }}
+
+{{- if .Values.adminApi.enabled }}
+
+Admin API (port {{ .Values.service.adminPort }}):
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.adminPort }}:{{ .Values.service.adminPort }}
+  pipelock adaptive status --api-url http://127.0.0.1:{{ .Values.service.adminPort }}
+  pipelock session list   --api-url http://127.0.0.1:{{ .Values.service.adminPort }}
+{{- if not .Values.adminApi.tokenSecretRef.name }}
+  # WARNING: adminApi.enabled is true but adminApi.tokenSecretRef.name is not set.
+  # The admin API is reachable without authentication. Provide a Secret holding the bearer token.
+{{- end }}
+{{- end }}
+
+{{- if and .Values.license.enabled (not .Values.license.existingSecret) }}
+
+WARNING: license.enabled is true but license.existingSecret is not set. Pro features will not activate.
+{{- end }}
+
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.podDisruptionBudget.enabled) }}
+
+NOTE: {{ .Values.replicaCount }} replicas running without a PodDisruptionBudget. A node drain or rollout can take all pods down at once. Set podDisruptionBudget.enabled=true to keep at least one replica available during voluntary disruptions.
+{{- end }}

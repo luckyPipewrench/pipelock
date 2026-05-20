@@ -1,0 +1,150 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Pipelock Helm values",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "image": {
+      "type": "object",
+      "required": ["repository", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "digest": { "type": "string" },
+        "pullPolicy": {
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "automount": { "type": "boolean" },
+        "annotations": { "type": "object" },
+        "name": { "type": "string" }
+      }
+    },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "service": {
+      "type": "object",
+      "required": ["type", "port", "metricsPort"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "mcpPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "metricsPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "adminPort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "resources": { "type": "object" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "topologySpreadConstraints": { "type": "array" },
+    "priorityClassName": { "type": "string" },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^[0-9]+%$" }
+          ]
+        },
+        "maxUnavailable": {
+          "oneOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^[0-9]+%$" }
+          ]
+        }
+      }
+    },
+    "extraEnv": { "type": "array" },
+    "extraEnvFrom": { "type": "array" },
+    "extraVolumes": { "type": "array" },
+    "extraVolumeMounts": { "type": "array" },
+    "license": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingSecret": { "type": "string" },
+        "secretKey": { "type": "string" },
+        "mountPath": { "type": "string" }
+      }
+    },
+    "sentry": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "dsnSecretRef": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        }
+      }
+    },
+    "adminApi": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "tokenSecretRef": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        },
+        "tokenMountPath": { "type": "string" }
+      }
+    },
+    "pipelock": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "mcp": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "upstream": { "type": "string" },
+        "listen": { "type": "string" }
+      }
+    },
+    "podMonitor": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "labels": { "type": "object" }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "livenessProbe": { "type": "object" },
+    "readinessProbe": { "type": "object" }
+  }
+}

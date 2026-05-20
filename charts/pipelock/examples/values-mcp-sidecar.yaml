@@ -1,0 +1,25 @@
+# MCP HTTP listener mode: bridges agent MCP traffic to an upstream MCP server.
+# The pod exposes both the standard fetch/forward proxy on 8888 AND an MCP
+# HTTP listener on 8889 that forwards to mcp.upstream.
+#
+# Install:
+#   helm install pipelock-mcp ./charts/pipelock -f values-mcp-sidecar.yaml
+
+mcp:
+  enabled: true
+  upstream: "http://your-mcp-server.namespace.svc.cluster.local:3000/mcp"
+  listen: "0.0.0.0:8889"
+
+pipelock:
+  mode: balanced
+  enforce: true
+  mcp_input_scanning:
+    enabled: true
+    action: block
+  mcp_tool_scanning:
+    enabled: true
+    detect_drift: true
+  mcp_tool_policy:
+    enabled: true
+  redaction:
+    enabled: true

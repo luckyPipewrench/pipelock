@@ -27,6 +27,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "pipelock.serviceAccountName" . }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -59,12 +62,44 @@ spec:
             - name: metrics
               containerPort: {{ .Values.service.metricsPort }}
               protocol: TCP
+            {{- if .Values.adminApi.enabled }}
+            - name: admin
+              containerPort: {{ .Values.service.adminPort }}
+              protocol: TCP
+            {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           {{- with .Values.readinessProbe }}
           readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $hasLicenseEnv := and .Values.license.enabled .Values.license.existingSecret }}
+          {{- $hasSentryEnv := and .Values.sentry.enabled .Values.sentry.dsnSecretRef.name }}
+          {{- $hasExtraEnv := gt (len .Values.extraEnv) 0 }}
+          {{- if or $hasLicenseEnv $hasSentryEnv $hasExtraEnv }}
+          env:
+            {{- if $hasLicenseEnv }}
+            - name: PIPELOCK_LICENSE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.existingSecret | quote }}
+                  key: {{ .Values.license.secretKey | quote }}
+            {{- end }}
+            {{- if $hasSentryEnv }}
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sentry.dsnSecretRef.name | quote }}
+                  key: {{ .Values.sentry.dsnSecretRef.key | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           resources:
@@ -74,10 +109,38 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/pipelock
+            {{- if and .Values.license.enabled .Values.license.existingSecret }}
+            - name: license
+              mountPath: {{ .Values.license.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.adminApi.enabled .Values.adminApi.tokenSecretRef.name }}
+            - name: admin-token
+              mountPath: {{ .Values.adminApi.tokenMountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "pipelock.fullname" . }}
+        {{- if and .Values.license.enabled .Values.license.existingSecret }}
+        - name: license
+          secret:
+            secretName: {{ .Values.license.existingSecret | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if and .Values.adminApi.enabled .Values.adminApi.tokenSecretRef.name }}
+        - name: admin-token
+          secret:
+            secretName: {{ .Values.adminApi.tokenSecretRef.name | quote }}
+            defaultMode: 0400
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -88,5 +151,9 @@ spec:
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}

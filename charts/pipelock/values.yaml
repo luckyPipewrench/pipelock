@@ -2,7 +2,10 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/luckypipewrench/pipelock
-  tag: "@sha256:3dcd7e8860a9868ad1849de2786c6dfa4e9180b66d91aa7bddcd1c6aca286983"  # defaults to .Chart.AppVersion
+  # Default tag tracks the chart appVersion. To pin by digest, set image.digest
+  # to a sha256 string and the chart will render repository@digest. The tag
+  # value below is the v2.5.0 multi-arch manifest digest.
+  tag: "@sha256:ea07c3b476829e0a9c13b8484aa9c71e60e811c5fdf07d35e17bcb889bb72446"  # defaults to .Chart.AppVersion
   digest: ""  # optional sha256 digest; when set, repository@digest is used
   pullPolicy: IfNotPresent
 
@@ -13,6 +16,9 @@ fullnameOverride: ""
 serviceAccount:
   create: true
   automount: false
+  # Annotations on the ServiceAccount. Useful for IRSA (AWS), Workload Identity
+  # (GCP/Azure), or Vault Agent injection patterns where the chart needs to
+  # bind a cloud identity for license fetch or Sentry DSN retrieval.
   annotations: {}
   # name: ""
 
@@ -37,6 +43,8 @@ service:
   port: 8888
   mcpPort: 8889
   metricsPort: 9091
+  # Admin API port. Only exposed on the Service when adminApi.enabled is true.
+  adminPort: 9090
 
 resources:
   requests:
@@ -50,9 +58,96 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# Spread replicas across topology domains. Most useful when replicaCount >= 2.
+topologySpreadConstraints: []
+priorityClassName: ""
+
+# PodDisruptionBudget. Strongly recommended when running multiple replicas
+# behind a single Service, because pipelock is on the agent's critical
+# traffic path and a single eviction takes the proxy down for that pod.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1  # set only one of minAvailable / maxUnavailable
+
+# Additional environment variables passed to the pipelock container.
+# Used for license tokens (PIPELOCK_LICENSE), Sentry DSN, and admin API token.
+extraEnv: []
+# - name: PIPELOCK_LICENSE
+#   valueFrom:
+#     secretKeyRef:
+#       name: pipelock-license
+#       key: license.token
+
+extraEnvFrom: []
+# - secretRef:
+#     name: pipelock-secrets
+
+# Additional volumes and mounts. Useful for mounting a license token at a
+# specific path or providing extra CA bundles for TLS interception.
+extraVolumes: []
+# - name: pipelock-license
+#   secret:
+#     secretName: pipelock-license
+extraVolumeMounts: []
+# - name: pipelock-license
+#   mountPath: /etc/pipelock/license
+#   readOnly: true
+
+# Pipelock Pro / Enterprise license. Pro features (per-agent profiles,
+# CIDR matching, budgets) require a valid signed license token.
+license:
+  # Set to true to mount the license token into the pod. Community/free
+  # installs do not need this — all detection and enforcement layers ship
+  # in the open-source binary.
+  enabled: false
+  # Name of an existing Kubernetes Secret holding the license token. The
+  # Secret must contain the key named below (default: license.token).
+  existingSecret: ""
+  secretKey: "license.token"
+  # Path inside the container where the secret is mounted. Pipelock looks
+  # at ~/.config/pipelock/license.token by default; this path is documented
+  # for operators who set licenseTokenPath in pipelock.yaml.
+  mountPath: "/etc/pipelock/license"
+
+# Sentry error reporting. When enabled, sets SENTRY_DSN from a Secret.
+sentry:
+  enabled: false
+  dsnSecretRef:
+    name: ""
+    key: "dsn"
+
+# Authenticated admin API for `pipelock adaptive` and `pipelock session`
+# commands. When enabled, the chart renders kill_switch.api_listen into the
+# config and exposes the admin port on the Service.
+adminApi:
+  enabled: false
+  # Token Secret. Required when adminApi.enabled is true. The Secret must
+  # contain the key named below (default: token). Token is mounted at the
+  # path documented in pipelock.yaml as kill_switch.api_token_path.
+  tokenSecretRef:
+    name: ""
+    key: "token"
+  tokenMountPath: "/etc/pipelock/admin"
+
 # Pipelock configuration (rendered into ConfigMap as pipelock.yaml).
 # NOTE: fetch_proxy.listen and metrics_listen are templated from service.port
 # and service.metricsPort. Do not set them here; change the service values instead.
+# When adminApi.enabled is true, kill_switch.api_listen is also templated from
+# service.adminPort and should not be set here.
+#
+# Common v2.5 sections you may want to add under pipelock: below:
+#   mediation_envelope:     SPIFFE actor format, inbound verification trust list
+#   health_watchdog:        wedge-detection liveness probe surface
+#   browser_shield:         oversize action, exempt domains, max bytes
+#   redaction:              Anthropic / OpenAI / Gemini parser profile
+#   learn:                  observe / compile / shadow / promote contract pipeline
+#   agents:                 per-agent profiles (Pro license required)
+#   adaptive_enforcement:   signal weights, airlock thresholds
+#   kill_switch:            sources, api_token_path (auto-set when adminApi.enabled)
+#   request_body_scanning:  body-side DLP toggles
+#   file_sentry:            workspace file integrity monitoring
+#   sentry:                 DSN is set via the sentry block above
 pipelock:
   version: 1
   mode: balanced
@@ -96,6 +191,8 @@ livenessProbe:
     port: http
   initialDelaySeconds: 5
   periodSeconds: 30
+  timeoutSeconds: 3
+  failureThreshold: 3
 
 readinessProbe:
   httpGet:
@@ -103,3 +200,5 @@ readinessProbe:
     port: http
   initialDelaySeconds: 2
   periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 2

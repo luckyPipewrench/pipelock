@@ -32,12 +32,9 @@ Prometheus metrics:
 
 Admin API (port {{ .Values.service.adminPort }}):
   kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.adminPort }}:{{ .Values.service.adminPort }}
+  export PIPELOCK_KILLSWITCH_API_TOKEN=$(kubectl get secret {{ required "adminApi.tokenSecretRef.name is required when adminApi.enabled=true" .Values.adminApi.tokenSecretRef.name }} -o jsonpath='{.data.{{ required "adminApi.tokenSecretRef.key is required when adminApi.enabled=true" .Values.adminApi.tokenSecretRef.key }}}' | base64 -d)
   pipelock adaptive status --api-url http://127.0.0.1:{{ .Values.service.adminPort }}
   pipelock session list   --api-url http://127.0.0.1:{{ .Values.service.adminPort }}
-{{- if not .Values.adminApi.tokenSecretRef.name }}
-  # WARNING: adminApi.enabled is true but adminApi.tokenSecretRef.name is not set.
-  # The admin API is reachable without authentication. Provide a Secret holding the bearer token.
-{{- end }}
 {{- end }}
 
 {{- if and .Values.license.enabled (not .Values.license.existingSecret) }}

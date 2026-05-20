@@ -4,9 +4,9 @@ image:
   repository: ghcr.io/luckypipewrench/pipelock
   # Default tag tracks the chart appVersion. To pin by digest, set image.digest
   # to a sha256 string and the chart will render repository@digest. The tag
-  # value below is the v2.5.0 multi-arch manifest digest.
-  tag: "@sha256:ea07c3b476829e0a9c13b8484aa9c71e60e811c5fdf07d35e17bcb889bb72446"  # defaults to .Chart.AppVersion
-  digest: ""  # optional sha256 digest; when set, repository@digest is used
+  # value falls through to .Chart.AppVersion when empty.
+  tag: ""  # defaults to .Chart.AppVersion
+  digest: "sha256:ea07c3b476829e0a9c13b8484aa9c71e60e811c5fdf07d35e17bcb889bb72446"  # v2.5.0 multi-arch manifest digest
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -71,9 +71,9 @@ podDisruptionBudget:
   # maxUnavailable: 1  # set only one of minAvailable / maxUnavailable
 
 # Additional environment variables passed to the pipelock container.
-# Used for license tokens (PIPELOCK_LICENSE), Sentry DSN, and admin API token.
+# Used for license tokens (PIPELOCK_LICENSE_KEY), Sentry DSN, and admin API token.
 extraEnv: []
-# - name: PIPELOCK_LICENSE
+# - name: PIPELOCK_LICENSE_KEY
 #   valueFrom:
 #     secretKeyRef:
 #       name: pipelock-license
@@ -97,7 +97,7 @@ extraVolumeMounts: []
 # Pipelock Pro / Enterprise license. Pro features (per-agent profiles,
 # CIDR matching, budgets) require a valid signed license token.
 license:
-  # Set to true to mount the license token into the pod. Community/free
+  # Set to true to source the license token from a Secret. Community/free
   # installs do not need this — all detection and enforcement layers ship
   # in the open-source binary.
   enabled: false
@@ -105,9 +105,9 @@ license:
   # Secret must contain the key named below (default: license.token).
   existingSecret: ""
   secretKey: "license.token"
-  # Path inside the container where the secret is mounted. Pipelock looks
-  # at ~/.config/pipelock/license.token by default; this path is documented
-  # for operators who set licenseTokenPath in pipelock.yaml.
+  # Path inside the container where the secret is mounted. The chart also
+  # sets PIPELOCK_LICENSE_KEY from the Secret; license_file is rendered for
+  # operators who prefer file-based license loading.
   mountPath: "/etc/pipelock/license"
 
 # Sentry error reporting. When enabled, sets SENTRY_DSN from a Secret.
@@ -123,12 +123,11 @@ sentry:
 adminApi:
   enabled: false
   # Token Secret. Required when adminApi.enabled is true. The Secret must
-  # contain the key named below (default: token). Token is mounted at the
-  # path documented in pipelock.yaml as kill_switch.api_token_path.
+  # contain the key named below (default: token). The chart exposes the token
+  # via PIPELOCK_KILLSWITCH_API_TOKEN so it does not land in the ConfigMap.
   tokenSecretRef:
     name: ""
     key: "token"
-  tokenMountPath: "/etc/pipelock/admin"
 
 # Pipelock configuration (rendered into ConfigMap as pipelock.yaml).
 # NOTE: fetch_proxy.listen and metrics_listen are templated from service.port
@@ -144,10 +143,11 @@ adminApi:
 #   learn:                  observe / compile / shadow / promote contract pipeline
 #   agents:                 per-agent profiles (Pro license required)
 #   adaptive_enforcement:   signal weights, airlock thresholds
-#   kill_switch:            sources, api_token_path (auto-set when adminApi.enabled)
+#   kill_switch:            sources, api_listen (auto-set when adminApi.enabled)
 #   request_body_scanning:  body-side DLP toggles
 #   file_sentry:            workspace file integrity monitoring
 #   sentry:                 DSN is set via the sentry block above
+#   license_file:           auto-set when license.enabled and existingSecret are set
 pipelock:
   version: 1
   mode: balanced

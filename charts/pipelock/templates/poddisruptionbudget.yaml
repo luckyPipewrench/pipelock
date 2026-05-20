@@ -6,11 +6,10 @@ metadata:
   labels:
     {{- include "pipelock.labels" . | nindent 4 }}
 spec:
-  {{- if hasKey .Values.podDisruptionBudget "minAvailable" }}
-  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
-  {{- end }}
   {{- if hasKey .Values.podDisruptionBudget "maxUnavailable" }}
   maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   {{- end }}
   selector:
     matchLabels:

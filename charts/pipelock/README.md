@@ -19,8 +19,8 @@ The chart is configured by passing values to `helm install -f values.yaml`. The 
 | Key | Default | Description |
 |---|---|---|
 | `image.repository` | `ghcr.io/luckypipewrench/pipelock` | Image repository |
-| `image.tag` | digest of v2.5.0 multi-arch manifest | Tag used when `image.digest` is empty. Falls through to `.Chart.AppVersion` if also empty. |
-| `image.digest` | `""` | When set, the chart renders `repository@digest` for pinning |
+| `image.tag` | `""` | Tag used when `image.digest` is empty. Falls through to `.Chart.AppVersion` if also empty. |
+| `image.digest` | v2.5.0 multi-arch manifest digest | When set, the chart renders `repository@digest` for pinning |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 
 ### Ports
@@ -56,7 +56,7 @@ Community installs do not need a license. Pro features (per-agent profiles, CIDR
 | `license.secretKey` | `license.token` | Key within the Secret |
 | `license.mountPath` | `/etc/pipelock/license` | Where the Secret is mounted in the pod |
 
-When enabled, the chart also sets `PIPELOCK_LICENSE` from the same Secret as an env var.
+When enabled, the chart sets `PIPELOCK_LICENSE_KEY` from the same Secret and renders `license_file` to the mounted Secret path.
 
 ### Sentry
 
@@ -73,9 +73,8 @@ When enabled, the chart also sets `PIPELOCK_LICENSE` from the same Secret as an 
 | `adminApi.enabled` | `false` | Open the admin port for `pipelock adaptive` / `pipelock session` |
 | `adminApi.tokenSecretRef.name` | `""` | Secret holding the bearer token. Required for authentication. |
 | `adminApi.tokenSecretRef.key` | `token` | Key within the Secret |
-| `adminApi.tokenMountPath` | `/etc/pipelock/admin` | Mount path. Pipelock reads the token from this file. |
 
-When enabled, the chart sets `kill_switch.api_listen` and `kill_switch.api_token_path` in the generated pipelock.yaml.
+When enabled, the chart sets `kill_switch.api_listen` in the generated pipelock.yaml and sources the bearer token from `PIPELOCK_KILLSWITCH_API_TOKEN`.
 
 ### MCP sidecar
 
@@ -110,8 +109,7 @@ The chart automatically templates these into the config and they should not be s
 - `fetch_proxy.listen` (from `service.port`)
 - `metrics_listen` (from `service.metricsPort`)
 - `kill_switch.api_listen` (from `service.adminPort` when `adminApi.enabled`)
-- `kill_switch.api_token_path` (from `adminApi.tokenSecretRef`)
-- `license_token_path` (from `license.existingSecret`)
+- `license_file` (from `license.existingSecret`)
 
 ## Examples
 

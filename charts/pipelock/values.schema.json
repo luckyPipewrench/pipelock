@@ -114,8 +114,7 @@
             "name": { "type": "string" },
             "key": { "type": "string" }
           }
-        },
-        "tokenMountPath": { "type": "string" }
+        }
       }
     },
     "pipelock": {

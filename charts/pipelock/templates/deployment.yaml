@@ -77,11 +77,18 @@ spec:
           {{- end }}
           {{- $hasLicenseEnv := and .Values.license.enabled .Values.license.existingSecret }}
           {{- $hasSentryEnv := and .Values.sentry.enabled .Values.sentry.dsnSecretRef.name }}
+          {{- $adminTokenSecret := "" }}
+          {{- $adminTokenKey := "" }}
+          {{- if .Values.adminApi.enabled }}
+          {{- $adminTokenSecret = required "adminApi.tokenSecretRef.name is required when adminApi.enabled=true" .Values.adminApi.tokenSecretRef.name }}
+          {{- $adminTokenKey = required "adminApi.tokenSecretRef.key is required when adminApi.enabled=true" .Values.adminApi.tokenSecretRef.key }}
+          {{- end }}
+          {{- $hasAdminEnv := and .Values.adminApi.enabled $adminTokenSecret }}
           {{- $hasExtraEnv := gt (len .Values.extraEnv) 0 }}
-          {{- if or $hasLicenseEnv $hasSentryEnv $hasExtraEnv }}
+          {{- if or $hasLicenseEnv $hasSentryEnv $hasAdminEnv $hasExtraEnv }}
           env:
             {{- if $hasLicenseEnv }}
-            - name: PIPELOCK_LICENSE
+            - name: PIPELOCK_LICENSE_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.license.existingSecret | quote }}
@@ -93,6 +100,13 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.sentry.dsnSecretRef.name | quote }}
                   key: {{ .Values.sentry.dsnSecretRef.key | quote }}
+            {{- end }}
+            {{- if $hasAdminEnv }}
+            - name: PIPELOCK_KILLSWITCH_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $adminTokenSecret | quote }}
+                  key: {{ $adminTokenKey | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -114,11 +128,6 @@ spec:
               mountPath: {{ .Values.license.mountPath | quote }}
               readOnly: true
             {{- end }}
-            {{- if and .Values.adminApi.enabled .Values.adminApi.tokenSecretRef.name }}
-            - name: admin-token
-              mountPath: {{ .Values.adminApi.tokenMountPath | quote }}
-              readOnly: true
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -130,12 +139,6 @@ spec:
         - name: license
           secret:
             secretName: {{ .Values.license.existingSecret | quote }}
-            defaultMode: 0400
-        {{- end }}
-        {{- if and .Values.adminApi.enabled .Values.adminApi.tokenSecretRef.name }}
-        - name: admin-token
-          secret:
-            secretName: {{ .Values.adminApi.tokenSecretRef.name | quote }}
             defaultMode: 0400
         {{- end }}
         {{- with .Values.extraVolumes }}

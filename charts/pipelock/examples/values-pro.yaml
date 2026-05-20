@@ -10,8 +10,8 @@
 #   kubectl create secret generic pipelock-sentry \
 #     --from-literal=dsn=https://...@sentry.io/...
 #
-# Install:
-#   helm install pipelock ./charts/pipelock -f values-pro.yaml
+# Install (from repo root):
+#   helm install pipelock ./charts/pipelock -f charts/pipelock/examples/values-pro.yaml
 
 replicaCount: 2
 

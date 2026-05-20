@@ -46,7 +46,7 @@
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
         },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "mcpPort": { "type": "integer", "minimum": 1, "maximum": 65535 },

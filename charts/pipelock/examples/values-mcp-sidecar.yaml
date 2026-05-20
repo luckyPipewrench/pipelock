@@ -2,8 +2,8 @@
 # The pod exposes both the standard fetch/forward proxy on 8888 AND an MCP
 # HTTP listener on 8889 that forwards to mcp.upstream.
 #
-# Install:
-#   helm install pipelock-mcp ./charts/pipelock -f values-mcp-sidecar.yaml
+# Install (from repo root):
+#   helm install pipelock-mcp ./charts/pipelock -f charts/pipelock/examples/values-mcp-sidecar.yaml
 
 mcp:
   enabled: true

@@ -1,8 +1,8 @@
 # High-availability install: 3 replicas, PodDisruptionBudget, topology spread,
 # NetworkPolicy, and Prometheus Operator PodMonitor.
 #
-# Install:
-#   helm install pipelock ./charts/pipelock -f values-ha.yaml
+# Install (from repo root):
+#   helm install pipelock ./charts/pipelock -f charts/pipelock/examples/values-ha.yaml
 
 replicaCount: 3
 

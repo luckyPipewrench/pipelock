@@ -25,7 +25,7 @@
 
 **Agent-external attestation built in.** Receipts are signed by the mediator, outside the agent process and outside its credentials, so evidence does not depend on the agent attesting to itself.
 
-**Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for wrapped outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 48 credential patterns, and 25 injection patterns with 6-pass normalization.
+**Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for wrapped outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 48 credential patterns, and 29 injection patterns with 6-pass normalization.
 
 **Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
@@ -107,9 +107,13 @@ pipelock mcp proxy --sandbox --config pipelock.yaml -- npx server
 
 ### Response Scanning
 
-Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 25 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
+Fetched content is scanned for prompt injection and state/control poisoning before reaching the agent. A 6-pass normalization pipeline catches zero-width character evasion, homoglyph substitution, leetspeak encoding, and base64-wrapped payloads. 29 built-in patterns cover jailbreak phrases, instruction manipulation, credential solicitation, memory persistence, preference poisoning, covert action directives, model instruction boundaries, and CJK-language instruction overrides. Actions: `block`, `strip`, `warn`, or `ask` (human-in-the-loop terminal approval).
 
 `text/event-stream` responses (OpenAI chat completions, Anthropic messages, Kilo Gateway, MCP HTTP/SSE) stream through with per-event DLP and injection scanning so token-by-token LLM chat UX is preserved while body scanning stays on. Clean events flush immediately; a detection terminates the stream fail-closed. Compressed SSE streams are rejected since compressed bytes evade regex matching. See [SSE streaming guide](docs/guides/sse-streaming.md).
+
+### Request Body Scanning
+
+Outbound request bodies and headers are scanned before they leave the protected agent path. Body scanning covers JSON keys and values, ordered multi-field JSON payloads, form-encoded bodies, raw text, reverse-proxy requests, intercepted CONNECT traffic, and outbound WebSocket client frames. In enforce mode, critical DLP findings and prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason` even when `request_body_scanning.action: warn`; provider exemptions still use the existing wildcard-aware response-scanning exemption list.
 
 ### Request Redaction
 
@@ -199,6 +203,7 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Audit Reports** | `pipelock report --input events.jsonl` generates HTML/JSON reports with risk rating, timeline, and evidence appendix. Ed25519 signing with `--sign`. ([Sample report](examples/sample-report.html)) |
 | **Diagnose** | `pipelock diagnose` runs 7 local checks to verify your config works end-to-end (no network required) |
 | **Enforcement Doctor** (v2.5) | `pipelock doctor` reports configured-vs-enforceable status for proxying, TLS interception, request-body scanning, Browser Shield, MCP wrapping, MCP binary integrity, tool provenance, file_sentry, Sentry, and deployment-boundary signals. |
+| **Request Body Injection Blocking** (v2.5) | Request-body prompt-injection and critical-DLP findings hard-block non-provider destinations in enforce mode across forward, reverse, TLS-intercept, and WebSocket transports, with block-reason headers for operator-visible diagnosis. |
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
 | **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |

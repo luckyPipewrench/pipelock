@@ -197,11 +197,11 @@ This registers pipelock as a `PreToolUse` hook for security-relevant tools:
 The hook fails closed (denies) on every supported input path it cannot positively classify as safe. Concretely:
 
 - **Unsupported hook events** — any `hook_event_name` outside the supported set deny rather than fall through to allow.
+- **Unknown tools** — unrecognized `tool_name` values route through the generic tool-use scanner with their full `tool_name` and `tool_input` instead of falling through to allow.
 - **Malformed payloads** — missing or unparseable JSON returns a deny verdict.
+- **Null tool input** — a null `tool_input` returns an explicit error rather than bypassing tool-use inspection.
 
-The closed default applies in both `JSON-decision` mode (`permissionDecision: "deny"`) and `--exit-code` mode (exit 2). The black-box pen-test suite covers both decision modes for the unsupported-event paths.
-
-> **Known limitation:** unknown `tool_name` values are not yet routed through the generic tool-use scanner. Configure explicit hook matchers for the tools you rely on, and keep MCP tools covered through the `mcp__.*` matcher.
+The closed default applies in both `JSON-decision` mode (`permissionDecision: "deny"`) and `--exit-code` mode (exit 2). The black-box pen-test suite covers both decision modes for unsupported-event and unknown-tool paths.
 
 The hook reads JSON from stdin and returns allow/deny decisions. An `--exit-code`
 mode is also available (exit 0 for allow, exit 2 for deny):

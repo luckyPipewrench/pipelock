@@ -71,7 +71,7 @@ These techniques hide injection payloads in fetched content or MCP tool results.
 
 | Technique | Example | Status | How |
 |-----------|---------|----------|-----|
-| Basic injection | "Ignore all previous instructions" | Tested | 25 built-in patterns, case-insensitive |
+| Basic injection | "Ignore all previous instructions" | Tested | 29 built-in patterns, case-insensitive |
 | Zero-width splitting | `ignore\u200ball\u200bprevious` | Tested | Pass 1: strip ZW chars |
 | Word boundary collapse | Words merged after ZW removal | Tested | Pass 2: replace invisible with space, re-scan |
 | Leetspeak substitution | `1GN0R3 4LL PR3V10US` | Tested | Pass 3: digit-to-letter folding |

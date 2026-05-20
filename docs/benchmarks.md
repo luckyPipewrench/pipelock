@@ -29,7 +29,7 @@ Full 11-layer URL scanning: scheme, CRLF injection, path traversal, blocklist, D
 
 ## Response Scanning (`ScanResponse()`)
 
-Pattern matching for prompt injection on fetched content. 25 patterns including 6 state/control patterns and 4 CJK-language override patterns.
+Pattern matching for prompt injection on fetched content. 29 patterns including state/control patterns and CJK-language override patterns.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |-----------|------:|-----:|----------:|
@@ -114,7 +114,7 @@ True concurrent throughput across all available goroutines.
 - **Full 11-layer scan on a typical URL: ~32 microseconds.** Slightly higher than v1.5.0 (~21μs) due to expanded DLP patterns and additional scanner layers. Well under 1ms.
 - Blocked URLs short-circuit early: blocklist check is ~2μs.
 - DLP regex matching (48 patterns) with pre-filter: ~8μs. Pre-filter alone: ~497ns with zero allocations on clean text.
-- Response scanning with 25 patterns on small content: ~76μs. Large content (~10KB): ~8.4ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~42μs.
+- Response scanning with 29 patterns on small content: ~76μs. Large content (~10KB): ~8.4ms. State/control patterns add ~133μs on clean text. Injection detected via early exit: ~42μs.
 - MCP scanning (JSON parse + text extraction + pattern match): ~76μs clean, ~33μs injection.
 - Cross-request entropy tracking: ~110μs per record. Fragment buffer append: ~83ns (single alloc).
 - **Parallel throughput scales linearly with cores** (benchmarks run with rate limiting and data budget disabled to isolate scanning overhead).

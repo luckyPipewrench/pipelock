@@ -220,9 +220,9 @@ passthrough_domains:
 
 ## Request Body Scanning
 
-Scans request bodies on the forward proxy path for secret exfiltration and prompt injection. Header scanning covers secret exfiltration in Authorization/Cookie-style headers that bypass URL-level scanning.
+Scans request bodies and headers for secret exfiltration and prompt injection before traffic leaves the protected agent path. Catches secrets and instruction-smuggling payloads in POST/PUT/PATCH bodies, JSON keys and values, form-urlencoded fields, outbound WebSocket client frames, reverse-proxy requests, intercepted CONNECT traffic, and Authorization/Cookie headers that bypass URL-level scanning.
 
-**Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests), fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true).
+**Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests), reverse proxy, outbound WebSocket client text messages, fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true).
 
 ```yaml
 request_body_scanning:
@@ -242,8 +242,8 @@ request_body_scanning:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `enabled` | `false` | Enable request body DLP/prompt-injection scanning and request header DLP scanning |
-| `action` | `warn` | `warn` logs only, `block` rejects (requires enforce mode) |
+| `enabled` | `false` | Enable request body/header DLP scanning and request body prompt-injection scanning |
+| `action` | `warn` | `warn` logs ordinary findings, `block` rejects ordinary findings (requires enforce mode). Critical DLP and prompt-injection hard-blocks still reject non-provider destinations in enforce mode. |
 | `max_body_bytes` | `5242880` | Max body size to buffer; bodies exceeding this are always blocked (fail-closed) |
 | `scan_headers` | `true` | Scan request headers for DLP patterns |
 | `header_mode` | `sensitive` | `sensitive`: scan only listed headers. `all`: scan all headers except ignore list |
@@ -264,6 +264,8 @@ request_body_scanning:
 - Multipart filename exceeding 256 bytes: prevents secret exfiltration via long filenames
 
 **Header scanning:** Headers are scanned regardless of destination host. An agent can exfiltrate secrets via `Authorization: Bearer <secret>` to any host, including allowlisted ones. The URL allowlist controls URL-level blocking, not header DLP bypass.
+
+**Security hard-blocks:** In enforce mode, critical-severity DLP findings in request bodies hard-block with `X-Pipelock-Block-Reason: dlp_match` even when `request_body_scanning.action: warn`. Request-body prompt-injection findings hard-block non-provider destinations with `X-Pipelock-Block-Reason: prompt_injection`. Operators that need audit-only rollout for selected critical patterns can set those individual patterns to `action: warn` or run the deployment with `enforce: false`.
 
 **Note on `scan_headers`:** The config default is `true`, but omitting the field from your YAML file gives `false` (Go's zero value overrides the default). Always set `scan_headers: true` explicitly in your config if you want header scanning enabled.
 
@@ -598,11 +600,11 @@ response_scanning:
 | `enabled` | `true` | Enable response scanning |
 | `action` | `"warn"` | block, strip, warn, or ask (HITL) |
 | `ask_timeout_seconds` | `30` | Timeout for human-in-the-loop approval |
-| `include_defaults` | `true` | Merge with 25 built-in patterns |
+| `include_defaults` | `true` | Merge with 29 built-in patterns |
 | `exempt_domains` | `[]` | Hosts to skip injection scanning for (DLP still applies on outbound). Supports `*.example.com` wildcards (also matches the apex `example.com`). |
-| `patterns` | 25 built-in | Injection and state/control poisoning patterns |
+| `patterns` | 29 built-in | Injection and state/control poisoning patterns |
 
-**Built-in patterns (25):** 13 prompt injection patterns (jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation), 6 state/control poisoning patterns (credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, silent credential handling), and 4 CJK-language override patterns (Chinese, Japanese, Korean instruction overrides and jailbreak mode). All patterns use DOTALL mode to match across newlines in multiline tool output.
+**Built-in patterns (29):** Prompt-injection and state/control poisoning coverage includes jailbreak phrases, system overrides, role overrides, instruction manipulation, encoded payloads, tool invocation commands, authority escalation, credential solicitation, credential path directives, auth material requirements, memory persistence directives, preference poisoning, covert-action directives, silent credential handling, and CJK-language override patterns. All patterns use DOTALL mode to match across newlines in multiline tool output.
 
 **Actions:**
 - **block:** reject the response entirely, agent gets an error

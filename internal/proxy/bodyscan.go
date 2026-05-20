@@ -226,6 +226,11 @@ type BodyScanRequest struct {
 	Host string
 	// Path is the upstream request path, used for provider parser selection.
 	Path string
+	// Target is the full request URL used to evaluate scoped suppress rules.
+	// When empty, Host/Path are joined into a best-effort target.
+	Target string
+	// Suppress contains config-level finding suppressions.
+	Suppress []config.SuppressEntry
 }
 
 // scanRequestBody reads, buffers, and scans an HTTP request body for
@@ -271,7 +276,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	if req.RedactMatcher != nil {
 		texts, parseErr := extractBodyText(buf, req.ContentType, req.MaxBytes)
 		if parseErr == "" {
-			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, texts)
+			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress)
 		}
 	}
 
@@ -344,7 +349,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
-	if matches := scanBodyTextsForDLP(ctx, req.Scanner, texts); len(matches) > 0 {
+	if matches := scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress); len(matches) > 0 {
 		return buf, BodyScanResult{
 			Clean:           false,
 			DLPMatches:      matches,
@@ -417,19 +422,50 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
 }
 
-func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string) []scanner.TextDLPMatch {
+func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry) []scanner.TextDLPMatch {
 	for _, text := range texts {
 		result := sc.ScanTextForDLP(ctx, text)
 		if !result.Clean {
-			return result.Matches
+			if matches := unsuppressedDLPMatches(result.Matches, target, suppress); len(matches) > 0 {
+				return matches
+			}
 		}
 	}
 	joined := strings.Join(sortedBodyTexts(texts), bodyDLPJoinSeparator)
 	result := sc.ScanTextForDLP(ctx, joined)
 	if !result.Clean {
-		return result.Matches
+		if matches := unsuppressedDLPMatches(result.Matches, target, suppress); len(matches) > 0 {
+			return matches
+		}
 	}
 	return nil
+}
+
+func (req BodyScanRequest) suppressTarget() string {
+	if req.Target != "" {
+		return req.Target
+	}
+	if req.Host == "" {
+		return req.Path
+	}
+	if req.Path == "" {
+		return req.Host
+	}
+	return req.Host + req.Path
+}
+
+func unsuppressedDLPMatches(matches []scanner.TextDLPMatch, target string, suppress []config.SuppressEntry) []scanner.TextDLPMatch {
+	if len(matches) == 0 || len(suppress) == 0 || target == "" {
+		return matches
+	}
+	filtered := matches[:0]
+	for _, match := range matches {
+		if config.IsSuppressed(match.PatternName, target, suppress) {
+			continue
+		}
+		filtered = append(filtered, match)
+	}
+	return filtered
 }
 
 func sortedBodyTexts(texts []string) []string {

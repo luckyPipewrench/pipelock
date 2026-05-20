@@ -78,6 +78,7 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	t.Cleanup(staleSc.Close)
 
 	inputCfg := &InputScanConfig{Enabled: true, Action: config.ActionBlock}
+	requestBodyCfg := &config.RequestBodyScanning{Enabled: true, Action: config.ActionWarn}
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn}
 	policyCfg := &policy.Config{Action: config.ActionBlock}
 	chainMatcher := chains.New(&cfg.ToolChainDetection)
@@ -93,8 +94,12 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	staleMediaEnabled := false
 
 	opts := MCPProxyOpts{
-		Scanner:       staleSc,
-		InputCfg:      &InputScanConfig{Enabled: false},
+		Scanner:  staleSc,
+		InputCfg: &InputScanConfig{Enabled: false},
+		RequestBodyCfg: &config.RequestBodyScanning{
+			Enabled: false,
+			Action:  config.ActionBlock,
+		},
 		ToolCfg:       &tools.ToolScanConfig{Action: config.ActionBlock},
 		PolicyCfg:     &policy.Config{Action: config.ActionWarn},
 		ChainMatcher:  chains.New(&staleCfg.ToolChainDetection),
@@ -109,6 +114,7 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 
 		ScannerFn:       func() *scanner.Scanner { return sc },
 		InputCfgFn:      func() *InputScanConfig { return inputCfg },
+		RequestBodyFn:   func() *config.RequestBodyScanning { return requestBodyCfg },
 		ToolCfgFn:       func() *tools.ToolScanConfig { return toolCfg },
 		PolicyCfgFn:     func() *policy.Config { return policyCfg },
 		ChainMatcherFn:  func() *chains.Matcher { return chainMatcher },
@@ -127,6 +133,9 @@ func TestMCPProxyOptsResolversPreferFunctions(t *testing.T) {
 	}
 	if opts.inputCfg() != inputCfg {
 		t.Fatal("input resolver did not use InputCfgFn")
+	}
+	if opts.requestBodyCfg() != requestBodyCfg {
+		t.Fatal("request body resolver did not use RequestBodyFn")
 	}
 	if opts.toolCfg() != toolCfg {
 		t.Fatal("tool resolver did not use ToolCfgFn")
@@ -170,6 +179,7 @@ func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	inputCfg := &InputScanConfig{Enabled: true}
+	requestBodyCfg := &config.RequestBodyScanning{Enabled: true, Action: config.ActionBlock}
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionBlock}
 	policyCfg := &policy.Config{Action: config.ActionBlock}
 	chainMatcher := chains.New(&cfg.ToolChainDetection)
@@ -185,25 +195,26 @@ func TestMCPProxyOptsResolversFallbackToStaticValues(t *testing.T) {
 	redactLimits := redact.DefaultLimits().ToLimits()
 	redactProfile := "strict"
 	opts := MCPProxyOpts{
-		Scanner:       sc,
-		InputCfg:      inputCfg,
-		ToolCfg:       toolCfg,
-		PolicyCfg:     policyCfg,
-		ChainMatcher:  chainMatcher,
-		AdaptiveCfg:   adaptiveCfg,
-		TaintCfg:      taintCfg,
-		CEE:           cee,
-		RedirectRT:    redirectRT,
-		ProvenanceCfg: provenanceCfg,
-		A2ACfg:        a2aCfg,
-		MediaPolicy:   mediaPolicy,
-		RedactMatcher: redactMatcher,
-		RedactLimits:  redactLimits,
-		RedactProfile: redactProfile,
+		Scanner:        sc,
+		InputCfg:       inputCfg,
+		RequestBodyCfg: requestBodyCfg,
+		ToolCfg:        toolCfg,
+		PolicyCfg:      policyCfg,
+		ChainMatcher:   chainMatcher,
+		AdaptiveCfg:    adaptiveCfg,
+		TaintCfg:       taintCfg,
+		CEE:            cee,
+		RedirectRT:     redirectRT,
+		ProvenanceCfg:  provenanceCfg,
+		A2ACfg:         a2aCfg,
+		MediaPolicy:    mediaPolicy,
+		RedactMatcher:  redactMatcher,
+		RedactLimits:   redactLimits,
+		RedactProfile:  redactProfile,
 	}
 
 	if opts.scanner() != sc || opts.inputCfg() != inputCfg || opts.toolCfg() != toolCfg ||
-		opts.policyCfg() != policyCfg || opts.chainMatcher() != chainMatcher ||
+		opts.requestBodyCfg() != requestBodyCfg || opts.policyCfg() != policyCfg || opts.chainMatcher() != chainMatcher ||
 		opts.adaptiveCfg() != adaptiveCfg || opts.taintCfg() != taintCfg ||
 		opts.cee() != cee || opts.redirectRT() != redirectRT ||
 		opts.provenanceCfg() != provenanceCfg || opts.a2aCfg() != a2aCfg ||

@@ -45,7 +45,7 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"jwt", "bearer eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"ssh-openssh", "-----BEGIN OPENSSH PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		{"ssh-rsa", "-----BEGIN RSA PRIVATE " + "KEY-----", ClassSSHPrivateKey},
-		{"env-secret", "TELEGRAM_BOT_TOKEN=1234567890:" + strings.Repeat("F", 35), ClassEnvSecret},
+		{"env-secret", fakeTelegramEnvSecret(), ClassEnvSecret},
 		{"seed-phrase", "mnemonic abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ClassSeedPhrase},
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},
 		{"ssn", "SSN " + "123-45-" + "6789 on file", ClassSSN},
@@ -174,7 +174,7 @@ func TestDefaultMatcher_OverlapsResolvedByPriority(t *testing.T) {
 func TestDefaultMatcher_EnvSecretAbsorbsEmbeddedToken(t *testing.T) {
 	t.Parallel()
 	m := NewDefaultMatcher()
-	s := "TELEGRAM_BOT_TOKEN=1234567890:" + strings.Repeat("F", 35)
+	s := fakeTelegramEnvSecret()
 
 	matches := m.Scan(s)
 	if len(matches) != 1 {
@@ -186,6 +186,10 @@ func TestDefaultMatcher_EnvSecretAbsorbsEmbeddedToken(t *testing.T) {
 	if matches[0].Original != s {
 		t.Fatalf("env assignment span = %q, want full assignment", matches[0].Original)
 	}
+}
+
+func fakeTelegramEnvSecret() string {
+	return "TELEGRAM_" + "BOT_" + "TOK" + "EN=1234567890:" + strings.Repeat("F", 35)
 }
 
 // TestDefaultMatcher_SpansAreNonOverlapping sorted and non-overlapping.

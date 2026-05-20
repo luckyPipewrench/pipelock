@@ -94,8 +94,14 @@ func TestDiscoverCmd_JSONRedactsSensitiveValues(t *testing.T) {
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs([]string{"--json", "--home", home})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("expected warning exit for unprotected discovered server")
+
+	err := cmd.Execute()
+	var exitErr *cliutil.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %v", err)
+	}
+	if exitErr.Code != 1 {
+		t.Fatalf("exit code = %d, want 1", exitErr.Code)
 	}
 
 	out := stdout.String()
@@ -136,8 +142,14 @@ func TestDiscoverCmd_HumanAndGenerateRedactSensitiveValues(t *testing.T) {
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 	cmd.SetArgs([]string{"--generate", "--home", home})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("expected warning exit for unprotected discovered server")
+
+	err := cmd.Execute()
+	var exitErr *cliutil.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected ExitError, got %v", err)
+	}
+	if exitErr.Code != 1 {
+		t.Fatalf("exit code = %d, want 1", exitErr.Code)
 	}
 
 	output := buf.String()

@@ -1059,6 +1059,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			AgentID:         agent,
 			Host:            r.URL.Hostname(),
 			Path:            r.URL.Path,
+			Target:          targetURL,
+			Suppress:        cfg.Suppress,
 		}
 		applyBodyScanRedaction(&bodyReq, p.currentRedactionRuntimeFor(cfg))
 		buf, bodyResult := scanRequestBody(r.Context(), bodyReq)
@@ -1071,7 +1073,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if bodyAction == "" {
 					bodyAction = cfg.RequestBodyScanning.Action
 				}
-				if shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg) {
+				if shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg) ||
+					shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg) {
 					bodyAction = config.ActionBlock
 				}
 			}

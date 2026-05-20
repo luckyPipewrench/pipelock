@@ -906,7 +906,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		errCode = -32002
 		errMsg = errPolicyBlocked
 	}
-	if bindingReason != "" {
+	if bindingReason != "" && bindingAction == config.ActionBlock {
 		errCode = -32000
 		errMsg = "pipelock: " + bindingReason
 	}
@@ -954,7 +954,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = effectiveAction
 		blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
-		if bindingReason != "" {
+		if bindingReason != "" && bindingAction == config.ActionBlock {
 			blockReason = blockreason.SessionBinding
 		}
 		result.Blocked = &BlockedRequest{

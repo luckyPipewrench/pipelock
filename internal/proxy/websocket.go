@@ -926,6 +926,8 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		AgentID:     r.agent,
 		Host:        r.hostname,
 		Path:        r.path,
+		Target:      r.targetURL,
+		Suppress:    r.cfg.Suppress,
 	}
 	applyBodyScanRedaction(&bodyReq, r.redaction)
 	return scanRequestBody(ctx, bodyReq)
@@ -1393,7 +1395,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			action = config.ActionWarn
 		}
 	}
-	hardBlock := shouldHardBlockBodyCriticalDLP(result, r.hostname, r.cfg)
+	hardBlock := shouldHardBlockBodyCriticalDLP(result, r.hostname, r.cfg) || promptInjectionHardBlock
 	if hardBlock {
 		action = config.ActionBlock
 	}

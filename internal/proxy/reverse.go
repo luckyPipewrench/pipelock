@@ -536,7 +536,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	forwardedVerdict := config.ActionAllow
 	var reverseBodyBytes []byte
 	if r.Body != nil && r.ContentLength != 0 && cfg.RequestBodyScanning.Enabled {
-		redaction := currentRedactionRuntimeForConfig(cfg, rp.redactionRuntimePtr)
+		redaction := currentRedactionRuntimeForConfig(cfg, rp.redactionRuntimePtr, sc)
 		blocked, verdict, bodyBytes, bodyFinding := rp.scanRequest(w, r, cfg, sc, redaction, reverseBlockReceiptInput{
 			RequestID: requestID,
 			Agent:     agent,
@@ -729,6 +729,8 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		Scanner:         sc,
 		Host:            rp.upstream.Hostname(),
 		Path:            r.URL.Path,
+		Target:          receiptInput.Target,
+		Suppress:        cfg.Suppress,
 	}
 	applyBodyScanRedaction(&bodyReq, redaction)
 	bodyBytes, result := scanRequestBody(r.Context(), bodyReq)

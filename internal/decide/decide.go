@@ -128,7 +128,7 @@ func Decide(ctx context.Context, cfg *config.Config, sc *scanner.Scanner, policy
 	case EventWriteFile:
 		return decideWrite(cfg, sc, policyCfg, action.Write)
 	case EventToolUse:
-		return decideToolUse(cfg, sc, action.ToolUse)
+		return decideToolUse(cfg, sc, policyCfg, action.ToolUse)
 	default:
 		return Decision{
 			Outcome:     Deny,
@@ -261,12 +261,14 @@ func decideWrite(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 // tool_input and runs DLP + injection scanning, so unknown tools cannot
 // silently exfiltrate secrets or relay prompt injection. Malformed JSON is a
 // block-level finding (fail-closed).
-func decideToolUse(cfg *config.Config, sc *scanner.Scanner, p *ToolUsePayload) Decision {
+func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config, p *ToolUsePayload) Decision {
 	if p == nil {
 		return deny("pipelock: missing ToolUse payload")
 	}
 
 	var evidence []Evidence
+	var argStrings []string
+	var rawArgs json.RawMessage
 	var scanText string
 
 	if p.ToolInput != "" {
@@ -280,7 +282,8 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, p *ToolUsePayload) D
 			})
 			scanText = p.ToolInput
 		} else {
-			argStrings := ExtractAllStringsFromJSON(json.RawMessage(p.ToolInput))
+			rawArgs = json.RawMessage(p.ToolInput)
+			argStrings = ExtractAllStringsFromJSON(rawArgs)
 			scanText = strings.Join(argStrings, " ")
 		}
 	}
@@ -293,6 +296,11 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, p *ToolUsePayload) D
 			injResult := sc.ScanResponse(context.Background(), scanText)
 			evidence = append(evidence, evidenceFromInjection(injResult, cfg.ResponseScanning.Action)...)
 		}
+	}
+
+	if policyCfg != nil {
+		policyVerdict := policyCfg.CheckToolCallWithArgs(p.ToolName, argStrings, rawArgs)
+		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
 	return buildDecision(cfg, evidence)

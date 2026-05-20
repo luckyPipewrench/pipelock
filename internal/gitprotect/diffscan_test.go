@@ -159,6 +159,7 @@ func TestParseHunkNewStart(t *testing.T) {
 		{"@@ -10,5 +20,8 @@", 20},
 		{"@@ -0,0 +1,100 @@", 1},
 		{"@@ -5 +7 @@", 7},
+		{"@@ -0,0 +9223372036854775807 @@", 1},
 		{"@@ invalid", 1}, // fallback
 		{"no plus sign", 1},
 	}

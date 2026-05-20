@@ -4,11 +4,14 @@
 package proxy
 
 import (
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestBuildRedactionRuntime_DisabledReturnsNil(t *testing.T) {
@@ -100,6 +103,54 @@ func TestCurrentRedactionConfigFor_MismatchFailsClosed(t *testing.T) {
 	if !required {
 		t.Fatal("mismatched enabled config must fail closed")
 	}
+}
+
+func TestCurrentRedactionRuntimeForConfig_ScannerSecretMismatchFailsClosed(t *testing.T) {
+	cfg := config.Defaults()
+	applyRedactionTestProfile(cfg)
+
+	oldScannerCfg := config.Defaults()
+	oldScannerCfg.Internal = nil
+	oldScannerCfg.DLP.SecretsFile = writeRedactionRuntimeSecretFile(t, "old-secret-value-1234")
+	oldScanner := scanner.New(oldScannerCfg)
+	t.Cleanup(oldScanner.Close)
+
+	newScannerCfg := config.Defaults()
+	newScannerCfg.Internal = nil
+	newScannerCfg.DLP.SecretsFile = writeRedactionRuntimeSecretFile(t, "new-secret-value-1234")
+	newScanner := scanner.New(newScannerCfg)
+	t.Cleanup(newScanner.Close)
+
+	stored := &redactionRuntime{
+		matcher:   &redact.Matcher{},
+		configKey: redactionConfigKeyForScanner(cfg, oldScanner),
+		required:  true,
+	}
+	var ptr atomic.Pointer[redactionRuntime]
+	ptr.Store(stored)
+
+	got := currentRedactionRuntimeForConfig(cfg, &ptr, newScanner)
+	if got == nil {
+		t.Fatal("expected fail-closed sentinel on scanner secret mismatch")
+	}
+	if got == stored {
+		t.Fatal("runtime built from stale scanner secrets must not be returned")
+	}
+	if got.matcher != nil {
+		t.Fatal("sentinel must not expose a matcher")
+	}
+	if !got.required {
+		t.Fatal("sentinel must require redaction")
+	}
+}
+
+func writeRedactionRuntimeSecretFile(t *testing.T, secret string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	return path
 }
 
 // TestCurrentRedactionRuntimeForConfig_NoStoredRuntime_FailsClosed covers

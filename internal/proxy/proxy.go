@@ -1560,6 +1560,9 @@ func addRedactionDictionaryChunks(matcher *redact.Matcher, class redact.Class, e
 		if entry == "" {
 			continue
 		}
+		if len(entry) > knownSecretDictMaxBytes {
+			return fmt.Errorf("entry length %d exceeds max dictionary chunk size %d", len(entry), knownSecretDictMaxBytes)
+		}
 		if len(chunk) > 0 && (len(chunk) >= knownSecretDictMaxEntries || chunkBytes+len(entry) > knownSecretDictMaxBytes) {
 			if err := flush(); err != nil {
 				return err

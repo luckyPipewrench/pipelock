@@ -20,7 +20,11 @@ import (
 
 // suppressRe matches inline suppression comments: // pipelock:ignore or # pipelock:ignore
 // Must stay in sync with cliutil.SuppressRe — duplicated here to avoid import cycle.
-var suppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
+var (
+	suppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
+
+	maxDiffLineNumber = int(^uint(0)>>1) - 1
+)
 
 // Finding represents a secret detected in a git diff.
 type Finding struct {
@@ -89,17 +93,24 @@ func parseDiff(diffText string) map[string][]addedLine {
 				lineNum: lineNum,
 				content: content,
 			})
-			lineNum++
+			lineNum = nextDiffLineNumber(lineNum)
 		} else if strings.HasPrefix(line, "-") {
 			// Removed lines don't increment the new-file line counter
 			continue
 		} else {
 			// Context lines increment the counter
-			lineNum++
+			lineNum = nextDiffLineNumber(lineNum)
 		}
 	}
 
 	return result
+}
+
+func nextDiffLineNumber(n int) int {
+	if n >= maxDiffLineNumber {
+		return maxDiffLineNumber
+	}
+	return n + 1
 }
 
 // parseHunkNewStart extracts the starting line number of the new file
@@ -118,11 +129,11 @@ func parseHunkNewStart(hunkLine string) int {
 		end = len(rest)
 	}
 
-	n, err := strconv.Atoi(rest[:end])
-	if err != nil || n < 1 {
+	n64, err := strconv.ParseInt(rest[:end], 10, 64)
+	if err != nil || n64 < 1 || n64 > int64(maxDiffLineNumber) {
 		return 1
 	}
-	return n
+	return int(n64)
 }
 
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.

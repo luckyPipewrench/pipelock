@@ -59,16 +59,16 @@ const (
 
 // Config configures the flight recorder.
 type Config struct {
-	Enabled            bool   `yaml:"enabled"`
-	Dir                string `yaml:"dir"`
-	CheckpointInterval int    `yaml:"checkpoint_interval"`
-	RetentionDays      int    `yaml:"retention_days"`
-	Redact             bool   `yaml:"redact"`
-	SignCheckpoints    bool   `yaml:"sign_checkpoints"`
-	MaxEntriesPerFile  int    `yaml:"max_entries_per_file"`
-	FileMode           os.FileMode
-	RawEscrow          bool   `yaml:"raw_escrow"`
-	EscrowPublicKey    string `yaml:"escrow_public_key"`
+	Enabled            bool        `yaml:"enabled"`
+	Dir                string      `yaml:"dir"`
+	CheckpointInterval int         `yaml:"checkpoint_interval"`
+	RetentionDays      int         `yaml:"retention_days"`
+	Redact             bool        `yaml:"redact"`
+	SignCheckpoints    bool        `yaml:"sign_checkpoints"`
+	MaxEntriesPerFile  int         `yaml:"max_entries_per_file"`
+	FileMode           os.FileMode `yaml:"file_mode"`
+	RawEscrow          bool        `yaml:"raw_escrow"`
+	EscrowPublicKey    string      `yaml:"escrow_public_key"`
 }
 
 func safeEvidenceFileMode(mode os.FileMode) bool {

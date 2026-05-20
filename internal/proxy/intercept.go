@@ -732,6 +732,8 @@ func newInterceptHandler(
 				AgentID:         ic.Agent,
 				Host:            r.URL.Hostname(),
 				Path:            r.URL.Path,
+				Target:          targetURL,
+				Suppress:        ic.Config.Suppress,
 			}
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
@@ -744,7 +746,8 @@ func newInterceptHandler(
 					if bodyAction == "" {
 						bodyAction = ic.Config.RequestBodyScanning.Action
 					}
-					if shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config) {
+					if shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config) ||
+						shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config) {
 						bodyAction = config.ActionBlock
 					}
 				}
@@ -996,6 +999,7 @@ func newInterceptHandler(
 				}
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
+					interceptRecordSignal(ic, session.SignalBlock)
 					ic.Logger.LogBlocked(actx, "header_dlp", "request header contains secret")
 					ic.Metrics.RecordTLSRequestBlocked("header_dlp")
 					interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{

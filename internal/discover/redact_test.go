@@ -20,14 +20,14 @@ func TestRedactReportForOutput_RemovesSensitiveValues(t *testing.T) {
 				"split-secret",
 				"--header",
 				"Authorization: Bearer header-secret",
-				"https://api.example.com/mcp?api_key=secret&safe=value#frag",
+				"https://api.example.com/mcp?" + "api_key=secret&safe=value#frag",
 				"DATABASE_URL=postgresql://app:db-secret@db.internal:5432/app",
 			},
 			Env: map[string]string{
 				"API_TOKEN": "secret-token",
 				"BRAIN_DIR": "/data",
 			},
-			URL: "https://token@example.com/mcp?bearer=secret",
+			URL: "https://token@example.com/mcp?" + "bearer=secret",
 		}},
 	}
 
@@ -53,7 +53,7 @@ func TestRedactReportForOutput_RemovesSensitiveValues(t *testing.T) {
 func TestRedactReportForOutput_RedactsSensitiveCommandURL(t *testing.T) {
 	report := &Report{
 		Servers: []MCPServer{{
-			Command: "https://user:" + "pass@example.com/tool?token=secret",
+			Command: "https://user:" + "pass@example.com/tool?" + "token=secret",
 		}},
 	}
 
@@ -75,7 +75,7 @@ func TestRedactReportForOutput_DoesNotMutateInput(t *testing.T) {
 		Servers: []MCPServer{{
 			Args: []string{rawURL},
 			Env:  map[string]string{"TOKEN": "secret"},
-			URL:  "https://example.com/mcp?token=secret",
+			URL:  "https://example.com/mcp?" + "token=secret",
 		}},
 	}
 
@@ -87,7 +87,7 @@ func TestRedactReportForOutput_DoesNotMutateInput(t *testing.T) {
 	if report.Servers[0].Env["TOKEN"] != "secret" {
 		t.Fatalf("input env mutated: %q", report.Servers[0].Env["TOKEN"])
 	}
-	if report.Servers[0].URL != "https://example.com/mcp?token=secret" {
+	if report.Servers[0].URL != "https://example.com/mcp?"+"token=secret" {
 		t.Fatalf("input url mutated: %q", report.Servers[0].URL)
 	}
 }

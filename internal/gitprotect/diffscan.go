@@ -129,11 +129,11 @@ func parseHunkNewStart(hunkLine string) int {
 		end = len(rest)
 	}
 
-	n64, err := strconv.ParseInt(rest[:end], 10, 64)
-	if err != nil || n64 < 1 || n64 > int64(maxDiffLineNumber) {
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil || n < 1 || n > maxDiffLineNumber {
 		return 1
 	}
-	return int(n64)
+	return n
 }
 
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.

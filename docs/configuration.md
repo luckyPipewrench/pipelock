@@ -222,7 +222,7 @@ passthrough_domains:
 
 Scans request bodies and headers for secret exfiltration and prompt injection before traffic leaves the protected agent path. Catches secrets and instruction-smuggling payloads in POST/PUT/PATCH bodies, JSON keys and values, form-urlencoded fields, outbound WebSocket client frames, reverse-proxy requests, intercepted CONNECT traffic, and Authorization/Cookie headers that bypass URL-level scanning.
 
-**Scope:** Forward HTTP proxy (`HTTPS_PROXY` absolute-URI requests), reverse proxy, outbound WebSocket client text messages, fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true).
+**Scope:** Forward HTTP proxy (`HTTPS_PROXY` and `HTTP_PROXY` absolute-URI requests), reverse proxy, outbound WebSocket client text messages, fetch handler headers, and intercepted CONNECT tunnels (when `tls_interception.enabled` is true).
 
 ```yaml
 request_body_scanning:

@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
@@ -154,12 +155,17 @@ func buildMCPToolCfg(
 	if cfg == nil || !cfg.MCPToolScanning.Enabled {
 		return nil
 	}
-	return &tools.ToolScanConfig{
+	toolCfg := &tools.ToolScanConfig{
 		Baseline:    baseline,
 		Action:      cfg.MCPToolScanning.Action,
 		DetectDrift: cfg.MCPToolScanning.DetectDrift,
 		ExtraPoison: extraPoison,
 	}
+	if cfg.MCPSessionBinding.Enabled {
+		toolCfg.BindingUnknownAction = cfg.MCPSessionBinding.UnknownToolAction
+		toolCfg.BindingNoBaselineAction = cfg.MCPSessionBinding.NoBaselineAction
+	}
+	return toolCfg
 }
 
 func buildMCPChainMatcher(cfg *config.Config, m *metrics.Metrics) *chains.Matcher {
@@ -189,6 +195,23 @@ func buildMCPCEE(cfg *config.Config, m *metrics.Metrics) *mcp.CEEDeps {
 		)
 	}
 	return deps
+}
+
+type liveFileSentryScanner struct {
+	load func() *scanner.Scanner
+}
+
+func (s liveFileSentryScanner) ScanTextForDLP(ctx context.Context, text string) scanner.TextDLPResult {
+	sc := s.load()
+	if sc == nil {
+		return scanner.TextDLPResult{
+			Matches: []scanner.TextDLPMatch{{
+				PatternName: "scanner unavailable",
+				Severity:    "critical",
+			}},
+		}
+	}
+	return sc.ScanTextForDLP(ctx, text)
 }
 
 func (s *Server) liveReceiptEmitter() *receipt.Emitter {
@@ -249,6 +272,72 @@ func (s *Server) currentMCPToolExtraPoison() []*tools.ExtraPoisonPattern {
 		return nil
 	}
 	return append([]*tools.ExtraPoisonPattern(nil), s.mcpToolExtraPoison...)
+}
+
+func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel context.CancelFunc) (func(), error) {
+	if cfg == nil || !cfg.FileSentry.Enabled {
+		return func() {}, nil
+	}
+
+	onErr := func(err error) {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: [file_sentry] %v\n", err)
+	}
+	watcher, err := filesentry.NewWatcher(&cfg.FileSentry, liveFileSentryScanner{
+		load: func() *scanner.Scanner {
+			if s.proxy == nil {
+				return nil
+			}
+			return s.proxy.ScannerPtr().Load()
+		},
+	}, nil, onErr)
+	if err != nil {
+		if cfg.FileSentry.BestEffort {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry init failed (best_effort: continuing without file monitoring): %v\n", err)
+			return func() {}, nil
+		}
+		return nil, fmt.Errorf("file sentry init failed (feature is enabled): %w", err)
+	}
+
+	if err := watcher.Arm(); err != nil {
+		_ = watcher.Close()
+		if cfg.FileSentry.BestEffort {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry failed to arm watches (best_effort: continuing without file monitoring): %v\n", err)
+			return func() {}, nil
+		}
+		return nil, fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", err)
+	}
+
+	consumerDone := make(chan struct{})
+	go func() {
+		defer close(consumerDone)
+		for f := range watcher.Findings() {
+			agent := ""
+			if f.IsAgent {
+				agent = " (agent process)"
+			}
+			_, _ = fmt.Fprintf(s.opts.Stderr,
+				"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
+				f.Path, f.PatternName, f.Severity, agent)
+			if s.metrics != nil {
+				s.metrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
+			}
+		}
+	}()
+
+	go func() {
+		if err := watcher.Start(ctx); err != nil {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry fatal: %v — cancelling runtime\n", err)
+			cancel()
+		}
+	}()
+
+	_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s)\n",
+		len(cfg.FileSentry.WatchPaths))
+
+	return func() {
+		_ = watcher.Close()
+		<-consumerDone
+	}, nil
 }
 
 func (s *Server) refreshRuntimeState(
@@ -466,6 +555,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				Enabled:           true,
 				Dir:               opts.CaptureOutput,
 				MaxEntriesPerFile: 10000, // 10k entries per file before rotation
+				FileMode:          cfg.FlightRecorder.FileMode,
 			},
 			EscrowPublicKey: escrowPub,
 			DropSink:        m,
@@ -496,6 +586,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			Redact:             cfg.FlightRecorder.Redact,
 			SignCheckpoints:    cfg.FlightRecorder.SignCheckpoints,
 			MaxEntriesPerFile:  cfg.FlightRecorder.MaxEntriesPerFile,
+			FileMode:           cfg.FlightRecorder.FileMode,
 			RawEscrow:          cfg.FlightRecorder.RawEscrow,
 			EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
 		}
@@ -644,6 +735,12 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	cfg := s.currentConfig()
+	stopFileSentry, fsErr := s.startFileSentry(ctx, cfg, cancel)
+	if fsErr != nil {
+		return fsErr
+	}
+	defer stopFileSentry()
+
 	_, _ = fmt.Fprintf(s.opts.Stderr, "Pipelock %s starting\n", cliutil.DisplayVersion())
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Mode:   %s\n", cfg.Mode)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Listen: %s\n", cfg.FetchProxy.Listen)

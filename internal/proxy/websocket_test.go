@@ -474,6 +474,7 @@ func TestWSProxyRedaction_RewritesJSONMessage(t *testing.T) {
 	defer backendCleanup()
 
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.Enforce = ptrBool(false)
 		applyRedactionTestProfile(cfg)
 	})
 	defer proxyCleanup()

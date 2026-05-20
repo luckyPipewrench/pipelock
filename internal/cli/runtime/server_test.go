@@ -85,6 +85,18 @@ func waitForServerCancel(t *testing.T, s *Server) {
 	t.Fatal("server did not publish internal cancel")
 }
 
+func waitForServerOutput(t *testing.T, buf *syncBuffer, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if buf.contains(want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("server output missing %q:\n%s", want, buf.String())
+}
+
 // TestNewServer_AppliesCLIOverrides verifies that ModeChanged / ListenChanged
 // drive Mode and FetchProxy.Listen overrides on the loaded config. This is
 // the behavior RunCmd used to implement via cobra.Flag.Changed().
@@ -374,6 +386,56 @@ func TestServer_StartShutdown(t *testing.T) {
 	}
 }
 
+func TestServer_StartArmsFileSentry(t *testing.T) {
+	watchDir := t.TempDir()
+	scanContent := "true"
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"file_sentry:",
+		"  enabled: true",
+		"  watch_paths:",
+		"    - " + strconv.Quote(watchDir),
+		"  scan_content: " + scanContent,
+		"",
+	}, "\n"))
+
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = newServerTestFreePort(t)
+		o.ListenChanged = true
+	})
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	waitForServerCancel(t, s)
+	waitForServerOutput(t, buf, "file sentry watching 1 path(s)")
+
+	proof := filepath.Join(watchDir, "file-sentry-run-proof.txt")
+	content := strings.Join([]string{"AKIA", "IOSFODNN7", "EXAMPLE"}, "")
+	if err := os.WriteFile(proof, []byte(content), 0o600); err != nil {
+		t.Fatalf("write proof file: %v", err)
+	}
+	waitForServerOutput(t, buf, "DLP match in "+proof+": AWS Access ID")
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}
+
 func TestServer_StateHelpers(t *testing.T) {
 	s, _ := newTestServer(t, nil)
 
@@ -403,6 +465,9 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	cfg.MCPToolScanning.Enabled = true
 	cfg.MCPToolScanning.Action = config.ActionWarn
 	cfg.MCPToolScanning.DetectDrift = true
+	cfg.MCPSessionBinding.Enabled = true
+	cfg.MCPSessionBinding.UnknownToolAction = config.ActionBlock
+	cfg.MCPSessionBinding.NoBaselineAction = config.ActionWarn
 	cfg.ToolChainDetection.Enabled = true
 	cfg.CrossRequestDetection.Enabled = true
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
@@ -421,6 +486,9 @@ func TestRuntimeMCPBuilders(t *testing.T) {
 	toolCfg := buildMCPToolCfg(cfg, extra, baseline)
 	if toolCfg == nil || toolCfg.Action != config.ActionWarn || !toolCfg.DetectDrift || toolCfg.Baseline != baseline {
 		t.Fatalf("tool cfg = %+v", toolCfg)
+	}
+	if toolCfg.BindingUnknownAction != config.ActionBlock || toolCfg.BindingNoBaselineAction != config.ActionWarn {
+		t.Fatalf("tool binding actions = %q/%q, want block/warn", toolCfg.BindingUnknownAction, toolCfg.BindingNoBaselineAction)
 	}
 	if chain := buildMCPChainMatcher(cfg, metrics.New()); chain == nil {
 		t.Fatal("expected chain matcher when tool chain detection is enabled")

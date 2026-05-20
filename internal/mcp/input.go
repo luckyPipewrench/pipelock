@@ -271,6 +271,41 @@ func ForwardScannedInput(
 			pendingActionID = receipt.NewActionID()
 		}
 		rpcID := frame.ID
+		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
+		warnCtx.Transport = transportMCPStdio
+		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
+		if redactionCfg.Matcher != nil {
+			originalVerdict := ScanRequest(stdioInputCtx, line, sc, action, onParseError)
+			if !originalVerdict.Clean && action == config.ActionBlock {
+				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
+				recordAdaptiveSignal(session.SignalBlock)
+				if pendingActionID != "" && receiptEmitter != nil {
+					layer, pattern, severity := contentScanAttribution(originalVerdict)
+					_, _ = EmitMCPDecision(receiptEmitter, nil, MCPDecision{
+						Receipt: receipt.EmitOpts{
+							ActionID:  pendingActionID,
+							Verdict:   config.ActionBlock,
+							Layer:     layer,
+							Pattern:   pattern,
+							Severity:  severity,
+							Transport: opts.Transport,
+							Target:    pendingToolCallName,
+							MCPMethod: methodToolsCall,
+							ToolName:  pendingToolCallName,
+						},
+					})
+				}
+				blockedCh <- BlockedRequest{
+					ID:             originalVerdict.ID,
+					IsNotification: isRPCNotification(originalVerdict.ID),
+					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked", lineNum),
+					ErrorCode:      -32001,
+					ErrorMessage:   "pipelock: request blocked by MCP input scanning",
+					ErrorData:      mcpBlockReasonData(mcpScannerBlockReason(originalVerdict, policy.Verdict{}, false)),
+				}
+				continue
+			}
+		}
 		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedactionWithConfig(line, redactionCfg)
 		if redactErr != nil {
 			reason := redactErr.Error()
@@ -312,10 +347,6 @@ func ForwardScannedInput(
 		// Method, and ToolCallName are invariant under redaction but
 		// re-parsing keeps the frame the single source of truth.
 		frame = ParseMCPFrame(line)
-
-		warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
-		warnCtx.Transport = transportMCPStdio
-		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 
 		// Evaluate every configured gate in one pass. The helper returns
 		// a composite verdict and the first gate that short-circuited,
@@ -1078,6 +1109,23 @@ func isRPCNotification(id json.RawMessage) bool {
 // joinStrings joins strings with newline separator, matching jsonrpc.ExtractText pattern.
 func joinStrings(ss []string) string {
 	return strings.Join(ss, "\n")
+}
+
+func joinInputVerdictReasons(verdict InputVerdict) string {
+	reasons := make([]string, 0, len(verdict.Matches)+len(verdict.Inject)+1)
+	for _, m := range verdict.Matches {
+		reasons = append(reasons, m.PatternName)
+	}
+	for _, m := range verdict.Inject {
+		reasons = append(reasons, m.PatternName)
+	}
+	if verdict.Error != "" {
+		reasons = append(reasons, verdict.Error)
+	}
+	if len(reasons) == 0 {
+		return "input scanning"
+	}
+	return joinStrings(reasons)
 }
 
 // injectMCPEnvelope injects a mediation envelope into a JSON-RPC message's

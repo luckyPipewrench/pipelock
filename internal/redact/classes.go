@@ -23,20 +23,21 @@ type classPattern struct {
 
 // Shared regex fragments reused across category-specific registries.
 const (
-	hex32    = `[a-fA-F0-9]{32}`
-	hex40    = `[a-fA-F0-9]{40}`
-	hex64    = `[a-fA-F0-9]{64}`
-	hex128   = `[a-fA-F0-9]{128}`
-	octet    = `(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)`
-	ipv4Str  = `\b` + octet + `\.` + octet + `\.` + octet + `\.` + octet
-	cidrMask = `/(?:3[0-2]|[12]?\d)\b`
+	hex32         = `[a-fA-F0-9]{32}`
+	hex40         = `[a-fA-F0-9]{40}`
+	hex64         = `[a-fA-F0-9]{64}`
+	hex128        = `[a-fA-F0-9]{128}`
+	octet         = `(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)`
+	ipv4Str       = `\b` + octet + `\.` + octet + `\.` + octet + `\.` + octet
+	cidrMask      = `/(?:3[0-2]|[12]?\d)\b`
+	envSecretName = `(?:[A-Z][A-Z0-9]*[_-])+(?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY)` //nolint:gosec // credential-type regex, not a secret value
 )
 
 // classRegistry is the shipped set of structured secret classes.
 // Split across category helpers so no single function trips funlen and the
 // priority story stays scannable category by category.
 func classRegistry() []classPattern {
-	out := make([]classPattern, 0, 24)
+	out := make([]classPattern, 0, 32)
 	out = append(out, tokenClasses()...)
 	out = append(out, hashClasses()...)
 	out = append(out, networkClasses()...)
@@ -49,10 +50,21 @@ func classRegistry() []classPattern {
 // so specific token formats win over generic patterns sharing the span.
 func tokenClasses() []classPattern {
 	return []classPattern{
+		// Env-style assignments must outrank embedded token formats so
+		// KEY=<placeholder> does not remain shaped like an env-secret leak
+		// after redaction.
+		{class: ClassEnvSecret, pattern: regexp.MustCompile(`\b` + envSecretName + `\b\s*=\s*\S{8,}`), priority: 120},
 		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA|AGPA|AROA)[A-Z0-9]{16}\b`), priority: 100},
+		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`), priority: 100},
 		{class: ClassGitHubToken, pattern: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},
+		{class: ClassGitLabToken, pattern: regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
+		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{10,}\b`), priority: 100},
+		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{10,}\b`), priority: 100},
+		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
+		{class: ClassDiscordToken, pattern: regexp.MustCompile(`\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b`), priority: 100},
+		{class: ClassBearer, pattern: regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}\b`), priority: 95},
 		// JWT: three base64url segments separated by dots; first segment
 		// starts with `eyJ` (decodes to '{"').
 		{class: ClassJWT, pattern: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`), priority: 100},

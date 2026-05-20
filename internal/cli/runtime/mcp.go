@@ -664,6 +664,7 @@ signed action receipts for MCP decisions.`,
 					Redact:             cfg.FlightRecorder.Redact,
 					SignCheckpoints:    cfg.FlightRecorder.SignCheckpoints,
 					MaxEntriesPerFile:  cfg.FlightRecorder.MaxEntriesPerFile,
+					FileMode:           cfg.FlightRecorder.FileMode,
 					RawEscrow:          cfg.FlightRecorder.RawEscrow,
 					EscrowPublicKey:    cfg.FlightRecorder.EscrowPublicKey,
 				}

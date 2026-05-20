@@ -52,6 +52,9 @@ func TestScanRequestBody_Redaction_BeforeDLPEarlyReturn(t *testing.T) {
 	if result.RedactionReport == nil || !result.RedactionReport.Applied {
 		t.Fatalf("RedactionReport missing or not applied: %+v", result.RedactionReport)
 	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected pre-redaction DLP evidence to survive redaction")
+	}
 }
 
 func TestScanRequestBody_Redaction_AnnotatesProviderParser(t *testing.T) {

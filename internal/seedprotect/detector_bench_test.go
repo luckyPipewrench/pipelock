@@ -37,7 +37,7 @@ func BenchmarkSeedDetect_LongText(b *testing.B) {
 
 func BenchmarkSeedChecksum(b *testing.B) {
 	// Benchmark just checksum validation on a known-valid 12-word phrase.
-	words := strings.Fields(valid12)
+	words := tokenizeWithSpans(valid12)
 	indices := wordIndices(words)
 	for b.Loop() {
 		validateChecksum(indices)

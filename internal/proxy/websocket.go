@@ -1393,7 +1393,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			action = config.ActionWarn
 		}
 	}
-	hardBlock := shouldHardBlockCriticalDLP(result.DLPMatches, r.cfg.EnforceEnabled())
+	hardBlock := shouldHardBlockBodyCriticalDLP(result, r.hostname, r.cfg)
 	if hardBlock {
 		action = config.ActionBlock
 	}
@@ -1701,6 +1701,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if r.cfg.RequestBodyScanning.Enabled && r.scanText {
 			buf, bodyResult := r.scanClientMessageBody(ctx, msg)
 			wsMergeRedactionReport(&r.redactionLog, bodyResult.RedactionReport)
+			if r.proxy != nil {
+				recordBodyRedactionMetrics(r.proxy.metrics, "websocket", r.agent, bodyResult.RedactionReport)
+			}
 			if r.handleClientMessageBodyResult(log, buf, bodyResult) {
 				blocked = true
 				return

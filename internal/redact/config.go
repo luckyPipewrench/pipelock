@@ -298,6 +298,9 @@ func (c *Config) BuildMatcher(profileName string) (*Matcher, error) {
 			m.patterns = append(m.patterns, cp)
 		}
 	}
+	if _, ok := classSet[string(ClassSeedPhrase)]; ok {
+		m.seedPhrase = true
+	}
 
 	// Attach each referenced dictionary. The redact package does not read
 	// the filesystem; if EntriesFile is set, the caller must resolve it
@@ -333,10 +336,11 @@ func (c *Config) BuildProviderRegistry() (*ProviderRegistry, error) {
 // shipped registry. Used for Validate to reject typos in operator profiles.
 func shippedClassNames() map[string]struct{} {
 	reg := defaultRegistry()
-	out := make(map[string]struct{}, len(reg))
+	out := make(map[string]struct{}, len(reg)+1)
 	for _, cp := range reg {
 		out[string(cp.class)] = struct{}{}
 	}
+	out[string(ClassSeedPhrase)] = struct{}{}
 	return out
 }
 

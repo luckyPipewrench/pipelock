@@ -107,7 +107,8 @@ func reverseTestSetup(t *testing.T, cfg *config.Config, upstreamHandler http.Han
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
 	if cfg.Redaction.Enabled {
 		p := &Proxy{}
-		rt, err := p.buildRedactionRuntime(cfg)
+		p.scannerPtr.Store(sc)
+		rt, err := p.buildRedactionRuntimeWithScanner(cfg, sc)
 		if err != nil {
 			t.Fatalf("build redaction runtime: %v", err)
 		}

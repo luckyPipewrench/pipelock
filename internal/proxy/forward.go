@@ -1071,7 +1071,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if bodyAction == "" {
 					bodyAction = cfg.RequestBodyScanning.Action
 				}
-				if shouldHardBlockCriticalDLP(bodyResult.DLPMatches, cfg.EnforceEnabled()) {
+				if shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg) {
 					bodyAction = config.ActionBlock
 				}
 			}
@@ -1093,6 +1093,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		forwardRedactionReport = bodyResult.RedactionReport
+		recordBodyRedactionMetrics(p.metrics, "forward", agentLabel, bodyResult.RedactionReport)
 
 		if !bodyResult.Clean {
 			hasFinding = true
@@ -1129,7 +1130,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			fwdBodyExempt := scannerLabel == scannerLabelBodyDLP &&
 				len(bodyResult.DLPMatches) > 0 &&
 				isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains)
-			dlpHardBlock := shouldHardBlockCriticalDLP(bodyResult.DLPMatches, cfg.EnforceEnabled()) && !fwdBodyExempt
+			dlpHardBlock := shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg)
 			if promptInjectionHardBlock || dlpHardBlock {
 				action = config.ActionBlock
 			}

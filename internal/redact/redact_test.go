@@ -137,10 +137,12 @@ func TestRedactor_BuiltInClassesFormatCorrectly(t *testing.T) {
 	classes := []Class{
 		ClassIPv4, ClassIPv6, ClassCIDR, ClassFQDN, ClassEmail,
 		ClassAWSAccessKey, ClassGoogleAPIKey,
-		ClassGitHubToken, ClassSlackToken, ClassJWT,
+		ClassGitHubToken, ClassGitLabToken, ClassSlackToken,
+		ClassOpenAIAPIKey, ClassAnthropicKey, ClassTelegramToken,
+		ClassDiscordToken, ClassJWT,
 		ClassHashMD5, ClassHashSHA1, ClassHashSHA256, ClassHashSHA512,
 		ClassMAC, ClassSSN, ClassCreditCard,
-		ClassSSHPrivateKey, ClassADUser,
+		ClassSSHPrivateKey, ClassADUser, ClassEnvSecret, ClassSeedPhrase,
 	}
 	for _, c := range classes {
 		t.Run(string(c), func(t *testing.T) {

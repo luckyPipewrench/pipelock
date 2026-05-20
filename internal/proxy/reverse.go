@@ -763,6 +763,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	}
 
 	if result.Clean {
+		recordBodyRedactionMetrics(rp.metrics, "reverse", "", result.RedactionReport)
 		// Re-wrap the buffered body so the reverse proxy can forward
 		// it. GetBody lets stdlib replay on redirect hops even though
 		// the reverse proxy's upstream client does not follow redirects
@@ -785,7 +786,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		action = config.ActionBlock
 	}
 	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, rp.upstream.Hostname(), cfg)
-	dlpHardBlock := shouldHardBlockCriticalDLP(result.DLPMatches, cfg.EnforceEnabled())
+	dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, rp.upstream.Hostname(), cfg)
 	if promptInjectionHardBlock || dlpHardBlock {
 		action = config.ActionBlock
 	}
@@ -809,6 +810,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if len(injectionNames) > 0 {
 		rp.logger.LogBodyScan(actx, audit.EventBodyPromptInjection, action, len(injectionNames), injectionNames)
 	}
+	recordBodyRedactionMetrics(rp.metrics, "reverse", "", result.RedactionReport)
 	if len(patternNames) > 0 {
 		rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil)
 	}

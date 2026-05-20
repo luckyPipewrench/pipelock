@@ -8845,6 +8845,23 @@ func TestLoad_FlightRecorderDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_FlightRecorderFileMode(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "fr-mode.yaml")
+	content := "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: /tmp/fr\n  file_mode: 0640\n"
+	if err := os.WriteFile(cfgPath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.FlightRecorder.FileMode != 0o640 {
+		t.Errorf("FileMode = %04o, want 0640", cfg.FlightRecorder.FileMode)
+	}
+}
+
 func TestLoad_MCPToolProvenanceDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "prov.yaml")
@@ -11966,6 +11983,17 @@ func TestValidate_FlightRecorder(t *testing.T) {
 			wantErr: "escrow_public_key is required",
 		},
 		{
+			name: "unsafe_file_mode",
+			cfg: func() *Config {
+				c := Defaults()
+				c.FlightRecorder.Enabled = true
+				c.FlightRecorder.Dir = testRecorderDir
+				c.FlightRecorder.FileMode = 0o644
+				return c
+			},
+			wantErr: "flight_recorder.file_mode",
+		},
+		{
 			name: "valid_full_config",
 			cfg: func() *Config {
 				c := Defaults()
@@ -11974,6 +12002,7 @@ func TestValidate_FlightRecorder(t *testing.T) {
 				c.FlightRecorder.CheckpointInterval = 60
 				c.FlightRecorder.RetentionDays = 7
 				c.FlightRecorder.MaxEntriesPerFile = 1000
+				c.FlightRecorder.FileMode = 0o640
 				return c
 			},
 		},

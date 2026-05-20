@@ -31,13 +31,22 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"fqdn", "visit dc01.corp.local for login", ClassFQDN},
 		{"aws-access-key-akia", "key AKIA" + "IOSFODNN7EXAMPLE exposed", ClassAWSAccessKey},
 		{"aws-access-key-asia", "temp " + "ASIA" + "Q5ZABCDEFG1234XY", ClassAWSAccessKey},
+		{"aws-secret-key", "AWS_SECRET_ACCESS_KEY=" + strings.Repeat("A", 40), ClassEnvSecret},
 		{"google-api-key", "AIza" + "SyD4mHwK8NQ2J5B1v6xR3L9fP7aW0cZu8kE", ClassGoogleAPIKey},
 		{"github-pat", "token ghp_" + strings.Repeat("A", 36) + " expires", ClassGitHubToken},
 		{"github-new", "token github_pat_" + strings.Repeat("B", 40), ClassGitHubToken},
+		{"gitlab-token", "token glpat-" + strings.Repeat("C", 24), ClassGitLabToken},
 		{"slack-bot", "use " + "xox" + "b-12345-67890-abcdefghijklmnopqrstuvwx", ClassSlackToken},
+		{"openai-api-key", "use sk-proj-" + strings.Repeat("D", 24), ClassOpenAIAPIKey},
+		{"anthropic-api-key", "use sk-ant-" + strings.Repeat("E", 24), ClassAnthropicKey},
+		{"telegram-token", "bot 1234567890:" + strings.Repeat("F", 35), ClassTelegramToken},
+		{"discord-token", "bot M" + strings.Repeat("G", 23) + "." + strings.Repeat("H", 6) + "." + strings.Repeat("I", 27), ClassDiscordToken},
+		{"bearer-token", "Authorization: bearer " + strings.Repeat("J", 24), ClassBearer},
 		{"jwt", "bearer eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"ssh-openssh", "-----BEGIN OPENSSH PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		{"ssh-rsa", "-----BEGIN RSA PRIVATE " + "KEY-----", ClassSSHPrivateKey},
+		{"env-secret", "TELEGRAM_BOT_TOKEN=1234567890:" + strings.Repeat("F", 35), ClassEnvSecret},
+		{"seed-phrase", "mnemonic abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ClassSeedPhrase},
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},
 		{"ssn", "SSN " + "123-45-" + "6789 on file", ClassSSN},
 		{"credit-card-visa", "card " + "4111 1111 " + "1111 1111", ClassCreditCard},
@@ -159,6 +168,23 @@ func TestDefaultMatcher_OverlapsResolvedByPriority(t *testing.T) {
 	}
 	if matches[0].Class != ClassCIDR {
 		t.Fatalf("expected ClassCIDR, got %s", matches[0].Class)
+	}
+}
+
+func TestDefaultMatcher_EnvSecretAbsorbsEmbeddedToken(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+	s := "TELEGRAM_BOT_TOKEN=1234567890:" + strings.Repeat("F", 35)
+
+	matches := m.Scan(s)
+	if len(matches) != 1 {
+		t.Fatalf("expected env assignment to redact as one span, got %d: %+v", len(matches), matches)
+	}
+	if matches[0].Class != ClassEnvSecret {
+		t.Fatalf("expected ClassEnvSecret to win overlap, got %s", matches[0].Class)
+	}
+	if matches[0].Original != s {
+		t.Fatalf("env assignment span = %q, want full assignment", matches[0].Original)
 	}
 }
 

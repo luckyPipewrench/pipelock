@@ -744,7 +744,7 @@ func newInterceptHandler(
 					if bodyAction == "" {
 						bodyAction = ic.Config.RequestBodyScanning.Action
 					}
-					if shouldHardBlockCriticalDLP(result.DLPMatches, ic.Config.EnforceEnabled()) {
+					if shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config) {
 						bodyAction = config.ActionBlock
 					}
 				}
@@ -766,6 +766,9 @@ func newInterceptHandler(
 				})
 			}
 			interceptRedactionReport = result.RedactionReport
+			if ic.Proxy != nil {
+				recordBodyRedactionMetrics(ic.Proxy.metrics, "connect", ic.Agent, result.RedactionReport)
+			}
 
 			if !result.Clean {
 				hasFinding = true
@@ -806,7 +809,7 @@ func newInterceptHandler(
 					len(result.DLPMatches) > 0 &&
 					isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
-				dlpHardBlock := shouldHardBlockCriticalDLP(result.DLPMatches, ic.Config.EnforceEnabled()) && !dlpExempt
+				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {
 					action = config.ActionBlock
 				}
@@ -963,8 +966,7 @@ func newInterceptHandler(
 				hdrAction := config.ActionAllow
 				if hdrHasFinding {
 					hdrAction = ic.Config.RequestBodyScanning.Action
-					if shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled()) &&
-						!isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains) {
+					if shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled()) {
 						hdrAction = config.ActionBlock
 					}
 				}
@@ -988,8 +990,7 @@ func newInterceptHandler(
 			if headerResult != nil && !headerResult.Clean {
 				hasFinding = true
 				action := ic.Config.RequestBodyScanning.Action
-				headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled()) &&
-					!isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
+				headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, ic.Config.EnforceEnabled())
 				if headerHardBlock {
 					action = config.ActionBlock
 				}

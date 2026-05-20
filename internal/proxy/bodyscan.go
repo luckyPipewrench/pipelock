@@ -76,6 +76,12 @@ const (
 	scannerPatternUnavailable = "scanner unavailable during reload"
 
 	invalidFormURLEncodedBody = "invalid application/x-www-form-urlencoded body"
+
+	// bodyDLPJoinSeparator preserves cross-field token/key DLP because the
+	// scanner's dot-collapse pass removes dots, but it prevents phrase-based
+	// detectors like BIP-39 from synthesizing mnemonics across unrelated JSON
+	// fields. Field-local seed phrases are still scanned before the join.
+	bodyDLPJoinSeparator = "."
 )
 
 // isDomainExempt checks if a hostname matches any pattern in a domain
@@ -142,6 +148,22 @@ func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled b
 	return false
 }
 
+func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {
+	enforceEnabled := cfg != nil && cfg.EnforceEnabled()
+	if !shouldHardBlockCriticalDLP(result.DLPMatches, enforceEnabled) {
+		return false
+	}
+	if result.RedactedDLPOnly &&
+		result.RedactionReport != nil &&
+		result.RedactionReport.Applied &&
+		result.RedactionReport.TotalRedactions > 0 &&
+		cfg != nil &&
+		isResponseScanExempt(hostname, cfg.ResponseScanning.ExemptDomains) {
+		return false
+	}
+	return true
+}
+
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
 	Clean            bool
@@ -149,8 +171,12 @@ type BodyScanResult struct {
 	DLPMatches       []scanner.TextDLPMatch
 	InjectionMatches []scanner.ResponseMatch
 	AddressFindings  []addressprotect.Finding // crypto address poisoning findings
-	HeaderName       string                   // set when a header triggered the match
-	Reason           string                   // human-readable block reason
+	// RedactedDLPOnly is true when DLP matched the original body but the
+	// post-redaction body scanned clean. Callers can use this to distinguish
+	// "raw residual secret remains" from "secret was removed before forward".
+	RedactedDLPOnly bool
+	HeaderName      string // set when a header triggered the match
+	Reason          string // human-readable block reason
 	// RedactionReport is populated when ActionRedact ran against the body.
 	// Nil when the feature is disabled or the body was blocked before
 	// reaching the redaction step. Receipt emitters serialize a summary
@@ -241,6 +267,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 		return buf, BodyScanResult{Clean: true}
 	}
 
+	var preRedactionDLP []scanner.TextDLPMatch
+	if req.RedactMatcher != nil {
+		texts, parseErr := extractBodyText(buf, req.ContentType, req.MaxBytes)
+		if parseErr == "" {
+			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, texts)
+		}
+	}
+
 	// Redaction runs BEFORE DLP so that every forwarding path (including
 	// non-block DLP actions like warn / strip) forwards the redacted buf.
 	// Running redaction after DLP would mean a DLP-matched warn-mode
@@ -298,19 +332,34 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 
 	if len(texts) == 0 {
+		if len(preRedactionDLP) > 0 {
+			return buf, BodyScanResult{
+				Clean:           false,
+				DLPMatches:      preRedactionDLP,
+				RedactedDLPOnly: redactReport != nil && redactReport.Applied,
+				RedactionReport: redactReport,
+			}
+		}
 		return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
 	}
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
-	for _, text := range texts {
-		result := req.Scanner.ScanTextForDLP(ctx, text)
-		if !result.Clean {
-			return buf, BodyScanResult{
-				Clean:           false,
-				DLPMatches:      result.Matches,
-				RedactionReport: redactReport,
-			}
+	if matches := scanBodyTextsForDLP(ctx, req.Scanner, texts); len(matches) > 0 {
+		return buf, BodyScanResult{
+			Clean:           false,
+			DLPMatches:      matches,
+			RedactionReport: redactReport,
 		}
+	}
+	if len(preRedactionDLP) > 0 {
+		return buf, BodyScanResult{
+			Clean:           false,
+			DLPMatches:      preRedactionDLP,
+			RedactedDLPOnly: redactReport != nil && redactReport.Applied,
+			RedactionReport: redactReport,
+		}
+	}
+	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponse(ctx, text)
 		if !injectionResult.Clean {
 			return buf, BodyScanResult{
@@ -337,18 +386,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 
 	// Sort to ensure deterministic ordering for DLP (Go map iteration in
 	// non-JSON body parsers and query maps can otherwise vary).
-	sorted := make([]string, len(texts))
-	copy(sorted, texts)
-	sort.Strings(sorted)
+	sorted := sortedBodyTexts(texts)
 	joined := strings.Join(sorted, "\n")
-	result := req.Scanner.ScanTextForDLP(ctx, joined)
-	if !result.Clean {
-		return buf, BodyScanResult{
-			Clean:           false,
-			DLPMatches:      result.Matches,
-			RedactionReport: redactReport,
-		}
-	}
 	injectionResult = req.Scanner.ScanResponse(ctx, joined)
 	if !injectionResult.Clean {
 		return buf, BodyScanResult{
@@ -376,6 +415,28 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 
 	return buf, BodyScanResult{Clean: true, RedactionReport: redactReport}
+}
+
+func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []string) []scanner.TextDLPMatch {
+	for _, text := range texts {
+		result := sc.ScanTextForDLP(ctx, text)
+		if !result.Clean {
+			return result.Matches
+		}
+	}
+	joined := strings.Join(sortedBodyTexts(texts), bodyDLPJoinSeparator)
+	result := sc.ScanTextForDLP(ctx, joined)
+	if !result.Clean {
+		return result.Matches
+	}
+	return nil
+}
+
+func sortedBodyTexts(texts []string) []string {
+	sorted := make([]string, len(texts))
+	copy(sorted, texts)
+	sort.Strings(sorted)
+	return sorted
 }
 
 func allowlistSkipsRedactionRewrite(req BodyScanRequest) bool {
@@ -921,8 +982,7 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *con
 		return false, false
 	}
 	action := cfg.RequestBodyScanning.Action
-	headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, cfg.EnforceEnabled()) &&
-		!isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+	headerHardBlock := shouldHardBlockCriticalDLP(headerResult.DLPMatches, cfg.EnforceEnabled())
 	if headerHardBlock {
 		action = config.ActionBlock
 	}

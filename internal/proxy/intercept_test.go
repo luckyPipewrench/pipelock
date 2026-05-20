@@ -65,8 +65,16 @@ func testInterceptSetup(t *testing.T) (*certgen.CertCache, *x509.CertPool, *conf
 
 func testInterceptRedactProxy(t *testing.T, cfg *config.Config) *Proxy {
 	t.Helper()
+	return testInterceptRedactProxyWithScanner(t, cfg, nil)
+}
+
+func testInterceptRedactProxyWithScanner(t *testing.T, cfg *config.Config, sc *scanner.Scanner) *Proxy {
+	t.Helper()
 	p := &Proxy{captureObs: capture.NopObserver{}}
-	rt, err := p.buildRedactionRuntime(cfg)
+	if sc != nil {
+		p.scannerPtr.Store(sc)
+	}
+	rt, err := p.buildRedactionRuntimeWithScanner(cfg, sc)
 	if err != nil {
 		t.Fatalf("build redaction runtime: %v", err)
 	}

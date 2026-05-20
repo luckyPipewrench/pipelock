@@ -66,8 +66,18 @@ type Config struct {
 	Redact             bool   `yaml:"redact"`
 	SignCheckpoints    bool   `yaml:"sign_checkpoints"`
 	MaxEntriesPerFile  int    `yaml:"max_entries_per_file"`
+	FileMode           os.FileMode
 	RawEscrow          bool   `yaml:"raw_escrow"`
 	EscrowPublicKey    string `yaml:"escrow_public_key"`
+}
+
+func safeEvidenceFileMode(mode os.FileMode) bool {
+	switch mode.Perm() {
+	case 0o600, 0o640, 0o660:
+		return mode&^os.ModePerm == 0
+	default:
+		return false
+	}
 }
 
 // RedactFunc is the signature for DLP redaction. Matches scanner.ScanTextForDLP.
@@ -110,6 +120,12 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	}
 	if cfg.MaxEntriesPerFile <= 0 {
 		cfg.MaxEntriesPerFile = defaultMaxEntriesPerFile
+	}
+	if cfg.FileMode == 0 {
+		cfg.FileMode = filePermissions
+	}
+	if !safeEvidenceFileMode(cfg.FileMode) {
+		return nil, fmt.Errorf("evidence file mode %04o is unsafe; use 0600, 0640, or 0660", cfg.FileMode.Perm())
 	}
 
 	if err := os.MkdirAll(filepath.Clean(cfg.Dir), dirPermissions); err != nil {
@@ -530,8 +546,11 @@ func (r *Recorder) writeEscrow(rawJSON []byte) (string, error) {
 	escrowName := fmt.Sprintf("evidence-%s-%d.raw.enc", filepath.Base(r.sessionID), r.seq)
 	escrowPath := filepath.Join(filepath.Clean(r.cfg.Dir), escrowName)
 
-	if err := os.WriteFile(escrowPath, payload, filePermissions); err != nil {
+	if err := os.WriteFile(escrowPath, payload, r.cfg.FileMode); err != nil {
 		return "", fmt.Errorf("writing escrow file: %w", err)
+	}
+	if err := os.Chmod(escrowPath, r.cfg.FileMode); err != nil {
+		return "", fmt.Errorf("setting escrow file permissions: %w", err)
 	}
 
 	return escrowPath, nil
@@ -658,9 +677,13 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	name := fmt.Sprintf("evidence-%s-%d.jsonl", filepath.Base(sessionID), seqStart)
 	path := filepath.Join(filepath.Clean(r.cfg.Dir), name)
 
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, filePermissions)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_APPEND, r.cfg.FileMode)
 	if err != nil {
 		return err
+	}
+	if err := f.Chmod(r.cfg.FileMode); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("setting evidence file permissions: %w", err)
 	}
 
 	r.file = f

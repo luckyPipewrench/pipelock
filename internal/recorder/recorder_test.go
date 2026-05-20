@@ -72,6 +72,66 @@ func TestRecorder_Dir(t *testing.T) {
 	})
 }
 
+func TestRecorder_FileMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		mode      os.FileMode
+		wantMode  os.FileMode
+		wantError string
+	}{
+		{name: "default_owner_only", wantMode: 0o600},
+		{name: "group_read", mode: 0o640, wantMode: 0o640},
+		{name: "group_read_write", mode: 0o660, wantMode: 0o660},
+		{name: "world_read_rejected", mode: 0o644, wantError: "unsafe"},
+		{name: "execute_rejected", mode: 0o700, wantError: "unsafe"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			rec, err := recorder.New(recorder.Config{
+				Enabled:  true,
+				Dir:      dir,
+				FileMode: tt.mode,
+			}, nil, nil)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("New error = %v, want substring %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			if err := rec.Record(recorder.Entry{
+				SessionID: testSessionID,
+				Type:      testType,
+				Transport: testTransport,
+				Summary:   "file mode proof",
+			}); err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			if err := rec.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+
+			path := filepath.Join(dir, "evidence-test-session-0.jsonl")
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+			if got := info.Mode().Perm(); got != tt.wantMode {
+				t.Fatalf("mode = %04o, want %04o", got, tt.wantMode)
+			}
+		})
+	}
+}
+
 func TestRecorder_HashChain(t *testing.T) {
 	dir := t.TempDir()
 	cfg := recorder.Config{

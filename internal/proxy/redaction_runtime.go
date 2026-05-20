@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // redactionRuntime snapshots every request-body redaction input that must stay
@@ -28,7 +29,11 @@ type redactionRuntime struct {
 }
 
 func (p *Proxy) buildRedactionRuntime(cfg *config.Config) (*redactionRuntime, error) {
-	matcher, err := p.buildRedactMatcher(cfg)
+	return p.buildRedactionRuntimeWithScanner(cfg, p.scannerPtr.Load())
+}
+
+func (p *Proxy) buildRedactionRuntimeWithScanner(cfg *config.Config, sc *scanner.Scanner) (*redactionRuntime, error) {
+	matcher, err := p.buildRedactMatcherWithScanner(cfg, sc)
 	if err != nil {
 		return nil, err
 	}

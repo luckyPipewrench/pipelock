@@ -70,6 +70,23 @@ func TestScanRequestBody_JSONWithSecret(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_SeedPhraseDoesNotSpanJSONFields(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	body := `{"a":"abandon abandon abandon abandon abandon abandon","b":"abandon abandon abandon abandon abandon about"}`
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: contentTypeJSON,
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if !result.Clean {
+		t.Fatalf("seed phrase detector must not synthesize mnemonic across fields: %+v", result)
+	}
+}
+
 func TestScanRequestBody_JSONKeyExfil(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)

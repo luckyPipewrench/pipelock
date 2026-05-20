@@ -59,11 +59,11 @@ func withAdaptive(cfg *config.AdaptiveEnforcement) testOptsFunc {
 	return func(o *MCPProxyOpts) { o.AdaptiveCfg = cfg }
 }
 
-func withRedaction(m *redact.Matcher, profile string) testOptsFunc {
+func withRedaction(m *redact.Matcher) testOptsFunc {
 	return func(o *MCPProxyOpts) {
 		o.RedactMatcher = m
 		o.RedactLimits = redact.DefaultLimits().ToLimits()
-		o.RedactProfile = profile
+		o.RedactProfile = "code"
 	}
 }
 

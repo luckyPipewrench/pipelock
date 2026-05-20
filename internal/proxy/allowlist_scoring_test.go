@@ -23,10 +23,8 @@ import (
 // --- Forward proxy body DLP exempt tests ---
 
 // TestForwardProxy_BodyDLP_ExemptHost_NoEscalationUpgrade verifies that
-// body DLP findings on adaptive-exempt destinations are NOT upgraded by adaptive
-// enforcement. When the session is pre-escalated, a DLP finding on a
-// non-exempt host gets upgraded from warn to block. The same finding on
-// an exempt host stays at warn and the request is forwarded.
+// body DLP findings on adaptive-exempt destinations do not feed adaptive
+// scoring. Critical DLP still hard-blocks when enforcement is enabled.
 func TestForwardProxy_BodyDLP_ExemptHost_NoEscalationUpgrade(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -87,8 +85,8 @@ func TestForwardProxy_BodyDLP_ExemptHost_NoEscalationUpgrade(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 
-	if resp.StatusCode == http.StatusForbidden {
-		t.Errorf("expected 200 for body DLP on exempt host (warn not upgraded), got 403")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for critical body DLP on exempt host, got %d", resp.StatusCode)
 	}
 
 	scoreAfter := rec.ThreatScore()
@@ -175,6 +173,8 @@ func TestForwardHTTP_HeaderDLP_ExemptHost_NoSignal(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.ScanHeaders = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn
+	enforceTrue := true
+	cfg.Enforce = &enforceTrue
 	// Exempt the upstream host from adaptive scoring.
 	upstreamURL, _ := url.Parse(upstream.URL)
 	cfg.AdaptiveEnforcement.ExemptDomains = []string{upstreamURL.Hostname()}
@@ -204,9 +204,8 @@ func TestForwardHTTP_HeaderDLP_ExemptHost_NoSignal(t *testing.T) {
 	handler := p.buildHandler(http.NewServeMux())
 	handler.ServeHTTP(w, req)
 
-	// Audit mode: request allowed regardless.
-	if w.Code == http.StatusForbidden {
-		t.Errorf("expected request allowed in audit mode, got 403: %s", w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected critical header DLP block on exempt host, got %d: %s", w.Code, w.Body.String())
 	}
 
 	// Score should NOT increase because the host is exempt.

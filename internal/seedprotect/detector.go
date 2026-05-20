@@ -24,16 +24,43 @@ type SeedMatch struct {
 	Encoded       string // "", "base64", "hex", "url"
 }
 
+// SeedSpan is a seed phrase match with byte offsets into the original text.
+type SeedSpan struct {
+	SeedMatch
+	Start int
+	End   int
+}
+
+type tokenSpan struct {
+	word  string
+	start int
+	end   int
+}
+
 // Detect scans text for BIP-39 seed phrases. Returns all matches found.
 // minWords must be one of {12, 15, 18, 21, 24}.
 // If verifyChecksum is true, only phrases with valid BIP-39 checksums are returned.
 func Detect(text string, minWords int, verifyChecksum bool) []SeedMatch {
-	tokens := tokenize(text)
+	spans := DetectSpans(text, minWords, verifyChecksum)
+	if len(spans) == 0 {
+		return nil
+	}
+	matches := make([]SeedMatch, 0, len(spans))
+	for _, span := range spans {
+		matches = append(matches, span.SeedMatch)
+	}
+	return matches
+}
+
+// DetectSpans scans text for BIP-39 seed phrases and returns byte offsets for
+// each phrase. It uses the same checksum semantics as Detect.
+func DetectSpans(text string, minWords int, verifyChecksum bool) []SeedSpan {
+	tokens := tokenizeWithSpans(text)
 	if len(tokens) < minWords {
 		return nil
 	}
 
-	var matches []SeedMatch
+	var matches []SeedSpan
 	for _, wantLen := range validLengths {
 		if wantLen < minWords {
 			continue
@@ -42,7 +69,7 @@ func Detect(text string, minWords int, verifyChecksum bool) []SeedMatch {
 			break
 		}
 		for start := 0; start <= len(tokens)-wantLen; start++ {
-			if !IsWord(tokens[start]) {
+			if !IsWord(tokens[start].word) {
 				continue // early bail: first word not BIP-39
 			}
 			if !allBIP39(tokens[start : start+wantLen]) {
@@ -53,9 +80,13 @@ func Detect(text string, minWords int, verifyChecksum bool) []SeedMatch {
 			if verifyChecksum && !checksumOK {
 				continue
 			}
-			matches = append(matches, SeedMatch{
-				WordCount:     wantLen,
-				ChecksumValid: checksumOK,
+			matches = append(matches, SeedSpan{
+				SeedMatch: SeedMatch{
+					WordCount:     wantLen,
+					ChecksumValid: checksumOK,
+				},
+				Start: tokens[start].start,
+				End:   tokens[start+wantLen-1].end,
 			})
 			// Skip past this match to avoid overlapping detections
 			start += wantLen - 1
@@ -65,22 +96,38 @@ func Detect(text string, minWords int, verifyChecksum bool) []SeedMatch {
 }
 
 // tokenize splits text into lowercase words using the separator pattern.
-func tokenize(text string) []string {
-	raw := separatorRE.Split(text, -1)
-	tokens := make([]string, 0, len(raw))
-	for _, t := range raw {
-		t = strings.ToLower(strings.TrimSpace(t))
-		if t != "" {
-			tokens = append(tokens, t)
-		}
+func tokenizeWithSpans(text string) []tokenSpan {
+	sepLocs := separatorRE.FindAllStringIndex(text, -1)
+	tokens := make([]tokenSpan, 0, len(sepLocs)+1)
+	start := 0
+	for _, loc := range sepLocs {
+		appendTokenSpan(&tokens, text, start, loc[0])
+		start = loc[1]
 	}
+	appendTokenSpan(&tokens, text, start, len(text))
 	return tokens
 }
 
+func appendTokenSpan(tokens *[]tokenSpan, text string, start, end int) {
+	if start >= end {
+		return
+	}
+	raw := text[start:end]
+	word := strings.ToLower(strings.TrimSpace(raw))
+	if word == "" {
+		return
+	}
+	*tokens = append(*tokens, tokenSpan{
+		word:  word,
+		start: start,
+		end:   end,
+	})
+}
+
 // allBIP39 returns true if every word in the slice is a BIP-39 word.
-func allBIP39(words []string) bool {
+func allBIP39(words []tokenSpan) bool {
 	for _, w := range words {
-		if !IsWord(w) {
+		if !IsWord(w.word) {
 			return false
 		}
 	}
@@ -88,10 +135,10 @@ func allBIP39(words []string) bool {
 }
 
 // wordIndices converts words to their BIP-39 indices (0-2047).
-func wordIndices(words []string) []int {
+func wordIndices(words []tokenSpan) []int {
 	indices := make([]int, len(words))
 	for i, w := range words {
-		indices[i] = IndexOf(w)
+		indices[i] = IndexOf(w.word)
 	}
 	return indices
 }

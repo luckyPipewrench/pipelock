@@ -23,7 +23,12 @@ const (
 	ClassAWSAccessKey  Class = "aws-access-key"
 	ClassGoogleAPIKey  Class = "google-api-key"
 	ClassGitHubToken   Class = "github-token"
+	ClassGitLabToken   Class = "gitlab-token"
 	ClassSlackToken    Class = "slack-token"
+	ClassOpenAIAPIKey  Class = "openai-api-key"     //nolint:gosec // class label, not a secret value
+	ClassAnthropicKey  Class = "anthropic-api-key"  //nolint:gosec // class label, not a secret value
+	ClassTelegramToken Class = "telegram-bot-token" //nolint:gosec // class label, not a secret value
+	ClassDiscordToken  Class = "discord-bot-token"  //nolint:gosec // class label, not a secret value
 	ClassJWT           Class = "jwt"
 	ClassHashMD5       Class = "hash-md5"
 	ClassHashSHA1      Class = "hash-sha1"
@@ -34,6 +39,8 @@ const (
 	ClassCreditCard    Class = "credit-card"
 	ClassSSHPrivateKey Class = "ssh-private-key"
 	ClassADUser        Class = "ad-user"
+	ClassEnvSecret     Class = "env-secret"
+	ClassSeedPhrase    Class = "seed-phrase"
 )
 
 // Reserved class labels for future profiles or operator-defined use.
@@ -42,6 +49,7 @@ const (
 	ClassBearer       Class = "bearer"
 	ClassHashNTLM     Class = "hash-ntlm"
 	ClassCredential   Class = "credential"
+	ClassKnownSecret  Class = "known-secret"
 )
 
 // Redactor manages per-request redaction state: sequence numbering per class

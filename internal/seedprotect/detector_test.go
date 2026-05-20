@@ -29,6 +29,18 @@ func TestDetect_Valid12Word(t *testing.T) {
 	}
 }
 
+func TestDetectSpans_Valid12WordOffsets(t *testing.T) {
+	text := "prefix " + valid12 + " suffix"
+	matches := DetectSpans(text, 12, true)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 seed span, got %d: %+v", len(matches), matches)
+	}
+	got := text[matches[0].Start:matches[0].End]
+	if got != valid12 {
+		t.Fatalf("span = %q, want valid phrase", got)
+	}
+}
+
 func TestDetect_Valid24Word(t *testing.T) {
 	matches := Detect(valid24, 12, true)
 	if len(matches) == 0 {

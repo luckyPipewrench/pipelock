@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
 
 var (
@@ -40,6 +42,10 @@ type Match struct {
 // goroutines; each scan builds its own match list.
 type Matcher struct {
 	patterns []classPattern
+	// seedPhrase enables checksum-verified BIP-39 phrase redaction. It is
+	// not encoded as one giant regex because checksum validation is part of
+	// the security boundary.
+	seedPhrase bool
 	// dictionaries compiled into a single alternation regex per class.
 	// Separate from patterns so dictionary matches can be disambiguated
 	// from regex matches in telemetry and tests.
@@ -60,7 +66,7 @@ type dictPattern struct {
 // registry and no operator dictionaries. Equivalent to a profile that
 // enables every structured class but no contextual entities.
 func NewDefaultMatcher() *Matcher {
-	return &Matcher{patterns: defaultRegistry()}
+	return &Matcher{patterns: defaultRegistry(), seedPhrase: true}
 }
 
 // Dictionary is an operator-supplied named list of literal strings that
@@ -181,6 +187,16 @@ func (m *Matcher) Scan(s string) []Match {
 			})
 		}
 	}
+	if m.seedPhrase {
+		for _, span := range seedprotect.DetectSpans(s, 12, true) {
+			raw = append(raw, Match{
+				Class:    ClassSeedPhrase,
+				Start:    span.Start,
+				End:      span.End,
+				Original: s[span.Start:span.End],
+			})
+		}
+	}
 
 	return resolveOverlaps(raw, m.priorityLookup())
 }
@@ -201,6 +217,9 @@ func (m *Matcher) priorityLookup() map[Class]int {
 		if p, ok := out[dp.class]; !ok || dp.priority > p {
 			out[dp.class] = dp.priority
 		}
+	}
+	if m.seedPhrase {
+		out[ClassSeedPhrase] = 130
 	}
 	return out
 }

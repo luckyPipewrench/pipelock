@@ -510,10 +510,48 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return result
 	}
 
+	// Determine input scanning parameters before redaction so block-mode
+	// DLP can enforce on the original tool arguments. Warn mode still
+	// redacts before forwarding below.
+	action := config.ActionWarn
+	onParseError := config.ActionBlock
+	if inputCfg != nil && inputCfg.Enabled {
+		action = inputCfg.Action
+		onParseError = inputCfg.OnParseError
+	}
+	scanEnabled := inputCfg != nil && inputCfg.Enabled
+
+	// Build the scan context once so pre-redaction and post-redaction
+	// scans share the same DLPWarnContext.
+	inputScanCtx := opts.warnContext()
+	wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
+	if wc.Transport == "" {
+		wc.Transport = transportMCPHTTP
+		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
+	}
+
 	if pendingToolName := frame.ToolCallName; pendingToolName != "" {
 		toolName = pendingToolName
 		mcpMethod = methodToolsCall
 		actionID = receipt.NewActionID()
+	}
+	if scanEnabled && redactionCfg.Matcher != nil {
+		originalVerdict := ScanRequest(inputScanCtx, msg, sc, action, onParseError)
+		if !originalVerdict.Clean && action == config.ActionBlock {
+			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
+			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
+			recordAdaptiveSignal(session.SignalBlock)
+			receiptVerdict = config.ActionBlock
+			result.Blocked = &BlockedRequest{
+				ID:             originalVerdict.ID,
+				IsNotification: isRPCNotification(originalVerdict.ID),
+				LogMessage:     "blocked",
+				ErrorCode:      -32001,
+				ErrorMessage:   "pipelock: request blocked by MCP input scanning",
+				ErrorData:      mcpBlockReasonData(mcpScannerBlockReason(originalVerdict, policy.Verdict{}, false)),
+			}
+			return result
+		}
 	}
 	rewrittenMsg, report, redactErr := applyMCPToolCallRedactionWithConfig(msg, redactionCfg)
 	if redactErr != nil {
@@ -541,24 +579,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// Redaction may have rewritten argument values; re-parse so
 	// downstream gates (DoW, taint) see the redacted args.
 	frame = ParseMCPFrame(msg)
-
-	// Determine input scanning parameters.
-	action := config.ActionWarn
-	onParseError := config.ActionBlock
-	if inputCfg != nil && inputCfg.Enabled {
-		action = inputCfg.Action
-		onParseError = inputCfg.OnParseError
-	}
-	scanEnabled := inputCfg != nil && inputCfg.Enabled
-
-	// Build the scan context once so the helper sees the same
-	// DLPWarnContext the inline content scan would have seen.
-	inputScanCtx := opts.warnContext()
-	wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
-	if wc.Transport == "" {
-		wc.Transport = transportMCPHTTP
-		inputScanCtx = scanner.WithDLPWarnContext(inputScanCtx, wc)
-	}
 
 	// Evaluate every configured gate in one pass. The helper returns
 	// a composite verdict and the first gate that short-circuited,
@@ -708,11 +728,46 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 
 	taintEval = eval.TaintDecision
+	bindingAction := eval.BindingAction
+	bindingReason := eval.BindingReason
 	chainAction := eval.ChainAction
 	chainReason := eval.ChainReason
+	if bindingReason != "" {
+		switch bindingReason {
+		case bindingReasonMissingToolName:
+			_, _ = fmt.Fprintf(logW, "pipelock: tools/call missing params.name\n")
+		case bindingReasonNoBaseline:
+			_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q before baseline established\n", toolName)
+		case bindingReasonUnknownTool:
+			_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q not in session baseline\n", toolName)
+		default:
+			_, _ = fmt.Fprintf(logW, "pipelock: tools/call %q session binding violation: %s\n", toolName, bindingReason)
+		}
+		obs.ObserveToolPolicyVerdict(context.Background(), &capture.ToolPolicyRecord{
+			Subsurface:        "session_binding",
+			Transport:         opts.Transport,
+			SessionID:         captureSessionID(opts.Transport),
+			SessionIDOriginal: captureSessionIDOriginal(opts.Transport),
+			ConfigHash:        opts.captureConfigHash(),
+			Profile:           opts.captureProfile(),
+			ActionClass:       captureActionClass,
+			Request: capture.CaptureRequest{
+				ToolName:  toolName,
+				MCPMethod: methodToolsCall,
+			},
+			RawFindings: []capture.Finding{{
+				Kind:       capture.KindSessionBinding,
+				ToolName:   toolName,
+				PolicyRule: bindingReason,
+				Action:     bindingAction,
+			}},
+			EffectiveAction: bindingAction,
+			Outcome:         captureOutcome(bindingAction, false),
+		})
+	}
 
 	// All clean — proceed (with block_all and CEE checks).
-	if verdict.Clean && !policyVerdict.Matched && chainAction == "" {
+	if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
@@ -812,6 +867,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}
+	if bindingReason != "" {
+		reasons = append(reasons, bindingReason)
+	}
 	if chainReason != "" {
 		reasons = append(reasons, chainReason)
 	}
@@ -832,6 +890,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if policyVerdict.Matched {
 		effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
 	}
+	if bindingAction != "" {
+		effectiveAction = mergeAction(effectiveAction, bindingAction)
+	}
 	if chainAction != "" {
 		effectiveAction = mergeAction(effectiveAction, chainAction)
 	}
@@ -844,6 +905,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if verdict.Clean && policyVerdict.Matched {
 		errCode = -32002
 		errMsg = errPolicyBlocked
+	}
+	if bindingReason != "" {
+		errCode = -32000
+		errMsg = "pipelock: " + bindingReason
 	}
 
 	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
@@ -888,13 +953,17 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = effectiveAction
+		blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
+		if bindingReason != "" {
+			blockReason = blockreason.SessionBinding
+		}
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isNotification,
 			LogMessage:     "blocked",
 			ErrorCode:      errCode,
 			ErrorMessage:   errMsg,
-			ErrorData:      mcpBlockReasonData(mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")),
+			ErrorData:      mcpBlockReasonData(blockReason),
 		}
 		return result
 	case config.ActionRedirect:

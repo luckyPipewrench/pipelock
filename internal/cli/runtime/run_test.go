@@ -706,6 +706,7 @@ func TestRunCmd_RedactionWiresMCPListenerAndReverseProxy(t *testing.T) {
 
 	cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
+enforce: false
 fetch_proxy:
   listen: %q
   timeout_seconds: 5
@@ -713,6 +714,11 @@ fetch_proxy:
 request_body_scanning:
   enabled: true
   action: warn
+mcp_input_scanning:
+  enabled: true
+  action: warn
+mcp_session_binding:
+  enabled: false
 reverse_proxy:
   enabled: true
   listen: %q

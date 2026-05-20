@@ -1592,6 +1592,11 @@ func (c *Config) validateFlightRecorder() error {
 	if c.FlightRecorder.MaxEntriesPerFile < 0 {
 		return fmt.Errorf("flight_recorder.max_entries_per_file must be non-negative")
 	}
+	switch c.FlightRecorder.FileMode {
+	case 0, 0o600, 0o640, 0o660:
+	default:
+		return fmt.Errorf("flight_recorder.file_mode must be 0600, 0640, or 0660 when set")
+	}
 	if c.FlightRecorder.RawEscrow && c.FlightRecorder.EscrowPublicKey == "" {
 		return fmt.Errorf("flight_recorder.escrow_public_key is required when raw_escrow is enabled")
 	}

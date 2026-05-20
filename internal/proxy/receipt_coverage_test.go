@@ -1547,7 +1547,7 @@ func TestReceiptCoverage_WSSessionClose_RedactionSummary(t *testing.T) {
 
 	rph := newReceiptProxyHelper(t)
 	proxyAddr, cleanup := setupWSProxyWithReceipts(t, rph, func(cfg *config.Config) {
-		cfg.Enforce = ptrBool(true)
+		cfg.Enforce = ptrBool(false)
 		applyRedactionTestProfile(cfg)
 	})
 	defer cleanup()

@@ -938,6 +938,23 @@ func TestRecordBodyPromptInjection(t *testing.T) {
 	}
 }
 
+func TestRecordBodyRedactions(t *testing.T) {
+	m := New()
+	m.RecordBodyRedactions("connect", testAgent, "openai", "json", "env-secret", 2)
+	m.RecordBodyRedactions("connect", testAgent, "openai", "json", "env-secret", 1)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, req)
+
+	body, _ := io.ReadAll(w.Body)
+	text := string(body)
+	want := `pipelock_body_redactions_total{agent="test-agent",class="env-secret",parser="json",provider="openai",transport="connect"} 3`
+	if !strings.Contains(text, want) {
+		t.Errorf("expected body redaction counter %q:\n%s", want, text)
+	}
+}
+
 func TestRecordHeaderDLP(t *testing.T) {
 	m := New()
 	m.RecordHeaderDLP("block", testAgent)

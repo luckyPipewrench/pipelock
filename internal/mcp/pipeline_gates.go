@@ -119,11 +119,11 @@ type MCPInputEvaluation struct {
 	TaintApproved bool
 
 	// BindingAction is the session-binding action ("block" or "warn")
-	// when a stdio binding violation was detected. Empty when binding
-	// did not fire. Stdio-only; the HTTP helper leaves this empty.
+	// when a binding violation was detected. Empty when binding did not
+	// fire.
 	BindingAction string
 
-	// BindingReason names the stdio binding violation:
+	// BindingReason names the binding violation:
 	// "session_binding:batch_request" (batch with binding active),
 	// "session_binding:missing_tool_name" (tools/call without
 	// params.name), "session_binding:no_baseline" (tools/call before
@@ -241,6 +241,23 @@ func EvaluateMCPInputGates(
 		if !allowed && action == config.ActionBlock {
 			eval.BlockingGate = blockingGateDoW
 			return eval
+		}
+	}
+
+	// session binding. HTTP listener traffic shares a listener-level
+	// tools/list baseline; apply the same tools/call inventory check as
+	// stdio before policy/chain/taint can treat the call as clean.
+	if toolCfg := opts.toolCfg(); toolCfg != nil && toolCfg.Baseline != nil && toolCfg.BindingUnknownAction != "" && frame.IsToolsCall() {
+		switch {
+		case frame.ToolCallName == "":
+			eval.BindingAction = toolCfg.BindingUnknownAction
+			eval.BindingReason = bindingReasonMissingToolName
+		case !toolCfg.Baseline.HasBaseline():
+			eval.BindingAction = toolCfg.BindingNoBaselineAction
+			eval.BindingReason = bindingReasonNoBaseline
+		case !toolCfg.Baseline.IsKnownTool(frame.ToolCallName):
+			eval.BindingAction = toolCfg.BindingUnknownAction
+			eval.BindingReason = bindingReasonUnknownTool
 		}
 	}
 

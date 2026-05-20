@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -232,6 +233,31 @@ func TestRunHTTPProxy_RedactsToolCallArguments(t *testing.T) {
 	}
 	if !strings.Contains(envelope.Params.Arguments.Prompt, mcpPlaceholderAWS) {
 		t.Fatalf("upstream request missing placeholder: %s", upstreamBody.String())
+	}
+}
+
+func TestScanHTTPInput_PreRedactionDLPBlocksToolCall(t *testing.T) {
+	secret := mcpRedactionSecret()
+	sc := testScannerForHTTP(t)
+	msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use ` + secret + ` to deploy"}}}`)
+	var logBuf bytes.Buffer
+
+	decision := scanHTTPInputDecision(msg, &logBuf, "", "", MCPProxyOpts{
+		Scanner:       sc,
+		InputCfg:      &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock},
+		RedactMatcher: testHTTPRedactionMatcher(),
+		RedactLimits:  redact.DefaultLimits().ToLimits(),
+		RedactProfile: "code",
+	})
+
+	if decision.Blocked == nil {
+		t.Fatal("expected pre-redaction DLP block")
+	}
+	if !strings.Contains(logBuf.String(), "AWS Access ID") {
+		t.Fatalf("expected AWS Access ID in block log, got: %s", logBuf.String())
+	}
+	if string(decision.Blocked.ErrorData) == "" || !strings.Contains(string(decision.Blocked.ErrorData), string(blockreason.DLPMatch)) {
+		t.Fatalf("expected DLP block reason data, got: %s", string(decision.Blocked.ErrorData))
 	}
 }
 
@@ -1771,6 +1797,103 @@ func TestHTTPListener_HealthEndpoint(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "ok") {
 		t.Errorf("body = %s, want ok", body)
+	}
+}
+
+func TestRunHTTPListenerProxy_SessionBindingBlocksNoBaseline(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	toolCfg := &tools.ToolScanConfig{
+		Baseline:                tools.NewToolBaseline(),
+		Action:                  config.ActionBlock,
+		BindingUnknownAction:    config.ActionBlock,
+		BindingNoBaselineAction: config.ActionBlock,
+	}
+	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
+
+	resp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)) //nolint:gosec,noctx // test
+	if err != nil {
+		t.Fatalf("POST listener proxy: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(response): %v", err)
+	}
+	if !strings.Contains(string(payload), bindingReasonNoBaseline) {
+		t.Fatalf("expected no-baseline block, got: %s", payload)
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("upstream calls = %d, want 0", got)
+	}
+	if !strings.Contains(logBuf.String(), "before baseline established") {
+		t.Fatalf("expected binding diagnostic log, got: %s", logBuf.String())
+	}
+}
+
+func TestRunHTTPListenerProxy_SessionBindingBlocksUnknownToolAfterToolsList(t *testing.T) {
+	var toolCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll(upstream request): %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"tools/list"`) {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]}}`))
+			return
+		}
+		toolCalls.Add(1)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"ok"}]}}`))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	toolCfg := &tools.ToolScanConfig{
+		Baseline:                tools.NewToolBaseline(),
+		Action:                  config.ActionBlock,
+		BindingUnknownAction:    config.ActionBlock,
+		BindingNoBaselineAction: config.ActionBlock,
+	}
+	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}, toolCfg, nil)
+
+	listResp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)) //nolint:gosec,noctx // test
+	if err != nil {
+		t.Fatalf("POST tools/list: %v", err)
+	}
+	listPayload, err := io.ReadAll(listResp.Body)
+	_ = listResp.Body.Close()
+	if err != nil {
+		t.Fatalf("ReadAll(tools/list response): %v", err)
+	}
+	if !strings.Contains(string(listPayload), `"name":"echo"`) {
+		t.Fatalf("expected tools/list to establish baseline, got: %s", listPayload)
+	}
+
+	callResp, err := http.Post(baseURL+"/", "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"unknown_tool","arguments":{"text":"hi"}}}`)) //nolint:gosec,noctx // test
+	if err != nil {
+		t.Fatalf("POST tools/call: %v", err)
+	}
+	defer func() { _ = callResp.Body.Close() }()
+	callPayload, err := io.ReadAll(callResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(tools/call response): %v", err)
+	}
+	if !strings.Contains(string(callPayload), bindingReasonUnknownTool) {
+		t.Fatalf("expected unknown-tool block, got: %s", callPayload)
+	}
+	if got := toolCalls.Load(); got != 0 {
+		t.Fatalf("tool call upstream forwards = %d, want 0", got)
+	}
+	if !strings.Contains(logBuf.String(), "not in session baseline") {
+		t.Fatalf("expected binding diagnostic log, got: %s", logBuf.String())
 	}
 }
 

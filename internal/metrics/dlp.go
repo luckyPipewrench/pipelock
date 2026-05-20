@@ -26,6 +26,12 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 		Help:      "Total request body prompt-injection detections by action.",
 	}, []string{"action", "agent"})
 
+	m.bodyRedactions = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "body_redactions_total",
+		Help:      "Total request body redactions by transport, provider parser, and class.",
+	}, []string{"transport", "agent", "provider", "parser", "class"})
+
 	m.dlpWarnMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "dlp_warn_matches_total",
@@ -45,7 +51,7 @@ func (m *Metrics) registerDLPMetrics(reg *prometheus.Registry) {
 	}, []string{"pattern", "severity", "agent"})
 
 	reg.MustRegister(
-		m.bodyDLPHits, m.bodyInjectionHits, m.headerDLPHits, m.dlpWarnMatches,
+		m.bodyDLPHits, m.bodyInjectionHits, m.bodyRedactions, m.headerDLPHits, m.dlpWarnMatches,
 		m.AddressFindings, m.FileSentryFindings,
 	)
 }
@@ -58,6 +64,14 @@ func (m *Metrics) RecordBodyDLP(action, agent string) {
 // RecordBodyPromptInjection increments the request body prompt-injection counter by action.
 func (m *Metrics) RecordBodyPromptInjection(action, agent string) {
 	m.bodyInjectionHits.WithLabelValues(action, agent).Inc()
+}
+
+// RecordBodyRedactions increments request body redaction counters by class.
+func (m *Metrics) RecordBodyRedactions(transport, agent, provider, parser, class string, count int) {
+	if m == nil || count <= 0 {
+		return
+	}
+	m.bodyRedactions.WithLabelValues(transport, agent, provider, parser, class).Add(float64(count))
 }
 
 // RecordHeaderDLP increments the request header DLP scan counter by action.

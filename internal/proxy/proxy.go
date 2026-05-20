@@ -1289,7 +1289,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	// Stage the full redaction runtime BEFORE publication so a failed
 	// matcher build aborts the whole reload instead of mixing matcher,
 	// limits, and allowlist from different policy revisions.
-	newRedactionRuntime, redactErr := p.buildRedactionRuntime(cfg)
+	newRedactionRuntime, redactErr := p.buildRedactionRuntimeWithScanner(cfg, sc)
 	if redactErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 			fmt.Errorf("redaction runtime reload failed, keeping old config: %w", redactErr))
@@ -1503,11 +1503,72 @@ func (p *Proxy) setupCEE(ceeCfg *config.CrossRequestDetection) {
 // that body-scan callers consume. Returns nil (no matcher) when redaction is
 // disabled or unresolved. A compile error is returned so callers can surface
 // it at startup/reload time rather than silently degrading.
-func (p *Proxy) buildRedactMatcher(cfg *config.Config) (*redact.Matcher, error) {
+func (p *Proxy) buildRedactMatcherWithScanner(cfg *config.Config, sc *scanner.Scanner) (*redact.Matcher, error) {
 	if !cfg.Redaction.Enabled {
 		return nil, nil
 	}
-	return cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+	matcher, err := cfg.Redaction.BuildMatcher(cfg.Redaction.DefaultProfile)
+	if err != nil {
+		return nil, err
+	}
+	if err := addKnownSecretRedactionDictionaries(matcher, sc); err != nil {
+		return nil, err
+	}
+	return matcher, nil
+}
+
+const (
+	knownSecretRedactionPriority = 140
+	knownSecretDictMaxEntries    = 128
+	knownSecretDictMaxBytes      = 64 * 1024
+)
+
+func addKnownSecretRedactionDictionaries(matcher *redact.Matcher, sc *scanner.Scanner) error {
+	if matcher == nil || sc == nil {
+		return nil
+	}
+	values := sc.RedactionSecretValues()
+	if err := addRedactionDictionaryChunks(matcher, redact.ClassEnvSecret, values.Env); err != nil {
+		return fmt.Errorf("add env secret redaction dictionary: %w", err)
+	}
+	if err := addRedactionDictionaryChunks(matcher, redact.ClassKnownSecret, values.File); err != nil {
+		return fmt.Errorf("add known secret redaction dictionary: %w", err)
+	}
+	return nil
+}
+
+func addRedactionDictionaryChunks(matcher *redact.Matcher, class redact.Class, entries []string) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	var chunk []string
+	var chunkBytes int
+	flush := func() error {
+		if len(chunk) == 0 {
+			return nil
+		}
+		err := matcher.AddDictionary(redact.Dictionary{
+			Class:    class,
+			Entries:  chunk,
+			Priority: knownSecretRedactionPriority,
+		})
+		chunk = nil
+		chunkBytes = 0
+		return err
+	}
+	for _, entry := range entries {
+		if entry == "" {
+			continue
+		}
+		if len(chunk) > 0 && (len(chunk) >= knownSecretDictMaxEntries || chunkBytes+len(entry) > knownSecretDictMaxBytes) {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+		chunk = append(chunk, entry)
+		chunkBytes += len(entry)
+	}
+	return flush()
 }
 
 // setupRedaction stores the compiled redaction runtime at startup. When

@@ -23,7 +23,7 @@ import (
 // from the config file. When set to a non-empty value, it takes priority over
 // the config file value. This allows Kubernetes deployments to source the token
 // from a Secret (via env[].valueFrom.secretKeyRef) instead of a ConfigMap.
-const EnvAPIToken = "PIPELOCK_" + "KILLSWITCH_API_TOKEN" //nolint:gosec // env var name, not a credential
+const EnvAPIToken = config.EnvKillSwitchAPIToken
 
 // Decision describes the outcome of a kill switch check.
 type Decision struct {

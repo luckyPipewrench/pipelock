@@ -6641,6 +6641,19 @@ func TestValidate_KillSwitchAPIListen_Valid(t *testing.T) {
 	}
 }
 
+func TestValidate_KillSwitchAPIListen_EnvTokenValid(t *testing.T) {
+	t.Setenv(EnvKillSwitchAPIToken, testToken)
+
+	cfg := Defaults()
+	cfg.ApplyDefaults()
+	cfg.KillSwitch.APIListen = testAPIListen
+	cfg.KillSwitch.APIToken = ""
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("api_listen with %s should pass validation: %v", EnvKillSwitchAPIToken, err)
+	}
+}
+
 func TestValidate_KillSwitchAPIListen_Empty(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()

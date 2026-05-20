@@ -127,6 +127,10 @@ const (
 	// EnvLicenseKey is the environment variable for license token override.
 	// Takes highest priority over license_file and license_key config fields.
 	EnvLicenseKey = "PIPELOCK_LICENSE_KEY"
+
+	// EnvKillSwitchAPIToken is the environment variable for admin API bearer
+	// token override. Takes priority over kill_switch.api_token.
+	EnvKillSwitchAPIToken = "PIPELOCK_KILLSWITCH_API_TOKEN" //nolint:gosec // env var name, not a credential
 )
 
 // SuppressEntry defines a finding suppression rule for false positives.

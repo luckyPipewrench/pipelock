@@ -1199,8 +1199,8 @@ func (c *Config) validateKillSwitch() error {
 		if apiPort == proxyPort {
 			return fmt.Errorf("kill_switch.api_listen port %s collides with fetch_proxy.listen port %s", apiPort, proxyPort)
 		}
-		if c.KillSwitch.APIToken == "" {
-			return fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token to be set")
+		if c.KillSwitch.APIToken == "" && os.Getenv(EnvKillSwitchAPIToken) == "" {
+			return fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token or %s to be set", EnvKillSwitchAPIToken)
 		}
 	}
 	return nil

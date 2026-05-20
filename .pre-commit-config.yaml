@@ -11,7 +11,7 @@ repos:
         # under check-yaml so accidental corruption is still caught.
         exclude: |
           (?x)^(
-            charts/.*/templates/|
+            charts/.*/templates/.*|
             internal/contract/testdata/invalid/duplicate_key\.yaml|
             internal/contract/testdata/invalid/yaml_alias\.yaml|
             internal/contract/testdata/invalid/yaml_anchor\.yaml|

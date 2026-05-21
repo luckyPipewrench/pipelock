@@ -308,6 +308,15 @@
         @media (max-width: 600px) {
             .stats-grid { grid-template-columns: repeat(2, 1fr); }
             .compliance-summary-grid { grid-template-columns: 1fr; }
+            /* Reset the odd-card centering for single-column mobile layout —
+               with one column there's nothing to center, the card should
+               fill its track like its siblings. */
+            .compliance-summary-grid > .stat-card:last-child:nth-child(odd) {
+                grid-column: auto;
+                width: auto;
+                margin-left: 0;
+                margin-right: 0;
+            }
         }
 
         @media print {

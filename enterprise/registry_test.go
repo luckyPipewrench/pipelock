@@ -461,7 +461,7 @@ func TestAgentRegistryResolveFromRequest_ContextOverride(t *testing.T) {
 	}
 	defer reg.Close()
 
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	ctx := edition.WithAgentOverride(r.Context(), testProfileClaudeCode)
 	r = r.WithContext(ctx)
 
@@ -486,7 +486,7 @@ func TestAgentRegistryResolveFromRequest_CIDR(t *testing.T) {
 	}
 	defer reg.Close()
 
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	r.RemoteAddr = "10.0.0.42:12345"
 
 	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)
@@ -510,7 +510,7 @@ func TestAgentRegistryResolveFromRequest_Header(t *testing.T) {
 	}
 	defer reg.Close()
 
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	r.Header.Set(edition.AgentHeader, testProfileClaudeCode)
 
 	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)
@@ -534,7 +534,7 @@ func TestAgentRegistryResolveFromRequest_Fallback(t *testing.T) {
 	}
 	defer reg.Close()
 
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	// No override, no CIDR match, no header.
 
 	ra, id := reg.ResolveFromRequest(context.Background(), r, cfg, nil)

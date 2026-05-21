@@ -31,7 +31,7 @@ func TestNewEdition(t *testing.T) {
 	defer ed.Close()
 
 	// Should resolve to default for anonymous requests.
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	ra, id := ed.ResolveAgent(context.Background(), r)
 	if id.Profile != edition.ProfileDefault {
 		t.Errorf("profile = %q, want %q", id.Profile, edition.ProfileDefault)
@@ -56,7 +56,7 @@ func TestNewEdition_WithAgents(t *testing.T) {
 	defer ed.Close()
 
 	// Request with matching header.
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	r.Header.Set(edition.AgentHeader, "claude-code")
 	ra, id := ed.ResolveAgent(context.Background(), r)
 	if id.Profile != "claude-code" {

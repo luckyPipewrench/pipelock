@@ -98,7 +98,7 @@ func signedWebhookRequest(t *testing.T, srv *Server, body string) *http.Request 
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	sig := signWebhook(t, []byte(body), timestamp, srv.cfg.PolarWebhookSecret)
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook/polar", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook/polar", strings.NewReader(body))
 	req.Header.Set("Webhook-Id", testWebhookMsgID)
 	req.Header.Set("Webhook-Timestamp", timestamp)
 	req.Header.Set("Webhook-Signature", sig)
@@ -109,7 +109,7 @@ func signedWebhookRequest(t *testing.T, srv *Server, body string) *http.Request 
 func TestServer_HealthEndpoint(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 
 	srv.mux.ServeHTTP(w, req)
@@ -153,7 +153,7 @@ func TestServer_WebhookInvalidSignature(t *testing.T) {
 	srv := newTestServer(t)
 
 	body := `{"type":"subscription.created","data":{"id":"sub_123"}}`
-	req := httptest.NewRequest(http.MethodPost, "/webhook/polar", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook/polar", strings.NewReader(body))
 	req.Header.Set("Webhook-Id", testWebhookMsgID)
 	req.Header.Set("Webhook-Timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 	req.Header.Set("Webhook-Signature", "v1,aW52YWxpZHNpZw==")
@@ -170,7 +170,7 @@ func TestServer_WebhookMissingHeaders(t *testing.T) {
 	srv := newTestServer(t)
 
 	body := `{"type":"subscription.created","data":{"id":"sub_123"}}`
-	req := httptest.NewRequest(http.MethodPost, "/webhook/polar", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook/polar", strings.NewReader(body))
 	// No webhook headers set.
 	w := httptest.NewRecorder()
 
@@ -188,7 +188,7 @@ func TestServer_WebhookInvalidJSON(t *testing.T) {
 	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 	sig := signWebhook(t, []byte(body), timestamp, srv.cfg.PolarWebhookSecret)
 
-	req := httptest.NewRequest(http.MethodPost, "/webhook/polar", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/webhook/polar", strings.NewReader(body))
 	req.Header.Set("Webhook-Id", testWebhookMsgID)
 	req.Header.Set("Webhook-Timestamp", timestamp)
 	req.Header.Set("Webhook-Signature", sig)
@@ -224,7 +224,7 @@ func TestServer_WebhookNonSubscriptionEvent(t *testing.T) {
 func TestServer_WebhookWrongMethod(t *testing.T) {
 	srv := newTestServer(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/webhook/polar", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/webhook/polar", nil)
 	w := httptest.NewRecorder()
 
 	srv.mux.ServeHTTP(w, req)

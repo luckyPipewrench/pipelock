@@ -91,6 +91,7 @@
     {
       "description": "Hold jsonschema at 0.18.x in the Rust verifier. 0.19+ renames JSONSchema to Validator and changes the compile/validate API, needs manual migration.",
       "matchManagers": ["cargo"],
+      "matchFileNames": ["sdk/verifiers/rust/**"],
       "matchPackageNames": ["jsonschema"],
       "allowedVersions": "<0.19"
     }

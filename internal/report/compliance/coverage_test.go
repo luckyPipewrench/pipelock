@@ -106,8 +106,11 @@ func TestSortControls(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	catalog := Catalog()
-	if len(catalog) != 5 {
-		t.Fatalf("catalog has %d frameworks, want 5", len(catalog))
+	// 7 frameworks: 5 original (OWASP MCP + Agentic, MITRE ATLAS, EU AI
+	// Act, SOC 2) plus NIST AI RMF and HIPAA added 2026-05.
+	const wantCount = 7
+	if len(catalog) != wantCount {
+		t.Fatalf("catalog has %d frameworks, want %d", len(catalog), wantCount)
 	}
 	ids := make(map[string]bool)
 	for _, f := range catalog {

@@ -6,12 +6,21 @@ package compliance
 import "sort"
 
 // Catalog returns the built-in compliance frameworks in a stable order.
+// The order is the order frameworks render in the free-tier summary grid
+// and in the paid-tier annex list. Adjacent frameworks are topically
+// grouped: agent-security industry standards (OWASP, MITRE), then
+// regulatory frameworks (EU AI Act, NIST AI RMF, HIPAA), then audit
+// attestation (SOC 2). Adding a framework here automatically extends
+// `assess` output, `summary.json` coverage summaries, and the free
+// tier compliance grid.
 func Catalog() []Framework {
 	return []Framework{
 		OWASPMCPTop10(),
 		OWASPAgenticTop10(),
 		MITREATLAS(),
 		EUAIAct(),
+		NISTAIRMF(),
+		HIPAASecurityRule(),
 		SOC2TSC(),
 	}
 }

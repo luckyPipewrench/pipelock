@@ -37,10 +37,24 @@ func TestFramework_CoverageSummary(t *testing.T) {
 
 func TestCatalog_ReturnsFrameworks(t *testing.T) {
 	frameworks := Catalog()
-	if len(frameworks) != 5 {
-		t.Fatalf("Catalog() = %d frameworks, want 5", len(frameworks))
+	// Catalog ordering is part of the rendered output contract — both
+	// the free-tier compliance grid and the paid annex iterate in this
+	// order, and any reorder is a visible UI change.
+	wantOrder := []string{
+		"owasp_mcp_top_10",
+		"owasp_agentic_top_10",
+		"mitre_atlas",
+		"eu_ai_act",
+		"nist_ai_rmf",
+		"hipaa_security",
+		"soc2_tsc",
 	}
-	if frameworks[0].ID != "owasp_mcp_top_10" {
-		t.Errorf("first framework = %q, want owasp_mcp_top_10", frameworks[0].ID)
+	if len(frameworks) != len(wantOrder) {
+		t.Fatalf("Catalog() = %d frameworks, want %d", len(frameworks), len(wantOrder))
+	}
+	for i, want := range wantOrder {
+		if frameworks[i].ID != want {
+			t.Errorf("frameworks[%d].ID = %q, want %q", i, frameworks[i].ID, want)
+		}
 	}
 }

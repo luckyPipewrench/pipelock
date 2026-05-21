@@ -314,7 +314,7 @@ func configPaths(home string) []clientPath {
 		},
 		{
 			Client: clientJunie,
-			Path:   filepath.Join(home, ".junie", "mcp", "mcp.json"),
+			Path:   filepath.Join(home, ".junie", wrapperArgMCP, "mcp.json"),
 			Key:    configKeyMCPServers,
 			Scope:  scopeUser,
 		},

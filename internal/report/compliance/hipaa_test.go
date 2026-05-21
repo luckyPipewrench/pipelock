@@ -65,14 +65,18 @@ func TestHIPAASecurityRule_NoFabricatedClaims(t *testing.T) {
 	}
 	bans := []forbidden{
 		{"HTTPS-only", "Pipelock accepts both http and https schemes; no HTTPS-only enforcement exists in scanner.go"},
-		{"https-only", "Pipelock accepts both http and https schemes; no HTTPS-only enforcement exists in scanner.go"},
 		{"MRN", "No MRN pattern ships in DLP defaults; do not claim built-in MRN detection"},
 		{"ICD-10", "No ICD-10 pattern ships in DLP defaults"},
 		{"NPI", "No NPI pattern ships in DLP defaults"},
 	}
+	// Match case-insensitively so a future edit writing "Https-Only",
+	// "Mrn", or "Icd-10" doesn't bypass the guard. Mirrors the NIST AI
+	// RMF forbidden-phrase scan; keeping the two parallel guards aligned
+	// prevents a class of cross-test divergence bypass.
 	for _, c := range f.Controls {
+		lowered := strings.ToLower(c.Evidence)
 		for _, b := range bans {
-			if strings.Contains(c.Evidence, b.phrase) {
+			if strings.Contains(lowered, strings.ToLower(b.phrase)) {
 				t.Errorf("control %q Evidence contains forbidden phrase %q: %s", c.ID, b.phrase, b.why)
 			}
 		}

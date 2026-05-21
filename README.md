@@ -174,7 +174,7 @@ See [docs/guides/siem-integration.md](docs/guides/siem-integration.md) for log s
 
 ### Security Assessment
 
-`pipelock assess` runs a four-stage security assessment against your deployment: attack simulation (20 scenarios across DLP, injection, tool poisoning, and URL evasion), config audit (12 categories scored 0-100), deployment verification (live probe of scanning and containment), and MCP server discovery (protection status across Claude Code, Cursor, VS Code, and other clients).
+`pipelock assess` runs a four-stage security assessment against your deployment: attack simulation across DLP, prompt injection, tool poisoning, URL evasion, address poisoning, seed-phrase, skill poisoning, and split-payload categories; a config audit covering every shipped detection surface (DLP, MCP transport, contract gate, redaction, browser shield, mediation envelope, flight recorder, request body, cross-request, address protection, seed-phrase, git protection, file sentry); deployment verification (live probe of scanning and containment); and MCP server discovery (protection status across Claude Code, Cursor, VS Code, and other clients).
 
 Critical exposures like unprotected MCP servers cap the grade regardless of numeric score.
 
@@ -186,7 +186,7 @@ pipelock assess finalize assessment-a1b2c3d4/
 
 The free summary shows your grade, section scores, and top findings. Licensed users get the full report with server-specific findings, remediation commands, and Ed25519-signed evidence.
 
-![Pipelock Security Summary showing grade C (79/100) with compliance coverage, MCP protection, and detection scoring](docs/assets/assess-summary.png)
+![Pipelock Security Summary showing grade C (73/100) with compliance coverage, MCP protection, and detection scoring](docs/assets/assess-summary.png)
 
 ### Flight Recorder
 
@@ -207,7 +207,7 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
 | **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
-| **Config Scoring** (v2.0) | `pipelock audit score --config pipelock.yaml` evaluates security posture across 12 categories (0-100 with letter grade). Flags overpermissive tool policies. |
+| **Config Scoring** (v2.6) | `pipelock audit score --config pipelock.yaml` evaluates security posture across 23 categories with a 170-point budget and letter grade. Flags overpermissive tool policies and stale coverage across newly shipped detection surfaces. |
 | **File Integrity** | SHA256 manifests detect modified, added, or removed workspace files |
 | **Git Protection** | `git diff \| pipelock git scan-diff` catches secrets before they're committed |
 | **Ed25519 Signing** | Key management, file signing, and signature verification for multi-agent trust |

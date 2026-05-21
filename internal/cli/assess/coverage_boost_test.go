@@ -251,30 +251,6 @@ func TestCreateTarGz_BadArchivePath(t *testing.T) {
 	}
 }
 
-// ---------- sortedArtifactKeys ----------
-
-func TestSortedArtifactKeys(t *testing.T) {
-	m := map[string]string{
-		"c.json": "hash3",
-		"a.json": "hash1",
-		"b.json": "hash2",
-	}
-	keys := sortedArtifactKeys(m)
-	if len(keys) != 3 {
-		t.Fatalf("expected 3 keys, got %d", len(keys))
-	}
-	if keys[0] != "a.json" || keys[1] != "b.json" || keys[2] != "c.json" {
-		t.Errorf("expected [a.json b.json c.json], got %v", keys)
-	}
-}
-
-func TestSortedArtifactKeys_Empty(t *testing.T) {
-	keys := sortedArtifactKeys(nil)
-	if len(keys) != 0 {
-		t.Errorf("expected 0 keys, got %d", len(keys))
-	}
-}
-
 // ---------- splitJSONLines ----------
 
 func TestSplitJSONLines(t *testing.T) {

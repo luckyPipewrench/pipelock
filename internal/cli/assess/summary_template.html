@@ -263,6 +263,18 @@
             gap: 0.75rem;
         }
 
+        /* When the framework count is odd, the trailing card lands alone in
+           the last row. Center it (rather than leaving an empty cell) by
+           spanning both columns and constraining its width with auto
+           margins — keeps the grid balanced regardless of how many
+           frameworks ship. */
+        .compliance-summary-grid > .stat-card:last-child:nth-child(odd) {
+            grid-column: 1 / -1;
+            width: calc(50% - 0.375rem);
+            margin-left: auto;
+            margin-right: auto;
+        }
+
         footer {
             margin-top: 3rem;
             padding: 1.5rem 0;

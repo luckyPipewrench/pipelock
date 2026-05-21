@@ -193,7 +193,7 @@ func runAssessRun(runDir string, force bool, skip []string) error {
 		}
 	}
 
-	// Step 9: record skipped primitives.
+	// Step 7: record skipped primitives.
 	var skipped []string
 	allPrimitives := []string{primitiveSimulate, primitiveAuditScore, primitiveVerifyInstall, primitiveDiscover}
 	for _, p := range allPrimitives {
@@ -209,6 +209,15 @@ func runAssessRun(runDir string, force bool, skip []string) error {
 		return failManifest(manifestPath, &manifest, failureErr)
 	}
 
+	// Step 9: hash every produced evidence file and record into the manifest.
+	// finalize cross-checks these hashes before trusting evidence content.
+	// Files for skipped primitives are absent and get no entry.
+	hashes, err := hashEvidenceFiles(evidenceDir, allPrimitives, skipSet)
+	if err != nil {
+		return failManifest(manifestPath, &manifest, fmt.Errorf("hashing evidence: %w", err))
+	}
+	manifest.EvidenceHashes = hashes
+
 	now := time.Now().UTC()
 	manifest.Status = assessStatusCompleted
 	manifest.CompletedAt = &now
@@ -217,6 +226,32 @@ func runAssessRun(runDir string, force bool, skip []string) error {
 	}
 
 	return nil
+}
+
+// evidenceFilename returns the JSONL filename used for a primitive.
+func evidenceFilename(primitive string) string {
+	return primitive + ".jsonl"
+}
+
+// hashEvidenceFiles computes SHA-256 of each unskipped primitive's evidence
+// file. Missing files for unskipped primitives are a hard error — `run`
+// should have written them, so absence indicates a programming bug, not
+// user behavior. The returned map keys are file names like "simulate.jsonl".
+func hashEvidenceFiles(evidenceDir string, allPrimitives []string, skipSet map[string]bool) (map[string]string, error) {
+	hashes := make(map[string]string, len(allPrimitives))
+	for _, p := range allPrimitives {
+		if skipSet[p] {
+			continue
+		}
+		name := evidenceFilename(p)
+		path := filepath.Join(evidenceDir, name)
+		h, err := hashFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("hashing %s: %w", name, err)
+		}
+		hashes[name] = h
+	}
+	return hashes, nil
 }
 
 // loadConfigForAssess loads the config file or returns defaults.
@@ -387,28 +422,57 @@ func runPrimitiveDiscover(evidenceDir string) error {
 	return writeEvidenceJSONL(filepath.Join(evidenceDir, "discover.jsonl"), []any{wrapped})
 }
 
-// wrapDiscoverReport converts a discover.Report into the versioned assess wrapper.
-func wrapDiscoverReport(r *discover.Report, home string) AssessDiscoverReport {
+// scannedRootSentinel replaces the absolute home path in shareable reports.
+// The actual path is local infrastructure detail that has no value to a
+// reader of the assessment but trivially leaks the operator's username.
+const scannedRootSentinel = "$HOME"
+
+// wrapDiscoverReport converts a discover.Report into the versioned assess
+// wrapper, redacting any field that would expose infrastructure detail
+// when the assessment is shared with a customer, auditor, or buyer.
+//
+// Redacted: ScannedRoot (replaced with $HOME), server Env, Args, URL,
+// ConfigPath, ProjectPath, Command, and client ConfigPath. The wrapped
+// report keeps everything needed to reason about coverage: client name,
+// server name, transport class, protection status, risk level, evidence
+// string, parse warnings.
+func wrapDiscoverReport(r *discover.Report, _ string) AssessDiscoverReport {
 	result := AssessDiscoverReport{
 		SchemaVersion: assessSchemaVersion,
-		ScannedRoot:   home,
+		ScannedRoot:   scannedRootSentinel,
 	}
 	for _, c := range r.Clients {
+		redactedClient := c
+		// Strip absolute config path — leaks home dir layout and project
+		// names. The client identity stays in ClientConfig.Client.
+		redactedClient.ConfigPath = ""
+		// ParseError text from a failed config read often embeds the
+		// absolute file path (e.g. "/home/<user>/.cursor/mcp.json: ...").
+		// Drop the text; the summary still tracks the parse-error count.
+		redactedClient.ParseError = ""
 		result.Clients = append(result.Clients, AssessDiscoverClient{
-			ClientConfig:  c,
+			ClientConfig:  redactedClient,
 			SchemaVersion: assessSchemaVersion,
 		})
 	}
 	for _, s := range r.Servers {
-		// Redact fields that may contain secrets (env vars, connection strings
-		// in args, config paths that reveal infrastructure). The assessment
-		// only needs protection status, risk, and server identity.
+		// Redact fields that may contain secrets or operator infrastructure
+		// detail. The assessment only needs protection status, risk, and
+		// server identity.
 		redacted := s
 		redacted.Env = nil
 		redacted.Args = nil
 		redacted.URL = ""
 		redacted.ConfigPath = ""
 		redacted.ProjectPath = ""
+		// Command is often an absolute path on the operator's machine
+		// (e.g. /home/<user>/.local/bin/<tool>) — leaks username and
+		// installed toolchain. Server identity stays in ServerName.
+		redacted.Command = ""
+		// ParseWarnings carry free-form strings from config parsing that
+		// frequently include absolute paths or operator-specific tokens.
+		// Drop them rather than ship operator state to a customer.
+		redacted.ParseWarnings = nil
 		result.Servers = append(result.Servers, AssessDiscoverServer{
 			MCPServer:     redacted,
 			SchemaVersion: assessSchemaVersion,

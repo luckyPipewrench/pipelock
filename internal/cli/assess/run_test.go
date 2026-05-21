@@ -326,8 +326,10 @@ func TestWrapDiscoverReport(t *testing.T) {
 	if wrapped.SchemaVersion != assessSchemaVersion {
 		t.Errorf("SchemaVersion = %q, want %q", wrapped.SchemaVersion, assessSchemaVersion)
 	}
-	if wrapped.ScannedRoot != "/home/test" {
-		t.Errorf("ScannedRoot = %q, want /home/test", wrapped.ScannedRoot)
+	// ScannedRoot is replaced with a sentinel so the absolute home path
+	// is never embedded in a shareable assessment artifact.
+	if wrapped.ScannedRoot != scannedRootSentinel {
+		t.Errorf("ScannedRoot = %q, want %q (no absolute paths leak into reports)", wrapped.ScannedRoot, scannedRootSentinel)
 	}
 	if wrapped.Summary.TotalClients != 2 {
 		t.Errorf("Summary.TotalClients = %d, want 2", wrapped.Summary.TotalClients)
@@ -374,11 +376,12 @@ func TestWrapDiscoverReport_RedactsSecrets(t *testing.T) {
 	if s.Risk != discover.RiskHigh {
 		t.Errorf("Risk redacted, should be kept")
 	}
-	if s.Command != "npx" {
-		t.Errorf("Command redacted, should be kept")
+	if s.Evidence != "matches high-risk keyword: postgres" {
+		t.Errorf("Evidence redacted, should be kept (carries the why-classification narrative)")
 	}
 
-	// Fields that may contain secrets must be stripped.
+	// Fields that may contain secrets or operator-infrastructure detail
+	// must be stripped before the report can be shared.
 	if s.Env != nil {
 		t.Errorf("Env not redacted: %v", s.Env)
 	}
@@ -393,6 +396,10 @@ func TestWrapDiscoverReport_RedactsSecrets(t *testing.T) {
 	}
 	if s.ProjectPath != "" {
 		t.Errorf("ProjectPath not redacted: %q", s.ProjectPath)
+	}
+	// Command is often an absolute path on the operator's machine.
+	if s.Command != "" {
+		t.Errorf("Command not redacted: %q (leaks operator toolchain)", s.Command)
 	}
 
 	// Verify via JSON serialization too — no secrets in the wire format.

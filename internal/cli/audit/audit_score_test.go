@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 func TestScoreConfig_Defaults(t *testing.T) {
@@ -23,8 +24,14 @@ func TestScoreConfig_Defaults(t *testing.T) {
 	if result.TotalScore == 0 {
 		t.Error("defaults should have nonzero score (DLP + response scanning)")
 	}
-	if len(result.Categories) != 12 {
-		t.Errorf("expected 12 categories, got %d", len(result.Categories))
+	// Schema v2 (2026-05) added 11 new categories for features that
+	// shipped in pipelock v2.1-v2.5: live-lock contracts, redaction,
+	// browser shield, mediation envelope, flight recorder, request
+	// body scanning, cross-request detection, address protection,
+	// seed-phrase detection, git protection, file sentry.
+	const wantCategories = 23
+	if len(result.Categories) != wantCategories {
+		t.Errorf("expected %d categories, got %d", wantCategories, len(result.Categories))
 	}
 }
 
@@ -57,6 +64,38 @@ func TestScoreConfig_FullyConfigured(t *testing.T) {
 	cfg.ToolChainDetection.Enabled = true
 	cfg.ToolChainDetection.CustomPatterns = []config.ChainPattern{{Name: "test", Sequence: []string{"read", "write"}}}
 	cfg.Sandbox.Enabled = true
+
+	// Schema-v2 features. Each block exercises a non-trivial fraction of
+	// the per-category point budget so the "fully configured" config
+	// scores A across both the v1 and v2 surfaces.
+	cfg.LearnLock.Enabled = true
+	cfg.LearnLock.Mode = config.LockModeLive
+	cfg.Redaction.Enabled = true
+	cfg.Redaction.DefaultProfile = "default"
+	cfg.Redaction.Profiles = map[string]redact.ProfileSpec{"default": {}}
+	cfg.Redaction.StrictReload = true
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.Strictness = "aggressive"
+	cfg.MediationEnvelope.Enabled = true
+	cfg.MediationEnvelope.Sign = true
+	cfg.FlightRecorder.Enabled = true
+	cfg.FlightRecorder.SignCheckpoints = true
+	cfg.FlightRecorder.Redact = true
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionBlock
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.AddressProtection.Enabled = true
+	cfg.AddressProtection.Action = config.ActionBlock
+	cfg.AddressProtection.UnknownAction = config.ActionBlock
+	// Seed-phrase detection is on by default (nil = true).
+	cfg.GitProtection.Enabled = true
+	cfg.GitProtection.PrePushScan = true
+	cfg.GitProtection.BlockedCommands = []string{"force-push"}
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []string{"/etc/secrets"}
 
 	result := ScoreConfig(cfg, "test.yaml")
 

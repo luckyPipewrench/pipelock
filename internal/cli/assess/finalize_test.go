@@ -876,22 +876,6 @@ func TestAssessFinalize_EvidenceHashes(t *testing.T) {
 	}
 }
 
-func TestAssessFinalize_SortedArtifactKeys(t *testing.T) {
-	m := map[string]string{
-		"zebra.json":           "hash1",
-		"assessment.json":      "hash2",
-		"evidence/sim.jsonl":   "hash3",
-		"evidence/audit.jsonl": "hash4",
-	}
-
-	keys := sortedArtifactKeys(m)
-	for i := 1; i < len(keys); i++ {
-		if keys[i] < keys[i-1] {
-			t.Errorf("keys not sorted: %q before %q", keys[i-1], keys[i])
-		}
-	}
-}
-
 // TestAssessFinalize_RoundTrip verifies the full init -> run -> finalize flow
 // produces a valid, internally consistent assessment.
 func TestAssessFinalize_RoundTrip(t *testing.T) {

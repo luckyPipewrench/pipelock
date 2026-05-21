@@ -133,6 +133,12 @@ func ScoreConfig(cfg *config.Config, cfgFile string) *ScoreResult {
 	// Sandbox (5 points)
 	categories = append(categories, scoreSandbox(cfg, &findings))
 
+	// Schema-v2 categories: features that shipped in pipelock v2.1-v2.5
+	// and were absent from the original audit set. See audit_score_v2.go
+	// for the scoring rationale and point budget (currently +70 points,
+	// raising the maximum from 100 to 170).
+	categories = append(categories, scoreV2Categories(cfg, &findings)...)
+
 	total := 0
 	maxTotal := 0
 	for _, c := range categories {

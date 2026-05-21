@@ -15,11 +15,29 @@ import (
 )
 
 // Schema and scoring version constants.
+//
+// Version 2 (2026-05) added:
+//   - AssessManifest.EvidenceHashes — run records, finalize verifies. Fail-closed
+//     on missing or tampered evidence files between run and finalize.
+//   - scoreDeploymentVerification requires non-empty Checks before awarding 100.
+//   - Discover wrapper redacts server Command, client ConfigPath, and ScannedRoot.
+//   - Compliance frameworks are conditionally attached: partial assessments
+//     (skipped or absent primitives) omit the section entirely.
+//   - Audit categories cover features shipped in v2.1-v2.5: live-lock contracts,
+//     redaction, browser shield, mediation envelope, flight recorder,
+//     request body scanning, cross-request detection, address
+//     protection, seed-phrase detection, git protection, file sentry.
 const (
-	assessSchemaVersion   = "1"
-	assessScoringVersion  = "1"
-	assessRendererVersion = "1.0"
+	assessSchemaVersion   = "2"
+	assessScoringVersion  = "2"
+	assessRendererVersion = "2.0"
 )
+
+// assessSchemaVersionV1 is recognized by verify/verify-attestation for
+// backward compatibility with previously signed bundles. New runs always
+// produce v2 manifests; finalize refuses v1 manifests because they lack
+// the EvidenceHashes integrity field.
+const assessSchemaVersionV1 = "1"
 
 // Status constants for AssessManifest.Status.
 const (
@@ -95,6 +113,21 @@ type AssessManifest struct {
 	RendererVersion   string            `json:"renderer_version"`
 	ScoringVersion    string            `json:"scoring_version"`
 	Artifacts         map[string]string `json:"artifacts,omitempty"`
+
+	// EvidenceHashes maps each written evidence file's name (e.g.
+	// "simulate.jsonl") to its SHA-256 hex digest at the moment `assess run`
+	// produced it. Populated by run; verified by finalize. A v2 manifest
+	// missing this field, or whose recorded hashes do not match the
+	// current evidence bytes, causes finalize to refuse with an
+	// integrity error. Skipped primitives have no entry.
+	EvidenceHashes map[string]string `json:"evidence_hashes,omitempty"`
+
+	// ComplianceOmittedReason explains, in the finalized manifest, why the
+	// compliance framework catalog was not attached to this assessment.
+	// Empty means the catalog was attached. Non-empty when at least one
+	// primitive was skipped, missing, or had failed evidence — in which
+	// case the assessment cannot honestly claim framework coverage.
+	ComplianceOmittedReason string `json:"compliance_omitted_reason,omitempty"`
 }
 
 // Assessment is the full, attestable assessment output.

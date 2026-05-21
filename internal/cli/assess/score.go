@@ -6,6 +6,7 @@ package assess
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -45,8 +46,45 @@ const (
 	scoreSevInfo     = "info"
 )
 
+// shouldAttachCompliance decides whether the compliance framework catalog
+// is attached to an assessment. The catalog asserts product capabilities,
+// but presenting it inside an assessment implies "and this run verified
+// those capabilities are present." Partial runs cannot honestly make
+// that claim. Returns the omission reason when compliance should NOT be
+// attached, or empty when it should.
+//
+// Compliance is omitted when:
+//   - any primitive was skipped (--skip on `assess run`);
+//   - any primitive's evidence is absent at finalize time (caught by
+//     verifyEvidenceIntegrity, but defense-in-depth here);
+//   - the operator passed --allow-partial.
+func shouldAttachCompliance(manifest AssessManifest, sources AssessSources) string {
+	if manifest.AllowPartial {
+		return "assessment finalized with --allow-partial; framework coverage is only attached to fully-evidenced runs"
+	}
+	if len(manifest.SkippedPrimitives) > 0 {
+		return fmt.Sprintf("assessment skipped primitives %v; framework coverage is only attached to fully-evidenced runs", manifest.SkippedPrimitives)
+	}
+	if sources.Simulate == nil || sources.AuditScore == nil || sources.VerifyInstall == nil || sources.Discover == nil {
+		return "one or more evidence sources missing at finalize time; framework coverage is only attached to fully-evidenced runs"
+	}
+	return ""
+}
+
 // synthesizeAssessment combines all source outputs into a scored Assessment.
 func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assessment {
+	// Sanitize the manifest copy embedded into the assessment output.
+	// manifest.json on disk keeps the absolute config path because run
+	// and re-finalize need it to re-read and hash the config; the
+	// shared Assessment artifact (rendered into assessment.json,
+	// summary.json, attestation primary artifact, HTML reports) must
+	// not embed an operator filesystem path. Drop everything except
+	// the basename so a customer viewing a signed bundle cannot infer
+	// where the assessment was run.
+	if manifest.ConfigFile != "" && manifest.ConfigFile != configLabelDefaults {
+		manifest.ConfigFile = filepath.Base(manifest.ConfigFile)
+	}
+
 	// Compute sections.
 	sections := []AssessmentSection{
 		scoreDetectionCoverage(sources.Simulate),
@@ -99,8 +137,17 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 	// Generate findings.
 	findings := generateFindings(sources)
 
-	// Attach compliance coverage mappings.
-	complianceFrameworks := compliance.Catalog()
+	// Compliance frameworks are only attached when this assessment can
+	// honestly claim coverage — meaning every primitive ran and produced
+	// evidence. Partial runs omit the section and record why in the
+	// manifest so the operator (and any downstream reader) can tell
+	// "no coverage claim" from "didn't bother to check."
+	var complianceFrameworks []compliance.Framework
+	if reason := shouldAttachCompliance(manifest, sources); reason == "" {
+		complianceFrameworks = compliance.Catalog()
+	} else {
+		manifest.ComplianceOmittedReason = reason
+	}
 
 	return Assessment{
 		SchemaVersion: assessSchemaVersion,
@@ -205,6 +252,25 @@ func scoreDeploymentVerification(verify *diag.VerifyReport) AssessmentSection {
 		}
 	}
 
+	// An empty Checks slice is structurally indistinguishable from a
+	// corrupt or stub VerifyReport. Without recorded checks, there is no
+	// evidence anything was probed; treat as inapplicable (MaxScore=0)
+	// so the section is excluded from the weighted average rather than
+	// awarded a perfect score by accident.
+	if len(verify.Checks) == 0 {
+		return AssessmentSection{
+			SchemaVersion: assessSchemaVersion,
+			ID:            sectionDeploymentVerification,
+			Name:          "Deployment Verification",
+			Score:         0,
+			MaxScore:      0,
+			Grade:         assessGradeF,
+			Detail:        "no checks recorded",
+			Applicable:    0,
+			Total:         0,
+		}
+	}
+
 	applicable, passed := 0, 0
 	for _, c := range verify.Checks {
 		if c.Status == verifyStatusNA {
@@ -216,7 +282,10 @@ func scoreDeploymentVerification(verify *diag.VerifyReport) AssessmentSection {
 		}
 	}
 
-	// If all checks are N/A (e.g., host run with no containment): perfect score.
+	// All recorded checks were N/A (e.g., host-mode run with no containment
+	// probes applicable). Reward because the report exists with checks —
+	// distinguishes "we looked and nothing applied" from "we have nothing
+	// to show".
 	if applicable == 0 {
 		return AssessmentSection{
 			SchemaVersion: assessSchemaVersion,
@@ -439,9 +508,13 @@ func mapScoreFindingSeverity(sev string) string {
 	}
 }
 
-// auditRemediation returns category-specific remediation text for audit-score findings.
+// auditRemediation returns category-specific remediation text for
+// audit-score findings. Category names are matched against the
+// audit.Category* constants — keep this switch in sync with the
+// scoring functions in internal/cli/audit/.
 func auditRemediation(category string) string {
 	switch category {
+	// Schema-v1 categories (original audit set).
 	case "Sandbox":
 		return "Enable sandbox mode with `sandbox: {enabled: true}` in your pipelock config."
 	case "DLP":
@@ -466,6 +539,31 @@ func auditRemediation(category string) string {
 		return "Enable adaptive enforcement with `adaptive_enforcement: {enabled: true}`."
 	case "Tool Chain Detection":
 		return "Enable chain detection with `tool_chain_detection: {enabled: true}`."
+
+	// Schema-v2 categories (added 2026-05 for pipelock v2.1-v2.5 features).
+	case audit.CategoryLiveLockContracts:
+		return "Enable the live-lock contract gate with `learn_lock: {enabled: true, mode: live}`. Use `mode: shadow` first to observe drift before flipping to enforcement."
+	case audit.CategoryRedaction:
+		return "Enable class-preserving redaction with `redaction: {enabled: true, default_profile: <profile>}`. Configure a default profile and dictionaries, then set `strict_reload: true` for fail-closed dictionary failures."
+	case audit.CategoryBrowserShield:
+		return "Enable browser shield with `browser_shield: {enabled: true, strictness: standard}`. Use `aggressive` for sensitive fetch destinations."
+	case audit.CategoryMediationEnvelope:
+		return "Enable mediation envelope with `mediation_envelope: {enabled: true, sign: true, signing_key_path: <ed25519-key>}` to produce signed receipts that downstream verifiers can attest."
+	case audit.CategoryFlightRecorder:
+		return "Enable tamper-evident decision recording with `flight_recorder: {enabled: true, sign_checkpoints: true, redact: true}`."
+	case audit.CategoryRequestBody:
+		return "Enable request body scanning with `request_body_scanning: {enabled: true, action: block, scan_headers: true}` to catch secrets in POST/PUT bodies and authorization headers."
+	case audit.CategoryCrossRequest:
+		return "Enable cross-request detection with `cross_request_detection: {enabled: true, entropy_budget: {enabled: true}, fragment_reassembly: {enabled: true}}` to catch secrets split across requests."
+	case audit.CategoryAddressProtect:
+		return "Enable blockchain address protection with `address_protection: {enabled: true, action: block, unknown_action: block, allowed_addresses: [<your-addresses>]}`."
+	case audit.CategorySeedPhrase:
+		return "Seed-phrase detection is on by default. To restore defaults, remove the `seed_phrase_detection.enabled` field or set it to `null`."
+	case audit.CategoryGitProtection:
+		return "Enable git-aware protection with `git_protection: {enabled: true, pre_push_scan: true, blocked_commands: [\"force-push\"]}`."
+	case audit.CategoryFileSentry:
+		return "Enable filesystem-watch DLP with `file_sentry: {enabled: true, watch_paths: [<sensitive-paths>]}`."
+
 	default:
 		return "Review the configuration section and enable recommended protections."
 	}

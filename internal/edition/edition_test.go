@@ -32,7 +32,7 @@ func TestNoopEdition_ResolveAgent(t *testing.T) {
 		t.Fatalf("newNoopEdition: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	resolved, id := ed.ResolveAgent(context.Background(), r)
 
 	if resolved.Name != ProfileDefault {
@@ -64,7 +64,7 @@ func TestNoopEdition_ResolveAgent_DefaultIdentity(t *testing.T) {
 	}
 
 	// No header — should resolve to config default identity with config-default auth.
-	r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	_, id := ed.ResolveAgent(context.Background(), r)
 
 	if id.Name != "deployment_my-sidecar" {
@@ -79,7 +79,7 @@ func TestNoopEdition_ResolveAgent_DefaultIdentity(t *testing.T) {
 	}
 
 	// Header should override config default with self-declared auth.
-	r2 := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	r2.Header.Set(AgentHeader, "explicit-agent")
 	_, id2 := ed.ResolveAgent(context.Background(), r2)
 
@@ -146,7 +146,7 @@ func TestNoopEdition_Reload(t *testing.T) {
 		t.Fatalf("Reload: %v", err)
 	}
 
-	resolved, _ := ed2.ResolveAgent(context.Background(), httptest.NewRequest(http.MethodGet, "http://example.com", nil))
+	resolved, _ := ed2.ResolveAgent(context.Background(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil))
 	if resolved.Config != cfg2 {
 		t.Error("reloaded edition should use new config")
 	}
@@ -211,13 +211,13 @@ func TestWithAgentOverride(t *testing.T) {
 	}
 
 	// Set override
-	ctx = WithAgentOverride(ctx, "my-agent")
+	ctx = WithAgentOverride(ctx, testAgentMyAgent)
 	profile, ok = AgentOverrideFromContext(ctx)
 	if !ok {
 		t.Fatal("expected override to be set")
 	}
-	if profile != "my-agent" {
-		t.Errorf("profile = %q, want %q", profile, "my-agent")
+	if profile != testAgentMyAgent {
+		t.Errorf("profile = %q, want %q", profile, testAgentMyAgent)
 	}
 
 	// Empty string override should return false
@@ -235,10 +235,10 @@ func TestExtractAgent(t *testing.T) {
 		query  string
 		want   string
 	}{
-		{"no agent", "", "", "anonymous"},
-		{"from header", "my-agent", "", "my-agent"},
-		{"from query", "", "my-agent", "my-agent"},
-		{"header takes priority", "from-header", "from-query", "from-header"},
+		{"no agent", "", "", agentAnonymous},
+		{"from header", testAgentMyAgent, "", testAgentMyAgent},
+		{"from query", "", testAgentMyAgent, testAgentMyAgent},
+		{"header takes priority", testAgentFromHeader, testAgentFromQuery, testAgentFromHeader},
 		{"sanitizes special chars", "my agent!@#", "", "my_agent___"},
 		{"truncates long names", strings.Repeat("a", 100), "", strings.Repeat("a", 64)},
 		{"all-invalid chars become underscores", "!@#$%", "", "_____"},
@@ -246,7 +246,7 @@ func TestExtractAgent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 			if tt.header != "" {
 				r.Header.Set(AgentHeader, tt.header)
 			}
@@ -264,7 +264,7 @@ func TestExtractAgent(t *testing.T) {
 }
 
 func TestResolveAgentIdentity(t *testing.T) {
-	known := map[string]bool{"agent-a": true, "agent-b": true}
+	known := map[string]bool{testAgentA: true, testAgentB: true}
 
 	tests := []struct {
 		name        string
@@ -274,18 +274,18 @@ func TestResolveAgentIdentity(t *testing.T) {
 		wantName    string
 		wantProfile string
 	}{
-		{"context override", "agent-a", "", "", "agent-a", "agent-a"},
-		{"context override beats header", "agent-a", "agent-b", "", "agent-a", "agent-a"},
-		{"known header agent", "", "agent-a", "", "agent-a", "agent-a"},
+		{"context override", testAgentA, "", "", testAgentA, testAgentA},
+		{"context override beats header", testAgentA, testAgentB, "", testAgentA, testAgentA},
+		{"known header agent", "", testAgentA, "", testAgentA, testAgentA},
 		{"unknown header agent", "", "unknown", "", "unknown", ProfileDefault},
-		{"query param agent", "", "", "agent-b", "agent-b", "agent-b"},
+		{"query param agent", "", "", testAgentB, testAgentB, testAgentB},
 		{"no agent", "", "", "", "", ProfileDefault},
-		{"nil knownProfiles", "", "my-agent", "", "my-agent", ProfileDefault},
+		{"nil knownProfiles", "", testAgentMyAgent, "", testAgentMyAgent, ProfileDefault},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 			if tt.header != "" {
 				r.Header.Set(AgentHeader, tt.header)
 			}
@@ -361,7 +361,7 @@ func TestResolveAgentIdentity_ActorAuth(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 			r = tt.setup(r)
 			id := ResolveAgentIdentity(r, knownProfiles, "", false)
 			if id.Auth != tt.wantAuth {
@@ -382,20 +382,20 @@ func TestExtractAgentWithDefault(t *testing.T) {
 		bind            bool
 		want            string
 	}{
-		{"no agent no default", "", "", "", false, "anonymous"},
-		{"no agent with default", "", "", "deployment/my-app", false, "deployment_my-app"},
-		{"header overrides default", "from-header", "", "deployment/my-app", false, "from-header"},
-		{"default overrides query", "", "from-query", "deployment/my-app", false, "deployment_my-app"},
-		{"header overrides query and default", "from-header", "from-query", "deployment/my-app", false, "from-header"},
+		{"no agent no default", "", "", "", false, agentAnonymous},
+		{"no agent with default", "", "", testAgentDeployment, false, testAgentDeploymentSafe},
+		{"header overrides default", testAgentFromHeader, "", testAgentDeployment, false, testAgentFromHeader},
+		{"default overrides query", "", testAgentFromQuery, testAgentDeployment, false, testAgentDeploymentSafe},
+		{"header overrides query and default", testAgentFromHeader, testAgentFromQuery, testAgentDeployment, false, testAgentFromHeader},
 		{"default sanitized", "", "", "bad agent!@#", false, "bad_agent___"},
-		{"empty default same as anonymous", "", "", "", false, "anonymous"},
-		{"bind ignores header and query", "from-header", "from-query", "deployment/my-app", true, "deployment_my-app"},
+		{"empty default same as anonymous", "", "", "", false, agentAnonymous},
+		{"bind ignores header and query", testAgentFromHeader, testAgentFromQuery, testAgentDeployment, true, testAgentDeploymentSafe},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 			if tt.header != "" {
 				r.Header.Set(AgentHeader, tt.header)
 			}
@@ -415,7 +415,7 @@ func TestExtractAgentWithDefault(t *testing.T) {
 func TestResolveAgentIdentity_DefaultIdentity(t *testing.T) {
 	t.Parallel()
 
-	known := map[string]bool{"agent-a": true}
+	known := map[string]bool{testAgentA: true}
 
 	tests := []struct {
 		name            string
@@ -433,22 +433,22 @@ func TestResolveAgentIdentity_DefaultIdentity(t *testing.T) {
 		},
 		{
 			name:            "no header, default identity used",
-			defaultIdentity: "deployment/my-app",
-			wantName:        "deployment_my-app",
+			defaultIdentity: testAgentDeployment,
+			wantName:        testAgentDeploymentSafe,
 			wantProfile:     ProfileDefault,
 		},
 		{
 			name:            "header overrides default identity",
-			header:          "agent-a",
-			defaultIdentity: "deployment/my-app",
-			wantName:        "agent-a",
-			wantProfile:     "agent-a",
+			header:          testAgentA,
+			defaultIdentity: testAgentDeployment,
+			wantName:        testAgentA,
+			wantProfile:     testAgentA,
 		},
 		{
 			name:            "default identity overrides query param",
-			query:           "agent-a",
-			defaultIdentity: "deployment/my-app",
-			wantName:        "deployment_my-app",
+			query:           testAgentA,
+			defaultIdentity: testAgentDeployment,
+			wantName:        testAgentDeploymentSafe,
 			wantProfile:     ProfileDefault,
 		},
 	}
@@ -456,7 +456,7 @@ func TestResolveAgentIdentity_DefaultIdentity(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 			if tt.header != "" {
 				r.Header.Set(AgentHeader, tt.header)
 			}
@@ -479,13 +479,13 @@ func TestResolveAgentIdentity_DefaultIdentity(t *testing.T) {
 func TestResolveAgentIdentity_BindDefaultIdentity(t *testing.T) {
 	t.Parallel()
 
-	known := map[string]bool{"agent-a": true}
-	r := httptest.NewRequest(http.MethodGet, "http://example.com?agent=agent-a", nil)
+	known := map[string]bool{testAgentA: true}
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com?agent=agent-a", nil)
 	r.Header.Set(AgentHeader, "spoofed-header")
 
-	id := ResolveAgentIdentity(r, known, "deployment/my-app", true)
-	if id.Name != "deployment_my-app" {
-		t.Errorf("Name = %q, want %q", id.Name, "deployment_my-app")
+	id := ResolveAgentIdentity(r, known, testAgentDeployment, true)
+	if id.Name != testAgentDeploymentSafe {
+		t.Errorf("Name = %q, want %q", id.Name, testAgentDeploymentSafe)
 	}
 	if id.Profile != ProfileDefault {
 		t.Errorf("Profile = %q, want %q", id.Profile, ProfileDefault)
@@ -507,7 +507,7 @@ func TestNoopEdition_ResolveAgent_BindDefaultIdentity(t *testing.T) {
 		t.Fatalf("newNoopEdition: %v", err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "http://example.com?agent=query-agent", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com?agent=query-agent", nil)
 	r.Header.Set(AgentHeader, "header-agent")
 	_, id := ed.ResolveAgent(context.Background(), r)
 
@@ -549,7 +549,7 @@ func TestValidateAgentName(t *testing.T) {
 		{"valid with dots", "agent.v2", false},
 		{"valid with underscore", "my_agent", false},
 		{"empty", "", true},
-		{"reserved anonymous", "anonymous", true},
+		{"reserved anonymous", agentAnonymous, true},
 		{"spaces", "my agent", true},
 		{"special chars", "agent!@#", true},
 		{"too long", strings.Repeat("a", 65), true},

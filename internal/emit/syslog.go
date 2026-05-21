@@ -62,7 +62,7 @@ func parseSyslogAddress(addr string) (string, string, error) {
 		return "", "", fmt.Errorf("emit: invalid syslog address %q: %w", addr, err)
 	}
 	network := strings.ToLower(u.Scheme)
-	if network != "udp" && network != "tcp" {
+	if network != networkUDP && network != "tcp" {
 		return "", "", fmt.Errorf("emit: unsupported syslog address %q (use udp://host:port or tcp://host:port)", addr)
 	}
 	if u.Host == "" {

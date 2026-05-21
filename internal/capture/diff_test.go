@@ -17,27 +17,27 @@ func TestComputeDiff(t *testing.T) {
 	records := []ReplayedRecord{
 		// Changed: original allow → candidate block  → new_block
 		{
-			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: "allow"},
-			Result:  ReplayResult{OriginalAction: "allow", CandidateAction: "block", Changed: true},
+			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: ActionAllow},
+			Result:  ReplayResult{OriginalAction: ActionAllow, CandidateAction: ActionBlock, Changed: true},
 		},
 		// Unchanged
 		{
-			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: "allow"},
-			Result:  ReplayResult{OriginalAction: "allow", CandidateAction: "allow", Changed: false},
+			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: ActionAllow},
+			Result:  ReplayResult{OriginalAction: ActionAllow, CandidateAction: ActionAllow, Changed: false},
 		},
 		// Changed: original block → candidate allow → new_allow
 		{
-			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: "block"},
-			Result:  ReplayResult{OriginalAction: "block", CandidateAction: "allow", Changed: true},
+			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: ActionBlock},
+			Result:  ReplayResult{OriginalAction: ActionBlock, CandidateAction: ActionAllow, Changed: true},
 		},
 		// Evidence-only (CEE surface)
 		{
-			Summary: CaptureSummary{Surface: SurfaceCEE, EffectiveAction: "block"},
+			Summary: CaptureSummary{Surface: SurfaceCEE, EffectiveAction: ActionBlock},
 			Result:  ReplayResult{EvidenceOnly: true},
 		},
 		// Summary-only (response surface, no scanner input stored)
 		{
-			Summary: CaptureSummary{Surface: SurfaceResponse, EffectiveAction: "allow"},
+			Summary: CaptureSummary{Surface: SurfaceResponse, EffectiveAction: ActionAllow},
 			Result:  ReplayResult{SummaryOnly: true},
 		},
 	}
@@ -117,12 +117,12 @@ func TestComputeDiff_Empty(t *testing.T) {
 func TestComputeDiff_AllUnchanged(t *testing.T) {
 	records := []ReplayedRecord{
 		{
-			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: "allow"},
-			Result:  ReplayResult{OriginalAction: "allow", CandidateAction: "allow", Changed: false},
+			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: ActionAllow},
+			Result:  ReplayResult{OriginalAction: ActionAllow, CandidateAction: ActionAllow, Changed: false},
 		},
 		{
-			Summary: CaptureSummary{Surface: SurfaceDLP, EffectiveAction: "block"},
-			Result:  ReplayResult{OriginalAction: "block", CandidateAction: "block", Changed: false},
+			Summary: CaptureSummary{Surface: SurfaceDLP, EffectiveAction: ActionBlock},
+			Result:  ReplayResult{OriginalAction: ActionBlock, CandidateAction: ActionBlock, Changed: false},
 		},
 	}
 
@@ -151,12 +151,12 @@ func TestComputeDiff_AllUnchanged(t *testing.T) {
 func TestComputeDiff_AllEvidenceOnly(t *testing.T) {
 	records := []ReplayedRecord{
 		{
-			Summary: CaptureSummary{Surface: SurfaceCEE, EffectiveAction: "block"},
-			Result:  ReplayResult{OriginalAction: "block", EvidenceOnly: true},
+			Summary: CaptureSummary{Surface: SurfaceCEE, EffectiveAction: ActionBlock},
+			Result:  ReplayResult{OriginalAction: ActionBlock, EvidenceOnly: true},
 		},
 		{
-			Summary: CaptureSummary{Surface: SurfaceToolScan, EffectiveAction: "allow"},
-			Result:  ReplayResult{OriginalAction: "allow", EvidenceOnly: true},
+			Summary: CaptureSummary{Surface: SurfaceToolScan, EffectiveAction: ActionAllow},
+			Result:  ReplayResult{OriginalAction: ActionAllow, EvidenceOnly: true},
 		},
 	}
 
@@ -184,8 +184,8 @@ func TestComputeDiff_FailClosedTreatedAsBlock(t *testing.T) {
 	// original was not a blocking action.
 	records := []ReplayedRecord{
 		{
-			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: "allow"},
-			Result:  ReplayResult{OriginalAction: "allow", CandidateAction: "fail_closed", Changed: true},
+			Summary: CaptureSummary{Surface: SurfaceURL, EffectiveAction: ActionAllow},
+			Result:  ReplayResult{OriginalAction: ActionAllow, CandidateAction: "fail_closed", Changed: true},
 		},
 	}
 
@@ -244,9 +244,9 @@ func TestIsBlockAction(t *testing.T) {
 		action string
 		want   bool
 	}{
-		{"block", true},
+		{ActionBlock, true},
 		{"fail_closed", true},
-		{"allow", false},
+		{ActionAllow, false},
 		{"warn", false},
 		{"strip", false},
 		{"redirect", false},

@@ -28,6 +28,7 @@ const MaxSessionKeyLen = 200
 // Surface constants identify which proxy layer produced a capture entry.
 const (
 	ActionAllow       = "allow"
+	ActionBlock       = "block"
 	SurfaceURL        = "url"
 	SurfaceResponse   = "response"
 	SurfaceDLP        = "dlp"
@@ -35,6 +36,13 @@ const (
 	SurfaceToolPolicy = "tool_policy"
 	SurfaceToolScan   = "tool_scan"
 )
+
+// EnforcementMode is the scanner enforcement gate.
+const EnforcementModeEnforce = "enforce"
+
+// DropSummaryCaptureOverflow is the canonical fail-closed drop summary
+// recorded when the capture queue overflows.
+const DropSummaryCaptureOverflow = "capture queue overflow"
 
 // Capture-grade constants describe how much evidence is available for replay.
 const (

@@ -50,7 +50,7 @@ func newFetchLiveLockProxy(t *testing.T, loader *contractruntime.Loader, upstrea
 
 func serveFetchLiveLock(t *testing.T, p *Proxy, targetURL string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+targetURL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+targetURL, nil)
 	req.Header.Set(AgentHeader, "agent-a")
 	rec := httptest.NewRecorder()
 	p.handleFetch(rec, req)
@@ -366,7 +366,7 @@ func TestConnectLiveLock_PathKeyedRuleCannotMatchConnect(t *testing.T) {
 
 func serveWSLiveLockStatus(t *testing.T, p *Proxy, targetURL string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/ws?url="+targetURL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/ws?url="+targetURL, nil)
 	req.Header.Set(AgentHeader, "agent-a")
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")

@@ -48,7 +48,7 @@ func TestFlightRecorder_BlockedRequestCreatesEvidence(t *testing.T) {
 	}
 
 	// pastebin.com is on the default blocklist — request should be blocked.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -136,7 +136,7 @@ func TestFlightRecorder_NilRecorder_NoOp(t *testing.T) {
 	}
 
 	// This should not panic even though recorder is nil.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -173,7 +173,7 @@ func TestFlightRecorder_DisabledRecorder_NoOp(t *testing.T) {
 	}
 
 	// Should not panic with a disabled (nop) recorder.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -221,7 +221,7 @@ func TestFlightRecorder_CleanRequest_NoEvidence(t *testing.T) {
 	}
 
 	// Allowed request should not create evidence entries.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()

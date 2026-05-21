@@ -57,9 +57,9 @@ func TestBuildProxyDecisionReceipt_ContractAllowHappyPath(t *testing.T) {
 			RuleID:        "rule-allow-1",
 		},
 		ResolvedContract: rc,
-		ActionType:       "http_request",
+		ActionType:       testHTTPRequest,
 		Target:           "https://api.example.com/v1/users",
-		Transport:        "forward",
+		Transport:        testForward,
 		EventID:          "01900000-0000-7000-8000-000000000001",
 		Timestamp:        time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
 	}
@@ -140,9 +140,9 @@ func TestBuildProxyDecisionReceipt_ShadowModeSurfacesLiveVerdict(t *testing.T) {
 			Drift:         &DriftEvent{ContractHash: rc.ContractHash, RuleID: "rule-block-1", Kind: DriftKindPositive, Mode: ModeShadow, Action: config.ActionBlock},
 		},
 		ResolvedContract: rc,
-		ActionType:       "http_request",
+		ActionType:       testHTTPRequest,
 		Target:           "https://api.example.com/v1/admin",
-		Transport:        "forward",
+		Transport:        testForward,
 		EventID:          "01900000-0000-7000-8000-000000000002",
 		Timestamp:        time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
 	}
@@ -188,9 +188,9 @@ func TestBuildProxyDecisionReceipt_NoContractPin(t *testing.T) {
 			WinningSource: WinningSourceScanner,
 		},
 		ResolvedContract: nil,
-		ActionType:       "http_request",
+		ActionType:       testHTTPRequest,
 		Target:           "https://malicious.example.com/",
-		Transport:        "forward",
+		Transport:        testForward,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
 	if err != nil {
@@ -220,9 +220,9 @@ func TestBuildProxyDecisionReceipt_ValidationErrors(t *testing.T) {
 			PolicySources: []string{PolicySourceScanner},
 			WinningSource: WinningSourceScanner,
 		},
-		ActionType: "http_request",
-		Target:     "https://example.com/",
-		Transport:  "forward",
+		ActionType: testHTTPRequest,
+		Target:     testExampleHTTPSURL,
+		Transport:  testForward,
 	}
 	cases := []struct {
 		name   string
@@ -289,9 +289,9 @@ func TestBuildProxyDecisionReceipt_DelegationChainIsolation(t *testing.T) {
 			PolicySources: []string{PolicySourceScanner},
 			WinningSource: WinningSourceScanner,
 		},
-		ActionType:      "http_request",
-		Target:          "https://example.com/",
-		Transport:       "forward",
+		ActionType:      testHTTPRequest,
+		Target:          testExampleHTTPSURL,
+		Transport:       testForward,
 		DelegationChain: chain,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
@@ -320,9 +320,9 @@ func TestBuildProxyDecisionReceipt_PolicySourcesIsolation(t *testing.T) {
 			PolicySources: sources,
 			WinningSource: WinningSourceScanner,
 		},
-		ActionType: "http_request",
-		Target:     "https://example.com/",
-		Transport:  "forward",
+		ActionType: testHTTPRequest,
+		Target:     testExampleHTTPSURL,
+		Transport:  testForward,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
 	if err != nil {
@@ -354,9 +354,9 @@ func TestBuildProxyDecisionReceipt_LeavesSignatureZero(t *testing.T) {
 			PolicySources: []string{PolicySourceScanner},
 			WinningSource: WinningSourceScanner,
 		},
-		ActionType: "http_request",
-		Target:     "https://example.com/",
-		Transport:  "forward",
+		ActionType: testHTTPRequest,
+		Target:     testExampleHTTPSURL,
+		Transport:  testForward,
 	}
 	got, err := BuildProxyDecisionReceipt(in)
 	if err != nil {

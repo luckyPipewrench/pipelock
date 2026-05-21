@@ -56,7 +56,7 @@ func TestPrometheusHandler(t *testing.T) {
 	m.RecordAllowed(100*time.Millisecond, testAgent)
 	m.RecordBlocked("evil.com", "dlp", 50*time.Millisecond, testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -93,7 +93,7 @@ func TestStatsHandler(t *testing.T) {
 	m.RecordAllowed(200*time.Millisecond, testAgent)
 	m.RecordBlocked("evil.com", "dlp", 50*time.Millisecond, testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -134,7 +134,7 @@ func TestStatsHandler_BlockRate(t *testing.T) {
 	m.RecordAllowed(10*time.Millisecond, testAgent)
 	m.RecordBlocked("x.com", "dlp", 10*time.Millisecond, testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -150,7 +150,7 @@ func TestStatsHandler_BlockRate(t *testing.T) {
 func TestStatsHandler_Empty(t *testing.T) {
 	m := New()
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -254,7 +254,7 @@ func TestRecordSessionAnomaly(t *testing.T) {
 	m.RecordSessionAnomaly("domain_burst")
 	m.RecordSessionAnomaly("volume_spike")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -285,7 +285,7 @@ func TestRecordSessionEscalation(t *testing.T) {
 	m := New()
 	m.RecordSessionEscalation("warn", "block")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -300,7 +300,7 @@ func TestSetSessionsActive(t *testing.T) {
 	m := New()
 	m.SetSessionsActive(42)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -316,7 +316,7 @@ func TestRecordSessionEvicted(t *testing.T) {
 	m.RecordSessionEvicted()
 	m.RecordSessionEvicted()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -396,7 +396,7 @@ func TestRecordTunnelBlocked(t *testing.T) {
 	m.RecordTunnelBlocked(testAgent)
 
 	// Verify the Prometheus counter was incremented (check via /metrics)
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -415,7 +415,7 @@ func TestIncrDecrActiveTunnels(t *testing.T) {
 	m.DecrActiveTunnels()
 
 	// Check gauge via /metrics
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -431,7 +431,7 @@ func TestStatsHandler_IncludesTunnels(t *testing.T) {
 	m.RecordTunnel(5*time.Second, 4096, testAgent)
 	m.RecordTunnel(10*time.Second, 8192, testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -449,7 +449,7 @@ func TestPrometheusHandler_TunnelMetrics(t *testing.T) {
 	m.RecordTunnel(5*time.Second, 4096, testAgent)
 	m.IncrActiveTunnels()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -505,7 +505,7 @@ func TestStatsHandler_IncludesSessionData(t *testing.T) {
 	m.RecordSessionAnomaly("ip_domain_burst")
 	m.RecordSessionEscalation("normal", "elevated")
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -535,7 +535,7 @@ func TestStatsHandler_IncludesSessionData(t *testing.T) {
 func TestStatsHandler_EmptySessionData(t *testing.T) {
 	m := New()
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -566,7 +566,7 @@ func TestRecordWSCompleted(t *testing.T) {
 	}
 	m.mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -579,7 +579,7 @@ func TestRecordWSBlocked(t *testing.T) {
 	m := New()
 	m.RecordWSBlocked()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -592,7 +592,7 @@ func TestRecordWSStats(t *testing.T) {
 	m := New()
 	m.RecordWSStats(5*time.Second, 1024, 2048)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -614,7 +614,7 @@ func TestIncrDecrActiveWS(t *testing.T) {
 	m.IncrActiveWS()
 	m.DecrActiveWS()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -629,7 +629,7 @@ func TestRecordWSFrame(t *testing.T) {
 	m.RecordWSFrame("binary")
 	m.RecordWSFrame("text")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -647,7 +647,7 @@ func TestRecordWSScanHit(t *testing.T) {
 	m.RecordWSScanHit("dlp")
 	m.RecordWSScanHit("injection")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -665,7 +665,7 @@ func TestRecordWSRedirectHint(t *testing.T) {
 	m.RecordWSRedirectHint()
 	m.RecordWSRedirectHint()
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -680,7 +680,7 @@ func TestStatsHandler_IncludesWebSockets(t *testing.T) {
 	m.RecordWSCompleted()
 	m.RecordWSCompleted()
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -752,7 +752,7 @@ func TestRecordKillSwitchDenial(t *testing.T) {
 	// Verify Prometheus metric incremented.
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, `pipelock_kill_switch_denials_total{endpoint="/fetch",transport="http"} 2`) {
 		t.Errorf("expected 2 http /fetch denials in metrics output:\n%s", body)
@@ -770,7 +770,7 @@ func TestRecordChainDetection(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 	if !strings.Contains(body, `pipelock_chain_detections_total{action="warn",pattern="read-then-exec",severity="high"} 2`) {
 		t.Errorf("expected 2 read-then-exec detections:\n%s", body)
@@ -839,7 +839,7 @@ func TestRegisterKillSwitchState(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_kill_switch_active{source="api"} 1`) {
@@ -869,7 +869,7 @@ func TestRegisterKillSwitchState_AllActive(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	for _, src := range []string{"config", "api", "signal", "sentinel"} {
@@ -888,7 +888,7 @@ func TestRecordSNI(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_sni_total{agent="test-agent",category="match"} 2`) {
@@ -905,7 +905,7 @@ func TestRecordBodyDLP(t *testing.T) {
 	m.RecordBodyDLP("block", testAgent)
 	m.RecordBodyDLP("warn", testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -924,7 +924,7 @@ func TestRecordBodyPromptInjection(t *testing.T) {
 	m.RecordBodyPromptInjection("block", testAgent)
 	m.RecordBodyPromptInjection("warn", testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -943,7 +943,7 @@ func TestRecordBodyRedactions(t *testing.T) {
 	m.RecordBodyRedactions("connect", testAgent, "openai", "json", "env-secret", 2)
 	m.RecordBodyRedactions("connect", testAgent, "openai", "json", "env-secret", 1)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -961,7 +961,7 @@ func TestRecordHeaderDLP(t *testing.T) {
 	m.RecordHeaderDLP("warn", testAgent)
 	m.RecordHeaderDLP("warn", testAgent)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -981,7 +981,7 @@ func TestRegisterInfo(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_info{version="0.3.1-test"} 1`) {
@@ -996,7 +996,7 @@ func TestRegisterKillSwitchState_Nil(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if strings.Contains(body, "pipelock_kill_switch_active") {
@@ -1012,7 +1012,7 @@ func TestRecordTLSIntercept(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_tls_intercept_total{outcome="success"} 2`) {
@@ -1029,7 +1029,7 @@ func TestSetTLSCertCacheSize(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "pipelock_tls_cert_cache_size 42") {
@@ -1044,7 +1044,7 @@ func TestRecordTLSHandshake(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_tls_handshake_duration_seconds_count{side="client"} 1`) {
@@ -1063,7 +1063,7 @@ func TestRecordTLSRequestBlocked(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_tls_request_blocked_total{reason="dlp"} 2`) {
@@ -1082,7 +1082,7 @@ func TestRecordTLSResponseBlocked(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_tls_response_blocked_total{reason="injection"} 2`) {
@@ -1124,7 +1124,7 @@ func TestConcurrentTLSMetrics(t *testing.T) {
 	// Verify counters via /metrics (no panics, correct registration).
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "pipelock_tls_intercept_total") {
@@ -1148,7 +1148,7 @@ func TestPrometheusHandler_TLSMetrics(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	for _, metric := range []string{
@@ -1198,7 +1198,7 @@ func TestStatsHandler_PerAgentBreakdown(t *testing.T) {
 	m.RecordAllowed(10*time.Millisecond, testAgentAlt)
 	m.RecordTunnel(5*time.Second, 1024, testAgentAlt)
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -1231,7 +1231,7 @@ func TestStatsHandler_PerAgentBreakdown(t *testing.T) {
 func TestStatsHandler_NoAgentsWhenEmpty(t *testing.T) {
 	m := New()
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -1245,7 +1245,7 @@ func TestStatsHandler_NoAgentsWhenEmpty(t *testing.T) {
 func TestStatsHandler_CEEDefaults(t *testing.T) {
 	m := New()
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -1275,7 +1275,7 @@ func TestStatsHandler_CEEWithCallback(t *testing.T) {
 		}
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	w := httptest.NewRecorder()
 	m.StatsHandler().ServeHTTP(w, req)
 
@@ -1301,7 +1301,7 @@ func TestRecordCrossRequestEntropyExceeded(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "pipelock_cross_request_entropy_exceeded_total 2") {
@@ -1323,7 +1323,7 @@ func TestRecordCrossRequestDLPMatch(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "pipelock_cross_request_dlp_match_total 3") {
@@ -1343,7 +1343,7 @@ func TestSetCrossRequestFragmentBytes(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "pipelock_cross_request_fragment_buffer_bytes 42") {
@@ -1365,7 +1365,7 @@ func TestRecordScanAPIRequest(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_scan_api_requests_total{decision="allow",kind="dlp",status_code="200"} 1`) {
@@ -1386,7 +1386,7 @@ func TestObserveScanAPIDuration(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_scan_api_duration_seconds_count{kind="dlp"} 1`) {
@@ -1405,7 +1405,7 @@ func TestRecordScanAPIFinding(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_scan_api_findings_total{kind="dlp",scanner="dlp",severity="critical"} 2`) {
@@ -1424,7 +1424,7 @@ func TestRecordScanAPIError(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, `pipelock_scan_api_errors_total{error_code="invalid_json",kind="dlp"} 2`) {
@@ -1444,7 +1444,7 @@ func TestIncrDecrScanAPIInflight(t *testing.T) {
 
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "pipelock_scan_api_inflight_requests 2") {
@@ -1484,7 +1484,7 @@ func TestConcurrentScanAPIMetrics(t *testing.T) {
 	// Verify no panics and metrics registered via /metrics.
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 
 	for _, metric := range []string{
@@ -1538,7 +1538,7 @@ func TestRecordAdaptiveUpgrade(t *testing.T) {
 			m.RecordAdaptiveUpgrade(tt.fromAction, tt.toAction, tt.level)
 			m.RecordAdaptiveUpgrade(tt.fromAction, tt.toAction, tt.level)
 
-			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 			w := httptest.NewRecorder()
 			m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1571,7 +1571,7 @@ func TestSetAdaptiveSessionLevel(t *testing.T) {
 	// Remove one.
 	m.SetAdaptiveSessionLevel("elevated", -1)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1594,7 +1594,7 @@ func TestRecordFileSentryFinding(t *testing.T) {
 	m.RecordFileSentryFinding("Anthropic API Key", "critical", true)
 	m.RecordFileSentryFinding("Anthropic API Key", "critical", true)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1611,7 +1611,7 @@ func TestRecordFileSentryFinding_AgentFalse(t *testing.T) {
 	m := New()
 	m.RecordFileSentryFinding("GitHub Token", "critical", false)
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1633,7 +1633,7 @@ func TestRecordAddressFinding(t *testing.T) {
 	m := New()
 	m.RecordAddressFinding("eth", "blocked")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1652,7 +1652,7 @@ func TestRecordReverseProxyRequest(t *testing.T) {
 	m.RecordReverseProxyRequest("POST", "403")
 	m.RecordReverseProxyRequest("GET", "200")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1672,7 +1672,7 @@ func TestRecordReverseProxyScanBlocked(t *testing.T) {
 	m.RecordReverseProxyScanBlocked("response", "injection")
 	m.RecordReverseProxyScanBlocked("response", "injection")
 
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1730,7 +1730,7 @@ func TestRecordSessionAutoDeescalation(t *testing.T) {
 				m.RecordSessionAutoDeescalation(tt.from, tt.to)
 			}
 
-			req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 			w := httptest.NewRecorder()
 			m.PrometheusHandler().ServeHTTP(w, req)
 
@@ -1799,7 +1799,7 @@ func scrapeMetrics(t *testing.T, m *Metrics) string {
 	t.Helper()
 	handler := m.PrometheusHandler()
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, err := io.ReadAll(rec.Body)
 	if err != nil {
 		t.Fatalf("reading metrics: %v", err)

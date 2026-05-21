@@ -1873,7 +1873,7 @@ func RunHTTPListenerProxy(
 	}
 
 	// Graceful shutdown on context cancellation.
-	go func() {
+	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 		<-ctx.Done()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()

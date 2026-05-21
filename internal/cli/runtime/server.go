@@ -369,6 +369,21 @@ func (s *Server) refreshRuntimeState(
 	}
 }
 
+// stderrSyncWriter wraps the operator-facing stderr writer with a mutex so
+// concurrent producers (Reload's warning emitter and the MCP listener
+// startup log path) cannot interleave or race a shared bytes.Buffer when
+// tests substitute one.
+type stderrSyncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *stderrSyncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // NewServer validates opts, loads config, applies CLI overrides, and builds
 // every runtime component. No ports are bound; that is Start's job. On any
 // construction failure NewServer closes whatever was partially built and
@@ -377,6 +392,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
+	opts.Stderr = &stderrSyncWriter{w: opts.Stderr}
 	if opts.Stdout == nil {
 		opts.Stdout = io.Discard
 	}
@@ -852,7 +868,7 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		apiSrv := newHTTPServer(apiMux)
-		go func() {
+		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
@@ -884,7 +900,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return err
 		}
 		metricsSrv := newHTTPServer(metricsMux)
-		go func() {
+		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
@@ -936,7 +952,7 @@ func (s *Server) Start(ctx context.Context) error {
 		scanAPISrv.ReadTimeout = readTimeout
 		scanAPISrv.ReadHeaderTimeout = readTimeout
 		scanAPISrv.WriteTimeout = writeTimeout
-		go func() {
+		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()
@@ -1147,7 +1163,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 		rpSrv := newHTTPServer(rpHandler)
 		rpSrv.WriteTimeout = 30 * time.Second // reverse proxy upstream requests need more time
-		go func() {
+		go func() {                           //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 			<-ctx.Done()
 			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
 			defer shutCancel()

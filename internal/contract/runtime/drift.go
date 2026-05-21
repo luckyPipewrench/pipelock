@@ -53,6 +53,11 @@ type DriftEvent struct {
 	OpportunityStatus  string
 }
 
+// OpportunityStatus values reported in DriftEvent.
+const (
+	OpportunityStatusHealthy = "healthy"
+)
+
 // OpportunityMissing describes an opportunity_missing receipt candidate.
 type OpportunityMissing struct {
 	ContractHash              string
@@ -119,7 +124,7 @@ func EvaluateDrift(obs DriftObservation) (DriftResult, error) {
 			Mode:               obs.Mode,
 			Action:             config.ActionBlock,
 			ObservationSummary: "unexpected observation outside enforced contract",
-			OpportunityStatus:  "healthy",
+			OpportunityStatus:  OpportunityStatusHealthy,
 		}
 		return driftResult(event), nil
 	}
@@ -138,7 +143,7 @@ func EvaluateDrift(obs DriftObservation) (DriftResult, error) {
 			Kind:              DriftKindNegative,
 			Mode:              obs.Mode,
 			MissedWindows:     obs.MissedWindows,
-			OpportunityStatus: "healthy",
+			OpportunityStatus: OpportunityStatusHealthy,
 		}
 		return driftResult(event), nil
 	}

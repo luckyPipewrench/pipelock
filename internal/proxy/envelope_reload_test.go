@@ -154,7 +154,7 @@ func TestProxy_NewInitializesSigningEmitterAtStartup(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/signed", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/signed", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -183,7 +183,7 @@ func TestProxy_BuildEnvelopeEmitterDefaultsExpiresToReplayWindow(t *testing.T) {
 		t.Fatal("expected enabled emitter")
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "https://upstream.example/api", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://upstream.example/api", nil)
 	if err := stage.emitter.InjectAndSign(req, nil, envelope.BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000040",
 		Action:    "read",
@@ -792,7 +792,7 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 				// Each request gets a unique path so the shared
 				// observation map can key on it without collisions.
 				hitPath := fmt.Sprintf("/hit/w%d/n%d", id, i)
-				r := httptest.NewRequest(http.MethodGet,
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
 					"/fetch?url="+upstream.URL+hitPath, nil)
 				rr := httptest.NewRecorder()
 				handler.ServeHTTP(rr, r)

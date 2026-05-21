@@ -6,6 +6,7 @@ package capture
 import (
 	"bytes"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -21,15 +22,15 @@ func newTestDiffReport() *DiffReport {
 	entry := DiffEntry{
 		Summary: CaptureSummary{
 			Surface:    SurfaceURL,
-			Subsurface: "forward",
+			Subsurface: testSubsurface,
 			Request: CaptureRequest{
-				Method: "GET",
+				Method: http.MethodGet,
 				URL:    "https://example.com/api",
 			},
-			EffectiveAction: "allow",
+			EffectiveAction: ActionAllow,
 		},
-		OriginalAction:  "allow",
-		CandidateAction: "block",
+		OriginalAction:  ActionAllow,
+		CandidateAction: ActionBlock,
 		Changed:         true,
 		ChangeType:      changeTypeNewBlock,
 	}

@@ -197,7 +197,7 @@ func TestForwardHTTP_HeaderDLP_ExemptHost_NoSignal(t *testing.T) {
 	scoreBefore := rec.ThreatScore()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
-	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/ok", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/ok", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 	w := httptest.NewRecorder()
 
@@ -250,7 +250,7 @@ func TestForwardHTTP_HeaderDLP_NonExemptHost_SignalRecorded(t *testing.T) {
 	scoreBefore := rec.ThreatScore()
 
 	secret := "AKIA" + "IOSFODNN7EXAMPLE"
-	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/ok", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/ok", nil)
 	req.Header.Set("Authorization", "Bearer "+secret)
 	w := httptest.NewRecorder()
 

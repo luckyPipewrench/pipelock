@@ -6,6 +6,7 @@ package capture_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -22,7 +23,7 @@ func TestCaptureSummary_JSONRoundTrip(t *testing.T) {
 	summary := capture.CaptureSummary{
 		CaptureSchemaVersion: capture.CaptureSchemaV1,
 		Surface:              capture.SurfaceURL,
-		Subsurface:           "forward",
+		Subsurface:           testSubsurface,
 		BatchIndex:           &batchIdx,
 		ConfigHash:           "abc123",
 		BuildVersion:         "v2.0.0",
@@ -39,18 +40,18 @@ func TestCaptureSummary_JSONRoundTrip(t *testing.T) {
 		ScannerBytes:         256,
 		ScannerSample:        "scanned text",
 		Request: capture.CaptureRequest{
-			Method:       "GET",
+			Method:       http.MethodGet,
 			URL:          "https://example.com/path",
 			Headers:      map[string][]string{"Content-Type": {"application/json"}},
 			BodySample:   "{}",
 			ToolName:     "bash",
 			ToolArgsJSON: `{"cmd":"ls"}`,
-			MCPMethod:    "tools/call",
+			MCPMethod:    testToolsCall,
 		},
 		RawFindings: []capture.Finding{
 			{
 				Kind:         capture.KindDLP,
-				Action:       "block",
+				Action:       testEffAction,
 				Severity:     "critical",
 				PatternName:  "aws_key",
 				Encoded:      "base64",
@@ -61,13 +62,13 @@ func TestCaptureSummary_JSONRoundTrip(t *testing.T) {
 		EffectiveFindings: []capture.Finding{
 			{
 				Kind:        capture.KindInjection,
-				Action:      "block",
+				Action:      testEffAction,
 				Severity:    "critical",
 				PatternName: "jailbreak_dan",
 				MatchText:   "DAN mode",
 			},
 		},
-		EffectiveAction: "block",
+		EffectiveAction: testEffAction,
 		Outcome:         capture.OutcomeBlocked,
 	}
 

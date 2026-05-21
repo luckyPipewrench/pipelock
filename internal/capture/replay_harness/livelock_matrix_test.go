@@ -40,6 +40,9 @@ const (
 	gateRuntimeHTTP = "runtime.EvaluateHTTP"
 	gateRuntimeMCP  = "runtime.EvaluateMCP"
 
+	livelockJSONKeyValue  = "value"
+	livelockConfidenceOne = "1.0"
+
 	contractStateNone         = "none"
 	contractStateAllow        = "allow"
 	contractStateDefaultDeny  = "default_deny"
@@ -601,11 +604,11 @@ func liveLockLoader(t *testing.T, mode contractruntime.Mode, rules ...contract.R
 func liveLockHTTPRule(tr liveLockTransport) contract.Rule {
 	ruleID := allowRuleID(tr)
 	selector := map[string]any{
-		"host":    map[string]any{"value": liveLockHTTPHost},
+		"host":    map[string]any{livelockJSONKeyValue: liveLockHTTPHost},
 		"methods": []any{tr.Method},
 	}
 	if tr.Method != http.MethodConnect {
-		selector["paths"] = []any{map[string]any{"value": pathForRule(tr.AllowedURL)}}
+		selector["paths"] = []any{map[string]any{livelockJSONKeyValue: pathForRule(tr.AllowedURL)}}
 	}
 	if tr.EffectiveAction != "" {
 		selector["effective_action"] = tr.EffectiveAction
@@ -617,8 +620,8 @@ func liveLockHTTPRule(tr liveLockTransport) contract.Rule {
 		LifecycleState:       contract.LifecycleEnforce,
 		RequiredCaptureGrade: contract.CaptureGradeFull,
 		ObservedCaptureGrade: contract.CaptureGradeFull,
-		Confidence:           "1.0",
-		WilsonLower:          "1.0",
+		Confidence:           livelockConfidenceOne,
+		WilsonLower:          livelockConfidenceOne,
 		Observation:          map[string]any{},
 		Selector:             selector,
 		Rationale:            map[string]any{},
@@ -635,12 +638,12 @@ func liveLockMCPRule(ruleID string) contract.Rule {
 		LifecycleState:       contract.LifecycleEnforce,
 		RequiredCaptureGrade: contract.CaptureGradeFull,
 		ObservedCaptureGrade: contract.CaptureGradeFull,
-		Confidence:           "1.0",
-		WilsonLower:          "1.0",
+		Confidence:           livelockConfidenceOne,
+		WilsonLower:          livelockConfidenceOne,
 		Observation:          map[string]any{},
 		Selector: map[string]any{
-			"server": map[string]any{"value": liveLockMCPServer},
-			"tool":   map[string]any{"value": liveLockAllowedTool},
+			"server": map[string]any{livelockJSONKeyValue: liveLockMCPServer},
+			"tool":   map[string]any{livelockJSONKeyValue: liveLockAllowedTool},
 		},
 		Rationale:         map[string]any{},
 		RecurringSupport:  map[string]any{},

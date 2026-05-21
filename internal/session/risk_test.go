@@ -15,7 +15,7 @@ func TestSessionRiskObserve(t *testing.T) {
 
 	risk.Observe(session.RiskObservation{
 		Source: session.TaintSourceRef{
-			URL:   "https://docs.github.com/copilot",
+			URL:   testGitHubCopilotDocs,
 			Kind:  "http_response",
 			Level: session.TaintAllowlistedReference,
 		},
@@ -28,7 +28,7 @@ func TestSessionRiskObserve(t *testing.T) {
 	if risk.Contaminated {
 		t.Fatal("allowlisted reference should not contaminate the session")
 	}
-	if risk.LastExternalURL != "https://docs.github.com/copilot" {
+	if risk.LastExternalURL != testGitHubCopilotDocs {
 		t.Fatalf("last external url = %q", risk.LastExternalURL)
 	}
 

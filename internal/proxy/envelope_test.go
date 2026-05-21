@@ -72,7 +72,7 @@ func TestEnvelope_FetchInjectsHeader(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -136,7 +136,7 @@ func TestEnvelope_FetchNoEmitter(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -179,7 +179,7 @@ func TestEnvelope_FetchStripsInbound(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
 	// Inject a spoofed header.
 	req.Header.Set(envelope.HeaderName, "act=\"spoofed\", vd=\"spoofed\"")
 	w := httptest.NewRecorder()

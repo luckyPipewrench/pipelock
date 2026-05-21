@@ -104,53 +104,53 @@ func harnessCorpus() []sessionSpec {
 		{
 			sessionID: "session-001",
 			records: []recordSpec{
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/repos"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodPost, "https://api.example.com/v1/repos"),
-				allowedURLSpec("forward", http.MethodGet, "https://docs.example.com/guide"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://docs.example.com/guide"),
 				blockedURLSpec(http.MethodGet, "https://exfil.example.net/sink"),
-				dlpSpec("forward", http.MethodPost, "https://api.example.com/v1/users"),
+				dlpSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/users"),
 				toolPolicyAllowSpec("read_file", `{"path":"/tmp/notes.md"}`),
 				toolPolicyBlockSpec("write_file", `{"path":"/etc/hosts","content":"x"}`),
-				responseSpec("forward", http.MethodGet, "https://docs.example.com/guide"),
-				warnedURLSpec("forward", http.MethodPost, "https://api.example.com/v1/repos"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
+				responseSpec(testSubsurface, http.MethodGet, "https://docs.example.com/guide"),
+				warnedURLSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
 			},
 		},
 		{
 			sessionID: "session-002",
 			records: []recordSpec{
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/orgs"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodPost, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/orgs"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/repos"),
 				allowedURLSpec("intercept", http.MethodGet, "https://docs.example.com/guide"),
 				dlpSpec("intercept", http.MethodPost, "https://api.example.com/v1/users"),
 				blockedURLSpec(http.MethodGet, "https://exfil.example.net/sink"),
 				blockedURLSpec(http.MethodPost, "https://exfil.example.net/upload"),
 				toolPolicyAllowSpec("read_file", `{"path":"/var/log/app.log"}`),
 				responseSpec("intercept", http.MethodGet, "https://docs.example.com/guide"),
-				warnedURLSpec("forward", http.MethodPost, "https://api.example.com/v1/repos"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/repos"),
+				warnedURLSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/repos"),
 			},
 		},
 		{
 			sessionID: "session-003",
 			records: []recordSpec{
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodPost, "https://api.example.com/v1/repos"),
-				allowedURLSpec("forward", http.MethodGet, "https://docs.example.com/guide"),
-				warnedURLSpec("forward", http.MethodPost, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/repos"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://docs.example.com/guide"),
+				warnedURLSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/repos"),
 				blockedURLSpec(http.MethodGet, "https://exfil.example.net/sink"),
-				dlpSpec("forward", http.MethodPost, "https://api.example.com/v1/users"),
+				dlpSpec(testSubsurface, http.MethodPost, "https://api.example.com/v1/users"),
 				toolPolicyAllowSpec("read_file", `{"path":"/tmp/notes.md"}`),
-				responseSpec("forward", http.MethodGet, "https://docs.example.com/guide"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/orgs"),
-				allowedURLSpec("forward", http.MethodGet, "https://api.example.com/v1/users"),
+				responseSpec(testSubsurface, http.MethodGet, "https://docs.example.com/guide"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/orgs"),
+				allowedURLSpec(testSubsurface, http.MethodGet, "https://api.example.com/v1/users"),
 			},
 		},
 	}
@@ -175,7 +175,7 @@ func allowedURLSpec(transport, method, url string) recordSpec {
 }
 
 func blockedURLSpec(method, url string) recordSpec {
-	const transport = "forward"
+	const transport = testSubsurface
 	const pattern = "test_blocklist"
 	finding := capture.Finding{
 		Kind:        capture.KindDLP,
@@ -205,7 +205,7 @@ func warnedURLSpec(transport, method, url string) recordSpec {
 		surface:         capture.SurfaceURL,
 		subsurface:      transport,
 		transport:       transport,
-		actionClass:     "write",
+		actionClass:     ekActionClassWrite,
 		request:         capture.CaptureRequest{Method: method, URL: url},
 		rawFindings:     []capture.Finding{finding},
 		effectiveAction: config.ActionWarn,
@@ -218,7 +218,7 @@ func dlpSpec(transport, method, url string) recordSpec {
 		surface:         capture.SurfaceDLP,
 		subsurface:      transport,
 		transport:       transport,
-		actionClass:     "write",
+		actionClass:     ekActionClassWrite,
 		request:         capture.CaptureRequest{Method: method, URL: url},
 		effectiveAction: config.ActionAllow,
 		outcome:         capture.OutcomeClean,
@@ -246,13 +246,13 @@ func responseSpec(transport, method, url string) recordSpec {
 func toolPolicyBaseSpec(toolName, argsJSON string) recordSpec {
 	return recordSpec{
 		surface:     capture.SurfaceToolPolicy,
-		subsurface:  "mcp_stdio",
-		transport:   "mcp_stdio",
-		actionClass: string(receipt.ClassifyMCPTool(toolName, "tools/call")),
+		subsurface:  testTransportMCP,
+		transport:   testTransportMCP,
+		actionClass: string(receipt.ClassifyMCPTool(toolName, testToolsCall)),
 		request: capture.CaptureRequest{
 			ToolName:     toolName,
 			ToolArgsJSON: argsJSON,
-			MCPMethod:    "tools/call",
+			MCPMethod:    testToolsCall,
 		},
 	}
 }
@@ -462,7 +462,7 @@ func harnessCandidateConfig() *config.Config {
 	// SSRF off: tests don't have DNS access in CI, and the harness is
 	// proving compile / replay determinism, not network behavior.
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{
 		"exfil.example.net",

@@ -18,15 +18,23 @@ const (
 	SeverityCritical                 // Needs immediate attention
 )
 
+// Severity-name string constants. Single source of truth for the lowercase
+// labels exposed to users (config min_severity, OTLP severity text, etc.).
+const (
+	severityNameInfo     = "info"
+	severityNameWarn     = "warn"
+	severityNameCritical = "critical"
+)
+
 // String returns the lowercase string representation of the severity.
 func (s Severity) String() string {
 	switch s {
 	case SeverityWarn:
-		return "warn"
+		return severityNameWarn
 	case SeverityCritical:
-		return "critical"
+		return severityNameCritical
 	default:
-		return "info"
+		return severityNameInfo
 	}
 }
 
@@ -34,9 +42,9 @@ func (s Severity) String() string {
 // The comparison is case-insensitive. Returns SeverityInfo for unrecognized values.
 func ParseSeverity(s string) Severity {
 	switch strings.ToLower(s) {
-	case "warn":
+	case severityNameWarn:
 		return SeverityWarn
-	case "critical":
+	case severityNameCritical:
 		return SeverityCritical
 	default:
 		return SeverityInfo
@@ -57,7 +65,7 @@ func DefaultInstanceID() string {
 	if h, err := os.Hostname(); err == nil && h != "" {
 		return h
 	}
-	return "pipelock"
+	return instanceIDFallback
 }
 
 // EventAdaptiveUpgrade is the event type emitted when adaptive enforcement
@@ -83,44 +91,80 @@ const EventTextStego = "text_stego_detected"
 // Used internally for severity mapping — block actions map to SeverityCritical.
 const actionBlock = "block"
 
+// EventAnomaly is the event-type key for session anomaly findings (suspicious
+// signal classes that warrant operator review but do not necessarily block).
+const EventAnomaly = "anomaly"
+
+// EventAdaptiveEscalation is the event-type key for adaptive enforcement
+// escalations (e.g. warn → block transitions on accumulated signal).
+const EventAdaptiveEscalation = "adaptive_escalation"
+
+// Event type constants used as keys in EventSeverity. Pulled into named
+// constants so the test suite and OTLP emitter can reference them by name.
+const (
+	EventKillSwitchDeny     = "kill_switch_deny"
+	EventBlocked            = "blocked"
+	EventSessionAnomaly     = "session_anomaly"
+	EventMCPUnknownTool     = "mcp_unknown_tool"
+	EventResponseScan       = "response_scan"
+	EventError              = "error"
+	EventResponseScanExempt = "response_scan_exempt"
+	EventTunnelClose        = "tunnel_close"
+	EventConfigReload       = "config_reload"
+	EventRedirect           = "redirect"
+	EventForwardHTTP        = "forward_http"
+	EventToolRedirect       = "tool_redirect"
+	EventWSBlocked          = "ws_blocked"
+	EventWSScan             = "ws_scan"
+	EventTunnelOpen         = "tunnel_open"
+	EventWSOpen             = "ws_open"
+	EventWSClose            = "ws_close"
+)
+
+// instanceIDFallback is the default instance identifier when hostname lookup fails.
+const instanceIDFallback = "pipelock"
+
+// networkUDP is the canonical network value for UDP transports (syslog, etc.).
+const networkUDP = "udp"
+
 // EventSeverity maps audit event type strings to their severity level.
 // Severity is hardcoded — users control emission threshold, not event severity.
 var EventSeverity = map[string]Severity{
 	// Critical: needs immediate attention
-	"kill_switch_deny": SeverityCritical,
+	EventKillSwitchDeny: SeverityCritical,
 	// Note: chain_detection, adaptive_escalation, and adaptive_upgrade severity
 	// depends on action, handled by the caller via ChainDetectionSeverity /
 	// EscalationSeverity / UpgradeSeverity helpers.
 
 	// Warn: suspicious, worth investigating
-	"blocked":          SeverityWarn,
-	"anomaly":          SeverityWarn,
-	"session_anomaly":  SeverityWarn,
-	"mcp_unknown_tool": SeverityWarn,
-	"ws_blocked":       SeverityWarn,
-	"response_scan":    SeverityWarn,
-	"ws_scan":          SeverityWarn,
+	EventBlocked:        SeverityWarn,
+	EventAnomaly:        SeverityWarn,
+	EventSessionAnomaly: SeverityWarn,
+	EventMCPUnknownTool: SeverityWarn,
+	EventWSBlocked:      SeverityWarn,
+	EventResponseScan:   SeverityWarn,
+	EventWSScan:         SeverityWarn,
 	// adaptive_escalation: default warn; overridden to Critical if escalating to block
-	"adaptive_escalation": SeverityWarn,
+	EventAdaptiveEscalation: SeverityWarn,
 	// adaptive_upgrade: default warn; overridden to Critical if upgrading to block
 	EventAdaptiveUpgrade: SeverityWarn,
-	"error":              SeverityWarn, // errors are suspicious
+	EventError:           SeverityWarn, // errors are suspicious
 
 	// Warn: security-relevant operational events
-	"response_scan_exempt": SeverityWarn, // scanning was skipped; operators need visibility
-	EventMediaExposure:     SeverityWarn, // media reached agent; provenance signal for taint system
-	EventTextStego:         SeverityWarn, // suspicious combining-mark density; exposure signal
+	EventResponseScanExempt: SeverityWarn, // scanning was skipped; operators need visibility
+	EventMediaExposure:      SeverityWarn, // media reached agent; provenance signal for taint system
+	EventTextStego:          SeverityWarn, // suspicious combining-mark density; exposure signal
 
 	// Info: normal operations
-	"allowed":       SeverityInfo,
-	"tunnel_open":   SeverityInfo,
-	"tunnel_close":  SeverityInfo,
-	"ws_open":       SeverityInfo,
-	"ws_close":      SeverityInfo,
-	"config_reload": SeverityInfo,
-	"redirect":      SeverityInfo,
-	"forward_http":  SeverityInfo,
-	"tool_redirect": SeverityInfo,
+	"allowed":         SeverityInfo,
+	EventTunnelOpen:   SeverityInfo,
+	EventTunnelClose:  SeverityInfo,
+	EventWSOpen:       SeverityInfo,
+	EventWSClose:      SeverityInfo,
+	EventConfigReload: SeverityInfo,
+	EventRedirect:     SeverityInfo,
+	EventForwardHTTP:  SeverityInfo,
+	EventToolRedirect: SeverityInfo,
 }
 
 // ChainDetectionSeverity returns the severity for a chain detection event

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -47,9 +48,9 @@ func TestWriterSanitizeSessionID_PathTraversal(t *testing.T) {
 		SessionID:       "../escape",
 		RequestID:       "req-traversal",
 		ConfigHash:      testConfigHash,
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if err := w.Close(); err != nil {
@@ -89,9 +90,9 @@ func TestWriterSanitizeSessionID_SlashInID(t *testing.T) {
 		SessionID:       "bad/session",
 		RequestID:       "req-slash",
 		ConfigHash:      testConfigHash,
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if err := w.Close(); err != nil {
@@ -130,9 +131,9 @@ func TestWriterSanitizeSessionID_Empty(t *testing.T) {
 		SessionID:       "",
 		RequestID:       "req-empty",
 		ConfigHash:      testConfigHash,
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if err := w.Close(); err != nil {
@@ -176,9 +177,9 @@ func TestWriterSendAfterClose(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       "req-post-close",
 		ConfigHash:      testConfigHash,
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if drops := sink.drops.Load(); drops == 0 {
@@ -193,7 +194,7 @@ func TestWriterRedaction(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	sc := scanner.New(cfg)
 	defer sc.Close()
@@ -220,10 +221,10 @@ func TestWriterRedaction(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       "req-redact",
 		ConfigHash:      testConfigHash,
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 		Request: capture.CaptureRequest{
-			Method:  "POST",
+			Method:  http.MethodPost,
 			URL:     "https://example.com/api",
 			Headers: map[string][]string{"Authorization": {"Bearer secret"}},
 		},
@@ -293,9 +294,9 @@ func TestWriterResponseVerdictWirePayloadSidecar(t *testing.T) {
 		ConfigHash:      testConfigHash,
 		TransformKind:   capture.TransformReadability,
 		WirePayload:     []byte("wire payload content"),
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if err := w.Close(); err != nil {
@@ -356,14 +357,14 @@ func TestLoaderExtractCaptureSummary_CorruptEntry(t *testing.T) {
 
 	// One valid URL verdict.
 	w.ObserveURLVerdict(ctx, &capture.URLVerdictRecord{
-		Subsurface:      "forward",
-		Transport:       "forward",
+		Subsurface:      testSubsurface,
+		Transport:       testSubsurface,
 		SessionID:       "corrupt-test",
 		RequestID:       "req-good",
 		EffectiveAction: config.ActionAllow,
 		Outcome:         capture.OutcomeClean,
 		Request: capture.CaptureRequest{
-			Method: "GET",
+			Method: http.MethodGet,
 			URL:    "https://good.example.com",
 		},
 	})
@@ -375,7 +376,7 @@ func TestLoaderExtractCaptureSummary_CorruptEntry(t *testing.T) {
 	// Replay: should get 1 record, 0 skipped.
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 
 	records, _, skipped, _, err := capture.LoadAndReplay(cfg, dir)
@@ -509,9 +510,9 @@ func TestWriterBuildSummaryWirePayloadTruncation(t *testing.T) {
 		ConfigHash:      testConfigHash,
 		TransformKind:   capture.TransformReadability,
 		WirePayload:     longPayload,
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if err := w.Close(); err != nil {
@@ -556,7 +557,7 @@ func TestWriterRedactionWithFindings(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	sc := scanner.New(cfg)
 	defer sc.Close()
@@ -592,7 +593,7 @@ func TestWriterRedactionWithFindings(t *testing.T) {
 			{Kind: capture.KindDLP, MatchText: "secret-data-here", Action: config.ActionBlock},
 		},
 		Request: capture.CaptureRequest{
-			Method:       "POST",
+			Method:       http.MethodPost,
 			URL:          "https://example.com",
 			BodySample:   "sensitive body content",
 			ToolArgsJSON: `{"key":"value"}`,

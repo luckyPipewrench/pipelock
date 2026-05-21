@@ -13,37 +13,37 @@ func TestClassifyProtection(t *testing.T) {
 	}{
 		{
 			name:   "pipelock wrapped stdio with full path",
-			server: MCPServer{Command: "/home/user/.local/bin/pipelock", Args: []string{"mcp", "proxy", "--config", "local.yaml", "--", "node", "server.js"}},
+			server: MCPServer{Command: "/home/user/.local/bin/pipelock", Args: []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "local.yaml", "--", testCmdNode, testServerJS}},
 			want:   ProtectedPipelock,
 		},
 		{
 			name:   "pipelock bare command",
-			server: MCPServer{Command: "pipelock", Args: []string{"mcp", "proxy", "--", "uvx", "some-server"}},
+			server: MCPServer{Command: wrapperCommand, Args: []string{wrapperArgMCP, wrapperArgProxy, "--", "uvx", "some-server"}},
 			want:   ProtectedPipelock,
 		},
 		{
 			name:   "pipelock with tilde path",
-			server: MCPServer{Command: "~/.local/bin/pipelock", Args: []string{"mcp", "proxy", "--", "node", "s.js"}},
+			server: MCPServer{Command: "~/.local/bin/pipelock", Args: []string{wrapperArgMCP, wrapperArgProxy, "--", testCmdNode, "s.js"}},
 			want:   ProtectedPipelock,
 		},
 		{
 			name:   "pipelock command but no mcp arg",
-			server: MCPServer{Command: "pipelock", Args: []string{"run", "--config", "config.yaml"}},
+			server: MCPServer{Command: wrapperCommand, Args: []string{"run", flagConfig, "config.yaml"}},
 			want:   Unprotected,
 		},
 		{
 			name:   "pipelock command but no proxy arg",
-			server: MCPServer{Command: "pipelock", Args: []string{"mcp", "scan", "file.txt"}},
+			server: MCPServer{Command: wrapperCommand, Args: []string{wrapperArgMCP, "scan", "file.txt"}},
 			want:   Unprotected,
 		},
 		{
 			name:   "bare npx command",
-			server: MCPServer{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}},
+			server: MCPServer{Command: testCmdNpx, Args: []string{"-y", testServerFilesystemPkg}},
 			want:   Unprotected,
 		},
 		{
 			name:   "http server",
-			server: MCPServer{Transport: "http", URL: "https://api.example.com/mcp"},
+			server: MCPServer{Transport: TransportHTTP, URL: testHTTPMCPURL},
 			want:   Unprotected,
 		},
 		{
@@ -53,17 +53,17 @@ func TestClassifyProtection(t *testing.T) {
 		},
 		{
 			name:   "command only, no wrapper",
-			server: MCPServer{Command: "node", Args: []string{"server.js"}},
+			server: MCPServer{Command: testCmdNode, Args: []string{testServerJS}},
 			want:   Unprotected,
 		},
 		{
 			name:   "windows exe path",
-			server: MCPServer{Command: `C:\Program Files\pipelock.exe`, Args: []string{"mcp", "proxy", "--", "node", "s.js"}},
+			server: MCPServer{Command: `C:\Program Files\pipelock.exe`, Args: []string{wrapperArgMCP, wrapperArgProxy, "--", testCmdNode, "s.js"}},
 			want:   ProtectedPipelock,
 		},
 		{
 			name:   "false positive pipelock-helper",
-			server: MCPServer{Command: "/opt/pipelock-helper", Args: []string{"mcp", "proxy"}},
+			server: MCPServer{Command: "/opt/pipelock-helper", Args: []string{wrapperArgMCP, wrapperArgProxy}},
 			want:   Unprotected,
 		},
 	}

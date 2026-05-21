@@ -62,8 +62,8 @@ func parseClaudeCodeConfig(path string) ([]MCPServer, error) {
 	var servers []MCPServer
 
 	// Parse global mcpServers
-	if serversRaw, ok := raw["mcpServers"]; ok {
-		global, err := parseServerMap(serversRaw, path, "claude-code")
+	if serversRaw, ok := raw[configKeyMCPServers]; ok {
+		global, err := parseServerMap(serversRaw, path, clientClaudeCode)
 		if err != nil {
 			return nil, fmt.Errorf("parsing %s[mcpServers]: %w", path, err)
 		}
@@ -77,7 +77,7 @@ func parseClaudeCodeConfig(path string) ([]MCPServer, error) {
 		var projects map[string]json.RawMessage
 		if err := json.Unmarshal(projectsRaw, &projects); err != nil {
 			servers = append(servers, MCPServer{
-				Client:        "claude-code",
+				Client:        clientClaudeCode,
 				ConfigPath:    path,
 				ServerName:    "(projects)",
 				Transport:     TransportUnknown,
@@ -90,7 +90,7 @@ func parseClaudeCodeConfig(path string) ([]MCPServer, error) {
 			var proj map[string]json.RawMessage
 			if err := json.Unmarshal(projRaw, &proj); err != nil {
 				servers = append(servers, MCPServer{
-					Client:        "claude-code",
+					Client:        clientClaudeCode,
 					ConfigPath:    path,
 					ProjectPath:   projPath,
 					ServerName:    "(malformed project)",
@@ -100,11 +100,11 @@ func parseClaudeCodeConfig(path string) ([]MCPServer, error) {
 				})
 				continue
 			}
-			if mcpRaw, ok := proj["mcpServers"]; ok {
-				projServers, err := parseServerMap(mcpRaw, path, "claude-code")
+			if mcpRaw, ok := proj[configKeyMCPServers]; ok {
+				projServers, err := parseServerMap(mcpRaw, path, clientClaudeCode)
 				if err != nil {
 					servers = append(servers, MCPServer{
-						Client:        "claude-code",
+						Client:        clientClaudeCode,
 						ConfigPath:    path,
 						ProjectPath:   projPath,
 						ServerName:    "(malformed mcpServers)",

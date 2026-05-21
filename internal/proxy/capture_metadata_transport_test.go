@@ -224,7 +224,7 @@ func TestCaptureMetadata_ForwardTransport(t *testing.T) {
 	obs := newCaptureMetadataObserver()
 	p := newCaptureMetadataProxy(t, captureMetadataConfig(), obs)
 
-	req := httptest.NewRequest(http.MethodGet, upstream.URL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
 	rec := httptest.NewRecorder()
 	p.handleForwardHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -256,7 +256,7 @@ func TestCaptureMetadata_ReverseTransport(t *testing.T) {
 	scPtr.Store(sc)
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), obs, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(`{"key":"`+fakeAPIKey()+`"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api", strings.NewReader(`{"key":"`+fakeAPIKey()+`"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(AgentHeader, "reverse-agent")
 	rec := httptest.NewRecorder()

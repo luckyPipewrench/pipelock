@@ -25,10 +25,10 @@ func TestEmitter_Build(t *testing.T) {
 	})
 
 	env, err := em.Build(BuildOpts{
-		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
-		Action:     "write",
-		Verdict:    "allow",
-		SideEffect: "external_write",
+		ActionID:   testReceiptID1,
+		Action:     testActionWrite,
+		Verdict:    testVerdictAllow,
+		SideEffect: testSideEffectExt,
 		Actor:      "claude-code",
 		ActorAuth:  ActorAuthBound,
 	})
@@ -42,7 +42,7 @@ func TestEmitter_Build(t *testing.T) {
 	if env.Action != "write" {
 		t.Errorf("Action = %q, want %q", env.Action, "write")
 	}
-	if env.ReceiptID != "01961f3a-7b2c-7000-8000-000000000001" {
+	if env.ReceiptID != testReceiptID1 {
 		t.Errorf("ReceiptID = %q, want matching ActionID", env.ReceiptID)
 	}
 	if env.Timestamp == 0 {
@@ -59,7 +59,7 @@ func TestEmitter_Build_Nil(t *testing.T) {
 	var em *Emitter
 	env, err := em.Build(BuildOpts{
 		ActionID: "test",
-		Action:   "read",
+		Action:   testActionRead,
 		Verdict:  "allow",
 	})
 	if err != nil {
@@ -75,12 +75,12 @@ func TestEmitter_BuildActorFormatError(t *testing.T) {
 	t.Parallel()
 
 	em := NewEmitter(EmitterConfig{
-		ConfigHash:  "sha256:test",
+		ConfigHash:  testConfigHashSHA,
 		ActorFormat: ActorFormatSPIFFE,
-		TrustDomain: "bad/domain",
+		TrustDomain: testTrustBadDomain,
 	})
 
-	if _, err := em.Build(BuildOpts{Actor: "agent"}); err == nil {
+	if _, err := em.Build(BuildOpts{Actor: testActorAgent}); err == nil {
 		t.Fatal("expected actor formatting error")
 	}
 }
@@ -89,14 +89,14 @@ func TestEmitter_InjectAndSignActorFormatErrorStripsHeaders(t *testing.T) {
 	t.Parallel()
 
 	em := NewEmitter(EmitterConfig{
-		ConfigHash:  "sha256:test",
+		ConfigHash:  testConfigHashSHA,
 		ActorFormat: ActorFormatSPIFFE,
-		TrustDomain: "bad/domain",
+		TrustDomain: testTrustBadDomain,
 	})
 	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
 	req.Header.Set(HeaderName, "stale")
 
-	if err := em.InjectAndSign(req, nil, BuildOpts{Actor: "agent"}); err == nil {
+	if err := em.InjectAndSign(req, nil, BuildOpts{Actor: testActorAgent}); err == nil {
 		t.Fatal("expected actor formatting error")
 	}
 	if got := req.Header.Get(HeaderName); got != "" {
@@ -113,10 +113,10 @@ func TestEmitter_InjectHTTPEnvelope(t *testing.T) {
 
 	h := http.Header{}
 	err := em.InjectHTTPEnvelope(h, BuildOpts{
-		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
-		Action:     "write",
-		Verdict:    "allow",
-		SideEffect: "external_write",
+		ActionID:   testReceiptID1,
+		Action:     testActionWrite,
+		Verdict:    testVerdictAllow,
+		SideEffect: testSideEffectExt,
 		Actor:      "test-agent",
 		ActorAuth:  ActorAuthSelfDeclared,
 	})
@@ -151,9 +151,9 @@ func TestEmitter_InjectMCPEnvelope(t *testing.T) {
 
 	meta := make(map[string]any)
 	if err := em.InjectMCPEnvelope(meta, BuildOpts{
-		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
-		Action:     "read",
-		Verdict:    "allow",
+		ActionID:   testReceiptID1,
+		Action:     testActionRead,
+		Verdict:    testVerdictAllow,
 		SideEffect: "external_read",
 		Actor:      "test",
 		ActorAuth:  ActorAuthMatched,
@@ -183,12 +183,12 @@ func TestEmitter_InjectMCPEnvelopeActorFormatError(t *testing.T) {
 	t.Parallel()
 
 	em := NewEmitter(EmitterConfig{
-		ConfigHash:  "sha256:test",
+		ConfigHash:  testConfigHashSHA,
 		ActorFormat: ActorFormatSPIFFE,
-		TrustDomain: "bad/domain",
+		TrustDomain: testTrustBadDomain,
 	})
 
-	if err := em.InjectMCPEnvelope(map[string]any{}, BuildOpts{Actor: "agent"}); err == nil {
+	if err := em.InjectMCPEnvelope(map[string]any{}, BuildOpts{Actor: testActorAgent}); err == nil {
 		t.Fatal("expected actor formatting error")
 	}
 }
@@ -198,7 +198,7 @@ func TestEmitter_UpdateConfigHash(t *testing.T) {
 
 	em := NewEmitter(EmitterConfig{ConfigHash: "v1"})
 
-	env1, err := em.Build(BuildOpts{Action: "read", Verdict: "allow", ActorAuth: ActorAuthBound})
+	env1, err := em.Build(BuildOpts{Action: testActionRead, Verdict: testVerdictAllow, ActorAuth: ActorAuthBound})
 	if err != nil {
 		t.Fatalf("Build env1: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestEmitter_UpdateConfigHash(t *testing.T) {
 
 	em.UpdateConfigHash("v2")
 
-	env2, err := em.Build(BuildOpts{Action: "read", Verdict: "allow", ActorAuth: ActorAuthBound})
+	env2, err := em.Build(BuildOpts{Action: testActionRead, Verdict: testVerdictAllow, ActorAuth: ActorAuthBound})
 	if err != nil {
 		t.Fatalf("Build env2: %v", err)
 	}
@@ -237,9 +237,9 @@ func TestEmitter_Build_PolicyHashOverride(t *testing.T) {
 	perAgent := PolicyHashFromHex("ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100")
 
 	env, err := em.Build(BuildOpts{
-		ActionID:   "01961f3a-7b2c-7000-8000-000000000001",
-		Action:     "write",
-		Verdict:    "allow",
+		ActionID:   testReceiptID1,
+		Action:     testActionWrite,
+		Verdict:    testVerdictAllow,
 		ActorAuth:  ActorAuthBound,
 		PolicyHash: perAgent,
 	})
@@ -263,13 +263,12 @@ func TestEmitter_Build_PolicyHashOverride(t *testing.T) {
 func TestEmitter_Build_PolicyHashFallback(t *testing.T) {
 	t.Parallel()
 
-	const globalHex = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
 	em := NewEmitter(EmitterConfig{ConfigHash: globalHex})
 
 	env, err := em.Build(BuildOpts{
-		ActionID:  "01961f3a-7b2c-7000-8000-000000000002",
-		Action:    "read",
-		Verdict:   "allow",
+		ActionID:  testReceiptID2,
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthMatched,
 	})
 	if err != nil {
@@ -315,14 +314,14 @@ func TestEmitter_InjectAndSign_NoSigner(t *testing.T) {
 	t.Parallel()
 
 	em := NewEmitter(EmitterConfig{
-		ConfigHash: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		ConfigHash: globalHex,
 	})
 	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
 
 	if err := em.InjectAndSign(req, nil, BuildOpts{
-		ActionID:  "01961f3a-7b2c-7000-8000-000000000001",
-		Action:    "read",
-		Verdict:   "allow",
+		ActionID:  testReceiptID1,
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)
@@ -349,7 +348,7 @@ func TestEmitter_InjectAndSign_WithSigner(t *testing.T) {
 	pub, priv := testSignerKey(t)
 	signer := newTestSigner(t, priv)
 	em := NewEmitter(EmitterConfig{
-		ConfigHash: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		ConfigHash: globalHex,
 		Signer:     signer,
 	})
 
@@ -357,9 +356,9 @@ func TestEmitter_InjectAndSign_WithSigner(t *testing.T) {
 	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
 
 	if err := em.InjectAndSign(req, body, BuildOpts{
-		ActionID:  "01961f3a-7b2c-7000-8000-000000000002",
-		Action:    "write",
-		Verdict:   "allow",
+		ActionID:  testReceiptID2,
+		Action:    testActionWrite,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)
@@ -426,7 +425,7 @@ func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
 	pub, priv := testSignerKey(t)
 	signer := newTestSigner(t, priv)
 	em := NewEmitter(EmitterConfig{
-		ConfigHash: "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899",
+		ConfigHash: globalHex,
 		Signer:     signer,
 	})
 
@@ -437,8 +436,8 @@ func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
 	// scanning disabled, signing enabled."
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000010",
-		Action:    "write",
-		Verdict:   "allow",
+		Action:    testActionWrite,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)
@@ -523,8 +522,8 @@ func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000011",
-		Action:    "write",
-		Verdict:   "allow",
+		Action:    testActionWrite,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)
@@ -600,8 +599,8 @@ func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000012",
-		Action:    "write",
-		Verdict:   "allow",
+		Action:    testActionWrite,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)

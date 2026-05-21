@@ -36,6 +36,10 @@ const (
 	otlpSeverityWarn  = 13
 	otlpSeverityError = 17
 
+	otlpSeverityTextInfo  = "INFO"
+	otlpSeverityTextWarn  = "WARN"
+	otlpSeverityTextError = "ERROR"
+
 	// Retry backoff schedule for 429/5xx responses and network errors.
 	otlpMaxRetries   = 3
 	otlpRetryBase    = 1 * time.Second
@@ -362,11 +366,11 @@ func (s *OTLPSink) eventToLogRecord(event Event) *logspb.LogRecord {
 func mapSeverity(sev Severity) (logspb.SeverityNumber, string) {
 	switch sev {
 	case SeverityWarn:
-		return otlpSeverityWarn, "WARN"
+		return otlpSeverityWarn, otlpSeverityTextWarn
 	case SeverityCritical:
-		return otlpSeverityError, "ERROR"
+		return otlpSeverityError, otlpSeverityTextError
 	default:
-		return otlpSeverityInfo, "INFO"
+		return otlpSeverityInfo, otlpSeverityTextInfo
 	}
 }
 

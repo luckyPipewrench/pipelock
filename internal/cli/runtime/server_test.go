@@ -200,8 +200,15 @@ func TestNewServer_DefaultsWritersAndReverseListen(t *testing.T) {
 	if s.opts.Stdout != io.Discard {
 		t.Fatal("nil stdout should default to io.Discard")
 	}
-	if s.opts.Stderr != io.Discard {
-		t.Fatal("nil stderr should default to io.Discard")
+	// opts.Stderr is wrapped in a sync writer to serialize concurrent
+	// producers (see NewServer); the underlying writer should still be
+	// io.Discard when no stderr was provided.
+	syncW, ok := s.opts.Stderr.(*stderrSyncWriter)
+	if !ok {
+		t.Fatalf("opts.Stderr type = %T, want *stderrSyncWriter", s.opts.Stderr)
+	}
+	if syncW.w != io.Discard {
+		t.Fatal("nil stderr should default to io.Discard under the sync wrapper")
 	}
 	if s.cfg.ReverseProxy.Listen != ":8890" {
 		t.Fatalf("reverse listen = %q, want default :8890", s.cfg.ReverseProxy.Listen)

@@ -1069,7 +1069,7 @@ func TestHealthIncludesForwardProxy(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	p.handleHealth(w, req)
 

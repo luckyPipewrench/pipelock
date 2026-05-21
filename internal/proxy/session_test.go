@@ -495,7 +495,7 @@ func TestSessionState_LastActivity(t *testing.T) {
 // scrapeMetric reads the prometheus HTTP handler and checks for a metric substring.
 func scrapeMetric(t *testing.T, m *metrics.Metrics, want string) bool {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -1732,7 +1732,7 @@ func TestSessionState_OnEntryRecovery_EmitsMetrics(t *testing.T) {
 	m.SetAdaptiveSessionLevel(toLabel, 1)
 
 	// Verify metrics were recorded.
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)
@@ -1880,7 +1880,7 @@ func TestSessionManager_SweepMetrics_MultiLevel(t *testing.T) {
 	}
 
 	// Verify metrics.
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(w, req)
 	body, _ := io.ReadAll(w.Body)

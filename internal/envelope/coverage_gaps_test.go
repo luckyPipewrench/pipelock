@@ -51,8 +51,8 @@ func TestEmitter_InjectAndSign_StripsHeadersOnSignError(t *testing.T) {
 
 	err = em.InjectAndSign(req, []byte("body"), BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-0000000000aa",
-		Action:    "write",
-		Verdict:   "allow",
+		Action:    testActionWrite,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	})
 	if err == nil {
@@ -94,7 +94,7 @@ func TestEmitter_InjectAndSign_NilRequestReturnsError(t *testing.T) {
 	t.Parallel()
 
 	em := NewEmitter(EmitterConfig{ConfigHash: "aa"})
-	if err := em.InjectAndSign(nil, nil, BuildOpts{Action: "read", Verdict: "allow"}); err == nil {
+	if err := em.InjectAndSign(nil, nil, BuildOpts{Action: testActionRead, Verdict: testVerdictAllow}); err == nil {
 		t.Error("InjectAndSign(nil, ...) should return an error")
 	}
 }
@@ -107,7 +107,7 @@ func TestEmitter_InjectAndSign_NilEmitterIsNoOp(t *testing.T) {
 
 	var em *Emitter
 	req := newTestRequest(t, http.MethodGet, "https://upstream.example/", nil)
-	if err := em.InjectAndSign(req, nil, BuildOpts{Action: "read", Verdict: "allow"}); err != nil {
+	if err := em.InjectAndSign(req, nil, BuildOpts{Action: testActionRead, Verdict: testVerdictAllow}); err != nil {
 		t.Errorf("nil emitter should no-op, got err = %v", err)
 	}
 	if v := req.Header.Get("Pipelock-Mediation"); v != "" {
@@ -126,8 +126,8 @@ func TestEmitter_InjectAndSign_NoSignerHeaderOnly(t *testing.T) {
 	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-0000000000bb",
-		Action:    "read",
-		Verdict:   "allow",
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)

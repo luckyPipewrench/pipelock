@@ -68,7 +68,7 @@ func TestStripInternalIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			req := httptest.NewRequest(http.MethodGet, "http://example.com"+tt.path, http.NoBody)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com"+tt.path, http.NoBody)
 			if tt.setAgentHdr {
 				req.Header.Set(AgentHeader, attackerAgent)
 			}
@@ -98,7 +98,7 @@ func TestStripInternalIdentity(t *testing.T) {
 func TestStripInternalIdentity_ForwardedHeaders(t *testing.T) {
 	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/", http.NoBody)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com/", http.NoBody)
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
 	req.Header.Set("X-Real-IP", "5.6.7.8")
 	req.Header.Set("X-Forwarded-Host", "evil.example")

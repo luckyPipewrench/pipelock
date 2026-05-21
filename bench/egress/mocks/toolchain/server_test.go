@@ -12,7 +12,7 @@ func TestHandleEmitsConfiguredToolUseRoundsThenEndTurn(t *testing.T) {
 	s := &Server{chainLen: 3}
 	wantReasons := []string{"tool_use", "tool_use", "tool_use", "end_turn"}
 	for i, want := range wantReasons {
-		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader("{}"))
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/messages", strings.NewReader("{}"))
 		rec := httptest.NewRecorder()
 		s.handle(rec, req)
 		if rec.Code != http.StatusOK {

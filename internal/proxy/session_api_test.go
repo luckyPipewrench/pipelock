@@ -67,7 +67,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		sm.GetOrCreate("mcp-stdio-1")
 
 		handler := newTestSessionAPIHandler(t, sm)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 
@@ -100,7 +100,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		defer cleanup()
 
 		handler := newTestSessionAPIHandler(t, sm)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		w := httptest.NewRecorder()
 
 		handler.HandleList(w, req)
@@ -115,7 +115,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		defer cleanup()
 
 		handler := newTestSessionAPIHandler(t, sm)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer wrong-token")
 		w := httptest.NewRecorder()
 
@@ -128,7 +128,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 
 	t.Run("profiling disabled", func(t *testing.T) {
 		handler := newTestSessionAPIHandler(t, nil)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 
@@ -144,7 +144,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		defer cleanup()
 
 		handler := newTestSessionAPIHandler(t, sm)
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 
@@ -160,7 +160,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 		defer cleanup()
 
 		handler := newTestSessionAPIHandler(t, sm)
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 
@@ -196,7 +196,7 @@ func TestSessionAPI_HandleList(t *testing.T) {
 			Logger:        audit.NewNop(),
 		}) // empty token
 
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer some-token")
 		w := httptest.NewRecorder()
 
@@ -218,7 +218,7 @@ func TestSessionAPI_HandleReset_Success(t *testing.T) {
 	sess.SetBlockAll(true)
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -266,7 +266,7 @@ func TestSessionAPI_HandleTask_Success(t *testing.T) {
 	before := sess.TaskSnapshot()
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/task", strings.NewReader(`{"label":"new task","reason":"user started a new task"}`))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/task", strings.NewReader(`{"label":"new task","reason":"user started a new task"}`))
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -303,7 +303,7 @@ func TestSessionAPI_HandleTrust_Success(t *testing.T) {
 	task := sess.TaskSnapshot()
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/trust", strings.NewReader(fmt.Sprintf(`{"scope":"task","action_match":"publish:post:https://api.example.com/auth/update","expires_at":"%s","granted_by":"operator","reason":"same-task follow-up"}`, time.Now().UTC().Add(time.Hour).Format(time.RFC3339))))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent-a%7C10.0.0.1/trust", strings.NewReader(fmt.Sprintf(`{"scope":"task","action_match":"publish:post:https://api.example.com/auth/update","expires_at":"%s","granted_by":"operator","reason":"same-task follow-up"}`, time.Now().UTC().Add(time.Hour).Format(time.RFC3339))))
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -342,7 +342,7 @@ func TestSessionAPI_HandleReset_InvocationKeyRejected(t *testing.T) {
 	sm.GetOrCreate("mcp-stdio-42")
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/mcp-stdio-42/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/mcp-stdio-42/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -358,7 +358,7 @@ func TestSessionAPI_HandleReset_NotFound(t *testing.T) {
 	defer cleanup()
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/nonexistent%7C10.0.0.1/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/nonexistent%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -379,14 +379,14 @@ func TestSessionAPI_HandleReset_RateLimited(t *testing.T) {
 
 	// Exhaust the rate limit (10 requests per window).
 	for range sessionAPIRateLimitMax {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 		handler.HandleReset(w, req)
 	}
 
 	// 11th request should be rate-limited.
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 	handler.HandleReset(w, req)
@@ -407,7 +407,7 @@ func TestSessionAPI_HandleList_NotRateLimited(t *testing.T) {
 
 	// Send more requests than the reset rate limit to prove list is unaffected.
 	for range sessionAPIRateLimitMax + 5 {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 		handler.HandleList(w, req)
@@ -446,7 +446,7 @@ func TestSessionAPI_RateLimiters_Independent(t *testing.T) {
 	// /reset on the same handler must still succeed — its limiter
 	// has not been touched.
 	{
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 		handler.HandleReset(w, req)
@@ -488,7 +488,7 @@ func TestSessionAPI_HandleReset_MethodNotAllowed(t *testing.T) {
 	defer cleanup()
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -526,7 +526,7 @@ func TestSessionAPI_HandleReset_DecrementEscalatedMetrics(t *testing.T) {
 		APIToken:      testSessionAPIToken,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent-b%7C10.0.0.2/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent-b%7C10.0.0.2/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -568,7 +568,7 @@ func TestExtractSessionKey(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.url, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, tt.url, nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tt.url, nil)
 			got, ok := extractSessionKey(r)
 			if ok != tt.ok {
 				t.Errorf("extractSessionKey(%q) ok = %v, want %v", tt.url, ok, tt.ok)
@@ -646,7 +646,7 @@ func TestSessionAPI_IntegrationViaProxy(t *testing.T) {
 	handler := p.buildHandler(p.buildMux())
 
 	// List sessions via the proxy handler.
-	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	listReq := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 	listReq.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	listW := httptest.NewRecorder()
 	handler.ServeHTTP(listW, listReq)
@@ -656,7 +656,7 @@ func TestSessionAPI_IntegrationViaProxy(t *testing.T) {
 	}
 
 	// Reset session via the proxy handler.
-	resetReq := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/test-agent%7C10.0.0.1/reset", nil)
+	resetReq := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/test-agent%7C10.0.0.1/reset", nil)
 	resetReq.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	resetW := httptest.NewRecorder()
 	handler.ServeHTTP(resetW, resetReq)
@@ -706,7 +706,7 @@ func TestSessionAPI_HandleReset_ClearsCEEState(t *testing.T) {
 		APIToken:      testSessionAPIToken,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -789,7 +789,7 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 						return
 					default:
 					}
-					req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/", nil)
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/", nil)
 					req.RemoteAddr = testRemoteAddr3
 					req.Header.Set("X-Pipelock-Agent", "agent")
 					w := httptest.NewRecorder()
@@ -805,7 +805,7 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 				return
 			default:
 			}
-			req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
 			req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -839,7 +839,7 @@ func newTaskRequest(method, key, body string) *http.Request {
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, path, r)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, r)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	return req
 }
@@ -852,7 +852,7 @@ func newTrustRequest(method, key, body string) *http.Request {
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req := httptest.NewRequest(method, path, r)
+	req := httptest.NewRequestWithContext(context.Background(), method, path, r)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	return req
 }
@@ -879,7 +879,7 @@ func TestSessionAPI_HandleTask_Unauthorized(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/task", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/task", nil)
 	// No Authorization header.
 	w := httptest.NewRecorder()
 	handler.HandleTask(w, req)
@@ -930,7 +930,7 @@ func TestSessionAPI_HandleTask_BadKey(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, sm)
 
 	// Path missing the session key entirely.
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//task", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions//task", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 	handler.HandleTask(w, req)
@@ -1060,7 +1060,7 @@ func TestSessionAPI_HandleTrust_Unauthorized(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/trust", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/trust", nil)
 	w := httptest.NewRecorder()
 	handler.HandleTrust(w, req)
 
@@ -1108,7 +1108,7 @@ func TestSessionAPI_HandleTrust_BadKey(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//trust", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions//trust", nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 	handler.HandleTrust(w, req)
@@ -1275,7 +1275,7 @@ func TestDecodeJSONBody(t *testing.T) {
 			if tc.body != "" {
 				r = strings.NewReader(tc.body)
 			}
-			req := httptest.NewRequest(http.MethodPost, "/x", r)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", r)
 			var v payload
 			err := decodeJSONBody(req, &v)
 			if tc.wantErr && err == nil {
@@ -1307,7 +1307,7 @@ func TestDecodeJSONBody_NilBody(t *testing.T) {
 func TestDecodeJSONBody_SizeLimit(t *testing.T) {
 	// Build a body larger than sessionAPIMaxBodyBytes with a valid opening.
 	big := `{"name":"` + strings.Repeat("a", sessionAPIMaxBodyBytes+1) + `"}`
-	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(big))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/x", strings.NewReader(big))
 	var v struct {
 		Name string `json:"name"`
 	}

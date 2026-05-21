@@ -13,42 +13,42 @@ func TestClassifyRisk(t *testing.T) {
 	}{
 		{
 			name:     "filesystem server",
-			server:   MCPServer{ServerName: "filesystem", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: kwFilesystem, Command: testCmdNpx, Args: []string{"-y", testServerFilesystemPkg}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
 			name:     "postgres server",
-			server:   MCPServer{ServerName: "postgres", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-postgres"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "postgres", Command: testCmdNpx, Args: []string{"-y", "@modelcontextprotocol/server-postgres"}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
 			name:     "shell server",
-			server:   MCPServer{ServerName: "shell", Command: "node", Args: []string{"shell-server.js"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "shell", Command: testCmdNode, Args: []string{"shell-server.js"}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
 			name:     "slack server",
-			server:   MCPServer{ServerName: "slack", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-slack"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "slack", Command: testCmdNpx, Args: []string{"-y", "@modelcontextprotocol/server-slack"}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
 			name:     "everything server",
-			server:   MCPServer{ServerName: "everything", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-everything"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "everything", Command: testCmdNpx, Args: []string{"-y", "@modelcontextprotocol/server-everything"}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
 			name:     "browser server via playwright",
-			server:   MCPServer{ServerName: "browser", Command: "npx", Args: []string{"-y", "@playwright/mcp-server"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "browser", Command: testCmdNpx, Args: []string{"-y", "@playwright/mcp-server"}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
 			name:     "memory server",
-			server:   MCPServer{ServerName: "memory", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-memory"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "memory", Command: testCmdNpx, Args: []string{"-y", "@modelcontextprotocol/server-memory"}, Protection: Unprotected},
 			wantRisk: RiskMedium,
 		},
 		{
 			name:     "brave search server",
-			server:   MCPServer{ServerName: "brave-search", Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-brave-search"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "brave-search", Command: testCmdNpx, Args: []string{"-y", "@modelcontextprotocol/server-brave-search"}, Protection: Unprotected},
 			wantRisk: RiskMedium,
 		},
 		{
@@ -58,7 +58,7 @@ func TestClassifyRisk(t *testing.T) {
 		},
 		{
 			name:     "protected pipelock gets low risk",
-			server:   MCPServer{ServerName: "filesystem", Command: "pipelock", Args: []string{"mcp", "proxy"}, Protection: ProtectedPipelock},
+			server:   MCPServer{ServerName: kwFilesystem, Command: wrapperCommand, Args: []string{wrapperArgMCP, wrapperArgProxy}, Protection: ProtectedPipelock},
 			wantRisk: RiskLow,
 		},
 		{
@@ -73,7 +73,7 @@ func TestClassifyRisk(t *testing.T) {
 		},
 		{
 			name:     "git server",
-			server:   MCPServer{ServerName: "git-ops", Command: "npx", Args: []string{"-y", "mcp-server-git"}, Protection: Unprotected},
+			server:   MCPServer{ServerName: "git-ops", Command: testCmdNpx, Args: []string{"-y", "mcp-server-git"}, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 		{
@@ -88,7 +88,7 @@ func TestClassifyRisk(t *testing.T) {
 		},
 		{
 			name:     "hyphenated fs still matches",
-			server:   MCPServer{ServerName: "my-fs-server", Command: "node", Protection: Unprotected},
+			server:   MCPServer{ServerName: "my-fs-server", Command: testCmdNode, Protection: Unprotected},
 			wantRisk: RiskHigh,
 		},
 	}
@@ -104,8 +104,8 @@ func TestClassifyRisk(t *testing.T) {
 
 func TestClassifyRiskReturnsReason(t *testing.T) {
 	risk, reason := classifyRisk(MCPServer{
-		ServerName: "filesystem",
-		Command:    "npx",
+		ServerName: kwFilesystem,
+		Command:    testCmdNpx,
 		Protection: Unprotected,
 	})
 	if risk != RiskHigh {

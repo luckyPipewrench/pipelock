@@ -47,14 +47,13 @@ func base58Decode(s string) ([]byte, error) {
 		leadingZeros++
 	}
 
-	// Convert base58 digits to a big integer.
+	// Convert base58 digits to a big integer. Iterate by byte (not rune)
+	// since base58 is ASCII-only; any multi-byte sequence is rejected
+	// because at least one byte falls outside the base58 charset.
 	n := new(big.Int)
 	base := big.NewInt(58)
-	for _, c := range s {
-		if c > 255 {
-			return nil, errInvalidBase58Char
-		}
-		idx := base58CharIndex[byte(c)]
+	for i := 0; i < len(s); i++ {
+		idx := base58CharIndex[s[i]]
 		if idx < 0 {
 			return nil, errInvalidBase58Char
 		}

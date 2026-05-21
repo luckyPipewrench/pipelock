@@ -17,7 +17,7 @@ func TestParseMCPServersStdio(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "claude-code")
+	servers, err := parseConfigFile(path, configKeyMCPServers, clientClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,13 +28,13 @@ func TestParseMCPServersStdio(t *testing.T) {
 	if s.ServerName != "brain" {
 		t.Errorf("name = %q, want brain", s.ServerName)
 	}
-	if s.Command != "pipelock" {
+	if s.Command != wrapperCommand {
 		t.Errorf("command = %q, want pipelock", s.Command)
 	}
-	if s.Transport != "stdio" {
+	if s.Transport != TransportStdio {
 		t.Errorf("transport = %q, want stdio", s.Transport)
 	}
-	if s.Client != "claude-code" {
+	if s.Client != clientClaudeCode {
 		t.Errorf("client = %q, want claude-code", s.Client)
 	}
 }
@@ -47,7 +47,7 @@ func TestParseMCPServersHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "cursor")
+	servers, err := parseConfigFile(path, configKeyMCPServers, clientCursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,10 +55,10 @@ func TestParseMCPServersHTTP(t *testing.T) {
 		t.Fatalf("expected 1 server, got %d", len(servers))
 	}
 	s := servers[0]
-	if s.Transport != "http" {
+	if s.Transport != TransportHTTP {
 		t.Errorf("transport = %q, want http", s.Transport)
 	}
-	if s.URL != "https://api.example.com/mcp" {
+	if s.URL != testHTTPMCPURL {
 		t.Errorf("url = %q", s.URL)
 	}
 	// Headers present should produce a parse warning
@@ -75,7 +75,7 @@ func TestParseMCPServersNoHeadersNoWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "cursor")
+	servers, err := parseConfigFile(path, configKeyMCPServers, clientCursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestParseVSCodeServersKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "servers", "vscode")
+	servers, err := parseConfigFile(path, "servers", clientVSCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestParseVSCodeServersKey(t *testing.T) {
 }
 
 func TestParseMissingFile(t *testing.T) {
-	_, err := parseConfigFile("/nonexistent/path.json", "mcpServers", "test")
+	_, err := parseConfigFile("/nonexistent/path.json", configKeyMCPServers, "test")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -122,14 +122,14 @@ func TestParseServerURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "windsurf")
+	servers, err := parseConfigFile(path, configKeyMCPServers, "windsurf")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if servers[0].URL != "https://example.com/mcp" {
 		t.Errorf("url = %q, want https://example.com/mcp", servers[0].URL)
 	}
-	if servers[0].Transport != "http" {
+	if servers[0].Transport != TransportHTTP {
 		t.Errorf("transport = %q, want http", servers[0].Transport)
 	}
 }
@@ -142,7 +142,7 @@ func TestParseEmptyServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "claude-code")
+	servers, err := parseConfigFile(path, configKeyMCPServers, clientClaudeCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestParseMalformedJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := parseConfigFile(path, "mcpServers", "test")
+	_, err := parseConfigFile(path, configKeyMCPServers, "test")
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -172,7 +172,7 @@ func TestParseMalformedServersValue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := parseConfigFile(path, "mcpServers", "test")
+	_, err := parseConfigFile(path, configKeyMCPServers, "test")
 	if err == nil {
 		t.Fatal("expected error for non-object mcpServers")
 	}
@@ -186,7 +186,7 @@ func TestParseMissingKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "test")
+	servers, err := parseConfigFile(path, configKeyMCPServers, "test")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestParseMultipleServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "cursor")
+	servers, err := parseConfigFile(path, configKeyMCPServers, clientCursor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,11 +219,11 @@ func TestParseMultipleServers(t *testing.T) {
 	for _, s := range servers {
 		transports[s.Transport]++
 	}
-	if transports["stdio"] != 2 {
-		t.Errorf("expected 2 stdio servers, got %d", transports["stdio"])
+	if transports[TransportStdio] != 2 {
+		t.Errorf("expected 2 stdio servers, got %d", transports[TransportStdio])
 	}
-	if transports["http"] != 1 {
-		t.Errorf("expected 1 http server, got %d", transports["http"])
+	if transports[TransportHTTP] != 1 {
+		t.Errorf("expected 1 http server, got %d", transports[TransportHTTP])
 	}
 }
 
@@ -235,7 +235,7 @@ func TestParseNilArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "test")
+	servers, err := parseConfigFile(path, configKeyMCPServers, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestParseEmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := parseConfigFile(path, "mcpServers", "test")
+	_, err := parseConfigFile(path, configKeyMCPServers, "test")
 	if err == nil {
 		t.Fatal("expected error for empty file")
 	}
@@ -534,7 +534,7 @@ func TestParseUnknownTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "mcpServers", "test")
+	servers, err := parseConfigFile(path, configKeyMCPServers, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +555,7 @@ func TestParseExplicitTransportType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "servers", "vscode")
+	servers, err := parseConfigFile(path, "servers", clientVSCode)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,11 +575,11 @@ func TestParseExplicitStdioType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	servers, err := parseConfigFile(path, "servers", "vscode")
+	servers, err := parseConfigFile(path, "servers", clientVSCode)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if servers[0].Transport != "stdio" {
+	if servers[0].Transport != TransportStdio {
 		t.Errorf("transport = %q, want stdio", servers[0].Transport)
 	}
 }

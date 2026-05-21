@@ -200,7 +200,7 @@ func TestSessionAPI_HandleAdaptiveStatus(t *testing.T) {
 	sm.GetOrCreate(adaptiveAPIIdentityKey).RecordEvent(SessionEvent{Kind: "anomaly", Type: testDomainBurst})
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/adaptive/status", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/status", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -221,7 +221,7 @@ func TestSessionAPI_HandleAdaptiveStatus(t *testing.T) {
 func TestSessionAPI_HandleAdaptiveStatusRejectsWrongMethodAndMissingManager(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/status", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/status", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -235,7 +235,7 @@ func TestSessionAPI_HandleAdaptiveStatusRejectsWrongMethodAndMissingManager(t *t
 	}
 
 	handler = newTestSessionAPIHandler(t, nil)
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/adaptive/status", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/status", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w = httptest.NewRecorder()
 
@@ -252,7 +252,7 @@ func TestSessionAPI_HandleAdaptiveFlush(t *testing.T) {
 	sm.GetOrCreate(adaptiveAPIInvocationKey).RecordSignal(session.SignalBlock, 1.0)
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/flush", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/flush", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -280,7 +280,7 @@ func TestSessionAPI_HandleAdaptiveFlushRejectsMethodAndBadBody(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/adaptive/flush", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/flush", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -293,7 +293,7 @@ func TestSessionAPI_HandleAdaptiveFlushRejectsMethodAndBadBody(t *testing.T) {
 		t.Fatalf("Allow: got %q, want POST", allow)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/flush", strings.NewReader(`{"unexpected":true}`))
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/flush", strings.NewReader(`{"unexpected":true}`))
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w = httptest.NewRecorder()
 
@@ -306,7 +306,7 @@ func TestSessionAPI_HandleAdaptiveFlushRejectsMethodAndBadBody(t *testing.T) {
 
 func TestSessionAPI_HandleAdaptiveFlushRejectsMissingManagerAndRateLimit(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, nil)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/flush", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/flush", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -319,7 +319,7 @@ func TestSessionAPI_HandleAdaptiveFlushRejectsMissingManagerAndRateLimit(t *test
 	sm := newAdaptiveOperatorTestManager(t)
 	handler = newTestSessionAPIHandler(t, sm)
 	for range sessionAPIRateLimitMax {
-		req = httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/flush", nil)
+		req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/flush", nil)
 		req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 		w = httptest.NewRecorder()
 		handler.HandleAdaptiveFlush(w, req)
@@ -328,7 +328,7 @@ func TestSessionAPI_HandleAdaptiveFlushRejectsMissingManagerAndRateLimit(t *test
 		}
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/flush", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/flush", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w = httptest.NewRecorder()
 	handler.HandleAdaptiveFlush(w, req)
@@ -346,7 +346,7 @@ func TestSessionAPI_HandleAdaptiveWhoami(t *testing.T) {
 	sm.GetOrCreate(adaptiveAPIIdentityKey).RecordSignal(session.SignalBlock, 1.0)
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/adaptive/whoami", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/whoami", nil)
 	req.RemoteAddr = adaptiveAPIClientIP + ":4567"
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	req.Header.Set("X-Pipelock-Agent", " "+adaptiveAPIAgent+" ")
@@ -372,7 +372,7 @@ func TestSessionAPI_HandleAdaptiveWhoami(t *testing.T) {
 func TestSessionAPI_HandleAdaptiveWhoamiRejectsWrongMethodAndMissingManager(t *testing.T) {
 	sm := newAdaptiveOperatorTestManager(t)
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/adaptive/whoami", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/adaptive/whoami", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -386,7 +386,7 @@ func TestSessionAPI_HandleAdaptiveWhoamiRejectsWrongMethodAndMissingManager(t *t
 	}
 
 	handler = newTestSessionAPIHandler(t, nil)
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/adaptive/whoami", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/adaptive/whoami", nil)
 	req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 	w = httptest.NewRecorder()
 
@@ -477,7 +477,7 @@ func TestSessionAPI_AdaptiveRoutesViaProxyMux(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, tt.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), tt.method, tt.path, nil)
 			req.RemoteAddr = adaptiveAPIClientIP + ":4567"
 			req.Header.Set("Authorization", adaptiveAPIAuthHeader)
 			req.Header.Set("X-Pipelock-Agent", adaptiveAPIAgent)

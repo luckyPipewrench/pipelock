@@ -130,8 +130,8 @@ func TestEvaluateMCP_NoResolvedContractReturnsScannerVerdict(t *testing.T) {
 func TestEvaluateMCP_AllowRuleAnnotatesScannerVerdict(t *testing.T) {
 	t.Parallel()
 	args := []map[string]any{
-		{"key": "currency", "value": "USD"},
-		{"key": "amount", "value": 100},
+		{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD},
+		{testJSONKey: testFieldAmount, testJSONKeyValue: 100},
 	}
 	resolved := mcpResolved(mcpEnforceRule("r-allow", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
@@ -139,7 +139,7 @@ func TestEvaluateMCP_AllowRuleAnnotatesScannerVerdict(t *testing.T) {
 		Request: MCPRequest{
 			Server:   mcpTestServer,
 			ToolName: mcpTestTool,
-			ToolArgs: map[string]any{"currency": "USD", "amount": 100, "extra": "ignored"},
+			ToolArgs: map[string]any{testFieldCurrency: testCurrencyUSD, testFieldAmount: 100, "extra": "ignored"},
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -163,14 +163,14 @@ func TestEvaluateMCP_AllowRuleAnnotatesScannerVerdict(t *testing.T) {
 
 func TestEvaluateMCP_ArgsMismatchBlocksWithReason(t *testing.T) {
 	t.Parallel()
-	args := []map[string]any{{"key": "currency", "value": "USD"}}
+	args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
 			Server:   mcpTestServer,
 			ToolName: mcpTestTool,
-			ToolArgs: map[string]any{"currency": "EUR"},
+			ToolArgs: map[string]any{testFieldCurrency: "EUR"},
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -200,7 +200,7 @@ func TestEvaluateMCP_ArgsMissingKeyIsNonMatch(t *testing.T) {
 	// Missing key in the request must be a non-match, NOT a wildcard.
 	// Otherwise a tool call that omits the constrained arg would slip
 	// through default-deny by accident.
-	args := []map[string]any{{"key": "currency", "value": "USD"}}
+	args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
@@ -229,8 +229,8 @@ func TestEvaluateMCP_DefaultDenyForUnmatchedRequest(t *testing.T) {
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
-			Server:   "other-server",
-			ToolName: "other-tool",
+			Server:   testOtherServer,
+			ToolName: testOtherTool,
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -260,8 +260,8 @@ func TestEvaluateMCP_ObservationOnlyContractFallsThrough(t *testing.T) {
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
-			Server:   "other-server",
-			ToolName: "other-tool",
+			Server:   testOtherServer,
+			ToolName: testOtherTool,
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -289,9 +289,9 @@ func TestEvaluateMCP_HTTPRulesIgnoredByMCPEvaluator(t *testing.T) {
 		RequiredCaptureGrade: contract.CaptureGradeFull,
 		ObservedCaptureGrade: contract.CaptureGradeFull,
 		Selector: map[string]any{
-			"host":   map[string]any{"value": "api.example.com"},
-			"server": map[string]any{"value": mcpTestServer},
-			"tool":   map[string]any{"value": mcpTestTool},
+			testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
+			"server":        map[string]any{testJSONKeyValue: mcpTestServer},
+			testKeyTool:     map[string]any{testJSONKeyValue: mcpTestTool},
 		},
 		Confidence:        "stable",
 		WilsonLower:       "0.99",
@@ -329,8 +329,8 @@ func TestEvaluateMCP_ShadowModeNeverBlocksFromContract(t *testing.T) {
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
-			Server:   "other-server",
-			ToolName: "other-tool",
+			Server:   testOtherServer,
+			ToolName: testOtherTool,
 		},
 		Mode:           ModeShadow,
 		ScannerVerdict: config.ActionAllow,
@@ -367,8 +367,8 @@ func TestEvaluateMCP_CaptureModeNeverSignals(t *testing.T) {
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
-			Server:   "other-server",
-			ToolName: "other-tool",
+			Server:   testOtherServer,
+			ToolName: testOtherTool,
 		},
 		Mode:           ModeCapture,
 		ScannerVerdict: config.ActionAllow,
@@ -482,7 +482,7 @@ func TestEvaluateMCP_RuleWithMissingServerSelectorIgnored(t *testing.T) {
 	// Defense-in-depth: even if a malformed contract slips past
 	// upstream validation, it must not produce a spurious allow.
 	rule := mcpEnforceRule("r-broken", nil)
-	rule.Selector = map[string]any{"tool": map[string]any{"value": mcpTestTool}}
+	rule.Selector = map[string]any{testKeyTool: map[string]any{testJSONKeyValue: mcpTestTool}}
 	resolved := mcpResolved(rule)
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved:       &resolved,
@@ -503,14 +503,14 @@ func TestEvaluateMCP_RuleWithMissingServerSelectorIgnored(t *testing.T) {
 
 func TestEvaluateMCP_ArgMatcherWithEmptyKeyIsNonMatch(t *testing.T) {
 	t.Parallel()
-	args := []map[string]any{{"key": "   ", "value": "USD"}}
+	args := []map[string]any{{testJSONKey: "   ", testJSONKeyValue: testCurrencyUSD}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
 			Server:   mcpTestServer,
 			ToolName: mcpTestTool,
-			ToolArgs: map[string]any{"currency": "USD"},
+			ToolArgs: map[string]any{testFieldCurrency: testCurrencyUSD},
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -533,14 +533,14 @@ func TestEvaluateMCP_NilMatcherValueIsNonMatch(t *testing.T) {
 	t.Parallel()
 	t.Run("matcher value is nil", func(t *testing.T) {
 		t.Parallel()
-		args := []map[string]any{{"key": "currency", "value": nil}}
+		args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: nil}}
 		resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 		decision, err := EvaluateMCP(EvaluateMCPOptions{
 			Resolved: &resolved,
 			Request: MCPRequest{
 				Server:   mcpTestServer,
 				ToolName: mcpTestTool,
-				ToolArgs: map[string]any{"currency": "<nil>"},
+				ToolArgs: map[string]any{testFieldCurrency: "<nil>"},
 			},
 			Mode:           ModeLive,
 			ScannerVerdict: config.ActionAllow,
@@ -554,14 +554,14 @@ func TestEvaluateMCP_NilMatcherValueIsNonMatch(t *testing.T) {
 	})
 	t.Run("request value is nil", func(t *testing.T) {
 		t.Parallel()
-		args := []map[string]any{{"key": "currency", "value": "<nil>"}}
+		args := []map[string]any{{testJSONKey: testFieldCurrency, testJSONKeyValue: "<nil>"}}
 		resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 		decision, err := EvaluateMCP(EvaluateMCPOptions{
 			Resolved: &resolved,
 			Request: MCPRequest{
 				Server:   mcpTestServer,
 				ToolName: mcpTestTool,
-				ToolArgs: map[string]any{"currency": nil},
+				ToolArgs: map[string]any{testFieldCurrency: nil},
 			},
 			Mode:           ModeLive,
 			ScannerVerdict: config.ActionAllow,
@@ -580,14 +580,14 @@ func TestEvaluateMCP_ArgMatcherStringDoesNotMatchNumber(t *testing.T) {
 	// Typed equality is required. If display strings are treated as
 	// reality, a contract that allowed the string "100" would also allow
 	// numeric 100, which can mean a different thing to typed MCP tools.
-	args := []map[string]any{{"key": "amount", "value": "100"}}
+	args := []map[string]any{{testJSONKey: testFieldAmount, testJSONKeyValue: "100"}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
 			Server:   mcpTestServer,
 			ToolName: mcpTestTool,
-			ToolArgs: map[string]any{"amount": 100},
+			ToolArgs: map[string]any{testFieldAmount: 100},
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -605,7 +605,7 @@ func TestEvaluateMCP_ArgMatcherLargeIntegerExact(t *testing.T) {
 	// Numeric equality must not pass through float64 precision collapse.
 	// These two integers are distinct, but both round to the same IEEE-754
 	// value if compared as float64.
-	args := []map[string]any{{"key": "nonce", "value": uint64(9007199254740993)}}
+	args := []map[string]any{{testJSONKey: "nonce", testJSONKeyValue: uint64(9007199254740993)}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
@@ -627,14 +627,14 @@ func TestEvaluateMCP_ArgMatcherLargeIntegerExact(t *testing.T) {
 
 func TestEvaluateMCP_ArgMatcherJSONNumberMatchesNumericArg(t *testing.T) {
 	t.Parallel()
-	args := []map[string]any{{"key": "amount", "value": json.Number("100")}}
+	args := []map[string]any{{testJSONKey: testFieldAmount, testJSONKeyValue: json.Number("100")}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
 			Server:   mcpTestServer,
 			ToolName: mcpTestTool,
-			ToolArgs: map[string]any{"amount": 100},
+			ToolArgs: map[string]any{testFieldAmount: 100},
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -652,14 +652,14 @@ func TestEvaluateMCP_V2MatcherSilentlyMisses(t *testing.T) {
 	// v2 schema may add operators like {key, op, threshold}. A v1
 	// runtime sees these as non-match so operators get default-deny
 	// rather than a spurious allow on an unrecognized matcher.
-	args := []map[string]any{{"key": "amount", "op": "lt", "threshold": "1000"}}
+	args := []map[string]any{{testJSONKey: testFieldAmount, "op": "lt", "threshold": "1000"}}
 	resolved := mcpResolved(mcpEnforceRule("r-stripe", args))
 	decision, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved: &resolved,
 		Request: MCPRequest{
 			Server:   mcpTestServer,
 			ToolName: mcpTestTool,
-			ToolArgs: map[string]any{"amount": 5},
+			ToolArgs: map[string]any{testFieldAmount: 5},
 		},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
@@ -685,7 +685,7 @@ func TestEvaluateMCP_MalformedSelectorArgsNonMatch(t *testing.T) {
 			name: "non-map element mixed with valid matcher",
 			args: []any{
 				"not-a-map",
-				map[string]any{"key": "currency", "value": "USD"},
+				map[string]any{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD},
 			},
 		},
 		{
@@ -694,7 +694,7 @@ func TestEvaluateMCP_MalformedSelectorArgsNonMatch(t *testing.T) {
 		},
 		{
 			name: "args field is not a list",
-			args: map[string]any{"key": "currency", "value": "USD"},
+			args: map[string]any{testJSONKey: testFieldCurrency, testJSONKeyValue: testCurrencyUSD},
 		},
 		{
 			name: "args field is null",
@@ -713,7 +713,7 @@ func TestEvaluateMCP_MalformedSelectorArgsNonMatch(t *testing.T) {
 				Request: MCPRequest{
 					Server:   mcpTestServer,
 					ToolName: mcpTestTool,
-					ToolArgs: map[string]any{"currency": "USD"},
+					ToolArgs: map[string]any{testFieldCurrency: testCurrencyUSD},
 				},
 				Mode:           ModeLive,
 				ScannerVerdict: config.ActionAllow,
@@ -764,7 +764,7 @@ func TestScalarValuesEqual_NumericTypeMatrix(t *testing.T) {
 		{"int vs uint64 same value", int(5), uint64(5), true},
 		{"int vs float64 same value", int(5), float64(5.0), true},
 		{"json.Number vs int same value", json.Number("5"), int(5), true},
-		{"string equal", "USD", "USD", true},
+		{"string equal", testCurrencyUSD, testCurrencyUSD, true},
 		{"string vs int", "100", int(100), false},
 		{"string vs bool", "true", true, false},
 		{"bool true equal", true, true, true},
@@ -809,8 +809,8 @@ func mcpResolved(rules ...contract.Rule) ResolvedContract {
 // match, or a list of {key, value} maps for arg-equality matching.
 func mcpEnforceRule(ruleID string, args []map[string]any) contract.Rule {
 	selector := map[string]any{
-		"server": map[string]any{"value": mcpTestServer},
-		"tool":   map[string]any{"value": mcpTestTool},
+		"server":    map[string]any{testJSONKeyValue: mcpTestServer},
+		testKeyTool: map[string]any{testJSONKeyValue: mcpTestTool},
 	}
 	if len(args) > 0 {
 		argList := make([]any, len(args))
@@ -830,7 +830,7 @@ func mcpEnforceRule(ruleID string, args []map[string]any) contract.Rule {
 		Observation:          map[string]any{},
 		Selector:             selector,
 		Rationale:            map[string]any{},
-		RecurringSupport:     map[string]any{"windows_floor": 3},
+		RecurringSupport:     map[string]any{testWindowsFloor: 3},
 		OpportunityHealth:    map[string]any{},
 	}
 }

@@ -24,7 +24,7 @@ func TestSessionAPI_HandleAirlock_SoftTier(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"soft"}`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -56,7 +56,7 @@ func TestSessionAPI_HandleAirlock_NormalRelease(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"normal"}`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -90,7 +90,7 @@ func TestSessionAPI_HandleAirlock_InvalidTier(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"extreme"}`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -109,7 +109,7 @@ func TestSessionAPI_HandleAirlock_MissingBody(t *testing.T) {
 	sm.GetOrCreate("agent-a|10.0.0.1")
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, strings.NewReader(""))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, strings.NewReader(""))
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -129,7 +129,7 @@ func TestSessionAPI_HandleAirlock_InvalidJSON(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`not json`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -146,7 +146,7 @@ func TestSessionAPI_HandleAirlock_MethodNotAllowed(t *testing.T) {
 	defer cleanup()
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodGet, testAirlockEndpoint, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, testAirlockEndpoint, nil)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -167,7 +167,7 @@ func TestSessionAPI_HandleAirlock_NotFound(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"soft"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/nonexistent%7C10.0.0.1/airlock", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/nonexistent%7C10.0.0.1/airlock", body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -185,7 +185,7 @@ func TestSessionAPI_HandleAirlock_Unauthorized(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"soft"}`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	// No Authorization header.
 	w := httptest.NewRecorder()
 
@@ -204,7 +204,7 @@ func TestSessionAPI_HandleAirlock_BadKey(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"soft"}`)
 	// Path with wrong number of segments.
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/airlock", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/airlock", body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -225,7 +225,7 @@ func TestSessionAPI_HandleAirlock_SameTierNoop(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 	body := strings.NewReader(`{"tier":"hard"}`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 
@@ -258,7 +258,7 @@ func TestSessionAPI_HandleAirlock_RateLimited(t *testing.T) {
 	// Exhaust the airlock limiter at the documented 10/min ceiling.
 	for range sessionAPIRateLimitMax {
 		body := strings.NewReader(`{"tier":"soft"}`)
-		req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 		handler.HandleAirlock(w, req)
@@ -269,7 +269,7 @@ func TestSessionAPI_HandleAirlock_RateLimited(t *testing.T) {
 
 	// One more request should 429 with a Retry-After header.
 	body := strings.NewReader(`{"tier":"soft"}`)
-	req := httptest.NewRequest(http.MethodPost, testAirlockEndpoint, body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, testAirlockEndpoint, body)
 	req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 	w := httptest.NewRecorder()
 	handler.HandleAirlock(w, req)
@@ -297,7 +297,7 @@ func TestSessionAPI_SetAPIToken_HotReload(t *testing.T) {
 
 	// Old token accepted pre-rotation.
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 		handler.HandleList(w, req)
@@ -312,7 +312,7 @@ func TestSessionAPI_SetAPIToken_HotReload(t *testing.T) {
 
 	// Old token must now be rejected.
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+testSessionAPIToken)
 		w := httptest.NewRecorder()
 		handler.HandleList(w, req)
@@ -323,7 +323,7 @@ func TestSessionAPI_SetAPIToken_HotReload(t *testing.T) {
 
 	// New token must now be accepted.
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+newToken)
 		w := httptest.NewRecorder()
 		handler.HandleList(w, req)
@@ -338,7 +338,7 @@ func TestSessionAPI_SetAPIToken_HotReload(t *testing.T) {
 	// the bootstrap path when no api_token is in the YAML.
 	handler.SetAPIToken("")
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 		req.Header.Set("Authorization", "Bearer "+newToken)
 		w := httptest.NewRecorder()
 		handler.HandleList(w, req)
@@ -369,7 +369,7 @@ func TestExtractSessionKeyWithAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, tt.path, nil)
 			got, ok := extractSessionKeyWithAction(req, tt.action)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)

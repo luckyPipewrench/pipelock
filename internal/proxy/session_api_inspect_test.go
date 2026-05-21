@@ -37,7 +37,7 @@ func TestSessionAPI_HandleInspect_HappyPath(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
 	req.Header.Set("Authorization", inspectAuthHeader)
 	w := httptest.NewRecorder()
 
@@ -73,7 +73,7 @@ func TestSessionAPI_HandleInspect_NotFound(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, inspectURLFor("ghost|1.2.3.4"), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor("ghost|1.2.3.4"), nil)
 	req.Header.Set("Authorization", inspectAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleInspect(w, req)
@@ -88,7 +88,7 @@ func TestSessionAPI_HandleInspect_MethodNotAllowed(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, inspectURLFor(inspectIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, inspectURLFor(inspectIdentityKey), nil)
 	req.Header.Set("Authorization", inspectAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleInspect(w, req)
@@ -106,7 +106,7 @@ func TestSessionAPI_HandleInspect_Unauthorized(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
 	// No auth header.
 	w := httptest.NewRecorder()
 	handler.HandleInspect(w, req)
@@ -137,7 +137,7 @@ func TestSessionAPI_HandleInspect_BadPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil)
 			req.Header.Set("Authorization", inspectAuthHeader)
 			w := httptest.NewRecorder()
 			handler.HandleInspect(w, req)
@@ -156,7 +156,7 @@ func TestSessionAPI_HandleInspect_RateLimited(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, sm)
 
 	for i := 0; i < sessionAPIRateLimitMax; i++ {
-		req := httptest.NewRequest(http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
 		req.Header.Set("Authorization", inspectAuthHeader)
 		w := httptest.NewRecorder()
 		handler.HandleInspect(w, req)
@@ -166,7 +166,7 @@ func TestSessionAPI_HandleInspect_RateLimited(t *testing.T) {
 	}
 
 	// The next request should be rate-limited.
-	req := httptest.NewRequest(http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
 	req.Header.Set("Authorization", inspectAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleInspect(w, req)
@@ -191,7 +191,7 @@ func TestSessionAPI_HandleInspect_ManagerDisabled(t *testing.T) {
 		APIToken:      testSessionAPIToken,
 	})
 
-	req := httptest.NewRequest(http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
 	req.Header.Set("Authorization", inspectAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleInspect(w, req)
@@ -207,7 +207,7 @@ func TestSessionAPI_HandleInspect_RecentEventsEmpty(t *testing.T) {
 	sm.GetOrCreate(inspectIdentityKey)
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, inspectURLFor(inspectIdentityKey), nil)
 	req.Header.Set("Authorization", inspectAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleInspect(w, req)

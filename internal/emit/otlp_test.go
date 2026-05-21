@@ -47,10 +47,10 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 
 	event := Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test-instance",
-		Fields:     map[string]any{"url": "https://evil.com", "scanner": "dlp"},
+		InstanceID: testInstanceName,
+		Fields:     map[string]any{testFieldURL: testEvilURL, "scanner": "dlp"},
 	}
 
 	if err := sink.Emit(context.Background(), event); err != nil {
@@ -84,7 +84,7 @@ func TestOTLPSink_EmitEvent(t *testing.T) {
 	if record.SeverityNumber != otlpSeverityWarn {
 		t.Errorf("expected severity %d, got %d", otlpSeverityWarn, record.SeverityNumber)
 	}
-	if record.Body.GetStringValue() != "blocked" {
+	if record.Body.GetStringValue() != testEventBlocked {
 		t.Errorf("expected body 'blocked', got %q", record.Body.GetStringValue())
 	}
 	if record.ObservedTimeUnixNano == 0 {
@@ -118,7 +118,7 @@ func TestOTLPSink_NilFields(t *testing.T) {
 	defer func() { _ = sink.Close() }()
 
 	// Nil Fields map should not panic.
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now(), Fields: nil})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now(), Fields: nil})
 
 	select {
 	case <-doneCh:
@@ -141,9 +141,9 @@ func TestOTLPSink_SeverityFilter(t *testing.T) {
 	}
 
 	// Info event should be filtered.
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityInfo, Type: "allowed", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityInfo, Type: verdictAllowed, Timestamp: time.Now()})
 	// Warn event should pass.
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityWarn, Type: "blocked", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityWarn, Type: testEventBlocked, Timestamp: time.Now()})
 
 	// Wait for the one expected request.
 	select {
@@ -178,7 +178,7 @@ func TestOTLPSink_QueueFull(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	event := Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()}
+	event := Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()}
 
 	var queueFullCount int
 	for range 10 {
@@ -214,7 +214,7 @@ func TestOTLPSink_RetryOn503(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case <-doneCh:
@@ -246,7 +246,7 @@ func TestOTLPSink_NoRetryOn500(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case <-doneCh:
@@ -290,7 +290,7 @@ func TestOTLPSink_Gzip(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case r := <-resultCh:
@@ -320,7 +320,7 @@ func TestOTLPSink_CustomHeaders(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case auth := <-authCh:
@@ -366,7 +366,7 @@ func TestOTLPSink_CloseDrains(t *testing.T) {
 
 	// Enqueue several events, then close immediately.
 	for range 5 {
-		_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+		_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 	}
 	_ = sink.Close()
 
@@ -392,7 +392,7 @@ func TestOTLPSink_EndpointWithV1Logs(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case path := <-requestCh:
@@ -418,7 +418,7 @@ func TestOTLPSink_EndpointWithTrailingSlash(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case path := <-requestCh:
@@ -449,7 +449,7 @@ func TestOTLPSink_EmitAfterClose(t *testing.T) {
 	}
 	_ = sink.Close()
 
-	err = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	err = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 	if err == nil {
 		t.Error("expected error when emitting after close")
 	}
@@ -461,8 +461,8 @@ func TestMapSeverity(t *testing.T) {
 		wantNum logspb.SeverityNumber
 		wantStr string
 	}{
-		{SeverityInfo, otlpSeverityInfo, "INFO"},
-		{SeverityWarn, otlpSeverityWarn, "WARN"},
+		{SeverityInfo, otlpSeverityInfo, otlpSeverityTextInfo},
+		{SeverityWarn, otlpSeverityWarn, otlpSeverityTextWarn},
 		{SeverityCritical, otlpSeverityError, "ERROR"},
 	}
 	for _, tt := range tests {
@@ -494,7 +494,7 @@ func TestOTLPSink_NetworkErrorRetry(t *testing.T) {
 	// Close server immediately so retries hit network errors.
 	srv.Close()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	// Wait for retry exhaustion (3 attempts * ~1-2s backoff each, but network
 	// errors return fast since server is closed).
@@ -527,7 +527,7 @@ func TestOTLPSink_RetryExhausted(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case <-doneCh:
@@ -559,7 +559,7 @@ func TestOTLPSink_4xxNotRetried(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: "test", Timestamp: time.Now()})
+	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
 
 	select {
 	case <-doneCh:
@@ -634,15 +634,15 @@ func TestGzipCompress(t *testing.T) {
 func TestMarshalExportLogsRequest(t *testing.T) {
 	resource := &respb.Resource{
 		Attributes: []*commonpb.KeyValue{
-			stringKV("service.name", "test"),
+			stringKV("service.name", testStr),
 		},
 	}
 	record := &logspb.LogRecord{
 		TimeUnixNano:   12345,
 		SeverityNumber: otlpSeverityWarn,
-		SeverityText:   "WARN",
+		SeverityText:   otlpSeverityTextWarn,
 		Body: &commonpb.AnyValue{
-			Value: &commonpb.AnyValue_StringValue{StringValue: "blocked"},
+			Value: &commonpb.AnyValue_StringValue{StringValue: testEventBlocked},
 		},
 	}
 

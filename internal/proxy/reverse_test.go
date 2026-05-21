@@ -218,7 +218,7 @@ func TestReverseTargetURLCleansTraversalBeforeContractGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/../../admin?x=1", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.local/../../admin?x=1", nil)
 
 	got := reverseTargetURL(upstream, req)
 	want := "http://api.example.com/admin?x=1"
@@ -481,7 +481,7 @@ func TestReverseProxy_ServeHTTPSnapshotsUnderReloadLock(t *testing.T) {
 	var reloadMu sync.RWMutex
 	handler.SetReloadLock(&reloadMu)
 
-	req := httptest.NewRequest(http.MethodGet, "http://pipelock.local/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://pipelock.local/test", nil)
 	rec := httptest.NewRecorder()
 
 	reloadMu.Lock()
@@ -534,7 +534,7 @@ func TestReverseProxy_ModifyResponseUsesRequestSnapshot(t *testing.T) {
 	t.Cleanup(logger.Close)
 
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
-	req := httptest.NewRequest(http.MethodGet, "http://pipelock.local/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://pipelock.local/test", nil)
 	ctx := context.WithValue(req.Context(), ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
 	req = req.WithContext(ctx)

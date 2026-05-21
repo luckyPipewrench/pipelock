@@ -913,6 +913,14 @@ func createTarGz(archivePath, sourceDir string) error {
 	baseDir := filepath.Base(sourceDir)
 	cleanSource := filepath.Clean(sourceDir)
 
+	// Open the source dir as a root so per-file opens inside the walk reject
+	// symlinks that escape (G122 symlink TOCTOU).
+	root, err := os.OpenRoot(cleanSource)
+	if err != nil {
+		return fmt.Errorf("opening source root: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
 	return filepath.Walk(cleanSource, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -938,7 +946,7 @@ func createTarGz(archivePath, sourceDir string) error {
 			return nil
 		}
 
-		file, err := os.Open(filepath.Clean(path))
+		file, err := root.Open(rel)
 		if err != nil {
 			return fmt.Errorf("opening file for archive: %w", err)
 		}

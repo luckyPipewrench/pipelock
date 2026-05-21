@@ -46,7 +46,7 @@ func TestConfigPathsPlatformAware(t *testing.T) {
 
 	// Find the claude-desktop path and verify it uses the platform-appropriate directory
 	for _, p := range paths {
-		if p.Client == "claude-desktop" {
+		if p.Client == clientClaudeDesktop {
 			switch runtime.GOOS {
 			case osDarwin:
 				if !strings.Contains(p.Path, "Library/Application Support") {
@@ -107,7 +107,7 @@ func TestConfigPathsContainExpectedClients(t *testing.T) {
 		clients[p.Client] = true
 	}
 
-	expected := []string{"claude-code", "claude-desktop", "cursor", "vscode", "cline", "continue", "junie", "zed", "zed-preview", "zed-flatpak", "zed-preview-flatpak"}
+	expected := []string{clientClaudeCode, clientClaudeDesktop, clientCursor, clientVSCode, "cline", "continue", clientJunie, clientZed, clientZedPreview, clientZedFlatpak, clientZedPreviewFlatpak}
 	for _, c := range expected {
 		if !clients[c] {
 			t.Errorf("missing expected client %q", c)
@@ -120,16 +120,16 @@ func TestConfigPathsJunieUserLevel(t *testing.T) {
 	paths := configPaths(home)
 	found := false
 	for _, p := range paths {
-		if p.Client == "junie" {
+		if p.Client == clientJunie {
 			found = true
-			if p.Key != "mcpServers" {
+			if p.Key != configKeyMCPServers {
 				t.Errorf("junie key = %q, want 'mcpServers'", p.Key)
 			}
 			if p.Scope != "user" {
 				t.Errorf("junie scope = %q, want 'user'", p.Scope)
 			}
 			// Path must be derived from the home argument, not cwd.
-			want := filepath.Join(home, ".junie", "mcp", "mcp.json")
+			want := filepath.Join(home, ".junie", wrapperArgMCP, "mcp.json")
 			if p.Path != want {
 				t.Errorf("junie path = %q, want %q", p.Path, want)
 			}
@@ -143,7 +143,7 @@ func TestConfigPathsJunieUserLevel(t *testing.T) {
 func TestConfigPathsVSCodeUsesServersKey(t *testing.T) {
 	paths := configPaths("/home/testuser")
 	for _, p := range paths {
-		if p.Client == "vscode" {
+		if p.Client == clientVSCode {
 			if p.Key != "servers" {
 				t.Errorf("vscode key = %q, want 'servers'", p.Key)
 			}
@@ -248,10 +248,10 @@ func TestDiscoverFindsZedAllChannels(t *testing.T) {
 		name string
 		path string
 	}{
-		{"native stable", filepath.Join(home, ".config", "zed", "settings.json")},
-		{"native preview", filepath.Join(home, ".config", "zed-preview", "settings.json")},
-		{"flatpak stable", filepath.Join(home, ".var", "app", "dev.zed.Zed", "config", "zed", "settings.json")},
-		{"flatpak preview", filepath.Join(home, ".var", "app", "dev.zed.Zed.Preview", "config", "zed-preview", "settings.json")},
+		{"native stable", filepath.Join(home, ".config", clientZed, "settings.json")},
+		{"native preview", filepath.Join(home, ".config", clientZedPreview, "settings.json")},
+		{"flatpak stable", filepath.Join(home, ".var", "app", "dev.zed.Zed", "config", clientZed, "settings.json")},
+		{"flatpak preview", filepath.Join(home, ".var", "app", "dev.zed.Zed.Preview", "config", clientZedPreview, "settings.json")},
 	}
 	for _, ch := range channels {
 		if err := os.MkdirAll(filepath.Dir(ch.path), 0o750); err != nil {
@@ -275,10 +275,10 @@ func TestDiscoverFindsZedAllChannels(t *testing.T) {
 	}
 
 	wantClients := map[string]bool{
-		"zed":                 false,
-		"zed-preview":         false,
-		"zed-flatpak":         false,
-		"zed-preview-flatpak": false,
+		clientZed:               false,
+		clientZedPreview:        false,
+		clientZedFlatpak:        false,
+		clientZedPreviewFlatpak: false,
 	}
 	for _, server := range report.Servers {
 		if _, ok := wantClients[server.Client]; ok {
@@ -301,7 +301,7 @@ func TestDiscoverZedWrappedShowsProtected(t *testing.T) {
 	home := t.TempDir()
 
 	wrapped := `{"context_servers":{"filesystem":{"type":"stdio","command":"pipelock","args":["mcp","proxy","--config","/etc/pipelock/pipelock.yaml","--","npx","-y","@modelcontextprotocol/server-filesystem","/tmp"]}}}`
-	zedPath := filepath.Join(home, ".config", "zed", "settings.json")
+	zedPath := filepath.Join(home, ".config", clientZed, "settings.json")
 	if err := os.MkdirAll(filepath.Dir(zedPath), 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +318,7 @@ func TestDiscoverZedWrappedShowsProtected(t *testing.T) {
 		t.Fatalf("expected exactly 1 server, got %d", len(report.Servers))
 	}
 	got := report.Servers[0]
-	if got.Client != "zed" {
+	if got.Client != clientZed {
 		t.Errorf("client = %q, want zed", got.Client)
 	}
 	if got.Protection != ProtectedPipelock {
@@ -472,10 +472,10 @@ func TestDiscoverProjectIdentity(t *testing.T) {
 		t.Fatalf("expected 2 servers, got %d", len(report.Servers))
 	}
 
-	// Both named "filesystem" but should have different ProjectPath
+	// Both named kwFilesystem but should have different ProjectPath
 	projects := map[string]bool{}
 	for _, s := range report.Servers {
-		if s.ServerName != "filesystem" {
+		if s.ServerName != kwFilesystem {
 			t.Errorf("unexpected server name %q", s.ServerName)
 		}
 		if s.ProjectPath == "" {

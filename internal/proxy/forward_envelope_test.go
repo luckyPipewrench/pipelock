@@ -65,7 +65,7 @@ func TestForwardHTTP_EnvelopeSignedHappyPath(t *testing.T) {
 	// body-less GET, but Signature + Pipelock-Mediation must be).
 	handler := p.buildHandler(p.buildMux())
 	fetchURL := "/fetch?url=" + upstream.URL + "/signed"
-	req := httptest.NewRequest(http.MethodGet, fetchURL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, fetchURL, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -145,7 +145,7 @@ func TestForwardHTTP_EnvelopeSignedRedirectChain(t *testing.T) {
 	// verify the signing metadata survives the redirect: Signature and
 	// Pipelock-Mediation must be present on the final request.
 	fetchURL := "/fetch?url=" + redirector.URL + "/redirect"
-	req := httptest.NewRequest(http.MethodGet, fetchURL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, fetchURL, nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

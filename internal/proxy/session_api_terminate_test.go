@@ -36,7 +36,7 @@ func TestSessionAPI_HandleTerminate_HappyPath(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -94,7 +94,7 @@ func TestSessionAPI_HandleTerminate_CEEStateCleared(t *testing.T) {
 		APIToken:      testSessionAPIToken,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -119,7 +119,7 @@ func TestSessionAPI_HandleTerminate_InvocationKeyRejected(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateInvocationKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateInvocationKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -143,7 +143,7 @@ func TestSessionAPI_HandleTerminate_NotFound(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor("ghost|1.2.3.4"), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor("ghost|1.2.3.4"), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -158,7 +158,7 @@ func TestSessionAPI_HandleTerminate_MethodNotAllowed(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, terminateURLFor(terminateIdentityKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -176,7 +176,7 @@ func TestSessionAPI_HandleTerminate_Unauthorized(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
 
@@ -190,7 +190,7 @@ func TestSessionAPI_HandleTerminate_BadPath(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions//terminate", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions//terminate", nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -207,7 +207,7 @@ func TestSessionAPI_HandleTerminate_RejectsUnknownFields(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, sm)
 
 	body := bytes.NewBufferString(`{"unexpected_field": "value"}`)
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), body)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -226,7 +226,7 @@ func TestSessionAPI_HandleTerminate_EmptyBodyOK(t *testing.T) {
 
 	// Zero-length body is allowed — decodeJSONBody treats empty as "no
 	// fields" and leaves the target struct at its zero value.
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), bytes.NewBuffer(nil))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), bytes.NewBuffer(nil))
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -251,7 +251,7 @@ func TestSessionAPI_HandleTerminate_NoCEEPointers(t *testing.T) {
 		APIToken: testSessionAPIToken,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -286,7 +286,7 @@ func TestSessionAPI_HandleTerminate_NoCEEStateLoaded(t *testing.T) {
 		APIToken:      testSessionAPIToken,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)
@@ -320,7 +320,7 @@ func TestExtractSessionKeyOnly_BadPaths(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil)
 			_, ok := extractSessionKeyOnly(req)
 			if ok != tt.want {
 				t.Errorf("got ok=%v, want %v for path %q", ok, tt.want, tt.path)
@@ -347,7 +347,7 @@ func TestSessionAPI_HandleTerminate_RateLimited(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, sm)
 
 	for i := 0; i < sessionAPIRateLimitMax; i++ {
-		req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 		req.Header.Set("Authorization", terminateAuthHeader)
 		w := httptest.NewRecorder()
 		handler.HandleTerminate(w, req)
@@ -359,7 +359,7 @@ func TestSessionAPI_HandleTerminate_RateLimited(t *testing.T) {
 		sm.GetOrCreate(terminateIdentityKey)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), nil)
 	req.Header.Set("Authorization", terminateAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleTerminate(w, req)

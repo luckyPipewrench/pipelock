@@ -79,6 +79,21 @@
       "matchUpdateTypes": ["major"],
       "addLabels": ["major-update", "needs-review"],
       "automerge": false
+    },
+    {
+      "description": "Hold TypeScript at 5.x in the verifier. TS 6.0 needs tsconfig and source migrations we have not scoped.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["sdk/verifiers/ts/**"],
+      "matchPackageNames": ["typescript"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "Hold jsonschema at 0.18.x in the Rust verifier. 0.19+ renames JSONSchema to Validator and changes the compile/validate API, needs manual migration.",
+      "matchManagers": ["cargo"],
+      "matchFileNames": ["sdk/verifiers/rust/**"],
+      "matchPackageNames": ["jsonschema"],
+      "allowedVersions": "<0.19"
     }
   ]
 }

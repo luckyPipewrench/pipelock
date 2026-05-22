@@ -1222,7 +1222,7 @@ func TestReceiptCoverage_FetchHeaderDLP_EmitsReceipt(t *testing.T) {
 	})
 
 	// The upstream doesn't matter because header DLP blocks before the fetch.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://example.com/api", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://example.com/api", nil)
 	req.Header.Set("Authorization", "Bearer "+"sk-test-"+"abc123secret")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -1259,7 +1259,7 @@ func TestReceiptCoverage_FetchBlocklist_EmitsReceipt(t *testing.T) {
 		cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.example.com"}
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

@@ -21,10 +21,10 @@ func TestParseSyslogAddress(t *testing.T) {
 		wantAddr string
 		wantErr  bool
 	}{
-		{name: "udp valid", addr: "udp://syslog.example.com:514", wantNet: "udp", wantAddr: "syslog.example.com:514"},
-		{name: "tcp valid", addr: "tcp://syslog.example.com:514", wantNet: "tcp", wantAddr: "syslog.example.com:514"},
-		{name: "UDP uppercase", addr: "UDP://syslog.example.com:514", wantNet: "udp", wantAddr: "syslog.example.com:514"},
-		{name: "localhost with port", addr: "udp://127.0.0.1:1514", wantNet: "udp", wantAddr: "127.0.0.1:1514"},
+		{name: "udp valid", addr: "udp://syslog.example.com:514", wantNet: networkUDP, wantAddr: testSyslogAddr514},
+		{name: "tcp valid", addr: "tcp://syslog.example.com:514", wantNet: "tcp", wantAddr: testSyslogAddr514},
+		{name: "UDP uppercase", addr: "UDP://syslog.example.com:514", wantNet: networkUDP, wantAddr: testSyslogAddr514},
+		{name: "localhost with port", addr: "udp://127.0.0.1:1514", wantNet: networkUDP, wantAddr: "127.0.0.1:1514"},
 		{name: "unsupported scheme", addr: "http://syslog.example.com:514", wantErr: true},
 		{name: "empty scheme", addr: "://syslog.example.com:514", wantErr: true},
 		{name: "missing host", addr: "udp://", wantErr: true},
@@ -112,7 +112,7 @@ func TestSyslogSink_Close_NilWriter(t *testing.T) {
 func startUDPSyslog(t *testing.T) (string, <-chan string) {
 	t.Helper()
 	lc := net.ListenConfig{}
-	conn, err := lc.ListenPacket(context.Background(), "udp", "127.0.0.1:0")
+	conn, err := lc.ListenPacket(context.Background(), networkUDP, "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -135,7 +135,7 @@ func startUDPSyslog(t *testing.T) (string, <-chan string) {
 
 func TestNewSyslogSink_And_Emit(t *testing.T) {
 	addr, msgs := startUDPSyslog(t)
-	sink, err := NewSyslogSink("udp://"+addr, WithSyslogTag("test"))
+	sink, err := NewSyslogSink("udp://"+addr, WithSyslogTag(testStr))
 	if err != nil {
 		t.Fatalf("NewSyslogSink: %v", err)
 	}
@@ -143,10 +143,10 @@ func TestNewSyslogSink_And_Emit(t *testing.T) {
 
 	event := Event{
 		Severity:   SeverityWarn,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		InstanceID: "test-1",
-		Fields:     map[string]any{"reason": "dlp_secret"},
+		Fields:     map[string]any{testFieldReason: "dlp_secret"},
 	}
 
 	if err := sink.Emit(context.Background(), event); err != nil {
@@ -180,7 +180,7 @@ func TestSyslogSink_Emit_CriticalSeverity(t *testing.T) {
 
 	event := Event{
 		Severity:  SeverityCritical,
-		Type:      "kill_switch_deny",
+		Type:      EventKillSwitchDeny,
 		Timestamp: time.Now(),
 		Fields:    map[string]any{},
 	}
@@ -209,7 +209,7 @@ func TestSyslogSink_Emit_InfoSeverity(t *testing.T) {
 
 	event := Event{
 		Severity:  SeverityInfo,
-		Type:      "allowed",
+		Type:      verdictAllowed,
 		Timestamp: time.Now(),
 		Fields:    map[string]any{},
 	}
@@ -238,7 +238,7 @@ func TestSyslogSink_Emit_BelowMinSeverity(t *testing.T) {
 
 	event := Event{
 		Severity:  SeverityInfo,
-		Type:      "allowed",
+		Type:      verdictAllowed,
 		Timestamp: time.Now(),
 		Fields:    map[string]any{},
 	}
@@ -282,7 +282,7 @@ func TestNewSyslogSink_DialFailure(t *testing.T) {
 func TestNewSyslogSinkFromConfig(t *testing.T) {
 	addr, _ := startUDPSyslog(t)
 
-	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "local3", "myapp", "warn")
+	sink, err := NewSyslogSinkFromConfig("udp://"+addr, "local3", "myapp", testSeverityWarn)
 	if err != nil {
 		t.Fatalf("NewSyslogSinkFromConfig: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	// Channel field is unmarshalable — Emit should return an error.
 	event := Event{
 		Severity:  SeverityWarn,
-		Type:      "blocked",
+		Type:      testEventBlocked,
 		Timestamp: time.Now(),
 		Fields:    map[string]any{"bad": make(chan int)},
 	}

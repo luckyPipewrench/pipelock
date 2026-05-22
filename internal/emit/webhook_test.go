@@ -31,9 +31,9 @@ func TestWebhookSink_BelowMinSeverity(t *testing.T) {
 
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityInfo,
-		Type:       "allowed",
+		Type:       verdictAllowed,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err != nil {
 		t.Fatalf("expected nil error for dropped event, got %v", err)
@@ -71,8 +71,8 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  ts,
-		InstanceID: "test-host",
-		Fields:     map[string]any{"url": "https://evil.com", "reason": "blocklist"},
+		InstanceID: testHostName,
+		Fields:     map[string]any{testFieldURL: testEvilURL, testFieldReason: testBlocklistRsn},
 	})
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
@@ -91,8 +91,8 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 	if received.Type != testEventBlocked {
 		t.Errorf("payload type = %q, want %q", received.Type, testEventBlocked)
 	}
-	if received.Instance != "test-host" {
-		t.Errorf("payload instance = %q, want %q", received.Instance, "test-host")
+	if received.Instance != testHostName {
+		t.Errorf("payload instance = %q, want %q", received.Instance, testHostName)
 	}
 
 	// Verify timestamp is in RFC3339Nano format.
@@ -101,8 +101,8 @@ func TestWebhookSink_SuccessfulPost(t *testing.T) {
 		t.Errorf("timestamp %q is not RFC3339Nano: %v", received.Timestamp, parseErr)
 	}
 
-	if received.Fields["url"] != "https://evil.com" {
-		t.Errorf("fields[url] = %v, want %q", received.Fields["url"], "https://evil.com")
+	if received.Fields[testFieldURL] != testEvilURL {
+		t.Errorf("fields[url] = %v, want %q", received.Fields[testFieldURL], testEvilURL)
 	}
 }
 
@@ -116,7 +116,7 @@ func TestWebhookSink_BearerToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	token := "test" + "-secret-token"
+	token := testStr + "-secret-token"
 	sink := NewWebhookSink(srv.URL, WithBearerToken(token))
 	defer func() { _ = sink.Close() }()
 
@@ -124,7 +124,7 @@ func TestWebhookSink_BearerToken(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
@@ -160,7 +160,7 @@ func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
@@ -191,7 +191,7 @@ func TestWebhookSink_QueueFull(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	}
 
 	// Fill the queue. One item may be pulled by the goroutine, so send extra.
@@ -230,7 +230,7 @@ func TestWebhookSink_CloseDrainsPending(t *testing.T) {
 			Severity:   SeverityWarn,
 			Type:       testEventBlocked,
 			Timestamp:  time.Now(),
-			InstanceID: "test",
+			InstanceID: testStr,
 		})
 		if err != nil {
 			t.Fatalf("Emit %d returned error: %v", i, err)
@@ -262,7 +262,7 @@ func TestWebhookSink_ServerErrorDoesNotBlock(t *testing.T) {
 			Severity:   SeverityWarn,
 			Type:       testEventBlocked,
 			Timestamp:  time.Now(),
-			InstanceID: "test",
+			InstanceID: testStr,
 		})
 		if err != nil {
 			t.Fatalf("Emit %d returned error: %v", i, err)
@@ -302,7 +302,7 @@ func TestWebhookSink_ConcurrentEmit(t *testing.T) {
 					Severity:   SeverityWarn,
 					Type:       testEventBlocked,
 					Timestamp:  time.Now(),
-					InstanceID: "test",
+					InstanceID: testStr,
 				})
 			}
 		}()
@@ -375,7 +375,7 @@ func TestWebhookSink_NilFieldsInPayload(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 		Fields:     nil,
 	})
 	if err != nil {
@@ -405,7 +405,7 @@ func TestWebhookSink_EmitAfterClose(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err == nil {
 		t.Error("expected error when emitting to closed sink")
@@ -430,7 +430,7 @@ func TestWebhookSink_SendMarshalError(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 		Fields:     map[string]any{"bad": make(chan int)},
 	})
 	if err != nil {
@@ -442,7 +442,7 @@ func TestWebhookSink_SendMarshalError(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
@@ -464,7 +464,7 @@ func TestWebhookSink_SendInvalidURL(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
@@ -486,7 +486,7 @@ func TestWebhookSink_SendConnectionRefused(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	})
 	if err != nil {
 		t.Fatalf("Emit returned error: %v", err)
@@ -510,7 +510,7 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
 		Timestamp:  time.Now(),
-		InstanceID: "test",
+		InstanceID: testStr,
 	}
 
 	// Fill the queue: first event goes to goroutine (blocked on HTTP), second fills channel.

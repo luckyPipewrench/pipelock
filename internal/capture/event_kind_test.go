@@ -6,6 +6,7 @@ package capture_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -75,8 +76,8 @@ func TestObserveURLVerdict_StampsEventKind(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
-		EffectiveAction: "allow",
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 	if err := w.Close(); err != nil {
@@ -104,10 +105,10 @@ func TestObserveResponseVerdict_StampsEventKind(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 		TransformKind:   capture.TransformReadability,
 		WirePayload:     []byte("hello world"),
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 	if err := w.Close(); err != nil {
@@ -124,7 +125,7 @@ func TestObserveResponseVerdict_StampsEventKind(t *testing.T) {
 }
 
 // TestObserveDLPVerdict_StampsEventKind asserts DLP observations stamp
-// event_kind="dlp" and the explicit "write" classification reaches the wire.
+// event_kind="dlp" and the explicit ekActionClassWrite classification reaches the wire.
 func TestObserveDLPVerdict_StampsEventKind(t *testing.T) {
 	w, dir := newEventKindTestWriter(t)
 
@@ -135,10 +136,10 @@ func TestObserveDLPVerdict_StampsEventKind(t *testing.T) {
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
 		ActionClass:     ekActionClassWrite,
-		Request:         capture.CaptureRequest{Method: "POST", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict},
 		TransformKind:   capture.TransformJoinedFields,
 		ScannerInput:    "field=value",
-		EffectiveAction: "block",
+		EffectiveAction: testEffAction,
 		Outcome:         capture.OutcomeBlocked,
 	})
 	if err := w.Close(); err != nil {
@@ -166,10 +167,10 @@ func TestObserveCEEVerdict_StampsEventKind(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		Request:         capture.CaptureRequest{Method: "POST", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict},
 		TransformKind:   capture.TransformCEEWindow,
 		ScannerInput:    "abc 123 xyz",
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 	if err := w.Close(); err != nil {
@@ -194,12 +195,12 @@ func TestObserveToolPolicyVerdict_StampsEventKind(t *testing.T) {
 		RequestID:  ekTestRequestID,
 		ConfigHash: testConfigHash,
 		Request: capture.CaptureRequest{
-			Method:    "POST",
+			Method:    http.MethodPost,
 			URL:       testURLVerdict,
 			ToolName:  "fs.read",
-			MCPMethod: "tools/call",
+			MCPMethod: testToolsCall,
 		},
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 	if err := w.Close(); err != nil {
@@ -223,10 +224,10 @@ func TestObserveToolScanVerdict_StampsEventKind(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		Request:         capture.CaptureRequest{Method: "POST", URL: testURLVerdict, MCPMethod: "tools/list"},
+		Request:         capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict, MCPMethod: "tools/list"},
 		TransformKind:   capture.TransformToolsListDescription,
 		ScannerInput:    "tool description",
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 	if err := w.Close(); err != nil {
@@ -270,8 +271,8 @@ func TestWriteDropSentinel_StampsEventKind(t *testing.T) {
 			SessionID:       testSessionID,
 			RequestID:       ekTestRequestID,
 			ConfigHash:      testConfigHash,
-			Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
-			EffectiveAction: "allow",
+			Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
+			EffectiveAction: testVerdictAllow,
 			Outcome:         capture.OutcomeClean,
 		})
 	}
@@ -312,8 +313,8 @@ func TestBuildSummary_ActionClassUnset(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
-		EffectiveAction: "allow",
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 	if err := w.Close(); err != nil {
@@ -328,7 +329,7 @@ func TestBuildSummary_ActionClassUnset(t *testing.T) {
 }
 
 // TestBuildSummary_ActionClassPropagates_ExplicitWrite verifies that an
-// explicit "write" classification on the verdict record reaches
+// explicit ekActionClassWrite classification on the verdict record reaches
 // CaptureSummary.action_class on the wire.
 func TestBuildSummary_ActionClassPropagates_ExplicitWrite(t *testing.T) {
 	w, dir := newEventKindTestWriter(t)
@@ -340,10 +341,10 @@ func TestBuildSummary_ActionClassPropagates_ExplicitWrite(t *testing.T) {
 		RequestID:       ekTestRequestID,
 		ConfigHash:      testConfigHash,
 		ActionClass:     ekActionClassWrite,
-		Request:         capture.CaptureRequest{Method: "POST", URL: testURLVerdict},
+		Request:         capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict},
 		TransformKind:   capture.TransformJoinedFields,
 		ScannerInput:    "key=secret",
-		EffectiveAction: "block",
+		EffectiveAction: testEffAction,
 		Outcome:         capture.OutcomeBlocked,
 	})
 	if err := w.Close(); err != nil {

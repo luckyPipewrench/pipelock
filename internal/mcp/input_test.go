@@ -3295,7 +3295,7 @@ func TestTryRecoverSession(t *testing.T) {
 		tryRecoverSession(rec, adaptiveCfg, m)
 
 		// Verify de-escalation counter was incremented.
-		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 		w := httptest.NewRecorder()
 		m.PrometheusHandler().ServeHTTP(w, req)
 		body, _ := io.ReadAll(w.Body)
@@ -3332,7 +3332,7 @@ func TestTryRecoverSession(t *testing.T) {
 		tryRecoverSession(rec, adaptiveCfg, m)
 
 		// Metrics endpoint should not contain de-escalation counters.
-		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 		w := httptest.NewRecorder()
 		m.PrometheusHandler().ServeHTTP(w, req)
 		body, _ := io.ReadAll(w.Body)

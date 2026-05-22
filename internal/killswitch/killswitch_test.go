@@ -46,7 +46,7 @@ func TestController_ConfigEnabled(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch?url=http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://example.com", nil)
 	d := c.IsActiveHTTP(r)
 	if !d.Active {
 		t.Fatal("expected kill switch to be active when config enabled")
@@ -65,7 +65,7 @@ func TestController_ConfigDisabled(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch?url=http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://example.com", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected kill switch to be inactive when config disabled")
@@ -82,7 +82,7 @@ func TestController_SentinelFile(t *testing.T) {
 	c := New(cfg)
 
 	// No sentinel file — inactive.
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected kill switch inactive when sentinel file absent")
@@ -116,7 +116,7 @@ func TestController_SignalToggle(t *testing.T) {
 	cfg := testConfig()
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 
 	// Initially inactive.
 	d := c.IsActiveHTTP(r)
@@ -160,7 +160,7 @@ func TestController_ORComposition(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 
 	// Config enabled → active (source=config takes priority in reporting).
 	d := c.IsActiveHTTP(r)
@@ -221,7 +221,7 @@ func TestController_HealthExempt(t *testing.T) {
 	c := New(cfg)
 
 	// /health is exempt by default.
-	r := httptest.NewRequest(http.MethodGet, "/health", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected /health to be exempt from kill switch")
@@ -246,7 +246,7 @@ func TestController_MetricsExempt(t *testing.T) {
 	c := New(cfg)
 
 	// /metrics is exempt by default.
-	r := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected /metrics to be exempt from kill switch")
@@ -272,7 +272,7 @@ func TestController_AllowlistIP(t *testing.T) {
 	c := New(cfg)
 
 	// Allowed IP passes.
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r.RemoteAddr = "192.168.1.42:12345"
 	d := c.IsActiveHTTP(r)
 	if d.Active {
@@ -280,7 +280,7 @@ func TestController_AllowlistIP(t *testing.T) {
 	}
 
 	// Non-allowed IP blocked.
-	r2 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r2.RemoteAddr = "172.16.0.1:12345"
 	d = c.IsActiveHTTP(r2)
 	if !d.Active {
@@ -288,7 +288,7 @@ func TestController_AllowlistIP(t *testing.T) {
 	}
 
 	// Exact match on /32.
-	r3 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r3 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r3.RemoteAddr = "10.0.0.5:54321"
 	d = c.IsActiveHTTP(r3)
 	if d.Active {
@@ -320,7 +320,7 @@ func TestController_Reload(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Message != "initial message" {
 		t.Errorf("expected message %q, got %q", "initial message", d.Message)
@@ -359,7 +359,7 @@ func TestController_HTTPResponse(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch?url=http://example.com", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://example.com", nil)
 	d := c.IsActiveHTTP(r)
 
 	if !d.Active {
@@ -432,7 +432,7 @@ func TestController_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 			_ = c.IsActiveHTTP(r)
 		}()
 	}
@@ -538,7 +538,7 @@ func TestController_SourcePriority(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Source != srcConfig {
 		t.Errorf("expected source %q when all sources active, got %q", srcConfig, d.Source)
@@ -597,7 +597,7 @@ func TestController_SentinelStatError(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if !d.Active {
 		t.Fatal("expected kill switch ACTIVE on sentinel stat permission error (fail closed)")
@@ -682,7 +682,7 @@ func TestController_BareIPAddress(t *testing.T) {
 	c := New(cfg)
 
 	// Request with bare IP (no port) — should be allowlisted.
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r.RemoteAddr = "10.0.0.1" // bare IP, no :port
 	d := c.IsActiveHTTP(r)
 	if d.Active {
@@ -690,7 +690,7 @@ func TestController_BareIPAddress(t *testing.T) {
 	}
 
 	// Verify non-allowlisted bare IP is still blocked.
-	r2 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r2.RemoteAddr = "192.168.1.1" // bare IP, not in allowlist
 	d2 := c.IsActiveHTTP(r2)
 	if !d2.Active {
@@ -725,7 +725,7 @@ func TestController_APISource(t *testing.T) {
 	cfg := testConfig()
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected inactive initially")
@@ -754,21 +754,21 @@ func TestController_APIExempt(t *testing.T) {
 	c := New(cfg)
 
 	// /api/v1/killswitch is exempt by default
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected /api/v1/killswitch to be exempt from kill switch")
 	}
 
 	// /api/v1/killswitch/status is also exempt
-	r2 := httptest.NewRequest(http.MethodGet, "/api/v1/killswitch/status", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/killswitch/status", nil)
 	d2 := c.IsActiveHTTP(r2)
 	if d2.Active {
 		t.Fatal("expected /api/v1/killswitch/status to be exempt")
 	}
 
 	// Non-API path is still blocked
-	r3 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r3 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d3 := c.IsActiveHTTP(r3)
 	if !d3.Active {
 		t.Fatal("expected /fetch to be blocked")
@@ -782,7 +782,7 @@ func TestController_APIExemptDisabled(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", nil)
 	d := c.IsActiveHTTP(r)
 	if !d.Active {
 		t.Fatal("expected /api/v1/killswitch to be blocked when api_exempt disabled")
@@ -804,7 +804,7 @@ func TestController_SourcePriority_WithAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 
 	// All sources active — config wins
 	d := c.IsActiveHTTP(r)
@@ -870,25 +870,25 @@ func TestController_SeparatePort_SkipsAPIExemption(t *testing.T) {
 	c.SetSeparateAPIPort(true)
 
 	// With separatePort=true, /api/v1/killswitch should NOT be exempt.
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", nil)
 	d := c.IsActiveHTTP(r)
 	if !d.Active {
 		t.Fatal("expected /api/v1/killswitch to be BLOCKED when separatePort=true")
 	}
 
 	// /api/v1/killswitch/status should also be blocked.
-	r2 := httptest.NewRequest(http.MethodGet, "/api/v1/killswitch/status", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/killswitch/status", nil)
 	d2 := c.IsActiveHTTP(r2)
 	if !d2.Active {
 		t.Fatal("expected /api/v1/killswitch/status to be BLOCKED when separatePort=true")
 	}
 
 	// /health and /metrics should still be exempt (separate from API exemption).
-	rHealth := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rHealth := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil)
 	if c.IsActiveHTTP(rHealth).Active {
 		t.Fatal("expected /health to remain exempt when separatePort=true")
 	}
-	rMetrics := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rMetrics := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	if c.IsActiveHTTP(rMetrics).Active {
 		t.Fatal("expected /metrics to remain exempt when separatePort=true")
 	}
@@ -901,7 +901,7 @@ func TestController_SeparatePort_Default(t *testing.T) {
 	c := New(cfg)
 	// separatePort defaults to false — API should be exempt as before.
 
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected /api/v1/killswitch to be exempt by default (separatePort=false)")
@@ -914,7 +914,7 @@ func TestController_SeparatePort_Toggle(t *testing.T) {
 
 	c := New(cfg)
 
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", nil)
 
 	// Default: exempt.
 	if c.IsActiveHTTP(r).Active {
@@ -948,7 +948,7 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 
 	// All three runtime sources active.
 	d := c.IsActiveHTTP(r)
@@ -994,7 +994,7 @@ func TestController_Reload_PreservesRuntimeState(t *testing.T) {
 	c.SetAPI(true)
 	c.ToggleSignal()
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if !d.Active || d.Source != srcAPI {
 		t.Fatalf("pre-reload: expected active from api, got active=%v source=%q", d.Active, d.Source)
@@ -1034,7 +1034,7 @@ func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
 	c.SetAPI(true)
 	c.ToggleSignal()
 
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if !d.Active || d.Source != srcAPI {
 		t.Fatalf("expected active from api, got active=%v source=%q", d.Active, d.Source)
@@ -1042,7 +1042,7 @@ func TestController_APIHandler_Deactivate_PreservesOtherSources(t *testing.T) {
 
 	// Deactivate via the API handler (same as a real HTTP call).
 	body := bytes.NewBufferString(`{"active": false}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", body)
 	req.Header.Set("Authorization", testBearerToken)
 	w := httptest.NewRecorder()
 	h.HandleToggle(w, req)
@@ -1083,7 +1083,7 @@ func TestController_Reload_InvalidCIDR(t *testing.T) {
 	c.Reload(cfg2)
 
 	// Non-allowlisted IP should be blocked (kill switch is enabled).
-	r := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r.RemoteAddr = "192.168.1.1:12345"
 	d := c.IsActiveHTTP(r)
 	if !d.Active {
@@ -1091,7 +1091,7 @@ func TestController_Reload_InvalidCIDR(t *testing.T) {
 	}
 
 	// Allowlisted IP should pass despite the kill switch (valid CIDR was processed).
-	r2 := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r2.RemoteAddr = "10.0.0.1:12345"
 	d2 := c.IsActiveHTTP(r2)
 	if d2.Active {
@@ -1166,7 +1166,7 @@ func TestAPIHandler_EnvTokenAuthenticates(t *testing.T) {
 
 	// Activate via API using the env-sourced token.
 	body := bytes.NewBufferString(`{"active": true}`)
-	r := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", body)
 	r.Header.Set("Authorization", "Bearer "+envToken)
 	w := httptest.NewRecorder()
 	h.HandleToggle(w, r)
@@ -1176,7 +1176,7 @@ func TestAPIHandler_EnvTokenAuthenticates(t *testing.T) {
 	}
 
 	// Verify kill switch is now active.
-	req := httptest.NewRequest(http.MethodGet, "/fetch", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(req)
 	if !d.Active || d.Source != srcAPI {
 		t.Errorf("expected active from api source, got active=%v source=%q", d.Active, d.Source)
@@ -1184,7 +1184,7 @@ func TestAPIHandler_EnvTokenAuthenticates(t *testing.T) {
 
 	// Wrong token should fail.
 	body2 := bytes.NewBufferString(`{"active": false}`)
-	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/killswitch", body2)
+	r2 := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", body2)
 	r2.Header.Set("Authorization", "Bearer wrong-token")
 	w2 := httptest.NewRecorder()
 	h.HandleToggle(w2, r2)
@@ -1217,7 +1217,7 @@ func TestIsActiveHTTP_ExemptsSessionAPI(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.path, nil)
 			d := ks.IsActiveHTTP(r)
 			if d.Active != tt.wantActive {
 				t.Errorf("path %q: active=%v, want %v", tt.path, d.Active, tt.wantActive)
@@ -1237,7 +1237,7 @@ func TestIsActiveHTTP_SessionAPI_SeparatePort_NoExemption(t *testing.T) {
 	ks.SetSeparateAPIPort(true)
 	ks.SetAPI(true)
 
-	r := httptest.NewRequest(http.MethodGet, "/api/v1/sessions", nil)
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions", nil)
 	d := ks.IsActiveHTTP(r)
 	if !d.Active {
 		t.Error("session API should NOT be exempt on main port when separate API port is configured")

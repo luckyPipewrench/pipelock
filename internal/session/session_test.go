@@ -79,9 +79,9 @@ func TestEscalationLabel(t *testing.T) {
 		{0, "normal"},
 		{1, "elevated"},
 		{2, "high"},
-		{3, "critical"},
-		{4, "critical"}, // beyond slice → last entry
-		{99, "critical"},
+		{3, testSeverityCritical},
+		{4, testSeverityCritical}, // beyond slice → last entry
+		{99, testSeverityCritical},
 	}
 
 	for _, tt := range tests {

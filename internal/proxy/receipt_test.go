@@ -95,7 +95,7 @@ func TestProxy_ReceiptEmission_FetchBlock(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/steal", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/steal", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -208,7 +208,7 @@ func TestProxy_ReceiptEmission_FetchAllow(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/hello", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/hello", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -279,7 +279,7 @@ func TestProxy_NilEmitter_NoReceipt(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/steal", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/steal", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -359,7 +359,7 @@ func TestProxy_ReloadCreatesReceiptEmitter(t *testing.T) {
 
 	// Verify the emitter works by sending a request and checking for a receipt.
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -469,7 +469,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 
 	// Verify no receipt is emitted on subsequent requests.
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -647,7 +647,7 @@ fetch_proxy:
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -800,7 +800,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 
 	// Verify the updated hash is used in emitted receipts.
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -920,7 +920,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 
 	// Emit a receipt via a request and verify it is signed with key B.
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://evil.example.com/exfil", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -1016,7 +1016,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseScan(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/test", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -1120,7 +1120,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 	}
 
 	handler := p.buildHandler(p.buildMux())
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL+"/big", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/big", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

@@ -30,37 +30,37 @@ func TestNewLoader_RejectsMissingFields(t *testing.T) {
 	}{
 		{
 			name: "missing store_dir",
-			opts: LoaderOptions{RosterPath: "/tmp/r.json", PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1, Mode: ModeShadow},
+			opts: LoaderOptions{RosterPath: testRJSONPath, PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1, Mode: ModeShadow},
 			want: "store_dir required",
 		},
 		{
 			name: "missing roster_path",
-			opts: LoaderOptions{StoreDir: "/tmp/s", PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1, Mode: ModeShadow},
+			opts: LoaderOptions{StoreDir: testSPath, PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1, Mode: ModeShadow},
 			want: "roster_path required",
 		},
 		{
 			name: "missing fingerprint",
-			opts: LoaderOptions{StoreDir: "/tmp/s", RosterPath: "/tmp/r.json", Environment: validEnv, MinSignatures: 1, Mode: ModeShadow},
+			opts: LoaderOptions{StoreDir: testSPath, RosterPath: testRJSONPath, Environment: validEnv, MinSignatures: 1, Mode: ModeShadow},
 			want: "pinned_root_fingerprint required",
 		},
 		{
 			name: "missing environment",
-			opts: LoaderOptions{StoreDir: "/tmp/s", RosterPath: "/tmp/r.json", PinnedRootFingerprint: validFP, MinSignatures: 1, Mode: ModeShadow},
+			opts: LoaderOptions{StoreDir: testSPath, RosterPath: testRJSONPath, PinnedRootFingerprint: validFP, MinSignatures: 1, Mode: ModeShadow},
 			want: "environment required",
 		},
 		{
 			name: "zero min_signatures",
-			opts: LoaderOptions{StoreDir: "/tmp/s", RosterPath: "/tmp/r.json", PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 0, Mode: ModeShadow},
+			opts: LoaderOptions{StoreDir: testSPath, RosterPath: testRJSONPath, PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 0, Mode: ModeShadow},
 			want: "min_signatures must be >= 1",
 		},
 		{
 			name: "empty mode",
-			opts: LoaderOptions{StoreDir: "/tmp/s", RosterPath: "/tmp/r.json", PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1},
+			opts: LoaderOptions{StoreDir: testSPath, RosterPath: testRJSONPath, PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1},
 			want: "mode",
 		},
 		{
 			name: "unknown mode",
-			opts: LoaderOptions{StoreDir: "/tmp/s", RosterPath: "/tmp/r.json", PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1, Mode: Mode("preview")},
+			opts: LoaderOptions{StoreDir: testSPath, RosterPath: testRJSONPath, PinnedRootFingerprint: validFP, Environment: validEnv, MinSignatures: 1, Mode: Mode("preview")},
 			want: "mode",
 		},
 	}
@@ -584,9 +584,15 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	stop := make(chan struct{})
 	done := make(chan error, 1)
+	// producerDone is closed when the file-rewriting goroutine below has
+	// returned. Cleanup must wait on it before t.TempDir's RemoveAll runs,
+	// otherwise a mid-rename temp file in storeDir can break the cleanup
+	// with "directory not empty".
+	producerDone := make(chan struct{})
 	go func() { done <- loader.Watch(ctx) }()
 	t.Cleanup(func() {
 		close(stop)
+		<-producerDone
 		cancel()
 		<-done
 	})
@@ -610,6 +616,7 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 		t.Fatalf("read active.json: %v", err)
 	}
 	go func() {
+		defer close(producerDone)
 		ticker := time.NewTicker(40 * time.Millisecond)
 		defer ticker.Stop()
 		for {

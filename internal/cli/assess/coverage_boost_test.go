@@ -251,6 +251,36 @@ func TestCreateTarGz_BadArchivePath(t *testing.T) {
 	}
 }
 
+// TestCreateTarGz_RejectsEscapingSymlink verifies that the os.Root-backed
+// archive walk refuses to follow a symlink that escapes the source tree.
+// Without root-anchored opens an attacker who can race a symlink during
+// archive creation could exfiltrate file contents outside the assess dir.
+func TestCreateTarGz_RejectsEscapingSymlink(t *testing.T) {
+	srcDir := filepath.Join(t.TempDir(), "source")
+	if err := os.MkdirAll(srcDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "ok.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place a sensitive file OUTSIDE the source tree, then drop an escaping
+	// symlink inside the source tree pointing at it.
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("attacker-target"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(srcDir, "escape")); err != nil {
+		t.Skipf("symlink not supported on this platform: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "archive.tar.gz")
+	err := createTarGz(archivePath, srcDir)
+	if err == nil {
+		t.Fatal("createTarGz with escaping symlink: expected error, got nil")
+	}
+}
+
 // ---------- splitJSONLines ----------
 
 func TestSplitJSONLines(t *testing.T) {

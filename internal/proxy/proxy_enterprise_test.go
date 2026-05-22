@@ -40,7 +40,7 @@ func TestFetchEndpoint_AgentHeader(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req.Header.Set(AgentHeader, "test-bot")
 	w := httptest.NewRecorder()
 
@@ -65,7 +65,7 @@ func TestFetchEndpoint_AgentQueryParam(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text&agent=query-agent", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text&agent=query-agent", nil)
 	w := httptest.NewRecorder()
 
 	mux := http.NewServeMux()
@@ -89,7 +89,7 @@ func TestFetchEndpoint_AgentOnBlocked(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
 	req.Header.Set(AgentHeader, "blocked-agent")
 	w := httptest.NewRecorder()
 
@@ -202,7 +202,7 @@ func TestFetchEndpoint_PerAgentScanner(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 			if tt.agentHdr != "" {
 				req.Header.Set(AgentHeader, tt.agentHdr)
 			}
@@ -250,7 +250,7 @@ func TestFetchEndpoint_PerAgentScanner_AgentInResponse(t *testing.T) {
 
 	handler := p.Handler()
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req.Header.Set(AgentHeader, "my-test-agent")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -294,7 +294,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 	handler := p.Handler()
 
 	// Before reload: request from "strict-bot" should succeed (no profiles, fallback is balanced).
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req.Header.Set(AgentHeader, "strict-bot")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -322,7 +322,7 @@ func TestProxy_Reload_RebuildRegistry(t *testing.T) {
 	p.Reload(cfg2, sc2)
 
 	// After reload: "strict-bot" should be blocked (strict + no backend in allowlist).
-	req2 := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req2.Header.Set(AgentHeader, "strict-bot")
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, req2)
@@ -473,7 +473,7 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/fetch?url="+tt.url, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+tt.url, nil)
 			if tt.agent != "" {
 				req.Header.Set(AgentHeader, tt.agent)
 			}
@@ -539,7 +539,7 @@ func TestBudgetEnforcementFetch(t *testing.T) {
 	targetURL := backend.URL + "/text"
 
 	// First request: should succeed.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+targetURL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+targetURL, nil)
 	req.Header.Set(AgentHeader, testBudgetAgent)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -549,7 +549,7 @@ func TestBudgetEnforcementFetch(t *testing.T) {
 	}
 
 	// Second request: should be rate-limited (429).
-	req = httptest.NewRequest(http.MethodGet, "/fetch?url="+targetURL, nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+targetURL, nil)
 	req.Header.Set(AgentHeader, testBudgetAgent)
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -599,7 +599,7 @@ func TestMetricLabelBoundsUnknownAgent(t *testing.T) {
 	mux.HandleFunc("/fetch", p.handleFetch)
 
 	// Send request with arbitrary agent name not in any profile.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req.Header.Set(AgentHeader, "arbitrary-attacker-chosen-name")
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
@@ -682,7 +682,7 @@ func TestByteBudgetBlocksFetchResponse(t *testing.T) {
 
 	// First request: response body (500 bytes) exceeds byte budget (100).
 	// Should be blocked with 429 at read time.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 	req.Header.Set(AgentHeader, testByteBudgetAgent)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)

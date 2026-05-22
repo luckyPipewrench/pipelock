@@ -154,8 +154,10 @@ func validHeaderName(key string) bool {
 	if key == "" {
 		return false
 	}
-	for _, r := range key {
-		if r > 127 || !isHTTPTokenChar(byte(r)) {
+	// HTTP header names are ASCII tokens (RFC 7230 §3.2.6); iterate by byte
+	// so any non-ASCII byte is rejected by isHTTPTokenChar.
+	for i := 0; i < len(key); i++ {
+		if !isHTTPTokenChar(key[i]) {
 			return false
 		}
 	}

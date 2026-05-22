@@ -14,13 +14,13 @@ func TestEnvelope_Serialize(t *testing.T) {
 
 	env := Envelope{
 		Version:    1,
-		Action:     "write",
-		Verdict:    "allow",
-		SideEffect: "external_write",
+		Action:     testActionWrite,
+		Verdict:    testVerdictAllow,
+		SideEffect: testSideEffectExt,
 		Actor:      "agent:claude-code",
 		ActorAuth:  ActorAuthBound,
 		PolicyHash: []byte{0x62, 0x7e, 0x66, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000001",
+		ReceiptID:  testReceiptID1,
 		Timestamp:  1712345678,
 	}
 
@@ -45,13 +45,13 @@ func TestEnvelope_Serialize_RoundTrip(t *testing.T) {
 
 	env := Envelope{
 		Version:    1,
-		Action:     "read",
-		Verdict:    "allow",
+		Action:     testActionRead,
+		Verdict:    testVerdictAllow,
 		SideEffect: "none",
-		Actor:      "agent:test",
+		Actor:      testActorAgentTest,
 		ActorAuth:  ActorAuthSelfDeclared,
 		PolicyHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
-		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000002",
+		ReceiptID:  testReceiptID2,
 		Timestamp:  1712345679,
 	}
 
@@ -99,13 +99,13 @@ func TestEnvelope_ToMCPMeta(t *testing.T) {
 
 	env := Envelope{
 		Version:    1,
-		Action:     "write",
-		Verdict:    "allow",
-		SideEffect: "external_write",
+		Action:     testActionWrite,
+		Verdict:    testVerdictAllow,
+		SideEffect: testSideEffectExt,
 		Actor:      "agent:claude-code",
 		ActorAuth:  ActorAuthMatched,
 		PolicyHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
-		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000001",
+		ReceiptID:  testReceiptID1,
 		Timestamp:  1712345678,
 	}
 
@@ -130,10 +130,10 @@ func TestEnvelope_ToMCPMeta_OmitsOptionalEmptyFields(t *testing.T) {
 
 	meta := Envelope{
 		Version:    1,
-		Action:     "read",
-		Verdict:    "allow",
+		Action:     testActionRead,
+		Verdict:    testVerdictAllow,
 		SideEffect: "none",
-		Actor:      "agent:test",
+		Actor:      testActorAgentTest,
 		ActorAuth:  ActorAuthSelfDeclared,
 		PolicyHash: []byte{0x01},
 		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000003",
@@ -229,8 +229,8 @@ func TestEnvelope_Hop_RoundTrip(t *testing.T) {
 	// Hop == 0 must not appear on the wire at all.
 	zero := Envelope{
 		Version:    1,
-		Action:     "read",
-		Verdict:    "allow",
+		Action:     testActionRead,
+		Verdict:    testVerdictAllow,
 		ActorAuth:  ActorAuthBound,
 		ReceiptID:  "id-zero",
 		Timestamp:  1712345678,
@@ -286,8 +286,8 @@ func TestSerialize_RejectsNegativeHop(t *testing.T) {
 
 	env := Envelope{
 		Version:    1,
-		Action:     "read",
-		Verdict:    "allow",
+		Action:     testActionRead,
+		Verdict:    testVerdictAllow,
 		ActorAuth:  ActorAuthBound,
 		ReceiptID:  "id-neg",
 		Timestamp:  1712345678,

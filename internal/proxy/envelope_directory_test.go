@@ -31,7 +31,7 @@ func TestEnvelopeWellKnownDirectory(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 
-	req := httptest.NewRequest(http.MethodGet, envelope.WellKnownPath, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, envelope.WellKnownPath, nil)
 	rec := httptest.NewRecorder()
 	p.Handler().ServeHTTP(rec, req)
 
@@ -73,7 +73,7 @@ func TestEnvelopeWellKnownDirectoryUnsignedNotFound(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 
-	req := httptest.NewRequest(http.MethodGet, envelope.WellKnownPath, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, envelope.WellKnownPath, nil)
 	rec := httptest.NewRecorder()
 	p.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {

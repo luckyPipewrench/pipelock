@@ -74,7 +74,7 @@ func TestCaptureMetadata_FetchPath_RoundTrip(t *testing.T) {
 
 	// Drive a fetch through the handler. The URL points at the httptest
 	// upstream; the URL itself is clean so the verdict resolves to allow.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	rec := httptest.NewRecorder()
 	p.handleFetch(rec, req)
 	if rec.Code != http.StatusOK {

@@ -916,8 +916,10 @@ func validateSetupHeader(key, value string) error {
 }
 
 func validSetupHeaderName(key string) bool {
-	for _, r := range key {
-		if r > 127 || !isSetupHTTPTokenChar(byte(r)) {
+	// HTTP header names are ASCII tokens (RFC 7230 §3.2.6); iterate by byte
+	// so any non-ASCII byte is rejected by isSetupHTTPTokenChar.
+	for i := 0; i < len(key); i++ {
+		if !isSetupHTTPTokenChar(key[i]) {
 			return false
 		}
 	}

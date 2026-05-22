@@ -162,7 +162,7 @@ func TestOTLPSink_RetryOn429(t *testing.T) {
 
 	_ = sink.Emit(context.Background(), Event{
 		Severity:  SeverityCritical,
-		Type:      "test",
+		Type:      testStr,
 		Timestamp: time.Now(),
 	})
 
@@ -202,7 +202,7 @@ func TestOTLPSink_RetryOn502(t *testing.T) {
 
 	_ = sink.Emit(context.Background(), Event{
 		Severity:  SeverityCritical,
-		Type:      "test",
+		Type:      testStr,
 		Timestamp: time.Now(),
 	})
 
@@ -242,7 +242,7 @@ func TestOTLPSink_RetryOn504(t *testing.T) {
 
 	_ = sink.Emit(context.Background(), Event{
 		Severity:  SeverityCritical,
-		Type:      "test",
+		Type:      testStr,
 		Timestamp: time.Now(),
 	})
 
@@ -272,7 +272,7 @@ func TestWebhookSink_DrainWithQueuedEvents(t *testing.T) {
 			Severity:   SeverityWarn,
 			Type:       "drain-test",
 			Timestamp:  time.Now(),
-			InstanceID: "test",
+			InstanceID: testStr,
 		})
 	}
 
@@ -324,7 +324,7 @@ func TestOTLPSink_InstanceIDInAttributes(t *testing.T) {
 
 	_ = sink.Emit(context.Background(), Event{
 		Severity:   SeverityCritical,
-		Type:       "test",
+		Type:       testStr,
 		Timestamp:  time.Now(),
 		InstanceID: "my-instance-id",
 		Fields:     map[string]any{"key": "value"},

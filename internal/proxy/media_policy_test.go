@@ -539,7 +539,7 @@ func TestFetchEndpoint_MediaPolicyStripsJPEG(t *testing.T) {
 	p, b := setupTestProxy(t)
 	defer b.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/photo.jpg", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/photo.jpg", nil)
 	w := httptest.NewRecorder()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
@@ -576,7 +576,7 @@ func TestFetchEndpoint_MediaPolicyBlocksAudio(t *testing.T) {
 	p, b := setupTestProxy(t)
 	defer b.Close()
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+backend.URL+"/track.mp3", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/track.mp3", nil)
 	w := httptest.NewRecorder()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)

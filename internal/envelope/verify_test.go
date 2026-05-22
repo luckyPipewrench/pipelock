@@ -311,7 +311,7 @@ func TestParseAndFormatActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseActor spiffe: %v", err)
 	}
-	if !spiffe.IsSPIFFE || spiffe.TrustDomain != "example.test" || spiffe.Workload != "/agent/alpha" {
+	if !spiffe.IsSPIFFE || spiffe.TrustDomain != testTrustDomain || spiffe.Workload != "/agent/alpha" {
 		t.Fatalf("unexpected parsed SPIFFE actor: %+v", spiffe)
 	}
 
@@ -319,7 +319,7 @@ func TestParseAndFormatActor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseActor uppercase scheme: %v", err)
 	}
-	if !upper.IsSPIFFE || upper.TrustDomain != "example.test" {
+	if !upper.IsSPIFFE || upper.TrustDomain != testTrustDomain {
 		t.Fatalf("uppercase scheme parsed as %+v", upper)
 	}
 
@@ -572,14 +572,14 @@ func TestVerifierSignatureHelperErrors(t *testing.T) {
 		name string
 		h    http.Header
 	}{
-		{"bad signature input", http.Header{"Signature-Input": {`"`}}},
-		{"bad signature", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`"`}}},
-		{"non inner list", http.Header{"Signature-Input": {`pipelock1=1`}, "Signature": {`pipelock1=:AQI=:`}}},
-		{"wrong tag skipped", http.Header{"Signature-Input": {strings.Replace(goodSigInput, `tag="pipelock-mediation"`, `tag="other"`, 1)}, "Signature": {`pipelock1=:AQI=:`}}},
-		{"missing signature member", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`sig1=:AQI=:`}}},
-		{"unexpected signature item type", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`pipelock1=1`}}},
-		{"signature value not bytes", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`pipelock1="not-bytes"`}}},
-		{"wrong signature length", http.Header{"Signature-Input": {goodSigInput}, "Signature": {`pipelock1=:AQI=:`}}},
+		{"bad signature input", http.Header{testHeaderSigInput: {`"`}}},
+		{"bad signature", http.Header{testHeaderSigInput: {goodSigInput}, testHeaderSig: {`"`}}},
+		{"non inner list", http.Header{testHeaderSigInput: {`pipelock1=1`}, testHeaderSig: {testInvalidSigB64}}},
+		{"wrong tag skipped", http.Header{testHeaderSigInput: {strings.Replace(goodSigInput, `tag="pipelock-mediation"`, `tag="other"`, 1)}, testHeaderSig: {testInvalidSigB64}}},
+		{"missing signature member", http.Header{testHeaderSigInput: {goodSigInput}, testHeaderSig: {`sig1=:AQI=:`}}},
+		{"unexpected signature item type", http.Header{testHeaderSigInput: {goodSigInput}, testHeaderSig: {`pipelock1=1`}}},
+		{"signature value not bytes", http.Header{testHeaderSigInput: {goodSigInput}, testHeaderSig: {`pipelock1="not-bytes"`}}},
+		{"wrong signature length", http.Header{testHeaderSigInput: {goodSigInput}, testHeaderSig: {testInvalidSigB64}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -664,7 +664,7 @@ func TestVerifier_RejectsLifetimeOverWindow(t *testing.T) {
 	// Signer emits a 10-minute signature.
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "trusted-key",
+		KeyID:            testKeyIDTrusted,
 		SignedComponents: []string{derivedMethod, derivedTargetURI, headerPipelockMediation},
 		Expires:          10 * time.Minute,
 		NowFn:            func() time.Time { return now },
@@ -677,14 +677,14 @@ func TestVerifier_RejectsLifetimeOverWindow(t *testing.T) {
 		ConfigHash:  strings.Repeat("a", 64),
 		Signer:      signer,
 		ActorFormat: ActorFormatSPIFFE,
-		TrustDomain: "example.test",
+		TrustDomain: testTrustDomain,
 	})
 	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000003",
-		Action:    "read",
-		Verdict:   "allow",
-		Actor:     "alpha",
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
+		Actor:     testActorAlpha,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)
@@ -692,7 +692,7 @@ func TestVerifier_RejectsLifetimeOverWindow(t *testing.T) {
 
 	// Verifier caps lifetime at 5 minutes; the 10-min signature must be rejected.
 	verifier, err := NewVerifier(VerifierConfig{
-		TrustedKeys:          []TrustedKey{{KeyID: "trusted-key", PublicKey: pub}},
+		TrustedKeys:          []TrustedKey{{KeyID: testKeyIDTrusted, PublicKey: pub}},
 		ReplayCache:          newReplayCache(5*time.Minute, 1000, func() time.Time { return now }),
 		Skew:                 time.Minute,
 		MaxSignatureLifetime: 5 * time.Minute,
@@ -722,7 +722,7 @@ func TestVerifier_RejectsActorTrustDomainMismatch(t *testing.T) {
 	// actor is spiffe://example.test/agent/alpha — must reject.
 	verifier, err := NewVerifier(VerifierConfig{
 		TrustedKeys: []TrustedKey{{
-			KeyID:        "trusted-key",
+			KeyID:        testKeyIDTrusted,
 			PublicKey:    pub,
 			TrustDomains: []string{"other.example"},
 		}},
@@ -741,7 +741,7 @@ func TestVerifier_RejectsActorTrustDomainMismatch(t *testing.T) {
 	req2 := signedVerifierRequest(t, priv, now, "")
 	verifier2, err := NewVerifier(VerifierConfig{
 		TrustedKeys: []TrustedKey{{
-			KeyID:        "trusted-key",
+			KeyID:        testKeyIDTrusted,
 			PublicKey:    pub,
 			TrustDomains: []string{"example.test"},
 		}},
@@ -766,7 +766,7 @@ func TestVerifier_TrustDomainPinRequiresSPIFFEActor(t *testing.T) {
 	req := signedLegacyActorRequest(t, priv, now)
 	verifier, err := NewVerifier(VerifierConfig{
 		TrustedKeys: []TrustedKey{{
-			KeyID:        "trusted-key",
+			KeyID:        testKeyIDTrusted,
 			PublicKey:    pub,
 			TrustDomains: []string{"example.test"},
 		}},
@@ -868,7 +868,7 @@ func signedEmptyPostRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time
 	t.Helper()
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "trusted-key",
+		KeyID:            testKeyIDTrusted,
 		SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
 		MaxBodyBytes:     1 << 20,
 		NowFn:            func() time.Time { return now },
@@ -881,14 +881,14 @@ func signedEmptyPostRequest(t *testing.T, priv ed25519.PrivateKey, now time.Time
 		ConfigHash:  strings.Repeat("a", 64),
 		Signer:      signer,
 		ActorFormat: ActorFormatSPIFFE,
-		TrustDomain: "example.test",
+		TrustDomain: testTrustDomain,
 	})
 	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", nil)
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000005",
-		Action:    "read",
-		Verdict:   "allow",
-		Actor:     "alpha",
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
+		Actor:     testActorAlpha,
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
 		t.Fatalf("InjectAndSign: %v", err)
@@ -900,7 +900,7 @@ func signedLegacyActorRequest(t *testing.T, priv ed25519.PrivateKey, now time.Ti
 	t.Helper()
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "trusted-key",
+		KeyID:            testKeyIDTrusted,
 		SignedComponents: []string{derivedMethod, derivedTargetURI, headerPipelockMediation},
 		NowFn:            func() time.Time { return now },
 		RandReader:       bytes.NewReader([]byte("0123456789abcdef")),
@@ -915,8 +915,8 @@ func signedLegacyActorRequest(t *testing.T, priv ed25519.PrivateKey, now time.Ti
 	req := newTestRequest(t, http.MethodGet, "https://upstream.example/api", nil)
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000004",
-		Action:    "read",
-		Verdict:   "allow",
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
 		Actor:     "legacy-agent",
 		ActorAuth: ActorAuthBound,
 	}); err != nil {
@@ -940,7 +940,7 @@ func signedVerifierRequestWithURL(t *testing.T, priv ed25519.PrivateKey, now tim
 	}
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "trusted-key",
+		KeyID:            testKeyIDTrusted,
 		SignedComponents: []string{derivedMethod, derivedTargetURI, headerContentDigest, headerPipelockMediation},
 		MaxBodyBytes:     1 << 20,
 		NowFn:            func() time.Time { return now },
@@ -953,17 +953,17 @@ func signedVerifierRequestWithURL(t *testing.T, priv ed25519.PrivateKey, now tim
 		ConfigHash:  strings.Repeat("a", 64),
 		Signer:      signer,
 		ActorFormat: ActorFormatSPIFFE,
-		TrustDomain: "example.test",
+		TrustDomain: testTrustDomain,
 	})
 	req := newTestRequest(t, http.MethodPost, targetURL, body)
 	if body == nil {
 		req = newTestRequest(t, http.MethodGet, targetURL, nil)
 	}
 	err = em.InjectAndSign(req, bodyBytes, BuildOpts{
-		ActionID:  "01961f3a-7b2c-7000-8000-000000000001",
-		Action:    "read",
-		Verdict:   "allow",
-		Actor:     "alpha",
+		ActionID:  testReceiptID1,
+		Action:    testActionRead,
+		Verdict:   testVerdictAllow,
+		Actor:     testActorAlpha,
 		ActorAuth: ActorAuthBound,
 	})
 	if err != nil {

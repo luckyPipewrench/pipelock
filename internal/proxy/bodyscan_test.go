@@ -1206,7 +1206,7 @@ func TestFetchHandler_HeaderScan_SecretInAuth(t *testing.T) {
 	}
 
 	// Create a request to the fetch handler with a secret in the header.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
 	w := httptest.NewRecorder()
 
@@ -1245,7 +1245,7 @@ func TestFetchHandler_HeaderScan_WarnMode(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
 	w := httptest.NewRecorder()
 
@@ -1280,7 +1280,7 @@ func TestFetchHandler_HeaderScan_WarnModeCriticalDLPBlocksWhenEnforced(t *testin
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+upstream.URL, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	req.Header.Set("X-Api-Key", fakeAPIKey())
 	w := httptest.NewRecorder()
 

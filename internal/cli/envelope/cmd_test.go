@@ -726,7 +726,7 @@ func testTrustKey(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey, string) 
 
 func signedTrustVerifyRequest(t *testing.T, priv ed25519.PrivateKey, keyID, actor, body string) string {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "http://upstream.example/api", strings.NewReader(body))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://upstream.example/api", strings.NewReader(body))
 	env := domenvelope.Envelope{
 		Version:   1,
 		Action:    "write",

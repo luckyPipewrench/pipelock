@@ -52,7 +52,7 @@ func TestForwardHTTP_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 	mux.HandleFunc("/fetch", p.handleFetch)
 	handler := p.buildHandler(mux)
 
-	req := httptest.NewRequest(http.MethodPost, upstream.URL+"/upload",
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/upload",
 		&errorReader{n: 8, err: io.ErrUnexpectedEOF})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -116,7 +116,7 @@ func TestInterceptHandler_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 		Proxy:      p,
 	}, upstreamRT)
 
-	req := httptest.NewRequest(http.MethodPost, "https://"+testLoopbackIP+"/upload",
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://"+testLoopbackIP+"/upload",
 		&errorReader{n: 8, err: io.ErrUnexpectedEOF})
 	req.Header.Set("Content-Type", "application/json")
 
@@ -178,7 +178,7 @@ func TestReverseProxy_EnvelopeSigningReadFailureBlocks(t *testing.T) {
 	t.Cleanup(signingProxy.Close)
 	handler.SetEnvelopeEmitter(&signingProxy.envelopeEmitterPtr)
 
-	req := httptest.NewRequest(http.MethodPost, "http://proxy.example/api/upload",
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.example/api/upload",
 		&errorReader{n: 8, err: io.ErrUnexpectedEOF})
 	req.Header.Set("Content-Type", "application/json")
 

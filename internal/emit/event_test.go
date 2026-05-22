@@ -11,10 +11,10 @@ func TestSeverity_String(t *testing.T) {
 		sev  Severity
 		want string
 	}{
-		{name: "info", sev: SeverityInfo, want: "info"},
-		{name: "warn", sev: SeverityWarn, want: "warn"},
-		{name: "critical", sev: SeverityCritical, want: "critical"},
-		{name: "unknown defaults to info", sev: Severity(99), want: "info"},
+		{name: severityNameInfo, sev: SeverityInfo, want: severityNameInfo},
+		{name: testSeverityWarn, sev: SeverityWarn, want: testSeverityWarn},
+		{name: severityNameCritical, sev: SeverityCritical, want: severityNameCritical},
+		{name: testCaseUnknownInfo, sev: Severity(99), want: severityNameInfo},
 	}
 
 	for _, tt := range tests {
@@ -32,14 +32,14 @@ func TestParseSeverity(t *testing.T) {
 		input string
 		want  Severity
 	}{
-		{name: "info", input: "info", want: SeverityInfo},
-		{name: "warn", input: "warn", want: SeverityWarn},
-		{name: "critical", input: "critical", want: SeverityCritical},
+		{name: severityNameInfo, input: severityNameInfo, want: SeverityInfo},
+		{name: testSeverityWarn, input: testSeverityWarn, want: SeverityWarn},
+		{name: severityNameCritical, input: severityNameCritical, want: SeverityCritical},
 		{name: "empty string defaults to info", input: "", want: SeverityInfo},
-		{name: "unknown defaults to info", input: "emergency", want: SeverityInfo},
-		{name: "uppercase WARN", input: "WARN", want: SeverityWarn},
+		{name: testCaseUnknownInfo, input: "emergency", want: SeverityInfo},
+		{name: "uppercase WARN", input: otlpSeverityTextWarn, want: SeverityWarn},
 		{name: "mixed case Critical", input: "Critical", want: SeverityCritical},
-		{name: "uppercase INFO", input: "INFO", want: SeverityInfo},
+		{name: "uppercase INFO", input: otlpSeverityTextInfo, want: SeverityInfo},
 	}
 
 	for _, tt := range tests {
@@ -67,17 +67,17 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		wantSev   Severity
 	}{
 		// Critical
-		{"kill_switch_deny", SeverityCritical},
+		{EventKillSwitchDeny, SeverityCritical},
 
 		// Warn
-		{"blocked", SeverityWarn},
-		{"anomaly", SeverityWarn},
-		{"session_anomaly", SeverityWarn},
-		{"mcp_unknown_tool", SeverityWarn},
-		{"ws_blocked", SeverityWarn},
-		{"response_scan", SeverityWarn},
-		{"ws_scan", SeverityWarn},
-		{"adaptive_escalation", SeverityWarn},
+		{testEventBlocked, SeverityWarn},
+		{EventAnomaly, SeverityWarn},
+		{EventSessionAnomaly, SeverityWarn},
+		{EventMCPUnknownTool, SeverityWarn},
+		{EventWSBlocked, SeverityWarn},
+		{EventResponseScan, SeverityWarn},
+		{EventWSScan, SeverityWarn},
+		{EventAdaptiveEscalation, SeverityWarn},
 		{EventAdaptiveUpgrade, SeverityWarn},
 		{"error", SeverityWarn},
 
@@ -85,13 +85,13 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 		{"response_scan_exempt", SeverityWarn},
 
 		// Info
-		{"allowed", SeverityInfo},
-		{"tunnel_open", SeverityInfo},
+		{verdictAllowed, SeverityInfo},
+		{EventTunnelOpen, SeverityInfo},
 		{"tunnel_close", SeverityInfo},
-		{"ws_open", SeverityInfo},
-		{"ws_close", SeverityInfo},
+		{EventWSOpen, SeverityInfo},
+		{EventWSClose, SeverityInfo},
 		{"config_reload", SeverityInfo},
-		{"redirect", SeverityInfo},
+		{EventRedirect, SeverityInfo},
 		{"forward_http", SeverityInfo},
 		{"tool_redirect", SeverityInfo},
 	}
@@ -111,29 +111,29 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 
 func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 	known := map[string]bool{
-		"kill_switch_deny":     true,
-		"blocked":              true,
-		"anomaly":              true,
-		"session_anomaly":      true,
-		"mcp_unknown_tool":     true,
-		"ws_blocked":           true,
-		"response_scan":        true,
-		"ws_scan":              true,
-		"adaptive_escalation":  true,
-		EventAdaptiveUpgrade:   true,
-		"error":                true,
-		"response_scan_exempt": true,
-		EventMediaExposure:     true,
-		EventTextStego:         true,
-		"allowed":              true,
-		"tunnel_open":          true,
-		"tunnel_close":         true,
-		"ws_open":              true,
-		"ws_close":             true,
-		"config_reload":        true,
-		"redirect":             true,
-		"forward_http":         true,
-		"tool_redirect":        true,
+		EventKillSwitchDeny:     true,
+		testEventBlocked:        true,
+		EventAnomaly:            true,
+		EventSessionAnomaly:     true,
+		EventMCPUnknownTool:     true,
+		EventWSBlocked:          true,
+		EventResponseScan:       true,
+		EventWSScan:             true,
+		EventAdaptiveEscalation: true,
+		EventAdaptiveUpgrade:    true,
+		"error":                 true,
+		"response_scan_exempt":  true,
+		EventMediaExposure:      true,
+		EventTextStego:          true,
+		verdictAllowed:          true,
+		EventTunnelOpen:         true,
+		"tunnel_close":          true,
+		EventWSOpen:             true,
+		EventWSClose:            true,
+		"config_reload":         true,
+		EventRedirect:           true,
+		"forward_http":          true,
+		"tool_redirect":         true,
 	}
 
 	for k := range EventSeverity {
@@ -149,10 +149,10 @@ func TestChainDetectionSeverity(t *testing.T) {
 		action string
 		want   Severity
 	}{
-		{name: "block is critical", action: "block", want: SeverityCritical},
-		{name: "warn is warn", action: "warn", want: SeverityWarn},
+		{name: testCaseBlockIsCritical, action: conventionVerdictBlocked, want: SeverityCritical},
+		{name: testCaseWarnIsWarn, action: testSeverityWarn, want: SeverityWarn},
 		{name: "log is warn", action: "log", want: SeverityWarn},
-		{name: "empty is warn", action: "", want: SeverityWarn},
+		{name: testCaseEmptyIsWarn, action: "", want: SeverityWarn},
 	}
 
 	for _, tt := range tests {
@@ -170,10 +170,10 @@ func TestEscalationSeverity(t *testing.T) {
 		toAction string
 		want     Severity
 	}{
-		{name: "block is critical", toAction: "block", want: SeverityCritical},
-		{name: "warn is warn", toAction: "warn", want: SeverityWarn},
+		{name: testCaseBlockIsCritical, toAction: conventionVerdictBlocked, want: SeverityCritical},
+		{name: testCaseWarnIsWarn, toAction: testSeverityWarn, want: SeverityWarn},
 		{name: "throttle is warn", toAction: "throttle", want: SeverityWarn},
-		{name: "empty is warn", toAction: "", want: SeverityWarn},
+		{name: testCaseEmptyIsWarn, toAction: "", want: SeverityWarn},
 	}
 
 	for _, tt := range tests {
@@ -198,10 +198,10 @@ func TestUpgradeSeverity(t *testing.T) {
 		toAction string
 		want     Severity
 	}{
-		{name: "block is critical", toAction: "block", want: SeverityCritical},
-		{name: "warn is warn", toAction: "warn", want: SeverityWarn},
-		{name: "strip is warn", toAction: "strip", want: SeverityWarn},
-		{name: "empty is warn", toAction: "", want: SeverityWarn},
+		{name: testCaseBlockIsCritical, toAction: conventionVerdictBlocked, want: SeverityCritical},
+		{name: testCaseWarnIsWarn, toAction: testSeverityWarn, want: SeverityWarn},
+		{name: "strip is warn", toAction: testActionStrip, want: SeverityWarn},
+		{name: testCaseEmptyIsWarn, toAction: "", want: SeverityWarn},
 	}
 
 	for _, tt := range tests {

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -21,20 +22,30 @@ import (
 )
 
 const (
-	testSessionID   = "test-session-001"
-	testTransport   = "fetch"
-	testVersion     = "v2.0.0-test"
-	testSHA         = "abcdef12"
-	testConfigHash  = "confighash123"
-	testSubsurface  = "forward"
-	testQueueSize   = 128
-	testAgent       = "test-agent"
-	testProfile     = "default"
-	testURLVerdict  = "https://example.com/api"
-	testEffAction   = "block"
-	testOutcome     = "blocked"
-	testPatternName = "test_pattern"
-	testSeverity    = "critical"
+	testSessionID     = "test-session-001"
+	testTransport     = "fetch"
+	testVersion       = "v2.0.0-test"
+	testSHA           = "abcdef12"
+	testConfigHash    = "confighash123"
+	testSubsurface    = "forward"
+	testQueueSize     = 128
+	testAgent         = "test-agent"
+	testProfile       = "default"
+	testURLVerdict    = "https://example.com/api"
+	testEffAction     = "block"
+	testOutcome       = "blocked"
+	testPatternName   = "test_pattern"
+	testSeverity      = "critical"
+	testVerdictAllow  = "allow"
+	testToolsCall     = "tools/call"
+	testCIDRLoopback  = "127.0.0.0/8"
+	testTransportMCP  = "mcp_stdio"
+	testCIDRIPv6      = "::1/128"
+	testRepoBarURL    = "https://api.example.com/repos/bar"
+	testRuleNamerRf   = "Block rm -rf"
+	testHTTPDestRule  = "http_destination"
+	testAPIExampleCom = "api.example.com"
+	testJSONKeyPaths  = "paths"
 )
 
 // testDropSink counts drop notifications via an atomic counter.
@@ -178,7 +189,7 @@ func TestWriterRecordsURLVerdict(t *testing.T) {
 		ConfigHash:  testConfigHash,
 		Agent:       testAgent,
 		Profile:     testProfile,
-		Request:     capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request:     capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 		RawFindings: []capture.Finding{{Kind: capture.KindDLP, PatternName: testPatternName, Severity: testSeverity}},
 		EffectiveFindings: []capture.Finding{
 			{Kind: capture.KindDLP, PatternName: testPatternName, Action: testEffAction, Severity: testSeverity},
@@ -303,8 +314,8 @@ func TestWriterRecordsURLVerdictWithEscrow(t *testing.T) {
 		SessionID:       testSessionID,
 		RequestID:       "req-escrow",
 		ConfigHash:      testConfigHash,
-		Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
-		EffectiveAction: "allow",
+		Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
 	})
 
@@ -394,8 +405,8 @@ func TestWriterDropSentinel(t *testing.T) {
 			SessionID:       testSessionID,
 			RequestID:       "req-flood",
 			ConfigHash:      testConfigHash,
-			Request:         capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
-			EffectiveAction: "allow",
+			Request:         capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
+			EffectiveAction: testVerdictAllow,
 			Outcome:         capture.OutcomeClean,
 		})
 	}
@@ -479,8 +490,8 @@ func TestWriterMetricsSinkRecordsSanitizedSessionID(t *testing.T) {
 		SessionIDOriginal: "../unsafe-agent|127.0.0.1",
 		RequestID:         "req-sanitized",
 		ConfigHash:        testConfigHash,
-		Request:           capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
-		EffectiveAction:   "allow",
+		Request:           capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
+		EffectiveAction:   testVerdictAllow,
 		Outcome:           capture.OutcomeClean,
 	})
 
@@ -523,10 +534,10 @@ func TestWriterMetricsSinkRecordsObservationClasses(t *testing.T) {
 		actionClass string
 		method      string
 	}{
-		{requestID: "req-classified", actionClass: "write", method: "POST"},
+		{requestID: "req-classified", actionClass: ekActionClassWrite, method: http.MethodPost},
 		{requestID: "req-explicit-unclassified", actionClass: "unclassified", method: "CUSTOM"},
-		{requestID: "req-normalized", actionClass: " Read ", method: "GET"},
-		{requestID: "req-non-canonical", actionClass: "exec", method: "POST"},
+		{requestID: "req-normalized", actionClass: " Read ", method: http.MethodGet},
+		{requestID: "req-non-canonical", actionClass: "exec", method: http.MethodPost},
 		{requestID: "req-missing", actionClass: "", method: "CUSTOM"},
 	} {
 		w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
@@ -537,7 +548,7 @@ func TestWriterMetricsSinkRecordsObservationClasses(t *testing.T) {
 			ConfigHash:      testConfigHash,
 			ActionClass:     tc.actionClass,
 			Request:         capture.CaptureRequest{Method: tc.method, URL: testURLVerdict},
-			EffectiveAction: "allow",
+			EffectiveAction: testVerdictAllow,
 			Outcome:         capture.OutcomeClean,
 		})
 	}
@@ -600,16 +611,16 @@ func TestWriterMultipleSessions(t *testing.T) {
 	w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
 		Subsurface: testSubsurface, Transport: testTransport,
 		SessionID: sessionA, RequestID: "req-a",
-		ConfigHash: testConfigHash, EffectiveAction: "allow",
+		ConfigHash: testConfigHash, EffectiveAction: testVerdictAllow,
 		Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "GET", URL: "https://a.example.com"},
+		Request: capture.CaptureRequest{Method: http.MethodGet, URL: "https://a.example.com"},
 	})
 	w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
 		Subsurface: testSubsurface, Transport: testTransport,
 		SessionID: sessionB, RequestID: "req-b",
-		ConfigHash: testConfigHash, EffectiveAction: "allow",
+		ConfigHash: testConfigHash, EffectiveAction: testVerdictAllow,
 		Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "GET", URL: "https://b.example.com"},
+		Request: capture.CaptureRequest{Method: http.MethodGet, URL: "https://b.example.com"},
 	})
 
 	if err := w.Close(); err != nil {
@@ -665,9 +676,9 @@ func TestWriterSignedCheckpoints(t *testing.T) {
 		w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
 			Subsurface: testSubsurface, Transport: testTransport,
 			SessionID: testSessionID, RequestID: "req-cp",
-			ConfigHash: testConfigHash, EffectiveAction: "allow",
+			ConfigHash: testConfigHash, EffectiveAction: testVerdictAllow,
 			Outcome: capture.OutcomeClean,
-			Request: capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+			Request: capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 		})
 	}
 
@@ -750,9 +761,9 @@ func TestWriterBuildSummaryTruncation(t *testing.T) {
 		ConfigHash:      testConfigHash,
 		TransformKind:   capture.TransformJoinedFields,
 		ScannerInput:    string(longInput),
-		EffectiveAction: "allow",
+		EffectiveAction: testVerdictAllow,
 		Outcome:         capture.OutcomeClean,
-		Request:         capture.CaptureRequest{Method: "POST", URL: "https://example.com"},
+		Request:         capture.CaptureRequest{Method: http.MethodPost, URL: "https://example.com"},
 	})
 
 	if err := w.Close(); err != nil {
@@ -817,8 +828,8 @@ func TestWriterAllSurfaces(t *testing.T) {
 	w.ObserveURLVerdict(ctx, &capture.URLVerdictRecord{
 		Subsurface: testSubsurface, Transport: testTransport,
 		SessionID: sid, RequestID: rid, ConfigHash: ch,
-		EffectiveAction: "allow", Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow, Outcome: capture.OutcomeClean,
+		Request: capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	w.ObserveResponseVerdict(ctx, &capture.ResponseVerdictRecord{
@@ -826,39 +837,39 @@ func TestWriterAllSurfaces(t *testing.T) {
 		SessionID: sid, RequestID: rid, ConfigHash: ch,
 		TransformKind:   capture.TransformReadability,
 		WirePayload:     []byte("response body"),
-		EffectiveAction: "allow", Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow, Outcome: capture.OutcomeClean,
+		Request: capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	w.ObserveDLPVerdict(ctx, &capture.DLPVerdictRecord{
 		Subsurface: testSubsurface, Transport: testTransport,
 		SessionID: sid, RequestID: rid, ConfigHash: ch,
 		TransformKind: capture.TransformRaw, ScannerInput: "dlp-input",
-		EffectiveAction: "allow", Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "POST", URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow, Outcome: capture.OutcomeClean,
+		Request: capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict},
 	})
 
 	w.ObserveCEEVerdict(ctx, &capture.CEERecord{
 		Subsurface: testSubsurface, Transport: testTransport,
 		SessionID: sid, RequestID: rid, ConfigHash: ch,
 		TransformKind: capture.TransformCEEWindow, ScannerInput: "cee-input",
-		EffectiveAction: "allow", Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		EffectiveAction: testVerdictAllow, Outcome: capture.OutcomeClean,
+		Request: capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	w.ObserveToolPolicyVerdict(ctx, &capture.ToolPolicyRecord{
-		Subsurface: "mcp_stdio", Transport: "mcp-stdio",
+		Subsurface: testTransportMCP, Transport: "mcp-stdio",
 		SessionID: sid, RequestID: rid, ConfigHash: ch,
-		EffectiveAction: "allow", Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{ToolName: "exec", MCPMethod: "tools/call"},
+		EffectiveAction: testVerdictAllow, Outcome: capture.OutcomeClean,
+		Request: capture.CaptureRequest{ToolName: "exec", MCPMethod: testToolsCall},
 	})
 
 	w.ObserveToolScanVerdict(ctx, &capture.ToolScanRecord{
-		Subsurface: "mcp_stdio", Transport: "mcp-stdio",
+		Subsurface: testTransportMCP, Transport: "mcp-stdio",
 		SessionID: sid, RequestID: rid, ConfigHash: ch,
 		TransformKind:   capture.TransformToolsListDescription,
 		ScannerInput:    "tool description text",
-		EffectiveAction: "allow", Outcome: capture.OutcomeClean,
+		EffectiveAction: testVerdictAllow, Outcome: capture.OutcomeClean,
 		Request: capture.CaptureRequest{MCPMethod: "tools/list"},
 	})
 
@@ -901,9 +912,9 @@ func TestWriterNewWriterDisabledRecorder(t *testing.T) {
 	w.ObserveURLVerdict(context.Background(), &capture.URLVerdictRecord{
 		Subsurface: testSubsurface, Transport: testTransport,
 		SessionID: testSessionID, RequestID: "req-nop",
-		ConfigHash: testConfigHash, EffectiveAction: "allow",
+		ConfigHash: testConfigHash, EffectiveAction: testVerdictAllow,
 		Outcome: capture.OutcomeClean,
-		Request: capture.CaptureRequest{Method: "GET", URL: testURLVerdict},
+		Request: capture.CaptureRequest{Method: http.MethodGet, URL: testURLVerdict},
 	})
 
 	if err := w.Close(); err != nil {

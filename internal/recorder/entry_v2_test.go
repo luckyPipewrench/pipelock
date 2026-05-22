@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -570,7 +571,7 @@ func TestVerifyChain_HashMismatchAcrossVersions(t *testing.T) {
 func TestComputeHash_MarshalErrorFallback(t *testing.T) {
 	for _, ver := range []int{1, 2} {
 		ver := ver
-		t.Run("version_"+string(rune('0'+ver)), func(t *testing.T) {
+		t.Run("version_"+strconv.Itoa(ver), func(t *testing.T) {
 			e := recorder.Entry{
 				Version:   ver,
 				Sequence:  1,

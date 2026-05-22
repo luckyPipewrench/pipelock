@@ -2820,7 +2820,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	// The done channel ensures this goroutine exits if ListenAndServe
 	// fails immediately (e.g., address already in use).
 	done := make(chan struct{})
-	go func() {
+	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 		select {
 		case <-ctx.Done():
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

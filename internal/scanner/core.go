@@ -24,6 +24,13 @@ const (
 	ScannerCoreResponse = "core_response"
 )
 
+// Built-in pattern names — referenced in pattern definitions, tests, and
+// red-team assertions so the canonical spelling lives in one place.
+const (
+	patternNameAWSAccessID     = "AWS Access ID"
+	patternNamePromptInjection = "Prompt Injection"
+)
+
 // CoreDLPCount returns the number of immutable core DLP patterns.
 func CoreDLPCount() int { return len(coreDLPPatternDefs()) }
 
@@ -55,7 +62,7 @@ func coreDLPPatternDefs() []coreDLPPattern {
 	return []coreDLPPattern{
 		// Cloud provider credentials — names match config.Defaults() exactly.
 		{
-			name:     "AWS Access ID",
+			name:     patternNameAWSAccessID,
 			regex:    `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`,
 			severity: "critical",
 		},
@@ -109,7 +116,7 @@ func coreDLPPatternDefs() []coreDLPPattern {
 func coreResponsePatternDefs() []coreResponsePattern {
 	return []coreResponsePattern{
 		{
-			name:  "Prompt Injection",
+			name:  patternNamePromptInjection,
 			regex: `(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)`,
 		},
 		{

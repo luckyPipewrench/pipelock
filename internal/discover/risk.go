@@ -8,19 +8,27 @@ import (
 	"unicode"
 )
 
+// Risk-keyword constants. Shared with test fixtures so adding a keyword
+// in one place doesn't drift from the other.
+const (
+	kwFilesystem = "filesystem"
+	kwPostgres   = "postgres"
+	kwMemory     = "memory"
+)
+
 // highRiskKeywords indicate servers with dangerous capabilities.
 var highRiskKeywords = []string{
 	"exec", "shell", "terminal", "bash", "run", "command",
-	"filesystem", "fs", "file", "write", "git",
-	"postgres", "mysql", "sqlite", "database", "db", "redis", "mongo",
-	"fetch", "http", "network", "browser", "puppeteer", "playwright",
+	kwFilesystem, "fs", "file", "write", "git",
+	kwPostgres, "mysql", "sqlite", "database", "db", "redis", "mongo",
+	"fetch", TransportHTTP, "network", "browser", "puppeteer", "playwright",
 	"slack", "email", "discord", "telegram", "send", "notify",
 	"everything",
 }
 
 // mediumRiskKeywords indicate servers with moderate capabilities.
 var mediumRiskKeywords = []string{
-	"memory", "search", "context", "knowledge", "read",
+	kwMemory, "search", "context", "knowledge", "read",
 	"brave", "tavily",
 }
 

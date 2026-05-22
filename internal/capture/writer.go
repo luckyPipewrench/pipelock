@@ -319,7 +319,7 @@ func (w *Writer) writeDropSentinel(count int64) {
 		SessionID: metaSessionID,
 		Type:      EntryTypeCaptureDrop,
 		EventKind: EntryTypeCaptureDrop,
-		Summary:   "capture queue overflow",
+		Summary:   DropSummaryCaptureOverflow,
 		Detail: CaptureDropDetail{
 			Count:  int(count),
 			Reason: dropReason,

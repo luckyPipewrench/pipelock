@@ -19,7 +19,7 @@ func TestClassifyURLSource(t *testing.T) {
 	}{
 		{name: "localhost is trusted", rawURL: "http://localhost:3000/docs", want: session.TaintTrusted},
 		{name: "loopback is trusted", rawURL: "http://127.0.0.1:8080/health", want: session.TaintTrusted},
-		{name: "allowlisted docs are references", rawURL: "https://docs.github.com/copilot", want: session.TaintAllowlistedReference},
+		{name: "allowlisted docs are references", rawURL: testGitHubCopilotDocs, want: session.TaintAllowlistedReference},
 		{name: "random site is untrusted", rawURL: "https://evil.example/backdoor", want: session.TaintExternalUntrusted},
 		{name: "bad url is untrusted", rawURL: "://not-a-url", want: session.TaintExternalUntrusted},
 	}

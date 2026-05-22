@@ -70,8 +70,8 @@ func TestNewSigner_RejectsShortKey(t *testing.T) {
 	t.Parallel()
 	_, err := NewSigner(SignerConfig{
 		PrivKey:          ed25519.PrivateKey([]byte("too short")),
-		KeyID:            "test",
-		SignedComponents: []string{"@method"},
+		KeyID:            testKeyIDTest,
+		SignedComponents: []string{derivedMethod},
 	})
 	if err == nil {
 		t.Error("expected error for short private key")
@@ -84,7 +84,7 @@ func TestNewSigner_RejectsEmptyKeyID(t *testing.T) {
 	_, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
 		KeyID:            "   ",
-		SignedComponents: []string{"@method"},
+		SignedComponents: []string{derivedMethod},
 	})
 	if err == nil {
 		t.Error("expected error for whitespace-only key_id")
@@ -96,7 +96,7 @@ func TestNewSigner_RejectsEmptyComponents(t *testing.T) {
 	_, priv := testSignerKey(t)
 	_, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "test",
+		KeyID:            testKeyIDTest,
 		SignedComponents: nil,
 	})
 	if err == nil {
@@ -109,8 +109,8 @@ func TestNewSigner_RejectsUnsupportedComponent(t *testing.T) {
 	_, priv := testSignerKey(t)
 	_, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "test",
-		SignedComponents: []string{"@method", "host"},
+		KeyID:            testKeyIDTest,
+		SignedComponents: []string{derivedMethod, "host"},
 	})
 	if err == nil {
 		t.Error("expected error for unsupported signed_components entry")
@@ -122,8 +122,8 @@ func TestNewSigner_RejectsDuplicateComponents(t *testing.T) {
 	_, priv := testSignerKey(t)
 	_, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "test",
-		SignedComponents: []string{"@method", "@method"},
+		KeyID:            testKeyIDTest,
+		SignedComponents: []string{derivedMethod, derivedMethod},
 	})
 	if err == nil {
 		t.Error("expected error for duplicate signed_components entry")
@@ -316,8 +316,8 @@ func TestSignRequest_OverSizedBodyDropsContentDigest(t *testing.T) {
 	_, priv := testSignerKey(t)
 	signer, err := NewSigner(SignerConfig{
 		PrivKey:          priv,
-		KeyID:            "test",
-		SignedComponents: []string{"@method", "@target-uri", "content-digest", headerPipelockMediation},
+		KeyID:            testKeyIDTest,
+		SignedComponents: []string{derivedMethod, "@target-uri", "content-digest", headerPipelockMediation},
 		MaxBodyBytes:     64, // tiny cap for the test
 		NowFn:            func() time.Time { return time.Unix(1712345678, 0).UTC() },
 	})

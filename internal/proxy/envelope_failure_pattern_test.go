@@ -88,7 +88,7 @@ func TestRecordInboundEnvelopeVerifyMetricMapping(t *testing.T) {
 		"missing":  1,
 		"failed":   2,
 	}
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 	m.PrometheusHandler().ServeHTTP(rec, req)
 	body := rec.Body.String()
@@ -220,7 +220,7 @@ func TestVerifyInboundEnvelopeMissingHeaderSkipsBodyDrain(t *testing.T) {
 
 	pub, _ := testInboundEnvelopeKey(t)
 	cfg, verifier := testInboundVerifier(t, pub)
-	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/api", &errorReader{
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://upstream.example/api", &errorReader{
 		n:   8,
 		err: errors.New("body should not be read"),
 	})
@@ -238,7 +238,7 @@ func TestBufferInboundEnvelopeBodyClosesOverCapBody(t *testing.T) {
 	t.Parallel()
 
 	body := &closeTrackingReadCloser{Reader: strings.NewReader("abcdef")}
-	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/api", body)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://upstream.example/api", body)
 	req.Body = body
 	req.ContentLength = 6
 
@@ -294,7 +294,7 @@ func testInboundVerifier(t *testing.T, pub ed25519.PublicKey) (*config.Config, *
 func signedInboundRequest(t *testing.T, priv ed25519.PrivateKey, actor string) *http.Request {
 	t.Helper()
 
-	req := httptest.NewRequest(http.MethodPost, "https://upstream.example/api", strings.NewReader(testInboundBody))
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "https://upstream.example/api", strings.NewReader(testInboundBody))
 	env := envelope.Envelope{
 		Version:   1,
 		Action:    "write",

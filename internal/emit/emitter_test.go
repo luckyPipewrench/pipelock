@@ -52,9 +52,9 @@ func TestEmitter_FanOut(t *testing.T) {
 	s2 := &mockSink{}
 	s3 := &mockSink{}
 
-	em := NewEmitter("test-host", s1, s2, s3)
+	em := NewEmitter(testHostName, s1, s2, s3)
 
-	em.Emit(context.Background(), "blocked", map[string]any{"url": "https://evil.com"})
+	em.Emit(context.Background(), testEventBlocked, map[string]any{testFieldURL: testEvilURL})
 
 	for i, s := range []*mockSink{s1, s2, s3} {
 		events := s.getEvents()
@@ -62,11 +62,11 @@ func TestEmitter_FanOut(t *testing.T) {
 			t.Errorf("sink %d: got %d events, want 1", i, len(events))
 			continue
 		}
-		if events[0].Type != "blocked" {
-			t.Errorf("sink %d: event type = %q, want %q", i, events[0].Type, "blocked")
+		if events[0].Type != testEventBlocked {
+			t.Errorf("sink %d: event type = %q, want %q", i, events[0].Type, testEventBlocked)
 		}
-		if events[0].InstanceID != "test-host" {
-			t.Errorf("sink %d: instance = %q, want %q", i, events[0].InstanceID, "test-host")
+		if events[0].InstanceID != testHostName {
+			t.Errorf("sink %d: instance = %q, want %q", i, events[0].InstanceID, testHostName)
 		}
 	}
 
@@ -79,16 +79,16 @@ func TestEmitter_EmitLookupSeverity(t *testing.T) {
 		eventType string
 		wantSev   Severity
 	}{
-		{name: "known warn type", eventType: "blocked", wantSev: SeverityWarn},
-		{name: "known critical type", eventType: "kill_switch_deny", wantSev: SeverityCritical},
-		{name: "known info type", eventType: "allowed", wantSev: SeverityInfo},
-		{name: "unknown defaults to info", eventType: "completely_unknown", wantSev: SeverityInfo},
+		{name: "known warn type", eventType: testEventBlocked, wantSev: SeverityWarn},
+		{name: "known critical type", eventType: EventKillSwitchDeny, wantSev: SeverityCritical},
+		{name: "known info type", eventType: verdictAllowed, wantSev: SeverityInfo},
+		{name: testCaseUnknownInfo, eventType: "completely_unknown", wantSev: SeverityInfo},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := &mockSink{}
-			em := NewEmitter("test", s)
+			em := NewEmitter(testStr, s)
 
 			em.Emit(context.Background(), tt.eventType, nil)
 
@@ -105,11 +105,11 @@ func TestEmitter_EmitLookupSeverity(t *testing.T) {
 
 func TestEmitter_EmitWithSeverity(t *testing.T) {
 	s := &mockSink{}
-	em := NewEmitter("test", s)
+	em := NewEmitter(testStr, s)
 
 	// Override severity for chain_detection which isn't in the map.
 	em.EmitWithSeverity(context.Background(), SeverityCritical, "chain_detection", map[string]any{
-		"action": "block",
+		"action": conventionVerdictBlocked,
 	})
 
 	events := s.getEvents()
@@ -130,8 +130,8 @@ func TestEmitter_NilEmitter(t *testing.T) {
 	var em *Emitter
 
 	// Should not panic.
-	em.Emit(context.Background(), "blocked", nil)
-	em.EmitWithSeverity(context.Background(), SeverityCritical, "blocked", nil)
+	em.Emit(context.Background(), testEventBlocked, nil)
+	em.EmitWithSeverity(context.Background(), SeverityCritical, testEventBlocked, nil)
 
 	if err := em.Close(); err != nil {
 		t.Errorf("nil emitter Close() returned error: %v", err)
@@ -139,10 +139,10 @@ func TestEmitter_NilEmitter(t *testing.T) {
 }
 
 func TestEmitter_EmptyEmitter(t *testing.T) {
-	em := NewEmitter("test")
+	em := NewEmitter(testStr)
 
 	// No sinks — should not panic.
-	em.Emit(context.Background(), "blocked", nil)
+	em.Emit(context.Background(), testEventBlocked, nil)
 
 	if err := em.Close(); err != nil {
 		t.Errorf("empty emitter Close() returned error: %v", err)
@@ -153,7 +153,7 @@ func TestEmitter_CloseCallsAllSinks(t *testing.T) {
 	s1 := &mockSink{}
 	s2 := &mockSink{}
 
-	em := NewEmitter("test", s1, s2)
+	em := NewEmitter(testStr, s1, s2)
 	err := em.Close()
 	if err != nil {
 		t.Fatalf("Close returned error: %v", err)
@@ -174,7 +174,7 @@ func TestEmitter_CloseReturnsFirstError(t *testing.T) {
 	s1 := &mockSink{err: errFirst}
 	s2 := &mockSink{err: errSecond}
 
-	em := NewEmitter("test", s1, s2)
+	em := NewEmitter(testStr, s1, s2)
 	err := em.Close()
 
 	if !errors.Is(err, errFirst) {
@@ -194,10 +194,10 @@ func TestEmitter_SinkErrorIgnoredOnEmit(t *testing.T) {
 	s1 := &mockSink{err: errors.New("emit error")}
 	s2 := &mockSink{}
 
-	em := NewEmitter("test", s1, s2)
+	em := NewEmitter(testStr, s1, s2)
 
 	// Should not panic despite s1 returning an error.
-	em.Emit(context.Background(), "blocked", nil)
+	em.Emit(context.Background(), testEventBlocked, nil)
 
 	// s2 should still receive the event.
 	events := s2.getEvents()
@@ -210,10 +210,10 @@ func TestEmitter_SinkErrorIgnoredOnEmit(t *testing.T) {
 
 func TestEmitter_EventTimestampIsSet(t *testing.T) {
 	s := &mockSink{}
-	em := NewEmitter("test", s)
+	em := NewEmitter(testStr, s)
 
 	before := time.Now()
-	em.Emit(context.Background(), "allowed", nil)
+	em.Emit(context.Background(), verdictAllowed, nil)
 
 	events := s.getEvents()
 	if len(events) != 1 {
@@ -229,10 +229,10 @@ func TestEmitter_EventTimestampIsSet(t *testing.T) {
 func TestEmitter_ReloadSinks(t *testing.T) {
 	old1 := &mockSink{}
 	old2 := &mockSink{}
-	em := NewEmitter("test", old1, old2)
+	em := NewEmitter(testStr, old1, old2)
 
 	// Emit to old sinks
-	em.Emit(context.Background(), "blocked", nil)
+	em.Emit(context.Background(), testEventBlocked, nil)
 	if len(old1.getEvents()) != 1 {
 		t.Fatal("old sink 1 should have 1 event before reload")
 	}
@@ -265,7 +265,7 @@ func TestEmitter_ReloadSinks(t *testing.T) {
 
 func TestEmitter_ReloadSinks_ToEmpty(t *testing.T) {
 	s := &mockSink{}
-	em := NewEmitter("test", s)
+	em := NewEmitter(testStr, s)
 
 	// Reload to zero sinks
 	old := em.ReloadSinks(nil)
@@ -277,15 +277,15 @@ func TestEmitter_ReloadSinks_ToEmpty(t *testing.T) {
 	}
 
 	// Should not panic with zero sinks
-	em.Emit(context.Background(), "blocked", nil)
+	em.Emit(context.Background(), testEventBlocked, nil)
 
 	_ = em.Close()
 }
 
 func TestEmitter_ReloadSinks_FromEmpty(t *testing.T) {
-	em := NewEmitter("test") // 0 sinks
+	em := NewEmitter(testStr) // 0 sinks
 
-	em.Emit(context.Background(), "blocked", nil) // no-op, no panic
+	em.Emit(context.Background(), testEventBlocked, nil) // no-op, no panic
 
 	// Reload to add sinks
 	s := &mockSink{}
@@ -304,7 +304,7 @@ func TestEmitter_ReloadSinks_FromEmpty(t *testing.T) {
 
 func TestEmitter_ReloadSinks_Concurrent(t *testing.T) {
 	s1 := &mockSink{}
-	em := NewEmitter("test", s1)
+	em := NewEmitter(testStr, s1)
 
 	// Fire events concurrently while reloading
 	var wg sync.WaitGroup
@@ -320,7 +320,7 @@ func TestEmitter_ReloadSinks_Concurrent(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					em.Emit(context.Background(), "blocked", nil)
+					em.Emit(context.Background(), testEventBlocked, nil)
 				}
 			}
 		}()
@@ -343,24 +343,24 @@ func TestEmitter_ReloadSinks_Concurrent(t *testing.T) {
 
 func TestEmitter_FieldsPassedThrough(t *testing.T) {
 	s := &mockSink{}
-	em := NewEmitter("test", s)
+	em := NewEmitter(testStr, s)
 
 	fields := map[string]any{
-		"url":    "https://evil.com",
-		"reason": "blocklist",
-		"score":  0.95,
+		testFieldURL:    testEvilURL,
+		testFieldReason: testBlocklistRsn,
+		"score":         0.95,
 	}
-	em.Emit(context.Background(), "blocked", fields)
+	em.Emit(context.Background(), testEventBlocked, fields)
 
 	events := s.getEvents()
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want 1", len(events))
 	}
-	if events[0].Fields["url"] != "https://evil.com" {
-		t.Errorf("fields[url] = %v, want %q", events[0].Fields["url"], "https://evil.com")
+	if events[0].Fields[testFieldURL] != testEvilURL {
+		t.Errorf("fields[url] = %v, want %q", events[0].Fields[testFieldURL], testEvilURL)
 	}
-	if events[0].Fields["reason"] != "blocklist" {
-		t.Errorf("fields[reason] = %v, want %q", events[0].Fields["reason"], "blocklist")
+	if events[0].Fields[testFieldReason] != testBlocklistRsn {
+		t.Errorf("fields[reason] = %v, want %q", events[0].Fields[testFieldReason], testBlocklistRsn)
 	}
 
 	_ = em.Close()

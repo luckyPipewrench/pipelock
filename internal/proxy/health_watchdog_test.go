@@ -34,7 +34,7 @@ func callHealth(t *testing.T, p *Proxy) (int, healthRespParse) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", p.handleHealth)
 	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil))
 	var body healthRespParse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode /health body: %v (raw=%s)", err, rec.Body.String())

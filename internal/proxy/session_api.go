@@ -1108,7 +1108,9 @@ func (h *SessionAPIHandler) HandleAdaptiveWhoami(w http.ResponseWriter, r *http.
 	agent := strings.TrimSpace(r.Header.Get("X-Pipelock-Agent"))
 	h.logSessionAdmin("adaptive_whoami", clientIP, "", "ok", http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, agent))
+	// SessionKey is a deterministic identity hash for adaptive scoring, not a secret —
+	// it's the operator-facing identifier in the public adaptive API surface.
+	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, agent)) //nolint:gosec // G117: session_key field is an identity hash, not a credential
 }
 
 // airlockCfgFromManager fetches the active airlock config from the manager

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,7 +34,7 @@ func newTestScanner(t *testing.T, mutate func(*config.Config)) *scanner.Scanner 
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil // disable SSRF (no DNS in tests)
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false // no env leak scanning
 	if mutate != nil {
 		mutate(cfg)
@@ -46,7 +47,7 @@ func newTestScanner(t *testing.T, mutate func(*config.Config)) *scanner.Scanner 
 func TestReplayURLVerdict(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"example.com"}
 
@@ -86,7 +87,7 @@ func TestReplayURLVerdict_ScannerInput(t *testing.T) {
 	})
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"evil.com"}
 
@@ -109,22 +110,22 @@ func TestReplayURLVerdict_ScannerInput(t *testing.T) {
 func TestReplayContractURL(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	sc := newTestScanner(t, nil)
 	re := NewContractReplayEngine(cfg, sc, contract.Contract{
 		Rules: []contract.Rule{{
 			RuleID:               testContractRuleIDAPI,
-			RuleKind:             "http_destination",
-			LifecycleState:       "enforce",
+			RuleKind:             testHTTPDestRule,
+			LifecycleState:       EnforcementModeEnforce,
 			RequiredCaptureGrade: contract.CaptureGradeFull,
 			ObservedCaptureGrade: contract.CaptureGradeFull,
 			Selector: map[string]any{
-				"host": map[string]any{"value": "api.example.com"},
-				"paths": []any{
-					map[string]any{"value": "/repos/foo"},
+				testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
+				testJSONKeyPaths: []any{
+					map[string]any{testJSONKeyValue: "/repos/foo"},
 				},
-				"methods": []any{"GET"},
+				"methods": []any{http.MethodGet},
 			},
 		}},
 	})
@@ -148,8 +149,8 @@ func TestReplayContractURL(t *testing.T) {
 		Surface:         SurfaceURL,
 		EffectiveAction: config.ActionAllow,
 		Request: CaptureRequest{
-			Method: "GET",
-			URL:    "https://api.example.com/repos/bar",
+			Method: http.MethodGet,
+			URL:    testRepoBarURL,
 		},
 	}, "")
 	if !blocked.Changed || blocked.CandidateAction != config.ActionBlock {
@@ -164,7 +165,7 @@ func TestReplayContractURL(t *testing.T) {
 		Surface:         SurfaceURL,
 		EffectiveAction: config.ActionAllow,
 		Request: CaptureRequest{
-			Method: "GET",
+			Method: http.MethodGet,
 			URL:    "https://evil.example.com/repos/foo",
 		},
 	}, "")
@@ -180,7 +181,7 @@ func TestReplayContractURL(t *testing.T) {
 			Surface:         SurfaceURL,
 			EffectiveAction: config.ActionAllow,
 			Request: CaptureRequest{
-				Method: "GET",
+				Method: http.MethodGet,
 				URL:    rawURL,
 			},
 		}, "")
@@ -193,47 +194,47 @@ func TestReplayContractURL(t *testing.T) {
 func TestReplayContractURL_DeduplicatesDenyRuleIDs(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	sc := newTestScanner(t, nil)
 	re := NewContractReplayEngine(cfg, sc, contract.Contract{
 		Rules: []contract.Rule{
 			{
 				RuleID:               " r-api ",
-				RuleKind:             "http_destination",
-				LifecycleState:       "enforce",
+				RuleKind:             testHTTPDestRule,
+				LifecycleState:       EnforcementModeEnforce,
 				RequiredCaptureGrade: contract.CaptureGradeFull,
 				ObservedCaptureGrade: contract.CaptureGradeFull,
 				Selector: map[string]any{
-					"host": map[string]any{"value": "api.example.com"},
-					"paths": []any{
-						map[string]any{"value": "/repos/foo"},
+					testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
+					testJSONKeyPaths: []any{
+						map[string]any{testJSONKeyValue: "/repos/foo"},
 					},
 				},
 			},
 			{
 				RuleID:               testContractRuleIDAPI,
-				RuleKind:             "http_destination",
-				LifecycleState:       "enforce",
+				RuleKind:             testHTTPDestRule,
+				LifecycleState:       EnforcementModeEnforce,
 				RequiredCaptureGrade: contract.CaptureGradeFull,
 				ObservedCaptureGrade: contract.CaptureGradeFull,
 				Selector: map[string]any{
-					"host": map[string]any{"value": "api.example.com"},
-					"paths": []any{
-						map[string]any{"value": "/repos/baz"},
+					testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
+					testJSONKeyPaths: []any{
+						map[string]any{testJSONKeyValue: "/repos/baz"},
 					},
 				},
 			},
 			{
 				RuleID:               "",
-				RuleKind:             "http_destination",
-				LifecycleState:       "enforce",
+				RuleKind:             testHTTPDestRule,
+				LifecycleState:       EnforcementModeEnforce,
 				RequiredCaptureGrade: contract.CaptureGradeFull,
 				ObservedCaptureGrade: contract.CaptureGradeFull,
 				Selector: map[string]any{
-					"host": map[string]any{"value": "api.example.com"},
-					"paths": []any{
-						map[string]any{"value": "/repos/qux"},
+					testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
+					testJSONKeyPaths: []any{
+						map[string]any{testJSONKeyValue: "/repos/qux"},
 					},
 				},
 			},
@@ -244,8 +245,8 @@ func TestReplayContractURL_DeduplicatesDenyRuleIDs(t *testing.T) {
 		Surface:         SurfaceURL,
 		EffectiveAction: config.ActionAllow,
 		Request: CaptureRequest{
-			Method: "GET",
-			URL:    "https://api.example.com/repos/bar",
+			Method: http.MethodGet,
+			URL:    testRepoBarURL,
 		},
 	}, "")
 	if result.CandidateAction != config.ActionBlock || len(result.CandidateFindings) != 1 {
@@ -259,18 +260,18 @@ func TestReplayContractURL_DeduplicatesDenyRuleIDs(t *testing.T) {
 func TestReplayContractURL_FallsBackWhenCaptureGradeInsufficient(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	sc := newTestScanner(t, nil)
 	re := NewContractReplayEngine(cfg, sc, contract.Contract{
 		Rules: []contract.Rule{{
 			RuleID:               "r-response",
-			RuleKind:             "http_destination",
-			LifecycleState:       "enforce",
+			RuleKind:             testHTTPDestRule,
+			LifecycleState:       EnforcementModeEnforce,
 			RequiredCaptureGrade: contract.CaptureGradeFull,
 			ObservedCaptureGrade: contract.CaptureGradeFull,
 			Selector: map[string]any{
-				"host": map[string]any{"value": "api.example.com"},
+				testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
 			},
 		}},
 	})
@@ -279,8 +280,8 @@ func TestReplayContractURL_FallsBackWhenCaptureGradeInsufficient(t *testing.T) {
 		Surface:         SurfaceResponse,
 		EffectiveAction: config.ActionAllow,
 		Request: CaptureRequest{
-			Method: "GET",
-			URL:    "https://api.example.com/repos/bar",
+			Method: http.MethodGet,
+			URL:    testRepoBarURL,
 		},
 	}, "")
 	if result.Changed || result.CandidateAction != config.ActionAllow {
@@ -291,22 +292,22 @@ func TestReplayContractURL_FallsBackWhenCaptureGradeInsufficient(t *testing.T) {
 func TestReplayContractURL_NoEnforceRulesAllows(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	sc := newTestScanner(t, nil)
 	re := NewContractReplayEngine(cfg, sc, contract.Contract{
 		Rules: []contract.Rule{{
 			RuleID:         "r-capture",
-			RuleKind:       "http_destination",
+			RuleKind:       testHTTPDestRule,
 			LifecycleState: "capture_only",
-			Selector:       map[string]any{"host": map[string]any{"value": "api.example.com"}},
+			Selector:       map[string]any{testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom}},
 		}},
 	})
 
 	result := re.ReplayRecord(CaptureSummary{
 		Surface:         SurfaceURL,
 		EffectiveAction: config.ActionAllow,
-		Request:         CaptureRequest{Method: "GET", URL: "https://other.example.com"},
+		Request:         CaptureRequest{Method: http.MethodGet, URL: "https://other.example.com"},
 	}, "")
 	if result.Changed || result.CandidateAction != config.ActionAllow {
 		t.Fatalf("result = changed %v action %q, want false/allow", result.Changed, result.CandidateAction)
@@ -316,7 +317,7 @@ func TestReplayContractURL_NoEnforceRulesAllows(t *testing.T) {
 func TestReplayResponseVerdict(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
@@ -357,7 +358,7 @@ func TestReplayDLPVerdict(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 
 	re := NewReplayEngine(cfg, sc)
@@ -387,13 +388,13 @@ func TestReplayDLPVerdict(t *testing.T) {
 func TestReplayToolPolicy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.Action = config.ActionBlock
 	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
 		{
-			Name:        "Block rm -rf",
+			Name:        testRuleNamerRf,
 			ToolPattern: `(?i)^bash$`,
 			ArgPattern:  `(?i)\brm\s+-rf\b`,
 			Action:      config.ActionBlock,
@@ -424,7 +425,7 @@ func TestReplayToolPolicy(t *testing.T) {
 	}
 	found := false
 	for _, f := range result.CandidateFindings {
-		if f.Kind == KindToolPolicy && f.PolicyRule == "Block rm -rf" {
+		if f.Kind == KindToolPolicy && f.PolicyRule == testRuleNamerRf {
 			found = true
 		}
 	}
@@ -436,13 +437,13 @@ func TestReplayToolPolicy(t *testing.T) {
 func TestReplayToolPolicy_NoMatch(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.Action = config.ActionBlock
 	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
 		{
-			Name:        "Block rm -rf",
+			Name:        testRuleNamerRf,
 			ToolPattern: `(?i)^bash$`,
 			ArgPattern:  `(?i)\brm\s+-rf\b`,
 			Action:      config.ActionBlock,
@@ -498,7 +499,7 @@ func TestReplaySummaryOnly(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	re := NewReplayEngine(cfg, sc)
 
@@ -533,7 +534,7 @@ func TestReplaySummaryOnly(t *testing.T) {
 func TestReplayResponseVerdict_Clean(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
@@ -563,7 +564,7 @@ func TestReplayDLPVerdict_Clean(t *testing.T) {
 	sc := newTestScanner(t, nil)
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	re := NewReplayEngine(cfg, sc)
 
@@ -629,7 +630,7 @@ func writeDropSentinels(t *testing.T, sessionsDir string, count int) {
 	if err := rec.Record(recorder.Entry{
 		SessionID: metaSessionID,
 		Type:      EntryTypeCaptureDrop,
-		Summary:   "capture queue overflow",
+		Summary:   DropSummaryCaptureOverflow,
 		Detail:    CaptureDropDetail{Count: count, Reason: "backpressure"},
 	}); err != nil {
 		t.Fatalf("rec.Record (meta): %v", err)
@@ -658,7 +659,7 @@ func TestLoadAndReplay(t *testing.T) {
 	// Candidate config blocks safe.example.com — should produce Changed=true.
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"safe.example.com"}
 
@@ -708,8 +709,8 @@ func TestLoadAndReplayWithOptions_DecryptsSidecar(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	w.ObserveDLPVerdict(context.Background(), &DLPVerdictRecord{
-		Subsurface:      "forward",
-		Transport:       "forward",
+		Subsurface:      testSubsurface,
+		Transport:       testSubsurface,
 		SessionID:       loadReplaySessionID,
 		RequestID:       "req-sidecar",
 		ConfigHash:      loadReplayOriginalHash,
@@ -728,7 +729,7 @@ func TestLoadAndReplayWithOptions_DecryptsSidecar(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 
 	withoutEscrow, _, _, _, err := LoadAndReplay(cfg, dir)
@@ -827,7 +828,7 @@ func TestLoadAndReplay_Empty(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 
 	records, dropped, skipped, originalHash, err := LoadAndReplay(cfg, dir)
@@ -865,7 +866,7 @@ func TestLoadAndReplay_DropCount(t *testing.T) {
 		if recErr := rec.Record(recorder.Entry{
 			SessionID: metaSessionID,
 			Type:      EntryTypeCaptureDrop,
-			Summary:   "capture queue overflow",
+			Summary:   DropSummaryCaptureOverflow,
 			Detail:    CaptureDropDetail{Count: count, Reason: "backpressure"},
 		}); recErr != nil {
 			t.Fatalf("rec.Record: %v", recErr)
@@ -877,7 +878,7 @@ func TestLoadAndReplay_DropCount(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 
 	_, dropped, _, _, err := LoadAndReplay(cfg, dir)
@@ -910,7 +911,7 @@ func TestLoadAndReplay_SkipsFiles(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	cfg.DLP.ScanEnv = false
 
 	// Only one session session dir; capture-meta should be skipped.

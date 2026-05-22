@@ -266,7 +266,7 @@ func TestReverseProxyInboundEnvelopeVerificationMissingHeaderBlocks(t *testing.T
 	t.Cleanup(p.Close)
 	handler.SetEnvelopeVerifier(&p.envelopeVerifierPtr)
 
-	req := httptest.NewRequest(http.MethodGet, "http://proxy.example/missing-envelope", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/missing-envelope", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 

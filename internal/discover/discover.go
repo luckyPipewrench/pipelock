@@ -42,6 +42,46 @@ const (
 	osWindows = "windows"
 )
 
+// MCP client name constants.
+const (
+	clientClaudeCode        = "claude-code"
+	clientClaudeDesktop     = "claude-desktop"
+	clientCursor            = "cursor"
+	clientJunie             = "junie"
+	clientVSCode            = "vscode"
+	clientZed               = "zed"
+	clientZedPreview        = "zed-preview"
+	clientZedFlatpak        = "zed-flatpak"
+	clientZedPreviewFlatpak = "zed-preview-flatpak"
+)
+
+// Config scope constants.
+const (
+	scopeUser = "user"
+)
+
+// Config-key constants shared across parsers.
+const (
+	configKeyMCPServers     = "mcpServers"
+	configKeyServers        = "servers"
+	configKeyContextServers = "context_servers"
+)
+
+// evidenceNoProxy is the warning string emitted when no proxy wrapper is detected.
+const evidenceNoProxy = "no proxy wrapper detected"
+
+// CLI flags emitted in wrapper-suggestion args and matched by detection logic.
+const (
+	flagConfig = "--config"
+)
+
+// Pipelock wrapper command/arg constants used by classifier + generator.
+const (
+	wrapperCommand  = "pipelock"
+	wrapperArgMCP   = "mcp"
+	wrapperArgProxy = "proxy"
+)
+
 // MCPServer is a single discovered MCP server configuration.
 type MCPServer struct {
 	Client        string            `json:"client"`
@@ -112,7 +152,7 @@ func Discover(home string) (*Report, error) {
 		var err error
 
 		// Claude Code has nested per-project servers
-		if cp.Client == "claude-code" {
+		if cp.Client == clientClaudeCode {
 			parsed, err = parseClaudeCodeConfig(cp.Path)
 		} else {
 			parsed, err = parseConfigFile(cp.Path, cp.Key, cp.Client)
@@ -146,7 +186,7 @@ func Discover(home string) (*Report, error) {
 			parsed[i].Evidence = protectionEvidence(parsed[i])
 			risk, reason := classifyRisk(parsed[i])
 			parsed[i].Risk = risk
-			if parsed[i].Evidence == "no proxy wrapper detected" {
+			if parsed[i].Evidence == evidenceNoProxy {
 				parsed[i].Evidence = reason
 			}
 			if parsed[i].ParseWarnings == nil {
@@ -237,80 +277,80 @@ func configPaths(home string) []clientPath {
 
 	return []clientPath{
 		{
-			Client: "claude-code",
+			Client: clientClaudeCode,
 			Path:   filepath.Join(home, ".claude.json"),
-			Key:    "mcpServers",
-			Scope:  "user",
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
 		},
 		{
-			Client: "claude-desktop",
+			Client: clientClaudeDesktop,
 			Path:   filepath.Join(appData, "Claude", "claude_desktop_config.json"),
-			Key:    "mcpServers",
-			Scope:  "user",
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
 		},
 		{
-			Client: "cursor",
+			Client: clientCursor,
 			Path:   filepath.Join(home, ".cursor", "mcp.json"),
-			Key:    "mcpServers",
-			Scope:  "user",
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
 		},
 		{
-			Client: "vscode",
+			Client: clientVSCode,
 			Path:   filepath.Join(appData, "Code", "User", "mcp.json"),
-			Key:    "servers",
-			Scope:  "user",
+			Key:    configKeyServers,
+			Scope:  scopeUser,
 		},
 		{
 			Client: "cline",
 			Path:   filepath.Join(appData, "Code", "User", "globalStorage", "saoudrizwan.claude-dev", "settings", "cline_mcp_settings.json"),
-			Key:    "mcpServers",
-			Scope:  "user",
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
 		},
 		{
 			Client: "continue",
 			Path:   filepath.Join(home, ".continue", "config.json"),
-			Key:    "mcpServers",
-			Scope:  "user",
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
 		},
 		{
-			Client: "junie",
-			Path:   filepath.Join(home, ".junie", "mcp", "mcp.json"),
-			Key:    "mcpServers",
-			Scope:  "user",
+			Client: clientJunie,
+			Path:   filepath.Join(home, ".junie", wrapperArgMCP, "mcp.json"),
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
 		},
 		// Zed stores config under ~/.config/zed/ on both Linux and macOS
 		// per zed.dev/docs (it does not follow the macOS Application Support
 		// convention). The settings.json top-level key is "context_servers"
 		// rather than "mcpServers" or "servers".
 		{
-			Client: "zed",
+			Client: clientZed,
 			Path:   filepath.Join(home, ".config", "zed", "settings.json"),
-			Key:    "context_servers",
-			Scope:  "user",
+			Key:    configKeyContextServers,
+			Scope:  scopeUser,
 		},
 		// Zed Preview is a separate binary that ships ahead of stable; its
 		// config dir is "zed-preview" rather than "zed". Users who run both
 		// channels need both wraps detected.
 		{
-			Client: "zed-preview",
+			Client: clientZedPreview,
 			Path:   filepath.Join(home, ".config", "zed-preview", "settings.json"),
-			Key:    "context_servers",
-			Scope:  "user",
+			Key:    configKeyContextServers,
+			Scope:  scopeUser,
 		},
 		// Flatpak-sandboxed Zed lives under $HOME/.var/app/<app-id>/config/.
 		// Inside the sandbox Zed sees its own XDG_CONFIG_HOME pointing at
 		// that dir, but from outside (where discover runs) the path is fixed.
 		{
-			Client: "zed-flatpak",
+			Client: clientZedFlatpak,
 			Path:   filepath.Join(home, ".var", "app", "dev.zed.Zed", "config", "zed", "settings.json"),
-			Key:    "context_servers",
-			Scope:  "user",
+			Key:    configKeyContextServers,
+			Scope:  scopeUser,
 		},
 		{
-			Client: "zed-preview-flatpak",
+			Client: clientZedPreviewFlatpak,
 			Path:   filepath.Join(home, ".var", "app", "dev.zed.Zed.Preview", "config", "zed-preview", "settings.json"),
-			Key:    "context_servers",
-			Scope:  "user",
+			Key:    configKeyContextServers,
+			Scope:  scopeUser,
 		},
 		// Note: project-local .junie/mcp/mcp.json and project-local
 		// .zed/settings.json are not scanned here. Discover(home) must be

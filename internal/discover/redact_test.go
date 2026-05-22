@@ -12,7 +12,7 @@ func TestRedactReportForOutput_RemovesSensitiveValues(t *testing.T) {
 	report := &Report{
 		Servers: []MCPServer{{
 			ServerName: "db",
-			Command:    "npx",
+			Command:    testCmdNpx,
 			Args: []string{
 				"postgresql://postgres:postgres@127.0.0.1:5432/app",
 				"--token=abc123",
@@ -25,7 +25,7 @@ func TestRedactReportForOutput_RemovesSensitiveValues(t *testing.T) {
 			},
 			Env: map[string]string{
 				"API_TOKEN": "secret-token",
-				"BRAIN_DIR": "/data",
+				"BRAIN_DIR": testDataDir,
 			},
 			URL: "https://token@example.com/mcp?" + "bearer=secret",
 		}},
@@ -38,7 +38,7 @@ func TestRedactReportForOutput_RemovesSensitiveValues(t *testing.T) {
 	got := redacted.Servers[0]
 	joined := strings.Join(append(append([]string{got.URL}, got.Args...), got.Env["API_TOKEN"], got.Env["BRAIN_DIR"]), " ")
 
-	for _, leaked := range []string{"postgres:postgres", "postgres@", "app:db-secret", "abc123", "split-secret", "header-secret", "secret-token", "/data", "api_key=secret", "bearer=secret", "#frag"} {
+	for _, leaked := range []string{"postgres:postgres", "postgres@", "app:db-secret", "abc123", "split-secret", "header-secret", "secret-token", testDataDir, "api_key=secret", "bearer=secret", "#frag"} {
 		if strings.Contains(joined, leaked) {
 			t.Fatalf("redacted output leaked %q in %q", leaked, joined)
 		}
@@ -74,7 +74,7 @@ func TestRedactReportForOutput_DoesNotMutateInput(t *testing.T) {
 	report := &Report{
 		Servers: []MCPServer{{
 			Args: []string{rawURL},
-			Env:  map[string]string{"TOKEN": "secret"},
+			Env:  map[string]string{"TOKEN": secretMarker},
 			URL:  "https://example.com/mcp?" + "token=secret",
 		}},
 	}
@@ -84,7 +84,7 @@ func TestRedactReportForOutput_DoesNotMutateInput(t *testing.T) {
 	if report.Servers[0].Args[0] != rawURL {
 		t.Fatalf("input args mutated: %q", report.Servers[0].Args[0])
 	}
-	if report.Servers[0].Env["TOKEN"] != "secret" {
+	if report.Servers[0].Env["TOKEN"] != secretMarker {
 		t.Fatalf("input env mutated: %q", report.Servers[0].Env["TOKEN"])
 	}
 	if report.Servers[0].URL != "https://example.com/mcp?"+"token=secret" {

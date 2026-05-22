@@ -323,7 +323,7 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 
 	// Send first half from client A (10.0.0.1) as bare query token.
 	targetURL1 := target.URL + "?" + firstHalf
-	req1 := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL1), nil)
+	req1 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL1), nil)
 	req1.RemoteAddr = testRemoteAddr3
 	w1 := httptest.NewRecorder()
 	handler.ServeHTTP(w1, req1)
@@ -339,7 +339,7 @@ func TestCEEIntegration_SessionIsolation(t *testing.T) {
 	// Send second half from client B (10.0.0.2) as bare query token.
 	// Different session, so fragment buffers are isolated.
 	targetURL2 := target.URL + "?" + secondHalf
-	req2 := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL2), nil)
+	req2 := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL2), nil)
 	req2.RemoteAddr = "10.0.0.2:12345"
 	w2 := httptest.NewRecorder()
 	handler.ServeHTTP(w2, req2)

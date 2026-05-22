@@ -200,7 +200,7 @@ func TestRFC9421_ExternalVerifierInterop(t *testing.T) {
 			// between signer and verifier hosts.
 			BeforeDuration: time.Minute,
 			RequiredCoveredComponents: map[string]bool{
-				"@method":     true,
+				derivedMethod: true,
 				"@target-uri": true,
 			},
 		},

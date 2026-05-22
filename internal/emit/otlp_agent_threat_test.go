@@ -45,15 +45,15 @@ func TestAgentThreatDetectionAttrs_ActionMapping(t *testing.T) {
 		want     string
 		wantEmit bool
 	}{
-		{name: "block", raw: "block", want: conventionActionBlock, wantEmit: true},
-		{name: "blocked-alias", raw: "blocked", want: conventionActionBlock, wantEmit: true},
+		{name: conventionVerdictBlocked, raw: conventionVerdictBlocked, want: conventionActionBlock, wantEmit: true},
+		{name: "blocked-alias", raw: testEventBlocked, want: conventionActionBlock, wantEmit: true},
 		{name: "allow", raw: "allow", want: conventionActionAllow, wantEmit: true},
-		{name: "allowed-alias", raw: "allowed", want: conventionActionAllow, wantEmit: true},
-		{name: "warn", raw: "warn", want: conventionActionWarn, wantEmit: true},
-		{name: "ask", raw: "ask", want: conventionActionAsk, wantEmit: true},
-		{name: "strip-suppressed", raw: "strip", wantEmit: false},
+		{name: "allowed-alias", raw: verdictAllowed, want: conventionActionAllow, wantEmit: true},
+		{name: testSeverityWarn, raw: testSeverityWarn, want: conventionActionWarn, wantEmit: true},
+		{name: conventionActionAsk, raw: conventionActionAsk, want: conventionActionAsk, wantEmit: true},
+		{name: "strip-suppressed", raw: testActionStrip, wantEmit: false},
 		{name: "forward-suppressed", raw: "forward", wantEmit: false},
-		{name: "redirect-suppressed", raw: "redirect", wantEmit: false},
+		{name: "redirect-suppressed", raw: EventRedirect, wantEmit: false},
 		{name: "unknown-suppressed", raw: "magic", wantEmit: false},
 		{name: "non-string-suppressed", raw: 42, wantEmit: false},
 		{name: "nil-suppressed", raw: nil, wantEmit: false},
@@ -84,9 +84,9 @@ func TestAgentThreatDetectionAttrs_ActionMappingForLegacyBlockedEvents(t *testin
 	}{
 		{name: "generic-blocked-with-scanner", eventType: eventTypeBlocked, withScanner: true, wantEmit: true},
 		{name: "websocket-blocked-with-scanner", eventType: eventTypeWSBlocked, withScanner: true, wantEmit: true},
-		{name: "anomaly-is-not-an-enforcement-action", eventType: "anomaly", withScanner: true, wantEmit: false},
+		{name: "anomaly-is-not-an-enforcement-action", eventType: EventAnomaly, withScanner: true, wantEmit: false},
 		// Defense-in-depth: legacy fallback must require a scanner
-		// identifier so future code reusing the "blocked" or "ws_blocked"
+		// identifier so future code reusing the testEventBlocked or EventWSBlocked
 		// type for a lifecycle / error event cannot be promoted to a
 		// convention block decision.
 		{name: "blocked-without-scanner-suppresses", eventType: eventTypeBlocked, withScanner: false, wantEmit: false},
@@ -263,9 +263,9 @@ func TestAgentThreatDetectionAttrs_FullEventMapping(t *testing.T) {
 		fields[fieldBundleVersion] = testBundleVersion
 		event := Event{
 			Severity:   SeverityCritical,
-			Type:       "blocked",
+			Type:       testEventBlocked,
 			Timestamp:  time.Now(),
-			InstanceID: "test-instance",
+			InstanceID: testInstanceName,
 			Fields:     fields,
 		}
 		attrs := agentThreatDetectionAttrs(event, testBinaryVersion)
@@ -282,10 +282,10 @@ func TestAgentThreatDetectionAttrs_FullEventMapping(t *testing.T) {
 	t.Run("core-scanner-warn-no-request-id", func(t *testing.T) {
 		event := Event{
 			Severity:  SeverityWarn,
-			Type:      "response_scan",
+			Type:      EventResponseScan,
 			Timestamp: time.Now(),
 			Fields: map[string]any{
-				fieldAction:  "warn",
+				fieldAction:  testSeverityWarn,
 				fieldScanner: testScannerDefault,
 				// no request_id — correlation_id should be omitted
 			},
@@ -307,7 +307,7 @@ func TestAgentThreatDetectionAttrs_FullEventMapping(t *testing.T) {
 		event := Event{
 			Severity: SeverityInfo,
 			Fields: map[string]any{
-				fieldAction:  "strip",
+				fieldAction:  testActionStrip,
 				fieldScanner: testScannerDefault,
 			},
 		}
@@ -333,7 +333,7 @@ func TestAgentThreatDetectionAttrs_FullEventMapping(t *testing.T) {
 		event := Event{
 			Severity: SeverityWarn,
 			Fields: map[string]any{
-				fieldAction:        "ask",
+				fieldAction:        conventionActionAsk,
 				fieldPrimaryRuleID: testRuleIDDefault,
 				fieldBundleVersion: testBundleVersion,
 				fieldRequestID:     testRequestIDDefault,
@@ -396,9 +396,9 @@ func TestOTLPSink_AgentThreatDetectionToggle(t *testing.T) {
 	sink := &OTLPSink{version: testBinaryVersion}
 	event := Event{
 		Severity:   SeverityWarn,
-		Type:       "response_scan",
+		Type:       EventResponseScan,
 		Timestamp:  time.Now(),
-		InstanceID: "test-instance",
+		InstanceID: testInstanceName,
 		Fields: map[string]any{
 			fieldAction:    conventionVerdictAllowed,
 			fieldPattern:   testPatternDefault,
@@ -430,7 +430,7 @@ func TestOTLPSink_AgentThreatDetectionToggle(t *testing.T) {
 		s.EnableAgentThreatDetection()
 		stripEvent := event
 		stripEvent.Fields = map[string]any{
-			fieldAction:  "strip",
+			fieldAction:  testActionStrip,
 			fieldPattern: testPatternDefault,
 		}
 		record := s.eventToLogRecord(stripEvent)
@@ -455,7 +455,7 @@ func TestAgentThreatDetectionAttrs_GoldenSample(t *testing.T) {
 	}
 	event := Event{
 		Severity:   SeverityCritical,
-		Type:       "blocked",
+		Type:       testEventBlocked,
 		Timestamp:  ts,
 		InstanceID: "pipelock-sample",
 		Fields: map[string]any{

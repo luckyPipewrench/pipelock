@@ -102,7 +102,7 @@ func TestEmitDLPWarnWritesReceiptAndMetric(t *testing.T) {
 	}
 
 	recorderBody := httptest.NewRecorder()
-	m.PrometheusHandler().ServeHTTP(recorderBody, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	m.PrometheusHandler().ServeHTTP(recorderBody, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, err := io.ReadAll(recorderBody.Body)
 	if err != nil {
 		t.Fatalf("io.ReadAll(): %v", err)
@@ -205,7 +205,7 @@ func TestEmitDLPWarnNilReceiptEmitter(t *testing.T) {
 	emitDLPWarn(audit.NewNop(), m, nil, ctx, "warn-nil", "low")
 
 	recorderBody := httptest.NewRecorder()
-	m.PrometheusHandler().ServeHTTP(recorderBody, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	m.PrometheusHandler().ServeHTTP(recorderBody, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, err := io.ReadAll(recorderBody.Body)
 	if err != nil {
 		t.Fatalf("io.ReadAll(): %v", err)
@@ -243,7 +243,7 @@ func TestEmitDLPWarnMissingTransport(t *testing.T) {
 	emitDLPWarn(audit.NewNop(), m, nil, ctx, "warn-transport", "medium")
 
 	recorderBody := httptest.NewRecorder()
-	m.PrometheusHandler().ServeHTTP(recorderBody, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	m.PrometheusHandler().ServeHTTP(recorderBody, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
 	body, err := io.ReadAll(recorderBody.Body)
 	if err != nil {
 		t.Fatalf("io.ReadAll(): %v", err)

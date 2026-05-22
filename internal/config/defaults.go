@@ -69,70 +69,70 @@ func Defaults() *Config {
 			ScanEnv: true,
 			Patterns: []DLPPattern{
 				// Provider API keys
-				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{10,}`, Severity: "critical"},
-				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{10,}`, Severity: "critical"},
-				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{10,}`, Severity: "critical"},
-				{Name: "Fireworks API Key", Regex: `fw_[a-zA-Z0-9]{24,}`, Severity: "critical"},
+				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{10,}`, Severity: SeverityCritical},
+				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{10,}`, Severity: SeverityCritical},
+				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{10,}`, Severity: SeverityCritical},
+				{Name: "Fireworks API Key", Regex: `fw_[a-zA-Z0-9]{24,}`, Severity: SeverityCritical},
 				{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}`, Severity: "high"},
-				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: "critical"},
+				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
 				// Stripe keys use underscores (sk_test_) or hyphens (sk-test-) depending on version.
-				{Name: "Stripe Key", Regex: `[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}`, Severity: "critical"},
+				{Name: "Stripe Key", Regex: `[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}`, Severity: SeverityCritical},
 				// Stripe webhook signing secrets: "whsec_" prefix.
-				{Name: "Stripe Webhook Secret", Regex: `whsec_[a-zA-Z0-9_\-]{20,}`, Severity: "critical"},
+				{Name: "Stripe Webhook Secret", Regex: `whsec_[a-zA-Z0-9_\-]{20,}`, Severity: SeverityCritical},
 
 				// Source control tokens
-				{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: "critical"},
-				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: "critical"},
+				{Name: "GitHub Token", Regex: `gh[pousr]_[A-Za-z0-9_]{36,}`, Severity: SeverityCritical},
+				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical},
 				// GitLab personal access tokens: "glpat-" prefix, 20+ chars.
-				{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: "critical"},
+				{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
 
 				// Cloud provider credentials
 				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
 				// AIDA (user ID), AIPA (instance profile), AGPA (group), ANPA/ANVA (policy), A3T (legacy).
 				// {16,}: real AWS IDs have 16+ chars after prefix. Avoids FPs like ASIA2025REPORT1234.
-				{Name: "AWS Access ID", Regex: `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`, Severity: "critical"},
+				{Name: "AWS Access ID", Regex: `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`, Severity: SeverityCritical},
 				// AWS secret access keys: 40-char base64 near AWS context words.
 				// Anchored to common config key names to reduce FPs on arbitrary base64.
 				// Separator class handles YAML (: ), env (=), JSON (":"), and quoted formats.
-				{Name: "AWS Secret Key", Regex: `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`, Severity: "critical"},
-				{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: "critical"},
+				{Name: "AWS Secret Key", Regex: `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`, Severity: SeverityCritical},
+				{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
 
 				// Messaging platform tokens
-				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: "critical"},
-				{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: "critical"},
-				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: "critical"},
+				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},
+				{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical},
+				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: SeverityCritical},
 
 				// Communication service keys
 				{Name: "Twilio API Key", Regex: `SK[a-f0-9]{32}`, Severity: "high"},
-				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: "critical"},
+				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: SeverityCritical},
 				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
 
 				// Observability / monitoring
 				// New Relic user API keys: "NRAK-" prefix, 27+ uppercase alphanumeric.
-				{Name: "New Relic API Key", Regex: `NRAK-[A-Z0-9]{27,}`, Severity: "critical"},
+				{Name: "New Relic API Key", Regex: `NRAK-[A-Z0-9]{27,}`, Severity: SeverityCritical},
 
 				// AI/ML provider keys
-				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: "critical"},
-				{Name: "Databricks Token", Regex: `dapi[a-z0-9]{30,}`, Severity: "critical"},
-				{Name: "Replicate API Token", Regex: `r8_[A-Za-z0-9]{20,}`, Severity: "critical"},
-				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: "critical"},
+				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: SeverityCritical},
+				{Name: "Databricks Token", Regex: `dapi[a-z0-9]{30,}`, Severity: SeverityCritical},
+				{Name: "Replicate API Token", Regex: `r8_[A-Za-z0-9]{20,}`, Severity: SeverityCritical},
+				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: SeverityCritical},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
-				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}`, Severity: "critical"},
+				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}`, Severity: SeverityCritical},
 				// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
-				{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}`, Severity: "critical"},
+				{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}`, Severity: SeverityCritical},
 				// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
-				{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}`, Severity: "critical"},
+				{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}`, Severity: SeverityCritical},
 
 				// Infrastructure and platform tokens
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.
-				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: "critical"},
-				{Name: "HashiCorp Vault Token", Regex: `hvs\.[a-zA-Z0-9]{23,}`, Severity: "critical"},
-				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}`, Severity: "critical"},
-				{Name: "Supabase Service Key", Regex: `sb_secret_[a-zA-Z0-9_-]{20,}`, Severity: "critical"},
+				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
+				{Name: "HashiCorp Vault Token", Regex: `hvs\.[a-zA-Z0-9]{23,}`, Severity: SeverityCritical},
+				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}`, Severity: SeverityCritical},
+				{Name: "Supabase Service Key", Regex: `sb_secret_[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
 
 				// Package registry tokens
-				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}`, Severity: "critical"},
-				{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9_-]{16,}`, Severity: "critical"},
+				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}`, Severity: SeverityCritical},
+				{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9_-]{16,}`, Severity: SeverityCritical},
 
 				// Developer platform tokens
 				{Name: "Linear API Key", Regex: `lin_api_[a-zA-Z0-9]{40,}`, Severity: "high"},
@@ -140,19 +140,19 @@ func Defaults() *Config {
 				{Name: "Sentry Auth Token", Regex: `sntrys_[a-zA-Z0-9]{40,}`, Severity: "high"},
 
 				// Cryptographic material
-				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: "critical"},
+				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: SeverityCritical},
 				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
 
 				// Cryptocurrency private keys
 				// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or
 				// compressed (K/L + 51 base58 = 52 chars). Mainnet only; testnet deferred.
-				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: "critical", Validator: ValidatorWIF},
+				{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: SeverityCritical, Validator: ValidatorWIF},
 				// Extended private keys (BIP-32/49/84): xprv/yprv/zprv (mainnet) + tprv (testnet).
 				// 111 total chars, base58check encoded.
-				{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: "critical"},
+				{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: SeverityCritical},
 				// Ethereum/EVM private keys: 0x-prefixed 64-char hex (256-bit).
 				// Requires 0x to avoid SHA-256 hash false positives. (?i) auto-prefix covers 0X.
-				{Name: "Ethereum Private Key", Regex: `0x[0-9a-f]{64}\b`, Severity: "critical"},
+				{Name: "Ethereum Private Key", Regex: `0x[0-9a-f]{64}\b`, Severity: SeverityCritical},
 				// Ethereum Address (0x + 40 hex) is available in preset configs
 				// but NOT in defaults because DLP fires before address_protection
 				// allowlists, causing unavoidable false positives for blockchain

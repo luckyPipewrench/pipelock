@@ -116,7 +116,7 @@ func (re *ReplayEngine) replayContractURL(summary CaptureSummary, scannerInput s
 	var hostRuleIDs []string
 	seenHostRuleIDs := map[string]struct{}{}
 	for _, rule := range re.contract.Rules {
-		if rule.LifecycleState != "enforce" || (rule.RuleKind != "http_destination" && rule.RuleKind != "http_action") {
+		if rule.LifecycleState != EnforcementModeEnforce || (rule.RuleKind != "http_destination" && rule.RuleKind != "http_action") {
 			continue
 		}
 		if !contractRuleHostMatches(rule, u.Hostname()) {

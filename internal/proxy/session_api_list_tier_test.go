@@ -92,7 +92,7 @@ func TestSessionAPI_HandleList_TierFilter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions"+tt.query, nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions"+tt.query, nil)
 			req.Header.Set("Authorization", listTierAuthHeader)
 			w := httptest.NewRecorder()
 			handler.HandleList(w, req)

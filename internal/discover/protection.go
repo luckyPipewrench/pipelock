@@ -29,7 +29,7 @@ func classifyProtection(s MCPServer) ProtectionStatus {
 func isPipelockWrapped(s MCPServer) bool {
 	base := commandBase(s.Command)
 	name := strings.TrimSuffix(base, filepath.Ext(base))
-	if !strings.EqualFold(name, "pipelock") {
+	if !strings.EqualFold(name, wrapperCommand) {
 		return false
 	}
 
@@ -37,9 +37,9 @@ func isPipelockWrapped(s MCPServer) bool {
 	hasProxy := false
 	for _, arg := range s.Args {
 		switch arg {
-		case "mcp":
+		case wrapperArgMCP:
 			hasMCP = true
-		case "proxy":
+		case wrapperArgProxy:
 			hasProxy = true
 		}
 	}
@@ -70,6 +70,6 @@ func protectionEvidence(s MCPServer) string {
 	case Unknown:
 		return "no command or url configured"
 	default:
-		return "no proxy wrapper detected"
+		return evidenceNoProxy
 	}
 }

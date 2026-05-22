@@ -177,5 +177,5 @@ func SortedCaptureSurfaces(status map[string]SurfaceStatus) []string {
 // Both "block" and "fail_closed" are treated as blocking actions because
 // fail_closed is the fail-safe outcome for parse errors and timeouts.
 func isBlockAction(action string) bool {
-	return action == "block" || action == "fail_closed"
+	return action == ActionBlock || action == OutcomeFailClosed
 }

@@ -332,7 +332,7 @@ func TestProxy_ApplyShield_OversizeScanHead(t *testing.T) {
 		t.Fatalf("scan_head summary = %+v, want partial summary with body/scanned bytes", summary)
 	}
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
 	p.metrics.PrometheusHandler().ServeHTTP(w, req)
 	if !strings.Contains(w.Body.String(), `pipelock_shield_oversize_scan_head_total{transport="fetch"} 1`) {
 		t.Errorf("metrics output missing scan_head counter: %s", w.Body.String())

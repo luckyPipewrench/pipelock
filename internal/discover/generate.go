@@ -25,7 +25,7 @@ func GenerateWrapper(s MCPServer) string {
 		_, _ = fmt.Fprintf(&b, "  After:\n")
 		_, _ = fmt.Fprintf(&b, "    \"command\": \"pipelock\",\n")
 
-		afterArgs := []string{"mcp", "proxy", "--config", "~/.config/pipelock/local.yaml"}
+		afterArgs := []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "~/.config/pipelock/local.yaml"}
 		for _, k := range sortedEnvKeys(s.Env) {
 			afterArgs = append(afterArgs, "--env", k)
 		}

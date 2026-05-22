@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -51,22 +52,22 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 
 	// Record 1: api.example.com was allowed originally.
 	w.ObserveURLVerdict(ctx, &capture.URLVerdictRecord{
-		Subsurface:      "forward",
-		Transport:       "forward",
+		Subsurface:      testSubsurface,
+		Transport:       testSubsurface,
 		SessionID:       roundTripSessionID,
 		RequestID:       "req-1",
 		EffectiveAction: config.ActionAllow,
 		Outcome:         capture.OutcomeClean,
 		Request: capture.CaptureRequest{
-			Method: "GET",
+			Method: http.MethodGet,
 			URL:    "https://api.example.com/safe",
 		},
 	})
 
 	// Record 2: evil.example.com was blocked originally.
 	w.ObserveURLVerdict(ctx, &capture.URLVerdictRecord{
-		Subsurface:      "forward",
-		Transport:       "forward",
+		Subsurface:      testSubsurface,
+		Transport:       testSubsurface,
 		SessionID:       roundTripSessionID,
 		RequestID:       "req-2",
 		EffectiveAction: config.ActionBlock,
@@ -78,7 +79,7 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 			{Kind: capture.KindDLP, Action: config.ActionBlock, PatternName: "test_pattern"},
 		},
 		Request: capture.CaptureRequest{
-			Method: "GET",
+			Method: http.MethodGet,
 			URL:    "https://evil.example.com/exfil",
 		},
 	})
@@ -90,7 +91,7 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 	// --- Phase 2: LoadAndReplay ---
 	candidateCfg := config.Defaults()
 	candidateCfg.Internal = nil // disable SSRF checks (no DNS in tests)
-	candidateCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	candidateCfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	candidateCfg.DLP.ScanEnv = false // no env leak scanning
 	// Candidate blocks both domains — api.example.com was previously allowed,
 	// so it becomes a new_block. evil.example.com was already blocked, so it

@@ -10,11 +10,11 @@ import (
 
 func TestGenerateWrapperStdio(t *testing.T) {
 	server := MCPServer{
-		ServerName: "filesystem",
-		Client:     "cursor",
-		Command:    "npx",
-		Args:       []string{"-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
-		Transport:  "stdio",
+		ServerName: kwFilesystem,
+		Client:     clientCursor,
+		Command:    testCmdNpx,
+		Args:       []string{"-y", testServerFilesystemPkg, "/tmp"},
+		Transport:  TransportStdio,
 		Protection: Unprotected,
 	}
 
@@ -22,16 +22,16 @@ func TestGenerateWrapperStdio(t *testing.T) {
 	if suggestion == "" {
 		t.Fatal("expected non-empty suggestion")
 	}
-	if !strings.Contains(suggestion, "pipelock") {
+	if !strings.Contains(suggestion, wrapperCommand) {
 		t.Error("suggestion should contain pipelock")
 	}
-	if !strings.Contains(suggestion, "mcp") {
+	if !strings.Contains(suggestion, wrapperArgMCP) {
 		t.Error("suggestion should contain mcp")
 	}
-	if !strings.Contains(suggestion, "proxy") {
+	if !strings.Contains(suggestion, wrapperArgProxy) {
 		t.Error("suggestion should contain proxy")
 	}
-	if !strings.Contains(suggestion, "npx") {
+	if !strings.Contains(suggestion, testCmdNpx) {
 		t.Error("suggestion should contain original command")
 	}
 }
@@ -39,9 +39,9 @@ func TestGenerateWrapperStdio(t *testing.T) {
 func TestGenerateWrapperHTTP(t *testing.T) {
 	server := MCPServer{
 		ServerName: "remote",
-		Client:     "cursor",
-		URL:        "https://api.example.com/mcp",
-		Transport:  "http",
+		Client:     clientCursor,
+		URL:        testHTTPMCPURL,
+		Transport:  TransportHTTP,
 		Protection: Unprotected,
 	}
 
@@ -49,7 +49,7 @@ func TestGenerateWrapperHTTP(t *testing.T) {
 	if !strings.Contains(suggestion, "--upstream") {
 		t.Error("HTTP suggestion should contain --upstream")
 	}
-	if !strings.Contains(suggestion, "https://api.example.com/mcp") {
+	if !strings.Contains(suggestion, testHTTPMCPURL) {
 		t.Error("suggestion should contain original URL")
 	}
 }
@@ -70,11 +70,11 @@ func TestGenerateWrapperUnknown(t *testing.T) {
 func TestGenerateWrapperStdioWithEnv(t *testing.T) {
 	server := MCPServer{
 		ServerName: "brain",
-		Client:     "claude-code",
-		Command:    "node",
-		Args:       []string{"server.js"},
-		Env:        map[string]string{"BRAIN_DIR": "/data", "API_KEY": "secret"},
-		Transport:  "stdio",
+		Client:     clientClaudeCode,
+		Command:    testCmdNode,
+		Args:       []string{testServerJS},
+		Env:        map[string]string{"BRAIN_DIR": testDataDir, "API_KEY": secretMarker},
+		Transport:  TransportStdio,
 		Protection: Unprotected,
 	}
 
@@ -99,15 +99,15 @@ func TestGenerateWrapperStdioWithEnv(t *testing.T) {
 func TestGenerateWrapperNoArgs(t *testing.T) {
 	server := MCPServer{
 		ServerName: "simple",
-		Client:     "cursor",
+		Client:     clientCursor,
 		Command:    "myserver",
 		Args:       []string{},
-		Transport:  "stdio",
+		Transport:  TransportStdio,
 		Protection: Unprotected,
 	}
 
 	suggestion := GenerateWrapper(server)
-	if !strings.Contains(suggestion, "pipelock") {
+	if !strings.Contains(suggestion, wrapperCommand) {
 		t.Error("suggestion should contain pipelock")
 	}
 	if !strings.Contains(suggestion, "myserver") {

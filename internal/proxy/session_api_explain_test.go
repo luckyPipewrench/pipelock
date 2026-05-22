@@ -66,7 +66,7 @@ func TestSessionAPI_HandleExplain_HardTierWithEvidence(t *testing.T) {
 
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -114,7 +114,7 @@ func TestSessionAPI_HandleExplain_NoneTierReturns200(t *testing.T) {
 	sm.GetOrCreate(explainIdentityKey)
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -140,7 +140,7 @@ func TestSessionAPI_HandleExplain_NotFound(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, explainURLFor("ghost|1.2.3.4"), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor("ghost|1.2.3.4"), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -155,7 +155,7 @@ func TestSessionAPI_HandleExplain_Unauthorized(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
 
@@ -169,7 +169,7 @@ func TestSessionAPI_HandleExplain_MethodNotAllowed(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodPost, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, explainURLFor(explainIdentityKey), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -187,7 +187,7 @@ func TestSessionAPI_HandleExplain_BadPath(t *testing.T) {
 	defer cleanup()
 	handler := newTestSessionAPIHandler(t, sm)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions//explain", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/sessions//explain", nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -204,7 +204,7 @@ func TestSessionAPI_HandleExplain_RateLimited(t *testing.T) {
 	handler := newTestSessionAPIHandler(t, sm)
 
 	for i := 0; i < sessionAPIRateLimitMax; i++ {
-		req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 		req.Header.Set("Authorization", explainAuthHeader)
 		w := httptest.NewRecorder()
 		handler.HandleExplain(w, req)
@@ -213,7 +213,7 @@ func TestSessionAPI_HandleExplain_RateLimited(t *testing.T) {
 		}
 	}
 
-	req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -232,7 +232,7 @@ func TestSessionAPI_HandleExplain_ManualTrigger(t *testing.T) {
 	_, _, _ = sess.Airlock().ForceSetTier(config.AirlockTierDrain)
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)
@@ -269,7 +269,7 @@ func TestSessionAPI_HandleExplain_PrefersNonTransitionEvidence(t *testing.T) {
 	_, _, _ = sess.Airlock().SetTierWithProvenance(config.AirlockTierHard, airlockTriggerOnCritical, airlockSourceTriggers)
 
 	handler := newTestSessionAPIHandler(t, sm)
-	req := httptest.NewRequest(http.MethodGet, explainURLFor(explainIdentityKey), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, explainURLFor(explainIdentityKey), nil)
 	req.Header.Set("Authorization", explainAuthHeader)
 	w := httptest.NewRecorder()
 	handler.HandleExplain(w, req)

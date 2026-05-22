@@ -553,7 +553,7 @@ func TestUpdateCEEStats_WithTrackerAndBuffer(t *testing.T) {
 
 	// Hit the /stats endpoint and parse CEE data from JSON.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	m.StatsHandler().ServeHTTP(rec, req)
 
 	var resp struct {
@@ -589,7 +589,7 @@ func TestUpdateCEEStats_Disabled(t *testing.T) {
 	defer p.Close()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 	m.StatsHandler().ServeHTTP(rec, req)
 
 	var resp struct {
@@ -990,7 +990,7 @@ func TestReload_CEETeardownAndRebuild(t *testing.T) {
 
 	getCEEStats := func() metrics.CEEStats {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/stats", nil)
 		m.StatsHandler().ServeHTTP(rec, req)
 		var resp struct {
 			CEE metrics.CEEStats `json:"cross_request_detection"`
@@ -1076,7 +1076,7 @@ func TestFetchEndpoint_CEEEntropyBlock(t *testing.T) {
 	targetURL := upstream.URL + "/text?payload=abcdefghijklmnopqrstuvwxyz0123456789"
 
 	// First request: should be blocked because 1-bit budget is exceeded.
-	req := httptest.NewRequest(http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL), nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(targetURL), nil)
 	w := httptest.NewRecorder()
 	p.handleFetch(w, req)
 

@@ -300,7 +300,7 @@ func TestKillSwitchHealthReportsActive(t *testing.T) {
 
 	// Health with kill switch inactive.
 	w := httptest.NewRecorder()
-	p.handleHealth(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+	p.handleHealth(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil))
 	var h1 healthResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &h1); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -312,7 +312,7 @@ func TestKillSwitchHealthReportsActive(t *testing.T) {
 	// Activate via API source.
 	ks.SetAPI(true)
 	w = httptest.NewRecorder()
-	p.handleHealth(w, httptest.NewRequest(http.MethodGet, "/health", nil))
+	p.handleHealth(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/health", nil))
 	var h2 healthResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &h2); err != nil {
 		t.Fatalf("unmarshal: %v", err)

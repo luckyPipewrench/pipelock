@@ -6,6 +6,7 @@ package runtime
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -33,17 +34,17 @@ func TestActiveSetResolvePrecedenceAndReceiptStamp(t *testing.T) {
 			Body: contract.ActiveManifest{
 				Generation: 7,
 				Selectors: []contract.ManifestSelector{
-					{SelectorID: "default", Default: true, ContractHash: defaultHash},
-					{SelectorID: "glob", AgentGlob: "build-*", ContractHash: globHash},
-					{SelectorID: "exact", Agent: "build-agent", ContractHash: exactHash},
+					{SelectorID: testDefault, Default: true, ContractHash: defaultHash},
+					{SelectorID: testGlob, AgentGlob: "build-*", ContractHash: globHash},
+					{SelectorID: testExact, Agent: "build-agent", ContractHash: exactHash},
 				},
 			},
 		},
 		ManifestHash: testManifestHash,
 		Contracts: map[string]contract.ContractEnvelope{
-			"default": {Body: contract.Contract{ContractHash: defaultHash}},
-			"glob":    {Body: contract.Contract{ContractHash: globHash}},
-			"exact":   {Body: contract.Contract{ContractHash: exactHash}},
+			testDefault: {Body: contract.Contract{ContractHash: defaultHash}},
+			testGlob:    {Body: contract.Contract{ContractHash: globHash}},
+			testExact:   {Body: contract.Contract{ContractHash: exactHash}},
 		},
 	}
 
@@ -55,15 +56,15 @@ func TestActiveSetResolvePrecedenceAndReceiptStamp(t *testing.T) {
 	if !ok {
 		t.Fatal("Resolve returned no match")
 	}
-	if resolved.SelectorID != "exact" {
+	if resolved.SelectorID != testExact {
 		t.Fatalf("selector_id = %q, want exact", resolved.SelectorID)
 	}
 	other, ok := active.Resolve("build-worker")
-	if !ok || other.SelectorID != "glob" {
+	if !ok || other.SelectorID != testGlob {
 		t.Fatalf("glob resolve = (%v, %v), want glob match", other, ok)
 	}
 	fallback, ok := active.Resolve("unknown")
-	if !ok || fallback.SelectorID != "default" {
+	if !ok || fallback.SelectorID != testDefault {
 		t.Fatalf("default resolve = (%v, %v), want default match", fallback, ok)
 	}
 
@@ -71,7 +72,7 @@ func TestActiveSetResolvePrecedenceAndReceiptStamp(t *testing.T) {
 	if stamped.ActiveManifestHash != testManifestHash {
 		t.Fatalf("active_manifest_hash = %q", stamped.ActiveManifestHash)
 	}
-	if stamped.ContractHash != exactHash || stamped.SelectorID != "exact" || stamped.ContractGeneration != 7 {
+	if stamped.ContractHash != exactHash || stamped.SelectorID != testExact || stamped.ContractGeneration != 7 {
 		t.Fatalf("stamped context = %+v", stamped)
 	}
 }
@@ -158,14 +159,14 @@ func TestResolveNilNoMatchAndRejectsBadGlob(t *testing.T) {
 				Generation: 1,
 				Selectors: []contract.ManifestSelector{
 					{SelectorID: "bad-glob", AgentGlob: "[", ContractHash: testContractHash},
-					{SelectorID: "other", Agent: "other", ContractHash: testContractHash},
+					{SelectorID: testOther, Agent: testOther, ContractHash: testContractHash},
 				},
 			},
 		},
 		ManifestHash: testManifestHash,
 		Contracts: map[string]contract.ContractEnvelope{
 			"bad-glob": {Body: contract.Contract{ContractHash: testContractHash}},
-			"other":    {Body: contract.Contract{ContractHash: testContractHash}},
+			testOther:  {Body: contract.Contract{ContractHash: testContractHash}},
 		},
 	}
 	if _, err := NewActiveSet(state); !errors.Is(err, ErrInvalidSelector) {
@@ -183,11 +184,11 @@ func TestResolveNilNoMatchAndRejectsBadGlob(t *testing.T) {
 }
 
 func TestEvaluateHTTP_KillSwitchSuppressesContractEvalButKeepsAuditDecision(t *testing.T) {
-	resolved := resolvedContractWithRules(enforceRule("r-allow", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-allow", testAPIExampleCom, "/v1/chat", http.MethodPost))
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:         &resolved,
-		Request:          HTTPRequest{URL: "https://api.example.com/v1/other", Method: "POST"},
+		Request:          HTTPRequest{URL: "https://api.example.com/v1/other", Method: http.MethodPost},
 		Mode:             ModeLive,
 		KillSwitchActive: true,
 		ScannerVerdict:   config.ActionAllow,
@@ -211,7 +212,7 @@ func TestEvaluateHTTP_KillSwitchSuppressesContractEvalButKeepsAuditDecision(t *t
 }
 
 func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-chat", testAPIExampleCom, "/v1/chat", http.MethodPost))
 
 	allowed, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
@@ -228,7 +229,7 @@ func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
 
 	explicitDefaultPort, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com:443/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: "https://api.example.com:443/v1/chat", Method: http.MethodPost},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
 	})
@@ -241,7 +242,7 @@ func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
 
 	alternatePort, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com:8443/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: "https://api.example.com:8443/v1/chat", Method: http.MethodPost},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
 	})
@@ -255,7 +256,7 @@ func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
 
 	denied, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com/v1/completions", Method: "POST"},
+		Request:        HTTPRequest{URL: "https://api.example.com/v1/completions", Method: http.MethodPost},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
 	})
@@ -278,11 +279,11 @@ func TestEvaluateHTTP_DefaultDenyOnceContractHasEnforceRule(t *testing.T) {
 	// to a host the contract does not enumerate is denied by default in live
 	// mode — without this the "lock" is just per-host policy refinement and
 	// any new domain (including exfil) falls through to the scanner.
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "chat.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-chat", "chat.example.com", "/v1/chat", http.MethodPost))
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSOtherChatURL, Method: http.MethodPost},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionAllow,
 	})
@@ -308,13 +309,13 @@ func TestEvaluateHTTP_ObservationOnlyContractFallsThroughToScanner(t *testing.T)
 	// claims no jurisdiction. Traffic falls through to the scanner verdict
 	// regardless of host. This lets operators promote a fresh contract
 	// without immediately locking out every request.
-	rule := enforceRule("r-chat", "api.example.com", "/v1/chat", "POST")
+	rule := enforceRule("r-chat", testAPIExampleCom, "/v1/chat", http.MethodPost)
 	rule.LifecycleState = LifecycleProposed
 	resolved := resolvedContractWithRules(rule)
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSOtherChatURL, Method: http.MethodPost},
 		Mode:           ModeLive,
 		ScannerVerdict: config.ActionWarn,
 	})
@@ -349,7 +350,7 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 		t.Fatalf("explicit scanner decision = %+v", decision)
 	}
 
-	resolved := resolvedContractWithRules(enforceRule("r1", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost))
 	if _, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeLive,
 		Resolved:       &resolved,
@@ -359,13 +360,13 @@ func TestEvaluateHTTP_ScannerFallbacksAndErrors(t *testing.T) {
 		t.Fatalf("invalid URL err = %v", err)
 	}
 
-	badLifecycle := enforceRule("r1", "api.example.com", "/v1/chat", "POST")
+	badLifecycle := enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost)
 	badLifecycle.LifecycleState = "surprise"
 	resolved = resolvedContractWithRules(badLifecycle)
 	if _, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeLive,
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSAPIChatURL, Method: http.MethodPost},
 		ScannerVerdict: config.ActionAllow,
 	}); !errors.Is(err, ErrUnsupportedLifecycle) {
 		t.Fatalf("lifecycle err = %v", err)
@@ -389,12 +390,12 @@ func TestEvaluateHTTP_ScannerBlockBeatsContractAllow(t *testing.T) {
 	// https://api.example.com/v1/chat must NOT resurrect a request the
 	// scanner blocked (DLP / SSRF / blocklist all flow through scanner).
 	// Without this, the contract becomes a signed bypass.
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-chat", testAPIExampleCom, "/v1/chat", http.MethodPost))
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeLive,
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSAPIChatURL, Method: http.MethodPost},
 		ScannerVerdict: config.ActionBlock,
 	})
 	if err != nil {
@@ -412,12 +413,12 @@ func TestEvaluateHTTP_ScannerBlockBeatsContractAllow(t *testing.T) {
 }
 
 func TestEvaluateHTTP_ShadowModeObservesContractBlockButLetsScannerVerdictStand(t *testing.T) {
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-chat", testAPIExampleCom, "/v1/chat", http.MethodPost))
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeShadow,
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSOtherChatURL, Method: http.MethodPost},
 		ScannerVerdict: config.ActionAllow,
 	})
 	if err != nil {
@@ -441,12 +442,12 @@ func TestEvaluateHTTP_ShadowModeObservesContractBlockButLetsScannerVerdictStand(
 }
 
 func TestEvaluateHTTP_ShadowModeContractAllowDoesNotEmitObservedOnlyReason(t *testing.T) {
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-chat", testAPIExampleCom, "/v1/chat", http.MethodPost))
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeShadow,
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSAPIChatURL, Method: http.MethodPost},
 		ScannerVerdict: config.ActionAllow,
 	})
 	if err != nil {
@@ -464,12 +465,12 @@ func TestEvaluateHTTP_ShadowModeContractAllowDoesNotEmitObservedOnlyReason(t *te
 }
 
 func TestEvaluateHTTP_CaptureModeNeverBlocksFromContract(t *testing.T) {
-	resolved := resolvedContractWithRules(enforceRule("r-chat", "api.example.com", "/v1/chat", "POST"))
+	resolved := resolvedContractWithRules(enforceRule("r-chat", testAPIExampleCom, "/v1/chat", http.MethodPost))
 
 	decision, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeCapture,
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://other.example.com/v1/chat", Method: "POST"},
+		Request:        HTTPRequest{URL: testHTTPSOtherChatURL, Method: http.MethodPost},
 		ScannerVerdict: config.ActionAllow,
 	})
 	if err != nil {
@@ -487,7 +488,7 @@ func TestEvaluateHTTP_CaptureModeNeverBlocksFromContract(t *testing.T) {
 }
 
 func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
-	actionRule := enforceRule("r-action", "api.example.com", "/v1/chat", "POST")
+	actionRule := enforceRule("r-action", testAPIExampleCom, "/v1/chat", http.MethodPost)
 	actionRule.Selector["effective_action"] = "delegate"
 	resolved := resolvedContractWithRules(actionRule)
 	allowed, err := EvaluateHTTP(EvaluateOptions{
@@ -495,8 +496,8 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 		Resolved:       &resolved,
 		ScannerVerdict: config.ActionAllow,
 		Request: HTTPRequest{
-			URL:             "https://api.example.com/v1/chat",
-			Method:          "POST",
+			URL:             testHTTPSAPIChatURL,
+			Method:          http.MethodPost,
 			EffectiveAction: "delegate",
 		},
 	})
@@ -512,8 +513,8 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 		Resolved:       &resolved,
 		ScannerVerdict: config.ActionAllow,
 		Request: HTTPRequest{
-			URL:             "https://api.example.com/v1/chat",
-			Method:          "POST",
+			URL:             testHTTPSAPIChatURL,
+			Method:          http.MethodPost,
 			EffectiveAction: "read",
 		},
 	})
@@ -524,12 +525,12 @@ func TestEvaluateHTTP_SelectorConstraintBranches(t *testing.T) {
 		t.Fatalf("action mismatch decision = %+v", denied)
 	}
 
-	badPathRule := enforceRule("r-badpath", "api.example.com", "/v1/chat", "POST")
+	badPathRule := enforceRule("r-badpath", testAPIExampleCom, "/v1/chat", http.MethodPost)
 	resolved = resolvedContractWithRules(badPathRule)
 	blocked, err := EvaluateHTTP(EvaluateOptions{
 		Mode:           ModeLive,
 		Resolved:       &resolved,
-		Request:        HTTPRequest{URL: "https://api.example.com/v1%2Fchat", Method: "POST"},
+		Request:        HTTPRequest{URL: "https://api.example.com/v1%2Fchat", Method: http.MethodPost},
 		ScannerVerdict: config.ActionWarn,
 	})
 	if err != nil {
@@ -550,7 +551,7 @@ func TestEvaluateDrift_OpportunityMissingBlocksAutoDemotion(t *testing.T) {
 		HistoricalRate:     "0.90",
 		CurrentRate:        "0.10",
 		Window:             "2026-04-30T00:00:00Z/2026-04-30T01:00:00Z",
-		ParentContext:      "api.example.com",
+		ParentContext:      testAPIExampleCom,
 		MissedWindows:      9,
 	})
 	if err != nil {
@@ -610,7 +611,7 @@ func TestEvaluateDrift_RejectsEmptyAndUnknownMode(t *testing.T) {
 	// emit session.SignalBlock and push adaptive enforcement. Empty mode
 	// must now fail-closed so the caller is forced to be explicit.
 	_, err := EvaluateDrift(DriftObservation{
-		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		Rule:               enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost),
 		ContractHash:       testContractHash,
 		OpportunityHealthy: true,
 		UnexpectedObserved: true,
@@ -620,7 +621,7 @@ func TestEvaluateDrift_RejectsEmptyAndUnknownMode(t *testing.T) {
 	}
 
 	_, err = EvaluateDrift(DriftObservation{
-		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		Rule:               enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost),
 		ContractHash:       testContractHash,
 		Mode:               Mode("preview"),
 		OpportunityHealthy: true,
@@ -633,7 +634,7 @@ func TestEvaluateDrift_RejectsEmptyAndUnknownMode(t *testing.T) {
 
 func TestEvaluateDrift_PositiveSignalOnlyInLiveMode(t *testing.T) {
 	live, err := EvaluateDrift(DriftObservation{
-		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		Rule:               enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost),
 		ContractHash:       testContractHash,
 		Mode:               ModeLive,
 		OpportunityHealthy: true,
@@ -647,7 +648,7 @@ func TestEvaluateDrift_PositiveSignalOnlyInLiveMode(t *testing.T) {
 	}
 
 	shadow, err := EvaluateDrift(DriftObservation{
-		Rule:               enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		Rule:               enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost),
 		ContractHash:       testContractHash,
 		Mode:               ModeShadow,
 		OpportunityHealthy: true,
@@ -663,7 +664,7 @@ func TestEvaluateDrift_PositiveSignalOnlyInLiveMode(t *testing.T) {
 
 func TestEvaluateDrift_SuppressedInvalidAndInactiveBranches(t *testing.T) {
 	result, err := EvaluateDrift(DriftObservation{
-		Rule:             enforceRule("r1", "api.example.com", "/v1/chat", "POST"),
+		Rule:             enforceRule("r1", testAPIExampleCom, "/v1/chat", http.MethodPost),
 		ContractHash:     testContractHash,
 		KillSwitchActive: true,
 	})
@@ -675,7 +676,7 @@ func TestEvaluateDrift_SuppressedInvalidAndInactiveBranches(t *testing.T) {
 	}
 
 	_, err = EvaluateDrift(DriftObservation{
-		Rule:         contract.Rule{RuleID: "r1", LifecycleState: "bad"},
+		Rule:         contract.Rule{RuleID: "r1", LifecycleState: testBad},
 		ContractHash: testContractHash,
 		Mode:         ModeLive,
 	})
@@ -712,7 +713,7 @@ func TestEvaluateDrift_SuppressedInvalidAndInactiveBranches(t *testing.T) {
 
 func TestEvaluateDrift_UsesRuleWindowFloor(t *testing.T) {
 	rule := captureRule("r1")
-	rule.RecurringSupport = map[string]any{"windows_floor": "4"}
+	rule.RecurringSupport = map[string]any{testWindowsFloor: "4"}
 	tooEarly, err := EvaluateDrift(DriftObservation{
 		Rule:                rule,
 		ContractHash:        testContractHash,
@@ -749,7 +750,7 @@ func TestContractDriftPayloadValidates(t *testing.T) {
 		RuleID:            "r1",
 		Kind:              DriftKindNegative,
 		MissedWindows:     4,
-		OpportunityStatus: "healthy",
+		OpportunityStatus: testStatusHealthy,
 	})
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -781,8 +782,8 @@ func TestHelperBranches(t *testing.T) {
 		{"n": -1},
 		{"n": int64(-1)},
 		{"n": float64(-1)},
-		{"n": "bad"},
-		{"n": []string{"bad"}},
+		{"n": testBad},
+		{"n": []string{testBad}},
 	} {
 		if got := observationUint(m, "n"); got != 0 {
 			t.Fatalf("observationUint(%v) = %d, want 0", m, got)
@@ -804,22 +805,22 @@ func TestHelperBranches(t *testing.T) {
 		t.Fatal("firstString(nil) should be empty")
 	}
 
-	if got := selectorString(map[string]any{"host": "bad"}, "host"); got != "" {
+	if got := selectorString(map[string]any{testJSONKeyHost: testBad}, testJSONKeyHost); got != "" {
 		t.Fatalf("selectorString bad = %q", got)
 	}
-	if got := selectorMethods(map[string]any{"methods": "bad"}); got != nil {
+	if got := selectorMethods(map[string]any{testJSONKeyMethods: testBad}); got != nil {
 		t.Fatalf("selectorMethods bad = %v", got)
 	}
-	if got := selectorMethods(map[string]any{"methods": []any{"GET", 4}}); len(got) != 1 || got[0] != "GET" {
+	if got := selectorMethods(map[string]any{testJSONKeyMethods: []any{http.MethodGet, 4}}); len(got) != 1 || got[0] != http.MethodGet {
 		t.Fatalf("selectorMethods mixed = %v", got)
 	}
-	if got := selectorPathValues(map[string]any{"paths": "bad"}); got != nil {
+	if got := selectorPathValues(map[string]any{testJSONKeyPaths: testBad}); got != nil {
 		t.Fatalf("selectorPathValues bad = %v", got)
 	}
-	if got := selectorPathValues(map[string]any{"paths": []any{"bad", map[string]any{"value": 3}, map[string]any{"value": "/ok"}}}); len(got) != 1 || got[0] != "/ok" {
+	if got := selectorPathValues(map[string]any{testJSONKeyPaths: []any{testBad, map[string]any{testJSONKeyValue: 3}, map[string]any{testJSONKeyValue: "/ok"}}}); len(got) != 1 || got[0] != "/ok" {
 		t.Fatalf("selectorPathValues mixed = %v", got)
 	}
-	if containsFolded([]string{"GET"}, "POST") {
+	if containsFolded([]string{http.MethodGet}, http.MethodPost) {
 		t.Fatal("containsFolded unexpectedly matched")
 	}
 	if matches, canCompare, invalidPath := ruleMatchesHTTP(contract.Rule{}, mustURL(t, "https://api.example.com/"), HTTPRequest{}); matches || !canCompare || invalidPath {
@@ -834,11 +835,11 @@ func TestHelperBranches(t *testing.T) {
 	if usesDefaultHTTPPort(mustURL(t, "ftp://api.example.com/")) {
 		t.Fatal("non-http scheme should not compare")
 	}
-	alt := enforceRule("r-alt", "api.example.com", "/v2/chat", "GET")
+	alt := enforceRule("r-alt", testAPIExampleCom, "/v2/chat", http.MethodGet)
 	if got := selectorPathValues(alt.Selector); len(got) != 1 || got[0] != "/v2/chat" {
 		t.Fatalf("alternate enforceRule path = %v", got)
 	}
-	if got := selectorMethods(alt.Selector); len(got) != 1 || got[0] != "GET" {
+	if got := selectorMethods(alt.Selector); len(got) != 1 || got[0] != http.MethodGet {
 		t.Fatalf("alternate enforceRule method = %v", got)
 	}
 }
@@ -861,9 +862,9 @@ func enforceRule(ruleID, host, pathValue, method string) contract.Rule {
 	rule.LifecycleState = LifecycleEnforce
 	rule.RuleKind = ruleKindHTTPAction
 	rule.Selector = map[string]any{
-		"host":    map[string]any{"value": host},
-		"paths":   []any{map[string]any{"value": pathValue}},
-		"methods": []any{method},
+		testJSONKeyHost:    map[string]any{testJSONKeyValue: host},
+		testJSONKeyPaths:   []any{map[string]any{testJSONKeyValue: pathValue}},
+		testJSONKeyMethods: []any{method},
 	}
 	return rule
 }
@@ -875,9 +876,9 @@ func captureRule(ruleID string) contract.Rule {
 		LifecycleState:       LifecycleCaptureOnly,
 		RequiredCaptureGrade: contract.CaptureGradeFull,
 		ObservedCaptureGrade: contract.CaptureGradeFull,
-		RecurringSupport:     map[string]any{"windows_floor": 3},
+		RecurringSupport:     map[string]any{testWindowsFloor: 3},
 		Selector: map[string]any{
-			"host": map[string]any{"value": "api.example.com"},
+			testJSONKeyHost: map[string]any{testJSONKeyValue: testAPIExampleCom},
 		},
 	}
 }

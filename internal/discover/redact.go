@@ -11,6 +11,10 @@ import (
 
 const redactedValue = "[REDACTED]"
 
+// secretMarker is the substring "secret"; matched against config keys to flag
+// likely-credential fields for redaction.
+const secretMarker = "secret"
+
 // RedactReportForOutput returns a copy of a discovery report suitable for CLI
 // output and evidence files. Discovery keeps raw values internally for local
 // classification, but output must not print secret env values, bearer URLs, or
@@ -139,7 +143,7 @@ func isSensitiveKey(key string) bool {
 	k = strings.NewReplacer("-", "_", ".", "_").Replace(k)
 	for _, marker := range []string{
 		"token",
-		"secret",
+		secretMarker,
 		"password",
 		"passwd",
 		"api_key",

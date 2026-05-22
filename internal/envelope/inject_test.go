@@ -16,13 +16,13 @@ func TestInjectHTTP(t *testing.T) {
 
 	env := Envelope{
 		Version:    1,
-		Action:     "write",
-		Verdict:    "allow",
-		SideEffect: "external_write",
-		Actor:      "agent:test",
+		Action:     testActionWrite,
+		Verdict:    testVerdictAllow,
+		SideEffect: testSideEffectExt,
+		Actor:      testActorAgentTest,
 		ActorAuth:  ActorAuthBound,
 		PolicyHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
-		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000001",
+		ReceiptID:  testReceiptID1,
 		Timestamp:  1712345678,
 	}
 
@@ -288,13 +288,13 @@ func TestInjectMCP(t *testing.T) {
 
 	env := Envelope{
 		Version:    1,
-		Action:     "read",
-		Verdict:    "allow",
+		Action:     testActionRead,
+		Verdict:    testVerdictAllow,
 		SideEffect: "external_read",
-		Actor:      "agent:test",
+		Actor:      testActorAgentTest,
 		ActorAuth:  ActorAuthSelfDeclared,
 		PolicyHash: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
-		ReceiptID:  "01961f3a-7b2c-7000-8000-000000000002",
+		ReceiptID:  testReceiptID2,
 		Timestamp:  1712345679,
 	}
 
@@ -309,7 +309,7 @@ func TestInjectMCP(t *testing.T) {
 	if !ok {
 		t.Fatalf("value is %T, want map[string]any", mediation)
 	}
-	if m["act"] != "read" {
+	if m["act"] != testActionRead {
 		t.Errorf("act = %v, want %q", m["act"], "read")
 	}
 }

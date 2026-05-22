@@ -113,7 +113,7 @@ func Defaults() *Config {
 
 				// AI/ML provider keys
 				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: SeverityCritical},
-				{Name: "Databricks Token", Regex: `dapi[a-z0-9]{30,}`, Severity: SeverityCritical},
+				{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}`, Severity: SeverityCritical},
 				{Name: "Replicate API Token", Regex: `r8_[A-Za-z0-9]{20,}`, Severity: SeverityCritical},
 				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: SeverityCritical},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.

@@ -96,9 +96,13 @@ const (
 	// response-scanning corpus now includes mixed English/Spanish instruction
 	// override and system-prompt disclosure patterns.
 	// 2026-05-21: rotated for ToolChainDetection.SensitivityLabels (v2.6
-	// lethal-trifecta detection). Same justification as goldenHashRichConfig
-	// below — adds a policy-semantic field to the canonical hash surface.
-	goldenHashDefaults = "8dd85a3f9c0677deade039b9f23e18e4cb242c4feb656fae6896e5c0898ea536"
+	// lethal-trifecta detection). Adds a policy-semantic field to the
+	// canonical hash surface.
+	// Re-bumped on the Databricks PAT pattern tightening: the default DLP
+	// regex moves from `dapi[a-z0-9]{30,}` to `dapi[0-9a-f]{32,}`. This
+	// matches the documented 32-char hex Databricks token format and removes
+	// a false-positive surface that fired on random base64 image payloads.
+	goldenHashDefaults = "4a9d35253c4c78fc9ee555c3162bf30bf9fd5039c34f49c4b6c80986128c2f74"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -143,7 +147,11 @@ const (
 	// which tools classify into untrusted_source / sensitive_source /
 	// external_sink, which changes which sequences emit the lethal-
 	// trifecta verdict.
-	goldenHashRichConfig = "508d4a0ab6fcce41d9c8286f0df68dec49eff2eba381b07ccb85052ebb09b5a2"
+	// Re-bumped for the Databricks PAT pattern tightening from
+	// `dapi[a-z0-9]{30,}` to `dapi[0-9a-f]{32,}` (defaults.go DLP set), which
+	// closes a false-positive surface in random base64 image payloads while
+	// still matching the documented 32-char hex Databricks token format.
+	goldenHashRichConfig = "5a39175fdc619b47288bf74068a4e7beaeb6959f771e370d8e50a671620ac320"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

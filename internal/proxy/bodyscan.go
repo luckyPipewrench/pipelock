@@ -206,13 +206,13 @@ type BodyScanRequest struct {
 	// body scan's MaxBytes. Zero values fall through to redact package
 	// defaults.
 	RedactLimits redact.Limits
-	// RedactAllowlistUnparseable lists hostnames whose non-JSON bodies are
-	// permitted through as-is. When the Host is not in this list and the
+	// RedactAllowlistUnparseable lists hostnames whose non-JSON bodies may use
+	// raw-text redaction fallback. When the Host is not in this list and the
 	// body is not JSON, redaction fails closed. Nil/empty = strict.
 	RedactAllowlistUnparseable []string
-	// RedactAllowlistUnparseableRoutes lists route-scoped exceptions for
-	// trusted non-JSON bodies. These are preferred over host-only entries
-	// for OAuth token and upload endpoints.
+	// RedactAllowlistUnparseableRoutes lists route-scoped raw-text fallback
+	// exceptions for trusted non-JSON bodies. These are preferred over
+	// host-only entries for OAuth token and upload endpoints.
 	RedactAllowlistUnparseableRoutes []redact.UnparseableRouteSpec
 	// RedactProviderRegistry selects the provider parser profile for JSON
 	// redaction. Nil falls back to the generic JSON parser.
@@ -274,7 +274,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 
 	var preRedactionDLP []scanner.TextDLPMatch
 	if req.RedactMatcher != nil {
-		texts, parseErr := extractBodyText(buf, req.ContentType, req.MaxBytes)
+		texts, parseErr := extractBodyText(buf, req)
 		if parseErr == "" {
 			preRedactionDLP = scanBodyTextsForDLP(ctx, req.Scanner, texts, req.suppressTarget(), req.Suppress)
 		}
@@ -287,7 +287,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	// reported in v1b round 1 review (2026-04-19). DLP then scans the
 	// redacted buf and catches anything redaction did not cover.
 	var redactReport *redact.Report
-	if req.RedactionRequired && req.RedactMatcher == nil && !allowlistSkipsRedactionRewrite(req) {
+	if req.RedactionRequired && req.RedactMatcher == nil {
 		return buf, BodyScanResult{
 			Clean:                false,
 			Action:               config.ActionBlock,
@@ -326,7 +326,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	}
 
 	// Extract text strings from body based on content type.
-	texts, parseErr := extractBodyText(buf, req.ContentType, req.MaxBytes)
+	texts, parseErr := extractBodyText(buf, req)
 	if parseErr != "" {
 		// Multipart limit exceeded: fail-closed block.
 		return nil, BodyScanResult{
@@ -475,36 +475,91 @@ func sortedBodyTexts(texts []string) []string {
 	return sorted
 }
 
-func allowlistSkipsRedactionRewrite(req BodyScanRequest) bool {
-	return !isJSONContentType(req.ContentType) && unparseableBodyAllowlisted(req)
+// applyRedaction is the pre-DLP content-transformation step. JSON bodies are
+// detected by declared media type or a valid JSON sniff. Operator-allowlisted
+// non-JSON bodies fall back to raw-text rewriting instead of passing through
+// unchanged. A fail-closed gate returns *redact.BlockError.
+func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
+	if bodyIsJSONForRedaction(buf, req.ContentType) {
+		rewritten, report, err := redact.RewriteRequestJSON(buf, req.RedactMatcher, redact.NewRedactor(), req.RedactLimits, redact.RequestMetadata{
+			Host: req.Host,
+			Path: req.Path,
+		}, req.RedactProviderRegistry)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rewritten, report, nil
+	}
+
+	if !unparseableBodyAllowlisted(req) {
+		return nil, nil, &redact.BlockError{
+			Reason: redact.ReasonNonJSONBody,
+			Detail: fmt.Sprintf("redaction enabled but body Content-Type %q is not JSON and request host %q/path %q is not allowed by redaction.allowlist_unparseable or redaction.allowlist_unparseable_routes", req.ContentType, req.Host, req.Path),
+		}
+	}
+	return rewriteRawTextBody(buf, req)
 }
 
-// applyRedaction is the pre-DLP content-transformation step. Returns
-// (rewritten, nil, nil) when the body was redacted, (rewritten, nil, nil)
-// with rewritten==buf when the feature is a no-op for this body (non-JSON
-// host on the allowlist), and (_, _, *BlockError) when a fail-closed
-// redaction gate fired.
-func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
-	if !isJSONContentType(req.ContentType) {
-		if !unparseableBodyAllowlisted(req) {
-			return nil, nil, &redact.BlockError{
-				Reason: redact.ReasonNonJSONBody,
-				Detail: fmt.Sprintf("redaction enabled but body Content-Type %q is not JSON and request host %q/path %q is not allowed by redaction.allowlist_unparseable or redaction.allowlist_unparseable_routes", req.ContentType, req.Host, req.Path),
-			}
+func bodyIsJSONForRedaction(buf []byte, contentType string) bool {
+	if isJSONContentType(contentType) {
+		return true
+	}
+	return json.Valid(bytes.TrimSpace(buf))
+}
+
+func rewriteRawTextBody(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
+	if req.RedactMatcher == nil {
+		return nil, nil, &redact.BlockError{
+			Reason: redact.ReasonInternalError,
+			Detail: "redaction matcher unavailable for raw-text fallback",
 		}
-		// Allowlisted host with non-JSON body: caller forwards as-is.
-		// Return nil report so the caller does not fabricate a redaction
-		// receipt summary for a body that was never scanned.
-		return buf, nil, nil
 	}
-	rewritten, report, err := redact.RewriteRequestJSON(buf, req.RedactMatcher, redact.NewRedactor(), req.RedactLimits, redact.RequestMetadata{
-		Host: req.Host,
-		Path: req.Path,
-	}, req.RedactProviderRegistry)
-	if err != nil {
-		return nil, nil, err
+	lim := req.RedactLimits
+	if lim.MaxBodyBytes <= 0 {
+		lim.MaxBodyBytes = redact.DefaultMaxBodyBytes
 	}
-	return rewritten, report, nil
+	if lim.MaxRedactionsPerRequest <= 0 {
+		lim.MaxRedactionsPerRequest = redact.DefaultMaxRedactions
+	}
+	if lim.MaxBodyBytes > 0 && len(buf) > lim.MaxBodyBytes {
+		return nil, nil, &redact.BlockError{Reason: redact.ReasonBodyTooLarge}
+	}
+
+	body := string(buf)
+	matches := req.RedactMatcher.Scan(body)
+	if lim.MaxRedactionsPerRequest > 0 && countUniqueRawTextMatches(matches) > lim.MaxRedactionsPerRequest {
+		return nil, nil, &redact.BlockError{Reason: redact.ReasonOverflow}
+	}
+	redactor := redact.NewRedactor()
+	rewritten := redact.RewriteString(body, matches, redactor)
+	return []byte(rewritten), &redact.Report{
+		Applied:         true,
+		Provider:        redact.ProviderGenericRawText,
+		Parser:          redact.ParserRawText,
+		TotalRedactions: redactor.Total(),
+		ByClass:         redactor.ByClass(),
+	}, nil
+}
+
+func countUniqueRawTextMatches(matches []redact.Match) int {
+	if len(matches) == 0 {
+		return 0
+	}
+	seen := make(map[redact.Class]map[string]struct{})
+	total := 0
+	for _, match := range matches {
+		byOriginal, ok := seen[match.Class]
+		if !ok {
+			byOriginal = make(map[string]struct{})
+			seen[match.Class] = byOriginal
+		}
+		if _, ok := byOriginal[match.Original]; ok {
+			continue
+		}
+		byOriginal[match.Original] = struct{}{}
+		total++
+	}
+	return total
 }
 
 func unparseableBodyAllowlisted(req BodyScanRequest) bool {
@@ -662,8 +717,8 @@ func hasNonIdentityEncoding(ce string) bool {
 // extractBodyText dispatches body text extraction by content type.
 // Returns extracted strings and an error string if parsing limits are exceeded
 // (multipart only). Empty error means success.
-func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, string) {
-	mediaType, params, _ := mime.ParseMediaType(contentType)
+func extractBodyText(body []byte, req BodyScanRequest) ([]string, string) {
+	mediaType, params, _ := mime.ParseMediaType(req.ContentType)
 
 	switch {
 	case mediaType == contentTypeJSON || strings.HasSuffix(mediaType, "+json"):
@@ -679,15 +734,15 @@ func extractBodyText(body []byte, contentType string, maxBytes int) ([]string, s
 		if params["boundary"] == "" {
 			return nil, "multipart/form-data missing boundary"
 		}
-		return extractMultipart(body, params["boundary"], maxBytes)
+		return extractMultipart(body, params["boundary"], req.MaxBytes)
 
 	case strings.HasPrefix(mediaType, "text/") || strings.HasSuffix(mediaType, "+xml"):
 		return []string{string(body)}, ""
 
 	default:
-		// Fallback: raw text scan. Never skip unknown content types.
-		// An attacker can set Content-Type: application/octet-stream on a
-		// JSON body containing secrets. Raw scan catches plaintext patterns.
+		// Fallback: raw text scan. Never skip unknown content types. An
+		// attacker can set Content-Type: application/octet-stream on a body
+		// containing secrets. Raw scan catches plaintext patterns.
 		return []string{string(body)}, ""
 	}
 }

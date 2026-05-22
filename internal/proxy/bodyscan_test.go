@@ -295,6 +295,147 @@ func TestScanRequestBody_ContentTypeBypass_ImagePNG(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_JSONImageDataURLScansPayloadText(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// A valid-looking image data URL must not become a DLP blind spot. A
+	// literal token-shaped substring after image magic still exits in the
+	// request body and must be scanned.
+	imageData := "/9j/" + "dapi" + strings.Repeat("a", 32)
+	body := `{"image_url":{"url":"data:image/jpeg;base64,` + imageData + `"}}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match in image data URL payload text")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches")
+	}
+}
+
+func TestScanRequestBody_JSONImageDataURLStillScansPromptText(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	imageData := "/9j/DAPI" + strings.Repeat("A", 32)
+	token := "dapi" + strings.Repeat("a", 32)
+	body := `{"text":"leak ` + token + `","image_url":{"url":"data:image/jpeg;base64,` + imageData + `"}}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match in prompt text next to image data URL")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches")
+	}
+}
+
+func TestScanRequestBody_JSONImageDataURLWithoutImageMagicStillScansPayloadText(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	token := "dapi" + strings.Repeat("a", 32)
+	payload := base64.StdEncoding.EncodeToString([]byte(token))
+	body := `{"image_url":{"url":"data:image/jpeg;base64,` + payload + `"}}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match when image data URL lacks JPEG magic")
+	}
+}
+
+func TestScanRequestBody_ModelProviderOpaqueReasoningFieldsStillScanned(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	token := "fw_" + strings.Repeat("A", 24)
+	body := `{
+		"input": [{
+			"role": "assistant",
+			"content": [{
+				"type": "reasoning",
+				"encrypted_content": "` + token + `",
+				"thinkingSignature": "{\"encrypted_content\":\"` + token + `\"}"
+			}]
+		}]
+	}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		Host:        "chatgpt.com",
+		Path:        "/backend-api/codex/responses",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match in provider opaque reasoning fields")
+	}
+	if len(result.DLPMatches) == 0 {
+		t.Fatal("expected non-empty DLP matches")
+	}
+}
+
+func TestScanRequestBody_ModelProviderStillScansPromptText(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	body := `{"input":"leak ` + "fw_" + strings.Repeat("A", 24) + `"}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		Host:        "chatgpt.com",
+		Path:        "/backend-api/codex/responses",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match in prompt text for model provider request")
+	}
+}
+
+func TestScanRequestBody_OpaqueReasoningFieldNamesDoNotBypassOtherHosts(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	body := `{"encrypted_content":"` + "fw_" + strings.Repeat("A", 24) + `"}`
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:        strings.NewReader(body),
+		ContentType: "application/json",
+		Host:        "example.com",
+		Path:        "/collect",
+		MaxBytes:    cfg.RequestBodyScanning.MaxBodyBytes,
+		Scanner:     sc,
+	})
+	if result.Clean {
+		t.Fatal("expected DLP match for opaque field name on non-provider host")
+	}
+}
+
 func TestScanRequestBody_CompressedGzip(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)

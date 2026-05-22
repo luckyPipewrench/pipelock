@@ -25,7 +25,7 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		{"sendgrid", `(?i)SG\.[a-zA-Z0-9_-]{22}`, "sg."},
 		{"mailgun", "(?i)key-[a-zA-Z0-9]{32}", "key-"},
 		{"hugging face", "(?i)hf_[A-Za-z0-9]{20,}", "hf_"},
-		{"databricks", "(?i)dapi[a-z0-9]{30,}", "dapi"},
+		{"databricks", "(?i)dapi[0-9a-f]{32,}", "dapi"},
 		{"replicate", "(?i)r8_[A-Za-z0-9]{20,}", "r8_"},
 		{"together", "(?i)tok_[a-z0-9]{40,}", "tok_"},
 		{"pinecone", "(?i)pcsk_[a-zA-Z0-9]{36,}", "pcsk_"},

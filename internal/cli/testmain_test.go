@@ -24,18 +24,18 @@ import (
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "pipelock-cli-test-xdg-*")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "TestMain: create temp dir:", err)
+		_, _ = fmt.Fprintf(os.Stderr, "TestMain: create temp dir: %v\n", err)
 		os.Exit(1)
 	}
 	dataHome, err := filepath.Abs(tmp)
 	if err != nil {
 		_ = os.RemoveAll(tmp)
-		fmt.Fprintln(os.Stderr, "TestMain: resolve absolute path:", err)
+		_, _ = fmt.Fprintf(os.Stderr, "TestMain: resolve absolute path: %v\n", err)
 		os.Exit(1)
 	}
 	if err := os.Setenv("XDG_DATA_HOME", dataHome); err != nil {
 		_ = os.RemoveAll(tmp)
-		fmt.Fprintln(os.Stderr, "TestMain: set XDG_DATA_HOME:", err)
+		_, _ = fmt.Fprintf(os.Stderr, "TestMain: set XDG_DATA_HOME: %v\n", err)
 		os.Exit(1)
 	}
 	code := m.Run()

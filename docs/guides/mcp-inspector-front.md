@@ -14,7 +14,7 @@ Three classes of bug this configuration defends against:
 |---|---|---|
 | **Unauthenticated query-parameter command injection** | CVE-2025-49596 in MCP Inspector | Auth token required on every request; bad token → 401, never reaches the inspector |
 | **Drive-by browser exploitation via 0.0.0.0 bypass** | CVE-2025-49596 (same incident; the bypass is the delivery vector) | Origin allowlist rejects any browser tab whose Origin header isn't on the list |
-| **Localhost-port-scanning from rogue processes on the host** | Generic; any malicious script with network access on the dev machine | Pipelock binds to localhost only and requires the token; rogue processes that don't have the token see only 401 |
+| **Localhost-port-scanning from rogue processes on the host** | Generic; any malicious script with network access on the dev machine | Listener stays on localhost; the token-gate shim rejects requests without a valid token (401) before they reach the inspector |
 
 What this configuration does **not** protect against: a determined attacker who already has read access to the developer's shell environment can read `MCP_INSPECTOR_TOKEN` and forge a request. The configuration raises the cost of opportunistic exploitation; it does not replace process isolation or threat-model hygiene on the developer's machine.
 

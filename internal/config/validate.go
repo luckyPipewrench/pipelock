@@ -1150,13 +1150,21 @@ func (c *Config) validateToolChainDetection() error {
 		default:
 			return fmt.Errorf("tool_chain_detection.sensitivity_labels[%q]: invalid label: must be untrusted_source, sensitive_source, or external_sink", label)
 		}
-		for i, pat := range patterns {
-			if strings.TrimSpace(pat) == "" {
+		if len(patterns) == 0 {
+			return fmt.Errorf("tool_chain_detection.sensitivity_labels[%q]: must contain at least one pattern (use absent label to disable instead)", label)
+		}
+		for i, rawPat := range patterns {
+			pat := strings.TrimSpace(rawPat)
+			if pat == "" {
 				return fmt.Errorf("tool_chain_detection.sensitivity_labels[%q][%d] is empty", label, i)
 			}
 			if _, err := filepath.Match(pat, "probe"); err != nil {
 				return fmt.Errorf("tool_chain_detection.sensitivity_labels[%q][%d] %q: invalid glob pattern: %w", label, i, pat, err)
 			}
+			// Persist the trimmed form so the matcher uses the normalized
+			// pattern at runtime (slice is a reference, so writing here
+			// updates the value stored on the Config).
+			patterns[i] = pat
 		}
 	}
 	return nil

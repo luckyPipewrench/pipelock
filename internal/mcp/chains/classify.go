@@ -66,27 +66,35 @@ func classifyTool(toolName string, cfg *config.ToolChainDetection) string {
 }
 
 // classifyByOverride checks config-defined tool category overrides.
-// Tries exact match first, then glob patterns.
-// Uses categoryPriority order so overlapping overrides are deterministic.
+// Tries exact match first, then glob patterns. Uses categoryPriority order
+// so overlapping overrides are deterministic.
 func classifyByOverride(toolName string, categories map[string][]string) string {
-	if len(categories) == 0 {
+	return matchOverrideWithPriority(toolName, categoryPriority, categories)
+}
+
+// matchOverrideWithPriority returns the first label whose pattern list matches
+// toolName, walked in priority order with an exact-match pass before a glob
+// pass. Shared between category (classifyByOverride) and sensitivity
+// (classifySensitivityByOverride) so the two axes can't drift apart.
+func matchOverrideWithPriority(toolName string, priority []string, labels map[string][]string) string {
+	if len(labels) == 0 {
 		return ""
 	}
 
-	// Check all categories for exact match first (priority order).
-	for _, category := range categoryPriority {
-		for _, pat := range categories[category] {
+	// Exact match first, walked in priority order.
+	for _, label := range priority {
+		for _, pat := range labels[label] {
 			if pat == toolName {
-				return category
+				return label
 			}
 		}
 	}
 
-	// Check all categories for glob match (priority order).
-	for _, category := range categoryPriority {
-		for _, pat := range categories[category] {
+	// Glob match second, walked in priority order.
+	for _, label := range priority {
+		for _, pat := range labels[label] {
 			if matched, _ := filepath.Match(pat, toolName); matched {
-				return category
+				return label
 			}
 		}
 	}
@@ -324,7 +332,11 @@ func ClassifySensitivity(toolName, argHint string, cfg *config.ToolChainDetectio
 	}
 
 	// Substring pass for multi-segment shapes.
-	lower := strings.ToLower(toolName)
+	// Normalize delimiters (-, ., __, etc.) to underscores so needles like
+	// "pull_request" match tool names shaped "create-pull-request" or
+	// "create.pull.request". Without this, only delimiter-equivalent forms
+	// match and multi-segment needles silently miss.
+	lower := strings.ToLower(strings.Join(splitToolName(toolName), "_"))
 	for _, label := range sensitivityPriority {
 		for _, needle := range sensitivitySubstrings[label] {
 			if strings.Contains(lower, needle) {
@@ -337,33 +349,11 @@ func ClassifySensitivity(toolName, argHint string, cfg *config.ToolChainDetectio
 }
 
 // classifySensitivityByOverride checks config-defined sensitivity overrides.
-// Mirrors classifyByOverride for the category axis: exact match first,
-// then glob patterns. Uses sensitivityPriority for deterministic tie-break
-// when the same tool appears under multiple labels.
+// Mirrors classifyByOverride on the category axis (exact match first, then
+// glob, in priority order). The two share matchOverrideWithPriority so
+// behavioral changes can't drift between axes.
 func classifySensitivityByOverride(toolName string, labels map[string][]string) string {
-	if len(labels) == 0 {
-		return ""
-	}
-
-	// Exact match across labels in priority order.
-	for _, label := range sensitivityPriority {
-		for _, pat := range labels[label] {
-			if pat == toolName {
-				return label
-			}
-		}
-	}
-
-	// Glob match across labels in priority order.
-	for _, label := range sensitivityPriority {
-		for _, pat := range labels[label] {
-			if matched, _ := filepath.Match(pat, toolName); matched {
-				return label
-			}
-		}
-	}
-
-	return ""
+	return matchOverrideWithPriority(toolName, sensitivityPriority, labels)
 }
 
 // matchSensitivityByPriority walks segments against the sensitivity keyword

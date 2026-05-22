@@ -4,17 +4,38 @@
 package assess
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
+// TestMain isolates the rules directory for assess package tests so they
+// don't inherit whatever rule bundles the developer has installed under
+// ~/.local/share/pipelock/rules/. Without this, assess's verify-install
+// step calls rules.MergeIntoConfig with the user's actual installed
+// bundles and fails on any bundle whose min_pipelock requirement exceeds
+// the dev-build version constant ("0.1.0-dev" from cliutil/version.go).
+//
+// XDG_DATA_HOME must be an absolute path: rules.ResolveRulesDir only
+// honors it when filepath.IsAbs returns true (merge.go:21). A relative
+// $TMPDIR would silently fall back to $HOME and defeat the isolation.
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "pipelock-assess-test-xdg-*")
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(os.Stderr, "TestMain: create temp dir:", err)
+		os.Exit(1)
 	}
-	if err := os.Setenv("XDG_DATA_HOME", tmp); err != nil {
-		panic(err)
+	dataHome, err := filepath.Abs(tmp)
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		fmt.Fprintln(os.Stderr, "TestMain: resolve absolute path:", err)
+		os.Exit(1)
+	}
+	if err := os.Setenv("XDG_DATA_HOME", dataHome); err != nil {
+		_ = os.RemoveAll(tmp)
+		fmt.Fprintln(os.Stderr, "TestMain: set XDG_DATA_HOME:", err)
+		os.Exit(1)
 	}
 	code := m.Run()
 	_ = os.RemoveAll(tmp)

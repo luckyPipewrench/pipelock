@@ -136,6 +136,88 @@ func TestScanRequestBody_Redaction_HostPortMatchesAllowlist(t *testing.T) {
 	}
 }
 
+func TestScanRequestBody_Redaction_JSONSniffWrongContentType(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	secret := redactionE2ESecret()
+	body := `{"prompt":"use ` + secret + `"}`
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                       strings.NewReader(body),
+		ContentType:                "text/plain; charset=utf-8",
+		MaxBytes:                   1024,
+		Scanner:                    sc,
+		RedactMatcher:              redact.NewDefaultMatcher(),
+		Host:                       "api.example.com",
+		RedactAllowlistUnparseable: []string{"api.example.com"},
+	})
+	if strings.Contains(string(buf), secret) {
+		t.Fatalf("sniffed JSON body leaked unredacted secret: %s", buf)
+	}
+	if result.RedactionReport == nil || result.RedactionReport.Parser != redact.ParserJSON {
+		t.Fatalf("expected JSON redaction report for sniffed body, got %+v", result.RedactionReport)
+	}
+}
+
+func TestScanRequestBody_Redaction_AllowlistedRawTextRewrites(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	secret := redactionE2ESecret()
+	body := `refresh_token=` + secret
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                       strings.NewReader(body),
+		Method:                     "POST",
+		ContentType:                "application/x-www-form-urlencoded",
+		MaxBytes:                   1024,
+		Scanner:                    sc,
+		RedactMatcher:              redact.NewDefaultMatcher(),
+		Host:                       "login.microsoftonline.com",
+		Path:                       "/tenant-id/oauth2/v2.0/token",
+		RedactAllowlistUnparseable: []string{"login.microsoftonline.com"},
+	})
+	if strings.Contains(string(buf), secret) {
+		t.Fatalf("allowlisted raw-text body leaked unredacted secret: %s", buf)
+	}
+	if !strings.Contains(string(buf), "<pl:") {
+		t.Fatalf("expected placeholder in rewritten raw-text body: %s", buf)
+	}
+	if result.RedactionReport == nil {
+		t.Fatal("expected raw-text redaction report")
+	}
+	if result.RedactionReport.Provider != redact.ProviderGenericRawText {
+		t.Fatalf("provider = %q, want %q", result.RedactionReport.Provider, redact.ProviderGenericRawText)
+	}
+	if result.RedactionReport.Parser != redact.ParserRawText {
+		t.Fatalf("parser = %q, want %q", result.RedactionReport.Parser, redact.ParserRawText)
+	}
+}
+
+func TestScanRequestBody_Redaction_RequiredNilMatcherBlocksAllowlistedRawText(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                       strings.NewReader(`refresh_token=` + redactionE2ESecret()),
+		Method:                     "POST",
+		ContentType:                "application/x-www-form-urlencoded",
+		MaxBytes:                   1024,
+		Scanner:                    sc,
+		RedactionRequired:          true,
+		Host:                       "login.microsoftonline.com",
+		RedactAllowlistUnparseable: []string{"login.microsoftonline.com"},
+	})
+	if result.Clean {
+		t.Fatal("expected fail-closed block when raw-text redaction matcher is unavailable")
+	}
+	if result.RedactionBlockReason != redact.ReasonInternalError {
+		t.Fatalf("RedactionBlockReason = %q, want %q", result.RedactionBlockReason, redact.ReasonInternalError)
+	}
+}
+
 func TestScanRequestBody_Redaction_RouteAllowlistRequiresFullMatch(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)
@@ -182,13 +264,14 @@ func TestScanRequestBody_Redaction_RouteAllowlistRequiresFullMatch(t *testing.T)
 	}
 }
 
-func TestScanRequestBody_Redaction_RouteAllowlistStillRunsDLP(t *testing.T) {
+func TestScanRequestBody_Redaction_RouteAllowlistRewritesBeforeDLP(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	_, result := scanRequestBody(context.Background(), BodyScanRequest{
-		Body:          strings.NewReader(`refresh_token=` + redactionE2ESecret()),
+	secret := redactionE2ESecret()
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:          strings.NewReader(`refresh_token=` + secret),
 		Method:        "POST",
 		ContentType:   "application/x-www-form-urlencoded",
 		MaxBytes:      1024,
@@ -203,11 +286,14 @@ func TestScanRequestBody_Redaction_RouteAllowlistStillRunsDLP(t *testing.T) {
 			ContentTypes: []string{"application/x-www-form-urlencoded"},
 		}},
 	})
-	if result.Clean {
-		t.Fatal("route-scoped redaction exception skipped DLP; expected body DLP finding")
+	if strings.Contains(string(buf), secret) {
+		t.Fatalf("route-scoped raw-text fallback leaked unredacted secret: %s", buf)
 	}
-	if len(result.DLPMatches) == 0 {
-		t.Fatalf("expected DLP matches after route allowlist, got %+v", result)
+	if !result.RedactedDLPOnly {
+		t.Fatalf("expected RedactedDLPOnly=true after raw-text rewrite, got %+v", result)
+	}
+	if result.RedactionReport == nil || result.RedactionReport.Parser != redact.ParserRawText {
+		t.Fatalf("expected raw-text redaction report, got %+v", result.RedactionReport)
 	}
 }
 

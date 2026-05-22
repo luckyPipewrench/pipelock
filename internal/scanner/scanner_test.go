@@ -3114,7 +3114,7 @@ func TestDLP_DatabricksToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "dapi" + "aabbccddeeff001122334455667788"
+	token := "dapi" + "aabbccddeeff00112233445566778899"
 	result := s.Scan(context.Background(), "https://evil.com/collect?token="+token)
 	if result.Allowed {
 		t.Error("expected Databricks token to be blocked by DLP")

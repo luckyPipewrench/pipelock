@@ -1324,20 +1324,35 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.receiptKeyPath = receiptStage.keyPath
 	}
 
+	oldCfg := p.cfgPtr.Load()
+	// When redaction is being disabled, publish the config before clearing the
+	// legacy matcher mirror. Enabling keeps the opposite order: runtime first,
+	// then cfg, so a cfg that requires redaction never appears before its
+	// matcher snapshot is available.
+	publishCfgBeforeRedaction := newRedactionRuntime == nil && oldCfg != nil && oldCfg.Redaction.Enabled && !cfg.Redaction.Enabled
+	if publishCfgBeforeRedaction {
+		p.cfgPtr.Store(cfg)
+		p.contractLoaderPtr.Store(contractLoader)
+	}
+
 	// Publish the staged redaction runtime as one snapshot so body-scan
 	// request paths cannot observe a new matcher with old limits/allowlist
-	// or vice versa. Keep redactMatcherPtr mirrored for non-request users
-	// that only need the compiled matcher.
-	p.redactionRuntimePtr.Store(newRedactionRuntime)
+	// or vice versa. When redaction is disabled, leave the old runtime
+	// pointer in place: new requests pass a disabled cfg and therefore ignore
+	// it, while in-flight requests that already captured the old enabled cfg
+	// can still complete with the matching matcher instead of failing closed
+	// during the disable reload.
 	if newRedactionRuntime != nil {
+		p.redactionRuntimePtr.Store(newRedactionRuntime)
 		p.redactMatcherPtr.Store(newRedactionRuntime.matcher)
 	} else {
 		p.redactMatcherPtr.Store(nil)
 	}
 
-	oldCfg := p.cfgPtr.Load()
-	p.cfgPtr.Store(cfg)
-	p.contractLoaderPtr.Store(contractLoader)
+	if !publishCfgBeforeRedaction {
+		p.cfgPtr.Store(cfg)
+		p.contractLoaderPtr.Store(contractLoader)
+	}
 	if p.wd != nil {
 		p.wd.BeatConfig()
 		p.installScannerHeartbeat(sc)

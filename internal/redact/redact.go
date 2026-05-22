@@ -25,6 +25,8 @@ const (
 	ClassGitHubToken   Class = "github-token"
 	ClassGitLabToken   Class = "gitlab-token"
 	ClassSlackToken    Class = "slack-token"
+	ClassVercelToken   Class = "vercel-token"       //nolint:gosec // class label, not a secret value
+	ClassDatabricksPAT Class = "databricks-token"   //nolint:gosec // class label, not a secret value
 	ClassOpenAIAPIKey  Class = "openai-api-key"     //nolint:gosec // class label, not a secret value
 	ClassAnthropicKey  Class = "anthropic-api-key"  //nolint:gosec // class label, not a secret value
 	ClassTelegramToken Class = "telegram-bot-token" //nolint:gosec // class label, not a secret value

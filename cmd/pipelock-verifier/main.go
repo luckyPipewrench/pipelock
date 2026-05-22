@@ -65,17 +65,16 @@ CI runner, an auditor's laptop, or an isolated environment.`,
 	root.AddCommand(newAuditPacketCmd())
 	root.AddCommand(newChainCmd())
 	root.AddCommand(newReceiptCmd())
+	root.AddCommand(newReplayCmd())
 
 	return root
 }
 
-func exactArgs(n int) cobra.PositionalArgs {
-	return func(cmd *cobra.Command, args []string) error {
-		if err := cobra.ExactArgs(n)(cmd, args); err != nil {
-			return cliutil.ExitCodeError(exitUsage, err)
-		}
-		return nil
+func exactOneArg(cmd *cobra.Command, args []string) error {
+	if err := cobra.ExactArgs(1)(cmd, args); err != nil {
+		return cliutil.ExitCodeError(exitUsage, err)
 	}
+	return nil
 }
 
 func usageFlagError(_ *cobra.Command, err error) error {

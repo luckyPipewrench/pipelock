@@ -63,7 +63,7 @@ Without --key the verifier confirms internal chain self-consistency
 (prev-hash linkage, signer agreement) but cannot prove provenance. A
 packet that claims verdict=valid AND trusted=true MUST carry signer_key,
 and --key (or the packet's own signer_key) must match.`,
-		Args:          exactArgs(1),
+		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

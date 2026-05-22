@@ -218,3 +218,92 @@ func TestClassifyTool_Delimiters(t *testing.T) {
 		})
 	}
 }
+
+// --- Sensitivity classification (v2.6: lethal-trifecta detection) ---
+
+func TestClassifySensitivity_Keywords(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		want string
+	}{
+		// untrusted_source
+		{"issue", "list_issues", "untrusted_source"},
+		{"comment", "get_comment", "untrusted_source"},
+		{"webpage scrape", "scrape_webpage", "untrusted_source"},
+		{"chat messages", "list_chats", "untrusted_source"},
+		{"email inbox", "read_email", "untrusted_source"},
+
+		// sensitive_source
+		{"private repo", "get_private_repo", "sensitive_source"},
+		{"ssh key", "read_ssh_key", "sensitive_source"},
+		{"secrets", "list_secrets", "sensitive_source"},
+		{"phi access", "read_phi_record", "sensitive_source"},
+		{"vault keys", "vault_get", "sensitive_source"},
+
+		// external_sink
+		{"create pull", "create_pull_request", "external_sink"},
+		{"send webhook", "send_webhook", "external_sink"},
+		{"publish post", "publish_post", "external_sink"},
+		{"tweet", "tweet_message", "external_sink"},
+		{"upload file", "upload_file", "external_sink"},
+
+		// neutral
+		{"plain compute", "calculate_sum", "neutral"},
+		{"unknown", "frobnicate", "neutral"},
+	}
+	cfg := &config.ToolChainDetection{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifySensitivity(tt.tool, "", cfg)
+			if got != tt.want {
+				t.Errorf("ClassifySensitivity(%q) = %q, want %q", tt.tool, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifySensitivity_Override_Exact(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		SensitivityLabels: map[string][]string{
+			"external_sink": {"completely_custom_tool"},
+		},
+	}
+	got := ClassifySensitivity("completely_custom_tool", "", cfg)
+	if got != "external_sink" {
+		t.Errorf("override should win, got %q", got)
+	}
+}
+
+func TestClassifySensitivity_Override_Glob(t *testing.T) {
+	cfg := &config.ToolChainDetection{
+		SensitivityLabels: map[string][]string{
+			"sensitive_source": {"acme_internal_*"},
+		},
+	}
+	got := ClassifySensitivity("acme_internal_payroll", "", cfg)
+	if got != "sensitive_source" {
+		t.Errorf("glob override should win, got %q", got)
+	}
+}
+
+func TestClassifySensitivity_OverridePriority(t *testing.T) {
+	// When the same tool name appears under multiple override labels,
+	// external_sink wins per sensitivityPriority.
+	cfg := &config.ToolChainDetection{
+		SensitivityLabels: map[string][]string{
+			"untrusted_source": {"ambiguous_tool"},
+			"external_sink":    {"ambiguous_tool"},
+		},
+	}
+	got := ClassifySensitivity("ambiguous_tool", "", cfg)
+	if got != "external_sink" {
+		t.Errorf("priority should pick external_sink, got %q", got)
+	}
+}
+
+func TestClassifySensitivity_EmptyName(t *testing.T) {
+	if got := ClassifySensitivity("", "", nil); got != "neutral" {
+		t.Errorf("empty name should be neutral, got %q", got)
+	}
+}

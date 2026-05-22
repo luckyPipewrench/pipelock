@@ -205,3 +205,181 @@ func reclassifyByArgs(category, argHint string) string {
 	}
 	return category
 }
+
+// Sensitivity label constants. These run orthogonally to category: a tool
+// has a category (read/write/exec/network/list/env/persist) AND a sensitivity
+// label (untrusted source / sensitive source / external sink / neutral).
+//
+// Lethal-trifecta attack pattern: untrusted-source -> sensitive-source ->
+// external-sink within one session. Three independent sources flag this
+// shape: Invariantlabs GitHub MCP, parasitic toolchain (arXiv 2509.06572),
+// and Toxic Flow Analysis. Pipelock detects it via subsequence matching
+// on the sensitivity axis rather than the category axis.
+const (
+	SensitivityUntrustedSource = "untrusted_source"
+	SensitivitySensitiveSource = "sensitive_source"
+	SensitivityExternalSink    = "external_sink"
+	SensitivityNeutral         = "neutral"
+)
+
+// sensitivityKeywords maps sensitivity labels to keywords that appear as
+// segments in tool names. Used as fallback classification when no config
+// override matches. Operator overrides take precedence.
+//
+// untrusted_source: pulls content from where attackers can inject (external
+// data, user-controlled inputs, third-party APIs, public registries).
+// sensitive_source: pulls private/sensitive data (secrets, credentials,
+// private repos, internal systems, personal messages).
+// external_sink: sends data to a destination outside the trust boundary
+// (public PR creation, message send, external webhook, file upload).
+//
+// Segments are matched after splitToolName, so plurals and variants must
+// be enumerated explicitly. Multi-segment shapes (e.g. "create_pull_request",
+// "post_webhook") are handled by sensitivitySubstrings, not this map.
+var sensitivityKeywords = map[string][]string{
+	SensitivityUntrustedSource: {
+		"issue", "issues", "comment", "comments", "review", "reviews",
+		"webpage", "scrape", "browse",
+		"chat", "chats", "message", "messages", "messaging", "dm", "dms",
+		"email", "emails", "inbox", "ticket", "tickets", "feedback",
+		"public", "external", "rss", "feed", "feeds",
+	},
+	SensitivitySensitiveSource: {
+		"secret", "secrets", "credential", "credentials",
+		"token", "tokens", "password", "passwords",
+		"private", "ssh", "vault",
+		"env", "environ", "getenv",
+		"profile", "billing", "payroll", "salary", "wage",
+		"phi", "pii", "patient", "ssn",
+	},
+	SensitivityExternalSink: {
+		"send", "post", "publish", "upload", "share",
+		"webhook", "notify", "alert", "tweet",
+		"broadcast", "announce",
+	},
+}
+
+// sensitivitySubstrings supplements segment matching with multi-segment
+// shapes that don't reduce to a single keyword. Each entry is checked
+// against the FULL lowercased tool name via strings.Contains, so
+// "create_pull_request" hits "pull_request" and "create_issue" hits
+// "create_issue". Keep this list tight: ambiguous matches go in
+// sensitivityKeywords instead.
+var sensitivitySubstrings = map[string][]string{
+	SensitivityUntrustedSource: {
+		"pull_request_review", "issue_comment", "pr_comment",
+	},
+	SensitivitySensitiveSource: {
+		"private_repo", "private_repos", "private_repository",
+		"ssh_key", "ssh_id_rsa", "api_key",
+		"chat_history", "message_history", "conversation_history",
+	},
+	SensitivityExternalSink: {
+		"pull_request", "create_pull", "create_issue", "create_comment",
+		"post_webhook", "send_webhook", "share_link", "public_url",
+	},
+}
+
+// sensitivityPriority defines tie-breaking when a tool name matches multiple
+// labels. external_sink > sensitive_source > untrusted_source > neutral.
+// Sinks rank highest because that's the action that completes the trifecta;
+// sensitive_source ranks above untrusted_source because true positives in
+// the sensitive class are higher-stakes than untrusted-input false positives.
+var sensitivityPriority = []string{
+	SensitivityExternalSink,
+	SensitivitySensitiveSource,
+	SensitivityUntrustedSource,
+}
+
+// ClassifySensitivity returns the sensitivity label for a tool name +
+// optional argument hint. Nil cfg uses keyword-only classification.
+//
+// Resolution order:
+//  1. Config override exact match (highest priority)
+//  2. Config override glob match
+//  3. Built-in keyword match against tool-name segments using sensitivityPriority
+//  4. Built-in substring match against full lowercased tool name (handles
+//     multi-segment shapes like "create_pull_request")
+//  5. Fallback: neutral
+//
+// argHint is reserved for future arg-based refinement (e.g., a generic
+// "http_request" tool becomes external_sink when args include POST verb).
+// Currently unused but accepted to keep the API stable.
+func ClassifySensitivity(toolName, argHint string, cfg *config.ToolChainDetection) string {
+	_ = argHint
+	if toolName == "" {
+		return SensitivityNeutral
+	}
+	if cfg == nil {
+		cfg = &config.ToolChainDetection{}
+	}
+
+	if lbl := classifySensitivityByOverride(toolName, cfg.SensitivityLabels); lbl != "" {
+		return lbl
+	}
+
+	segments := splitToolName(toolName)
+	if lbl := matchSensitivityByPriority(segments); lbl != SensitivityNeutral {
+		return lbl
+	}
+
+	// Substring pass for multi-segment shapes.
+	lower := strings.ToLower(toolName)
+	for _, label := range sensitivityPriority {
+		for _, needle := range sensitivitySubstrings[label] {
+			if strings.Contains(lower, needle) {
+				return label
+			}
+		}
+	}
+
+	return SensitivityNeutral
+}
+
+// classifySensitivityByOverride checks config-defined sensitivity overrides.
+// Mirrors classifyByOverride for the category axis: exact match first,
+// then glob patterns. Uses sensitivityPriority for deterministic tie-break
+// when the same tool appears under multiple labels.
+func classifySensitivityByOverride(toolName string, labels map[string][]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+
+	// Exact match across labels in priority order.
+	for _, label := range sensitivityPriority {
+		for _, pat := range labels[label] {
+			if pat == toolName {
+				return label
+			}
+		}
+	}
+
+	// Glob match across labels in priority order.
+	for _, label := range sensitivityPriority {
+		for _, pat := range labels[label] {
+			if matched, _ := filepath.Match(pat, toolName); matched {
+				return label
+			}
+		}
+	}
+
+	return ""
+}
+
+// matchSensitivityByPriority walks segments against the sensitivity keyword
+// table using priority order. Returns the highest-priority label that matches,
+// or "neutral".
+func matchSensitivityByPriority(segments []string) string {
+	for _, label := range sensitivityPriority {
+		keywords := sensitivityKeywords[label]
+		for _, seg := range segments {
+			lower := strings.ToLower(seg)
+			for _, kw := range keywords {
+				if lower == kw {
+					return label
+				}
+			}
+		}
+	}
+	return SensitivityNeutral
+}

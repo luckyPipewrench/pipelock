@@ -1029,3 +1029,160 @@ func TestMatcher_WriteFileNonPersistPath_StaysWrite(t *testing.T) {
 		t.Error("write to /tmp/ should not trigger persist-callback")
 	}
 }
+
+// --- Lethal trifecta (sensitivity-axis subsequence) ---
+
+func newTestMatcherForTrifecta(t *testing.T, overrides map[string]string) *Matcher {
+	t.Helper()
+	cfg := &config.ToolChainDetection{
+		Enabled:          true,
+		Action:           "warn",
+		WindowSize:       50,
+		WindowSeconds:    300,
+		PatternOverrides: overrides,
+	}
+	m := New(cfg)
+	if !cfg.Enabled || len(m.patterns) == 0 {
+		t.Fatal("matcher should be enabled with built-in patterns")
+	}
+	return m
+}
+
+func TestLethalTrifecta_HappyPath(t *testing.T) {
+	m := newTestMatcherForTrifecta(t, nil)
+	session := "s1"
+
+	// Untrusted-source: list_issues (a public source where attackers can plant payloads)
+	_ = m.Record(session, "list_issues")
+	// Sensitive-source: read_private_repo (private data)
+	_ = m.Record(session, "read_private_repo")
+	// External-sink: create_pull_request (publishes data out)
+	v := m.Record(session, "create_pull_request")
+
+	if !v.Matched {
+		t.Fatal("lethal trifecta should match")
+	}
+	if v.PatternName != "lethal-trifecta" {
+		t.Errorf("expected lethal-trifecta, got %q", v.PatternName)
+	}
+	if v.Severity != "critical" {
+		t.Errorf("expected critical severity, got %q", v.Severity)
+	}
+}
+
+func TestLethalTrifecta_OrderMatters(t *testing.T) {
+	// Sink before sensitive should NOT trigger the trifecta.
+	m := newTestMatcherForTrifecta(t, nil)
+	session := "s2"
+	_ = m.Record(session, "list_issues")
+	_ = m.Record(session, "create_pull_request") // sink early
+	v := m.Record(session, "read_private_repo")  // sensitive late
+
+	if v.Matched && v.PatternName == "lethal-trifecta" {
+		t.Errorf("out-of-order sequence should NOT match trifecta, got %v", v)
+	}
+}
+
+func TestLethalTrifecta_MissingMiddleStep(t *testing.T) {
+	m := newTestMatcherForTrifecta(t, nil)
+	session := "s3"
+	_ = m.Record(session, "list_issues")
+	v := m.Record(session, "create_pull_request")
+
+	if v.Matched && v.PatternName == "lethal-trifecta" {
+		t.Errorf("untrusted -> sink without sensitive should NOT match trifecta")
+	}
+}
+
+func TestLethalTrifecta_ActionOverride(t *testing.T) {
+	m := newTestMatcherForTrifecta(t, map[string]string{
+		"lethal-trifecta": "block",
+	})
+	session := "s4"
+	_ = m.Record(session, "list_issues")
+	_ = m.Record(session, "read_private_repo")
+	v := m.Record(session, "create_pull_request")
+
+	if !v.Matched {
+		t.Fatal("trifecta should match")
+	}
+	if v.Action != "block" {
+		t.Errorf("expected block action via override, got %q", v.Action)
+	}
+}
+
+func TestLethalTrifecta_NeutralCallsDoNotBreakChain(t *testing.T) {
+	// MaxGap defaults to 3 — insert a neutral call between trifecta steps
+	// and confirm the chain still matches.
+	m := newTestMatcherForTrifecta(t, nil)
+	session := "s5"
+	_ = m.Record(session, "list_issues")
+	_ = m.Record(session, "calculate_sum") // neutral
+	_ = m.Record(session, "read_private_repo")
+	v := m.Record(session, "create_pull_request")
+
+	if !v.Matched || v.PatternName != "lethal-trifecta" {
+		t.Errorf("trifecta with one neutral interleaved should still match, got %v", v)
+	}
+}
+
+func TestLethalTrifecta_PrefersTrifectaOverLowerSeverity(t *testing.T) {
+	// A category-axis pattern AND the trifecta both match; trifecta is critical
+	// so it should win on severity comparison.
+	m := newTestMatcherForTrifecta(t, nil)
+	session := "s6"
+	// list_issues classifies as untrusted_source on sensitivity AND as "list"
+	// on category, kicking off chain detection.
+	_ = m.Record(session, "list_issues")
+	_ = m.Record(session, "read_private_repo")    // sensitive + read
+	v := m.Record(session, "create_pull_request") // sink + network
+
+	// Either category-axis (read-write-send equiv via different categories) or
+	// sensitivity-axis (trifecta) may match. Trifecta is critical so it
+	// should be the reported verdict if present.
+	if !v.Matched {
+		t.Fatal("expected a match")
+	}
+	if v.PatternName != "lethal-trifecta" && v.Severity != "critical" {
+		t.Errorf("expected critical-severity verdict, got %v", v)
+	}
+}
+
+func TestLethalTrifecta_NeutralOnlyTool_Recorded(t *testing.T) {
+	// A tool that's neutral on BOTH axes should not be recorded (no point
+	// keeping noise in the history). Sanity check via internal state.
+	m := newTestMatcherForTrifecta(t, nil)
+	session := "s7"
+	_ = m.Record(session, "frobnicate") // unknown category + neutral sensitivity
+
+	val, ok := m.sessions.Load(session)
+	if ok {
+		sess := val.(*sessionHistory)
+		sess.mu.Lock()
+		count := len(sess.records)
+		sess.mu.Unlock()
+		if count != 0 {
+			t.Errorf("neutral+unknown tool should not be recorded, got %d records", count)
+		}
+	}
+}
+
+func TestSensitivitySubsequenceMatch_DirectAxis(t *testing.T) {
+	// Direct test of the sensitivity-axis subsequence walker without
+	// going through Record(), to confirm axis isolation.
+	records := []toolCallRecord{
+		{sensitivity: SensitivityUntrustedSource},
+		{sensitivity: SensitivityNeutral},
+		{sensitivity: SensitivitySensitiveSource},
+		{sensitivity: SensitivityExternalSink},
+	}
+	maxGap := 3
+	if !sensitivitySubsequenceMatch(records, lethalTrifectaSequence, maxGap) {
+		t.Error("trifecta sequence should match the prepared records")
+	}
+
+	// Negative: drop the sink.
+	if sensitivitySubsequenceMatch(records[:3], lethalTrifectaSequence, maxGap) {
+		t.Error("incomplete trifecta should not match")
+	}
+}

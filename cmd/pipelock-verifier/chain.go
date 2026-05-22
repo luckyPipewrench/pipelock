@@ -41,7 +41,7 @@ hold. Self-consistency does not prove provenance.
 
 With --key the verifier requires every receipt to be signed by the named
 key.`,
-		Args:          exactArgs(1),
+		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

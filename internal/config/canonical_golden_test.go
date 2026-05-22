@@ -95,7 +95,10 @@ const (
 	// Re-bumped for cross-lingual prompt-injection coverage: the default
 	// response-scanning corpus now includes mixed English/Spanish instruction
 	// override and system-prompt disclosure patterns.
-	goldenHashDefaults = "aa682bb532e53387fc7380b26324856531b8d41b58f8bc2c2d78eb2410bc0922"
+	// 2026-05-21: rotated for ToolChainDetection.SensitivityLabels (v2.6
+	// lethal-trifecta detection). Same justification as goldenHashRichConfig
+	// below — adds a policy-semantic field to the canonical hash surface.
+	goldenHashDefaults = "8dd85a3f9c0677deade039b9f23e18e4cb242c4feb656fae6896e5c0898ea536"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -134,7 +137,13 @@ const (
 	// goldenHashDefaults note above.
 	// Re-bumped for cross-lingual prompt-injection coverage: see
 	// goldenHashDefaults note above.
-	goldenHashRichConfig = "0e1384702d2b96dca932c1f7e304fabc3954d47f7bb7a5f2a2be6bbe25f566f4"
+	// 2026-05-21: rotated for ToolChainDetection.SensitivityLabels
+	// (v2.6 lethal-trifecta detection). The new field participates in
+	// policy semantics: operator-provided sensitivity overrides change
+	// which tools classify into untrusted_source / sensitive_source /
+	// external_sink, which changes which sequences emit the lethal-
+	// trifecta verdict.
+	goldenHashRichConfig = "508d4a0ab6fcce41d9c8286f0df68dec49eff2eba381b07ccb85052ebb09b5a2"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

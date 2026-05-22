@@ -771,6 +771,17 @@ type ToolChainDetection struct {
 	ToolCategories   map[string][]string `yaml:"tool_categories"`   // category -> tool name patterns
 	PatternOverrides map[string]string   `yaml:"pattern_overrides"` // pattern name -> action override
 	CustomPatterns   []ChainPattern      `yaml:"custom_patterns"`
+
+	// SensitivityLabels overrides keyword-based sensitivity classification.
+	// Keys are label names ("untrusted_source", "sensitive_source",
+	// "external_sink"); values are exact tool name patterns or globs.
+	// When set, overrides win over keyword fallback. Empty map = keyword-only.
+	//
+	// Lethal-trifecta detection (untrusted_source -> sensitive_source ->
+	// external_sink in sequence within the chain window) emits a critical
+	// verdict named "lethal-trifecta". Change its action by adding
+	// "lethal-trifecta" to PatternOverrides.
+	SensitivityLabels map[string][]string `yaml:"sensitivity_labels"`
 }
 
 // ChainPattern defines a tool call chain to detect.

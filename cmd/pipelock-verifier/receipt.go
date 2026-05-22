@@ -33,7 +33,7 @@ written as JSON. PATH must point at a JSON file holding one receipt
 
 Without --key the verifier checks the receipt's embedded signer_key.
 With --key it requires the receipt's signer to match the named key.`,
-		Args:          exactArgs(1),
+		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

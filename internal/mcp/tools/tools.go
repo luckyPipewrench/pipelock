@@ -473,6 +473,40 @@ var exfilParamPattern = regexp.MustCompile(
 		`credentials?|passwd|env.(?:secret|key|file|var)|aws.secret|access.token|auth.token)\b`,
 )
 
+// contextLeakParamPattern detects parameter names that direct the agent to
+// populate them with internal model context — system prompt, conversation
+// history, tool-call history, chain of thought, model identity, available
+// tools. The HiddenLayer "Exploiting MCP Tool Parameters" attack
+// (https://hiddenlayer.com/innovation-hub/exploiting-mcp-tool-parameters/)
+// demonstrated that agents will fill such parameters even when the tool
+// code never reads them — the name alone is enough of a cue.
+//
+// Operates on the same expanded form as exfilParamPattern: underscores and
+// camelCase boundaries are spaces, case is normalized lowercase. Patterns
+// match the HiddenLayer-published shapes plus immediate semantic siblings
+// (assistant_response, user_messages, etc.) that carry equivalent risk.
+//
+// Operators can suppress for known-good tools via mcp_tool_scanning config.
+var contextLeakParamPattern = regexp.MustCompile(
+	`(?i)\b(` +
+		`system\s+prompt|` +
+		`conversation\s+(history|context|log|transcript|messages?)|` +
+		`chat\s+(history|context|log|transcript|messages?)|` +
+		`tool\s+call\s+(history|log|trace|sequence|results?)|` +
+		`chain\s+of\s+thought|` +
+		`inner\s+monologue|` +
+		`reasoning\s+(trace|steps|chain|history)|` +
+		`model\s+(name|id|identifier|version)|` +
+		`assistant\s+(messages?|response|history|context)|` +
+		`user\s+(messages?|prompt|history)|` +
+		`tools\s+list|` +
+		`available\s+tools|` +
+		`prompt\s+(template|history|context|chain)|` +
+		`session\s+(context|history|state|memory)|` +
+		`agent\s+(state|memory|context|scratchpad)` +
+		`)\b`,
+)
+
 // hashTool computes a SHA256 hash of a tool's description and inputSchema.
 func hashTool(t ToolDef) string {
 	h := sha256.New()
@@ -928,15 +962,25 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) []T
 				hasFinding = true
 			}
 
-			// Exfiltration param pattern: runs per-param to avoid false
-			// positives from action words in the description pairing with
-			// sensitive targets in unrelated parameters.
+			// Exfiltration + context-leak param patterns: run per-param to avoid
+			// false positives from action words in the description pairing with
+			// sensitive targets in unrelated parameters. Each param is checked
+			// against both patterns; the first match per pattern is reported.
+			var exfilHit, contextHit bool
 			for _, name := range paramNames {
+				if exfilHit && contextHit {
+					break
+				}
 				expanded := normalize.ForToolText(expandParamName(name))
-				if exfilParamPattern.MatchString(expanded) {
+				if !exfilHit && exfilParamPattern.MatchString(expanded) {
 					match.ToolPoison = append(match.ToolPoison, "Exfiltration Parameter Name")
 					hasFinding = true
-					break
+					exfilHit = true
+				}
+				if !contextHit && contextLeakParamPattern.MatchString(expanded) {
+					match.ToolPoison = append(match.ToolPoison, "Context-Leak Parameter Name")
+					hasFinding = true
+					contextHit = true
 				}
 			}
 

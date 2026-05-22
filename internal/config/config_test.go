@@ -6234,6 +6234,68 @@ func TestValidate_ChainDetectionInvalidPatternOverride(t *testing.T) {
 	}
 }
 
+func TestValidate_ChainDetectionSensitivityLabels(t *testing.T) {
+	tests := []struct {
+		name    string
+		labels  map[string][]string
+		wantErr string
+	}{
+		{
+			name: "valid labels",
+			labels: map[string][]string{
+				"untrusted_source": {"github__list_issues"},
+				"sensitive_source": {"vault_*"},
+				"external_sink":    {"slack__send_message"},
+			},
+		},
+		{
+			name: "invalid label",
+			labels: map[string][]string{
+				"sensitve_source": {"vault_read"},
+			},
+			wantErr: "invalid label",
+		},
+		{
+			name: "empty pattern",
+			labels: map[string][]string{
+				"external_sink": {""},
+			},
+			wantErr: "is empty",
+		},
+		{
+			name: "invalid glob",
+			labels: map[string][]string{
+				"external_sink": {"notify["},
+			},
+			wantErr: "invalid glob pattern",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.ApplyDefaults()
+			cfg.ToolChainDetection.Enabled = true
+			cfg.ToolChainDetection.Action = ActionWarn
+			cfg.ToolChainDetection.WindowSize = 20
+			cfg.ToolChainDetection.WindowSeconds = 300
+			cfg.ToolChainDetection.SensitivityLabels = tt.labels
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected valid sensitivity labels, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestValidate_ChainDetectionDisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()

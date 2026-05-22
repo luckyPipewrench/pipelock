@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -426,6 +427,121 @@ func TestLoadCA_RejectsMismatchedKey(t *testing.T) {
 	_, _, err = LoadCA(certPath, keyPath)
 	if err == nil {
 		t.Error("expected error for mismatched key")
+	}
+}
+
+// TestLoadCA_AcceptsPKCS8EncodedECKey guards the Sentry regression where
+// LoadCA failed on EC keys serialized via PKCS8 ("PRIVATE KEY" PEM header).
+// Pipelock's own `tls init` writes SEC1, but operator-supplied CA keys can
+// arrive in either shape.
+func TestLoadCA_AcceptsPKCS8EncodedECKey(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+
+	ca, caKey, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// PKCS8-wrap the EC private key, a common external-tooling shape.
+	pkcs8DER, err := x509.MarshalPKCS8PrivateKey(caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8DER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	gotCert, gotKey, err := LoadCA(certPath, keyPath)
+	if err != nil {
+		t.Fatalf("LoadCA: %v", err)
+	}
+	if gotCert == nil || gotKey == nil {
+		t.Fatal("LoadCA returned nil cert or key")
+	}
+	if !gotCert.Equal(ca) {
+		t.Error("loaded cert does not equal generated CA cert")
+	}
+	if !gotKey.Equal(caKey) {
+		t.Error("loaded key does not equal generated CA key")
+	}
+}
+
+// TestLoadCA_RejectsRSAKeyInPKCS8 confirms the ECDSA-only contract is
+// enforced when the PKCS8 wrapping carries a non-EC key.
+func TestLoadCA_RejectsRSAKeyInPKCS8(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+
+	ca, _, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs8DER, err := x509.MarshalPKCS8PrivateKey(rsaKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pkcs8DER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Fatal("expected error for RSA key in PKCS8 wrapping, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be ECDSA") {
+		t.Errorf("error = %q, want it to mention ECDSA requirement", err.Error())
+	}
+}
+
+// TestLoadCA_RejectsUnsupportedPEMHeader rejects PEM blocks whose Type we do
+// not recognise (e.g., a raw `RSA PRIVATE KEY` PKCS1 header) with a clear
+// error that names the supported headers.
+func TestLoadCA_RejectsUnsupportedPEMHeader(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.pem")
+	keyPath := filepath.Join(dir, "ca-key.pem")
+
+	ca, _, _, err := GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw})
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = LoadCA(certPath, keyPath)
+	if err == nil {
+		t.Fatal("expected error for unsupported PEM header, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported PEM block type") {
+		t.Errorf("error = %q, want it to name the unsupported PEM block type", err.Error())
 	}
 }
 

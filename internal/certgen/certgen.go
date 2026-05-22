@@ -183,7 +183,7 @@ func LoadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, err
 	if keyBlock == nil {
 		return nil, nil, errors.New("no PEM block in CA key file")
 	}
-	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	key, err := parseECPrivateKeyBlock(keyBlock)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse CA key: %w", err)
 	}
@@ -203,6 +203,30 @@ func LoadCA(certPath, keyPath string) (*x509.Certificate, *ecdsa.PrivateKey, err
 	}
 
 	return cert, key, nil
+}
+
+// parseECPrivateKeyBlock decodes a CA key PEM block. Pipelock writes SEC1
+// (`EC PRIVATE KEY`) via MarshalECPrivateKey, but externally generated CA
+// keys may arrive as PKCS8 (`PRIVATE KEY`) from tools such as openssl genpkey
+// or cert-manager. Both must load. RSA / Ed25519 inside PKCS8 are rejected
+// explicitly because the CA contract is ECDSA-only.
+func parseECPrivateKeyBlock(block *pem.Block) (*ecdsa.PrivateKey, error) {
+	switch block.Type {
+	case "EC PRIVATE KEY":
+		return x509.ParseECPrivateKey(block.Bytes)
+	case "PRIVATE KEY":
+		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		key, ok := parsed.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("CA key must be ECDSA, got %T", parsed)
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block type %q (expected %q or %q)", block.Type, "EC PRIVATE KEY", "PRIVATE KEY")
+	}
 }
 
 // InstallCA prints platform-specific instructions for installing the CA cert.

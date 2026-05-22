@@ -60,6 +60,10 @@ func tokenClasses() []classPattern {
 		{class: ClassGitHubToken, pattern: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},
 		{class: ClassGitLabToken, pattern: regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
+		{class: ClassVercelToken, pattern: regexp.MustCompile(`\b(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
+		// Databricks PATs use a 32-char hex suffix; requiring at least 32 hex
+		// chars rejects 30-character matches seen in random base64 payloads.
+		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)\bdapi[0-9a-f]{32,}\b`), priority: 100},
 		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{10,}\b`), priority: 100},
 		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{10,}\b`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},

@@ -37,6 +37,8 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"github-new", "token github_pat_" + strings.Repeat("B", 40), ClassGitHubToken},
 		{"gitlab-token", "token glpat-" + strings.Repeat("C", 24), ClassGitLabToken},
 		{"slack-bot", "use " + "xox" + "b-12345-67890-abcdefghijklmnopqrstuvwx", ClassSlackToken},
+		{"vercel-token", "deploy token vcp_" + strings.Repeat("A", 24), ClassVercelToken},
+		{"databricks-pat", "use dapi" + strings.Repeat("a", 32), ClassDatabricksPAT},
 		{"openai-api-key", "use sk-proj-" + strings.Repeat("D", 24), ClassOpenAIAPIKey},
 		{"anthropic-api-key", "use sk-ant-" + strings.Repeat("E", 24), ClassAnthropicKey},
 		{"telegram-token", "bot 1234567890:" + strings.Repeat("F", 35), ClassTelegramToken},

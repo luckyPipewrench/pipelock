@@ -21,6 +21,14 @@ const (
 	// unknown JSON providers fail-closed-and-redacted instead of depending on a
 	// known-provider allowlist.
 	ProviderGenericJSON = "generic-json"
+
+	// ParserRawText is used for operator-allowlisted non-JSON request bodies.
+	// It rewrites matcher spans in the raw text instead of forwarding the body
+	// unchanged.
+	ParserRawText = "raw-text"
+
+	// ProviderGenericRawText labels raw-text fallback redaction receipts.
+	ProviderGenericRawText = "generic-raw-text"
 )
 
 // RequestMetadata identifies the upstream request enough to select a provider

@@ -3,6 +3,8 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +17,20 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+// generateWSKey returns a base64-encoded random 16-byte value suitable for
+// the Sec-WebSocket-Key header. Built at runtime rather than hardcoded so
+// the value does not trip secret scanners on the repo (gosec G101) and to
+// match the same pattern the agent-egress-bench runner adapter uses for
+// its manual upgrade requests.
+func generateWSKey(t *testing.T) string {
+	t.Helper()
+	keyBytes := make([]byte, 16)
+	if _, err := rand.Read(keyBytes); err != nil {
+		t.Fatalf("generate websocket key: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(keyBytes)
+}
 
 // TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname mirrors the
 // agent-egress-bench scenario where a local WebSocket fixture lives on
@@ -76,8 +92,8 @@ func TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname(t *testing.T) 
 	// read cannot fragment the status line or headers, and so any bytes
 	// pipelock buffers ahead of the WS frames stay accessible.
 	upgrade := fmt.Sprintf(
-		"%s /ws?url=%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-		http.MethodGet, "ws://"+hostPort+"/echo", proxyAddr,
+		"%s /ws?url=%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		http.MethodGet, "ws://"+hostPort+"/echo", proxyAddr, generateWSKey(t),
 	)
 	if _, writeErr := tcpConn.Write([]byte(upgrade)); writeErr != nil {
 		t.Fatalf("write upgrade: %v", writeErr)
@@ -159,8 +175,8 @@ func TestProxy_DNSHostOverrides_RawIPLiteralStillBlocked(t *testing.T) {
 	// trusted_domains rejects IP literals, override map is hostname-only,
 	// RFC1918/loopback check still fires so the upgrade is denied.
 	upgrade := fmt.Sprintf(
-		"%s /ws?url=ws://%s/admin HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-		http.MethodGet, net.JoinHostPort(backendHost, backendPort), proxyAddr,
+		"%s /ws?url=ws://%s/admin HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		http.MethodGet, net.JoinHostPort(backendHost, backendPort), proxyAddr, generateWSKey(t),
 	)
 	if _, writeErr := tcpConn.Write([]byte(upgrade)); writeErr != nil {
 		t.Fatalf("write upgrade: %v", writeErr)

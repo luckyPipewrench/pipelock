@@ -4,7 +4,7 @@
 > predicate catalog. Pipelock owns the namespace at `https://pipelab.org/attestation/`.
 > **Predicate type URL:** `https://pipelab.org/attestation/agent-action-receipt/v0.1`
 > **Versioning:** SemVer. The TypeURI carries the major version only; 0.X is itself a
-> major version per the in-toto new-predicate guidelines.
+> major version per Pipelock's versioning convention.
 > **Schema:** [`schemas/in-toto-agent-action-receipt-v0.1.schema.json`](../../schemas/in-toto-agent-action-receipt-v0.1.schema.json)
 > **Companion docs:**
 > - [Pipelock Action Receipt implementation spec](https://pipelab.org/learn/action-receipt-spec/)
@@ -56,6 +56,11 @@ evidence" — which `runtime-trace` does not model and SLSA Provenance does not 
 
 ## Statement layout
 
+Throughout this document, "Statement" refers to the **in-toto Statement v1**
+JSON object. The SCITT-WG specification also defines a "Signed Statement"
+artifact; that artifact is a different wire format (COSE_Sign1, not DSSE) and
+is covered in the [companion SCITT profile](./scitt-agent-action-statement-v0.1.md).
+
 An `agent-action-receipt` Statement follows in-toto Statement v1:
 
 ```json
@@ -101,7 +106,7 @@ Timestamps are RFC 3339 with `Z` suffix.
 | `target` | string | yes | The host:port, URL, MCP tool name, or other target identifier the action acted on. Free-form by transport. |
 | `transport` | string | yes | One of: `fetch`, `forward`, `intercept`, `websocket`, `mcp_stdio`, `mcp_http`, `mcp_http_upstream`, `mcp_http_listener`, `mcp_ws`. |
 | `verdict` | enum | yes | One of: `allow`, `block`, `warn`, `ask`, `strip`, `forward`, `redirect`. |
-| `verdictReason` | string | conditional | Required when `verdict != allow`. Canonical block-reason code from Pipelock's shipped vocabulary (e.g., `dlp_match`, `prompt_injection`, `ssrf_private_ip`, `tool_policy_deny`, `tool_chain_blocked`, `tool_poisoning`, `airlock_active`, `kill_switch_active`, `contract_default_deny`, `contract_rule_deny`). The full enumeration is defined in `internal/blockreason/blockreason.go` and mirrored in the [block-reason-header spec](./block-reason-header.md). The v1 ActionReceipt envelope does not carry this field directly; a v0.1 producer sources it from the same structured rejection code Pipelock emits in the `X-Pipelock-Block-Reason` HTTP header (and in JSON-RPC error metadata for MCP-internal blocks). For `verdict = allow`, the field MUST be omitted. |
+| `verdictReason` | string | conditional | Required when `verdict` is `block`, `warn`, `ask`, or `redirect`. MUST be omitted for `allow` and `forward` (both are pass-through verdicts). Optional for `strip`. Value is a canonical block-reason code from Pipelock's shipped vocabulary (e.g., `dlp_match`, `prompt_injection`, `ssrf_private_ip`, `tool_policy_deny`, `tool_chain_blocked`, `tool_poisoning`, `airlock_active`, `kill_switch_active`, `contract_default_deny`, `contract_enforce_default`). The full enumeration is defined in `internal/blockreason/blockreason.go` and mirrored in the [block-reason-header spec](./block-reason-header.md). The v1 ActionReceipt envelope does not carry this field directly; a v0.1 producer sources it from the same structured rejection code Pipelock emits in the `X-Pipelock-Block-Reason` HTTP header (and in JSON-RPC error metadata for MCP-internal blocks). |
 | `principal` | string | yes | Identity of the human or system authorizing the action (e.g., `spiffe://example.org/user/alice`, `oauth:user@example.com`, `local:operator`). |
 | `actor` | string | yes | Identity of the agent / workload that initiated the action. SPIFFE IDs preferred per Pipelock 2.4+ federation. |
 | `mediator` | object | yes | The Pipelock instance that decided the verdict. See "Mediator object" below. |
@@ -131,12 +136,15 @@ Timestamps are RFC 3339 with `Z` suffix.
 }
 ```
 
+`mediator.id`, `mediator.version`, and `mediator.signingKey` are REQUIRED;
+`mediator.buildCommit` is OPTIONAL but RECOMMENDED for reproducibility.
 `mediator.id` SHOULD be stable across reloads and unique per deployment. A v0.1
-producer derives it from the producer's persistent identity material; this profile
-does not specify the derivation. The `signingKey.publicKeyHex` MUST match the
-`signer_key` on the underlying ActionReceipt v1 (which Pipelock sources from
-`flight_recorder.signing_key_path` per `internal/config/schema.go`) so a relying
-party can pin one key across both envelope formats.
+producer derives it from the producer's persistent identity material; this
+profile does not specify the derivation. The `signingKey.publicKeyHex` MUST
+match the `signer_key` on the underlying ActionReceipt v1 (which Pipelock
+sources from `flight_recorder.signing_key_path` per
+`internal/config/schema.go`) so a relying party can pin one key across both
+envelope formats.
 
 ### Findings
 
@@ -162,10 +170,12 @@ with:
 
 - `payloadType`: `application/vnd.in-toto+json`
 - `payload`: base64-encoded JSON of the in-toto Statement
-- `signatures`: array of one or more DSSE signature blocks; the keyid SHOULD be the
-  raw hex public key (64 chars) so it pins to the same key on Pipelock's other
-  envelope formats. Multi-signature is supported but v0.1 producers emit a single
-  signature from `mediator.signingKey`.
+- `signatures`: array of one or more DSSE signature blocks. DSSE v1.0 defines
+  `signature.keyid` as OPTIONAL with no required shape; this profile pins
+  `keyid` to the raw hex public key (64 chars) so it cross-references the same
+  key on Pipelock's other envelope formats. The keyid shape is a profile choice,
+  not a DSSE-defined requirement. Multi-signature is supported but v0.1
+  producers emit a single signature from `mediator.signingKey`.
 
 The signing algorithm is **Ed25519 over the DSSE pre-authentication encoding**
 (`PAE("DSSEv1", payloadType, payload)`), per the DSSE v1.0 spec — NOT over a SHA-256
@@ -188,11 +198,12 @@ is self-contained.
 5. Apply the consumer's own policy on `verdict`, `actionType`, `target`, `principal`,
    `actor`, `mediator.id`, `mediator.signingKey.publicKeyHex`.
 
-Consumers MUST treat unknown predicate fields as informational and MUST ignore them,
-per the in-toto monotonic principle: "ignoring an attestation, or a field within an
-attestation, will never turn a DENY decision into an ALLOW." In practice this means
-a `verdict: block` MUST always be respected, regardless of whether the consumer
-recognizes every layer in `findings`.
+Consumers MUST treat unknown predicate fields as informational and MUST ignore
+them. This mirrors the in-toto attestation framework's monotonic principle
+(paraphrased: ignoring an attestation or a field within one must not flip a deny
+to an allow). In practice this means a `verdict: block` MUST always be
+respected, regardless of whether the consumer recognizes every layer in
+`findings`.
 
 ## Worked example
 
@@ -226,7 +237,7 @@ API key:
       "buildCommit": "dcd25d8",
       "signingKey": {
         "algorithm": "ed25519",
-        "publicKeyHex": "70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e"
+        "publicKeyHex": "0000000000000000000000000000000000000000000000000000000000000000"
       }
     },
     "decidedAt": "2026-05-22T19:43:21.118Z",
@@ -259,7 +270,7 @@ Wrapped in DSSE:
   "payload": "<base64 of the Statement above>",
   "signatures": [
     {
-      "keyid": "70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e",
+      "keyid": "0000000000000000000000000000000000000000000000000000000000000000",
       "sig": "<base64 Ed25519 signature over PAE>"
     }
   ]

@@ -206,12 +206,23 @@
     {
       "if": {
         "properties": {
-          "verdict": { "not": { "const": "allow" } }
+          "verdict": { "enum": ["block", "warn", "ask", "redirect"] }
         },
         "required": ["verdict"]
       },
       "then": {
         "required": ["verdictReason"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": { "enum": ["allow", "forward"] }
+        },
+        "required": ["verdict"]
+      },
+      "then": {
+        "not": { "required": ["verdictReason"] }
       }
     }
   ]

@@ -81,10 +81,14 @@ object with the following header parameters.
 
 | Label | Name | Value | Description |
 |---|---|---|---|
-| 1 | `alg` | -8 | EdDSA per RFC 9053. Ed25519 only in v0.1. |
+| 1 | `alg` | -8 | EdDSA per RFC 9053. The EdDSA algorithm identifier covers Ed25519 and Ed448; this profile pins the curve to Ed25519 out-of-band via the `kid` binding (the relying party's trust list records the 32-byte Ed25519 public key). A future revision MAY add an explicit curve-binding header. |
 | 3 | `content-type` | `application/vnd.pipelock.action-record+json` | Distinguishes Pipelock action-record payloads from other AI-agent statement formats on the same TS. |
 | 4 | `kid` | raw 32-byte Ed25519 public key | Same bytes as the Pipelock ActionReceipt v1 `signer_key` hex-decoded. SCITT architecture-22 places `kid` in the protected header when `x5t`/`x5chain` are not present; this profile relies on `kid` for key identification. Pinning the same `kid` across the v1 ActionReceipt and the SCITT Statement lets a relying party verify both wire formats with one trust anchor. |
-| 15 | `CWT_Claims` | CWT claims map | Carries `iss` (CWT claim 1), `sub` (CWT claim 2), and `iat` (CWT claim 6). Label 15 is the IANA-registered COSE header parameter for `CWT_Claims` per RFC 9597; SCITT architecture-22 reuses it to bind issuer + subject identity to the Signed Statement. |
+| 15 | `CWT_Claims` | CWT claims map | Carries `iss` (CWT claim 1), `sub` (CWT claim 2), and `iat` (CWT claim 6). Label 15 is the IANA-registered COSE header parameter for `CWT_Claims` per RFC 9597; SCITT architecture-22 reuses it to bind issuer + subject identity to the Signed Statement. **Producers MUST place `CWT_Claims` only in the protected header.** RFC 9597 forbids the parameter from appearing more than once across the protected and unprotected headers of a single COSE structure. |
+
+The protected header defined above satisfies the conformance requirements of
+draft-ietf-scitt-architecture-22 §4.2 for Signed Statements (protected `kid`
+plus `CWT_Claims` carrying `iss` and `sub`).
 
 **Unprotected header:**
 
@@ -102,10 +106,19 @@ and then signs with Ed25519 on the v1 path (per `internal/receipt/receipt.go`:
 COSE_Sign1 signature is taken over the COSE Sig_structure per RFC 9052 §4.4,
 which composes its own digest internally; the SCITT signature and the v1
 signature are over different sig-structures even though both sign the same
-payload bytes. Canonicalization of the payload is the Pipelock v1 rule
-(Go struct-declaration order over the `ActionRecord` struct in
-`internal/receipt/action.go`) so the Statement payload is byte-identical to
-what Pipelock's own verifiers check.
+payload bytes.
+
+**Canonicalization is mandatory and non-obvious.** The v1 ActionReceipt
+canonicalizes by serializing the `ActionRecord` struct in **Go
+struct-declaration order** (per `internal/receipt/action.go`), not RFC 8785
+JCS. Producers MUST produce the same byte stream Pipelock's `pipelock-verifier`
+and the cross-language SDK verifiers (`sdk/verifiers/ts`, `sdk/verifiers/rust`,
+`pipelock-verify-python`) accept; arbitrary alphabetic-key-order JSON
+serializers will produce different bytes and the COSE_Sign1 signature will not
+verify. Cross-language producers that emit SCITT Statements without using
+Pipelock's own emitter MUST mirror the struct-declaration order documented in
+the implementation spec. The EvidenceReceipt v2 path uses RFC 8785 JCS — a
+v0.2 SCITT profile may switch the payload to v2 bytes to remove this gotcha.
 
 A future v0.2 may switch the payload to the EvidenceReceipt v2 typed-payload bytes,
 which canonicalize via RFC 8785 JCS. v0.1 stays on v1 canonicalization to keep the
@@ -166,7 +179,7 @@ submit Statements out of band; first-party SCRAPI submission is a v0.2 candidate
 
 | Draft | Author | Layer | This profile's relationship |
 |---|---|---|---|
-| [`draft-emirdag-scitt-ai-agent-execution`](https://datatracker.ietf.org/doc/draft-emirdag-scitt-ai-agent-execution/) | Pinar Emirdag (VERIDIC) | Post-execution business-process audit (Agent Interaction Record) | **Complementary.** AIR is a business-process record of an agent interaction (request, response, evidence). This profile is a **per-network-action mediator verdict** — finer granularity, different issuer (the mediator, not the agent operator). A single AIR could reference multiple agent-action Statements; an agent-action Statement is a primitive that AIR can compose. |
+| [`draft-emirdag-scitt-ai-agent-execution`](https://datatracker.ietf.org/doc/draft-emirdag-scitt-ai-agent-execution/) | Pinar Emirdag (VERIDIC) | Post-execution business-process audit (Agent Interaction Record) | **Parallel — different granularity, same submission path.** Both define COSE_Sign1 SCITT Statements for AI-agent evidence and target the same SCITT TS submission path. AIR is a business-process record of an agent interaction (request, response, evidence); this profile is a per-network-action mediator verdict with a different issuer (the mediator, not the agent operator). A single AIR could reference multiple agent-action Statements as evidence. Neither profile is WG-adopted; consolidation under a future charter is explicitly welcome and this profile is offered as an input to that conversation, not as a competing claim on the same slot. |
 | [`draft-nelson-agent-delegation-receipts`](https://datatracker.ietf.org/doc/draft-nelson-agent-delegation-receipts/) | Ryan Nelson (Authproof) | Pre-execution authorization (Delegation Receipt Protocol) | **Complementary.** DRP attests authorization before an agent acts. This profile attests what the mediator did when the agent acted. Three layers (pre-auth, action, post-execution) of the same evidence story. |
 | [`draft-kamimura-scitt-refusal-events`](https://datatracker.ietf.org/doc/draft-kamimura-scitt-refusal-events/) | (Kamimura) | TS-side refusal evidence | Orthogonal. The agent-action Statement is the Issuer-side artifact; refusal events are TS-side. |
 | [`draft-munoz-scitt-permit-profile`](https://datatracker.ietf.org/doc/draft-munoz-scitt-permit-profile/) | (Munoz) | Permit-style profile | Adjacent. Not on the agent-action surface. |
@@ -226,7 +239,7 @@ structural reference, not a wire-byte target.
     << {
       1: -8,                                       / alg = EdDSA /
       3: "application/vnd.pipelock.action-record+json",
-      4: h'70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e', / kid /
+      4: h'0000000000000000000000000000000000000000000000000000000000000000', / kid - synthetic example, not a real signing key /
       15: {                                        / CWT_Claims (RFC 9597) /
         1: "https://pipelab.org/issuer/pipelock-7f3c2b1e",  / iss /
         2: "api.attacker.example/v1/upload",       / sub /
@@ -272,9 +285,10 @@ different questions about the same agent activity.
 ## Open questions
 
 - **`content-type` IANA registration.** `application/vnd.pipelock.action-record+json`
-  is a vendor-tree media type that does not require registration to be used.
-  Registration is a v0.2 consideration once the receipt format itself is more
-  publicly visible.
+  is a vendor-tree media type per RFC 6838 §3.2; vendor-tree types are
+  registered via IANA Expert Review. v0.1 ships as an experimental
+  pre-registration profile; the registration request is a v0.2 deliverable
+  once the receipt format itself is more publicly visible.
 - **CWT claims label allocation.** v0.1 uses the IANA-registered COSE header
   parameter for `CWT_Claims` (label 15, RFC 9597). The SCITT architecture's
   identity-binding convention is built on top of this registration; if a future
@@ -284,7 +298,7 @@ different questions about the same agent activity.
   organizational signer) is a v0.x consideration; the COSE_Sign envelope (NOT
   COSE_Sign1) covers that case if needed.
 - **Transparency-service onboarding.** No specific TS implementation is named in
-  v0.1. Conformance to SCRAPI is the goal; a Pipelock-operated TS is not.
+  v0.1. Conformance to SCRAPI is the goal.
 
 ## References
 

@@ -16,16 +16,21 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/spf13/cobra"
 )
 
 const (
-	licenseDefaultDir  = ".config/pipelock"
-	licensePrivKeyFile = "license.key"
-	licensePubKeyFile  = "license.pub"
-	licenseLedgerFile  = "licenses.jsonl"
+	licenseDefaultDir    = ".config/pipelock"
+	licensePrivKeyFile   = "license.key"
+	licensePubKeyFile    = "license.pub"
+	licenseLedgerFile    = "licenses.jsonl"
+	licenseStatusInvalid = "invalid"
+	licenseStatusMissing = "missing"
+	licenseStatusValid   = "valid"
 )
 
 // LicenseCmd returns the license command tree: keygen, issue, inspect, install.
@@ -39,6 +44,7 @@ func LicenseCmd() *cobra.Command {
 		licenseIssueCmd(),
 		licenseInspectCmd(),
 		licenseInstallCmd(),
+		licenseStatusCmd(),
 	)
 	return cmd
 }
@@ -252,6 +258,177 @@ func licenseInspectCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+type licenseStatusReport struct {
+	Status         string `json:"status"`
+	LicenseID      string `json:"license_id,omitempty"`
+	Tier           string `json:"tier,omitempty"`
+	SubscriptionID string `json:"subscription_id,omitempty"`
+	ExpiresAt      string `json:"expires_at,omitempty"`
+	DaysRemaining  int    `json:"days_remaining,omitempty"`
+	WarningBand    int    `json:"warning_band,omitempty"`
+	Severity       string `json:"severity,omitempty"`
+	CRLConfigured  bool   `json:"crl_configured"`
+	CRLExpiresAt   string `json:"crl_expires_at,omitempty"`
+	CRLSHA256      string `json:"crl_sha256,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+func licenseStatusCmd() *cobra.Command {
+	var (
+		configFile string
+		crlFile    string
+		jsonOutput bool
+	)
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Verify the configured license and show renewal status",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			report, err := buildLicenseStatusReport(configFile, crlFile)
+			if jsonOutput {
+				enc := json.NewEncoder(cmd.OutOrStdout())
+				enc.SetIndent("", "  ")
+				if encErr := enc.Encode(report); encErr != nil {
+					return fmt.Errorf("encode license status JSON: %w", encErr)
+				}
+			} else {
+				printLicenseStatus(cmd, report)
+			}
+			if err != nil {
+				return cliutil.ExitCodeError(1, err)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file (default: discovered config or built-in defaults)")
+	cmd.Flags().StringVar(&crlFile, "crl", "", "signed CRL file override")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output status as JSON")
+	return cmd
+}
+
+func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, error) {
+	cfg, err := loadLicenseStatusConfig(configFile)
+	if err != nil {
+		return licenseStatusReport{Status: licenseStatusInvalid, Reason: err.Error()}, err
+	}
+	report := licenseStatusReport{}
+	if cfg.LicenseKey == "" {
+		err := errors.New("no license key configured")
+		report.Status = licenseStatusMissing
+		report.Reason = err.Error()
+		return report, err
+	}
+	pubKey, err := licenseStatusPublicKey(cfg)
+	if err != nil {
+		report.Status = licenseStatusInvalid
+		report.Reason = err.Error()
+		return report, err
+	}
+	if crlFile == "" {
+		crlFile = cfg.LicenseCRLFile
+	}
+	var crl *license.CRL
+	if crlFile != "" {
+		report.CRLConfigured = true
+		loaded, crlErr := license.LoadAndVerifyCRL(crlFile, pubKey, time.Now())
+		if crlErr != nil {
+			report.Status = licenseStatusInvalid
+			report.Reason = crlErr.Error()
+			return report, crlErr
+		}
+		crl = &loaded
+		report.CRLExpiresAt = time.Unix(loaded.Payload.ExpiresAt, 0).UTC().Format(time.DateOnly)
+		report.CRLSHA256 = loaded.SHA256
+	}
+
+	lic, err := license.VerifyWithCRL(cfg.LicenseKey, pubKey, crl)
+	report.LicenseID = lic.ID
+	report.Tier = lic.Tier
+	report.SubscriptionID = lic.SubscriptionID
+	if lic.ExpiresAt > 0 {
+		report.ExpiresAt = time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly)
+		warn := license.ExpiryStatus(lic, time.Now())
+		report.DaysRemaining = warn.DaysRemaining
+		report.WarningBand = warn.ThresholdDays
+		report.Severity = warn.Severity
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, license.ErrLicenseRevoked):
+			report.Status = "revoked"
+		case errors.Is(err, license.ErrLicenseExpired):
+			report.Status = "expired"
+		default:
+			report.Status = licenseStatusInvalid
+		}
+		report.Reason = err.Error()
+		return report, err
+	}
+	report.Status = licenseStatusValid
+	return report, nil
+}
+
+func loadLicenseStatusConfig(configFile string) (*config.Config, error) {
+	if configFile == "" {
+		configFile = cliutil.DiscoverConfigPath()
+	}
+	if configFile == "" {
+		return config.Defaults(), nil
+	}
+	cfg, err := config.Load(configFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading config %q: %w", configFile, err)
+	}
+	return cfg, nil
+}
+
+func licenseStatusPublicKey(cfg *config.Config) (ed25519.PublicKey, error) {
+	if key := license.EmbeddedPublicKey(); key != nil {
+		return key, nil
+	}
+	if cfg.LicensePublicKey == "" {
+		return nil, errors.New("no license public key available")
+	}
+	keyBytes, err := hex.DecodeString(cfg.LicensePublicKey)
+	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid license public key")
+	}
+	return ed25519.PublicKey(keyBytes), nil
+}
+
+func printLicenseStatus(cmd *cobra.Command, report licenseStatusReport) {
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "License status: %s\n", report.Status)
+	if report.LicenseID != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  ID:       %s\n", report.LicenseID)
+	}
+	if report.Tier != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Tier:     %s\n", report.Tier)
+	}
+	if report.SubscriptionID != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Sub ID:   %s\n", report.SubscriptionID)
+	}
+	if report.ExpiresAt != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  %s (%d day(s) remaining)\n", report.ExpiresAt, report.DaysRemaining)
+		if report.WarningBand > 0 {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Warning:  %d-day renewal band (%s)\n", report.WarningBand, report.Severity)
+		}
+	} else if report.Status == licenseStatusValid {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Expires:  never\n")
+	}
+	if report.CRLConfigured {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  CRL:      configured")
+		if report.CRLExpiresAt != "" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), " (expires %s)", report.CRLExpiresAt)
+		}
+		_, _ = fmt.Fprintln(cmd.OutOrStdout())
+		if report.CRLSHA256 != "" {
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  CRL SHA:  %s\n", report.CRLSHA256)
+		}
+	}
+	if report.Reason != "" {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Reason:   %s\n", report.Reason)
+	}
 }
 
 // licenseDefaultTokenFile is the default filename for installed license tokens.

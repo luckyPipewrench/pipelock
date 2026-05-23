@@ -120,6 +120,19 @@ func (c *Client) CaptureMessage(msg string) {
 	sentry.CaptureMessage(msg)
 }
 
+// AddBreadcrumb records local context for later Sentry events.
+func (c *Client) AddBreadcrumb(category, message, level string, data map[string]any) {
+	if c == nil || !c.enabled {
+		return
+	}
+	sentry.AddBreadcrumb(&sentry.Breadcrumb{
+		Category: category,
+		Message:  message,
+		Level:    sentry.Level(level),
+		Data:     data,
+	})
+}
+
 // Flush waits for queued events to be sent.
 func (c *Client) Flush(timeout time.Duration) bool {
 	if c == nil || !c.enabled {

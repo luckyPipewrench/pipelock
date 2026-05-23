@@ -152,8 +152,14 @@ func (c *Config) policySemanticView() Config {
 	// identical effective policies across license refreshes.
 	view.LicenseKey = ""
 	view.LicenseFile = ""
+	view.LicenseCRLFile = ""
 	view.LicensePublicKey = ""
 	view.LicenseExpiresAt = 0
+	view.LicenseID = ""
+	view.LicenseCRLExpiresAt = 0
+	view.LicenseCRLSHA256 = ""
+	view.LicenseRevoked = false
+	view.LicenseRevocationReason = ""
 
 	// Envelope signing key path — infrastructure, not policy. The key
 	// material itself is never read here (we only hold a path), but

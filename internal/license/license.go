@@ -25,6 +25,8 @@ const maxTokenBytes = 64 * 1024
 // tokenPrefix identifies the license token format version.
 const tokenPrefix = "pipelock_lic_" + "v1_" //nolint:gosec // G101: not a credential, license format prefix
 
+var ErrLicenseExpired = errors.New("license expired")
+
 // Feature names for gating.
 const (
 	FeatureAgents = "agents"
@@ -113,7 +115,7 @@ func Verify(token string, publicKey ed25519.PublicKey) (License, error) {
 	}
 
 	if l.ExpiresAt > 0 && time.Now().Unix() > l.ExpiresAt {
-		return l, fmt.Errorf("license expired on %s", time.Unix(l.ExpiresAt, 0).UTC().Format(time.DateOnly))
+		return l, fmt.Errorf("%w on %s", ErrLicenseExpired, time.Unix(l.ExpiresAt, 0).UTC().Format(time.DateOnly))
 	}
 
 	return l, nil

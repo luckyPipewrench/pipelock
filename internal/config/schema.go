@@ -261,6 +261,7 @@ type Config struct {
 	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
 	LicenseKey               string                  `yaml:"license_key,omitempty"`                 // signed license token (from pipelock license issue)
 	LicenseFile              string                  `yaml:"license_file,omitempty"`                // path to file containing the license token (read at startup)
+	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`   // path to signed license revocation list (read at startup)
 	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`          // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal                 []string                `yaml:"internal"`
 	TrustedDomains           []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
@@ -271,6 +272,13 @@ type Config struct {
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
 	// enforcement so agents are disabled even without a config reload.
 	LicenseExpiresAt int64 `yaml:"-"`
+	// LicenseID and CRL metadata are runtime-derived from the verified
+	// license token and CRL. They are excluded from policy serialization.
+	LicenseID               string `yaml:"-" json:"-"`
+	LicenseCRLExpiresAt     int64  `yaml:"-" json:"-"`
+	LicenseCRLSHA256        string `yaml:"-" json:"-"`
+	LicenseRevoked          bool   `yaml:"-" json:"-"`
+	LicenseRevocationReason string `yaml:"-" json:"-"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().

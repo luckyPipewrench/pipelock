@@ -5,14 +5,19 @@ package diag
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 func TestDoctorJSONReportsWarningsForDefaultTopology(t *testing.T) {
@@ -134,6 +139,37 @@ func TestBuildDoctorReportWarnsWhenGlobalEnforceDisabled(t *testing.T) {
 		if check := doctorCheckFor(report, name); check.Enforcing {
 			t.Errorf("expected %s Enforcing=false when enforce=false, got %+v", name, check)
 		}
+	}
+}
+
+func TestBuildDoctorReportShowsLicenseExpiryWarning(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "lic_doctor_warning",
+		Email:     "doctor@example.com",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(7 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.LicenseKey = token
+	cfg.LicensePublicKey = hex.EncodeToString(pub)
+
+	report := buildDoctorReport(cfg, configLabelDefaults)
+	check := doctorCheckFor(report, "license_status")
+	if check.Status != doctorStatusWarn {
+		t.Fatalf("license status = %+v, want warning", check)
+	}
+	if !strings.Contains(check.Detail, "7-day renewal band") {
+		t.Fatalf("detail = %q, want renewal band", check.Detail)
 	}
 }
 

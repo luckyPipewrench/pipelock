@@ -25,6 +25,7 @@ const (
 	AuditEmailFailed     = "email_failed"
 	AuditRefreshIssued   = "refresh_issued"
 	AuditSubscriptionEnd = "subscription_ended"
+	AuditLicenseRevoked  = "license_revoked"
 	AuditFoundingCapHit  = "founding_cap_hit"
 	AuditError           = "error"
 )
@@ -154,6 +155,17 @@ func (a *AuditLedger) LogLicenseIssued(subscriptionID, email, licenseID, tier st
 		LicenseID:      licenseID,
 		Tier:           tier,
 		ExpiresAt:      expiresAt.UTC().Format(time.DateOnly),
+	})
+}
+
+// LogLicenseRevoked records a license revocation added to the CRL.
+func (a *AuditLedger) LogLicenseRevoked(subscriptionID, email, licenseID, reason string) error {
+	return a.Log(AuditEntry{
+		Event:          AuditLicenseRevoked,
+		SubscriptionID: subscriptionID,
+		CustomerEmail:  email,
+		LicenseID:      licenseID,
+		Detail:         reason,
 	})
 }
 

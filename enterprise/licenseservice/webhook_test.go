@@ -22,6 +22,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const testLicenseExisting = "lic_existing"
+
 // testSetup creates a fully wired test environment with in-memory DB,
 // temp ledger, mock Polar server, and mock email server.
 type testSetup struct {
@@ -559,7 +561,7 @@ func TestProcessSubscription_CanceledClearsRefresh(t *testing.T) {
 
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
-		Status:            "canceled",
+		Status:            statusCanceled,
 		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
@@ -604,7 +606,7 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 	now := time.Now().UTC()
 	existing := testEntitlement(testSubscriptionID)
 	existing.Org = "testcorp"
-	existing.LastLicenseID = "lic_existing"
+	existing.LastLicenseID = testLicenseExisting
 	existing.LastLicenseIssuedAt = &now
 	existing.LastLicensePeriodEnd = &periodEnd
 	existing.LastLicenseTier = tierPro
@@ -636,8 +638,8 @@ func TestProcessSubscription_IdempotentSkipsReissue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBySubscriptionID: %v", err)
 	}
-	if ent.LastLicenseID != "lic_existing" {
-		t.Errorf("LastLicenseID = %q, want %q (should be preserved)", ent.LastLicenseID, "lic_existing")
+	if ent.LastLicenseID != testLicenseExisting {
+		t.Errorf("LastLicenseID = %q, want %q (should be preserved)", ent.LastLicenseID, testLicenseExisting)
 	}
 }
 
@@ -1107,7 +1109,7 @@ func TestProcessSubscription_RevokedClearsRefresh(t *testing.T) {
 
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
-		Status:            "revoked",
+		Status:            statusRevoked,
 		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
@@ -1133,11 +1135,121 @@ func TestProcessSubscription_RevokedClearsRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBySubscriptionID: %v", err)
 	}
-	if ent.Status != "revoked" {
-		t.Errorf("Status = %q, want %q", ent.Status, "revoked")
+	if ent.Status != statusRevoked {
+		t.Errorf("Status = %q, want %q", ent.Status, statusRevoked)
 	}
 	if ent.NextRefreshAt != nil {
 		t.Error("NextRefreshAt should be nil after revocation")
+	}
+}
+
+func TestProcessSubscription_RevokesAllUnexpiredIssuedLicenses(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	now := time.Now().UTC()
+	expires := now.Add(45 * 24 * time.Hour)
+	existing := testEntitlement(testSubscriptionID)
+	existing.LastLicenseID = "lic_latest"
+	existing.LastLicenseIssuedAt = &now
+	existing.LastLicenseExpiresAt = &expires
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	for _, id := range []string{"lic_prior", "lic_latest"} {
+		if err := ts.db.InsertLicenseIssuance(ctx, LicenseIssuance{
+			LicenseID:      id,
+			SubscriptionID: testSubscriptionID,
+			ExpiresAt:      expires,
+			IssuedAt:       now.Add(-time.Hour),
+		}); err != nil {
+			t.Fatalf("InsertLicenseIssuance %s: %v", id, err)
+		}
+	}
+
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            statusRevoked,
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription revoked: %v", err)
+	}
+	records, err := ts.db.ListLicenseRevocations(ctx)
+	if err != nil {
+		t.Fatalf("ListLicenseRevocations: %v", err)
+	}
+	got := make(map[string]bool, len(records))
+	for _, rec := range records {
+		got[rec.LicenseID] = true
+	}
+	for _, want := range []string{"lic_prior", "lic_latest"} {
+		if !got[want] {
+			t.Fatalf("missing revocation for %s; records=%+v", want, records)
+		}
+	}
+	crl, err := ts.handler.SignedCRL(ctx, now)
+	if err != nil {
+		t.Fatalf("SignedCRL: %v", err)
+	}
+	for _, revoked := range crl.Payload.Revoked {
+		if revoked.Reason != "" {
+			t.Fatalf("public CRL should omit reason, got %+v", revoked)
+		}
+	}
+}
+
+func TestProcessSubscription_StaleActiveAfterTerminalDoesNotIssue(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+
+	existing := testEntitlement(testSubscriptionID)
+	existing.Status = statusCanceled
+	existing.LastLicenseID = testLicenseExisting
+	existing.LastLicensePeriodEnd = &existing.CurrentPeriodEnd
+	existing.LastLicenseTier = existing.Tier
+	existing.LastLicenseInterval = existing.BillingInterval
+	existing.LastLicenseProductID = existing.ProductID
+	existing.LastDeliveryStatus = testDeliveryStatusSent
+	if err := ts.db.Upsert(ctx, existing); err != nil {
+		t.Fatalf("Upsert terminal entitlement: %v", err)
+	}
+
+	sub := &PolarSubscription{
+		ID:                testSubscriptionID,
+		Status:            statusActive,
+		RecurringInterval: testIntervalMonth,
+		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
+	}
+	sub.Customer.Email = testCustomerEmail
+	sub.Customer.Metadata = map[string]string{}
+	sub.Product.ID = testProductID
+	sub.Product.Name = testProductName
+	sub.Product.Metadata = map[string]string{"pipelock_tier": "pro"}
+
+	if err := ts.handler.processSubscription(ctx, sub); err != nil {
+		t.Fatalf("processSubscription stale active: %v", err)
+	}
+	issuances, err := ts.db.ListUnexpiredLicenseIssuances(ctx, testSubscriptionID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("ListUnexpiredLicenseIssuances: %v", err)
+	}
+	if len(issuances) != 0 {
+		t.Fatalf("stale active event minted issuance: %+v", issuances)
+	}
+	ent, err := ts.db.GetBySubscriptionID(ctx, testSubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if ent.Status != statusCanceled {
+		t.Fatalf("status changed to %q, want canceled", ent.Status)
 	}
 }
 
@@ -1195,7 +1307,7 @@ func TestProcessSubscription_HandleEndedNoExistingLicense(t *testing.T) {
 	// Canceled subscription with NO prior entitlement (no license to expire).
 	sub := &PolarSubscription{
 		ID:                "sub_cancel_fresh",
-		Status:            "canceled",
+		Status:            statusCanceled,
 		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
@@ -1257,7 +1369,7 @@ func TestProcessSubscription_EndedEmailFailure(t *testing.T) {
 
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
-		Status:            "canceled",
+		Status:            statusCanceled,
 		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
@@ -1313,7 +1425,7 @@ func TestProcessSubscription_EndedPreservesLicenseFields(t *testing.T) {
 
 	sub := &PolarSubscription{
 		ID:                testSubscriptionID,
-		Status:            "canceled",
+		Status:            statusCanceled,
 		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  periodEnd,
 	}
@@ -1459,7 +1571,7 @@ func TestProcessSubscription_UnpaidStatus(t *testing.T) {
 
 	sub := &PolarSubscription{
 		ID:                "sub_unpaid",
-		Status:            "unpaid",
+		Status:            statusUnpaid,
 		RecurringInterval: testIntervalMonth,
 		CurrentPeriodEnd:  time.Date(2026, 4, 12, 0, 0, 0, 0, time.UTC),
 	}
@@ -1484,8 +1596,8 @@ func TestProcessSubscription_UnpaidStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetBySubscriptionID: %v", err)
 	}
-	if ent.Status != "unpaid" {
-		t.Errorf("Status = %q, want %q", ent.Status, "unpaid")
+	if ent.Status != statusUnpaid {
+		t.Errorf("Status = %q, want %q", ent.Status, statusUnpaid)
 	}
 }
 

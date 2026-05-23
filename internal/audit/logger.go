@@ -314,6 +314,7 @@ const (
 	EventAirlockDeescalate EventType = "airlock_deescalate"
 	EventShieldRewrite     EventType = "shield_rewrite"
 	EventMediaExposure     EventType = "media_exposure"
+	EventLicenseExpiry     EventType = "license_expiry"
 )
 
 // WebSocket frame direction constants used in audit log entries.
@@ -986,6 +987,31 @@ func (l *Logger) LogConfigReload(status, detail, configHash string) {
 
 	if l.emitter != nil {
 		l.emitter.Emit(context.Background(), string(EventConfigReload), e.fields)
+	}
+}
+
+// LogLicenseExpiry logs a renewal warning for the active enterprise license.
+func (l *Logger) LogLicenseExpiry(licenseID string, thresholdDays, daysRemaining int, severity, expiresAt string) {
+	level := l.zl.Info()
+	emitSeverity := emit.SeverityInfo
+	switch severity {
+	case severityCritical, "error":
+		level = l.zl.Error()
+		emitSeverity = emit.SeverityCritical
+	case severityWarn:
+		level = l.zl.Warn()
+		emitSeverity = emit.SeverityWarn
+	}
+	e := newLogEntry(level, EventLicenseExpiry).
+		str("license_id", licenseID).
+		intField("threshold_days", thresholdDays).
+		intField("days_remaining", daysRemaining).
+		str("severity", severity).
+		str("expires_at", expiresAt)
+	e.msg("license expiry warning")
+
+	if l.emitter != nil {
+		l.emitter.EmitWithSeverity(context.Background(), emitSeverity, string(EventLicenseExpiry), e.fields)
 	}
 }
 

@@ -116,7 +116,8 @@
     "decidedAt": {
       "type": "string",
       "format": "date-time",
-      "description": "RFC 3339 UTC timestamp with millisecond precision and Z suffix."
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+      "description": "RFC 3339 UTC timestamp with millisecond precision and Z suffix. The pattern enforces UTC Z (numeric offsets like +01:00 are rejected) and exactly three fractional-second digits, which JSON Schema's `format: \"date-time\"` annotation alone does not enforce."
     },
     "policy": {
       "type": "object",

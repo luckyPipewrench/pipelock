@@ -6,7 +6,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 > **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. Pipelock is a network-layer proxy; some MCP risks require complementary controls at the client, server, or identity layer. This mapping is for informational purposes and does not constitute compliance certification.
 
-**Last updated:** May 2026, reviewed against the v2.5 feature set. See CHANGELOG.md for full release history; the appendix at the bottom of this document lists v2.5-specific deltas mapped to MCP categories.
+**Last updated:** May 2026, reviewed against the v2.5 feature set. See [CHANGELOG.md](../../CHANGELOG.md) for full release history; the appendix at the bottom of this document lists v2.5-specific deltas mapped to MCP categories.
 
 ---
 
@@ -214,12 +214,12 @@ For multi-layer MCP security, combine network-layer enforcement (Pipelock) with:
 
 ## Appendix: v2.5 deltas mapped to MCP categories
 
-For full release history see `CHANGELOG.md`. This appendix lists only the v2.5 additions and the MCP category each strengthens.
+For full release history see [`CHANGELOG.md`](../../CHANGELOG.md). This appendix lists only the v2.5 additions and the MCP category each strengthens.
 
 - **Request-body prompt-injection blocking** across JSON / form-urlencoded / multipart / raw-text / split-field / key-as-payload shapes — **MCP06** (Intent Flow Subversion).
 - **Critical body-DLP hard-blocking in enforce mode** for AWS / Anthropic / GitHub-token-shaped findings — **MCP01** (Token Mismanagement & Secret Exposure).
 - **Provider-aware redaction** (Anthropic + OpenAI + Gemini parsers) with hardened placeholder semantics and tightened Databricks pattern — **MCP01**.
-- **`pipelock claude hook` unsupported-event fail-closed default** on non-`PreToolUse` Claude Code hook events (`PostToolUse`, `PreCompact`, `SessionStart`); the PreToolUse path itself uses an unknown-tool full-scan fallback rather than a hard deny — **MCP02** (Privilege Escalation via Scope Creep) at the IDE-hook surface.
+- **`pipelock claude hook` unsupported-event fail-closed default** on non-`PreToolUse` Claude Code hook events (`PostToolUse`, `PreCompact`, `SessionStart`); the PreToolUse path itself uses an unknown-tool full-scan fallback rather than a hard deny. This control contributes to both **MCP05** (Command Injection & Execution — scanning catches injection in unknown-tool input) and **MCP02** (Privilege Escalation via Scope Creep — unknown tools cannot bypass the scan path) at the IDE-hook surface.
 - **Host containment lifecycle CLI** (`pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh`) — **MCP02**.
 - **Audit Packet v0 schema + Go / TypeScript / Rust / Python verifier implementations** — **MCP08** (Lack of Audit and Telemetry).
 - **Strict-default SPIFFE actor enforcement on inbound mediation envelopes + `pipelock envelope trust` operator CLI** — **MCP07** (Insufficient Authentication & Authorization).

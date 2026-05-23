@@ -265,6 +265,7 @@ type Config struct {
 	Internal                 []string                `yaml:"internal"`
 	TrustedDomains           []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
 	SSRF                     SSRF                    `yaml:"ssrf"`
+	DNS                      DNS                     `yaml:"dns"`
 
 	// LicenseExpiresAt is the Unix timestamp of the license expiry, populated
 	// by EnforceLicenseGate(). Zero means perpetual. Used for runtime expiry
@@ -520,6 +521,21 @@ type SSRF struct {
 	// operator. Complementary to trusted_domains: this is IP-based trust,
 	// trusted_domains is hostname-based trust.
 	IPAllowlist []string `yaml:"ip_allowlist"`
+}
+
+// DNS configures hostname resolution overrides applied to the SSRF DNS
+// check and the proxy's dial path. Each entry maps a hostname to one or
+// more static IPs; matching lookups bypass the system resolver and return
+// the configured IPs directly. Designed for reproducible test harnesses
+// (e.g. agent-egress-bench fixtures published on loopback): combined with
+// trusted_domains, an operator can let pipelock reach an internal fixture
+// at a stable hostname while raw-IP SSRF attacks targeting the same range
+// remain blocked, because the IP-literal path never consults this map.
+// HostOverrides is empty by default; configuring it does not weaken any
+// security check on its own — exemption still requires a trusted_domains
+// entry for the same hostname.
+type DNS struct {
+	HostOverrides map[string][]string `yaml:"host_overrides"`
 }
 
 // LoggingConfig configures audit logging.

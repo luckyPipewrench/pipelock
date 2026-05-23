@@ -110,7 +110,11 @@ const (
 	// documented shapes and leading/trailing token boundaries.
 	// Re-bumped again after the Supabase right edge was adjusted to keep
 	// matching valid base64url checksums that end in '-'.
-	goldenHashDefaults = "b2a8779c2522d3046affc058c286fd3d78101e5d1c9026bd380f9bf2e8404c96"
+	// Re-bumped for the dns.host_overrides addition: dns is policy-relevant
+	// (it changes the destination IPs the SSRF check evaluates) and so it
+	// participates in the canonical view; the field is present but empty
+	// in Defaults().
+	goldenHashDefaults = "029a5449518889527136cdcb796b8746338d38a12ed0723b13ab24d7139c54a5"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -168,7 +172,10 @@ const (
 	// DLP pattern set, so the hash shifts in lockstep.
 	// Re-bumped again for the Supabase base64url checksum right-edge fix:
 	// see goldenHashDefaults note above.
-	goldenHashRichConfig = "4f0061858b23c6e7d389c2b88f5cbbb96c77898d2a62222bd1760c5e70042077"
+	// Re-bumped for the dns.host_overrides addition: see goldenHashDefaults
+	// note. The rich fixture omits dns:, so the field is empty but still
+	// part of the canonical view.
+	goldenHashRichConfig = "86666b12e6ce89ee16b749e4926444b8b10505bfcfb85ea8516d1d77d3118d68"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

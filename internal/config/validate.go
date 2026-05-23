@@ -167,6 +167,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateTrustedDomains(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateDNS(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateRules(); err != nil {
 		return warnings, err
 	}
@@ -1408,6 +1411,29 @@ func (c *Config) validateSSRF() error {
 		// to avoid accidentally allowlisting a wider range than intended.
 		if !ip.Equal(ipNet.IP) {
 			return fmt.Errorf("ssrf.ip_allowlist CIDR %q has host bits set (did you mean %q?)", cidr, ipNet.String())
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateDNS() error {
+	for host, ips := range c.DNS.HostOverrides {
+		if strings.TrimSpace(host) == "" {
+			return fmt.Errorf("dns.host_overrides: hostname key must be non-empty")
+		}
+		// Reject IP-literal keys: the override path is hostname-only, and
+		// allowing an IP-literal key would suggest the operator can rewrite
+		// "127.0.0.1" → some other IP, which the resolver does not do.
+		if net.ParseIP(host) != nil {
+			return fmt.Errorf("dns.host_overrides: %q is an IP literal; only hostnames may have overrides", host)
+		}
+		if len(ips) == 0 {
+			return fmt.Errorf("dns.host_overrides[%q]: must provide at least one IP", host)
+		}
+		for i, ip := range ips {
+			if net.ParseIP(ip) == nil {
+				return fmt.Errorf("dns.host_overrides[%q][%d]: invalid IP %q", host, i, ip)
+			}
 		}
 	}
 	return nil

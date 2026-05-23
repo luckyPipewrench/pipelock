@@ -2097,6 +2097,73 @@ func TestValidate_SSRFIPAllowlist_Empty(t *testing.T) {
 	}
 }
 
+func TestValidate_DNSHostOverrides_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"aeb-fixture.test": {"127.0.0.1"},
+		"internal.api":     {"10.0.0.5", "10.0.0.6"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("valid dns.host_overrides should validate, got: %v", err)
+	}
+}
+
+func TestValidate_DNSHostOverrides_EmptyHost(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"   ": {"127.0.0.1"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty hostname key")
+	}
+	if !strings.Contains(err.Error(), "dns.host_overrides") {
+		t.Errorf("expected error to mention dns.host_overrides, got: %v", err)
+	}
+}
+
+func TestValidate_DNSHostOverrides_IPLiteralKeyRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"127.0.0.1": {"127.0.0.1"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for IP-literal hostname key")
+	}
+	if !strings.Contains(err.Error(), "IP literal") {
+		t.Errorf("expected IP-literal error, got: %v", err)
+	}
+}
+
+func TestValidate_DNSHostOverrides_EmptyIPListRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"aeb-fixture.test": {},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty IP list")
+	}
+	if !strings.Contains(err.Error(), "at least one IP") {
+		t.Errorf("expected empty-IP-list error, got: %v", err)
+	}
+}
+
+func TestValidate_DNSHostOverrides_InvalidIPRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"aeb-fixture.test": {"not-an-ip"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid IP")
+	}
+	if !strings.Contains(err.Error(), "invalid IP") {
+		t.Errorf("expected invalid-IP error, got: %v", err)
+	}
+}
+
 func TestApplyDefaults_DoesNotOverwriteExistingValues(t *testing.T) {
 	cfg := &Config{
 		Version: 2,

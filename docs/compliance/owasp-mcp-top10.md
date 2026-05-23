@@ -37,8 +37,10 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 - **Environment leak detection:** `dlp.scan_env` reads the local environment and flags any outbound request containing env var values above a minimum length threshold.
 - **MCP input scanning:** scans tool call arguments (client-to-server) for secrets before they reach the MCP server. Catches agents forwarding credentials to untrusted tools.
 - **Encoding resistance:** 6-pass normalization decodes base64, hex, and URL encoding before pattern matching. Secrets encoded to evade detection are decoded and caught.
+- **Critical body-DLP hard-blocking in enforce mode (v2.5):** request bodies containing critical-severity findings (e.g., AWS keys, Anthropic tokens, GitHub tokens) return 403 with `BR=dlp_match` before reaching the upstream, even when `request_body_scanning.action` is otherwise configured to warn. Operators who used request-body warn mode as log-only must explicitly mark a pattern warn-only or rely on provider-exempt redaction to retain prior behaviour.
+- **Provider-aware redaction (v2.5):** Anthropic, OpenAI, and Gemini request parsers walk the body schema and emit irreversible typed placeholders for matched secrets so a sanitized request can still be forwarded to provider-exempt hosts. v2.5 hardens placeholder semantics across JSON / form / split-field shapes and tightens the Databricks-token pattern to remove a class-of-byte-coincidence false positive on opaque image data URLs.
 
-**Configuration:** `dlp`, `mcp_input_scanning`
+**Configuration:** `dlp`, `mcp_input_scanning`, `request_body_scanning`, `redact`
 
 **Gap:** Token rotation, vault integration, and credential lifecycle management are outside scope. Pipelock detects secret exposure at the transport layer; credential management requires complementary tools.
 
@@ -104,8 +106,9 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 - **Tool policy with shell normalization:** `mcp_tool_policy` includes 17 default rules covering destructive operations, persistence mechanisms, and credential access. Shell obfuscation (octal encoding, hex encoding, brace expansion, variable assignment, command substitution, IFS manipulation) is normalized before matching.
 - **Argument-level matching:** `arg_key` scopes pattern matching to specific tool argument keys, preventing overly broad rules.
 - **Sandbox containment (v2.0):** Landlock LSM + network namespaces + seccomp restrict filesystem access, network egress, and syscall surface for sandboxed agent processes. Even if injection succeeds, the command runs in a contained environment.
+- **`pipelock claude-hook` unknown-tool fail-closed (v2.5):** the Claude Code IDE-hook entry point routes unknown `tool_name` values through the full tool-use decision path with complete `tool_input` scanning instead of returning clean. Null tool input errors explicitly. Closes a fail-open path on IDE hook events for tools Pipelock has not yet enumerated.
 
-**Configuration:** `mcp_tool_policy`, `sandbox`
+**Configuration:** `mcp_tool_policy`, `sandbox`. (The `pipelock claude-hook` subcommand is a CLI surface — installed by `pipelock init claude-hook` and invoked from `~/.claude/settings.json` `PreToolUse` / `PostToolUse` matchers — not a YAML config block.)
 
 **Gap:** None for network-visible command execution. Commands executed entirely within the agent's local runtime without tool calls are outside the proxy's visibility.
 
@@ -121,8 +124,9 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 - **MCP response scanning:** tool results are scanned through the same pipeline before reaching the agent.
 - **State/control poisoning patterns:** detect credential solicitation ("provide your API key"), memory persistence ("save this for future sessions"), preference poisoning ("from now on, always use this tool"), and silent credential handling.
 - **Pre-filter optimization:** keyword-based gating skips expensive regex on clean content. Typical scan latency under 50us for clean responses.
+- **Request-body prompt-injection blocking (v2.5):** outbound request bodies are scanned across JSON, form-urlencoded, multipart, raw text, split-field, and key-as-payload shapes. Detected payloads return 403 with `BR=prompt_injection` before the request reaches the upstream LLM provider. Closes the loop where a tainted tool result re-enters the agent's next outbound prompt — a primary failure mode for indirect prompt injection on long-running agents.
 
-**Configuration:** `response_scanning`
+**Configuration:** `response_scanning`, `request_body_scanning`
 
 **Gap:** Pipelock uses deterministic pattern matching, not ML-based classification. Novel injection phrasing not matching any pattern variant will pass through. Pattern coverage is continuously expanded based on adversarial testing.
 

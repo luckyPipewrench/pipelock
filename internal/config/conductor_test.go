@@ -155,6 +155,34 @@ func TestValidateConductor_RejectsWorldWritableParents(t *testing.T) {
 	}
 }
 
+func TestValidateConductor_RejectsSymlinkResolvedWorldWritableParent(t *testing.T) {
+	cfg := Defaults()
+	conductor := validConductorConfig(t)
+	root := privateTempDir(t)
+	world := filepath.Join(root, "world")
+	target := filepath.Join(world, "target")
+	if err := os.Mkdir(world, 0o700); err != nil {
+		t.Fatalf("Mkdir(world) error = %v", err)
+	}
+	if err := os.Chmod(world, 0o777); err != nil { //nolint:gosec // verifies rejection of unsafe resolved parent permissions.
+		t.Fatalf("Chmod(world) error = %v", err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("Mkdir(target) error = %v", err)
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	conductor.BundleCacheDir = filepath.Join(link, "bundles")
+	cfg.Conductor = conductor
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "world-writable parent") {
+		t.Fatalf("Validate() = %v, want world-writable parent error", err)
+	}
+}
+
 func TestValidateConductor_StalePolicyOverrideWarns(t *testing.T) {
 	cfg := Defaults()
 	conductor := validConductorConfig(t)

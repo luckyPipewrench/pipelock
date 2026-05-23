@@ -114,6 +114,13 @@ func TestCapabilitiesClientHandshakeAddsDeadline(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesClientHandshakeRejectsZeroValueClient(t *testing.T) {
+	_, err := new(CapabilitiesClient).Handshake(context.Background())
+	if !errors.Is(err, ErrCapabilityNegotiation) {
+		t.Fatalf("Handshake() = %v, want ErrCapabilityNegotiation", err)
+	}
+}
+
 func TestCapabilitiesClientRejectsUnsafeBaseURL(t *testing.T) {
 	httpClient := &http.Client{Timeout: defaultCapabilitiesTimeout}
 	for _, raw := range []string{

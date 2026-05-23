@@ -180,21 +180,71 @@ func validateConductorAbsolutePath(field, value string) error {
 
 func validateConductorPrivateParent(field, rawPath string) error {
 	clean := filepath.Clean(rawPath)
+	seen := make(map[string]struct{})
 	for dir := filepath.Dir(clean); ; dir = filepath.Dir(dir) {
-		info, err := os.Stat(dir)
-		if err == nil {
-			if !info.IsDir() {
-				return fmt.Errorf("%s parent %s is not a directory", field, dir)
-			}
-			if info.Mode().Perm()&0o002 != 0 {
-				return fmt.Errorf("%s must not be under world-writable parent %s", field, dir)
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("%s stat parent %s: %w", field, dir, err)
+		if err := validateConductorParentPath(field, dir, seen); err != nil {
+			return err
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			return nil
 		}
 	}
+}
+
+func validateConductorParentPath(field, dir string, seen map[string]struct{}) error {
+	dir = filepath.Clean(dir)
+	if _, ok := seen[dir]; ok {
+		return nil
+	}
+	seen[dir] = struct{}{}
+
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("%s resolve parent %s: %w", field, dir, err)
+	}
+	if err := validateConductorResolvedParent(field, dir, resolved); err != nil {
+		return err
+	}
+	if resolved == dir {
+		return nil
+	}
+
+	intendedParent := filepath.Dir(dir)
+	rel, err := filepath.Rel(intendedParent, resolved)
+	if err != nil {
+		return fmt.Errorf("%s compare resolved parent %s to %s: %w", field, resolved, intendedParent, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("%s parent %s resolves outside intended parent %s to %s", field, dir, intendedParent, resolved)
+	}
+	for realDir := resolved; ; realDir = filepath.Dir(realDir) {
+		if err := validateConductorParentPath(field, realDir, seen); err != nil {
+			return err
+		}
+		parent := filepath.Dir(realDir)
+		if parent == realDir {
+			return nil
+		}
+	}
+}
+
+func validateConductorResolvedParent(field, displayPath, resolved string) error {
+	info, err := os.Stat(resolved)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("%s stat parent %s: %w", field, resolved, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s parent %s is not a directory", field, displayPath)
+	}
+	if info.Mode().Perm()&0o002 != 0 {
+		return fmt.Errorf("%s must not be under world-writable parent %s", field, displayPath)
+	}
+	return nil
 }

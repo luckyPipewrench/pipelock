@@ -74,6 +74,12 @@ func (c *CapabilitiesClient) Handshake(ctx context.Context) (NegotiatedCapabilit
 	if c == nil {
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: nil client", ErrCapabilityNegotiation)
 	}
+	if c.baseURL == nil {
+		return NegotiatedCapabilities{}, fmt.Errorf("%w: uninitialized base URL", ErrCapabilityNegotiation)
+	}
+	if c.httpClient == nil {
+		return NegotiatedCapabilities{}, fmt.Errorf("%w: uninitialized http client", ErrCapabilityNegotiation)
+	}
 	if ctx == nil {
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: nil context", ErrCapabilityNegotiation)
 	}

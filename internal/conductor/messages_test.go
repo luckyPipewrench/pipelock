@@ -826,6 +826,309 @@ func TestMessageIdentifiersAreBounded(t *testing.T) {
 	}
 }
 
+func TestPolicyBundlePayload_PolicyHashYAMLDocumentHandling(t *testing.T) {
+	payload := PolicyBundlePayload{ConfigYAML: "mode: strict\n---\n"}
+	if _, err := payload.PolicyHash(); err != nil {
+		t.Fatalf("PolicyHash(empty trailing doc) = %v, want nil", err)
+	}
+
+	payload.ConfigYAML = "mode: strict\n---\nmode: balanced\n"
+	_, err := payload.PolicyHash()
+	if !errors.Is(err, ErrInvalidHash) {
+		t.Fatalf("PolicyHash(non-empty trailing doc) = %v, want ErrInvalidHash", err)
+	}
+
+	payload.ConfigYAML = "mode: [\n"
+	if _, err := payload.PolicyHash(); err == nil {
+		t.Fatal("PolicyHash(malformed yaml) = nil, want error")
+	}
+}
+
+func TestCanonicalHashMethods(t *testing.T) {
+	if got, err := testPolicyBundle().CanonicalHash(); err != nil || got == "" {
+		t.Fatalf("PolicyBundle.CanonicalHash() = %q, %v; want hash", got, err)
+	}
+	if got, err := testRemoteKillMessage().CanonicalHash(); err != nil || got == "" {
+		t.Fatalf("RemoteKillMessage.CanonicalHash() = %q, %v; want hash", got, err)
+	}
+	if got, err := testRollbackAuthorization().CanonicalHash(); err != nil || got == "" {
+		t.Fatalf("RollbackAuthorization.CanonicalHash() = %q, %v; want hash", got, err)
+	}
+	if got, err := testAuditBatch().CanonicalHash(); err != nil || got == "" {
+		t.Fatalf("AuditBatchEnvelope.CanonicalHash() = %q, %v; want hash", got, err)
+	}
+}
+
+func TestRemoteKillMessage_ValidateForFollower(t *testing.T) {
+	msg := testRemoteKillMessage()
+	if err := msg.ValidateForFollower("org-test", "fleet-prod", "instance-1", nil); err != nil {
+		t.Fatalf("ValidateForFollower(wildcard) = %v, want nil", err)
+	}
+	if err := msg.ValidateForFollower("org-other", "fleet-prod", "instance-1", nil); !errors.Is(err, ErrAudienceMismatch) {
+		t.Fatalf("ValidateForFollower(org mismatch) = %v, want ErrAudienceMismatch", err)
+	}
+
+	msg.Audience = Audience{Labels: map[string]string{"ring": "canary"}}
+	if err := msg.ValidateForFollower("org-test", "fleet-prod", "instance-2", map[string]string{"ring": "canary"}); err != nil {
+		t.Fatalf("ValidateForFollower(label match) = %v, want nil", err)
+	}
+	if err := msg.ValidateForFollower("org-test", "fleet-prod", "instance-2", map[string]string{"ring": "prod"}); !errors.Is(err, ErrAudienceMismatch) {
+		t.Fatalf("ValidateForFollower(label mismatch) = %v, want ErrAudienceMismatch", err)
+	}
+}
+
+func TestRollbackAuthorization_VerifySignatures(t *testing.T) {
+	auth := testRollbackAuthorization()
+	pub1, proof1 := signedProof(t, auth.SignablePreimage, "rollback-signer-1", signing.PurposePolicyBundleRollback)
+	pub2, proof2 := signedProof(t, auth.SignablePreimage, "rollback-signer-2", signing.PurposePolicyBundleRollback)
+	auth.Signatures = []SignatureProof{proof1, proof2}
+	resolver := mapResolver(map[string]SignatureKey{
+		"rollback-signer-1": {PublicKey: pub1, KeyPurpose: signing.PurposePolicyBundleRollback},
+		"rollback-signer-2": {PublicKey: pub2, KeyPurpose: signing.PurposePolicyBundleRollback},
+	})
+	if err := auth.VerifySignatures(resolver); err != nil {
+		t.Fatalf("VerifySignatures() = %v, want nil", err)
+	}
+
+	auth.TargetBundleID = "bundle-other"
+	if err := auth.VerifySignaturesAt(testNow, resolver); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestAuditBatchEnvelope_VerifySignatures(t *testing.T) {
+	batch := testAuditBatch()
+	pub, proof := signedProof(t, batch.SignablePreimage, "audit-signer-1", signing.PurposeAuditBatchSigning)
+	batch.Signatures = []SignatureProof{proof}
+	resolver := mapResolver(map[string]SignatureKey{
+		"audit-signer-1": {PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning},
+	})
+	if err := batch.VerifySignatures(resolver); err != nil {
+		t.Fatalf("VerifySignatures() = %v, want nil", err)
+	}
+
+	batch.PayloadBytes++
+	if err := batch.VerifySignaturesAt(testNow, resolver); !errors.Is(err, ErrSignatureVerification) {
+		t.Fatalf("VerifySignaturesAt(tampered) = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestValidationEdgeCases(t *testing.T) {
+	t.Run("signature_proof_missing_signer", func(t *testing.T) {
+		err := (SignatureProof{KeyPurpose: signing.PurposePolicyBundleSigning, Algorithm: SignatureAlgorithmEd25519, Signature: testSignature("aa")}).
+			Validate(signing.PurposePolicyBundleSigning)
+		if !errors.Is(err, ErrMissingField) {
+			t.Fatalf("Validate() = %v, want ErrMissingField", err)
+		}
+	})
+
+	t.Run("signature_proof_bad_algorithm", func(t *testing.T) {
+		proof := testProof("signer-1", signing.PurposePolicyBundleSigning)
+		proof.Algorithm = "ecdsa"
+		err := proof.Validate(signing.PurposePolicyBundleSigning)
+		if !errors.Is(err, ErrInvalidSignature) {
+			t.Fatalf("Validate() = %v, want ErrInvalidSignature", err)
+		}
+	})
+
+	t.Run("dropped_reasons_with_zero_count", func(t *testing.T) {
+		err := (DroppedAccounting{Reasons: []DroppedReason{{Reason: "queue_full", Count: 1}}}).Validate()
+		if !errors.Is(err, ErrInvalidDroppedAccounting) {
+			t.Fatalf("Validate() = %v, want ErrInvalidDroppedAccounting", err)
+		}
+	})
+
+	t.Run("dropped_count_without_reasons", func(t *testing.T) {
+		err := (DroppedAccounting{Count: 1}).Validate()
+		if !errors.Is(err, ErrInvalidDroppedAccounting) {
+			t.Fatalf("Validate() = %v, want ErrInvalidDroppedAccounting", err)
+		}
+	})
+
+	t.Run("dropped_reason_invalid_identifier", func(t *testing.T) {
+		err := (DroppedReason{Reason: "bad reason", Count: 1}).Validate()
+		if !errors.Is(err, ErrInvalidDroppedAccounting) {
+			t.Fatalf("Validate() = %v, want ErrInvalidDroppedAccounting", err)
+		}
+	})
+
+	t.Run("rule_bundle_missing_version", func(t *testing.T) {
+		err := (RuleBundleRef{Name: "official", SHA256: testHash("04")}).Validate()
+		if !errors.Is(err, ErrMissingField) {
+			t.Fatalf("Validate() = %v, want ErrMissingField", err)
+		}
+	})
+
+	t.Run("evidence_chain_checkpoint_out_of_range", func(t *testing.T) {
+		chain := testAuditBatch().Chain
+		chain.CheckpointSeq = chain.SeqEnd + 1
+		err := chain.Validate(chain.SeqStart, chain.SeqEnd)
+		if !errors.Is(err, ErrInvalidSequenceRange) {
+			t.Fatalf("Validate() = %v, want ErrInvalidSequenceRange", err)
+		}
+	})
+
+	t.Run("invalid_signature_string_prefix", func(t *testing.T) {
+		err := validateEd25519SignatureString("bad:" + strings.Repeat("aa", 64))
+		if !errors.Is(err, ErrInvalidSignature) {
+			t.Fatalf("validateEd25519SignatureString() = %v, want ErrInvalidSignature", err)
+		}
+	})
+
+	t.Run("invalid_public_key_hex", func(t *testing.T) {
+		err := validatePublicKeyHex("pub", "ff")
+		if !errors.Is(err, ErrInvalidHash) {
+			t.Fatalf("validatePublicKeyHex() = %v, want ErrInvalidHash", err)
+		}
+	})
+}
+
+func TestRemoteKillMessage_ValidateErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*RemoteKillMessage)
+		want error
+	}{
+		{"unsupported_schema", func(m *RemoteKillMessage) { m.SchemaVersion = 99 }, ErrUnsupportedSchemaVersion},
+		{"missing_message_id", func(m *RemoteKillMessage) { m.MessageID = "" }, ErrMissingField},
+		{"missing_org", func(m *RemoteKillMessage) { m.OrgID = "" }, ErrMissingField},
+		{"empty_audience", func(m *RemoteKillMessage) { m.Audience = Audience{} }, ErrInvalidAudience},
+		{"invalid_state", func(m *RemoteKillMessage) { m.State = "paused" }, ErrInvalidState},
+		{"missing_counter", func(m *RemoteKillMessage) { m.Counter = 0 }, ErrMissingField},
+		{"invalid_window", func(m *RemoteKillMessage) { m.ExpiresAt = m.NotBefore }, ErrInvalidValidityWindow},
+		{"missing_created_at", func(m *RemoteKillMessage) { m.CreatedAt = time.Time{} }, ErrMissingField},
+		{"invalid_utf8_reason", func(m *RemoteKillMessage) { m.Reason = string([]byte{0xff}) }, ErrInvalidReason},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := testRemoteKillMessage()
+			tt.edit(&msg)
+			if err := msg.Validate(); !errors.Is(err, tt.want) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestRollbackAuthorization_ValidateErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*RollbackAuthorization)
+		want error
+	}{
+		{"unsupported_schema", func(r *RollbackAuthorization) { r.SchemaVersion = 99 }, ErrUnsupportedSchemaVersion},
+		{"missing_authorization_id", func(r *RollbackAuthorization) { r.AuthorizationID = "" }, ErrMissingField},
+		{"missing_fleet", func(r *RollbackAuthorization) { r.FleetID = "" }, ErrMissingField},
+		{"empty_audience", func(r *RollbackAuthorization) { r.Audience = Audience{} }, ErrInvalidAudience},
+		{"missing_current_bundle", func(r *RollbackAuthorization) { r.CurrentBundleID = "" }, ErrMissingField},
+		{"missing_target_bundle", func(r *RollbackAuthorization) { r.TargetBundleID = "" }, ErrMissingField},
+		{"missing_counter", func(r *RollbackAuthorization) { r.Counter = 0 }, ErrMissingField},
+		{"invalid_validity", func(r *RollbackAuthorization) { r.ExpiresAt = r.CreatedAt }, ErrInvalidValidityWindow},
+		{"control_reason", func(r *RollbackAuthorization) { r.Reason = "bad\tbundle" }, ErrInvalidReason},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := testRollbackAuthorization()
+			tt.edit(&auth)
+			if err := auth.Validate(); !errors.Is(err, tt.want) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestAuditBatchEnvelope_ValidateErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*AuditBatchEnvelope)
+		want error
+	}{
+		{"unsupported_schema", func(a *AuditBatchEnvelope) { a.SchemaVersion = 99 }, ErrUnsupportedSchemaVersion},
+		{"missing_batch_id", func(a *AuditBatchEnvelope) { a.BatchID = "" }, ErrMissingField},
+		{"missing_instance_id", func(a *AuditBatchEnvelope) { a.InstanceID = "" }, ErrMissingField},
+		{"missing_audit_schema", func(a *AuditBatchEnvelope) { a.AuditSchemaVersion = 0 }, ErrMissingField},
+		{"missing_emitted_at", func(a *AuditBatchEnvelope) { a.EmittedAt = time.Time{} }, ErrMissingField},
+		{"invalid_seq", func(a *AuditBatchEnvelope) { a.SeqEnd = a.SeqStart - 1 }, ErrInvalidSequenceRange},
+		{"missing_event_count", func(a *AuditBatchEnvelope) { a.EventCount = 0 }, ErrMissingField},
+		{"invalid_payload_hash", func(a *AuditBatchEnvelope) { a.PayloadSHA256 = "not-hex" }, ErrInvalidHash},
+		{"invalid_dropped", func(a *AuditBatchEnvelope) { a.Dropped = DroppedAccounting{Count: 1} }, ErrInvalidDroppedAccounting},
+		{"invalid_chain", func(a *AuditBatchEnvelope) { a.Chain.SeqEnd++ }, ErrInvalidSequenceRange},
+		{"missing_signatures", func(a *AuditBatchEnvelope) { a.Signatures = nil }, ErrThresholdRequired},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			batch := testAuditBatch()
+			tt.edit(&batch)
+			if err := batch.Validate(); !errors.Is(err, tt.want) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvidenceChain_ValidateErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*EvidenceChain)
+		want error
+	}{
+		{"wrong_entry_version", func(c *EvidenceChain) { c.EntryVersion = 3 }, ErrInvalidSequenceRange},
+		{"missing_segment", func(c *EvidenceChain) { c.SegmentID = "" }, ErrMissingField},
+		{"seq_mismatch", func(c *EvidenceChain) { c.SeqStart++ }, ErrInvalidSequenceRange},
+		{"bad_hash", func(c *EvidenceChain) { c.CheckpointHash = "bad" }, ErrInvalidHash},
+		{"bad_previous_tail", func(c *EvidenceChain) { c.PreviousSegmentTail = "bad" }, ErrInvalidHash},
+		{"bad_checkpoint_signature", func(c *EvidenceChain) { c.CheckpointSignature = "bad" }, ErrInvalidSignature},
+		{"missing_checkpoint_key", func(c *EvidenceChain) { c.CheckpointSignerKeyID = "" }, ErrMissingField},
+		{"missing_recorder_key", func(c *EvidenceChain) { c.FollowerRecorderKeyID = "" }, ErrMissingField},
+		{"bad_recorder_pub", func(c *EvidenceChain) { c.FollowerRecorderPubHex = "bad" }, ErrInvalidHash},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chain := testAuditBatch().Chain
+			tt.edit(&chain)
+			if err := chain.Validate(10, 20); !errors.Is(err, tt.want) {
+				t.Fatalf("Validate() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestAudienceAndLabelValidationErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		aud  Audience
+	}{
+		{"empty_instance", Audience{InstanceIDs: []string{""}}},
+		{"bad_instance", Audience{InstanceIDs: []string{"-bad"}}},
+		{"empty_label_value", Audience{Labels: map[string]string{"ring": ""}}},
+		{"long_label_key", Audience{Labels: map[string]string{strings.Repeat("a", MaxLabelKeyBytes+1): "v"}}},
+		{"long_label_value", Audience{Labels: map[string]string{"ring": strings.Repeat("a", MaxLabelValueBytes+1)}}},
+		{"bad_label_identifier", Audience{Labels: map[string]string{"-ring": "canary"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.aud.Validate(); !errors.Is(err, ErrInvalidAudience) {
+				t.Fatalf("Validate() = %v, want ErrInvalidAudience", err)
+			}
+		})
+	}
+}
+
+func TestRejectLicenseFieldsYAMLDocumentHandling(t *testing.T) {
+	if err := rejectLicenseFields(""); !errors.Is(err, ErrForbiddenLicenseField) {
+		t.Fatalf("rejectLicenseFields(empty) = %v, want ErrForbiddenLicenseField", err)
+	}
+	if err := rejectLicenseFields("mode: strict\n---\n"); err != nil {
+		t.Fatalf("rejectLicenseFields(empty trailing doc) = %v, want nil", err)
+	}
+	if err := rejectLicenseFields("mode: strict\n---\nmode: balanced\n"); !errors.Is(err, ErrForbiddenLicenseField) {
+		t.Fatalf("rejectLicenseFields(non-empty trailing doc) = %v, want ErrForbiddenLicenseField", err)
+	}
+	if err := rejectLicenseFields("mode: [\n"); !errors.Is(err, ErrForbiddenLicenseField) {
+		t.Fatalf("rejectLicenseFields(malformed) = %v, want ErrForbiddenLicenseField", err)
+	}
+}
+
 func testProof(keyID string, purpose signing.KeyPurpose) SignatureProof {
 	return SignatureProof{
 		SignerKeyID: keyID,

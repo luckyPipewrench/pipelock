@@ -158,7 +158,9 @@ func (p PolicyBundlePayload) PolicyHash() (string, error) {
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); err == nil {
-		return "", fmt.Errorf("%w: config_yaml has multiple YAML documents", ErrInvalidHash)
+		if !isEmptyYAMLDocument(extra) {
+			return "", fmt.Errorf("%w: config_yaml has multiple YAML documents", ErrInvalidHash)
+		}
 	} else if !errors.Is(err, io.EOF) {
 		return "", fmt.Errorf("parse policy bundle config_yaml trailing document: %w", err)
 	}
@@ -1290,8 +1292,19 @@ func rejectExtraYAMLDocuments(dec *yaml.Decoder) error {
 	if err != nil {
 		return fmt.Errorf("%w: parse config payload: %w", ErrForbiddenLicenseField, err)
 	}
-	if len(extra.Content) != 0 {
+	if !isEmptyYAMLDocument(extra) {
 		return fmt.Errorf("%w: multiple YAML documents", ErrForbiddenLicenseField)
 	}
 	return nil
+}
+
+func isEmptyYAMLDocument(n yaml.Node) bool {
+	if len(n.Content) == 0 {
+		return true
+	}
+	if n.Kind != yaml.DocumentNode || len(n.Content) != 1 {
+		return false
+	}
+	child := n.Content[0]
+	return child.Kind == yaml.ScalarNode && child.Tag == "!!null" && child.Value == ""
 }

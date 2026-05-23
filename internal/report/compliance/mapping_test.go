@@ -7,14 +7,14 @@ import "testing"
 
 func TestFramework_CoverageSummary(t *testing.T) {
 	f := Framework{
-		ID:             "owasp_mcp_top_10",
+		ID:             frameworkOWASPMCPTop10,
 		Name:           "OWASP MCP Top 10",
 		Version:        "2025",
 		MappingVersion: 1,
 		Controls: []ControlMapping{
-			{ID: "MCP01", Name: "Token Exposure", Status: StatusCovered, Features: []string{"dlp", "env_leak"}},
-			{ID: "MCP02", Name: "Privilege Escalation", Status: StatusCovered, Features: []string{"tool_policy"}},
-			{ID: "MCP03", Name: "Third Risk", Status: StatusPartial, Features: []string{"sandbox"}},
+			{ID: "MCP01", Name: "Token Exposure", Status: StatusCovered, Features: []string{featureDLP, featureEnvLeak}},
+			{ID: "MCP02", Name: "Privilege Escalation", Status: StatusCovered, Features: []string{featureToolPolicy}},
+			{ID: "MCP03", Name: "Third Risk", Status: StatusPartial, Features: []string{featureSandbox}},
 			{ID: "MCP04", Name: "Not Covered", Status: StatusNotCovered},
 		},
 	}

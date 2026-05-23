@@ -1003,13 +1003,13 @@ func verifySignatureThreshold(
 // unconditionally — revocation overrides any window check.
 func (k SignatureKey) checkLifecycle(now time.Time) error {
 	if k.RevokedAt != nil {
-		return fmt.Errorf("%w: revoked_at=%s", ErrSignatureVerification, k.RevokedAt.UTC().Format(time.RFC3339))
+		return fmt.Errorf("%w: revoked_at=%s verification_time=%s", ErrSignatureVerification, k.RevokedAt.UTC().Format(time.RFC3339), now.Format(time.RFC3339))
 	}
 	if !k.NotBefore.IsZero() && now.Before(k.NotBefore.UTC()) {
-		return fmt.Errorf("%w: not_before=%s", ErrNotYetValid, k.NotBefore.UTC().Format(time.RFC3339))
+		return fmt.Errorf("%w: not_before=%s verification_time=%s", ErrNotYetValid, k.NotBefore.UTC().Format(time.RFC3339), now.Format(time.RFC3339))
 	}
 	if !k.NotAfter.IsZero() && now.After(k.NotAfter.UTC()) {
-		return fmt.Errorf("%w: not_after=%s", ErrExpired, k.NotAfter.UTC().Format(time.RFC3339))
+		return fmt.Errorf("%w: not_after=%s verification_time=%s", ErrExpired, k.NotAfter.UTC().Format(time.RFC3339), now.Format(time.RFC3339))
 	}
 	return nil
 }

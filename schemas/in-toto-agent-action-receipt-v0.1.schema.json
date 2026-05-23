@@ -62,7 +62,7 @@
     },
     "verdictReason": {
       "type": "string",
-      "description": "Canonical block-reason code. Required when verdict != allow.",
+      "description": "Canonical block-reason code. Required when verdict is one of block, warn, ask, redirect. MUST be absent when verdict is allow or forward (both are pass-through verdicts). Optional when verdict is strip.",
       "minLength": 1
     },
     "principal": {

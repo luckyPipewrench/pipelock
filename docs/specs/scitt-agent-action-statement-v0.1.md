@@ -20,7 +20,7 @@ separated:
 | ActionReceipt v1 / EvidenceReceipt v2 envelope | Signed Statement | "Agent Action Signed Statement" |
 | `signer_key` (Ed25519 hex) | Issuer (and its key) | Issuer key |
 | `target` on the action record | Subject | Subject |
-| Pipelock policy bundle digest | Issuance context | Mapped via Statement `cnf` / header parameters |
+| Pipelock policy bundle digest | Issuance context | Carried in the payload as `action_record.policy_hash` (per `internal/receipt/action.go`); this profile does not lift it into a COSE header parameter. |
 | (none — no inclusion proof today) | Receipt (TS inclusion proof) | **Out of scope of v0.1.** Anchoring is the TS's job. |
 | (combined for relying parties) | Transparent Statement (Signed Statement + Receipt) | Out of scope; produced by the TS after submission. |
 
@@ -203,8 +203,8 @@ BoF threads before drawing conclusions about WG appetite.
 1. Receive a SCITT Transparent Statement (Statement + Receipt) from a TS, or the
    bare Statement from a Pipelock instance.
 2. Decode the COSE_Sign1 envelope; check `alg == EdDSA`, `content-type ==
-   application/vnd.pipelock.action-record+json`, and that `cwt-claims` is
-   present.
+   application/vnd.pipelock.action-record+json`, and that the protected
+   header carries `CWT_Claims` (label 15).
 3. Resolve the Issuer key by `kid` against the relying party's trust list.
 4. Verify the COSE_Sign1 signature.
 5. Parse the payload as a Pipelock action_record. Validate it against the

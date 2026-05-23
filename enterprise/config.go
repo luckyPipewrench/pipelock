@@ -7,11 +7,13 @@ package enterprise
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"regexp"
 	"slices"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -270,11 +272,26 @@ func EnforceLicenseGate(c *config.Config) {
 		return
 	}
 
-	// Verify the license token signature and expiration.
-	lic, err := license.Verify(c.LicenseKey, pubKey)
+	crl, crlLoaded, err := loadLicenseCRL(c, pubKey)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license CRL validation failed: %v\n"+
+			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
+		stripNamedAgents(c)
+		return
+	}
+
+	// Verify the license token signature, expiration, and revocation status.
+	lic, err := license.VerifyWithCRL(c.LicenseKey, pubKey, crl)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license verification failed: %v\n"+
 			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
+		if crlLoaded && errors.Is(err, license.ErrLicenseRevoked) {
+			c.LicenseRevoked = true
+			if revoked, ok := crl.RevocationFor(lic.ID); ok {
+				c.LicenseID = lic.ID
+				c.LicenseRevocationReason = revoked.Reason
+			}
+		}
 		stripNamedAgents(c)
 		return
 	}
@@ -289,6 +306,22 @@ func EnforceLicenseGate(c *config.Config) {
 
 	// Store expiry for runtime enforcement. Zero means perpetual.
 	c.LicenseExpiresAt = lic.ExpiresAt
+	c.LicenseID = lic.ID
+	if crlLoaded {
+		c.LicenseCRLExpiresAt = crl.Payload.ExpiresAt
+		c.LicenseCRLSHA256 = crl.SHA256
+	}
+}
+
+func loadLicenseCRL(c *config.Config, pubKey ed25519.PublicKey) (*license.CRL, bool, error) {
+	if c.LicenseCRLFile == "" {
+		return nil, false, nil
+	}
+	crl, err := license.LoadAndVerifyCRL(c.LicenseCRLFile, pubKey, time.Now())
+	if err != nil {
+		return nil, true, err
+	}
+	return &crl, true, nil
 }
 
 // stripNamedAgents removes all agent profiles except _default.

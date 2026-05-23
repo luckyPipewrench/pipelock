@@ -52,9 +52,38 @@ type Entitlement struct {
 	UpdatedAt time.Time
 }
 
+// RevokedLicenseRecord is a license ID that must be included in the signed CRL.
+type RevokedLicenseRecord struct {
+	LicenseID      string
+	SubscriptionID string
+	Reason         string
+	RevokedAt      time.Time
+}
+
+// LicenseIssuance records each minted license token so subscription shutdown
+// can revoke still-valid older refresh tokens, not just the latest one.
+type LicenseIssuance struct {
+	LicenseID      string
+	SubscriptionID string
+	ExpiresAt      time.Time
+	IssuedAt       time.Time
+}
+
 // EntitlementDB manages the SQLite entitlement store.
 type EntitlementDB struct {
 	db *sql.DB
+}
+
+// ErrTerminalEntitlement means a stale active event tried to mint a license
+// after this subscription was already recorded in a terminal state.
+var ErrTerminalEntitlement = errors.New("entitlement is terminal")
+
+type entitlementExecer interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+type entitlementQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 // OpenEntitlementDB opens (or creates) the SQLite database at path and
@@ -133,6 +162,26 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_entitlements_next_refresh ON entitlements(next_refresh_at);
 	CREATE INDEX IF NOT EXISTS idx_entitlements_founding ON entitlements(founding);
 	CREATE INDEX IF NOT EXISTS idx_entitlements_founding_reserved ON entitlements(founding_reserved_at);
+
+	CREATE TABLE IF NOT EXISTS license_revocations (
+		license_id      TEXT PRIMARY KEY,
+		subscription_id TEXT NOT NULL,
+		reason          TEXT NOT NULL,
+		revoked_at      DATETIME NOT NULL,
+		created_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_license_revocations_subscription ON license_revocations(subscription_id);
+
+	CREATE TABLE IF NOT EXISTS license_issuances (
+		license_id      TEXT PRIMARY KEY,
+		subscription_id TEXT NOT NULL,
+		expires_at      DATETIME NOT NULL,
+		issued_at       DATETIME NOT NULL,
+		created_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_license_issuances_subscription ON license_issuances(subscription_id);
 	`
 	_, err := e.db.ExecContext(ctx, ddl)
 	return err
@@ -141,6 +190,16 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 // Upsert inserts or updates an entitlement record. Updates the updated_at
 // timestamp automatically.
 func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
+	if ent == nil {
+		return errors.New("entitlement is nil")
+	}
+	if err := upsertEntitlement(ctx, e.db, ent); err != nil {
+		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
+	}
+	return nil
+}
+
+func upsertEntitlement(ctx context.Context, exec entitlementExecer, ent *Entitlement) error {
 	const query = `
 	INSERT INTO entitlements (
 		subscription_id, customer_email, product_id, tier, billing_interval,
@@ -183,7 +242,7 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 	`
 
 	//nolint:gosec // G701 false positive: query is a const with parameterized placeholders, not concatenated
-	_, err := e.db.ExecContext(ctx, query,
+	_, err := exec.ExecContext(ctx, query,
 		ent.SubscriptionID, ent.CustomerEmail, ent.ProductID, ent.Tier, ent.BillingInterval,
 		ent.Status, ent.CurrentPeriodEnd, ent.Founding, ent.FoundingReservedAt, ent.Org,
 		ent.Features,
@@ -192,10 +251,7 @@ func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
 		ent.LastLicenseProductID, ent.LastDeliveryStatus, ent.LastDeliveryAttemptAt,
 		ent.NextRefreshAt,
 	)
-	if err != nil {
-		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
-	}
-	return nil
+	return err
 }
 
 // GetBySubscriptionID retrieves a single entitlement by its Polar subscription ID.
@@ -318,4 +374,174 @@ func (e *EntitlementDB) UpdateNextRefresh(ctx context.Context, subID string, nex
 		return fmt.Errorf("update next refresh %s: %w", subID, err)
 	}
 	return nil
+}
+
+// UpsertLicenseRevocation records a revoked license ID for CRL publication.
+func (e *EntitlementDB) UpsertLicenseRevocation(ctx context.Context, rec RevokedLicenseRecord) error {
+	if rec.LicenseID == "" {
+		return errors.New("license_id is required")
+	}
+	if rec.SubscriptionID == "" {
+		return errors.New("subscription_id is required")
+	}
+	if rec.Reason == "" {
+		rec.Reason = "subscription_ended"
+	}
+	if rec.RevokedAt.IsZero() {
+		rec.RevokedAt = time.Now().UTC()
+	}
+	const query = `
+	INSERT INTO license_revocations (license_id, subscription_id, reason, revoked_at)
+	VALUES (?, ?, ?, ?)
+	ON CONFLICT(license_id) DO UPDATE SET
+		subscription_id = excluded.subscription_id,
+		reason = excluded.reason,
+		revoked_at = excluded.revoked_at
+	`
+	_, err := e.db.ExecContext(ctx, query, rec.LicenseID, rec.SubscriptionID, rec.Reason, rec.RevokedAt)
+	if err != nil {
+		return fmt.Errorf("upsert license revocation %s: %w", rec.LicenseID, err)
+	}
+	return nil
+}
+
+// ListLicenseRevocations returns all currently published license revocations.
+func (e *EntitlementDB) ListLicenseRevocations(ctx context.Context) ([]RevokedLicenseRecord, error) {
+	const query = `
+	SELECT r.license_id, r.subscription_id, r.reason, r.revoked_at
+	FROM license_revocations AS r
+	LEFT JOIN license_issuances i ON i.license_id = r.license_id
+	WHERE i.expires_at IS NULL OR i.expires_at > ?
+	ORDER BY r.license_id ASC
+	`
+	rows, err := e.db.QueryContext(ctx, query, time.Now().UTC())
+	if err != nil {
+		return nil, fmt.Errorf("list license revocations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []RevokedLicenseRecord
+	for rows.Next() {
+		var rec RevokedLicenseRecord
+		if err := rows.Scan(&rec.LicenseID, &rec.SubscriptionID, &rec.Reason, &rec.RevokedAt); err != nil {
+			return nil, fmt.Errorf("scan license revocation: %w", err)
+		}
+		results = append(results, rec)
+	}
+	return results, rows.Err()
+}
+
+// InsertLicenseIssuance records a minted license token for later revocation.
+func (e *EntitlementDB) InsertLicenseIssuance(ctx context.Context, issuance LicenseIssuance) error {
+	if err := insertLicenseIssuance(ctx, e.db, issuance); err != nil {
+		return fmt.Errorf("insert license issuance %s: %w", issuance.LicenseID, err)
+	}
+	return nil
+}
+
+// UpsertWithLicenseIssuance atomically records entitlement state and the
+// license issuance. It refuses stale active events when the current persisted
+// subscription state is already terminal.
+func (e *EntitlementDB) UpsertWithLicenseIssuance(ctx context.Context, ent *Entitlement, issuance LicenseIssuance) error {
+	if ent == nil {
+		return errors.New("entitlement is nil")
+	}
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin entitlement issuance transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	terminal, status, err := currentEntitlementTerminal(ctx, tx, ent.SubscriptionID)
+	if err != nil {
+		return err
+	}
+	if terminal {
+		return fmt.Errorf("%w: subscription %s status %s", ErrTerminalEntitlement, ent.SubscriptionID, status)
+	}
+	if err := upsertEntitlement(ctx, tx, ent); err != nil {
+		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
+	}
+	if err := insertLicenseIssuance(ctx, tx, issuance); err != nil {
+		return fmt.Errorf("insert license issuance %s: %w", issuance.LicenseID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit entitlement issuance transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func insertLicenseIssuance(ctx context.Context, exec entitlementExecer, issuance LicenseIssuance) error {
+	if issuance.LicenseID == "" {
+		return errors.New("license_id is required")
+	}
+	if issuance.SubscriptionID == "" {
+		return errors.New("subscription_id is required")
+	}
+	if issuance.ExpiresAt.IsZero() {
+		return errors.New("expires_at is required")
+	}
+	if issuance.IssuedAt.IsZero() {
+		issuance.IssuedAt = time.Now().UTC()
+	}
+	const query = `
+	INSERT INTO license_issuances (license_id, subscription_id, expires_at, issued_at)
+	VALUES (?, ?, ?, ?)
+	ON CONFLICT(license_id) DO NOTHING
+	`
+	_, err := exec.ExecContext(ctx, query, issuance.LicenseID, issuance.SubscriptionID, issuance.ExpiresAt, issuance.IssuedAt)
+	return err
+}
+
+// ListUnexpiredLicenseIssuances returns every still-valid license minted for a subscription.
+func (e *EntitlementDB) ListUnexpiredLicenseIssuances(ctx context.Context, subID string, now time.Time) ([]LicenseIssuance, error) {
+	const query = `
+	SELECT license_id, subscription_id, expires_at, issued_at
+	FROM license_issuances
+	WHERE subscription_id = ?
+	  AND expires_at > ?
+	ORDER BY issued_at ASC, license_id ASC
+	`
+	rows, err := e.db.QueryContext(ctx, query, subID, now.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("list license issuances %s: %w", subID, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []LicenseIssuance
+	for rows.Next() {
+		var issuance LicenseIssuance
+		if err := rows.Scan(&issuance.LicenseID, &issuance.SubscriptionID, &issuance.ExpiresAt, &issuance.IssuedAt); err != nil {
+			return nil, fmt.Errorf("scan license issuance: %w", err)
+		}
+		results = append(results, issuance)
+	}
+	return results, rows.Err()
+}
+
+func currentEntitlementTerminal(ctx context.Context, q entitlementQueryer, subID string) (bool, string, error) {
+	var status string
+	err := q.QueryRowContext(ctx, "SELECT status FROM entitlements WHERE subscription_id = ?", subID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("read current entitlement status %s: %w", subID, err)
+	}
+	return isTerminalEntitlementStatus(status), status, nil
+}
+
+func isTerminalEntitlementStatus(status string) bool {
+	switch status {
+	case statusCanceled, statusRevoked, statusUnpaid:
+		return true
+	default:
+		return false
+	}
 }

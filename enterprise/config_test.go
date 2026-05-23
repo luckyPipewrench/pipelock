@@ -8,6 +8,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -612,6 +615,64 @@ func TestEnforceLicenseGate_ValidLicense(t *testing.T) {
 	}
 	if cfg.LicenseExpiresAt == 0 {
 		t.Error("expected non-zero LicenseExpiresAt after valid license")
+	}
+}
+
+func TestEnforceLicenseGate_RevokedLicense(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "lic_revoked_gate",
+		Email:     "test@example.com",
+		Features:  []string{license.FeatureAgents},
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+	}
+	tok, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl, err := license.SignCRL(license.CRLPayload{
+		Version:   license.CRLVersion,
+		IssuedAt:  now.Add(-time.Hour).Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Revoked: []license.RevokedLicense{{
+			ID:        lic.ID,
+			Reason:    "subscription_canceled",
+			RevokedAt: now.Add(-time.Hour).Unix(),
+		}},
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlPath := filepath.Join(t.TempDir(), "crl.json")
+	if err := os.WriteFile(crlPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"claude-code": {Mode: config.ModeStrict},
+	}
+	cfg.LicenseKey = tok
+	cfg.LicensePublicKey = hex.EncodeToString(pub)
+	cfg.LicenseCRLFile = crlPath
+
+	EnforceLicenseGate(cfg)
+	if cfg.Agents != nil {
+		t.Error("expected agents disabled with revoked license")
+	}
+	if !cfg.LicenseRevoked {
+		t.Error("expected LicenseRevoked=true")
+	}
+	if cfg.LicenseRevocationReason != "subscription_canceled" {
+		t.Errorf("LicenseRevocationReason = %q", cfg.LicenseRevocationReason)
 	}
 }
 

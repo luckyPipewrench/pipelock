@@ -87,6 +87,10 @@ const EventMediaExposure = "media_exposure"
 // trigger. Fields include source URL, density, and a snippet hash.
 const EventTextStego = "text_stego_detected"
 
+// EventLicenseExpiry is emitted when the active enterprise license enters a
+// renewal warning band.
+const EventLicenseExpiry = "license_expiry"
+
 // actionBlock is the action string that indicates a request was blocked.
 // Used internally for severity mapping — block actions map to SeverityCritical.
 const actionBlock = "block"
@@ -154,6 +158,7 @@ var EventSeverity = map[string]Severity{
 	EventResponseScanExempt: SeverityWarn, // scanning was skipped; operators need visibility
 	EventMediaExposure:      SeverityWarn, // media reached agent; provenance signal for taint system
 	EventTextStego:          SeverityWarn, // suspicious combining-mark density; exposure signal
+	EventLicenseExpiry:      SeverityWarn, // overridden by caller with threshold-specific severity
 
 	// Info: normal operations
 	"allowed":         SeverityInfo,

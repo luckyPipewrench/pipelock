@@ -496,6 +496,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	emitter := emit.NewEmitter(instanceID, emitSinks...)
 	logger.SetEmitter(emitter)
 	s.emitter = emitter
+	emitLicenseExpiryWarning(cfg, logger, sentryClient, opts.Stderr)
 
 	runtimeMode := config.RuntimeForward
 	if hasMCPListen {
@@ -1227,8 +1228,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// License expiry watchdog: shut down agent listeners when the
-	// enterprise license expires at runtime. Only active when agent
-	// listeners exist and the license has a non-zero expiry.
+	// enterprise license expires at runtime. Agent shutdown only matters
+	// when listeners exist, but renewal warnings still emit for long-running
+	// proxy-only processes.
 	if agentListenerCount > 0 && cfg.LicenseExpiresAt > 0 {
 		go func() {
 			remaining := time.Until(time.Unix(cfg.LicenseExpiresAt, 0))
@@ -1246,6 +1248,12 @@ func (s *Server) Start(ctx context.Context) error {
 			case <-ctx.Done():
 			}
 		}()
+	}
+	if cfg.LicenseExpiresAt > 0 {
+		go s.startLicenseExpiryWatcher(ctx)
+	}
+	if agentListenerCount > 0 && cfg.LicenseCRLFile != "" {
+		go s.startLicenseCRLWatcher(ctx)
 	}
 
 	// Start the fetch proxy (blocks until context cancelled or error).
@@ -1413,7 +1421,10 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// agents on reload, do not re-add them via listener
 		// preservation.
 		agentsRevokedByLicense := oldCfg.Agents != nil && newCfg.Agents == nil
-		licenseInputsChanged := oldCfg.LicenseKey != newCfg.LicenseKey || oldCfg.LicensePublicKey != newCfg.LicensePublicKey || oldCfg.LicenseFile != newCfg.LicenseFile
+		licenseInputsChanged := oldCfg.LicenseKey != newCfg.LicenseKey ||
+			oldCfg.LicensePublicKey != newCfg.LicensePublicKey ||
+			oldCfg.LicenseFile != newCfg.LicenseFile ||
+			oldCfg.LicenseCRLFile != newCfg.LicenseCRLFile
 
 		if agentsRevokedByLicense {
 			// License gate disabled agents on reload. Shut down
@@ -1433,8 +1444,9 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			newCfg.Agents = oldCfg.Agents
 			newCfg.LicenseKey = oldCfg.LicenseKey
 			newCfg.LicenseFile = oldCfg.LicenseFile
+			newCfg.LicenseCRLFile = oldCfg.LicenseCRLFile
 			newCfg.LicensePublicKey = oldCfg.LicensePublicKey
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: license key inputs changed (license_key, license_file, or license_public_key) - requires restart for license re-verification\n")
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: license key inputs changed (license_key, license_file, license_crl_file, or license_public_key) - requires restart for license re-verification\n")
 		} else if AgentListenersChanged(oldCfg, newCfg) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 			PreserveAgentListeners(oldCfg, newCfg)
@@ -1444,6 +1456,11 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		// not parsed from YAML. Always preserve the old value until
 		// restart.
 		newCfg.LicenseExpiresAt = oldCfg.LicenseExpiresAt
+		newCfg.LicenseID = oldCfg.LicenseID
+		newCfg.LicenseCRLExpiresAt = oldCfg.LicenseCRLExpiresAt
+		newCfg.LicenseCRLSHA256 = oldCfg.LicenseCRLSHA256
+		newCfg.LicenseRevoked = oldCfg.LicenseRevoked
+		newCfg.LicenseRevocationReason = oldCfg.LicenseRevocationReason
 	}
 
 	// Surface advisory warnings on reload the same way NewServer does at

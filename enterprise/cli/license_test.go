@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +31,20 @@ func setTestHome(t *testing.T, dir string) {
 	t.Setenv("USERPROFILE", dir)
 }
 
+func writeLicenseStatusConfig(t *testing.T, token string, pub ed25519.PublicKey, crlPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := "mode: balanced\nlicense_key: " + token + "\nlicense_public_key: " + hex.EncodeToString(pub) + "\n"
+	if crlPath != "" {
+		cfg += "license_crl_file: " + crlPath + "\n"
+	}
+	path := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestLicenseCmd(t *testing.T) {
 	cmd := LicenseCmd()
 	if cmd.Use != "license" {
@@ -38,10 +54,267 @@ func TestLicenseCmd(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		got[strings.Fields(sub.Use)[0]] = true
 	}
-	for _, want := range []string{"keygen", "issue", "inspect", "install"} {
+	for _, want := range []string{"keygen", "issue", "inspect", "install", "status"} {
 		if !got[want] {
 			t.Errorf("missing %q subcommand", want)
 		}
+	}
+}
+
+func TestLicenseStatusValidWithWarningBand(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lic := license.License{
+		ID:        "lic_status",
+		Email:     "status@example.com",
+		IssuedAt:  time.Now().Unix(),
+		ExpiresAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+		Tier:      "pro",
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeLicenseStatusConfig(t, token, pub, "")
+
+	report, err := buildLicenseStatusReport(cfgPath, "")
+	if err != nil {
+		t.Fatalf("buildLicenseStatusReport: %v", err)
+	}
+	if report.Status != licenseStatusValid {
+		t.Fatalf("status = %q, want valid; report=%+v", report.Status, report)
+	}
+	if report.WarningBand != 7 {
+		t.Errorf("WarningBand = %d, want 7", report.WarningBand)
+	}
+	if report.Severity != license.ExpirySeverityWarn {
+		t.Errorf("Severity = %q, want warn", report.Severity)
+	}
+}
+
+func TestLicenseStatusRevokedByCRL(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "lic_revoked_status",
+		Email:     "status@example.com",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl, err := license.SignCRL(license.CRLPayload{
+		Version:   license.CRLVersion,
+		IssuedAt:  now.Add(-time.Hour).Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Revoked: []license.RevokedLicense{{
+			ID:        lic.ID,
+			Reason:    "subscription_canceled",
+			RevokedAt: now.Add(-time.Hour).Unix(),
+		}},
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlData, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	crlPath := filepath.Join(dir, "crl.json")
+	if err := os.WriteFile(crlPath, crlData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeLicenseStatusConfig(t, token, pub, crlPath)
+
+	report, err := buildLicenseStatusReport(cfgPath, "")
+	if err == nil {
+		t.Fatal("expected revoked license error")
+	}
+	if report.Status != "revoked" {
+		t.Fatalf("status = %q, want revoked; report=%+v", report.Status, report)
+	}
+}
+
+func TestLicenseStatusCommandOutputs(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:             "lic_status_cmd",
+		Email:          "status@example.com",
+		IssuedAt:       now.Unix(),
+		ExpiresAt:      now.Add(45 * 24 * time.Hour).Unix(),
+		Features:       []string{license.FeatureAgents},
+		Tier:           "enterprise",
+		SubscriptionID: "sub_status",
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeLicenseStatusConfig(t, token, pub, "")
+
+	t.Run("human", func(t *testing.T) {
+		cmd := licenseStatusCmd()
+		cmd.SilenceUsage = true
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetArgs([]string{"--config", cfgPath})
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("status: %v", err)
+		}
+		for _, want := range []string{"License status: valid", "lic_status_cmd", "enterprise", "sub_status"} {
+			if !strings.Contains(buf.String(), want) {
+				t.Fatalf("output missing %q:\n%s", want, buf.String())
+			}
+		}
+	})
+
+	t.Run("json missing", func(t *testing.T) {
+		cfgPath := writeLicenseStatusConfig(t, "", pub, "")
+		cmd := licenseStatusCmd()
+		cmd.SilenceUsage = true
+		var buf bytes.Buffer
+		cmd.SetOut(&buf)
+		cmd.SetArgs([]string{"--config", cfgPath, "--json"})
+		err := cmd.Execute()
+		if err == nil {
+			t.Fatal("expected missing license error")
+		}
+		var report licenseStatusReport
+		if jsonErr := json.Unmarshal(buf.Bytes(), &report); jsonErr != nil {
+			t.Fatalf("invalid JSON: %v\n%s", jsonErr, buf.String())
+		}
+		if report.Status != licenseStatusMissing {
+			t.Fatalf("status = %q, want missing", report.Status)
+		}
+	})
+}
+
+func TestLicenseStatusReportErrors(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "lic_status_errors",
+		Email:     "status@example.com",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("invalid config file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "bad.yaml")
+		if err := os.WriteFile(path, []byte("mode: ["), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		report, err := buildLicenseStatusReport(path, "")
+		if err == nil || report.Status != licenseStatusInvalid {
+			t.Fatalf("report=%+v err=%v, want invalid", report, err)
+		}
+	})
+
+	t.Run("invalid public key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "pipelock.yaml")
+		cfg := "mode: balanced\nlicense_key: " + token + "\nlicense_public_key: not-hex\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		report, err := buildLicenseStatusReport(path, "")
+		if err == nil || report.Status != licenseStatusInvalid {
+			t.Fatalf("report=%+v err=%v, want invalid", report, err)
+		}
+	})
+
+	t.Run("missing public key", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "pipelock.yaml")
+		cfg := "mode: balanced\nlicense_key: " + token + "\n"
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		report, err := buildLicenseStatusReport(path, "")
+		if err == nil || report.Status != licenseStatusInvalid || !strings.Contains(report.Reason, "no license public key") {
+			t.Fatalf("report=%+v err=%v, want missing public key", report, err)
+		}
+	})
+
+	t.Run("expired license", func(t *testing.T) {
+		expired := lic
+		expired.ID = "lic_status_expired"
+		expired.ExpiresAt = now.Add(-time.Hour).Unix()
+		expiredToken, err := license.Issue(expired, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := writeLicenseStatusConfig(t, expiredToken, pub, "")
+		report, err := buildLicenseStatusReport(cfgPath, "")
+		if err == nil || report.Status != "expired" {
+			t.Fatalf("report=%+v err=%v, want expired", report, err)
+		}
+	})
+
+	t.Run("invalid CRL override", func(t *testing.T) {
+		cfgPath := writeLicenseStatusConfig(t, token, pub, "")
+		crlPath := filepath.Join(t.TempDir(), "bad-crl.json")
+		if err := os.WriteFile(crlPath, []byte("{"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		report, err := buildLicenseStatusReport(cfgPath, crlPath)
+		if err == nil || report.Status != licenseStatusInvalid || !report.CRLConfigured {
+			t.Fatalf("report=%+v err=%v, want invalid CRL", report, err)
+		}
+	})
+}
+
+func TestPrintLicenseStatusVariants(t *testing.T) {
+	cmd := licenseStatusCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	printLicenseStatus(cmd, licenseStatusReport{
+		Status:         licenseStatusValid,
+		LicenseID:      "lic_print",
+		Tier:           "pro",
+		SubscriptionID: "sub_print",
+		ExpiresAt:      "2026-06-01",
+		DaysRemaining:  7,
+		WarningBand:    7,
+		Severity:       "warn",
+		CRLConfigured:  true,
+		CRLExpiresAt:   "2026-06-02",
+		CRLSHA256:      "abc123",
+	})
+	out := buf.String()
+	for _, want := range []string{"lic_print", "Warning:", "CRL SHA:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+
+	buf.Reset()
+	printLicenseStatus(cmd, licenseStatusReport{
+		Status: licenseStatusValid,
+		Reason: "because",
+	})
+	if !strings.Contains(buf.String(), "never") || !strings.Contains(buf.String(), "because") {
+		t.Fatalf("unexpected perpetual output:\n%s", buf.String())
 	}
 }
 

@@ -136,6 +136,7 @@ func TestNilClient_NoPanic(t *testing.T) {
 	// All methods should be safe no-ops on nil receiver.
 	c.CaptureError(errors.New("test"))
 	c.CaptureMessage("test")
+	c.AddBreadcrumb("license", "expiry", "warn", map[string]any{"days": "7"})
 	c.Close()
 	if !c.Flush(0) {
 		t.Error("expected Flush to return true on nil client")
@@ -146,9 +147,37 @@ func TestDisabledClient_NoPanic(t *testing.T) {
 	c := &Client{enabled: false}
 	c.CaptureError(errors.New("test"))
 	c.CaptureMessage("test")
+	c.AddBreadcrumb("license", "expiry", "warn", map[string]any{"days": "7"})
 	c.Close()
 	if !c.Flush(0) {
 		t.Error("expected Flush to return true on disabled client")
+	}
+}
+
+func TestAddBreadcrumbEnabledClient(t *testing.T) {
+	c, transport := initTestClient(t, nil)
+	defer c.Close()
+
+	c.AddBreadcrumb("license", "expiry warning", "warn", map[string]any{
+		"threshold_days": "7",
+		"days_remaining": "6",
+	})
+	c.CaptureMessage("license status changed")
+	_ = c.Flush(time.Second)
+
+	events := transport.Events()
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if len(events[0].Breadcrumbs) != 1 {
+		t.Fatalf("breadcrumbs = %d, want 1", len(events[0].Breadcrumbs))
+	}
+	crumb := events[0].Breadcrumbs[0]
+	if crumb.Category != "license" || crumb.Message != "expiry warning" || crumb.Level != sentry.Level("warn") {
+		t.Fatalf("breadcrumb = %+v, want license warning", crumb)
+	}
+	if crumb.Data["threshold_days"] != "7" || crumb.Data["days_remaining"] != "6" {
+		t.Fatalf("breadcrumb data = %+v, want warning band data", crumb.Data)
 	}
 }
 

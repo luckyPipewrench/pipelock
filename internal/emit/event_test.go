@@ -83,6 +83,7 @@ func TestEventSeverity_CoverExpectedTypes(t *testing.T) {
 
 		// Warn: security-relevant operational
 		{"response_scan_exempt", SeverityWarn},
+		{EventLicenseExpiry, SeverityWarn},
 
 		// Info
 		{verdictAllowed, SeverityInfo},
@@ -125,6 +126,7 @@ func TestEventSeverity_NoUnexpectedEntries(t *testing.T) {
 		"response_scan_exempt":  true,
 		EventMediaExposure:      true,
 		EventTextStego:          true,
+		EventLicenseExpiry:      true,
 		verdictAllowed:          true,
 		EventTunnelOpen:         true,
 		"tunnel_close":          true,

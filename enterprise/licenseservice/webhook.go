@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -35,8 +36,13 @@ const refreshLeadDays = 15
 // billingIntervalOneTime identifies one-time purchases (trials).
 const billingIntervalOneTime = "one_time"
 
-// statusActive is the active subscription/entitlement status.
-const statusActive = "active"
+// Subscription/entitlement status values used by Polar.
+const (
+	statusActive   = "active"
+	statusCanceled = "canceled"
+	statusRevoked  = "revoked"
+	statusUnpaid   = "unpaid"
+)
 
 // Tier constants for Pipelock subscription levels.
 const (
@@ -174,7 +180,7 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 	switch sub.Status {
 	case statusActive:
 		return h.handleActive(ctx, ent, existing)
-	case "canceled", "revoked", "unpaid":
+	case statusCanceled, statusRevoked, statusUnpaid:
 		return h.handleEnded(ctx, ent, existing)
 	default:
 		h.log.Warn().
@@ -202,6 +208,16 @@ func (h *WebhookHandler) processSubscription(ctx context.Context, sub *PolarSubs
 // handleActive processes an active subscription: checks idempotency,
 // mints a license if needed, persists state, then attempts email delivery.
 func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, existing *Entitlement) error {
+	if existing != nil && isTerminalEntitlementStatus(existing.Status) {
+		err := fmt.Errorf("%w: subscription %s status %s", ErrTerminalEntitlement, ent.SubscriptionID, existing.Status)
+		h.log.Warn().
+			Err(err).
+			Str("subscription_id", ent.SubscriptionID).
+			Msg("stale active subscription state ignored after terminal entitlement")
+		_ = h.ledger.LogError(ent.SubscriptionID, "ignore stale active subscription after terminal entitlement", err)
+		return nil
+	}
+
 	// Idempotency check: compare the full set of fields that affect the
 	// signed token (period, tier, interval, product, email, org). Also
 	// skip the fast path if delivery never succeeded (retry), or if the
@@ -262,8 +278,6 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 		return fmt.Errorf("issue license token: %w", err)
 	}
 
-	_ = h.ledger.LogLicenseIssued(ent.SubscriptionID, ent.CustomerEmail, lic.ID, ent.Tier, expiresAt)
-
 	// Update entitlement with license state.
 	ent.LastLicenseID = lic.ID
 	issuedAt := now
@@ -288,9 +302,24 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	deliveryAttempt := now
 	ent.LastDeliveryAttemptAt = &deliveryAttempt
 
-	if err := h.db.Upsert(ctx, ent); err != nil {
-		return fmt.Errorf("persist entitlement: %w", err)
+	if err := h.db.UpsertWithLicenseIssuance(ctx, ent, LicenseIssuance{
+		LicenseID:      lic.ID,
+		SubscriptionID: ent.SubscriptionID,
+		ExpiresAt:      expiresAt,
+		IssuedAt:       now,
+	}); err != nil {
+		if errors.Is(err, ErrTerminalEntitlement) {
+			h.log.Warn().
+				Err(err).
+				Str("subscription_id", ent.SubscriptionID).
+				Msg("stale active subscription state ignored after terminal entitlement")
+			_ = h.ledger.LogError(ent.SubscriptionID, "ignore stale active subscription after terminal entitlement", err)
+			return nil
+		}
+		_ = h.ledger.LogError(ent.SubscriptionID, "persist entitlement and license issuance", err)
+		return fmt.Errorf("persist entitlement and license issuance: %w", err)
 	}
+	_ = h.ledger.LogLicenseIssued(ent.SubscriptionID, ent.CustomerEmail, lic.ID, ent.Tier, expiresAt)
 
 	// Attempt email delivery, update delivery status after.
 	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, ent.Tier)
@@ -343,6 +372,13 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 		return fmt.Errorf("persist ended entitlement: %w", err)
 	}
 
+	if existing != nil {
+		reason := "subscription_" + ent.Status
+		if err := h.revokeSubscriptionLicenses(ctx, ent, existing, reason); err != nil {
+			return err
+		}
+	}
+
 	// Send cancellation email if we have a last-issued license.
 	if existing != nil && existing.LastLicenseExpiresAt != nil {
 		_, emailErr := h.email.SendSubscriptionEnded(ctx, ent.CustomerEmail, *existing.LastLicenseExpiresAt)
@@ -368,6 +404,65 @@ func (h *WebhookHandler) handleEnded(ctx context.Context, ent *Entitlement, exis
 		Msg("subscription ended")
 
 	return nil
+}
+
+func (h *WebhookHandler) revokeSubscriptionLicenses(ctx context.Context, ent, existing *Entitlement, reason string) error {
+	now := time.Now().UTC()
+	issuances, err := h.db.ListUnexpiredLicenseIssuances(ctx, ent.SubscriptionID, now)
+	if err != nil {
+		_ = h.ledger.LogError(ent.SubscriptionID, "list license issuances for revocation", err)
+		return fmt.Errorf("list license issuances for revocation: %w", err)
+	}
+	if existing.LastLicenseID != "" {
+		found := false
+		for _, issuance := range issuances {
+			if issuance.LicenseID == existing.LastLicenseID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			issuances = append(issuances, LicenseIssuance{
+				LicenseID:      existing.LastLicenseID,
+				SubscriptionID: ent.SubscriptionID,
+				IssuedAt:       now,
+			})
+		}
+	}
+	for _, issuance := range issuances {
+		if err := h.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
+			LicenseID:      issuance.LicenseID,
+			SubscriptionID: ent.SubscriptionID,
+			Reason:         reason,
+			RevokedAt:      now,
+		}); err != nil {
+			_ = h.ledger.LogError(ent.SubscriptionID, "record license revocation", err)
+			return fmt.Errorf("record license revocation: %w", err)
+		}
+		_ = h.ledger.LogLicenseRevoked(ent.SubscriptionID, ent.CustomerEmail, issuance.LicenseID, reason)
+	}
+	return nil
+}
+
+// SignedCRL returns the current signed license revocation list.
+func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.CRL, error) {
+	records, err := h.db.ListLicenseRevocations(ctx)
+	if err != nil {
+		return license.CRL{}, fmt.Errorf("list license revocations: %w", err)
+	}
+	revoked := make([]license.RevokedLicense, 0, len(records))
+	for _, rec := range records {
+		revoked = append(revoked, license.RevokedLicense{
+			ID:        rec.LicenseID,
+			RevokedAt: rec.RevokedAt.UTC().Unix(),
+		})
+	}
+	return license.SignCRL(license.CRLPayload{
+		Version:   license.CRLVersion,
+		IssuedAt:  now.UTC().Unix(),
+		ExpiresAt: now.UTC().Add(7 * 24 * time.Hour).Unix(),
+		Revoked:   revoked,
+	}, h.privateKey)
 }
 
 // HandleOrderEvent processes a Polar order.created webhook event for

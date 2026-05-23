@@ -18,9 +18,14 @@ package licenseservice
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -35,7 +40,14 @@ type Server struct {
 	log     zerolog.Logger
 	mux     *http.ServeMux
 	srv     *http.Server
+
+	crlMu         sync.Mutex
+	crlCache      []byte
+	crlCacheETag  string
+	crlCacheUntil time.Time
 }
+
+const crlCacheTTL = time.Minute
 
 // NewServer creates a license service server with all dependencies wired.
 func NewServer(
@@ -53,6 +65,7 @@ func NewServer(
 	}
 
 	s.mux.HandleFunc("POST /webhook/polar", s.handleWebhook)
+	s.mux.HandleFunc(http.MethodGet+" /crl.json", s.handleCRL)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
 	s.srv = &http.Server{
@@ -161,6 +174,71 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprintf(w, `{"status":"ok"}`)
+}
+
+// handleCRL returns the current signed license revocation list.
+func (s *Server) handleCRL(w http.ResponseWriter, r *http.Request) {
+	body, etag, err := s.cachedCRL(r.Context(), time.Now())
+	if err != nil {
+		s.log.Error().Err(err).Msg("build license CRL")
+		http.Error(w, "failed to build CRL", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=60")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", etag)
+	if ifNoneMatch(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		s.log.Error().Err(err).Msg("write license CRL")
+	}
+}
+
+func (s *Server) cachedCRL(ctx context.Context, now time.Time) ([]byte, string, error) {
+	s.crlMu.Lock()
+	defer s.crlMu.Unlock()
+
+	if len(s.crlCache) > 0 && now.Before(s.crlCacheUntil) {
+		return s.crlCache, s.crlCacheETag, nil
+	}
+	crl, err := s.handler.SignedCRL(ctx, now)
+	if err != nil {
+		return nil, "", err
+	}
+	body, err := json.Marshal(crl)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal license CRL: %w", err)
+	}
+	body = append(body, '\n')
+	sum := sha256.Sum256(body)
+	s.crlCache = body
+	s.crlCacheETag = `"` + hex.EncodeToString(sum[:]) + `"`
+	s.crlCacheUntil = now.Add(crlCacheTTL)
+	return s.crlCache, s.crlCacheETag, nil
+}
+
+func ifNoneMatch(header, etag string) bool {
+	if header == "" || etag == "" {
+		return false
+	}
+	normalizedETag := normalizeETag(etag)
+	for candidate := range strings.SplitSeq(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || normalizeETag(candidate) == normalizedETag {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeETag(etag string) string {
+	etag = strings.TrimSpace(etag)
+	etag = strings.TrimPrefix(etag, "W/")
+	etag = strings.Trim(etag, `"`)
+	return etag
 }
 
 // handleHealth returns 200 if the service is running.

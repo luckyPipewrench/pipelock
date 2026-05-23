@@ -4,16 +4,21 @@
 package diag
 
 import (
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 const (
@@ -124,6 +129,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorMCPBinaryIntegrity(cfg),
 		checkDoctorMCPToolProvenance(cfg),
 		checkDoctorFileSentry(cfg),
+		checkDoctorLicense(cfg),
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
 	}
@@ -140,6 +146,134 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		}
 	}
 	return report
+}
+
+func checkDoctorLicense(cfg *config.Config) doctorReportCheck {
+	if cfg.LicenseKey == "" {
+		return doctorReportCheck{
+			Name:    "license_status",
+			Surface: doctorSurfaceConfig,
+			Status:  doctorStatusInfo,
+			Detail:  "no enterprise license configured",
+		}
+	}
+	lic, verified, err := doctorVerifiedLicense(cfg)
+	if err != nil {
+		status := doctorStatusWarn
+		if errors.Is(err, license.ErrLicenseExpired) || errors.Is(err, license.ErrLicenseRevoked) {
+			status = doctorStatusFail
+		}
+		return doctorReportCheck{
+			Name:       "license_status",
+			Surface:    doctorSurfaceConfig,
+			Status:     status,
+			Configured: true,
+			Detail:     "license verification failed: " + err.Error(),
+			Next:       "run `pipelock license status` for details and install a valid license token",
+		}
+	}
+	if !verified {
+		return doctorReportCheck{
+			Name:       "license_status",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusWarn,
+			Configured: true,
+			Detail:     fmt.Sprintf("license %s is present but signature could not be verified because no public key is available", lic.ID),
+			Next:       "set license_public_key in dev builds or use an official build with an embedded key",
+		}
+	}
+	if cfg.LicenseRevoked {
+		return doctorReportCheck{
+			Name:       "license_status",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusFail,
+			Configured: true,
+			Detail:     fmt.Sprintf("license %s is revoked: %s", lic.ID, cfg.LicenseRevocationReason),
+			Next:       "install a renewed license token before relying on enterprise agent profiles",
+		}
+	}
+	if lic.ExpiresAt > 0 && time.Now().Unix() > lic.ExpiresAt {
+		return doctorReportCheck{
+			Name:       "license_status",
+			Surface:    doctorSurfaceConfig,
+			Status:     doctorStatusFail,
+			Configured: true,
+			Detail:     fmt.Sprintf("license %s expired on %s", lic.ID, time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly)),
+			Next:       "install a renewed license token before relying on enterprise agent profiles",
+		}
+	}
+	warning := license.ExpiryStatus(lic, time.Now())
+	if warning.Active {
+		status := doctorStatusWarn
+		if warning.Severity == license.ExpirySeverityInfo {
+			status = doctorStatusInfo
+		}
+		return doctorReportCheck{
+			Name:       "license_status",
+			Surface:    doctorSurfaceConfig,
+			Status:     status,
+			Configured: true,
+			Reachable:  true,
+			Enforcing:  true,
+			Detail: fmt.Sprintf("license %s expires in %d day(s) on %s; %d-day renewal band severity=%s",
+				lic.ID, warning.DaysRemaining, warning.ExpiresAt.Format(time.DateOnly), warning.ThresholdDays, warning.Severity),
+			Next: "renew or refresh the license before expiry disables enterprise agent profiles",
+		}
+	}
+	detail := "license token is configured"
+	if lic.ExpiresAt > 0 {
+		detail = fmt.Sprintf("license %s expires on %s", lic.ID, time.Unix(lic.ExpiresAt, 0).UTC().Format(time.DateOnly))
+	}
+	if cfg.LicenseCRLFile != "" {
+		detail += "; signed CRL configured"
+	}
+	return doctorReportCheck{
+		Name:       "license_status",
+		Surface:    doctorSurfaceConfig,
+		Status:     doctorStatusOK,
+		Configured: true,
+		Reachable:  true,
+		Enforcing:  true,
+		Detail:     detail,
+	}
+}
+
+func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
+	pubKey, err := doctorLicensePublicKey(cfg)
+	if err != nil {
+		if cfg.LicensePublicKey != "" {
+			return license.License{}, false, err
+		}
+		lic, decodeErr := license.Decode(cfg.LicenseKey)
+		if decodeErr != nil {
+			return license.License{}, false, decodeErr
+		}
+		return lic, false, nil
+	}
+	var crl *license.CRL
+	if cfg.LicenseCRLFile != "" {
+		loaded, crlErr := license.LoadAndVerifyCRL(cfg.LicenseCRLFile, pubKey, time.Now())
+		if crlErr != nil {
+			return license.License{}, true, crlErr
+		}
+		crl = &loaded
+	}
+	lic, verifyErr := license.VerifyWithCRL(cfg.LicenseKey, pubKey, crl)
+	return lic, true, verifyErr
+}
+
+func doctorLicensePublicKey(cfg *config.Config) (ed25519.PublicKey, error) {
+	if key := license.EmbeddedPublicKey(); key != nil {
+		return key, nil
+	}
+	if cfg.LicensePublicKey == "" {
+		return nil, errors.New("no license public key available")
+	}
+	keyBytes, err := hex.DecodeString(cfg.LicensePublicKey)
+	if err != nil || len(keyBytes) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid license public key")
+	}
+	return ed25519.PublicKey(keyBytes), nil
 }
 
 func checkDoctorHTTPProxy(cfg *config.Config) doctorReportCheck {

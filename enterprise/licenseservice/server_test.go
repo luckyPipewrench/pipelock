@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
 const (
@@ -126,6 +129,80 @@ func TestServer_HealthEndpoint(t *testing.T) {
 	ct := w.Header().Get("Content-Type")
 	if ct != testContentTypeJSON {
 		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
+func TestServer_CRLEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now().UTC()
+	if err := srv.handler.db.UpsertLicenseRevocation(t.Context(), RevokedLicenseRecord{
+		LicenseID:      "lic_crl_endpoint",
+		SubscriptionID: testSubscriptionID,
+		Reason:         "subscription_canceled",
+		RevokedAt:      now,
+	}); err != nil {
+		t.Fatalf("UpsertLicenseRevocation: %v", err)
+	}
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/crl.json", nil)
+	w := httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var crl license.CRL
+	if err := json.Unmarshal(w.Body.Bytes(), &crl); err != nil {
+		t.Fatalf("decode CRL: %v", err)
+	}
+	if _, ok := crl.RevocationFor("lic_crl_endpoint"); !ok {
+		t.Fatalf("CRL missing revocation: %+v", crl.Payload.Revoked)
+	}
+	etag := w.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("expected ETag header")
+	}
+	if cacheControl := w.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "max-age=60") {
+		t.Fatalf("Cache-Control = %q, want max-age=60", cacheControl)
+	}
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/crl.json", nil)
+	req.Header.Set("If-None-Match", etag)
+	w = httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("conditional status = %d, want 304", w.Code)
+	}
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/crl.json", nil)
+	req.Header.Set("If-None-Match", `W/`+etag+`, "other"`)
+	w = httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("weak conditional status = %d, want 304", w.Code)
+	}
+}
+
+func TestIfNoneMatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		etag   string
+		want   bool
+	}{
+		{name: "empty", header: "", etag: `"abc"`, want: false},
+		{name: "exact", header: `"abc"`, etag: `"abc"`, want: true},
+		{name: "weak", header: `W/"abc"`, etag: `"abc"`, want: true},
+		{name: "list", header: `"other", W/"abc"`, etag: `"abc"`, want: true},
+		{name: "wildcard", header: "*", etag: `"abc"`, want: true},
+		{name: "miss", header: `"other"`, etag: `"abc"`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ifNoneMatch(tt.header, tt.etag); got != tt.want {
+				t.Fatalf("ifNoneMatch(%q, %q) = %v, want %v", tt.header, tt.etag, got, tt.want)
+			}
+		})
 	}
 }
 

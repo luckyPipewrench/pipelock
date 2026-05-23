@@ -83,22 +83,29 @@ object with the following header parameters.
 |---|---|---|---|
 | 1 | `alg` | -8 | EdDSA per RFC 9053. Ed25519 only in v0.1. |
 | 3 | `content-type` | `application/vnd.pipelock.action-record+json` | Distinguishes Pipelock action-record payloads from other AI-agent statement formats on the same TS. |
-| 15 | `CWT_Claims` | CWT claims map | Carries `iss` (CWT claim 1), `sub` (CWT claim 2), and `iat` (CWT claim 6). Label 15 is the IANA-registered COSE header parameter for CWT_Claims per RFC 9596; SCITT architecture-22 reuses it to bind issuer + subject identity to the Signed Statement. |
+| 4 | `kid` | raw 32-byte Ed25519 public key | Same bytes as the Pipelock ActionReceipt v1 `signer_key` hex-decoded. SCITT architecture-22 places `kid` in the protected header when `x5t`/`x5chain` are not present; this profile relies on `kid` for key identification. Pinning the same `kid` across the v1 ActionReceipt and the SCITT Statement lets a relying party verify both wire formats with one trust anchor. |
+| 15 | `CWT_Claims` | CWT claims map | Carries `iss` (CWT claim 1), `sub` (CWT claim 2), and `iat` (CWT claim 6). Label 15 is the IANA-registered COSE header parameter for `CWT_Claims` per RFC 9597; SCITT architecture-22 reuses it to bind issuer + subject identity to the Signed Statement. |
 
 **Unprotected header:**
 
-| Label | Name | Value | Description |
-|---|---|---|---|
-| 4 | `kid` | raw 32-byte Ed25519 public key | Same bytes as the Pipelock ActionReceipt v1 `signer_key` hex-decoded. Pinning the same kid across both envelope formats lets a relying party verify both wire formats with one trust anchor. |
+No required parameters in v0.1. Producers MAY include `x5chain` (label 33) or
+other RFC 9052 parameters in the unprotected header but consumers conforming to
+this profile MUST NOT rely on unprotected-header content for verification
+decisions.
 
 **Payload:**
 
 The `payload` field of the COSE_Sign1 is the **canonical bytes of the Pipelock
-ActionReceipt v1 `action_record`** — the exact bytes Pipelock signs with Ed25519 on
-the v1 path. Canonicalization is the Pipelock v1 canonicalization rule (Go
-struct-declaration order over the `ActionRecord` struct in `internal/receipt/action.go`)
-because the Statement payload MUST be byte-identical to what Pipelock's own
-verifiers check.
+ActionReceipt v1 `action_record`** — the same bytes Pipelock hashes with SHA-256
+and then signs with Ed25519 on the v1 path (per `internal/receipt/receipt.go`:
+`sum := sha256.Sum256(data); sig := ed25519.Sign(privKey, sum[:])`). The
+COSE_Sign1 signature is taken over the COSE Sig_structure per RFC 9052 §4.4,
+which composes its own digest internally; the SCITT signature and the v1
+signature are over different sig-structures even though both sign the same
+payload bytes. Canonicalization of the payload is the Pipelock v1 rule
+(Go struct-declaration order over the `ActionRecord` struct in
+`internal/receipt/action.go`) so the Statement payload is byte-identical to
+what Pipelock's own verifiers check.
 
 A future v0.2 may switch the payload to the EvidenceReceipt v2 typed-payload bytes,
 which canonicalize via RFC 8785 JCS. v0.1 stays on v1 canonicalization to keep the
@@ -134,10 +141,13 @@ Statement is signed with the flight-recorder key, not the mediation-envelope key
 
 SCITT explicitly leaves participant discovery out of scope. A v0.1 producer
 publishes the Issuer public key via whatever channel its operator and relying
-parties have agreed on (out-of-band trust-list distribution, organizational PKI,
-or Pipelock's `pipelock envelope trust` operator CLI for managing a local trust
-list). Relying parties pin the 32-byte raw Ed25519 public key by fingerprint and
-rotate via that same channel. This profile defines no new discovery mechanism.
+parties have agreed on — out-of-band trust-list distribution, organizational
+PKI, or any other operator-managed mechanism. (Pipelock's
+`pipelock envelope trust` CLI is **not** suitable for SCITT issuer-key
+management; that CLI is scoped to mediation-envelope peers, which use a
+different key.) Relying parties pin the 32-byte raw Ed25519 public key by
+fingerprint and rotate via the channel of their choice. This profile defines no
+new discovery mechanism.
 
 ## Submission to a Transparency Service
 
@@ -164,14 +174,16 @@ submit Statements out of band; first-party SCRAPI submission is a v0.2 candidate
 This profile does NOT attempt to consolidate or replace any of the above. Authors
 of those drafts are invited to comment on the agent-action Statement shape.
 
-## Active SCITT-WG context (2026-05-22)
+## Active SCITT-WG context
 
-A charter-expansion thread titled "AI Agent Auditing and proposed BoF/WG charter"
-is active on the SCITT mailing list as of 2026-05-22. This profile is consistent
-with the **current** charter (it's an individual profile of the existing
-architecture and requires no charter change). It is also a candidate input to the
-AI Agent Auditing discussion if the WG decides to converge agent-evidence work
-under a new charter or BoF.
+Charter-expansion conversation around AI-agent evidence work has surfaced on
+the SCITT mailing list in 2026. This profile is consistent with the **current**
+charter (it's an individual profile of the existing architecture and requires
+no charter change). It is also a candidate input to any future agent-evidence
+convergence if the WG decides to scope new work. Anyone evaluating this profile
+should check the active SCITT mail archive at
+<https://mailarchive.ietf.org/arch/browse/scitt/> for the latest charter or
+BoF threads before drawing conclusions about WG appetite.
 
 ## Verification flow (relying party)
 
@@ -214,17 +226,16 @@ structural reference, not a wire-byte target.
     << {
       1: -8,                                       / alg = EdDSA /
       3: "application/vnd.pipelock.action-record+json",
-      15: {                                        / CWT_Claims (RFC 9596) /
+      4: h'70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e', / kid /
+      15: {                                        / CWT_Claims (RFC 9597) /
         1: "https://pipelab.org/issuer/pipelock-7f3c2b1e",  / iss /
         2: "api.attacker.example/v1/upload",       / sub /
         6: 1779730201                              / iat /
       }
     } >>,
 
-    / 2. unprotected header /
-    {
-      4: h'70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e' / kid /
-    },
+    / 2. unprotected header (empty in v0.1) /
+    {},
 
     / 3. payload — canonical bytes of the Pipelock action_record /
     h'<canonical action_record JSON bytes — see in-toto profile worked example
@@ -265,7 +276,7 @@ different questions about the same agent activity.
   Registration is a v0.2 consideration once the receipt format itself is more
   publicly visible.
 - **CWT claims label allocation.** v0.1 uses the IANA-registered COSE header
-  parameter for `CWT_Claims` (label 15, RFC 9596). The SCITT architecture's
+  parameter for `CWT_Claims` (label 15, RFC 9597). The SCITT architecture's
   identity-binding convention is built on top of this registration; if a future
   architecture revision adds additional SCITT-specific header parameters, this
   profile will track them at the next minor version.
@@ -285,6 +296,7 @@ different questions about the same agent activity.
 - [`draft-nelson-agent-delegation-receipts`](https://datatracker.ietf.org/doc/draft-nelson-agent-delegation-receipts/)
 - [RFC 9052 (COSE)](https://www.rfc-editor.org/rfc/rfc9052.html)
 - [RFC 9053 (COSE algorithms)](https://www.rfc-editor.org/rfc/rfc9053.html)
+- [RFC 9597 (CWT Claims in COSE Headers — defines `CWT_Claims` as label 15)](https://www.rfc-editor.org/rfc/rfc9597.html)
 - [RFC 8392 (CWT)](https://www.rfc-editor.org/rfc/rfc8392.html)
 - [RFC 8032 (Ed25519)](https://www.rfc-editor.org/rfc/rfc8032.html)
 - [Pipelock Action Receipt implementation spec](https://pipelab.org/learn/action-receipt-spec/)

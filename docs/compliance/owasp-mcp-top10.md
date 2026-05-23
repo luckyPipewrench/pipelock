@@ -108,7 +108,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 - **Sandbox containment (v2.0):** Landlock LSM + network namespaces + seccomp restrict filesystem access, network egress, and syscall surface for sandboxed agent processes. Even if injection succeeds, the command runs in a contained environment.
 - **`pipelock claude hook` unknown-tool fail-closed (v2.5):** the Claude Code IDE-hook entry point routes unknown `tool_name` values through the full tool-use decision path with complete `tool_input` scanning instead of returning clean. Null tool input errors explicitly. Closes a fail-open path on IDE hook events for tools Pipelock has not yet enumerated.
 
-**Configuration:** `mcp_tool_policy`, `sandbox`. (The `pipelock claude hook` subcommand is a CLI surface — registered under `pipelock claude` and invoked from `~/.claude/settings.json` `PreToolUse` / `PostToolUse` matchers — not a YAML config block.)
+**Configuration:** `mcp_tool_policy`, `sandbox`. (The `pipelock claude hook` subcommand is a CLI surface — registered under `pipelock claude` and invoked from `~/.claude/settings.json` `PreToolUse` matchers — not a YAML config block. Other Claude Code hook events such as `PostToolUse`, `PreCompact`, and `SessionStart` are fail-closed today; `pipelock claude hook` returns deny when invoked from any non-`PreToolUse` event.)
 
 **Gap:** None for network-visible command execution. Commands executed entirely within the agent's local runtime without tool calls are outside the proxy's visibility.
 

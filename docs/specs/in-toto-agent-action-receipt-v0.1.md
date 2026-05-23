@@ -77,9 +77,11 @@ An `agent-action-receipt` Statement follows in-toto Statement v1:
 ### Subject construction
 
 The subject digest is the **SHA-256 of the canonical bytes of the underlying
-Pipelock ActionReceipt v1 `action_record`** — the exact bytes that the Pipelock
-binary signs with Ed25519 on the v1 path. This makes the in-toto Statement
-content-addressable against the same bytes that any other Pipelock verifier
+Pipelock ActionReceipt v1 `action_record`** — the same SHA-256 digest the
+Pipelock binary signs with Ed25519 on the v1 path (per
+`internal/receipt/receipt.go`: `sum := sha256.Sum256(data); sig :=
+ed25519.Sign(privKey, sum[:])`). This makes the in-toto Statement
+content-addressable against the same digest that any other Pipelock verifier
 (`pipelock-verifier`, the Go / TypeScript / Rust / Python SDK verifiers) checks.
 
 The subject `name` is `agent-action:<actionId>` where `actionId` is the UUIDv7
@@ -99,7 +101,7 @@ Timestamps are RFC 3339 with `Z` suffix.
 | `target` | string | yes | The host:port, URL, MCP tool name, or other target identifier the action acted on. Free-form by transport. |
 | `transport` | string | yes | One of: `fetch`, `forward`, `intercept`, `websocket`, `mcp_stdio`, `mcp_http`, `mcp_http_upstream`, `mcp_http_listener`, `mcp_ws`. |
 | `verdict` | enum | yes | One of: `allow`, `block`, `warn`, `ask`, `strip`, `forward`, `redirect`. |
-| `verdictReason` | string | conditional | Required when `verdict != allow`. Canonical block-reason code (e.g., `dlp_match`, `prompt_injection`, `ssrf_private_ip`, `tool_policy_deny`, `airlock_active`, `kill_switch_active`, `contract_default_deny`, `contract_rule_deny`, `mcp_tool_blocked`). Vocabulary fixed per [block-reason-header spec](./block-reason-header.md). The v1 ActionReceipt envelope does not carry this field directly; a v0.1 producer sources it from the same structured rejection code Pipelock emits in the `X-Pipelock-Block-Reason` HTTP header (and in JSON-RPC error metadata for MCP-internal blocks). For `verdict = allow`, the field MUST be omitted. |
+| `verdictReason` | string | conditional | Required when `verdict != allow`. Canonical block-reason code from Pipelock's shipped vocabulary (e.g., `dlp_match`, `prompt_injection`, `ssrf_private_ip`, `tool_policy_deny`, `tool_chain_blocked`, `tool_poisoning`, `airlock_active`, `kill_switch_active`, `contract_default_deny`, `contract_rule_deny`). The full enumeration is defined in `internal/blockreason/blockreason.go` and mirrored in the [block-reason-header spec](./block-reason-header.md). The v1 ActionReceipt envelope does not carry this field directly; a v0.1 producer sources it from the same structured rejection code Pipelock emits in the `X-Pipelock-Block-Reason` HTTP header (and in JSON-RPC error metadata for MCP-internal blocks). For `verdict = allow`, the field MUST be omitted. |
 | `principal` | string | yes | Identity of the human or system authorizing the action (e.g., `spiffe://example.org/user/alice`, `oauth:user@example.com`, `local:operator`). |
 | `actor` | string | yes | Identity of the agent / workload that initiated the action. SPIFFE IDs preferred per Pipelock 2.4+ federation. |
 | `mediator` | object | yes | The Pipelock instance that decided the verdict. See "Mediator object" below. |

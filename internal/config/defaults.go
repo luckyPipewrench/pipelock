@@ -145,9 +145,15 @@ func Defaults() *Config {
 				// Infrastructure and platform tokens
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.
 				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
-				{Name: "HashiCorp Vault Token", Regex: `hvs\.[a-zA-Z0-9]{23,}`, Severity: SeverityCritical},
+				// Vault 1.10+ service tokens use hvs. plus 24+ random chars.
+				// Source: https://developer.hashicorp.com/vault/docs/concepts/tokens#token-prefixes
+				{Name: "HashiCorp Vault Token", Regex: `\bhvs\.[A-Za-z0-9]{24,}\b`, Severity: SeverityCritical},
 				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
-				{Name: "Supabase Service Key", Regex: `sb_secret_[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
+				// Supabase secret keys use sb_secret_<22-char-random>_<8-char-checksum>.
+				// Both suffix parts are base64url; the final checksum char may be '-',
+				// so the right edge handles that case without relying only on \b.
+				// Source: https://supabase.com/docs/guides/self-hosting/self-hosted-auth-keys#new-api-keys-format
+				{Name: "Supabase Service Key", Regex: `\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`, Severity: SeverityCritical},
 
 				// Package registry tokens
 				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}\b`, Severity: SeverityCritical},
@@ -159,9 +165,15 @@ func Defaults() *Config {
 				{Name: "PyPI Token", Regex: `pypi-AgE[A-Za-z0-9_-]{90,}`, Severity: SeverityCritical},
 
 				// Developer platform tokens
-				{Name: "Linear API Key", Regex: `lin_api_[a-zA-Z0-9]{40,}`, Severity: "high"},
+				// Linear documents lin_api_ as the personal API key prefix; keep the
+				// existing length floor but require a token boundary.
+				// Source: https://linear.app/changelog/2021-08-19-github-secret-scanning
+				{Name: "Linear API Key", Regex: `\blin_api_[A-Za-z0-9]{40,}\b`, Severity: "high"},
 				{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: "high"},
-				{Name: "Sentry Auth Token", Regex: `sntrys_[a-zA-Z0-9]{40,}`, Severity: "high"},
+				// Sentry CLI documents sntrys_ auth tokens; keep the existing
+				// length floor but require a token boundary.
+				// Source: https://docs.sentry.dev/cli/configuration/
+				{Name: "Sentry Auth Token", Regex: `\bsntrys_[A-Za-z0-9]{40,}\b`, Severity: "high"},
 
 				// Cryptographic material
 				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: SeverityCritical},

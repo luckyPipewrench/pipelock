@@ -495,14 +495,14 @@ dlp:
 | Groq API Key | `gsk_` | critical |
 | xAI API Key | `xai-` | critical |
 | DigitalOcean Token | `dop_v1_` | critical |
-| HashiCorp Vault Token | `hvs.` | critical |
+| HashiCorp Vault Token | `hvs.` + 24+ alphanumeric chars | critical |
 | Vercel Token | `vercel_\|vc[piark]_` | critical |
-| Supabase Service Key | `sb_secret_` | critical |
+| Supabase Service Key | `sb_secret_<22-char-random>_<8-char-checksum>` | critical |
 | npm Token | `npm_` | critical |
 | PyPI Token | `pypi-AgE` | critical |
-| Linear API Key | `lin_api_` | high |
+| Linear API Key | `lin_api_` + 40+ alphanumeric chars | high |
 | Notion API Key | `ntn_` | high |
-| Sentry Auth Token | `sntrys_` | high |
+| Sentry Auth Token | `sntrys_` + 40+ alphanumeric chars | high |
 | JWT Token | `ey...\..*\.` | high |
 | Private Key Header | `-----BEGIN.*PRIVATE KEY-----` | critical |
 | Bitcoin WIF Private Key | `[5KL]` + base58 | critical |

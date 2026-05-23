@@ -203,13 +203,13 @@ dlp:
       regex: 'dop_v1_[a-f0-9]{64}'
       severity: critical
     - name: "HashiCorp Vault Token"
-      regex: 'hvs\.[a-zA-Z0-9]{23,}'
+      regex: '\bhvs\.[A-Za-z0-9]{24,}\b'
       severity: critical
     - name: "Vercel Token"
       regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'
       severity: critical
     - name: "Supabase Service Key"
-      regex: 'sb_secret_[a-zA-Z0-9_-]{20,}'
+      regex: '\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)'
       severity: critical
     # Package registry tokens
     - name: "npm Token"
@@ -220,13 +220,13 @@ dlp:
       severity: critical
     # Developer platform tokens
     - name: "Linear API Key"
-      regex: 'lin_api_[a-zA-Z0-9]{40,}'
+      regex: '\blin_api_[A-Za-z0-9]{40,}\b'
       severity: high
     - name: "Notion API Key"
       regex: 'ntn_[a-zA-Z0-9]{40,}\b'
       severity: high
     - name: "Sentry Auth Token"
-      regex: 'sntrys_[a-zA-Z0-9]{40,}'
+      regex: '\bsntrys_[A-Za-z0-9]{40,}\b'
       severity: high
     # Cryptographic material
     - name: "Private Key Header"

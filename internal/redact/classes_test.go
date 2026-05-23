@@ -42,12 +42,17 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"huggingface-token", "token hf_" + strings.Repeat("A", 37), ClassHuggingFaceToken},
 		{"replicate-api-token", "token r8_" + strings.Repeat("A", 40), ClassReplicateAPIToken},
 		{"together-ai-key", "token TOK_" + strings.Repeat("A", 40), ClassTogetherAIKey},
+		{"hashicorp-vault-token", "token hvs." + strings.Repeat("A", 24), ClassVaultToken},
+		{"supabase-service-key", "token sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8), ClassSupabaseKey},
+		{"supabase-service-key-hyphen-checksum", "token sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 7) + "-", ClassSupabaseKey},
 		{"databricks-pat", "token dapi" + "aabbccddeeff00112233445566778899", ClassDatabricksPAT},
 		{"openai-api-key", "use sk-proj-" + strings.Repeat("D", 24), ClassOpenAIAPIKey},
 		{"anthropic-api-key", "use sk-ant-" + strings.Repeat("E", 24), ClassAnthropicKey},
 		{"npm-token", "token npm_" + strings.Repeat("A", 36), ClassNPMToken},
 		{"pypi-token", "token PYPI-AGE" + strings.Repeat("A", 90), ClassPyPIToken},
+		{"linear-api-key", "token LIN_API_" + strings.Repeat("A", 40), ClassLinearAPIKey},
 		{"notion-api-key", "token NTN_" + strings.Repeat("A", 40), ClassNotionAPIKey},
+		{"sentry-auth-token", "token SNTRYS_" + strings.Repeat("A", 40), ClassSentryAuthToken},
 		{"telegram-token", "bot 1234567890:" + strings.Repeat("F", 35), ClassTelegramToken},
 		{"discord-token", "bot M" + strings.Repeat("G", 23) + "." + strings.Repeat("H", 6) + "." + strings.Repeat("I", 27), ClassDiscordToken},
 		{"bearer-token", "Authorization: bearer " + strings.Repeat("J", 24), ClassBearer},
@@ -93,6 +98,69 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 					classesFound = append(classesFound, string(got.Class))
 				}
 				t.Fatalf("no match of class %s in %q; got classes %v", tc.want, tc.input, classesFound)
+			}
+		})
+	}
+}
+
+func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+
+	cases := []struct {
+		name  string
+		input string
+		class Class
+	}{
+		{
+			name:  "vault embedded after word char",
+			input: "prefix_hvs." + strings.Repeat("A", 24),
+			class: ClassVaultToken,
+		},
+		{
+			name:  "supabase embedded after word char",
+			input: "prefix_sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8),
+			class: ClassSupabaseKey,
+		},
+		{
+			name:  "linear embedded after word char",
+			input: "prefix_lin_api_" + strings.Repeat("A", 40),
+			class: ClassLinearAPIKey,
+		},
+		{
+			name:  "sentry embedded after word char",
+			input: "prefix_sntrys_" + strings.Repeat("A", 40),
+			class: ClassSentryAuthToken,
+		},
+		{
+			name:  "vault followed by underscore suffix",
+			input: "hvs." + strings.Repeat("A", 24) + "_payload",
+			class: ClassVaultToken,
+		},
+		{
+			name:  "supabase followed by underscore suffix",
+			input: "sb_secret_" + strings.Repeat("A", 22) + "_" + strings.Repeat("B", 8) + "_payload",
+			class: ClassSupabaseKey,
+		},
+		{
+			name:  "linear followed by underscore suffix",
+			input: "lin_api_" + strings.Repeat("A", 40) + "_payload",
+			class: ClassLinearAPIKey,
+		},
+		{
+			name:  "sentry followed by underscore suffix",
+			input: "sntrys_" + strings.Repeat("A", 40) + "_payload",
+			class: ClassSentryAuthToken,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for _, got := range m.Scan(tc.input) {
+				if got.Class == tc.class {
+					t.Fatalf("matched %s in %q: %+v", tc.class, tc.input, got)
+				}
 			}
 		})
 	}

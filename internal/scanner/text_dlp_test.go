@@ -614,7 +614,7 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - HashiCorp Vault Token",
-			text:        "My token is " + "hvs." + strings.Repeat("e", 30),
+			text:        "My token is " + "hvs." + strings.Repeat("e", 24),
 			wantClean:   false,
 			wantPattern: "HashiCorp Vault Token",
 		},
@@ -626,7 +626,13 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - Supabase Service Key",
-			text:        "My token is " + "sb_secret_" + strings.Repeat("a", 25),
+			text:        "My token is " + "sb_secret_" + strings.Repeat("a", 22) + "_" + strings.Repeat("b", 8),
+			wantClean:   false,
+			wantPattern: "Supabase Service Key",
+		},
+		{
+			name:        "raw DLP pattern match - Supabase Service Key ending hyphen",
+			text:        "My token is " + "sb_secret_" + strings.Repeat("a", 22) + "_" + strings.Repeat("b", 7) + "-",
 			wantClean:   false,
 			wantPattern: "Supabase Service Key",
 		},

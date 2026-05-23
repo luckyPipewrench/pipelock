@@ -31,6 +31,8 @@ func ResolveRulesDir(override string) string {
 // compiledStandardDLPNames is the set of DLP pattern names from
 // config.Defaults() that belong to the standard tier (non-core). When a
 // signed standard bundle loads, these are replaced by bundle patterns.
+// Name matching is intentional: if a shipped default DLP rule is renamed or
+// split, update this map in the same change so bundle replacement cannot drift.
 // Must match the 41 non-core DLP names in config.Defaults().
 var compiledStandardDLPNames = map[string]bool{
 	"Anthropic API Key":           true,

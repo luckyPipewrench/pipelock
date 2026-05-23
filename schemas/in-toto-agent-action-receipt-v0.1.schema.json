@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pipelab.org/attestation/agent-action-receipt/v0.1.schema.json",
+  "title": "Pipelock Agent Action Receipt Predicate v0.1",
+  "description": "JSON Schema for the predicate body of an in-toto Attestation Statement with predicateType https://pipelab.org/attestation/agent-action-receipt/v0.1. This schema validates the predicate object only; the surrounding in-toto Statement v1 envelope and the DSSE signing envelope are validated separately.",
+  "type": "object",
+  "required": [
+    "actionId",
+    "actionType",
+    "target",
+    "transport",
+    "verdict",
+    "principal",
+    "actor",
+    "mediator",
+    "decidedAt",
+    "policy"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "actionId": {
+      "type": "string",
+      "description": "RFC 9562 UUIDv7 in canonical dashed-hex form.",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "actionType": {
+      "type": "string",
+      "enum": [
+        "read",
+        "write",
+        "delegate",
+        "authorize",
+        "spend",
+        "commit",
+        "actuate",
+        "derive",
+        "unclassified"
+      ]
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Free-form target identifier per transport (host:port, URL, MCP tool name, etc.)."
+    },
+    "transport": {
+      "type": "string",
+      "enum": [
+        "fetch",
+        "forward",
+        "intercept",
+        "websocket",
+        "mcp_stdio",
+        "mcp_http",
+        "mcp_http_upstream",
+        "mcp_http_listener",
+        "mcp_ws"
+      ]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["allow", "block", "warn", "ask", "strip", "forward", "redirect"]
+    },
+    "verdictReason": {
+      "type": "string",
+      "description": "Canonical block-reason code. Required when verdict is one of block, warn, ask, redirect. MUST be absent when verdict is allow or forward (both are pass-through verdicts). Optional when verdict is strip.",
+      "minLength": 1
+    },
+    "principal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identity authorizing the action (SPIFFE ID, OAuth subject, local identity)."
+    },
+    "actor": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identity of the agent / workload taking the action."
+    },
+    "mediator": {
+      "type": "object",
+      "required": ["id", "version", "signingKey"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable, deployment-bound Pipelock instance identifier."
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?(\\+[A-Za-z0-9.-]+)?$",
+          "description": "SemVer of the Pipelock binary that produced this Statement."
+        },
+        "buildCommit": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{7,40}$",
+          "description": "Git commit SHA (short or full) of the running binary."
+        },
+        "signingKey": {
+          "type": "object",
+          "required": ["algorithm", "publicKeyHex"],
+          "additionalProperties": false,
+          "properties": {
+            "algorithm": {
+              "type": "string",
+              "enum": ["ed25519"]
+            },
+            "publicKeyHex": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{64}$",
+              "description": "Raw 32-byte Ed25519 public key, hex-encoded (64 chars)."
+            }
+          }
+        }
+      }
+    },
+    "decidedAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+      "description": "RFC 3339 UTC timestamp with millisecond precision and Z suffix. The pattern enforces UTC Z (numeric offsets like +01:00 are rejected) and exactly three fractional-second digits, which JSON Schema's `format: \"date-time\"` annotation alone does not enforce."
+    },
+    "policy": {
+      "type": "object",
+      "description": "in-toto ResourceDescriptor pointing at the policy bundle that governed the decision.",
+      "required": ["digest"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "uri": { "type": "string", "format": "uri" },
+        "digest": {
+          "type": "object",
+          "required": ["sha256"],
+          "additionalProperties": true,
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "delegationChain": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Ordered authority chain from principal to actor; empty / absent for direct authorization."
+    },
+    "parentActionId": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+      "description": "Causal predecessor actionId."
+    },
+    "sessionId": {
+      "type": "string",
+      "description": "Opaque Pipelock session identifier; not a stable cross-session identity."
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["layer", "rule", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "layer": {
+            "type": "string",
+            "enum": ["dlp", "injection", "ssrf", "tool_policy", "contract", "chain", "redaction"]
+          },
+          "rule": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "info"]
+          },
+          "position": {
+            "type": "string",
+            "description": "Optional structural pointer (e.g., body.messages[3].content). MUST NOT carry raw matched bytes or secrets."
+          }
+        }
+      }
+    },
+    "sideEffectClass": {
+      "type": "string",
+      "enum": ["none", "external_read", "external_write", "financial", "physical"]
+    },
+    "reversibility": {
+      "type": "string",
+      "enum": ["full", "compensatable", "irreversible", "unknown"]
+    },
+    "dataClassesIn": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "DLP class labels carried into the request body."
+    },
+    "dataClassesOut": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "DLP class labels carried out of the response body."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-form human-readable context. MUST NOT contain secrets, PII, or raw request bytes."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": { "enum": ["block", "warn", "ask", "redirect"] }
+        },
+        "required": ["verdict"]
+      },
+      "then": {
+        "required": ["verdictReason"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verdict": { "enum": ["allow", "forward"] }
+        },
+        "required": ["verdict"]
+      },
+      "then": {
+        "not": { "required": ["verdictReason"] }
+      }
+    }
+  ]
+}

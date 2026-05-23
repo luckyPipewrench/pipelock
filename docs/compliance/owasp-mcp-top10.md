@@ -6,7 +6,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 > **Note:** Coverage levels reflect architectural capabilities against known attack patterns, not guarantees of threat prevention. Pipelock is a network-layer proxy; some MCP risks require complementary controls at the client, server, or identity layer. This mapping is for informational purposes and does not constitute compliance certification.
 
-**Last updated:** May 2026 (reviewed against v2.5 feature set; v2.5 adds the host containment lifecycle CLI (`pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh`) strengthening MCP02 Privilege Escalation via Scope Creep — even an MCP server that escapes its sandbox cannot reach the internet directly when it runs as the contained agent user; nftables owner-match forces that user through Pipelock on loopback, and workspace ACL subcommands keep repo access explicit; the canonical Audit Packet v0 schema plus first-party Go / TypeScript / Rust / standalone verifier implementations strengthening MCP08 Lack of Audit and Telemetry with language-portable independent verification of every signed receipt; strict-default SPIFFE actor enforcement on inbound mediation envelopes plus the `pipelock envelope trust` operator CLI strengthening MCP07 Insufficient Authentication & Authorization for cross-deployment federation hops; activation-time tombstone enforcement strengthening MCP02 Privilege Escalation — a withdrawn contract cannot be re-promoted; skill-poisoning instruction-recognition coverage for memory-persistence / credential-solicitation / covert-action directives strengthening MCP03 Tool Poisoning at the instruction surface; rules-bundle keyring separated from the license key strengthening MCP04 Software Supply Chain Attacks & Dependency Tampering (bundle signing rotates independently); optional OTel `agent.threat.detection.*` attributes strengthening MCP08 Lack of Audit and Telemetry; `pipelock claude-hook` fail-closed default on unsupported hook events strengthening MCP02 Privilege Escalation at the IDE-hook surface. Builds on the v2.4 baseline (learn-and-lock contracts for MCP02 through operator-ratified envelopes and signed activation state, inbound envelope verification + replay cache for MCP04, `X-Pipelock-Block-Reason` for MCP01/MCP02/MCP03 visibility, Gemini provider redaction extending MCP01 to a third provider), the v2.3.0 baseline (class-preserving redaction on `tools/call` arguments across stdio / HTTP / reverse proxy / WebSocket, generic SSE streaming with per-event body scanning), and the v2.2.0 baseline (mediation envelope, signed action receipts across all MCP transports, taint-aware policy escalation with task boundaries, media policy and SVG active-content hardening, posture verify CLI, companion-proxy deployment via `pipelock init sidecar`).
+**Last updated:** May 2026, reviewed against the v2.5 feature set. See [CHANGELOG.md](../../CHANGELOG.md) for full release history; the appendix at the bottom of this document lists v2.5-specific deltas mapped to MCP categories.
 
 ---
 
@@ -19,7 +19,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 | MCP03:2025 | Tool Poisoning | **Strong** | Shipped |
 | MCP04:2025 | Software Supply Chain Attacks & Dependency Tampering | **Moderate** | Shipped |
 | MCP05:2025 | Command Injection & Execution | **Strong** | Shipped |
-| MCP06:2025 | Prompt Injection via Contextual Payloads | **Strong** | Shipped |
+| MCP06:2025 | Intent Flow Subversion | **Strong** | Shipped |
 | MCP07:2025 | Insufficient Authentication & Authorization | **Partial** | Roadmap |
 | MCP08:2025 | Lack of Audit and Telemetry | **Strong** | Shipped |
 | MCP09:2025 | Shadow MCP Servers | **Moderate** | Shipped |
@@ -33,12 +33,14 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **DLP scanning:** 48 regex patterns with 4 checksum validators (Luhn, mod97, ABA, WIF) detect secrets in tool arguments, URLs, headers, and request bodies. Patterns cover AWS, GitHub, Slack, Stripe, Anthropic, OpenAI, and 30+ other provider key formats.
+- **DLP scanning:** the shipped pattern set (run `make stats` for the live count) plus checksum validators (Luhn, mod97, ABA, WIF) detect secrets in tool arguments, URLs, headers, and request bodies. Patterns cover AWS, GitHub, Slack, Stripe, Anthropic, OpenAI, and many other provider key formats.
 - **Environment leak detection:** `dlp.scan_env` reads the local environment and flags any outbound request containing env var values above a minimum length threshold.
 - **MCP input scanning:** scans tool call arguments (client-to-server) for secrets before they reach the MCP server. Catches agents forwarding credentials to untrusted tools.
 - **Encoding resistance:** 6-pass normalization decodes base64, hex, and URL encoding before pattern matching. Secrets encoded to evade detection are decoded and caught.
+- **Critical body-DLP hard-blocking in enforce mode (v2.5):** request bodies containing critical-severity findings (e.g., AWS keys, Anthropic tokens, GitHub tokens) return 403 with `BR=dlp_match` before reaching the upstream, even when `request_body_scanning.action` is otherwise configured to warn. Operators who used request-body warn mode as log-only must explicitly mark a pattern warn-only or rely on provider-exempt redaction to retain prior behaviour.
+- **Provider-aware redaction (v2.5):** Anthropic, OpenAI, and Gemini request parsers walk the body schema and emit irreversible typed placeholders for matched secrets so a sanitized request can still be forwarded to provider-exempt hosts. v2.5 hardens placeholder semantics across JSON / form / split-field shapes and tightens the Databricks-token pattern to remove a class-of-byte-coincidence false positive on opaque image data URLs.
 
-**Configuration:** `dlp`, `mcp_input_scanning`
+**Configuration:** `dlp`, `mcp_input_scanning`, `request_body_scanning`, `redaction`
 
 **Gap:** Token rotation, vault integration, and credential lifecycle management are outside scope. Pipelock detects secret exposure at the transport layer; credential management requires complementary tools.
 
@@ -87,7 +89,7 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 - **Community rule bundles:** Ed25519-signed YAML rule bundles with integrity verification. Rules loaded from `~/.pipelock/rules/` are verified against a trusted keyring before use.
 - **Binary integrity monitoring:** `pipelock integrity` commands verify the pipelock binary itself has not been modified.
 - **Tool drift detection:** rug-pull detection catches tool definitions that change after initial registration, which can indicate a compromised or updated MCP server package.
-- **SBOM and provenance:** GoReleaser produces SLSA provenance attestation and SBOM for every release. OpenSSF Scorecard 8.6/10 + Best Practices Silver badge.
+- **SBOM and provenance:** GoReleaser produces SLSA provenance attestation and SBOM for every release. Current OpenSSF Scorecard and OpenSSF Best Practices badges are linked from the repository README; the live score is the authoritative figure.
 
 **Configuration:** `rules`, `pipelock integrity`
 
@@ -101,28 +103,30 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 **Pipelock coverage:**
 
-- **Tool policy with shell normalization:** `mcp_tool_policy` includes 17 default rules covering destructive operations, persistence mechanisms, and credential access. Shell obfuscation (octal encoding, hex encoding, brace expansion, variable assignment, command substitution, IFS manipulation) is normalized before matching.
+- **Tool policy with shell normalization:** `mcp_tool_policy` ships a default rule set covering destructive operations, persistence mechanisms, and credential access. Shell obfuscation (octal encoding, hex encoding, brace expansion, variable assignment, command substitution, IFS manipulation) is normalized before matching.
 - **Argument-level matching:** `arg_key` scopes pattern matching to specific tool argument keys, preventing overly broad rules.
 - **Sandbox containment (v2.0):** Landlock LSM + network namespaces + seccomp restrict filesystem access, network egress, and syscall surface for sandboxed agent processes. Even if injection succeeds, the command runs in a contained environment.
+- **`pipelock claude hook` unknown-tool full-scan fallback (v2.5):** the Claude Code IDE-hook entry point routes unknown `tool_name` values through the full tool-use decision path with complete `tool_input` scanning instead of returning clean. Unknown clean inputs are still allowed after scanning; unknown inputs that carry malicious or secret-bearing payloads are denied. Null tool input errors explicitly. Closes a fail-open path where Pipelock previously short-circuited on tool names it had not yet enumerated. The hook itself is fail-closed on unsupported hook events (`PostToolUse`, `PreCompact`, `SessionStart`); see appendix.
 
-**Configuration:** `mcp_tool_policy`, `sandbox`
+**Configuration:** `mcp_tool_policy`, `sandbox`. (The `pipelock claude hook` subcommand is a CLI surface — registered under `pipelock claude` and invoked from `~/.claude/settings.json` `PreToolUse` matchers — not a YAML config block. Other Claude Code hook events such as `PostToolUse`, `PreCompact`, and `SessionStart` are fail-closed today; `pipelock claude hook` returns deny when invoked from any non-`PreToolUse` event.)
 
 **Gap:** None for network-visible command execution. Commands executed entirely within the agent's local runtime without tool calls are outside the proxy's visibility.
 
 ---
 
-## MCP06:2025 — Prompt Injection via Contextual Payloads
+## MCP06:2025 — Intent Flow Subversion
 
-**Risk:** Malicious text designed to override agent instructions, embedded in tool results, web content, or error messages.
+**Risk:** Malicious instructions embedded in context (tool results, web content, error messages) hijack the agent's intent flow toward attacker objectives. The prompt-injection class adapted to the MCP-specific context surface.
 
 **Pipelock coverage:**
 
-- **Response scanning:** 6-pass normalization pipeline (NFKC + zero-width stripping, invisible char replacement, leetspeak, optional-whitespace, vowel folding, base64/hex decode) with 25 default patterns covering prompt injection, jailbreak templates, role/behavior overrides, credential solicitation, memory persistence directives, and CJK-language instruction overrides.
+- **Response scanning:** 6-pass normalization pipeline (NFKC + zero-width stripping, invisible char replacement, leetspeak, optional-whitespace, vowel folding, base64/hex decode) with default patterns covering prompt injection, jailbreak templates, role/behavior overrides, credential solicitation, memory persistence directives, and CJK-language instruction overrides.
 - **MCP response scanning:** tool results are scanned through the same pipeline before reaching the agent.
 - **State/control poisoning patterns:** detect credential solicitation ("provide your API key"), memory persistence ("save this for future sessions"), preference poisoning ("from now on, always use this tool"), and silent credential handling.
-- **Pre-filter optimization:** keyword-based gating skips expensive regex on clean content. Typical scan latency under 50us for clean responses.
+- **Pre-filter optimization:** keyword-based gating skips expensive regex on clean content. Scan latency for clean responses stays in the low-microsecond range on typical hardware.
+- **Request-body prompt-injection blocking (v2.5):** outbound request bodies are scanned across JSON, form-urlencoded, multipart, raw text, split-field, and key-as-payload shapes. Detected payloads return 403 with `BR=prompt_injection` before the request reaches the upstream LLM provider. Closes the loop where a tainted tool result re-enters the agent's next outbound prompt — a primary failure mode for indirect prompt injection on long-running agents.
 
-**Configuration:** `response_scanning`
+**Configuration:** `response_scanning`, `request_body_scanning`
 
 **Gap:** Pipelock uses deterministic pattern matching, not ML-based classification. Novel injection phrasing not matching any pattern variant will pass through. Pattern coverage is continuously expanded based on adversarial testing.
 
@@ -200,8 +204,26 @@ See also: [OWASP Agentic Top 10 mapping](../owasp-mapping.md) | [OWASP AIVSS cov
 
 Pipelock operates at the **network transport layer** between the MCP client (agent) and MCP server. This provides visibility into all traffic regardless of the agent framework, programming language, or MCP server implementation. However, some MCP risks that exist purely at the application layer (in-memory state, local variable access, semantic argument validation) are outside the proxy's architectural scope.
 
-For comprehensive MCP security, combine network-layer enforcement (Pipelock) with:
+For multi-layer MCP security, combine network-layer enforcement (Pipelock) with:
 - **Pre-deployment scanning** (Snyk Agent Scan, Aguara) for static tool/skill analysis
 - **Server-side protection** (mcp-context-protector) for server-level injection prevention
 - **Identity management** (Oasis, Keycard, Alter) for agent identity and access control
 - **Container isolation** (Docker MCP Gateway, NemoClaw) for process-level containment
+
+---
+
+## Appendix: v2.5 deltas mapped to MCP categories
+
+For full release history see [`CHANGELOG.md`](../../CHANGELOG.md). This appendix lists only the v2.5 additions and the MCP category each strengthens.
+
+- **Request-body prompt-injection blocking** across JSON / form-urlencoded / multipart / raw-text / split-field / key-as-payload shapes — **MCP06** (Intent Flow Subversion).
+- **Critical body-DLP hard-blocking in enforce mode** for AWS / Anthropic / GitHub-token-shaped findings — **MCP01** (Token Mismanagement & Secret Exposure).
+- **Provider-aware redaction** (Anthropic + OpenAI + Gemini parsers) with hardened placeholder semantics and tightened Databricks pattern — **MCP01**.
+- **`pipelock claude hook` unsupported-event fail-closed default** on non-`PreToolUse` Claude Code hook events (`PostToolUse`, `PreCompact`, `SessionStart`); the PreToolUse path itself uses an unknown-tool full-scan fallback rather than a hard deny. This control contributes to both **MCP05** (Command Injection & Execution — scanning catches injection in unknown-tool input) and **MCP02** (Privilege Escalation via Scope Creep — unknown tools cannot bypass the scan path) at the IDE-hook surface.
+- **Host containment lifecycle CLI** (`pipelock contain install / verify / rollback / add-tool / grant-workspace / revoke-workspace / ca-refresh`) — **MCP02**.
+- **Audit Packet v0 schema + Go / TypeScript / Rust / Python verifier implementations** — **MCP08** (Lack of Audit and Telemetry).
+- **Strict-default SPIFFE actor enforcement on inbound mediation envelopes + `pipelock envelope trust` operator CLI** — **MCP07** (Insufficient Authentication & Authorization).
+- **Activation-time tombstone enforcement** preventing re-promotion of withdrawn contracts — **MCP02**.
+- **Skill-poisoning instruction-recognition coverage** (memory-persistence / credential-solicitation / covert-action directives) — **MCP03** (Tool Poisoning).
+- **Rules-bundle keyring separated from license key** so bundle signing rotates independently — **MCP04** (Software Supply Chain Attacks & Dependency Tampering).
+- **Optional OTel `agent.threat.detection.*` attributes** — **MCP08**.

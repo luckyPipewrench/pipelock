@@ -102,7 +102,10 @@ const (
 	// regex moves from `dapi[a-z0-9]{30,}` to `dapi[0-9a-f]{32,}`. This
 	// matches the documented 32-char hex Databricks token format and removes
 	// a false-positive surface that fired on random base64 image payloads.
-	goldenHashDefaults = "4a9d35253c4c78fc9ee555c3162bf30bf9fd5039c34f49c4b6c80986128c2f74"
+	// Re-bumped for DLP false-positive sprint hardening: high-risk
+	// short-prefix provider patterns were narrowed to bounded documented
+	// shapes, and package-host path entropy exclusions were added.
+	goldenHashDefaults = "08c8369499d057136f40ee0dd1741fbb72d8bbeb86e8be1a32a2d53bc8859353"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -151,7 +154,11 @@ const (
 	// `dapi[a-z0-9]{30,}` to `dapi[0-9a-f]{32,}` (defaults.go DLP set), which
 	// closes a false-positive surface in random base64 image payloads while
 	// still matching the documented 32-char hex Databricks token format.
-	goldenHashRichConfig = "5a39175fdc619b47288bf74068a4e7beaeb6959f771e370d8e50a671620ac320"
+	// Re-bumped for DLP false-positive sprint hardening: see
+	// goldenHashDefaults note. The rich fixture inherits the default DLP
+	// pattern and entropy-exclusion defaults, so the hash shifts in
+	// lockstep.
+	goldenHashRichConfig = "011b5b53a01c74bf8a9b3d1e5c50bf34ad295d6991404176b28240f20f660675"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -187,6 +187,9 @@ func (c *Config) ApplyDefaults() {
 	if c.FetchProxy.Monitoring.SubdomainEntropyThreshold <= 0 {
 		c.FetchProxy.Monitoring.SubdomainEntropyThreshold = 4.0
 	}
+	if c.FetchProxy.Monitoring.SubdomainEntropyExclusions == nil {
+		c.FetchProxy.Monitoring.SubdomainEntropyExclusions = append([]string(nil), Defaults().FetchProxy.Monitoring.SubdomainEntropyExclusions...)
+	}
 	if c.FetchProxy.Monitoring.MaxReqPerMinute <= 0 {
 		c.FetchProxy.Monitoring.MaxReqPerMinute = 60
 	}

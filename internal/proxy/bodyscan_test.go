@@ -368,7 +368,7 @@ func TestScanRequestBody_ModelProviderOpaqueReasoningFieldsStillScanned(t *testi
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	token := "fw_" + strings.Repeat("A", 24)
+	token := "fw_" + strings.Repeat("A", 22)
 	body := `{
 		"input": [{
 			"role": "assistant",
@@ -401,7 +401,7 @@ func TestScanRequestBody_ModelProviderStillScansPromptText(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	body := `{"input":"leak ` + "fw_" + strings.Repeat("A", 24) + `"}`
+	body := `{"input":"leak ` + "fw_" + strings.Repeat("A", 22) + `"}`
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
@@ -421,7 +421,7 @@ func TestScanRequestBody_OpaqueReasoningFieldNamesDoNotBypassOtherHosts(t *testi
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	body := `{"encrypted_content":"` + "fw_" + strings.Repeat("A", 24) + `"}`
+	body := `{"encrypted_content":"` + "fw_" + strings.Repeat("A", 22) + `"}`
 
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),

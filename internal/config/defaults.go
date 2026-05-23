@@ -46,7 +46,11 @@ func Defaults() *Config {
 					"*.file.io",
 					"*.requestbin.com",
 				},
-				SubdomainEntropyExclusions: []string{},
+				SubdomainEntropyExclusions: []string{
+					"files.pythonhosted.org",
+					"pypi.org",
+					"objects.githubusercontent.com",
+				},
 			},
 		},
 		ForwardProxy: ForwardProxy{
@@ -72,7 +76,11 @@ func Defaults() *Config {
 				{Name: "Anthropic API Key", Regex: `sk-ant-[a-zA-Z0-9\-_]{10,}`, Severity: SeverityCritical},
 				{Name: "OpenAI API Key", Regex: `sk-proj-[a-zA-Z0-9\-_]{10,}`, Severity: SeverityCritical},
 				{Name: "OpenAI Service Key", Regex: `sk-svcacct-[a-zA-Z0-9\-]{10,}`, Severity: SeverityCritical},
-				{Name: "Fireworks API Key", Regex: `fw_[a-zA-Z0-9]{24,}`, Severity: SeverityCritical},
+				// Fireworks API keys use an "fw_" prefix with a 22-character
+				// alphanumeric suffix. Keep the trailing word boundary so longer
+				// opaque base64-ish IDs do not match a 22-character prefix.
+				// Source: https://docs.fireworks.ai/api-reference/authentication
+				{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical},
 				{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}`, Severity: "high"},
 				{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
 				// Stripe keys use underscores (sk_test_) or hyphens (sk-test-) depending on version.
@@ -112,10 +120,21 @@ func Defaults() *Config {
 				{Name: "New Relic API Key", Regex: `NRAK-[A-Z0-9]{27,}`, Severity: SeverityCritical},
 
 				// AI/ML provider keys
-				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{20,}`, Severity: SeverityCritical},
+				// Hugging Face user access tokens use an "hf_" prefix with a
+				// bounded alphanumeric suffix. Keep the boundary so longer
+				// opaque IDs do not match a valid token prefix.
+				// Source: https://huggingface.co/docs/hub/security-tokens
+				{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical},
+				// Databricks personal access tokens use a 32-character hex suffix.
+				// Keep this narrow: the previous lowercase-alphanumeric suffix
+				// produced false positives on base64 image payloads.
 				{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}`, Severity: SeverityCritical},
-				{Name: "Replicate API Token", Regex: `r8_[A-Za-z0-9]{20,}`, Severity: SeverityCritical},
-				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}`, Severity: SeverityCritical},
+				// Replicate API tokens use an "r8_" prefix with a 40-character
+				// hex suffix. The previous broad alphanumeric suffix was the same
+				// short-prefix FP shape as Fireworks and Databricks.
+				// Source: https://replicate.com/docs/topics/authentication
+				{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical},
+				{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical},
 				// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 				{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}`, Severity: SeverityCritical},
 				// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
@@ -127,16 +146,21 @@ func Defaults() *Config {
 				// DigitalOcean personal access tokens: 64 hex chars after prefix.
 				{Name: "DigitalOcean Token", Regex: `dop_v1_[a-f0-9]{64}`, Severity: SeverityCritical},
 				{Name: "HashiCorp Vault Token", Regex: `hvs\.[a-zA-Z0-9]{23,}`, Severity: SeverityCritical},
-				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}`, Severity: SeverityCritical},
+				{Name: "Vercel Token", Regex: `(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b`, Severity: SeverityCritical},
 				{Name: "Supabase Service Key", Regex: `sb_secret_[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
 
 				// Package registry tokens
-				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}`, Severity: SeverityCritical},
-				{Name: "PyPI Token", Regex: `pypi-[A-Za-z0-9_-]{16,}`, Severity: SeverityCritical},
+				{Name: "npm Token", Regex: `npm_[A-Za-z0-9]{36,}\b`, Severity: SeverityCritical},
+				// PyPI API tokens are long base64url payloads with a stable
+				// "pypi-AgE" prefix (v2 macaroon, empty location). If PyPI
+				// rotates macaroon format or version, this regex MUST be updated:
+				// current shape is intentionally precise over future-proof.
+				// Source: https://pypi.org/help/#apitoken
+				{Name: "PyPI Token", Regex: `pypi-AgE[A-Za-z0-9_-]{90,}`, Severity: SeverityCritical},
 
 				// Developer platform tokens
 				{Name: "Linear API Key", Regex: `lin_api_[a-zA-Z0-9]{40,}`, Severity: "high"},
-				{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}`, Severity: "high"},
+				{Name: "Notion API Key", Regex: `ntn_[a-zA-Z0-9]{40,}\b`, Severity: "high"},
 				{Name: "Sentry Auth Token", Regex: `sntrys_[a-zA-Z0-9]{40,}`, Severity: "high"},
 
 				// Cryptographic material

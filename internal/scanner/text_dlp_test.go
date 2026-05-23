@@ -316,7 +316,7 @@ func TestScanTextForDLP(t *testing.T) {
 		// --- New patterns ---
 		{
 			name:        "Fireworks API Key",
-			text:        "fw_" + "aBcDeFgHiJkLmNoPqRsTuVwX",
+			text:        "fw_" + "aBcDeFgHiJkLmNoPqRsTuV",
 			wantClean:   false,
 			wantPattern: "Fireworks API Key",
 		},
@@ -496,6 +496,31 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean: true,
 		},
 		{
+			name:      "FP: Fireworks old broad 24-char shape",
+			text:      "fw_" + strings.Repeat("A", 24),
+			wantClean: true,
+		},
+		{
+			name:      "FP: Databricks non-hex old broad shape",
+			text:      "dapi" + strings.Repeat("z", 32),
+			wantClean: true,
+		},
+		{
+			name:      "FP: Together token followed by underscore suffix",
+			text:      "tok_" + strings.Repeat("a", 40) + "_payload",
+			wantClean: true,
+		},
+		{
+			name:      "FP: Vercel token followed by underscore suffix",
+			text:      "vcp_" + strings.Repeat("a", 24) + "_payload",
+			wantClean: true,
+		},
+		{
+			name:      "FP: Notion token followed by underscore suffix",
+			text:      "ntn_" + strings.Repeat("a", 40) + "_payload",
+			wantClean: true,
+		},
+		{
 			name:      "FP: GOCSPX too short",
 			text:      "GOCSPX-short",
 			wantClean: true,
@@ -528,7 +553,7 @@ func TestScanTextForDLP(t *testing.T) {
 		// --- AI/ML platform tokens ---
 		{
 			name:        "raw DLP pattern match - Hugging Face Token",
-			text:        "My token is " + "hf_" + strings.Repeat("a", 25),
+			text:        "My token is " + "hf_" + strings.Repeat("a", 37),
 			wantClean:   false,
 			wantPattern: "Hugging Face Token",
 		},
@@ -540,13 +565,13 @@ func TestScanTextForDLP(t *testing.T) {
 		},
 		{
 			name:        "raw DLP pattern match - Replicate API Token",
-			text:        "My token is " + "r8_" + strings.Repeat("b", 25),
+			text:        "My token is " + "r8_" + strings.Repeat("b", 40),
 			wantClean:   false,
 			wantPattern: "Replicate API Token",
 		},
 		{
 			name:        "raw DLP pattern match - Together AI Key",
-			text:        "My token is " + "tok_" + strings.Repeat("c", 45),
+			text:        "My token is " + "tok_" + strings.Repeat("c", 40),
 			wantClean:   false,
 			wantPattern: "Together AI Key",
 		},
@@ -608,13 +633,13 @@ func TestScanTextForDLP(t *testing.T) {
 		// --- Developer platform tokens ---
 		{
 			name:        "raw DLP pattern match - npm Token",
-			text:        "My token is " + "npm_" + strings.Repeat("h", 40),
+			text:        "My token is " + "npm_" + strings.Repeat("h", 36),
 			wantClean:   false,
 			wantPattern: "npm Token",
 		},
 		{
 			name:        "raw DLP pattern match - PyPI Token",
-			text:        "My token is " + "pypi-" + "aB3_-cD4_-eF5_-gH6i",
+			text:        "My token is " + "pypi-AgE" + strings.Repeat("A", 90),
 			wantClean:   false,
 			wantPattern: "PyPI Token",
 		},

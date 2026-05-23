@@ -95,6 +95,10 @@ fetch_proxy:
       - "*.transfer.sh"
       - "file.io"
       - "requestbin.net"
+    subdomain_entropy_exclusions:
+      - "files.pythonhosted.org"
+      - "pypi.org"
+      - "objects.githubusercontent.com"
 ```
 
 | Field | Default | Description |
@@ -108,7 +112,7 @@ fetch_proxy:
 | `monitoring.max_requests_per_minute` | `60` | Per-domain rate limit |
 | `monitoring.max_data_per_minute` | `0` | Per-domain byte budget (0 = disabled) |
 | `monitoring.blocklist` | 5 domains | Blocked exfiltration targets |
-| `monitoring.subdomain_entropy_exclusions` | `[]` | Domains excluded from subdomain and path entropy checks (query entropy still checked) |
+| `monitoring.subdomain_entropy_exclusions` | `files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com` | Domains excluded from subdomain and path entropy checks; override to replace defaults, or set an empty list to disable exclusions entirely (query entropy still checked) |
 
 **Entropy guidance:**
 - English text: 3.5-4.0 bits/char
@@ -118,7 +122,7 @@ fetch_proxy:
 
 The default threshold (4.5) allows commit hashes and base64-encoded filenames while flagging encrypted blobs. Lower it (3.5) for strict mode. Raise it (5.0) for development environments where base64 URLs are common.
 
-**Subdomain entropy exclusions** skip subdomain and path entropy checks for specific domains, but query parameter entropy is still checked. Useful for APIs that embed tokens in URL paths (e.g., Telegram bot API). Supports wildcard matching (`*.example.com`).
+**Subdomain entropy exclusions** skip subdomain and path entropy checks for specific domains, but query parameter entropy is still checked. Defaults cover package/object hosts that use hash-like routing paths (`files.pythonhosted.org`, `pypi.org`, `objects.githubusercontent.com`). This is also useful for APIs that embed tokens in URL paths (e.g., Telegram bot API). Supports wildcard matching (`*.example.com`).
 
 ```yaml
 fetch_proxy:
@@ -495,7 +499,7 @@ dlp:
 | Vercel Token | `vercel_\|vc[piark]_` | critical |
 | Supabase Service Key | `sb_secret_` | critical |
 | npm Token | `npm_` | critical |
-| PyPI Token | `pypi-` | critical |
+| PyPI Token | `pypi-AgE` | critical |
 | Linear API Key | `lin_api_` | high |
 | Notion API Key | `ntn_` | high |
 | Sentry Auth Token | `sntrys_` | high |

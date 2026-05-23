@@ -15,34 +15,41 @@ type Class string
 // stable class labels for future profiles that are not matched by the v1
 // built-in regex registry yet.
 const (
-	ClassIPv4          Class = "ipv4"
-	ClassIPv6          Class = "ipv6"
-	ClassCIDR          Class = "cidr"
-	ClassFQDN          Class = "fqdn"
-	ClassEmail         Class = "email"
-	ClassAWSAccessKey  Class = "aws-access-key"
-	ClassGoogleAPIKey  Class = "google-api-key"
-	ClassGitHubToken   Class = "github-token"
-	ClassGitLabToken   Class = "gitlab-token"
-	ClassSlackToken    Class = "slack-token"
-	ClassVercelToken   Class = "vercel-token"       //nolint:gosec // class label, not a secret value
-	ClassDatabricksPAT Class = "databricks-token"   //nolint:gosec // class label, not a secret value
-	ClassOpenAIAPIKey  Class = "openai-api-key"     //nolint:gosec // class label, not a secret value
-	ClassAnthropicKey  Class = "anthropic-api-key"  //nolint:gosec // class label, not a secret value
-	ClassTelegramToken Class = "telegram-bot-token" //nolint:gosec // class label, not a secret value
-	ClassDiscordToken  Class = "discord-bot-token"  //nolint:gosec // class label, not a secret value
-	ClassJWT           Class = "jwt"
-	ClassHashMD5       Class = "hash-md5"
-	ClassHashSHA1      Class = "hash-sha1"
-	ClassHashSHA256    Class = "hash-sha256"
-	ClassHashSHA512    Class = "hash-sha512"
-	ClassMAC           Class = "mac"
-	ClassSSN           Class = "ssn"
-	ClassCreditCard    Class = "credit-card"
-	ClassSSHPrivateKey Class = "ssh-private-key"
-	ClassADUser        Class = "ad-user"
-	ClassEnvSecret     Class = "env-secret"
-	ClassSeedPhrase    Class = "seed-phrase"
+	ClassIPv4              Class = "ipv4"
+	ClassIPv6              Class = "ipv6"
+	ClassCIDR              Class = "cidr"
+	ClassFQDN              Class = "fqdn"
+	ClassEmail             Class = "email"
+	ClassAWSAccessKey      Class = "aws-access-key"
+	ClassGoogleAPIKey      Class = "google-api-key"
+	ClassGitHubToken       Class = "github-token"
+	ClassGitLabToken       Class = "gitlab-token"
+	ClassSlackToken        Class = "slack-token"
+	ClassFireworksAPIKey   Class = "fireworks-api-key"
+	ClassHuggingFaceToken  Class = "huggingface-token"
+	ClassReplicateAPIToken Class = "replicate-api-token"
+	ClassTogetherAIKey     Class = "together-ai-key"
+	ClassVercelToken       Class = "vercel-token"      //nolint:gosec // class label, not a secret value
+	ClassDatabricksPAT     Class = "databricks-token"  //nolint:gosec // class label, not a secret value
+	ClassOpenAIAPIKey      Class = "openai-api-key"    //nolint:gosec // class label, not a secret value
+	ClassAnthropicKey      Class = "anthropic-api-key" //nolint:gosec // class label, not a secret value
+	ClassNPMToken          Class = "npm-token"
+	ClassPyPIToken         Class = "pypi-token"
+	ClassNotionAPIKey      Class = "notion-api-key"
+	ClassTelegramToken     Class = "telegram-bot-token" //nolint:gosec // class label, not a secret value
+	ClassDiscordToken      Class = "discord-bot-token"  //nolint:gosec // class label, not a secret value
+	ClassJWT               Class = "jwt"
+	ClassHashMD5           Class = "hash-md5"
+	ClassHashSHA1          Class = "hash-sha1"
+	ClassHashSHA256        Class = "hash-sha256"
+	ClassHashSHA512        Class = "hash-sha512"
+	ClassMAC               Class = "mac"
+	ClassSSN               Class = "ssn"
+	ClassCreditCard        Class = "credit-card"
+	ClassSSHPrivateKey     Class = "ssh-private-key"
+	ClassADUser            Class = "ad-user"
+	ClassEnvSecret         Class = "env-secret"
+	ClassSeedPhrase        Class = "seed-phrase"
 )
 
 // Reserved class labels for future profiles or operator-defined use.

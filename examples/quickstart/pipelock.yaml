@@ -43,6 +43,10 @@ fetch_proxy:
       - "*.transfer.sh"
       - "*.file.io"
       - "*.requestbin.com"
+    subdomain_entropy_exclusions:
+      - "files.pythonhosted.org"
+      - "pypi.org"
+      - "objects.githubusercontent.com"
 
 forward_proxy:
   enabled: true
@@ -76,7 +80,7 @@ dlp:
       regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
       severity: critical
     - name: "Fireworks API Key"
-      regex: 'fw_[a-zA-Z0-9]{24,}'
+      regex: 'fw_[A-Za-z0-9]{22}\b'
       severity: critical
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}'

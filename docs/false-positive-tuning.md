@@ -118,7 +118,7 @@ For URL-path-level suppression (finer than domain exemption), use `suppress` ent
 
 ## Tuning Entropy Thresholds
 
-Path entropy and subdomain entropy are the most common false positive sources. APIs that use UUIDs, base64-encoded IDs, or hash-based URLs in their paths trigger entropy checks.
+Path entropy and subdomain entropy are the most common false positive sources. APIs that use UUIDs, base64-encoded IDs, or hash-based URLs in their paths trigger entropy checks. Defaults already exempt common package/object hosts with hash-based routing paths: `files.pythonhosted.org`, `pypi.org`, and `objects.githubusercontent.com`.
 
 The default threshold is `4.5` (balanced preset). Raising it reduces sensitivity:
 

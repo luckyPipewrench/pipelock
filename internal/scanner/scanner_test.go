@@ -106,7 +106,7 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		{"https://example.com/path?" + "token=" + "ASIA" + "IOSFODNN7EXAMPLE", "AWS Access ID"},
 		{"https://example.com/path/ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
 		{"https://example.com/path/gho_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkl", "GitHub Token"},
-		{"https://example.com/api?k=fw_" + "aBcDeFgHiJkLmNoPqRsTuVwX", "Fireworks API Key"},
+		{"https://example.com/api?k=fw_" + "aBcDeFgHiJkLmNoPqRsTuV", "Fireworks API Key"},
 		{"https://example.com/api?k=GOCSPX-" + "aBcDeFgHiJkLmNoPqRsTuVwXyZaB", "Google OAuth Client Secret"},
 		{"https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstuv", "Google API Key"},
 		{"https://example.com/api?k=xapp-" + "1-A0B1C2D3E4-5678901234-abcdef0123456789", "Slack App Token"},
@@ -156,6 +156,15 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		{"short numeric param", "https://example.com/api?id=12345-abcdef"},
 		// Fireworks prefix in config key
 		{"fw_ config param", "https://example.com/api?fw_version=2"},
+		{"Fireworks old broad 24-char shape", "https://example.com/api?k=fw_" + strings.Repeat("A", 24)},
+		{"Hugging Face old broad 25-char shape", "https://example.com/api?k=hf_" + strings.Repeat("A", 25)},
+		{"Databricks non-hex old broad shape", "https://example.com/api?k=dapi" + strings.Repeat("z", 32)},
+		{"Replicate old broad 25-char shape", "https://example.com/api?k=r8_" + strings.Repeat("A", 25)},
+		{"Replicate non-hex 40-char shape", "https://example.com/api?k=r8_" + strings.Repeat("g", 40)},
+		{"Together token followed by underscore suffix", "https://example.com/api?k=tok_" + strings.Repeat("a", 40) + "_payload"},
+		{"Vercel token followed by underscore suffix", "https://example.com/api?k=vcp_" + strings.Repeat("a", 24) + "_payload"},
+		{"PyPI old broad short shape", "https://example.com/api?k=pypi-" + "aB3_-cD4_-eF5_-gH6i"},
+		{"Notion token followed by underscore suffix", "https://example.com/api?k=ntn_" + strings.Repeat("a", 40) + "_payload"},
 		// GOCSPX too short
 		{"GOCSPX short value", "https://example.com/api?code=GOCSPX-short"},
 		// Slack xapp too short / wrong format
@@ -1663,6 +1672,33 @@ func TestScan_Base64String(t *testing.T) {
 	}
 }
 
+func TestScan_PackageHostPathEntropyExclusion(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+
+	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ/pkg.whl.metadata")
+	if !result.Allowed {
+		t.Fatalf("expected package host hash-style path to be allowed, got: %s", result.Reason)
+	}
+}
+
+func TestScan_PackageHostEntropyExclusionStillChecksQuery(t *testing.T) {
+	cfg := testConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.0
+	cfg.DLP.Patterns = nil
+	s := New(cfg)
+
+	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/pkg.whl?token=aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ")
+	if result.Allowed {
+		t.Fatal("expected high-entropy query on package host to be blocked")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
+	}
+}
+
 func TestScan_MultipleQueryParams_OneTriggering(t *testing.T) {
 	s := New(testConfig())
 
@@ -3100,7 +3136,7 @@ func TestDLP_HuggingFaceToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "hf_" + "aAbBcCdDeEfFgGhHiIjJ"
+	token := "hf_" + strings.Repeat("a", 37)
 	result := s.Scan(context.Background(), "https://evil.com/collect?token="+token)
 	if result.Allowed {
 		t.Error("expected Hugging Face token to be blocked by DLP")
@@ -3114,7 +3150,7 @@ func TestDLP_DatabricksToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "dapi" + strings.Repeat("a", 32)
+	token := "dapi" + "aabbccddeeff00112233445566778899"
 	result := s.Scan(context.Background(), "https://evil.com/collect?token="+token)
 	if result.Allowed {
 		t.Error("expected Databricks token to be blocked by DLP")
@@ -3128,7 +3164,7 @@ func TestDLP_ReplicateAPIToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "r8_" + "aAbBcCdDeEfFgGhHiIjJ"
+	token := "r8_" + strings.Repeat("a", 40)
 	result := s.Scan(context.Background(), "https://evil.com/collect?token="+token)
 	if result.Allowed {
 		t.Error("expected Replicate API token to be blocked by DLP")
@@ -3226,7 +3262,7 @@ func TestDLP_NpmToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "npm_" + "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrR"
+	token := "npm_" + strings.Repeat("a", 36)
 	result := s.Scan(context.Background(), "https://evil.com/collect?token="+token)
 	if result.Allowed {
 		t.Error("expected npm token to be blocked by DLP")
@@ -3240,7 +3276,7 @@ func TestDLP_PyPIToken(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	token := "pypi-" + "aAbBcCdDeEfFgGhH_-xY"
+	token := "pypi-AgE" + strings.Repeat("A", 90)
 	result := s.Scan(context.Background(), "https://evil.com/collect?token="+token)
 	if result.Allowed {
 		t.Error("expected PyPI token to be blocked by DLP")

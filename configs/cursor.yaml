@@ -59,7 +59,10 @@ fetch_proxy:
       - "*.requestbin.com"
       - "*.webhook.site"
       - "*.pipedream.net"
-    subdomain_entropy_exclusions: []
+    subdomain_entropy_exclusions:
+      - "files.pythonhosted.org"
+      - "pypi.org"
+      - "objects.githubusercontent.com"
 
 forward_proxy:
   enabled: true
@@ -108,7 +111,7 @@ dlp:
       regex: 'sk-svcacct-[a-zA-Z0-9\-]{10,}'
       severity: critical
     - name: "Fireworks API Key"
-      regex: 'fw_[a-zA-Z0-9]{24,}'
+      regex: 'fw_[A-Za-z0-9]{22}\b'
       severity: critical
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}'
@@ -168,16 +171,16 @@ dlp:
       severity: critical
     # AI/ML provider keys
     - name: "Hugging Face Token"
-      regex: 'hf_[A-Za-z0-9]{20,}'
+      regex: 'hf_[A-Za-z0-9]{34,37}\b'
       severity: critical
     - name: "Databricks Token"
-      regex: 'dapi[a-z0-9]{30,}'
+      regex: 'dapi[0-9a-f]{32,}'
       severity: critical
     - name: "Replicate API Token"
-      regex: 'r8_[A-Za-z0-9]{20,}'
+      regex: 'r8_[a-f0-9]{40}\b'
       severity: critical
     - name: "Together AI Key"
-      regex: 'tok_[a-z0-9]{40,}'
+      regex: 'tok_[a-z0-9]{40,}\b'
       severity: critical
     - name: "Pinecone API Key"
       regex: 'pcsk_[a-zA-Z0-9]{36,}'
@@ -196,24 +199,24 @@ dlp:
       regex: 'hvs\.[a-zA-Z0-9]{23,}'
       severity: critical
     - name: "Vercel Token"
-      regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}'
+      regex: '(?:vercel|vc[piark])_[a-zA-Z0-9]{24,}\b'
       severity: critical
     - name: "Supabase Service Key"
       regex: 'sb_secret_[a-zA-Z0-9_-]{20,}'
       severity: critical
     # Package registry tokens
     - name: "npm Token"
-      regex: 'npm_[A-Za-z0-9]{36,}'
+      regex: 'npm_[A-Za-z0-9]{36,}\b'
       severity: critical
     - name: "PyPI Token"
-      regex: 'pypi-[A-Za-z0-9_-]{16,}'
+      regex: 'pypi-AgE[A-Za-z0-9_-]{90,}'
       severity: critical
     # Developer platform tokens
     - name: "Linear API Key"
       regex: 'lin_api_[a-zA-Z0-9]{40,}'
       severity: high
     - name: "Notion API Key"
-      regex: 'ntn_[a-zA-Z0-9]{40,}'
+      regex: 'ntn_[a-zA-Z0-9]{40,}\b'
       severity: high
     - name: "Sentry Auth Token"
       regex: 'sntrys_[a-zA-Z0-9]{40,}'

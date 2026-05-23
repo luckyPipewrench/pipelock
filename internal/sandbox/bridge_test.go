@@ -135,9 +135,16 @@ func TestBridgeProxy_HandleConnFailsGracefully(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go bp.Serve(ctx)
-	defer bp.Close()
+	serveDone := make(chan struct{})
+	go func() {
+		bp.Serve(ctx)
+		close(serveDone)
+	}()
+	defer func() {
+		cancel()
+		<-serveDone
+		bp.Close()
+	}()
 
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", bp.Addr())
 	if err != nil {

@@ -105,7 +105,12 @@ const (
 	// Re-bumped for DLP false-positive sprint hardening: high-risk
 	// short-prefix provider patterns were narrowed to bounded documented
 	// shapes, and package-host path entropy exclusions were added.
-	goldenHashDefaults = "08c8369499d057136f40ee0dd1741fbb72d8bbeb86e8be1a32a2d53bc8859353"
+	// Re-bumped for DLP false-positive hardening pass 2: Vault, Supabase,
+	// Linear, and Sentry provider-token patterns were tightened to
+	// documented shapes and leading/trailing token boundaries.
+	// Re-bumped again after the Supabase right edge was adjusted to keep
+	// matching valid base64url checksums that end in '-'.
+	goldenHashDefaults = "b2a8779c2522d3046affc058c286fd3d78101e5d1c9026bd380f9bf2e8404c96"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -158,7 +163,12 @@ const (
 	// goldenHashDefaults note. The rich fixture inherits the default DLP
 	// pattern and entropy-exclusion defaults, so the hash shifts in
 	// lockstep.
-	goldenHashRichConfig = "011b5b53a01c74bf8a9b3d1e5c50bf34ad295d6991404176b28240f20f660675"
+	// Re-bumped for DLP false-positive hardening pass 2: see
+	// goldenHashDefaults note above. The rich fixture inherits the default
+	// DLP pattern set, so the hash shifts in lockstep.
+	// Re-bumped again for the Supabase base64url checksum right-edge fix:
+	// see goldenHashDefaults note above.
+	goldenHashRichConfig = "4f0061858b23c6e7d389c2b88f5cbbb96c77898d2a62222bd1760c5e70042077"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

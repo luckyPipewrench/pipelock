@@ -88,7 +88,8 @@ func (pf *dlpPreFilter) patternsToCheck(text string) []int {
 //	"(?i)sk-ant-[a-zA-Z0-9]{10,}"  → "sk-ant-"
 //	"(?i)(AKIA|A3T|AGPA)..."       → ""  (alternation at start = no single prefix)
 //	"(?i)github_pat_[a-zA-Z0-9]+"  → "github_pat_"
-//	"(?i)\\bpassword=.+"           → ""  (\b is a metachar)
+//	"(?i)\\b(?:password|token)=.+" → ""  (\b before alternation gives no prefix)
+//	"(?i)\\bhvs\\..+"              → "hvs."  (leading boundary skipped)
 //	"(?i)-----BEGIN\\s+..."        → "-----begin"  (stops before \s)
 //	"(?i)[sr]k_(live|test)_..."    → ""  (char class at start)
 func extractLiteralPrefix(regex string) string {
@@ -132,6 +133,12 @@ func extractLiteralPrefix(regex string) string {
 				break
 			}
 			next := s[i+1]
+			if next == 'b' && len(prefix) == 0 {
+				// A leading word boundary constrains the left edge but does
+				// not change the literal bytes any match must contain.
+				i += 2
+				continue
+			}
 			switch next {
 			case '.', '\\', '-', '_', '[', ']', '(', ')', '{', '}', '+', '*', '?', '^', '$', '|', '/':
 				// Escaped literal character.

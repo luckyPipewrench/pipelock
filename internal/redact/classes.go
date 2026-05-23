@@ -37,7 +37,7 @@ const (
 // Split across category helpers so no single function trips funlen and the
 // priority story stays scannable category by category.
 func classRegistry() []classPattern {
-	out := make([]classPattern, 0, 32)
+	out := make([]classPattern, 0, 36)
 	out = append(out, tokenClasses()...)
 	out = append(out, hashClasses()...)
 	out = append(out, networkClasses()...)
@@ -64,7 +64,9 @@ func tokenClasses() []classPattern {
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)\bhf_[A-Za-z0-9]{34,37}\b`), priority: 100},
 		{class: ClassReplicateAPIToken, pattern: regexp.MustCompile(`(?i)\br8_[a-f0-9]{40}\b`), priority: 100},
 		{class: ClassTogetherAIKey, pattern: regexp.MustCompile(`(?i)\btok_[a-z0-9]{40,}\b`), priority: 100},
+		{class: ClassVaultToken, pattern: regexp.MustCompile(`(?i)\bhvs\.[A-Za-z0-9]{24,}\b`), priority: 100},
 		{class: ClassVercelToken, pattern: regexp.MustCompile(`(?i)\b(?:vercel|vc[piark])_[A-Za-z0-9]{24,}\b`), priority: 100},
+		{class: ClassSupabaseKey, pattern: regexp.MustCompile(`(?i)\bsb_secret_[A-Za-z0-9_-]{22}_(?:[A-Za-z0-9_-]{7}[A-Za-z0-9_]\b|[A-Za-z0-9_-]{7}-\B)`), priority: 100},
 		{class: ClassDatabricksPAT, pattern: regexp.MustCompile(`(?i)\bdapi[0-9a-f]{32,}\b`), priority: 100},
 		{class: ClassOpenAIAPIKey, pattern: regexp.MustCompile(`\bsk-(?:proj|svcacct)-[A-Za-z0-9_-]{10,}\b`), priority: 100},
 		{class: ClassAnthropicKey, pattern: regexp.MustCompile(`\bsk-ant-[A-Za-z0-9_-]{10,}\b`), priority: 100},
@@ -72,7 +74,9 @@ func tokenClasses() []classPattern {
 		// PyPI API tokens use the stable "pypi-AgE" prefix for v2 macaroons
 		// with empty location. Update this if PyPI rotates token format.
 		{class: ClassPyPIToken, pattern: regexp.MustCompile(`(?i)\bpypi-AgE[A-Za-z0-9_-]{90,}`), priority: 100},
+		{class: ClassLinearAPIKey, pattern: regexp.MustCompile(`(?i)\blin_api_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassNotionAPIKey, pattern: regexp.MustCompile(`(?i)\bntn_[A-Za-z0-9]{40,}\b`), priority: 100},
+		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)\bsntrys_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
 		{class: ClassDiscordToken, pattern: regexp.MustCompile(`\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b`), priority: 100},
 		{class: ClassBearer, pattern: regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}\b`), priority: 95},

@@ -49,6 +49,7 @@ The headline arc is **verifiable egress control as a public, language-portable a
 ### Changed
 
 - **DLP provider-token patterns hardened.** Tightened nine short-prefix patterns (Fireworks, Hugging Face, Databricks, Replicate, Together, Vercel, npm, PyPI, Notion) to bounded vendor-documented shapes and added matching redaction classes. Default `subdomain_entropy_exclusions` now covers `files.pythonhosted.org`, `pypi.org`, and `objects.githubusercontent.com`: path entropy is skipped for those package/object hosts, while query entropy is still scanned. Operators with custom DLP override patterns should mirror the vendor-shaped patterns if they want the same false-positive reduction.
+- **DLP provider-token hardening pass 2.** Tightened the remaining short-prefix provider rules for HashiCorp Vault, Supabase, Linear, and Sentry: Vault now requires the documented `hvs.` + 24-character minimum, Supabase matches the documented `sb_secret_<22-char-random>_<8-char-checksum>` shape, and Linear/Sentry keep their existing length floors. All four now require leading and trailing token boundaries, with matching redaction classes for the same token families.
 
 ### Fixed
 

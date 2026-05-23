@@ -62,7 +62,7 @@ func TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname(t *testing.T) 
 	if dialErr != nil {
 		t.Fatalf("dial proxy: %v", dialErr)
 	}
-	defer tcpConn.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = tcpConn.Close() }()
 	if deadlineErr := tcpConn.SetDeadline(time.Now().Add(5 * time.Second)); deadlineErr != nil {
 		t.Fatalf("set deadline: %v", deadlineErr)
 	}
@@ -140,7 +140,7 @@ func TestProxy_DNSHostOverrides_RawIPLiteralStillBlocked(t *testing.T) {
 	if dialErr != nil {
 		t.Fatalf("dial proxy: %v", dialErr)
 	}
-	defer tcpConn.Close() //nolint:errcheck // test cleanup
+	defer func() { _ = tcpConn.Close() }()
 	if deadlineErr := tcpConn.SetDeadline(time.Now().Add(5 * time.Second)); deadlineErr != nil {
 		t.Fatalf("set deadline: %v", deadlineErr)
 	}

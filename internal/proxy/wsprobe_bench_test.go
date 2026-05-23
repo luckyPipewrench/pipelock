@@ -27,7 +27,7 @@ func TestWSProxy_BenchCrossMessage_GitHubToken(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	// First frame: prefix, no pattern hit alone.
 	msg1 := []byte("part1: ghp_ABCDEFGHIJKLMN")

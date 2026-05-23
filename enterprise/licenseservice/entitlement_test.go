@@ -6,6 +6,7 @@ package licenseservice
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -81,6 +82,114 @@ func TestEntitlementDB_UpsertAndGet(t *testing.T) {
 	}
 	if got.CustomerEmail != "updated@example.com" {
 		t.Errorf("CustomerEmail after update = %q, want %q", got.CustomerEmail, "updated@example.com")
+	}
+}
+
+func TestEntitlementDB_LicenseRevocationAndIssuanceValidation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	if err := db.Upsert(ctx, nil); err == nil {
+		t.Fatal("Upsert nil should error")
+	}
+	if err := db.UpsertWithLicenseIssuance(ctx, nil, LicenseIssuance{}); err == nil {
+		t.Fatal("UpsertWithLicenseIssuance nil entitlement should error")
+	}
+
+	for _, rec := range []RevokedLicenseRecord{
+		{SubscriptionID: testSubscriptionID},
+		{LicenseID: "lic_missing_sub"},
+	} {
+		if err := db.UpsertLicenseRevocation(ctx, rec); err == nil {
+			t.Fatalf("UpsertLicenseRevocation(%+v) should error", rec)
+		}
+	}
+
+	if err := db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
+		LicenseID:      "lic_default_reason",
+		SubscriptionID: testSubscriptionID,
+	}); err != nil {
+		t.Fatalf("UpsertLicenseRevocation default fields: %v", err)
+	}
+	revoked, err := db.ListLicenseRevocations(ctx)
+	if err != nil {
+		t.Fatalf("ListLicenseRevocations: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0].Reason != "subscription_ended" || revoked[0].RevokedAt.IsZero() {
+		t.Fatalf("revocations = %+v, want default reason and timestamp", revoked)
+	}
+
+	for _, issuance := range []LicenseIssuance{
+		{SubscriptionID: testSubscriptionID, ExpiresAt: now.Add(time.Hour)},
+		{LicenseID: "lic_missing_sub", ExpiresAt: now.Add(time.Hour)},
+		{LicenseID: "lic_missing_expiry", SubscriptionID: testSubscriptionID},
+	} {
+		if err := db.InsertLicenseIssuance(ctx, issuance); err == nil {
+			t.Fatalf("InsertLicenseIssuance(%+v) should error", issuance)
+		}
+	}
+
+	if err := db.InsertLicenseIssuance(ctx, LicenseIssuance{
+		LicenseID:      "lic_valid_issuance",
+		SubscriptionID: testSubscriptionID,
+		ExpiresAt:      now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("InsertLicenseIssuance valid: %v", err)
+	}
+	issuances, err := db.ListUnexpiredLicenseIssuances(ctx, testSubscriptionID, now)
+	if err != nil {
+		t.Fatalf("ListUnexpiredLicenseIssuances: %v", err)
+	}
+	if len(issuances) != 1 || issuances[0].IssuedAt.IsZero() {
+		t.Fatalf("issuances = %+v, want default issued_at", issuances)
+	}
+}
+
+func TestEntitlementDB_UpsertWithLicenseIssuance(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	ent := testEntitlement("sub_atomic")
+	issuance := LicenseIssuance{
+		LicenseID:      "lic_atomic",
+		SubscriptionID: ent.SubscriptionID,
+		ExpiresAt:      now.Add(24 * time.Hour),
+		IssuedAt:       now,
+	}
+	if err := db.UpsertWithLicenseIssuance(ctx, ent, issuance); err != nil {
+		t.Fatalf("UpsertWithLicenseIssuance: %v", err)
+	}
+	got, err := db.GetBySubscriptionID(ctx, ent.SubscriptionID)
+	if err != nil {
+		t.Fatalf("GetBySubscriptionID: %v", err)
+	}
+	if got == nil || got.SubscriptionID != ent.SubscriptionID {
+		t.Fatalf("entitlement = %+v, want %s", got, ent.SubscriptionID)
+	}
+	issuances, err := db.ListUnexpiredLicenseIssuances(ctx, ent.SubscriptionID, now.Add(-time.Second))
+	if err != nil {
+		t.Fatalf("ListUnexpiredLicenseIssuances: %v", err)
+	}
+	if len(issuances) != 1 || issuances[0].LicenseID != issuance.LicenseID {
+		t.Fatalf("issuances = %+v, want %s", issuances, issuance.LicenseID)
+	}
+
+	terminal := testEntitlement("sub_terminal")
+	terminal.Status = statusCanceled
+	if err := db.Upsert(ctx, terminal); err != nil {
+		t.Fatalf("Upsert terminal: %v", err)
+	}
+	terminal.Status = statusActive
+	err = db.UpsertWithLicenseIssuance(ctx, terminal, LicenseIssuance{
+		LicenseID:      "lic_terminal",
+		SubscriptionID: terminal.SubscriptionID,
+		ExpiresAt:      now.Add(24 * time.Hour),
+		IssuedAt:       now,
+	})
+	if !errors.Is(err, ErrTerminalEntitlement) {
+		t.Fatalf("err = %v, want ErrTerminalEntitlement", err)
 	}
 }
 

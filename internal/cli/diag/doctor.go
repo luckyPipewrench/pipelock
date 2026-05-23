@@ -241,6 +241,9 @@ func checkDoctorLicense(cfg *config.Config) doctorReportCheck {
 func doctorVerifiedLicense(cfg *config.Config) (license.License, bool, error) {
 	pubKey, err := doctorLicensePublicKey(cfg)
 	if err != nil {
+		if cfg.LicensePublicKey != "" {
+			return license.License{}, false, err
+		}
 		lic, decodeErr := license.Decode(cfg.LicenseKey)
 		if decodeErr != nil {
 			return license.License{}, false, decodeErr

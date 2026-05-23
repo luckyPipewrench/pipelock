@@ -1228,8 +1228,9 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// License expiry watchdog: shut down agent listeners when the
-	// enterprise license expires at runtime. Only active when agent
-	// listeners exist and the license has a non-zero expiry.
+	// enterprise license expires at runtime. Agent shutdown only matters
+	// when listeners exist, but renewal warnings still emit for long-running
+	// proxy-only processes.
 	if agentListenerCount > 0 && cfg.LicenseExpiresAt > 0 {
 		go func() {
 			remaining := time.Until(time.Unix(cfg.LicenseExpiresAt, 0))
@@ -1247,6 +1248,8 @@ func (s *Server) Start(ctx context.Context) error {
 			case <-ctx.Done():
 			}
 		}()
+	}
+	if cfg.LicenseExpiresAt > 0 {
 		go s.startLicenseExpiryWatcher(ctx)
 	}
 	if agentListenerCount > 0 && cfg.LicenseCRLFile != "" {

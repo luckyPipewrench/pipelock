@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,7 +65,7 @@ func NewServer(
 	}
 
 	s.mux.HandleFunc("POST /webhook/polar", s.handleWebhook)
-	s.mux.HandleFunc("GET /crl.json", s.handleCRL)
+	s.mux.HandleFunc(http.MethodGet+" /crl.json", s.handleCRL)
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 
 	s.srv = &http.Server{
@@ -186,7 +187,7 @@ func (s *Server) handleCRL(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=60")
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", etag)
-	if r.Header.Get("If-None-Match") == etag {
+	if ifNoneMatch(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -217,6 +218,27 @@ func (s *Server) cachedCRL(ctx context.Context, now time.Time) ([]byte, string, 
 	s.crlCacheETag = `"` + hex.EncodeToString(sum[:]) + `"`
 	s.crlCacheUntil = now.Add(crlCacheTTL)
 	return s.crlCache, s.crlCacheETag, nil
+}
+
+func ifNoneMatch(header, etag string) bool {
+	if header == "" || etag == "" {
+		return false
+	}
+	normalizedETag := normalizeETag(etag)
+	for candidate := range strings.SplitSeq(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || normalizeETag(candidate) == normalizedETag {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeETag(etag string) string {
+	etag = strings.TrimSpace(etag)
+	etag = strings.TrimPrefix(etag, "W/")
+	etag = strings.Trim(etag, `"`)
+	return etag
 }
 
 // handleHealth returns 200 if the service is running.

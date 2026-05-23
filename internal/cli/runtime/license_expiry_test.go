@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,13 +44,45 @@ func TestEmitLicenseExpiryWarningIdempotent(t *testing.T) {
 	}
 }
 
+func TestEmitLicenseExpiryWarningNoops(t *testing.T) {
+	for _, cfg := range []*config.Config{
+		nil,
+		func() *config.Config { c := config.Defaults(); return c }(),
+		func() *config.Config {
+			c := config.Defaults()
+			c.LicenseID = "lic_no_expiry"
+			return c
+		}(),
+		func() *config.Config {
+			c := config.Defaults()
+			c.LicenseID = "lic_far"
+			c.LicenseExpiresAt = time.Now().Add(31 * 24 * time.Hour).Unix()
+			return c
+		}(),
+	} {
+		var stderr bytes.Buffer
+		emitLicenseExpiryWarning(cfg, audit.NewNop(), nil, &stderr)
+		if stderr.String() != "" {
+			t.Fatalf("unexpected warning for cfg %+v: %q", cfg, stderr.String())
+		}
+	}
+}
+
 func TestLicenseExpiryStatePathEmptyWhenNoHome(t *testing.T) {
 	oldHome := cliutil.PipelockHome
 	cliutil.PipelockHome = ""
 	t.Cleanup(func() { cliutil.PipelockHome = oldHome })
+	t.Setenv("PIPELOCK_HOME", "")
 	t.Setenv("HOME", "")
 
 	if got := licenseExpiryStatePath(); got != "" {
 		t.Fatalf("licenseExpiryStatePath() = %q", got)
 	}
+}
+
+func TestStartLicenseExpiryWatcherReturnsOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	(&Server{}).startLicenseExpiryWatcher(ctx)
 }

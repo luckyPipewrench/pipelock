@@ -2506,6 +2506,54 @@ func TestLogSNIMismatch_Emitter(t *testing.T) {
 	}
 }
 
+func TestLogLicenseExpiry(t *testing.T) {
+	tests := []struct {
+		name         string
+		severity     string
+		wantSeverity emit.Severity
+	}{
+		{name: "info", severity: "info", wantSeverity: emit.SeverityInfo},
+		{name: "warn", severity: "warn", wantSeverity: emit.SeverityWarn},
+		{name: "error", severity: "error", wantSeverity: emit.SeverityCritical},
+		{name: "critical", severity: "critical", wantSeverity: emit.SeverityCritical},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger, sink := newLoggerWithEmitter(t)
+			defer logger.Close()
+
+			logger.LogLicenseExpiry("lic_expiry", 14, 13, tt.severity, "2026-06-01T00:00:00Z")
+
+			ev, ok := sink.lastEvent()
+			if !ok {
+				t.Fatal("expected emitted event")
+			}
+			if ev.Type != string(EventLicenseExpiry) {
+				t.Fatalf("type = %q, want %q", ev.Type, EventLicenseExpiry)
+			}
+			if ev.Severity != tt.wantSeverity {
+				t.Fatalf("severity = %v, want %v", ev.Severity, tt.wantSeverity)
+			}
+			if ev.Fields["license_id"] != "lic_expiry" {
+				t.Errorf("license_id = %v, want lic_expiry", ev.Fields["license_id"])
+			}
+			if ev.Fields["threshold_days"] != 14 {
+				t.Errorf("threshold_days = %v, want 14", ev.Fields["threshold_days"])
+			}
+			if ev.Fields["days_remaining"] != 13 {
+				t.Errorf("days_remaining = %v, want 13", ev.Fields["days_remaining"])
+			}
+			if ev.Fields["severity"] != tt.severity {
+				t.Errorf("severity field = %v, want %s", ev.Fields["severity"], tt.severity)
+			}
+			if ev.Fields["expires_at"] != "2026-06-01T00:00:00Z" {
+				t.Errorf("expires_at = %v, want timestamp", ev.Fields["expires_at"])
+			}
+		})
+	}
+}
+
 func TestLogChainDetection_JSONFormat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")

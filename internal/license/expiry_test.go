@@ -4,6 +4,7 @@
 package license
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -89,5 +90,44 @@ func TestExpiryWarningStateRoundTrip(t *testing.T) {
 	}
 	if got.LicenseID != want.LicenseID || got.ThresholdDays != want.ThresholdDays || !got.LastEmittedUTC.Equal(want.LastEmittedUTC) {
 		t.Fatalf("state mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestExpiryWarningStateErrorsAndNoopPaths(t *testing.T) {
+	if _, err := LoadExpiryWarningState(""); err != nil {
+		t.Fatalf("empty load path should be a no-op: %v", err)
+	}
+	if err := SaveExpiryWarningState("", ExpiryWarningState{}); err != nil {
+		t.Fatalf("empty save path should be a no-op: %v", err)
+	}
+	if _, err := LoadExpiryWarningState(filepath.Join(t.TempDir(), "missing.json")); err != nil {
+		t.Fatalf("missing state should be empty without error: %v", err)
+	}
+
+	dir := t.TempDir()
+	badJSON := filepath.Join(dir, "bad.json")
+	if err := os.WriteFile(badJSON, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadExpiryWarningState(badJSON); err == nil {
+		t.Fatal("expected parse error")
+	}
+
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := SaveExpiryWarningState(filepath.Join(blocker, "state.json"), ExpiryWarningState{})
+	if err == nil {
+		t.Fatal("expected directory creation error")
+	}
+}
+
+func TestExpirySeverityDefault(t *testing.T) {
+	if got := expirySeverity(99); got != "" {
+		t.Fatalf("expirySeverity(99) = %q, want empty", got)
+	}
+	if ShouldEmitExpiryWarning(ExpiryWarning{}, ExpiryWarningState{}) {
+		t.Fatal("inactive warning should not emit")
 	}
 }

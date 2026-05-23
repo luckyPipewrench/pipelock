@@ -448,7 +448,7 @@ func (h *WebhookHandler) revokeSubscriptionLicenses(ctx context.Context, ent, ex
 func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.CRL, error) {
 	records, err := h.db.ListLicenseRevocations(ctx)
 	if err != nil {
-		return license.CRL{}, err
+		return license.CRL{}, fmt.Errorf("list license revocations: %w", err)
 	}
 	revoked := make([]license.RevokedLicense, 0, len(records))
 	for _, rec := range records {

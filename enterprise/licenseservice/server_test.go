@@ -144,7 +144,7 @@ func TestServer_CRLEndpoint(t *testing.T) {
 		t.Fatalf("UpsertLicenseRevocation: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/crl.json", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/crl.json", nil)
 	w := httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)
 
@@ -166,12 +166,43 @@ func TestServer_CRLEndpoint(t *testing.T) {
 		t.Fatalf("Cache-Control = %q, want max-age=60", cacheControl)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/crl.json", nil)
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/crl.json", nil)
 	req.Header.Set("If-None-Match", etag)
 	w = httptest.NewRecorder()
 	srv.mux.ServeHTTP(w, req)
 	if w.Code != http.StatusNotModified {
 		t.Fatalf("conditional status = %d, want 304", w.Code)
+	}
+
+	req = httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/crl.json", nil)
+	req.Header.Set("If-None-Match", `W/`+etag+`, "other"`)
+	w = httptest.NewRecorder()
+	srv.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("weak conditional status = %d, want 304", w.Code)
+	}
+}
+
+func TestIfNoneMatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		etag   string
+		want   bool
+	}{
+		{name: "empty", header: "", etag: `"abc"`, want: false},
+		{name: "exact", header: `"abc"`, etag: `"abc"`, want: true},
+		{name: "weak", header: `W/"abc"`, etag: `"abc"`, want: true},
+		{name: "list", header: `"other", W/"abc"`, etag: `"abc"`, want: true},
+		{name: "wildcard", header: "*", etag: `"abc"`, want: true},
+		{name: "miss", header: `"other"`, etag: `"abc"`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ifNoneMatch(tt.header, tt.etag); got != tt.want {
+				t.Fatalf("ifNoneMatch(%q, %q) = %v, want %v", tt.header, tt.etag, got, tt.want)
+			}
+		})
 	}
 }
 

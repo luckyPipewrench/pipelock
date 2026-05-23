@@ -190,6 +190,9 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 // Upsert inserts or updates an entitlement record. Updates the updated_at
 // timestamp automatically.
 func (e *EntitlementDB) Upsert(ctx context.Context, ent *Entitlement) error {
+	if ent == nil {
+		return errors.New("entitlement is nil")
+	}
 	if err := upsertEntitlement(ctx, e.db, ent); err != nil {
 		return fmt.Errorf("upsert entitlement %s: %w", ent.SubscriptionID, err)
 	}
@@ -440,6 +443,9 @@ func (e *EntitlementDB) InsertLicenseIssuance(ctx context.Context, issuance Lice
 // license issuance. It refuses stale active events when the current persisted
 // subscription state is already terminal.
 func (e *EntitlementDB) UpsertWithLicenseIssuance(ctx context.Context, ent *Entitlement, issuance LicenseIssuance) error {
+	if ent == nil {
+		return errors.New("entitlement is nil")
+	}
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin entitlement issuance transaction: %w", err)

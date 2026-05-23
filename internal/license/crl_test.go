@@ -256,6 +256,132 @@ func TestLoadAndVerifyCRL(t *testing.T) {
 	}
 }
 
+func TestCRLUnmarshalJSONBuildsIndex(t *testing.T) {
+	_, priv := testKeyPair(t)
+	now := time.Now().UTC()
+	crl := testCRL(t, priv, now, "lic_unmarshal")
+	data, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got CRL
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("UnmarshalJSON: %v", err)
+	}
+	if got.SHA256 == "" {
+		t.Fatal("expected digest after unmarshal")
+	}
+	if revoked, ok := got.RevocationFor("lic_unmarshal"); !ok || revoked.ID != "lic_unmarshal" {
+		t.Fatalf("revocation lookup failed: %+v ok=%v", revoked, ok)
+	}
+}
+
+func TestCRLRevocationForFallbackAndReasonlessError(t *testing.T) {
+	crl := CRL{Payload: CRLPayload{Revoked: []RevokedLicense{{
+		ID:        "lic_reasonless",
+		RevokedAt: time.Now().UTC().Unix(),
+	}}}}
+	revoked, ok := crl.RevocationFor("lic_reasonless")
+	if !ok || revoked.ID != "lic_reasonless" {
+		t.Fatalf("RevocationFor = %+v, %v; want fallback match", revoked, ok)
+	}
+	if _, ok := crl.RevocationFor("lic_missing"); ok {
+		t.Fatal("missing license should not be revoked")
+	}
+	err := crl.CheckLicense(License{ID: "lic_reasonless"})
+	if !errors.Is(err, ErrLicenseRevoked) {
+		t.Fatalf("CheckLicense error = %v, want ErrLicenseRevoked", err)
+	}
+	if strings.Contains(err.Error(), "()") {
+		t.Fatalf("reasonless revocation should not render empty reason: %v", err)
+	}
+}
+
+func TestCRLRejectsMalformedInputs(t *testing.T) {
+	pub, priv := testKeyPair(t)
+	now := time.Now().UTC()
+	valid := testCRL(t, priv, now, "lic_valid")
+	validData, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var validWire crlWire
+	if err := json.Unmarshal(validData, &validWire); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		data []byte
+		key  ed25519.PublicKey
+	}{
+		{name: "bad public key", data: validData, key: ed25519.PublicKey("short")},
+		{name: "too large", data: []byte(strings.Repeat("x", maxCRLFileSize+1)), key: pub},
+		{name: "bad json", data: []byte("{"), key: pub},
+		{name: "bad payload base64", data: []byte(`{"payload":"%%","signature":"` + validWire.Signature + `"}`), key: pub},
+		{name: "bad signature base64", data: []byte(`{"payload":"` + validWire.Payload + `","signature":"%%"}`), key: pub},
+		{name: "bad signature size", data: []byte(`{"payload":"` + validWire.Payload + `","signature":"` + base64.RawURLEncoding.EncodeToString([]byte("short")) + `"}`), key: pub},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseAndVerifyCRL(tt.data, tt.key, now); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestValidateCRLPayloadRejectsInvalidRecords(t *testing.T) {
+	now := time.Now().UTC()
+	base := CRLPayload{
+		Version:   CRLVersion,
+		IssuedAt:  now.Add(-time.Hour).Unix(),
+		ExpiresAt: now.Add(time.Hour).Unix(),
+		Revoked: []RevokedLicense{{
+			ID:        "lic_ok",
+			RevokedAt: now.Add(-time.Hour).Unix(),
+		}},
+	}
+	tests := []struct {
+		name   string
+		mutate func(*CRLPayload)
+	}{
+		{name: "version", mutate: func(p *CRLPayload) { p.Version = 99 }},
+		{name: "issued", mutate: func(p *CRLPayload) { p.IssuedAt = 0 }},
+		{name: "expires", mutate: func(p *CRLPayload) { p.ExpiresAt = 0 }},
+		{name: "empty id", mutate: func(p *CRLPayload) { p.Revoked[0].ID = "" }},
+		{name: "missing revoked_at", mutate: func(p *CRLPayload) { p.Revoked[0].RevokedAt = 0 }},
+		{name: "duplicate", mutate: func(p *CRLPayload) { p.Revoked = append(p.Revoked, p.Revoked[0]) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := base
+			payload.Revoked = append([]RevokedLicense(nil), base.Revoked...)
+			tt.mutate(&payload)
+			if err := validateCRLPayload(payload, now); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+}
+
+func TestLoadAndVerifyCRLRejectsBadPaths(t *testing.T) {
+	pub, _ := testKeyPair(t)
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	large := filepath.Join(dir, "large.json")
+	if err := os.WriteFile(large, []byte(strings.Repeat("x", maxCRLFileSize+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(dir, "missing.json"), dir, large} {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			if _, err := LoadAndVerifyCRL(path, pub, now); err == nil {
+				t.Fatal("expected load error")
+			}
+		})
+	}
+}
+
 func testCRL(t *testing.T, priv ed25519.PrivateKey, now time.Time, revokedID string) CRL {
 	t.Helper()
 	crl, err := SignCRL(CRLPayload{

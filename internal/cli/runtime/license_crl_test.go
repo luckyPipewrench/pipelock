@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
@@ -98,4 +100,80 @@ func TestCheckLicenseCRLUnreadableFailsClosed(t *testing.T) {
 	if !failClosed {
 		t.Fatal("unreadable configured CRL should fail closed")
 	}
+}
+
+func TestCheckLicenseCRLAllowsValidUnrevokedLicense(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "lic_runtime_active",
+		Email:     "runtime@example.com",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crl, err := license.SignCRL(license.CRLPayload{
+		Version:   license.CRLVersion,
+		IssuedAt:  now.Add(-time.Hour).Unix(),
+		ExpiresAt: now.Add(24 * time.Hour).Unix(),
+		Revoked: []license.RevokedLicense{{
+			ID:        "lic_other",
+			RevokedAt: now.Add(-time.Hour).Unix(),
+		}},
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlData, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlPath := filepath.Join(t.TempDir(), "crl.json")
+	if err := os.WriteFile(crlPath, crlData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeServerTestConfig(t, "mode: balanced\nlicense_key: "+token+"\nlicense_public_key: "+hex.EncodeToString(pub)+"\nlicense_crl_file: "+crlPath+"\n")
+	s, _ := newTestServer(t, func(opts *ServerOpts) {
+		opts.ConfigFile = cfgPath
+	})
+
+	failClosed, err := s.checkLicenseCRL()
+	if err != nil {
+		t.Fatalf("checkLicenseCRL: %v", err)
+	}
+	if failClosed {
+		t.Fatal("valid unrevoked license should not fail closed")
+	}
+}
+
+func TestRuntimeLicensePublicKeyErrors(t *testing.T) {
+	for _, cfg := range []*config.Config{
+		{},
+		{LicensePublicKey: "not-hex"},
+		{LicensePublicKey: hex.EncodeToString([]byte("short"))},
+	} {
+		if _, err := runtimeLicensePublicKey(cfg); err == nil {
+			t.Fatalf("runtimeLicensePublicKey(%+v) expected error", cfg)
+		}
+	}
+	if auditLicenseCRLContext().Method() != "LICENSE_CRL" {
+		t.Fatal("unexpected audit context")
+	}
+	if (&Server{}).refreshLicenseCRLOnce() {
+		t.Fatal("empty server should not fail closed")
+	}
+}
+
+func TestStartLicenseCRLWatcherReturnsOnCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	(&Server{}).startLicenseCRLWatcher(ctx)
 }

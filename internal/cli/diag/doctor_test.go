@@ -173,6 +173,153 @@ func TestBuildDoctorReportShowsLicenseExpiryWarning(t *testing.T) {
 	}
 }
 
+func TestDoctorLicenseStatusBranches(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	active := license.License{
+		ID:        "lic_doctor_active",
+		Email:     "doctor@example.com",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(45 * 24 * time.Hour).Unix(),
+		Features:  []string{license.FeatureAgents},
+	}
+	activeToken, err := license.Issue(active, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		check := checkDoctorLicense(config.Defaults())
+		if check.Status != doctorStatusInfo {
+			t.Fatalf("check = %+v, want info", check)
+		}
+	})
+
+	t.Run("invalid configured public key fails verification", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.LicenseKey = activeToken
+		cfg.LicensePublicKey = "not-hex"
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusWarn || !strings.Contains(check.Detail, "invalid license public key") {
+			t.Fatalf("check = %+v, want invalid key warning", check)
+		}
+	})
+
+	t.Run("decode fallback without public key", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.LicenseKey = activeToken
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusWarn || !strings.Contains(check.Detail, "signature could not be verified") {
+			t.Fatalf("check = %+v, want no-key verification warning", check)
+		}
+	})
+
+	t.Run("configured revoked flag fails", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.LicenseKey = activeToken
+		cfg.LicensePublicKey = hex.EncodeToString(pub)
+		cfg.LicenseRevoked = true
+		cfg.LicenseRevocationReason = "revoked by issuer; contact billing"
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusFail || !strings.Contains(check.Detail, "revoked") {
+			t.Fatalf("check = %+v, want revoked failure", check)
+		}
+	})
+
+	t.Run("thirty day expiry band is info", func(t *testing.T) {
+		lic := active
+		lic.ID = "lic_doctor_30"
+		lic.ExpiresAt = now.Add(29 * 24 * time.Hour).Unix()
+		token, err := license.Issue(lic, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = hex.EncodeToString(pub)
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusInfo || !strings.Contains(check.Detail, "30-day renewal band") {
+			t.Fatalf("check = %+v, want info renewal band", check)
+		}
+	})
+
+	t.Run("bad CRL path reports verification warning", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.LicenseKey = activeToken
+		cfg.LicensePublicKey = hex.EncodeToString(pub)
+		cfg.LicenseCRLFile = filepath.Join(t.TempDir(), "missing-crl.json")
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusWarn || !strings.Contains(check.Detail, "license verification failed") {
+			t.Fatalf("check = %+v, want CRL verification warning", check)
+		}
+	})
+
+	t.Run("valid signed CRL", func(t *testing.T) {
+		crl, err := license.SignCRL(license.CRLPayload{
+			Version:   license.CRLVersion,
+			IssuedAt:  now.Add(-time.Hour).Unix(),
+			ExpiresAt: now.Add(24 * time.Hour).Unix(),
+			Revoked: []license.RevokedLicense{{
+				ID:        "lic_other",
+				RevokedAt: now.Add(-time.Hour).Unix(),
+			}},
+		}, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(crl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crlPath := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.WriteFile(crlPath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.LicenseKey = activeToken
+		cfg.LicensePublicKey = hex.EncodeToString(pub)
+		cfg.LicenseCRLFile = crlPath
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusOK || !strings.Contains(check.Detail, "signed CRL configured") {
+			t.Fatalf("check = %+v, want ok CRL detail", check)
+		}
+	})
+
+	t.Run("revoked from CRL", func(t *testing.T) {
+		crl, err := license.SignCRL(license.CRLPayload{
+			Version:   license.CRLVersion,
+			IssuedAt:  now.Add(-time.Hour).Unix(),
+			ExpiresAt: now.Add(24 * time.Hour).Unix(),
+			Revoked: []license.RevokedLicense{{
+				ID:        active.ID,
+				RevokedAt: now.Add(-time.Hour).Unix(),
+			}},
+		}, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(crl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crlPath := filepath.Join(t.TempDir(), "crl.json")
+		if err := os.WriteFile(crlPath, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Defaults()
+		cfg.LicenseKey = activeToken
+		cfg.LicensePublicKey = hex.EncodeToString(pub)
+		cfg.LicenseCRLFile = crlPath
+		check := checkDoctorLicense(cfg)
+		if check.Status != doctorStatusFail {
+			t.Fatalf("check = %+v, want fail", check)
+		}
+	})
+}
+
 func TestDoctorChecksCoverConfiguredBranches(t *testing.T) {
 	dir := t.TempDir()
 	caCert := filepath.Join(dir, "ca.pem")

@@ -83,8 +83,7 @@ object with the following header parameters.
 |---|---|---|---|
 | 1 | `alg` | -8 | EdDSA per RFC 9053. Ed25519 only in v0.1. |
 | 3 | `content-type` | `application/vnd.pipelock.action-record+json` | Distinguishes Pipelock action-record payloads from other AI-agent statement formats on the same TS. |
-| 391 | `cwt-claims` | CWT claims map | Carries `iss` (CWT claim 1) and `sub` (CWT claim 2) per the SCITT architecture's identity binding convention. |
-| 393 | `payload-pre-image-content-type` | (omitted in v0.1) | Reserved; future versions may carry the bytes hashed for the signing pre-image when the payload is a digest rather than the full record. |
+| 15 | `CWT_Claims` | CWT claims map | Carries `iss` (CWT claim 1), `sub` (CWT claim 2), and `iat` (CWT claim 6). Label 15 is the IANA-registered COSE header parameter for CWT_Claims per RFC 9596; SCITT architecture-22 reuses it to bind issuer + subject identity to the Signed Statement. |
 
 **Unprotected header:**
 
@@ -110,9 +109,9 @@ signs.
 
 | CWT claim | Source | Notes |
 |---|---|---|
-| `iss` (1) | Pipelock mediator identity URI | A SCITT Issuer identifier (URI). A v0.1 producer derives this from its persistent identity material; the recommended form is `https://pipelab.org/issuer/<mediatorId>` where `<mediatorId>` is a stable, deployment-bound, non-routable opaque identifier. The URI is an identifier, not a fetch endpoint; relying parties resolve it against their own trust list, not by HTTP retrieval. |
-| `sub` (2) | `action_record.target` | The "what was acted on" target string, lifted as the SCITT Subject. Same field that drives content addressing for verifier lookups. |
-| `iat` (6) | `action_record.decided_at` | UNIX seconds. |
+| `iss` (1) | Pipelock mediator identity URI | A SCITT Issuer identifier (URI). A v0.1 producer derives this from its persistent identity material; the recommended form is `https://pipelab.org/issuer/<mediatorId>` where `<mediatorId>` is a stable, deployment-bound, non-routable opaque identifier. The URI is an identifier, not a fetch endpoint; relying parties resolve it against their own trust list. |
+| `sub` (2) | `action_record.target` | The "what was acted on" target string from the v1 ActionRecord, lifted as the SCITT Subject. |
+| `iat` (6) | `action_record.timestamp` | UNIX seconds. Derived from the v1 `timestamp` field. |
 | `exp` (4) | (absent) | Statements about historical actions do not expire. |
 
 ### Issuer trust model
@@ -124,15 +123,21 @@ A SCITT relying party verifies the Statement by:
    relying party's own trust policy.
 3. Verifying the Ed25519 signature over the COSE_Sign1 sig-structure.
 
-Pipelock publishes its mediator verification key in two compatible ways:
+The Issuer key is the **action-receipt signing key** configured at
+`flight_recorder.signing_key_path` in `pipelock.yaml` (per
+`internal/config/schema.go`: "Ed25519 private key for checkpoint signing and
+action receipts"). Note this is a **different key** than the mediation-envelope
+signing key (`mediation_envelope.signing_key_path`); the latter signs HTTP-injected
+mediation headers per RFC 9421 and is what Pipelock's
+`/.well-known/http-message-signatures-directory` advertises. A v0.1 SCITT
+Statement is signed with the flight-recorder key, not the mediation-envelope key.
 
-- **RFC 9421 well-known directory:** `/.well-known/http-message-signatures-directory`
-  on the Pipelock instance's API listener. Pipelock 2.4+ already serves this for
-  mediation-envelope verifier key discovery; the same key is the Statement Issuer
-  key.
-- **Out-of-band pinning:** a relying party can pin the 32-byte raw public key by
-  fingerprint and rotate via a separate signed channel (Pipelock's
-  `pipelock envelope trust` operator CLI manages the trust list).
+SCITT explicitly leaves participant discovery out of scope. A v0.1 producer
+publishes the Issuer public key via whatever channel its operator and relying
+parties have agreed on (out-of-band trust-list distribution, organizational PKI,
+or Pipelock's `pipelock envelope trust` operator CLI for managing a local trust
+list). Relying parties pin the 32-byte raw Ed25519 public key by fingerprint and
+rotate via that same channel. This profile defines no new discovery mechanism.
 
 ## Submission to a Transparency Service
 
@@ -184,10 +189,12 @@ under a new charter or BoF.
 6. If a SCITT Receipt is attached: verify the TS inclusion proof against the TS's
    public verifiable data structure root. The Receipt verifies temporal anchoring;
    it does **not** re-verify the Statement signature.
-7. Apply consumer policy on `verdict`, `actionType`, `target`, `principal`,
-   `actor`, `mediator.id`. Unknown payload fields MUST be treated as informational
-   per the in-toto monotonic principle (mirror-borrowed here for the agent-action
-   payload).
+7. Apply consumer policy on the v1 ActionRecord payload fields: `verdict`,
+   `action_type`, `target`, `principal`, `actor`. The mediator identity is the
+   CWT `iss` claim plus the COSE `kid` parameter, not a payload field — the v1
+   ActionRecord carries no `mediator` object. Unknown payload fields MUST be
+   treated as informational per the in-toto monotonic principle (mirror-borrowed
+   here for the agent-action payload).
 
 ## Worked example
 
@@ -207,7 +214,7 @@ structural reference, not a wire-byte target.
     << {
       1: -8,                                       / alg = EdDSA /
       3: "application/vnd.pipelock.action-record+json",
-      391: {                                       / cwt-claims /
+      15: {                                        / CWT_Claims (RFC 9596) /
         1: "https://pipelab.org/issuer/pipelock-7f3c2b1e",  / iss /
         2: "api.attacker.example/v1/upload",       / sub /
         6: 1779730201                              / iat /
@@ -257,10 +264,11 @@ different questions about the same agent activity.
   is a vendor-tree media type that does not require registration to be used.
   Registration is a v0.2 consideration once the receipt format itself is more
   publicly visible.
-- **CWT claims label allocation.** The values `391` (`cwt-claims`) and `393`
-  (`payload-pre-image-content-type`) follow the SCITT architecture's draft
-  allocation. Final values will track whatever the architecture document carries
-  at RFC publication.
+- **CWT claims label allocation.** v0.1 uses the IANA-registered COSE header
+  parameter for `CWT_Claims` (label 15, RFC 9596). The SCITT architecture's
+  identity-binding convention is built on top of this registration; if a future
+  architecture revision adds additional SCITT-specific header parameters, this
+  profile will track them at the next minor version.
 - **Multi-signature.** v0.1 emits one signature. Co-signing (e.g., mediator +
   organizational signer) is a v0.x consideration; the COSE_Sign envelope (NOT
   COSE_Sign1) covers that case if needed.

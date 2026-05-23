@@ -99,7 +99,7 @@ Timestamps are RFC 3339 with `Z` suffix.
 | `target` | string | yes | The host:port, URL, MCP tool name, or other target identifier the action acted on. Free-form by transport. |
 | `transport` | string | yes | One of: `fetch`, `forward`, `intercept`, `websocket`, `mcp_stdio`, `mcp_http`, `mcp_http_upstream`, `mcp_http_listener`, `mcp_ws`. |
 | `verdict` | enum | yes | One of: `allow`, `block`, `warn`, `ask`, `strip`, `forward`, `redirect`. |
-| `verdictReason` | string | conditional | Required when `verdict != allow`. Canonical block-reason code (e.g., `dlp_match`, `prompt_injection`, `ssrf_private_ip`, `tool_policy_deny`, `airlock_active`, `kill_switch_active`, `contract_default_deny`, `contract_rule_deny`, `mcp_tool_blocked`). Vocabulary fixed per [block-reason-header spec](./block-reason-header.md). |
+| `verdictReason` | string | conditional | Required when `verdict != allow`. Canonical block-reason code (e.g., `dlp_match`, `prompt_injection`, `ssrf_private_ip`, `tool_policy_deny`, `airlock_active`, `kill_switch_active`, `contract_default_deny`, `contract_rule_deny`, `mcp_tool_blocked`). Vocabulary fixed per [block-reason-header spec](./block-reason-header.md). The v1 ActionReceipt envelope does not carry this field directly; a v0.1 producer sources it from the same structured rejection code Pipelock emits in the `X-Pipelock-Block-Reason` HTTP header (and in JSON-RPC error metadata for MCP-internal blocks). For `verdict = allow`, the field MUST be omitted. |
 | `principal` | string | yes | Identity of the human or system authorizing the action (e.g., `spiffe://example.org/user/alice`, `oauth:user@example.com`, `local:operator`). |
 | `actor` | string | yes | Identity of the agent / workload that initiated the action. SPIFFE IDs preferred per Pipelock 2.4+ federation. |
 | `mediator` | object | yes | The Pipelock instance that decided the verdict. See "Mediator object" below. |
@@ -129,10 +129,12 @@ Timestamps are RFC 3339 with `Z` suffix.
 }
 ```
 
-`mediator.id` SHOULD be stable across reloads and unique per deployment. Pipelock
-generates one at first start and persists it under `~/.config/pipelock/`. The
-`signingKey.publicKeyHex` MUST match the `signer_key` on the underlying ActionReceipt
-v1 so a relying party can pin one key across both envelope formats.
+`mediator.id` SHOULD be stable across reloads and unique per deployment. A v0.1
+producer derives it from the producer's persistent identity material; this profile
+does not specify the derivation. The `signingKey.publicKeyHex` MUST match the
+`signer_key` on the underlying ActionReceipt v1 (which Pipelock sources from
+`flight_recorder.signing_key_path` per `internal/config/schema.go`) so a relying
+party can pin one key across both envelope formats.
 
 ### Findings
 

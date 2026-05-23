@@ -1212,6 +1212,25 @@ trusted_domains:
 
 Per-agent `trusted_domains` overrides are available in agent profiles (Pro license).
 
+### DNS Host Overrides
+
+Static hostname-to-IP overrides used by SSRF DNS checks and the proxy dial path. Use this for reproducible local fixtures or controlled internal names when you cannot or do not want to modify system DNS.
+
+```yaml
+dns:
+  host_overrides:
+    fixture.example.test:
+      - "127.0.0.1"
+trusted_domains:
+  - "fixture.example.test"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `dns.host_overrides` | `{}` | Map of exact hostnames to one or more IP addresses. Hostname keys are normalized case-insensitively with trailing DNS dots stripped. URL, wildcard, host:port, and IP-literal keys are rejected. |
+
+Host overrides do not exempt a destination from SSRF blocking by themselves. If an override resolves to an internal IP, the hostname must also be present in `trusted_domains` or the target IP must be covered by `ssrf.ip_allowlist`. Raw IP targets never use `dns.host_overrides`.
+
 ### SSRF IP Allowlist
 
 Exempt specific IP ranges from SSRF blocking. Use this when your internal services resolve to known IP ranges and you want to allow connections by IP rather than by hostname.

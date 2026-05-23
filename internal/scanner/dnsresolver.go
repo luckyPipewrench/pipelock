@@ -54,6 +54,9 @@ func NewStaticOverrideResolver(overrides map[string][]string, upstream Resolver)
 		if key == "" {
 			continue
 		}
+		if net.ParseIP(key) != nil {
+			continue
+		}
 		// Defensive copy so caller mutations after construction do not
 		// leak into the resolver's state.
 		cp := make([]string, len(ips))
@@ -67,10 +70,11 @@ func NewStaticOverrideResolver(overrides map[string][]string, upstream Resolver)
 // the upstream resolver. IP literals are passed straight through to the
 // upstream so net.ParseIP-style fast paths remain unchanged.
 func (r *StaticOverrideResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
-	if net.ParseIP(host) != nil {
+	key := normalizeHostKey(host)
+	if net.ParseIP(key) != nil {
 		return r.upstream.LookupHost(ctx, host)
 	}
-	if ips, ok := r.overrides[normalizeHostKey(host)]; ok {
+	if ips, ok := r.overrides[key]; ok {
 		out := make([]string, len(ips))
 		copy(out, ips)
 		return out, nil
@@ -79,6 +83,6 @@ func (r *StaticOverrideResolver) LookupHost(ctx context.Context, host string) ([
 }
 
 func normalizeHostKey(host string) string {
-	host = strings.TrimSuffix(host, ".")
+	host = strings.TrimSuffix(strings.TrimSpace(host), ".")
 	return strings.ToLower(host)
 }

@@ -97,6 +97,23 @@ func TestStaticOverrideResolver_IPLiteralBypassesOverride(t *testing.T) {
 	}
 }
 
+func TestStaticOverrideResolver_TrailingDotIPLiteralBypassesOverride(t *testing.T) {
+	upstream := &fakeResolver{hosts: map[string][]string{"127.0.0.1.": {"198.51.100.7"}}}
+	r := NewStaticOverrideResolver(
+		map[string][]string{
+			"127.0.0.1.": {"127.0.0.1"},
+		},
+		upstream,
+	)
+	got, err := r.LookupHost(context.Background(), "127.0.0.1.")
+	if err != nil {
+		t.Fatalf("LookupHost: %v", err)
+	}
+	if len(got) != 1 || got[0] != "198.51.100.7" {
+		t.Errorf("got %v, want upstream [198.51.100.7]; trailing-dot IP literal must not hit overrides", got)
+	}
+}
+
 func TestStaticOverrideResolver_EmptyOverridesPassesThrough(t *testing.T) {
 	upstream := &fakeResolver{hosts: map[string][]string{"example.com": {"93.184.216.34"}}}
 	r := NewStaticOverrideResolver(nil, upstream)

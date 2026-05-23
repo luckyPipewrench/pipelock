@@ -2136,6 +2136,49 @@ func TestValidate_DNSHostOverrides_IPLiteralKeyRejected(t *testing.T) {
 	}
 }
 
+func TestValidate_DNSHostOverrides_TrailingDotIPLiteralKeyRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"127.0.0.1.": {"127.0.0.1"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for trailing-dot IP-literal hostname key")
+	}
+	if !strings.Contains(err.Error(), "IP literal") {
+		t.Errorf("expected IP-literal error, got: %v", err)
+	}
+}
+
+func TestValidate_DNSHostOverrides_HostPortRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"aeb-fixture.test:8080": {"127.0.0.1"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for host:port hostname key")
+	}
+	if !strings.Contains(err.Error(), "hostname") {
+		t.Errorf("expected hostname error, got: %v", err)
+	}
+}
+
+func TestValidate_DNSHostOverrides_DuplicateNormalizedHostRejected(t *testing.T) {
+	cfg := Defaults()
+	cfg.DNS.HostOverrides = map[string][]string{
+		"AEB-Fixture.Test.": {"127.0.0.1"},
+		"aeb-fixture.test":  {"127.0.0.2"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for duplicate normalized hostname key")
+	}
+	if !strings.Contains(err.Error(), "duplicates") {
+		t.Errorf("expected duplicate-host error, got: %v", err)
+	}
+}
+
 func TestValidate_DNSHostOverrides_EmptyIPListRejected(t *testing.T) {
 	cfg := Defaults()
 	cfg.DNS.HostOverrides = map[string][]string{

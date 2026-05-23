@@ -1118,6 +1118,7 @@ func TestScanner_IsTrustedDomain(t *testing.T) {
 		{"no match example.com", "example.com", false},
 		{"no match notinternal.corp", "notinternal.corp", false},
 		{"IP not trusted", "192.168.1.1", false},
+		{"trailing-dot IP not trusted", "192.168.1.1.", false}, // OPSEC-OK: test fixture for trailing-dot IP literal rejection
 		{"uppercase normalized", "LOCALHOST", true},
 		{"trailing dot stripped", "localhost.", true},
 	}

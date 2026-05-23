@@ -573,13 +573,13 @@ func (s *Scanner) IsInternalIP(ip net.IP) bool {
 // instead of blocking. IP literals are always rejected — trusted domains
 // only match hostnames to prevent SSRF bypass via raw IP addresses.
 func (s *Scanner) IsTrustedDomain(hostname string) bool {
+	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
 	// Reject IP literals: trusted domains match hostnames only.
 	// Without this, an attacker could add a raw IP to trusted_domains
 	// and bypass SSRF protection entirely.
 	if net.ParseIP(hostname) != nil {
 		return false
 	}
-	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
 	for _, pattern := range s.trustedDomains {
 		if MatchDomain(hostname, pattern) {
 			return true

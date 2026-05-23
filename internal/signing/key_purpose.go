@@ -14,8 +14,8 @@ import (
 // every signed-artifact key entry. The wire form is the lowercase hyphenated
 // string representation; this typed wrapper centralises validation and helpers.
 //
-// Six values are defined, drawn from the design doc Key Management section
-// (lines 758-870):
+// Twelve values are defined, drawn from the design doc Key Management section
+// (lines 758-870) and the Boss/Conductor control-plane spec:
 //
 //   - PurposeReceiptSigning:            runtime receipt keys (hot-loadable)
 //   - PurposeContractCompileSigning:    compile-time contract keys (warm, operator-only)
@@ -23,6 +23,12 @@ import (
 //   - PurposeRulesOfficialSigning:      official rules package signing keys
 //   - PurposeRosterRoot:                deployment-local trust root for key rosters
 //   - PurposeRecoveryRoot:              deployment-local trust root for recovery operations
+//   - PurposePolicyBundleSigning:       Conductor policy bundle signing keys
+//   - PurposePolicyBundleRollback:      Conductor rollback authorization keys
+//   - PurposeRemoteKillSigning:         Conductor remote kill-switch keys
+//   - PurposeTrustRootRotation:         Conductor trust-root rotation keys
+//   - PurposeAuditBatchSigning:         follower audit batch signing keys
+//   - PurposeEnrollmentTokenSigning:    Conductor enrollment-token signing keys
 //
 // Wire stability: these strings are part of the signed-artifact wire format
 // and will not change without a schema_version bump.
@@ -56,9 +62,33 @@ const (
 	// PurposeRecoveryRoot identifies the deployment-local trust root key
 	// used for recovery operations (root transition, emergency rotation).
 	PurposeRecoveryRoot KeyPurpose = "recovery-root"
+
+	// PurposePolicyBundleSigning identifies keys used to sign Boss/Conductor
+	// policy bundles distributed to followers.
+	PurposePolicyBundleSigning KeyPurpose = "policy-bundle-signing"
+
+	// PurposePolicyBundleRollback identifies keys used to authorize a one-shot
+	// rollback to a lower Boss/Conductor policy bundle version.
+	PurposePolicyBundleRollback KeyPurpose = "policy-bundle-rollback"
+
+	// PurposeRemoteKillSigning identifies keys used to sign Boss/Conductor
+	// remote kill-switch state messages.
+	PurposeRemoteKillSigning KeyPurpose = "remote-kill-signing"
+
+	// PurposeTrustRootRotation identifies keys used to sign Boss/Conductor
+	// trust-root rotation artifacts.
+	PurposeTrustRootRotation KeyPurpose = "trust-root-rotation"
+
+	// PurposeAuditBatchSigning identifies follower instance keys used to sign
+	// Boss-bound audit batch envelopes.
+	PurposeAuditBatchSigning KeyPurpose = "audit-batch-signing"
+
+	// PurposeEnrollmentTokenSigning identifies Boss keys used to sign narrow,
+	// one-shot enrollment tokens.
+	PurposeEnrollmentTokenSigning KeyPurpose = "enrollment-token-signing"
 )
 
-// ErrUnknownKeyPurpose indicates a key_purpose value is not one of the six
+// ErrUnknownKeyPurpose indicates a key_purpose value is not one of the
 // recognised purposes.
 var ErrUnknownKeyPurpose = errors.New("unknown key_purpose")
 
@@ -70,6 +100,12 @@ var knownPurposes = [...]KeyPurpose{
 	PurposeRulesOfficialSigning,
 	PurposeRosterRoot,
 	PurposeRecoveryRoot,
+	PurposePolicyBundleSigning,
+	PurposePolicyBundleRollback,
+	PurposeRemoteKillSigning,
+	PurposeTrustRootRotation,
+	PurposeAuditBatchSigning,
+	PurposeEnrollmentTokenSigning,
 }
 
 // knownSet provides O(1) validation lookup.
@@ -87,7 +123,7 @@ func (p KeyPurpose) String() string {
 	return string(p)
 }
 
-// Validate returns nil if p is one of the six known purposes. Otherwise it
+// Validate returns nil if p is one of the known purposes. Otherwise it
 // returns an error wrapping ErrUnknownKeyPurpose with the offending value.
 func (p KeyPurpose) Validate() error {
 	if _, ok := knownSet[p]; ok {
@@ -121,7 +157,33 @@ func (p KeyPurpose) IsCompileTime() bool {
 	return p == PurposeContractCompileSigning
 }
 
-// KnownPurposes returns a freshly-allocated slice of all six recognised key
+// IsConductorPurpose returns true for Boss/Conductor control-plane purposes.
+func (p KeyPurpose) IsConductorPurpose() bool {
+	switch p {
+	case PurposePolicyBundleSigning,
+		PurposePolicyBundleRollback,
+		PurposeRemoteKillSigning,
+		PurposeTrustRootRotation,
+		PurposeAuditBatchSigning,
+		PurposeEnrollmentTokenSigning:
+		return true
+	default:
+		return false
+	}
+}
+
+// RequiresConductorThreshold returns true for Conductor actions that are
+// catastrophic enough to require multi-approver signing policy.
+func (p KeyPurpose) RequiresConductorThreshold() bool {
+	switch p {
+	case PurposePolicyBundleRollback, PurposeRemoteKillSigning, PurposeTrustRootRotation:
+		return true
+	default:
+		return false
+	}
+}
+
+// KnownPurposes returns a freshly-allocated slice of all recognised key
 // purposes in stable order:
 //
 //  1. PurposeReceiptSigning
@@ -130,6 +192,12 @@ func (p KeyPurpose) IsCompileTime() bool {
 //  4. PurposeRulesOfficialSigning
 //  5. PurposeRosterRoot
 //  6. PurposeRecoveryRoot
+//  7. PurposePolicyBundleSigning
+//  8. PurposePolicyBundleRollback
+//  9. PurposeRemoteKillSigning
+//  10. PurposeTrustRootRotation
+//  11. PurposeAuditBatchSigning
+//  12. PurposeEnrollmentTokenSigning
 //
 // Tests rely on this order; it will not change without a major version bump.
 func KnownPurposes() []KeyPurpose {

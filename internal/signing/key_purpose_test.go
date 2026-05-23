@@ -22,6 +22,12 @@ func TestKeyPurpose_String(t *testing.T) {
 		{"rules-official-signing", PurposeRulesOfficialSigning, "rules-official-signing"},
 		{"roster-root", PurposeRosterRoot, "roster-root"},
 		{"recovery-root", PurposeRecoveryRoot, "recovery-root"},
+		{"policy-bundle-signing", PurposePolicyBundleSigning, "policy-bundle-signing"},
+		{"policy-bundle-rollback", PurposePolicyBundleRollback, "policy-bundle-rollback"},
+		{"remote-kill-signing", PurposeRemoteKillSigning, "remote-kill-signing"},
+		{"trust-root-rotation", PurposeTrustRootRotation, "trust-root-rotation"},
+		{"audit-batch-signing", PurposeAuditBatchSigning, "audit-batch-signing"},
+		{"enrollment-token-signing", PurposeEnrollmentTokenSigning, "enrollment-token-signing"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -160,8 +166,8 @@ func TestKnownPurposes(t *testing.T) {
 	purposes := KnownPurposes()
 
 	t.Run("length", func(t *testing.T) {
-		if len(purposes) != 6 {
-			t.Fatalf("KnownPurposes() returned %d elements, want 6", len(purposes))
+		if len(purposes) != 12 {
+			t.Fatalf("KnownPurposes() returned %d elements, want 12", len(purposes))
 		}
 	})
 
@@ -173,6 +179,12 @@ func TestKnownPurposes(t *testing.T) {
 			PurposeRulesOfficialSigning,
 			PurposeRosterRoot,
 			PurposeRecoveryRoot,
+			PurposePolicyBundleSigning,
+			PurposePolicyBundleRollback,
+			PurposeRemoteKillSigning,
+			PurposeTrustRootRotation,
+			PurposeAuditBatchSigning,
+			PurposeEnrollmentTokenSigning,
 		}
 		for i, p := range purposes {
 			if p != expected[i] {
@@ -190,6 +202,57 @@ func TestKnownPurposes(t *testing.T) {
 			t.Fatal("KnownPurposes() returns shared backing array; expected independent slices")
 		}
 	})
+}
+
+func TestKeyPurpose_IsConductorPurpose(t *testing.T) {
+	tests := []struct {
+		purpose  KeyPurpose
+		expected bool
+	}{
+		{PurposeReceiptSigning, false},
+		{PurposeContractCompileSigning, false},
+		{PurposeContractActivationSigning, false},
+		{PurposeRulesOfficialSigning, false},
+		{PurposeRosterRoot, false},
+		{PurposeRecoveryRoot, false},
+		{PurposePolicyBundleSigning, true},
+		{PurposePolicyBundleRollback, true},
+		{PurposeRemoteKillSigning, true},
+		{PurposeTrustRootRotation, true},
+		{PurposeAuditBatchSigning, true},
+		{PurposeEnrollmentTokenSigning, true},
+		{KeyPurpose("unknown"), false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.purpose), func(t *testing.T) {
+			if got := tt.purpose.IsConductorPurpose(); got != tt.expected {
+				t.Errorf("IsConductorPurpose() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestKeyPurpose_RequiresConductorThreshold(t *testing.T) {
+	tests := []struct {
+		purpose  KeyPurpose
+		expected bool
+	}{
+		{PurposePolicyBundleSigning, false},
+		{PurposePolicyBundleRollback, true},
+		{PurposeRemoteKillSigning, true},
+		{PurposeTrustRootRotation, true},
+		{PurposeAuditBatchSigning, false},
+		{PurposeEnrollmentTokenSigning, false},
+		{PurposeReceiptSigning, false},
+		{KeyPurpose("unknown"), false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.purpose), func(t *testing.T) {
+			if got := tt.purpose.RequiresConductorThreshold(); got != tt.expected {
+				t.Errorf("RequiresConductorThreshold() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
 }
 
 func TestAuthorizePayload(t *testing.T) {

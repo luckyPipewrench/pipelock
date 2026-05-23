@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
@@ -67,34 +69,42 @@ func TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname(t *testing.T) 
 		t.Fatalf("set deadline: %v", deadlineErr)
 	}
 
-	// Manual WS upgrade — gobwas's dialer would re-resolve the hostname on
-	// the client side, which we can't intercept. We just need pipelock to
-	// see and honor the override; the runner-side path through the proxy
-	// is what counts.
+	// Manual WS upgrade. Gobwas's dialer would re-resolve the hostname on
+	// the client side, which we cannot intercept; we need pipelock to see
+	// and honor the override, so the runner-side path through the proxy
+	// is what counts. Use http.ReadResponse via bufio so a partial TCP
+	// read cannot fragment the status line or headers, and so any bytes
+	// pipelock buffers ahead of the WS frames stay accessible.
 	upgrade := fmt.Sprintf(
-		"GET /ws?url=%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-		"ws://"+hostPort+"/echo", proxyAddr,
+		"%s /ws?url=%s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		http.MethodGet, "ws://"+hostPort+"/echo", proxyAddr,
 	)
 	if _, writeErr := tcpConn.Write([]byte(upgrade)); writeErr != nil {
 		t.Fatalf("write upgrade: %v", writeErr)
 	}
 
-	// Read upgrade response.
-	respBuf := make([]byte, 512)
-	if _, readErr := tcpConn.Read(respBuf); readErr != nil {
-		t.Fatalf("read upgrade response: %v", readErr)
+	br := bufio.NewReader(tcpConn)
+	resp, respErr := http.ReadResponse(br, &http.Request{Method: http.MethodGet})
+	if respErr != nil {
+		t.Fatalf("read upgrade response: %v", respErr)
 	}
-	if string(respBuf[:12]) != "HTTP/1.1 101" {
-		t.Fatalf("expected 101 Switching Protocols upgrade; got: %q", string(respBuf[:60]))
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		_ = resp.Body.Close()
+		t.Fatalf("expected 101 Switching Protocols upgrade; got: %d %s", resp.StatusCode, resp.Status)
 	}
+	_ = resp.Body.Close()
 
-	// Write a single benign text frame and expect an echo.
-	if err := wsutil.WriteClientMessage(tcpConn, ws.OpText, []byte("hello via trusted host")); err != nil {
+	// Write a single benign text frame and expect an echo. Wrap the conn
+	// in the package-local bufferedConn so wsutil.ReadServerData consumes
+	// any frame bytes already buffered by http.ReadResponse rather than
+	// losing them past the bufio boundary.
+	rw := &bufferedConn{Conn: tcpConn, r: br}
+	if err := wsutil.WriteClientMessage(rw, ws.OpText, []byte("hello via trusted host")); err != nil {
 		t.Fatalf("write frame: %v", err)
 	}
-	echo, _, err := wsutil.ReadServerData(tcpConn)
+	echo, _, err := wsutil.ReadServerData(rw)
 	if err != nil {
-		t.Fatalf("read echo: %v — override + trusted_domains should let the connection round-trip", err)
+		t.Fatalf("read echo: %v - override + trusted_domains should let the connection round-trip", err)
 	}
 	if string(echo) != "hello via trusted host" {
 		t.Fatalf("echo = %q, want round-trip via fixture", echo)
@@ -147,27 +157,26 @@ func TestProxy_DNSHostOverrides_RawIPLiteralStillBlocked(t *testing.T) {
 
 	// Direct attack: agent sends a /ws upgrade for raw 127.0.0.1:<port>.
 	// trusted_domains rejects IP literals, override map is hostname-only,
-	// RFC1918/loopback check still fires → block.
+	// RFC1918/loopback check still fires so the upgrade is denied.
 	upgrade := fmt.Sprintf(
-		"GET /ws?url=ws://%s/admin HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-		net.JoinHostPort(backendHost, backendPort), proxyAddr,
+		"%s /ws?url=ws://%s/admin HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGVzdHRlc3R0ZXN0dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+		http.MethodGet, net.JoinHostPort(backendHost, backendPort), proxyAddr,
 	)
 	if _, writeErr := tcpConn.Write([]byte(upgrade)); writeErr != nil {
 		t.Fatalf("write upgrade: %v", writeErr)
 	}
 
-	respBuf := make([]byte, 1024)
-	n, readErr := tcpConn.Read(respBuf)
-	if readErr != nil {
-		t.Fatalf("read response: %v", readErr)
+	br := bufio.NewReader(tcpConn)
+	resp, respErr := http.ReadResponse(br, &http.Request{Method: http.MethodGet})
+	if respErr != nil {
+		t.Fatalf("read response: %v", respErr)
 	}
-	resp := string(respBuf[:n])
-	if len(resp) < 12 || resp[:8] != "HTTP/1.1" {
-		t.Fatalf("expected HTTP response, got: %q", resp)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		t.Fatalf("raw 127.0.0.1 WS upgrade was accepted; SSRF check did NOT reject - override map must not exempt IP literals")
 	}
-	// Must NOT be 101 Switching Protocols. Pipelock SSRF should produce
-	// a 4xx/5xx, signaling refusal.
-	if len(resp) >= 12 && resp[:12] == "HTTP/1.1 101" {
-		t.Fatalf("raw 127.0.0.1 WS upgrade was accepted; SSRF check did NOT reject — override map must not exempt IP literals")
+	// Pipelock should signal refusal with a 4xx/5xx status.
+	if resp.StatusCode < 400 {
+		t.Fatalf("expected 4xx/5xx refusal, got: %d %s", resp.StatusCode, resp.Status)
 	}
 }

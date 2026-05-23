@@ -5,6 +5,7 @@ package conductor
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"math"
@@ -75,6 +76,24 @@ func TestPolicyBundle_Validate(t *testing.T) {
 		err := b.ValidateForFollower("org-test", "fleet-prod", "instance-other", map[string]string{"tier": "prod"})
 		if err != nil {
 			t.Fatalf("ValidateForFollower() = %v, want nil", err)
+		}
+	})
+
+	t.Run("payload_hash_mismatch", func(t *testing.T) {
+		b := testPolicyBundle()
+		b.PayloadSHA256 = testHash("03")
+		err := b.Validate()
+		if !errors.Is(err, ErrHashMismatch) {
+			t.Fatalf("Validate() = %v, want ErrHashMismatch", err)
+		}
+	})
+
+	t.Run("policy_hash_mismatch", func(t *testing.T) {
+		b := testPolicyBundle()
+		b.PolicyHash = testHash("02")
+		err := b.Validate()
+		if !errors.Is(err, ErrHashMismatch) {
+			t.Fatalf("Validate() = %v, want ErrHashMismatch", err)
 		}
 	})
 }
@@ -185,7 +204,7 @@ func TestAuditBatchEnvelope_DroppedAccounting(t *testing.T) {
 func TestCapabilitiesResponse_RequiresMTLSAndThresholds(t *testing.T) {
 	caps := CapabilitiesResponse{
 		SchemaVersion:          SchemaVersion,
-		BossID:                 "boss-us-1",
+		ConductorID:            "conductor-us-1",
 		RequiredMTLS:           true,
 		ConductorBundle:        SchemaRange{Min: 1, Max: 1},
 		RemoteKill:             SchemaRange{Min: 1, Max: 1},
@@ -292,6 +311,14 @@ func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {
 }
 
 func testPolicyBundle() PolicyBundle {
+	payload := PolicyBundlePayload{
+		ConfigYAML: "mode: strict\nagents:\n  claude-code:\n    mode: strict\n",
+		RuleBundles: []RuleBundleRef{{
+			Name:    "official",
+			Version: "2026.05.23",
+			SHA256:  testHash("04"),
+		}},
+	}
 	return PolicyBundle{
 		SchemaVersion:      SchemaVersion,
 		BundleID:           "bundle-0001",
@@ -305,16 +332,9 @@ func testPolicyBundle() PolicyBundle {
 		NotBefore:          testNow.Add(-time.Minute),
 		ExpiresAt:          testNow.Add(time.Hour),
 		MinPipelockVersion: "1.2.3",
-		PolicyHash:         testHash("02"),
-		PayloadSHA256:      testHash("03"),
-		Payload: PolicyBundlePayload{
-			ConfigYAML: "mode: strict\nagents:\n  claude-code:\n    mode: strict\n",
-			RuleBundles: []RuleBundleRef{{
-				Name:    "official",
-				Version: "2026.05.23",
-				SHA256:  testHash("04"),
-			}},
-		},
+		PolicyHash:         mustPolicyHash(payload),
+		PayloadSHA256:      mustPayloadHash(payload),
+		Payload:            payload,
 		Signatures: []SignatureProof{
 			testProof("policy-signer-1", signing.PurposePolicyBundleSigning),
 		},
@@ -324,7 +344,7 @@ func testPolicyBundle() PolicyBundle {
 func validCapabilitiesResponse() CapabilitiesResponse {
 	return CapabilitiesResponse{
 		SchemaVersion:          SchemaVersion,
-		BossID:                 "boss-us-1",
+		ConductorID:            "conductor-us-1",
 		RequiredMTLS:           true,
 		ConductorBundle:        SchemaRange{Min: 1, Max: 1},
 		RemoteKill:             SchemaRange{Min: 1, Max: 1},
@@ -382,6 +402,7 @@ func testRollbackAuthorization() RollbackAuthorization {
 }
 
 func testAuditBatch() AuditBatchEnvelope {
+	payload := testAuditPayload()
 	return AuditBatchEnvelope{
 		SchemaVersion:      SchemaVersion,
 		BatchID:            "audit-batch-0001",
@@ -393,8 +414,8 @@ func testAuditBatch() AuditBatchEnvelope {
 		SeqStart:           10,
 		SeqEnd:             20,
 		EventCount:         11,
-		PayloadSHA256:      testHash("10"),
-		PayloadBytes:       4096,
+		PayloadSHA256:      testBytesHash(payload),
+		PayloadBytes:       uint64(len(payload)),
 		Chain: EvidenceChain{
 			EntryVersion:           2,
 			SegmentID:              "segment-1",
@@ -576,6 +597,12 @@ func TestRemoteKillMessage_ValidateAtTimeAndReasonCap(t *testing.T) {
 	if err := oversized.Validate(); !errors.Is(err, ErrPayloadTooLarge) {
 		t.Fatalf("Validate(oversized reason) = %v, want ErrPayloadTooLarge", err)
 	}
+
+	control := testRemoteKillMessage()
+	control.Reason = "incident\nsecond-line"
+	if err := control.Validate(); !errors.Is(err, ErrInvalidReason) {
+		t.Fatalf("Validate(control reason) = %v, want ErrInvalidReason", err)
+	}
 }
 
 func TestRollbackAuthorization_ValidateAtTime(t *testing.T) {
@@ -589,26 +616,46 @@ func TestRollbackAuthorization_ValidateAtTime(t *testing.T) {
 	}
 }
 
-func TestAuditBatchEnvelope_ValidateForBossSkew(t *testing.T) {
+func TestAuditBatchEnvelope_ValidateForConductorSkew(t *testing.T) {
 	batch := testAuditBatch()
 	// Inside default skew.
-	if err := batch.ValidateForBoss(testNow.Add(30*time.Second), DefaultAuditMaxSkew); err != nil {
-		t.Fatalf("ValidateForBoss(inside) = %v, want nil", err)
+	if err := batch.ValidateForConductor(testNow.Add(30*time.Second), DefaultAuditMaxSkew); err != nil {
+		t.Fatalf("ValidateForConductor(inside) = %v, want nil", err)
 	}
 	// Past default skew → ErrSkewExceeded.
-	err := batch.ValidateForBoss(testNow.Add(2*time.Minute), DefaultAuditMaxSkew)
+	err := batch.ValidateForConductor(testNow.Add(2*time.Minute), DefaultAuditMaxSkew)
 	if !errors.Is(err, ErrSkewExceeded) {
-		t.Fatalf("ValidateForBoss(past) = %v, want ErrSkewExceeded", err)
+		t.Fatalf("ValidateForConductor(past) = %v, want ErrSkewExceeded", err)
 	}
 	// Future emission > skew (clock drift) → ErrSkewExceeded.
-	err = batch.ValidateForBoss(testNow.Add(-2*time.Minute), DefaultAuditMaxSkew)
+	err = batch.ValidateForConductor(testNow.Add(-2*time.Minute), DefaultAuditMaxSkew)
 	if !errors.Is(err, ErrSkewExceeded) {
-		t.Fatalf("ValidateForBoss(future) = %v, want ErrSkewExceeded", err)
+		t.Fatalf("ValidateForConductor(future) = %v, want ErrSkewExceeded", err)
 	}
 	// Operator misconfig > MaxAllowedAuditSkew → ErrSkewExceeded.
-	err = batch.ValidateForBoss(testNow, MaxAllowedAuditSkew+time.Second)
+	err = batch.ValidateForConductor(testNow, MaxAllowedAuditSkew+time.Second)
 	if !errors.Is(err, ErrSkewExceeded) {
-		t.Fatalf("ValidateForBoss(over-cap config) = %v, want ErrSkewExceeded", err)
+		t.Fatalf("ValidateForConductor(over-cap config) = %v, want ErrSkewExceeded", err)
+	}
+}
+
+func TestAuditBatchEnvelope_ValidateForConductorWithPayload(t *testing.T) {
+	batch := testAuditBatch()
+	payload := testAuditPayload()
+	if err := batch.ValidateForConductorWithPayload(testNow, DefaultAuditMaxSkew, payload); err != nil {
+		t.Fatalf("ValidateForConductorWithPayload(valid) = %v, want nil", err)
+	}
+
+	err := batch.ValidateForConductorWithPayload(testNow, DefaultAuditMaxSkew, append(payload, 'x'))
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("ValidateForConductorWithPayload(size mismatch) = %v, want ErrHashMismatch", err)
+	}
+
+	sameSizeDifferentHash := append([]byte(nil), payload...)
+	sameSizeDifferentHash[0] ^= 0x01
+	err = batch.ValidateForConductorWithPayload(testNow, DefaultAuditMaxSkew, sameSizeDifferentHash)
+	if !errors.Is(err, ErrHashMismatch) {
+		t.Fatalf("ValidateForConductorWithPayload(hash mismatch) = %v, want ErrHashMismatch", err)
 	}
 }
 
@@ -644,6 +691,26 @@ func TestAudience_RejectsMixedWildcard(t *testing.T) {
 	// Pure wildcard still passes.
 	if err := (Audience{InstanceIDs: []string{"*"}}).Validate(); err != nil {
 		t.Fatalf("Validate(pure wildcard) = %v, want nil", err)
+	}
+}
+
+func TestAudience_RejectsMixedSelectorTypes(t *testing.T) {
+	a := Audience{
+		InstanceIDs: []string{"instance-1"},
+		Labels:      map[string]string{"ring": "canary"},
+	}
+	err := a.Validate()
+	if !errors.Is(err, ErrInvalidAudienceSelectors) {
+		t.Fatalf("Validate() = %v, want ErrInvalidAudienceSelectors", err)
+	}
+	if !errors.Is(err, ErrInvalidAudience) {
+		t.Fatalf("Validate() = %v, want ErrInvalidAudience classification", err)
+	}
+}
+
+func TestIsIdentifierRejectsEmpty(t *testing.T) {
+	if isIdentifier("") {
+		t.Fatal("isIdentifier(empty) = true, want false")
 	}
 }
 
@@ -800,6 +867,31 @@ func mapResolver(keys map[string]SignatureKey) SignatureKeyResolver {
 		}
 		return key, nil
 	}
+}
+
+func mustPayloadHash(payload PolicyBundlePayload) string {
+	hash, err := payload.PayloadHash()
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}
+
+func mustPolicyHash(payload PolicyBundlePayload) string {
+	hash, err := payload.PolicyHash()
+	if err != nil {
+		panic(err)
+	}
+	return hash
+}
+
+func testAuditPayload() []byte {
+	return []byte(`{"events":[{"seq":10,"kind":"scan","verdict":"allow"},{"seq":11,"kind":"scan","verdict":"block"}]}`)
+}
+
+func testBytesHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func testHash(seed string) string {

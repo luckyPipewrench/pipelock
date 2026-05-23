@@ -15,7 +15,7 @@ import (
 // string representation; this typed wrapper centralises validation and helpers.
 //
 // Twelve values are defined, drawn from the design doc Key Management section
-// (lines 758-870) and the Boss/Conductor control-plane spec:
+// (lines 758-870) and the Conductor control-plane spec:
 //
 //   - PurposeReceiptSigning:            runtime receipt keys (hot-loadable)
 //   - PurposeContractCompileSigning:    compile-time contract keys (warm, operator-only)
@@ -63,27 +63,27 @@ const (
 	// used for recovery operations (root transition, emergency rotation).
 	PurposeRecoveryRoot KeyPurpose = "recovery-root"
 
-	// PurposePolicyBundleSigning identifies keys used to sign Boss/Conductor
+	// PurposePolicyBundleSigning identifies keys used to sign Conductor
 	// policy bundles distributed to followers.
 	PurposePolicyBundleSigning KeyPurpose = "policy-bundle-signing"
 
 	// PurposePolicyBundleRollback identifies keys used to authorize a one-shot
-	// rollback to a lower Boss/Conductor policy bundle version.
+	// rollback to a lower Conductor policy bundle version.
 	PurposePolicyBundleRollback KeyPurpose = "policy-bundle-rollback"
 
-	// PurposeRemoteKillSigning identifies keys used to sign Boss/Conductor
+	// PurposeRemoteKillSigning identifies keys used to sign Conductor
 	// remote kill-switch state messages.
 	PurposeRemoteKillSigning KeyPurpose = "remote-kill-signing"
 
-	// PurposeTrustRootRotation identifies keys used to sign Boss/Conductor
+	// PurposeTrustRootRotation identifies keys used to sign Conductor
 	// trust-root rotation artifacts.
 	PurposeTrustRootRotation KeyPurpose = "trust-root-rotation"
 
 	// PurposeAuditBatchSigning identifies follower instance keys used to sign
-	// Boss-bound audit batch envelopes.
+	// Conductor-bound audit batch envelopes.
 	PurposeAuditBatchSigning KeyPurpose = "audit-batch-signing"
 
-	// PurposeEnrollmentTokenSigning identifies Boss keys used to sign narrow,
+	// PurposeEnrollmentTokenSigning identifies Conductor keys used to sign narrow,
 	// one-shot enrollment tokens.
 	PurposeEnrollmentTokenSigning KeyPurpose = "enrollment-token-signing"
 )
@@ -157,7 +157,7 @@ func (p KeyPurpose) IsCompileTime() bool {
 	return p == PurposeContractCompileSigning
 }
 
-// IsConductorPurpose returns true for Boss/Conductor control-plane purposes.
+// IsConductorPurpose returns true for Conductor control-plane purposes.
 func (p KeyPurpose) IsConductorPurpose() bool {
 	switch p {
 	case PurposePolicyBundleSigning,

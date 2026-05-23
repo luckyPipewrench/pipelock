@@ -1,10 +1,10 @@
-# Boss Pipelock Conductor and Audit Sink Design
+# Pipelock Conductor and Audit Sink Design
 
 **Status:** Draft, pre-implementation gate
 **Version:** 0.1.0
 **Date:** 2026-05-23
 
-This document defines the hardened design target for Boss Pipelock, the
+This document defines the hardened design target for Pipelock Conductor, the
 enterprise control plane for Pipelock fleets. It covers the conductor plane
 that distributes signed policy bundles to follower instances and the audit sink
 plane that ingests signed evidence from those instances.
@@ -12,23 +12,23 @@ plane that ingests signed evidence from those instances.
 The architecture shape is:
 
 ```text
-Boss control plane
+Conductor control plane
   -> signed policy / emergency control messages
 Pipelock follower instances
   -> local enforcement, local recorder, local receipts
   -> signed audit batches
-Boss audit sink
+Conductor audit sink
   -> verification, DLP scanning, append-only ingest, indexed search
 ```
 
-Boss is not a scanner and must not become an inline dependency for enforcement.
-Followers continue to enforce locally. Boss coordinates policy distribution,
+Conductor is not a scanner and must not become an inline dependency for enforcement.
+Followers continue to enforce locally. Conductor coordinates policy distribution,
 evidence operations, fleet visibility, and auditor workflows.
 
 ## Goals
 
 - Distribute signed, audience-bound policy bundles to follower instances.
-- Preserve Pipelock capability separation: Boss must not hold agent secrets or
+- Preserve Pipelock capability separation: Conductor must not hold agent secrets or
   scan on behalf of followers.
 - Keep follower enforcement local and fail-closed.
 - Make bundle signing, enrollment, rollback, remote kill, and audit ingest
@@ -44,7 +44,7 @@ evidence operations, fleet visibility, and auditor workflows.
 - No replacement for local flight recorder or receipt verification.
 - No hosted dependency for local allow/block decisions.
 - No license metadata inside policy bundles in the MVP.
-- No bearer-only follower-to-Boss transport.
+- No bearer-only follower-to-Conductor transport.
 - No single online signing key that can silently compromise the whole fleet.
 
 ## Hard MVP Gates
@@ -53,7 +53,7 @@ No implementation should start until these are accepted as product/security
 requirements:
 
 1. Bundle signing uses KMS/HSM-backed keys and never stores signing private keys
-   on Boss disk.
+   on Conductor disk.
 2. Every signed bundle hash is written to an append-only transparency log.
 3. Catastrophic messages require threshold approval and a separate key purpose.
 4. Enrollment is concrete: one-shot token exchange for per-instance mTLS
@@ -64,13 +64,13 @@ requirements:
 7. Remote kill switch state is not ordinary bundle state.
 8. License metadata is excluded from policy bundles.
 9. Audit payloads are treated as hostile input even after signature validation.
-10. Follower-to-Boss transport is mTLS.
+10. Follower-to-Conductor transport is mTLS.
 
 ## Trust Model
 
 ### Principals
 
-- `boss-admin`: manages Boss configuration and users.
+- `conductor-admin`: manages Conductor configuration and users.
 - `policy-publisher`: can create policy bundle candidates.
 - `policy-approver`: can countersign catastrophic operations.
 - `follower-instance`: a registered Pipelock deployment.
@@ -86,7 +86,7 @@ wrong purpose.
 | `policy-bundle-signing` | ordinary policy bundle publication | no |
 | `policy-bundle-rollback` | one-shot rollback authorization | yes |
 | `remote-kill-signing` | remote kill switch toggle | yes |
-| `trust-root-rotation` | Boss/fleet trust root changes | yes |
+| `trust-root-rotation` | Conductor/fleet trust root changes | yes |
 | `audit-batch-signing` | follower audit batch signatures | no |
 | `receipt-signing` | local follower action receipts/checkpoints | no |
 | `enrollment-token-signing` | one-shot enrollment token minting | no |
@@ -100,8 +100,8 @@ must allow more signatures later.
 
 ### Signing Key Lifecycle
 
-Boss signing keys must be backed by KMS/HSM or equivalent external signing
-service. Private key material must not be exportable to Boss process storage.
+Conductor signing keys must be backed by KMS/HSM or equivalent external signing
+service. Private key material must not be exportable to Conductor process storage.
 
 Requirements:
 
@@ -111,7 +111,7 @@ Requirements:
 - Key rotation is published as a signed trust-root or intermediate update.
 - Followers reject unknown key IDs, wrong-purpose signatures, expired keys, and
   revoked keys.
-- CRL/trust roster age is exposed as a metric on both Boss and followers.
+- CRL/trust roster age is exposed as a metric on both Conductor and followers.
 
 ## Enrollment Protocol
 
@@ -119,26 +119,26 @@ Enrollment bootstraps follower identity. It is not optional.
 
 ### Recommended MVP
 
-1. Operator creates a one-shot enrollment token in Boss.
+1. Operator creates a one-shot enrollment token in Conductor.
 2. Token includes `org_id`, `fleet_id`, `instance_id`, allowed environment,
    allowed IP/CIDR hint, expiry, nonce, and token ID.
 3. Token is signed by `enrollment-token-signing`.
-4. Follower starts with the token and Boss trust root.
+4. Follower starts with the token and Conductor trust root.
 5. Follower generates local private keys:
    - mTLS leaf key
    - audit batch signing key
    - optional local receipt signing key if not already configured
 6. Follower calls `POST /api/v1/enroll` over TLS.
-7. Boss verifies token, checks token unused, validates singleton
+7. Conductor verifies token, checks token unused, validates singleton
    `instance_id`, and issues an mTLS leaf certificate.
-8. Boss stores the follower audit public key and expected instance metadata.
+8. Conductor stores the follower audit public key and expected instance metadata.
 9. Token is marked consumed permanently.
 10. All future follower calls derive identity from the mTLS certificate, not
     from request fields.
 
 ### Singleton Rule
 
-Boss must prevent silent instance cloning. A second enrollment for an active
+Conductor must prevent silent instance cloning. A second enrollment for an active
 `instance_id` fails unless an admin revokes or rotates the prior identity.
 
 ### Rotation
@@ -146,13 +146,13 @@ Boss must prevent silent instance cloning. A second enrollment for an active
 Follower certificates and audit keys rotate through a signed re-enrollment flow:
 
 - Existing mTLS identity authenticates the rotation request.
-- Boss issues a new cert/key binding.
+- Conductor issues a new cert/key binding.
 - Old identity remains accepted for a short overlap window.
 - Both old and new identities are visible in audit logs.
 
 ## Transport Surfaces
 
-Boss uses separate listeners:
+Conductor uses separate listeners:
 
 | Listener | Auth | Purpose |
 |---|---|---|
@@ -168,18 +168,18 @@ connection limits, request body caps, and per-instance rate limits.
 
 ## Capability Handshake
 
-Follower starts each Boss session with:
+Follower starts each Conductor session with:
 
 ```http
 GET /api/v1/conductor/capabilities
 ```
 
-Boss returns supported schema ranges:
+Conductor returns supported schema ranges:
 
 ```json
 {
   "schema_version": 1,
-  "boss_id": "boss-us-1",
+  "conductor_id": "conductor-us-1",
   "required_mtls": true,
   "conductor_bundle": {"min": 1, "max": 1},
   "remote_kill": {"min": 1, "max": 1},
@@ -196,7 +196,7 @@ Boss returns supported schema ranges:
 
 Follower selects the highest supported intersection. If no audit schema
 intersection exists, audit emission hard-fails locally and emits evidence. It
-must not silently drop Boss-bound audit.
+must not silently drop Conductor-bound audit.
 
 ## Policy Bundle
 
@@ -211,10 +211,7 @@ Policy bundles distribute policy content only. License fields are forbidden.
   "org_id": "org_...",
   "fleet_id": "fleet_...",
   "environment": "prod",
-  "audience": {
-    "instance_ids": ["pl-prod-1"],
-    "labels": {"ring": "canary"}
-  },
+  "audience": {"labels": {"ring": "canary"}},
   "version": 42,
   "previous_bundle_hash": "hex",
   "created_at": "2026-05-23T17:00:00Z",
@@ -225,7 +222,7 @@ Policy bundles distribute policy content only. License fields are forbidden.
   "payload_sha256": "hex",
   "payload": {
     "config_yaml": "...",
-    "rules_bundles": []
+    "rule_bundles": []
   },
   "signatures": []
 }
@@ -243,6 +240,8 @@ Follower rejects a bundle if:
   present.
 - `previous_bundle_hash` does not match local freshness state, except for
   initial enrollment or authorized rollback.
+- `payload_sha256` does not match the canonicalized `payload`.
+- `policy_hash` does not match the canonicalized policy representation.
 - `min_pipelock_version` exceeds follower version by more than the configured
   sanity window.
 - Payload contains forbidden fields, including license metadata.
@@ -285,14 +284,15 @@ Remote kill is separate from policy bundles.
 ```
 
 `state` is `"active"` or `"inactive"` (see `KillSwitchState` in
-`internal/conductor/messages.go`). `reason` is capped at `MaxReasonBytes`.
+`internal/conductor/messages.go`). `reason` is capped at `MaxReasonBytes` and
+must not contain control characters.
 
 Follower behavior:
 
 - Default `conductor.honor_remote_kill_switch` is false unless a managed-fleet
   preset explicitly enables it.
 - When disabled, followers reject remote kill messages, emit local evidence, and
-  report the rejection to Boss.
+  report the rejection to Conductor.
 - When enabled, remote kill messages require `remote-kill-signing` threshold
   signatures.
 - Accepted remote kill state is OR-composed as a separate kill source.
@@ -367,7 +367,7 @@ Follower apply is all-or-nothing:
     file-driven reload.
 14. Record local evidence for accept or reject.
 
-Boss-driven reload must share the same dedup/reload guard as file-driven reload
+Conductor-driven reload must share the same dedup/reload guard as file-driven reload
 to avoid fsnotify and conductor races.
 
 ## Stale Bundle Policy
@@ -395,8 +395,8 @@ local evidence.
 
 ## Audit Batcher
 
-Boss-bound audit cannot be a normal `emit.Sink`. The existing emitter ignores
-sink errors by design; a Boss audit transport needs durable retry state and
+Conductor-bound audit cannot be a normal `emit.Sink`. The existing emitter ignores
+sink errors by design; a Conductor audit transport needs durable retry state and
 explicit drop accounting.
 
 Implement a peer package:
@@ -419,8 +419,8 @@ Local audit batcher failures produce local recorder evidence and metrics.
 
 ## Audit Batch Schema
 
-Boss-bound batches require recorder v2 entries. v1 entries are not accepted for
-Boss-bound ingestion because v2 binds `event_kind` into the chain hash.
+Conductor-bound batches require recorder v2 entries. v1 entries are not accepted for
+Conductor-bound ingestion because v2 binds `event_kind` into the chain hash.
 
 ```json
 {
@@ -463,21 +463,24 @@ Boss-bound ingestion because v2 binds `event_kind` into the chain hash.
 ```
 
 Field names match the `AuditBatchEnvelope` Go struct. `payload_bytes` is capped
-at `MaxAuditPayloadBytes` (1 MiB). Boss enforces `|now - emitted_at|` against a
-configured skew via `ValidateForBoss` — see `DefaultAuditMaxSkew` (60s) and
-`MaxAllowedAuditSkew` (300s).
+at `MaxAuditPayloadBytes` (1 MiB). Conductor enforces `|now - emitted_at|` against a
+configured skew via `ValidateForConductor` — see `DefaultAuditMaxSkew` (60s) and
+`MaxAllowedAuditSkew` (300s). Ingest handlers must validate the envelope and
+payload together with `ValidateForConductorWithPayload` before DLP scanning,
+storage, or indexing.
 
 `dropped` is part of the signed envelope so evidence gaps are captured
-cryptographically rather than inferred from Boss-side metrics. When `count` is
+cryptographically rather than inferred from Conductor-side metrics. When `count` is
 zero, `reasons` must be empty. When `count` is non-zero, reason counts must sum
 exactly to `count`.
 
-### Boss Verification
+### Conductor Verification
 
-Boss must:
+Conductor must:
 
 - Authenticate follower identity from mTLS.
 - Verify batch signature with enrolled follower audit key.
+- Verify `len(payload) == payload_bytes` and `sha256(payload) == payload_sha256`.
 - Count only cryptographically verified distinct signer keys toward thresholds.
 - Reject instance ID mismatches between cert and payload.
 - Enforce created skew: default 60s, configurable max 300s with warning.
@@ -498,7 +501,7 @@ Fork detection is critical severity, not a soft reject.
 ## Audit Sink as Hostile Input
 
 A compromised follower can produce signed malicious audit batches. Signatures
-prove source, not truth. Boss must treat every field as attacker-controlled.
+prove source, not truth. Conductor must treat every field as attacker-controlled.
 
 Controls:
 
@@ -511,7 +514,7 @@ Controls:
 - No cross-fleet query expansion from untrusted event fields.
 - Reputation scoring for malformed, oversized, forked, or DLP-positive batches.
 
-Audit batches are also potential exfiltration channels. Boss must scan for
+Audit batches are also potential exfiltration channels. Conductor must scan for
 secrets before storing or indexing.
 
 ## Privacy and Storage
@@ -558,7 +561,7 @@ Draft YAML shape:
 ```yaml
 conductor:
   enabled: true
-  boss_url: "https://boss.example.internal"
+  conductor_url: "https://conductor.example.internal"
   org_id: "org_main"
   fleet_id: "prod"
   instance_id: "pl-prod-1"
@@ -585,7 +588,7 @@ Config validation must reject:
 - `created_skew_seconds > 300`
 - remote kill enabled without trust roster support for threshold signatures
 
-## Boss RBAC
+## Conductor RBAC
 
 MVP roles:
 
@@ -607,7 +610,7 @@ Catastrophic actions require approval by at least two distinct principals:
 
 ## Observability
 
-Boss metrics:
+Conductor metrics:
 
 - `conductor_fleet_drift{policy_hash}`
 - `conductor_bundle_apply_latency_seconds`
@@ -644,10 +647,10 @@ Paging defaults:
 
 ## Regionalization
 
-Boss deployments are regional. Default design is no cross-region replication.
+Conductor deployments are regional. Default design is no cross-region replication.
 
-- `Boss-US` handles US fleets and US evidence.
-- `Boss-EU` handles EU fleets and EU evidence.
+- `Conductor-US` handles US fleets and US evidence.
+- `Conductor-EU` handles EU fleets and EU evidence.
 - Cross-region export requires explicit operator/auditor action.
 - Policy bundles include region/environment audience claims.
 
@@ -658,9 +661,9 @@ regulated environments require FIPS 140-3 acceptable algorithms. The MVP must
 document this limitation. A future FIPS build may add ECDSA-P256 key purposes
 and dual-algorithm trust rosters.
 
-## Boss Supply Chain
+## Conductor Supply Chain
 
-Boss is the highest-value target in the product line. Its release provenance
+Conductor is the highest-value target in the product line. Its release provenance
 must be stronger than ordinary follower deployment:
 
 - signed container images
@@ -696,7 +699,7 @@ must be stronger than ordinary follower deployment:
 - Add stale bundle state machine.
 - Add rollback authorization support.
 
-### Phase 3: Boss Server MVP
+### Phase 3: Conductor Server MVP
 
 - Add follower mTLS listener.
 - Add admin listener with RBAC skeleton.
@@ -707,7 +710,7 @@ must be stronger than ordinary follower deployment:
 ### Phase 4: Audit Batcher and Sink
 
 - Add durable follower audit batcher.
-- Add Boss audit ingest endpoint.
+- Add Conductor audit ingest endpoint.
 - Add DLP-before-indexing.
 - Add fork detection.
 - Add per-follower storage namespace.
@@ -731,23 +734,27 @@ Required test coverage:
 - Rollback authorization is single-use.
 - Remote kill is rejected when `honor_remote_kill_switch` is false.
 - Remote kill without threshold signatures is rejected.
+- Remote kill and rollback reasons reject control characters.
 - Bundle apply is atomic under partial write.
 - Bundle apply uses existing reload panic handling.
-- Boss audit ingest rejects v1 recorder entries.
-- Boss audit ingest detects sequence forks.
-- Boss audit ingest verifies checkpoint signatures.
-- Boss audit ingest DLP-scans payload before indexing.
+- Conductor audit ingest rejects v1 recorder entries.
+- Conductor audit ingest detects sequence forks.
+- Conductor audit ingest verifies checkpoint signatures.
+- Conductor audit ingest DLP-scans payload before indexing.
 - Follower identity is derived from mTLS, not payload `instance_id`.
 - Enrollment token reuse fails.
 - Duplicate active `instance_id` enrollment fails.
 - Audit schema mismatch hard-fails.
 - Canonical preimage is byte-identical across producer timezones.
 - Canonical preimage changes when any policy-semantic field changes.
+- Policy bundles reject `policy_hash` and `payload_sha256` mismatches.
 - Nested license fields under any submap are rejected with a path-tagged error.
 - `MinPipelockVersion` is required and must be `major.minor.patch`.
 - `ValidateAtTime` rejects bundles outside `[NotBefore, ExpiresAt]`.
-- `ValidateForBoss` rejects audit batches outside `±DefaultAuditMaxSkew`.
+- `ValidateForConductor` rejects audit batches outside `±DefaultAuditMaxSkew`.
+- `ValidateForConductorWithPayload` rejects payload length/hash mismatches.
 - `Audience` rejects `"*"` mixed with explicit instance IDs.
+- `Audience` rejects mixed `instance_ids` and `labels`.
 - Capability handshake advertises all message schema ranges, mTLS requirement,
   v2 receipt entries, skew ceiling, and catastrophic thresholds.
 - Audit batch dropped accounting is signed and internally consistent.

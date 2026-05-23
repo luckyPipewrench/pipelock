@@ -1,7 +1,7 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// Package conductor defines Boss/Conductor signed message bodies.
+// Package conductor defines Conductor signed message bodies.
 package conductor
 
 import (
@@ -17,6 +17,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -68,8 +70,11 @@ var (
 	ErrExpired                  = errors.New("conductor message expired")
 	ErrSkewExceeded             = errors.New("conductor message exceeds allowed clock skew")
 	ErrInvalidMinVersion        = errors.New("invalid min_pipelock_version")
+	ErrHashMismatch             = errors.New("conductor hash mismatch")
 	ErrPayloadTooLarge          = errors.New("conductor payload exceeds size cap")
 	ErrInvalidAudienceWildcard  = errors.New("conductor audience cannot mix wildcard with explicit instance_ids")
+	ErrInvalidAudienceSelectors = errors.New("conductor audience cannot mix instance_ids with labels")
+	ErrInvalidReason            = errors.New("invalid conductor reason")
 	ErrInvalidIdentifier        = errors.New("invalid conductor identifier")
 	ErrSignatureVerification    = errors.New("conductor signature verification failed")
 	ErrInvalidDroppedAccounting = errors.New("invalid conductor dropped accounting")
@@ -139,6 +144,32 @@ type RuleBundleRef struct {
 type PolicyBundlePayload struct {
 	ConfigYAML  string          `json:"config_yaml"`
 	RuleBundles []RuleBundleRef `json:"rule_bundles,omitempty"`
+}
+
+func (p PolicyBundlePayload) PayloadHash() (string, error) {
+	return canonicalValueHash(p, "policy_bundle_payload")
+}
+
+func (p PolicyBundlePayload) PolicyHash() (string, error) {
+	var cfg any
+	decoder := yaml.NewDecoder(strings.NewReader(p.ConfigYAML))
+	if err := decoder.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("parse policy bundle config_yaml for policy hash: %w", err)
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); err == nil {
+		return "", fmt.Errorf("%w: config_yaml has multiple YAML documents", ErrInvalidHash)
+	} else if !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("parse policy bundle config_yaml trailing document: %w", err)
+	}
+	view := struct {
+		ConfigYAML  any             `json:"config_yaml"`
+		RuleBundles []RuleBundleRef `json:"rule_bundles,omitempty"`
+	}{
+		ConfigYAML:  cfg,
+		RuleBundles: p.RuleBundles,
+	}
+	return canonicalValueHash(view, "policy_bundle_policy")
 }
 
 type PolicyBundle struct {
@@ -240,7 +271,7 @@ type SchemaRange struct {
 
 type CapabilitiesResponse struct {
 	SchemaVersion          int         `json:"schema_version"`
-	BossID                 string      `json:"boss_id"`
+	ConductorID            string      `json:"conductor_id"`
 	RequiredMTLS           bool        `json:"required_mtls"`
 	ConductorBundle        SchemaRange `json:"conductor_bundle"`
 	RemoteKill             SchemaRange `json:"remote_kill"`
@@ -279,6 +310,9 @@ func (p SignatureProof) Validate(required signing.KeyPurpose) error {
 func (a Audience) Validate() error {
 	if len(a.InstanceIDs) == 0 && len(a.Labels) == 0 {
 		return fmt.Errorf("%w: empty audience", ErrInvalidAudience)
+	}
+	if len(a.InstanceIDs) > 0 && len(a.Labels) > 0 {
+		return fmt.Errorf("%w: %w", ErrInvalidAudience, ErrInvalidAudienceSelectors)
 	}
 	wildcard := false
 	for _, id := range a.InstanceIDs {
@@ -386,7 +420,7 @@ func (b PolicyBundle) SignablePreimage() ([]byte, error) {
 	// Force UTC + RFC3339Nano-compatible representation so two producers in
 	// different timezones canonicalize identically. Without this, the default
 	// time.Time JSON marshal embeds the source zone offset and breaks signature
-	// portability across regions / Boss replicas.
+	// portability across regions / Conductor replicas.
 	unsigned.CreatedAt = unsigned.CreatedAt.UTC()
 	unsigned.NotBefore = unsigned.NotBefore.UTC()
 	unsigned.ExpiresAt = unsigned.ExpiresAt.UTC()
@@ -450,7 +484,28 @@ func (b PolicyBundle) Validate() error {
 			return err
 		}
 	}
+	if err := b.validateHashes(); err != nil {
+		return err
+	}
 	return validateSignatureThreshold(b.Signatures, signing.PurposePolicyBundleSigning, RequiredStandardSigners)
+}
+
+func (b PolicyBundle) validateHashes() error {
+	payloadHash, err := b.Payload.PayloadHash()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(b.PayloadSHA256, payloadHash) {
+		return fmt.Errorf("%w: payload_sha256", ErrHashMismatch)
+	}
+	policyHash, err := b.Payload.PolicyHash()
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(b.PolicyHash, policyHash) {
+		return fmt.Errorf("%w: policy_hash", ErrHashMismatch)
+	}
+	return nil
 }
 
 // ValidateAtTime extends Validate with a freshness check: now must fall inside
@@ -697,13 +752,13 @@ func (a AuditBatchEnvelope) Validate() error {
 	return validateSignatureThreshold(a.Signatures, signing.PurposeAuditBatchSigning, RequiredStandardSigners)
 }
 
-// ValidateForBoss extends Validate with skew enforcement against Boss's clock.
+// ValidateForConductor extends Validate with skew enforcement against Conductor's clock.
 // maxSkew bounds |now - EmittedAt|; replay protection requires this be tight
 // (default DefaultAuditMaxSkew, ceiling MaxAllowedAuditSkew). Callers that
 // configure a higher skew must do so consciously and log a warning at config
 // load time. Validate alone does NOT enforce skew — a captured signed batch
 // could otherwise be replayed at any future time.
-func (a AuditBatchEnvelope) ValidateForBoss(now time.Time, maxSkew time.Duration) error {
+func (a AuditBatchEnvelope) ValidateForConductor(now time.Time, maxSkew time.Duration) error {
 	if err := a.Validate(); err != nil {
 		return err
 	}
@@ -721,6 +776,24 @@ func (a AuditBatchEnvelope) ValidateForBoss(now time.Time, maxSkew time.Duration
 		return fmt.Errorf("%w: |now-emitted_at|=%s max_skew=%s", ErrSkewExceeded, delta, maxSkew)
 	}
 	return nil
+}
+
+func (a AuditBatchEnvelope) ValidatePayload(payload []byte) error {
+	if uint64(len(payload)) != a.PayloadBytes {
+		return fmt.Errorf("%w: payload_bytes envelope=%d actual=%d", ErrHashMismatch, a.PayloadBytes, len(payload))
+	}
+	sum := sha256.Sum256(payload)
+	if !strings.EqualFold(hex.EncodeToString(sum[:]), a.PayloadSHA256) {
+		return fmt.Errorf("%w: payload_sha256", ErrHashMismatch)
+	}
+	return nil
+}
+
+func (a AuditBatchEnvelope) ValidateForConductorWithPayload(now time.Time, maxSkew time.Duration, payload []byte) error {
+	if err := a.ValidateForConductor(now, maxSkew); err != nil {
+		return err
+	}
+	return a.ValidatePayload(payload)
 }
 
 func (a AuditBatchEnvelope) VerifySignatures(resolve SignatureKeyResolver) error {
@@ -798,7 +871,7 @@ func (c CapabilitiesResponse) ValidateWithLocalThresholdCap(maxThreshold int) er
 	if err := validateSchemaVersion(c.SchemaVersion); err != nil {
 		return err
 	}
-	if err := validateIdentifier("boss_id", c.BossID); err != nil {
+	if err := validateIdentifier("conductor_id", c.ConductorID); err != nil {
 		return err
 	}
 	if !c.RequiredMTLS {
@@ -817,7 +890,7 @@ func (c CapabilitiesResponse) ValidateWithLocalThresholdCap(maxThreshold int) er
 	// Couple to recorder.EntryVersion — the version the local recorder
 	// actively WRITES — so a recorder bump (v2→v3) automatically tightens
 	// the handshake instead of leaving this stranded on a hardcoded "2".
-	// Boss must advertise that version or the follower can never produce
+	// Conductor must advertise that version or the follower can never produce
 	// ingestable batches.
 	if !slices.Contains(c.ReceiptEntryVersions, recorder.EntryVersion) {
 		return fmt.Errorf("%w: receipt_entry_versions must include recorder write version %d", ErrInvalidState, recorder.EntryVersion)
@@ -962,6 +1035,15 @@ func canonicalHash(preimage func() ([]byte, error)) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func canonicalValueHash(v any, name string) (string, error) {
+	data, err := canonicalPreimage(v, name)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func validateSchemaVersion(v int) error {
 	if !acceptedSchemaVersions[v] {
 		return fmt.Errorf("%w: got %d", ErrUnsupportedSchemaVersion, v)
@@ -1011,12 +1093,22 @@ func validateMinPipelockVersion(v string) error {
 	return nil
 }
 
-// validateReason caps free-form reason strings used in remote-kill / rollback
-// messages. Caps protect verifier CPU against publisher-controlled payload
-// inflation. Empty is allowed; only oversized strings are rejected.
+// validateReason caps and constrains free-form reason strings used in
+// remote-kill / rollback messages. Empty is allowed, but control characters
+// are rejected at the signed-message boundary so downstream logs, terminals,
+// web UIs, and pager paths do not all need to rediscover the same sanitization
+// rule.
 func validateReason(field, reason string) error {
 	if len(reason) > MaxReasonBytes {
 		return fmt.Errorf("%w: %s (%d bytes > cap %d)", ErrPayloadTooLarge, field, len(reason), MaxReasonBytes)
+	}
+	if !utf8.ValidString(reason) {
+		return fmt.Errorf("%w: %s contains invalid utf-8", ErrInvalidReason, field)
+	}
+	for _, r := range reason {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%w: %s contains control character U+%04X", ErrInvalidReason, field, r)
+		}
 	}
 	return nil
 }
@@ -1062,6 +1154,9 @@ func validateLabelSelector(key, value string) error {
 }
 
 func isIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
 	for i, r := range value {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			continue

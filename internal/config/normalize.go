@@ -34,6 +34,30 @@ func normalizeLearn(l *Learn) {
 	}
 }
 
+func normalizeConductor(c *Conductor) {
+	if c.PollInterval == "" {
+		c.PollInterval = "30s"
+	}
+	if c.CreatedSkewSeconds == 0 {
+		c.CreatedSkewSeconds = 60
+	}
+	if c.MaxMinVersionMinorSkew == 0 {
+		c.MaxMinVersionMinorSkew = 1
+	}
+	if c.MaxCapabilityThreshold == 0 {
+		c.MaxCapabilityThreshold = 7
+	}
+	if c.EmergencyStream == nil {
+		c.EmergencyStream = ptrBool(true)
+	}
+	if c.StalePolicy.GraceMultiplier == 0 {
+		c.StalePolicy.GraceMultiplier = 1
+	}
+	if c.StalePolicy.AfterGrace == "" {
+		c.StalePolicy.AfterGrace = ConductorStaleStrictDenyAll
+	}
+}
+
 // applySecurityDefaults sets security-sensitive booleans to true when they are
 // omitted or null in the config YAML. YAML unmarshal into a plain bool cannot
 // distinguish "field omitted" (should default to true, fail-closed) from "field
@@ -160,6 +184,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 // ApplyDefaults fills in zero-value fields with sensible defaults.
 func (c *Config) ApplyDefaults() {
 	normalizeLearn(&c.Learn)
+	normalizeConductor(&c.Conductor)
 	if c.Version == 0 {
 		c.Version = 1
 	}

@@ -143,6 +143,7 @@ func (c *Config) policySemanticView() Config {
 	view.Sentry = SentryConfig{}
 	view.Emit = EmitConfig{}
 	view.FlightRecorder = FlightRecorder{}
+	view.Conductor = Conductor{}
 
 	// License metadata — determines whether a tier feature is available,
 	// but the effective per-agent config that the request-time path

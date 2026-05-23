@@ -256,6 +256,7 @@ type Config struct {
 	Redaction                redact.Config           `yaml:"redaction"`
 	Learn                    Learn                   `yaml:"learn"`
 	LearnLock                LearnLock               `yaml:"learn_lock" json:"-"` // operational lock-runtime config, excluded from canonical policy hash
+	Conductor                Conductor               `yaml:"conductor" json:"-"`  // follower control-plane config, excluded from canonical policy hash
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
 	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
 	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
@@ -296,6 +297,46 @@ type Config struct {
 	// instances are treated as immutable after Load(); any mutation after
 	// a hash has been computed will return a stale value.
 	canonicalHashCache *canonicalHashCacheHolder `yaml:"-"`
+}
+
+const (
+	// ConductorStaleStrictDenyAll is the fail-closed stale-bundle behavior.
+	ConductorStaleStrictDenyAll = "strict_deny_all"
+
+	// ConductorStaleContinueLastKnownGood is an operator override that keeps
+	// the last bundle active after the grace window. Validation permits it but
+	// emits an advisory warning because it weakens the fail-closed default.
+	ConductorStaleContinueLastKnownGood = "continue_last_known_good"
+)
+
+// Conductor configures follower-side participation in a Conductor-managed
+// fleet. It is local control-plane plumbing, not scanner policy, and is
+// excluded from CanonicalPolicyHash.
+type Conductor struct {
+	Enabled                bool                 `yaml:"enabled"`
+	ConductorURL           string               `yaml:"conductor_url"`
+	OrgID                  string               `yaml:"org_id"`
+	FleetID                string               `yaml:"fleet_id"`
+	InstanceID             string               `yaml:"instance_id"`
+	TrustRosterPath        string               `yaml:"trust_roster_path"`
+	ClientCertPath         string               `yaml:"client_cert_path"`
+	ClientKeyPath          string               `yaml:"client_key_path"`
+	BundleCacheDir         string               `yaml:"bundle_cache_dir"`
+	DurableAuditQueueDir   string               `yaml:"durable_audit_queue_dir"`
+	PollInterval           string               `yaml:"poll_interval"`
+	HonorRemoteKillSwitch  bool                 `yaml:"honor_remote_kill_switch"`
+	EmergencyStream        *bool                `yaml:"emergency_stream"`
+	CreatedSkewSeconds     int                  `yaml:"created_skew_seconds"`
+	MaxMinVersionMajorSkew int                  `yaml:"max_min_version_major_skew"`
+	MaxMinVersionMinorSkew int                  `yaml:"max_min_version_minor_skew"`
+	MaxCapabilityThreshold int                  `yaml:"max_capability_threshold"`
+	StalePolicy            ConductorStalePolicy `yaml:"stale_policy"`
+}
+
+// ConductorStalePolicy controls local behavior after the active bundle expires.
+type ConductorStalePolicy struct {
+	GraceMultiplier int    `yaml:"grace_multiplier"`
+	AfterGrace      string `yaml:"after_grace"`
 }
 
 // MCPInputScanning configures scanning of MCP JSON-RPC requests going from

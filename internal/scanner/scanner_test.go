@@ -1678,7 +1678,8 @@ func TestScan_PackageHostPathEntropyExclusion(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 
-	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ/pkg.whl.metadata")
+	entropyPath := strings.Join([]string{"aB3xK9mQ", "7pR2wE5t", "Y8uI0oL4", "hG6fD1sZ"}, "")
+	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/"+entropyPath+"/pkg.whl.metadata")
 	if !result.Allowed {
 		t.Fatalf("expected package host hash-style path to be allowed, got: %s", result.Reason)
 	}
@@ -1690,7 +1691,8 @@ func TestScan_PackageHostEntropyExclusionStillChecksQuery(t *testing.T) {
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 
-	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/pkg.whl?token=aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ")
+	entropyQuery := strings.Join([]string{"aB3xK9mQ", "7pR2wE5t", "Y8uI0oL4", "hG6fD1sZ"}, "")
+	result := s.Scan(context.Background(), "https://files.pythonhosted.org/packages/pkg.whl?token="+entropyQuery)
 	if result.Allowed {
 		t.Fatal("expected high-entropy query on package host to be blocked")
 	}

@@ -1512,24 +1512,28 @@ func TestValidate_SubdomainEntropyExclusions_Valid(t *testing.T) {
 }
 
 func TestApplyDefaults_SubdomainEntropyExclusions(t *testing.T) {
-	cfg := &Config{}
-	cfg.ApplyDefaults()
-	want := Defaults().FetchProxy.Monitoring.SubdomainEntropyExclusions
-	if len(cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions) != len(want) {
-		t.Fatalf("SubdomainEntropyExclusions len = %d, want %d", len(cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions), len(want))
-	}
-	for i, entry := range want {
-		if cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[i] != entry {
-			t.Fatalf("SubdomainEntropyExclusions[%d] = %q, want %q", i, cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[i], entry)
+	t.Run("applies defaults when unset", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.ApplyDefaults()
+		want := Defaults().FetchProxy.Monitoring.SubdomainEntropyExclusions
+		if len(cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions) != len(want) {
+			t.Fatalf("SubdomainEntropyExclusions len = %d, want %d", len(cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions), len(want))
 		}
-	}
+		for i, entry := range want {
+			if cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[i] != entry {
+				t.Fatalf("SubdomainEntropyExclusions[%d] = %q, want %q", i, cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions[i], entry)
+			}
+		}
+	})
 
-	cfg = &Config{}
-	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{}
-	cfg.ApplyDefaults()
-	if len(cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions) != 0 {
-		t.Fatalf("explicit empty SubdomainEntropyExclusions should be preserved, got %v", cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions)
-	}
+	t.Run("preserves explicit empty slice", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{}
+		cfg.ApplyDefaults()
+		if len(cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions) != 0 {
+			t.Fatalf("explicit empty SubdomainEntropyExclusions should be preserved, got %v", cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions)
+		}
+	})
 }
 
 func TestValidate_SubdomainEntropyExclusions_Empty(t *testing.T) {

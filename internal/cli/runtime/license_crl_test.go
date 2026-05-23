@@ -154,14 +154,20 @@ func TestCheckLicenseCRLAllowsValidUnrevokedLicense(t *testing.T) {
 }
 
 func TestRuntimeLicensePublicKeyErrors(t *testing.T) {
-	for _, cfg := range []*config.Config{
-		{},
-		{LicensePublicKey: "not-hex"},
-		{LicensePublicKey: hex.EncodeToString([]byte("short"))},
-	} {
-		if _, err := runtimeLicensePublicKey(cfg); err == nil {
-			t.Fatalf("runtimeLicensePublicKey(%+v) expected error", cfg)
-		}
+	tests := []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{name: "empty-config", cfg: &config.Config{}},
+		{name: "not-hex", cfg: &config.Config{LicensePublicKey: "not-hex"}},
+		{name: "short-hex", cfg: &config.Config{LicensePublicKey: hex.EncodeToString([]byte("short"))}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := runtimeLicensePublicKey(tt.cfg); err == nil {
+				t.Fatalf("runtimeLicensePublicKey(%+v) expected error", tt.cfg)
+			}
+		})
 	}
 	if auditLicenseCRLContext().Method() != "LICENSE_CRL" {
 		t.Fatal("unexpected audit context")

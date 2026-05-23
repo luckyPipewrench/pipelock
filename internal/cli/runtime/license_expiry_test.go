@@ -45,26 +45,32 @@ func TestEmitLicenseExpiryWarningIdempotent(t *testing.T) {
 }
 
 func TestEmitLicenseExpiryWarningNoops(t *testing.T) {
-	for _, cfg := range []*config.Config{
-		nil,
-		func() *config.Config { c := config.Defaults(); return c }(),
-		func() *config.Config {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{name: "nil-config", cfg: nil},
+		{name: "no-license-id", cfg: func() *config.Config { c := config.Defaults(); return c }()},
+		{name: "no-expiry", cfg: func() *config.Config {
 			c := config.Defaults()
 			c.LicenseID = "lic_no_expiry"
 			return c
-		}(),
-		func() *config.Config {
+		}()},
+		{name: "far-expiry", cfg: func() *config.Config {
 			c := config.Defaults()
 			c.LicenseID = "lic_far"
 			c.LicenseExpiresAt = time.Now().Add(31 * 24 * time.Hour).Unix()
 			return c
-		}(),
-	} {
-		var stderr bytes.Buffer
-		emitLicenseExpiryWarning(cfg, audit.NewNop(), nil, &stderr)
-		if stderr.String() != "" {
-			t.Fatalf("unexpected warning for cfg %+v: %q", cfg, stderr.String())
-		}
+		}()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			emitLicenseExpiryWarning(tt.cfg, audit.NewNop(), nil, &stderr)
+			if stderr.String() != "" {
+				t.Fatalf("unexpected warning: %q", stderr.String())
+			}
+		})
 	}
 }
 

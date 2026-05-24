@@ -407,9 +407,9 @@ internal/conductor/auditbatcher
 
 Responsibilities:
 
-- Accept sanitized audit/event/receipt references from runtime paths.
+- Observe recorder v2 entries after they are durably flushed.
 - Persist batches to a local durable queue.
-- Sign each batch with the follower audit key.
+- Sign each batch with the follower audit key at recorder checkpoint boundaries.
 - Send over follower mTLS transport.
 - Retry with bounded backoff.
 - Track drop reasons explicitly.
@@ -571,6 +571,8 @@ conductor:
   client_key_path: "/etc/pipelock/conductor/client.key"
   bundle_cache_dir: "/var/lib/pipelock/conductor/bundles"
   durable_audit_queue_dir: "/var/lib/pipelock/conductor/audit-queue"
+  audit_signing_key_id: "instance-audit-1"
+  recorder_key_id: "instance-recorder-1"
   poll_interval: "30s"
   honor_remote_kill_switch: false
   created_skew_seconds: 60
@@ -579,7 +581,17 @@ conductor:
   stale_policy:
     grace_multiplier: 1
     after_grace: strict_deny_all
+
+flight_recorder:
+  enabled: true
+  dir: "/var/lib/pipelock/recorder"
+  sign_checkpoints: true
+  signing_key_path: "/etc/pipelock/recorder.key"
 ```
+
+When `conductor.enabled` is true, the flight recorder must be enabled with
+signed checkpoints and a configured signing key. `audit_signing_key_id` and
+`recorder_key_id` default to `instance_id` when omitted.
 
 Config validation must reject:
 

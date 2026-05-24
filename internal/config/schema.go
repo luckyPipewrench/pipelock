@@ -331,6 +331,8 @@ type Conductor struct {
 	ClientKeyPath          string               `yaml:"client_key_path"`
 	BundleCacheDir         string               `yaml:"bundle_cache_dir"`
 	DurableAuditQueueDir   string               `yaml:"durable_audit_queue_dir"`
+	AuditSigningKeyID      string               `yaml:"audit_signing_key_id"`
+	RecorderKeyID          string               `yaml:"recorder_key_id"`
 	PollInterval           string               `yaml:"poll_interval"`
 	HonorRemoteKillSwitch  bool                 `yaml:"honor_remote_kill_switch"`
 	EmergencyStream        *bool                `yaml:"emergency_stream"`

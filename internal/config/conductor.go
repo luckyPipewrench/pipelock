@@ -49,14 +49,28 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 	if err := validateConductorURL(cfg.ConductorURL); err != nil {
 		return err
 	}
-	for field, value := range map[string]string{
-		"conductor.org_id":      cfg.OrgID,
-		"conductor.fleet_id":    cfg.FleetID,
-		"conductor.instance_id": cfg.InstanceID,
+	for _, id := range []struct {
+		field string
+		value string
+	}{
+		{field: "conductor.org_id", value: cfg.OrgID},
+		{field: "conductor.fleet_id", value: cfg.FleetID},
+		{field: "conductor.instance_id", value: cfg.InstanceID},
+		{field: "conductor.audit_signing_key_id", value: cfg.AuditSigningKeyID},
+		{field: "conductor.recorder_key_id", value: cfg.RecorderKeyID},
 	} {
-		if err := validateConductorIdentifier(field, value); err != nil {
+		if err := validateConductorIdentifier(id.field, id.value); err != nil {
 			return err
 		}
+	}
+	if !c.FlightRecorder.Enabled {
+		return fmt.Errorf("flight_recorder.enabled must be true when conductor.enabled is true")
+	}
+	if !c.FlightRecorder.SignCheckpoints {
+		return fmt.Errorf("flight_recorder.sign_checkpoints must be true when conductor.enabled is true")
+	}
+	if strings.TrimSpace(c.FlightRecorder.SigningKeyPath) == "" {
+		return fmt.Errorf("flight_recorder.signing_key_path required when conductor.enabled is true")
 	}
 	for field, value := range map[string]string{
 		"conductor.trust_roster_path":       cfg.TrustRosterPath,

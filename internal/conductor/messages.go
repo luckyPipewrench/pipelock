@@ -1183,7 +1183,7 @@ func validateWindow(notBefore, expiresAt time.Time) error {
 }
 
 func validateSeqRange(start, end uint64) error {
-	if start == 0 || end == 0 || end < start {
+	if end < start {
 		return fmt.Errorf("%w: start=%d end=%d", ErrInvalidSequenceRange, start, end)
 	}
 	return nil

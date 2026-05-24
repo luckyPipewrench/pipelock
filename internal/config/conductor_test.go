@@ -54,9 +54,47 @@ func TestValidateConductor_DisabledStillValidatesLocalSafetyKnobs(t *testing.T) 
 func TestValidateConductor_Enabled(t *testing.T) {
 	cfg := Defaults()
 	cfg.Conductor = validConductorConfig(t)
+	configureConductorRecorder(t, cfg)
 
 	if _, err := cfg.ValidateWithWarnings(); err != nil {
 		t.Fatalf("ValidateWithWarnings() error = %v", err)
+	}
+}
+
+func TestValidateConductor_RequiresSignedFlightRecorder(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name:   "disabled",
+			mutate: func(cfg *Config) { cfg.FlightRecorder.Enabled = false },
+			want:   "flight_recorder.enabled must be true",
+		},
+		{
+			name:   "unsigned_checkpoints",
+			mutate: func(cfg *Config) { cfg.FlightRecorder.SignCheckpoints = false },
+			want:   "flight_recorder.sign_checkpoints must be true",
+		},
+		{
+			name:   "missing_signing_key",
+			mutate: func(cfg *Config) { cfg.FlightRecorder.SigningKeyPath = "" },
+			want:   "flight_recorder.signing_key_path required",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Conductor = validConductorConfig(t)
+			configureConductorRecorder(t, cfg)
+			tc.mutate(cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -137,6 +175,7 @@ func TestValidateConductor_RejectsInvalidEnabledConfig(t *testing.T) {
 			conductor := validConductorConfig(t)
 			tc.mutate(&conductor)
 			cfg.Conductor = conductor
+			configureConductorRecorder(t, cfg)
 
 			err := cfg.Validate()
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -189,6 +228,7 @@ func TestValidateConductor_RejectsWorldWritableParents(t *testing.T) {
 			conductor := validConductorConfig(t)
 			tc.mutate(&conductor)
 			cfg.Conductor = conductor
+			configureConductorRecorder(t, cfg)
 
 			err := cfg.Validate()
 			if err == nil || !strings.Contains(err.Error(), "world-writable parent") {
@@ -219,6 +259,7 @@ func TestValidateConductor_RejectsSymlinkResolvedWorldWritableParent(t *testing.
 	}
 	conductor.BundleCacheDir = filepath.Join(link, "bundles")
 	cfg.Conductor = conductor
+	configureConductorRecorder(t, cfg)
 
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "world-writable parent") {
@@ -231,6 +272,7 @@ func TestValidateConductor_StalePolicyOverrideWarns(t *testing.T) {
 	conductor := validConductorConfig(t)
 	conductor.StalePolicy.AfterGrace = ConductorStaleContinueLastKnownGood
 	cfg.Conductor = conductor
+	configureConductorRecorder(t, cfg)
 
 	warnings, err := cfg.ValidateWithWarnings()
 	if err != nil {
@@ -326,6 +368,15 @@ func validConductorConfig(t *testing.T) Conductor {
 		MaxCapabilityThreshold: 7,
 		StalePolicy:            ConductorStalePolicy{GraceMultiplier: 1, AfterGrace: ConductorStaleStrictDenyAll},
 	}
+}
+
+func configureConductorRecorder(t *testing.T, cfg *Config) {
+	t.Helper()
+	root := privateTempDir(t)
+	cfg.FlightRecorder.Enabled = true
+	cfg.FlightRecorder.Dir = filepath.Join(root, "recorder")
+	cfg.FlightRecorder.SignCheckpoints = true
+	cfg.FlightRecorder.SigningKeyPath = filepath.Join(root, "recorder.key")
 }
 
 func privateTempDir(t *testing.T) string {

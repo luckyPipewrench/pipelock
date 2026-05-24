@@ -35,6 +35,12 @@ func normalizeLearn(l *Learn) {
 }
 
 func normalizeConductor(c *Conductor) {
+	if c.AuditSigningKeyID == "" && c.InstanceID != "" {
+		c.AuditSigningKeyID = c.InstanceID
+	}
+	if c.RecorderKeyID == "" && c.InstanceID != "" {
+		c.RecorderKeyID = c.InstanceID
+	}
 	if c.PollInterval == "" {
 		c.PollInterval = "30s"
 	}

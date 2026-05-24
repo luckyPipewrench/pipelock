@@ -1,0 +1,412 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package auditbatcher
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
+)
+
+const (
+	defaultProducerBuffer = 4096
+
+	producerDropChannelFull       = "producer_channel_full"
+	producerDropEnqueueError      = "enqueue_error"
+	producerDropInvalidCheckpoint = "invalid_checkpoint"
+	producerDropPayloadTooLarge   = "payload_too_large"
+	producerDropQueueFull         = "queue_full"
+	producerDropSequenceGap       = "producer_sequence_gap"
+	producerDropShutdownPartial   = "shutdown_without_checkpoint"
+)
+
+// Producer observes locally written recorder entries and turns checkpoint
+// spans into signed Conductor audit batches. It is intentionally outside
+// emit.Emitter: enqueue failures need durable drop accounting rather than
+// fire-and-forget sink behavior.
+type Producer struct {
+	queue               *Queue
+	metrics             MetricsSink
+	orgID               string
+	fleetID             string
+	instanceID          string
+	auditSignerKeyID    string
+	recorderKeyID       string
+	followerPubHex      string
+	auditSigner         ed25519.PrivateKey
+	now                 func() time.Time
+	entries             chan recorder.Entry
+	done                chan struct{}
+	closeOnce           sync.Once
+	sendMu              sync.RWMutex
+	closed              atomic.Bool
+	dropMu              sync.Mutex
+	dropped             map[string]uint64
+	previousSegmentTail string
+}
+
+type ProducerConfig struct {
+	Queue            *Queue
+	Metrics          MetricsSink
+	OrgID            string
+	FleetID          string
+	InstanceID       string
+	AuditSignerKeyID string
+	RecorderKeyID    string
+	AuditSigner      ed25519.PrivateKey
+	BufferSize       int
+	Now              func() time.Time
+}
+
+func NewProducer(cfg ProducerConfig) (*Producer, error) {
+	if cfg.Queue == nil {
+		return nil, errors.New("auditbatcher: producer queue required")
+	}
+	if len(cfg.AuditSigner) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("auditbatcher: producer private key length=%d want=%d", len(cfg.AuditSigner), ed25519.PrivateKeySize)
+	}
+	for field, value := range map[string]string{
+		"org_id":              cfg.OrgID,
+		"fleet_id":            cfg.FleetID,
+		"instance_id":         cfg.InstanceID,
+		"audit_signer_key_id": cfg.AuditSignerKeyID,
+		"recorder_key_id":     cfg.RecorderKeyID,
+	} {
+		if err := validateProducerIdentifier(field, value); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.BufferSize <= 0 {
+		cfg.BufferSize = defaultProducerBuffer
+	}
+	if cfg.Now == nil {
+		cfg.Now = func() time.Time { return time.Now().UTC() }
+	}
+	pub, ok := cfg.AuditSigner.Public().(ed25519.PublicKey)
+	if !ok || len(pub) != ed25519.PublicKeySize {
+		return nil, errors.New("auditbatcher: producer public key unavailable")
+	}
+	p := &Producer{
+		queue:            cfg.Queue,
+		metrics:          cfg.Metrics,
+		orgID:            cfg.OrgID,
+		fleetID:          cfg.FleetID,
+		instanceID:       cfg.InstanceID,
+		auditSignerKeyID: cfg.AuditSignerKeyID,
+		recorderKeyID:    cfg.RecorderKeyID,
+		followerPubHex:   hex.EncodeToString(pub),
+		auditSigner:      append(ed25519.PrivateKey(nil), cfg.AuditSigner...),
+		now:              cfg.Now,
+		entries:          make(chan recorder.Entry, cfg.BufferSize),
+		done:             make(chan struct{}),
+		dropped:          map[string]uint64{},
+	}
+	go p.run()
+	return p, nil
+}
+
+// ObserveRecorderEntry accepts a post-flush recorder entry without blocking
+// enforcement. If the producer falls behind, the dropped entry is accounted in
+// the next successfully enqueued signed batch.
+func (p *Producer) ObserveRecorderEntry(entry recorder.Entry) {
+	if p == nil || p.closed.Load() {
+		return
+	}
+	p.sendMu.RLock()
+	defer p.sendMu.RUnlock()
+	if p.closed.Load() {
+		return
+	}
+	select {
+	case p.entries <- entry:
+	default:
+		p.addDropped(producerDropChannelFull, 1)
+		p.recordDropMetric(producerDropChannelFull)
+	}
+}
+
+func (p *Producer) Close() error {
+	if p == nil {
+		return nil
+	}
+	p.closeOnce.Do(func() {
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
+		p.closed.Store(true)
+		close(p.entries)
+		<-p.done
+	})
+	return nil
+}
+
+func (p *Producer) run() {
+	defer close(p.done)
+	var pending []recorder.Entry
+	for entry := range p.entries {
+		if entry.Version != recorder.EntryVersion {
+			p.addDropped(producerDropInvalidCheckpoint, 1)
+			p.recordDropMetric(producerDropInvalidCheckpoint)
+			continue
+		}
+		if len(pending) > 0 && entry.Sequence != pending[len(pending)-1].Sequence+1 {
+			p.addDropped(producerDropSequenceGap, uint64(len(pending)))
+			p.recordDropMetric(producerDropSequenceGap)
+			pending = nil
+		}
+		pending = append(pending, entry)
+		if entry.Type != "checkpoint" {
+			continue
+		}
+		if err := p.enqueueSegment(pending); err != nil {
+			p.recordDropMetric(errorDropReason(err))
+		}
+		pending = nil
+	}
+	if len(pending) > 0 {
+		p.addDropped(producerDropShutdownPartial, uint64(len(pending)))
+		p.recordDropMetric(producerDropShutdownPartial)
+	}
+}
+
+func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	checkpoint := entries[len(entries)-1]
+	if checkpoint.Type != "checkpoint" {
+		return nil
+	}
+	cp, err := checkpointDetail(checkpoint)
+	if err != nil {
+		p.addDropped(producerDropInvalidCheckpoint, uint64(len(entries)))
+		return fmt.Errorf("%s: %w", producerDropInvalidCheckpoint, err)
+	}
+	payload, err := marshalEntriesJSONL(entries)
+	if err != nil {
+		p.addDropped(producerDropEnqueueError, uint64(len(entries)))
+		return fmt.Errorf("%s: %w", producerDropEnqueueError, err)
+	}
+	if len(payload) > conductor.MaxAuditPayloadBytes {
+		p.addDropped(producerDropPayloadTooLarge, uint64(len(entries)))
+		p.previousSegmentTail = checkpoint.Hash
+		return fmt.Errorf("%s: payload=%d max=%d", producerDropPayloadTooLarge, len(payload), conductor.MaxAuditPayloadBytes)
+	}
+	envelope := p.envelope(entries, checkpoint, cp, payload)
+	signed, err := SignEnvelope(envelope, p.auditSignerKeyID, p.auditSigner)
+	if err != nil {
+		p.addDropped(producerDropEnqueueError, uint64(len(entries)))
+		return fmt.Errorf("%s: %w", producerDropEnqueueError, err)
+	}
+	if _, err := p.queue.Enqueue(Batch{Envelope: signed, Payload: payload}); err != nil {
+		reason := producerDropEnqueueError
+		if errors.Is(err, ErrQueueFull) {
+			reason = producerDropQueueFull
+		}
+		p.addDropped(reason, uint64(len(entries)))
+		return fmt.Errorf("%s: %w", reason, err)
+	}
+	p.clearDropped()
+	p.previousSegmentTail = checkpoint.Hash
+	p.recordQueue()
+	return nil
+}
+
+func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte) conductor.AuditBatchEnvelope {
+	sum := sha256.Sum256(payload)
+	return conductor.AuditBatchEnvelope{
+		SchemaVersion:      conductor.SchemaVersion,
+		BatchID:            p.nextBatchID(),
+		OrgID:              p.orgID,
+		FleetID:            p.fleetID,
+		InstanceID:         p.instanceID,
+		AuditSchemaVersion: recorder.EntryVersion,
+		EmittedAt:          p.now().UTC(),
+		SeqStart:           entries[0].Sequence,
+		SeqEnd:             checkpoint.Sequence,
+		EventCount:         uint64(len(entries)),
+		PayloadSHA256:      hex.EncodeToString(sum[:]),
+		PayloadBytes:       uint64(len(payload)),
+		Dropped:            p.droppedAccounting(),
+		Chain: conductor.EvidenceChain{
+			EntryVersion:           recorder.EntryVersion,
+			SegmentID:              segmentID(entries[0].SessionID, entries[0].Sequence, checkpoint.Sequence),
+			SeqStart:               entries[0].Sequence,
+			SeqEnd:                 checkpoint.Sequence,
+			PreviousSegmentTail:    p.previousSegmentTail,
+			SegmentHeadHash:        entries[0].Hash,
+			SegmentTailHash:        checkpoint.Hash,
+			CheckpointSeq:          checkpoint.Sequence,
+			CheckpointHash:         checkpoint.Hash,
+			CheckpointSignature:    ed25519SignatureString(cp.Signature),
+			CheckpointSignerKeyID:  p.recorderKeyID,
+			FollowerRecorderKeyID:  p.recorderKeyID,
+			FollowerRecorderPubHex: p.followerPubHex,
+		},
+	}
+}
+
+func (p *Producer) nextBatchID() string {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return fmt.Sprintf("audit-%020d", p.now().UTC().UnixNano())
+	}
+	return fmt.Sprintf("audit-%020d-%s", p.now().UTC().UnixNano(), hex.EncodeToString(random[:]))
+}
+
+func (p *Producer) addDropped(reason string, count uint64) {
+	if count == 0 {
+		return
+	}
+	reason = normalizeAccountingReason(reason)
+	p.dropMu.Lock()
+	defer p.dropMu.Unlock()
+	p.dropped[reason] += count
+}
+
+func (p *Producer) droppedAccounting() conductor.DroppedAccounting {
+	p.dropMu.Lock()
+	defer p.dropMu.Unlock()
+	if len(p.dropped) == 0 {
+		return conductor.DroppedAccounting{}
+	}
+	reasons := make([]string, 0, len(p.dropped))
+	for reason := range p.dropped {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	out := conductor.DroppedAccounting{Reasons: make([]conductor.DroppedReason, 0, len(reasons))}
+	for _, reason := range reasons {
+		count := p.dropped[reason]
+		out.Count += count
+		out.Reasons = append(out.Reasons, conductor.DroppedReason{Reason: reason, Count: count})
+	}
+	return out
+}
+
+func (p *Producer) clearDropped() {
+	p.dropMu.Lock()
+	defer p.dropMu.Unlock()
+	clear(p.dropped)
+}
+
+func (p *Producer) recordQueue() {
+	if p.metrics == nil {
+		return
+	}
+	stats, err := p.queue.Stats()
+	if err == nil {
+		p.metrics.RecordConductorAuditQueue(stats)
+	}
+}
+
+func (p *Producer) recordDropMetric(reason string) {
+	if p.metrics != nil {
+		p.metrics.RecordConductorAuditDelivery(deliveryOutcomeDrop, normalizeAccountingReason(reason))
+	}
+}
+
+func marshalEntriesJSONL(entries []recorder.Entry) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, entry := range entries {
+		if err := enc.Encode(entry); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func checkpointDetail(entry recorder.Entry) (recorder.CheckpointDetail, error) {
+	data, err := json.Marshal(entry.Detail)
+	if err != nil {
+		return recorder.CheckpointDetail{}, err
+	}
+	var detail recorder.CheckpointDetail
+	if err := json.Unmarshal(data, &detail); err != nil {
+		return recorder.CheckpointDetail{}, err
+	}
+	if strings.TrimSpace(detail.Signature) == "" {
+		return recorder.CheckpointDetail{}, errors.New("checkpoint signature required")
+	}
+	return detail, nil
+}
+
+func ed25519SignatureString(hexSig string) string {
+	if strings.HasPrefix(hexSig, conductor.SignaturePrefixEd25519) {
+		return hexSig
+	}
+	return conductor.SignaturePrefixEd25519 + hexSig
+}
+
+func segmentID(sessionID string, start, end uint64) string {
+	if sessionID == "" {
+		sessionID = "recorder"
+	}
+	return fmt.Sprintf("segment-%s-%020d-%020d", safeSegmentPart(sessionID), start, end)
+}
+
+func safeSegmentPart(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r == '_' || r == '-' || r == '.' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "recorder"
+	}
+	return b.String()
+}
+
+func validateProducerIdentifier(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("auditbatcher: producer %s required", field)
+	}
+	if len(value) > conductor.MaxIDBytes {
+		return fmt.Errorf("auditbatcher: producer %s length=%d max=%d", field, len(value), conductor.MaxIDBytes)
+	}
+	for i, r := range value {
+		if r != '_' && r != '-' && r != '.' && (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
+			return fmt.Errorf("auditbatcher: producer %s contains invalid character %q", field, r)
+		}
+		if i == 0 && (r == '_' || r == '-' || r == '.') {
+			return fmt.Errorf("auditbatcher: producer %s must start with an ASCII letter or digit", field)
+		}
+	}
+	return nil
+}
+
+func errorDropReason(err error) string {
+	if err == nil {
+		return producerDropEnqueueError
+	}
+	text := err.Error()
+	for _, reason := range []string{
+		producerDropChannelFull,
+		producerDropEnqueueError,
+		producerDropInvalidCheckpoint,
+		producerDropPayloadTooLarge,
+		producerDropQueueFull,
+		producerDropSequenceGap,
+		producerDropShutdownPartial,
+	} {
+		if strings.Contains(text, reason) {
+			return reason
+		}
+	}
+	return producerDropEnqueueError
+}

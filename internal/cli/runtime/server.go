@@ -88,20 +88,21 @@ type Server struct {
 	cfg          *config.Config
 	bundleResult *rules.LoadResult
 
-	sentry          *plsentry.Client
-	logger          *audit.Logger
-	emitter         *emit.Emitter
-	scanner         *scanner.Scanner
-	metrics         *metrics.Metrics
-	killswitch      *killswitch.Controller
-	ksAPI           *killswitch.APIHandler
-	proxy           *proxy.Proxy
-	receiptEmitter  *receipt.Emitter
-	envelopeEmitter *envelope.Emitter
-	captureWriter   *capture.Writer
-	recorder        *recorder.Recorder
-	conductorAudit  *auditbatcher.Transport
-	approver        *hitl.Approver
+	sentry            *plsentry.Client
+	logger            *audit.Logger
+	emitter           *emit.Emitter
+	scanner           *scanner.Scanner
+	metrics           *metrics.Metrics
+	killswitch        *killswitch.Controller
+	ksAPI             *killswitch.APIHandler
+	proxy             *proxy.Proxy
+	receiptEmitter    *receipt.Emitter
+	envelopeEmitter   *envelope.Emitter
+	captureWriter     *capture.Writer
+	recorder          *recorder.Recorder
+	conductorAudit    *auditbatcher.Transport
+	conductorProducer *auditbatcher.Producer
+	approver          *hitl.Approver
 
 	// lastReloadHash / lastReloadAt dedup fsnotify + SIGHUP stacking
 	// inside Reload. Two stacked Changes() events with the same hash
@@ -282,7 +283,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.scanner = sc
 	m := metrics.New()
 	s.metrics = m
-	_, conductorAudit, conductorErr := buildConductorAuditTransport(cfg, m)
+	conductorQueue, conductorAudit, conductorErr := buildConductorAuditTransport(cfg, m)
 	if conductorErr != nil {
 		s.cleanup()
 		return nil, conductorErr
@@ -354,6 +355,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// separate code path (capture.Writer above). This path wires the
 	// YAML-config-driven recorder into the proxy so enforcement decisions
 	// are hash-chained to disk.
+	var recPrivKey ed25519.PrivateKey
 	if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir != "" {
 		recCfg := recorder.Config{
 			Enabled:            cfg.FlightRecorder.Enabled,
@@ -373,7 +375,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			redactFn = sc.ScanTextForDLP
 		}
 
-		var recPrivKey ed25519.PrivateKey
 		if cfg.FlightRecorder.SigningKeyPath != "" {
 			k, kErr := signing.LoadPrivateKeyFile(cfg.FlightRecorder.SigningKeyPath)
 			if kErr != nil {
@@ -416,6 +417,29 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 
 		_, _ = fmt.Fprintf(opts.Stderr, "  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
+	}
+	if conductorQueue != nil {
+		if s.recorder == nil {
+			s.cleanup()
+			return nil, errors.New("conductor audit producer requires flight recorder")
+		}
+		producer, producerErr := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
+			Queue:            conductorQueue,
+			Metrics:          m,
+			OrgID:            cfg.Conductor.OrgID,
+			FleetID:          cfg.Conductor.FleetID,
+			InstanceID:       cfg.Conductor.InstanceID,
+			AuditSignerKeyID: cfg.Conductor.AuditSigningKeyID,
+			RecorderKeyID:    cfg.Conductor.RecorderKeyID,
+			AuditSigner:      recPrivKey,
+		})
+		if producerErr != nil {
+			s.cleanup()
+			return nil, fmt.Errorf("creating conductor audit producer: %w", producerErr)
+		}
+		s.conductorProducer = producer
+		s.recorder.SetObserver(producer)
+		_, _ = fmt.Fprintf(opts.Stderr, "  Conductor: audit producer enabled\n")
 	}
 
 	if cfg.MediationEnvelope.Enabled {

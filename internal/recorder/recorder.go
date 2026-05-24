@@ -83,12 +83,20 @@ func safeEvidenceFileMode(mode os.FileMode) bool {
 // RedactFunc is the signature for DLP redaction. Matches scanner.ScanTextForDLP.
 type RedactFunc func(ctx context.Context, text string) scanner.TextDLPResult
 
+// EntryObserver receives entries after they are durably flushed to the
+// recorder. Observer failures must be handled internally; recorder writes
+// cannot depend on optional downstream transports.
+type EntryObserver interface {
+	ObserveRecorderEntry(Entry)
+}
+
 // Recorder writes hash-chained evidence entries to JSONL files.
 type Recorder struct {
 	cfg       Config
 	redactFn  RedactFunc
 	privKey   ed25519.PrivateKey
 	escrowPub *[x25519KeySize]byte
+	observer  EntryObserver
 
 	mu             sync.Mutex
 	seq            uint64
@@ -176,6 +184,18 @@ func (r *Recorder) Dir() string {
 		return ""
 	}
 	return r.cfg.Dir
+}
+
+// SetObserver installs an optional post-write observer for newly recorded
+// entries. It is intended for durable audit fan-out that must see the same
+// recorder v2 entries written locally.
+func (r *Recorder) SetObserver(observer EntryObserver) {
+	if r == nil || r.nop {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.observer = observer
 }
 
 // Record writes an entry to the chain. Thread-safe. The caller provides the
@@ -708,7 +728,21 @@ func (r *Recorder) writeEntry(e Entry) error {
 	if _, err := r.writer.Write([]byte("\n")); err != nil {
 		return err
 	}
-	return r.writer.Flush()
+	if err := r.writer.Flush(); err != nil {
+		return err
+	}
+	r.notifyObserver(e)
+	return nil
+}
+
+func (r *Recorder) notifyObserver(e Entry) {
+	if r.observer == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	r.observer.ObserveRecorderEntry(e)
 }
 
 // closeFile flushes and closes the current file.

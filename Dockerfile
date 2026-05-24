@@ -13,7 +13,7 @@ ARG LICENSE_PUBLIC_KEY=""
 ARG RULES_KEYRING_HEX=""
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -tags enterprise \
     -ldflags "-s -w \
       -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} \
       -X github.com/luckyPipewrench/pipelock/internal/cliutil.BuildDate=${BUILD_DATE} \

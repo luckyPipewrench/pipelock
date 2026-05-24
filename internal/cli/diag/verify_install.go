@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -125,14 +126,14 @@ func VerifyInstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify-install",
 		Short: "Verify pipelock is protecting this agent",
-		Long: `Run 14 deterministic checks to verify pipelock's scanning pipeline,
+		Long: `Run 15 deterministic checks to verify pipelock's scanning pipeline,
 local enforcement surfaces, and network containment. Produces a verifiable
 report with optional Ed25519 signature.
 
-Scanning checks (11): config validation, proxy health, DLP blocking, CONNECT
-blocking, MCP input scanning, injection detection, tool policy enforcement,
-Browser Shield rewrite, file_sentry detection, MCP binary integrity smoke,
-and MCP tool provenance smoke.
+Scanning checks (12): config validation, proxy health, DLP blocking, CONNECT
+blocking, WebSocket blocklist blocking, MCP input scanning, injection
+detection, tool policy enforcement, Browser Shield rewrite, file_sentry
+detection, MCP binary integrity smoke, and MCP tool provenance smoke.
 
 Containment checks (3): attempt direct HTTP (1.1.1.1:80), DNS (8.8.8.8:53),
 and HTTPS (1.1.1.1:443) egress bypassing the proxy. Only meaningful inside a
@@ -180,6 +181,7 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 	// When using defaults, enable full protection for out-of-the-box verification.
 	if configFile == "" {
 		cfg.ForwardProxy.Enabled = true
+		cfg.WebSocketProxy.Enabled = true
 		cfg.MCPToolPolicy = config.MCPToolPolicy{
 			Enabled: true,
 			Action:  config.ActionBlock,
@@ -300,11 +302,12 @@ func runVerifyInstall(cmd *cobra.Command, configFile string, jsonOut, noColor bo
 // BuildVerifyChecks returns the standard set of verification checks.
 func BuildVerifyChecks() []VerifyCheck {
 	return []VerifyCheck{
-		// Scanning and local enforcement proof surfaces (11).
+		// Scanning and local enforcement proof surfaces (12).
 		{Name: "config_valid", Category: verifyCatScanning, Run: checkConfigValid},
 		{Name: "proxy_health", Category: verifyCatScanning, Run: checkProxyHealth},
 		{Name: "fetch_dlp", Category: verifyCatScanning, Run: checkFetchDLP},
 		{Name: "forward_blocked", Category: verifyCatScanning, Run: checkVerifyForwardBlocked},
+		{Name: "scanning_websocket", Category: verifyCatScanning, Run: checkScanningWebSocket},
 		{Name: "scanning_dlp", Category: verifyCatScanning, Run: checkScanningDLP},
 		{Name: "scanning_injection", Category: verifyCatScanning, Run: checkScanningInjection},
 		{Name: "scanning_policy", Category: verifyCatScanning, Run: checkScanningPolicy},
@@ -379,7 +382,7 @@ func EnableDefaultVerifyProofs(cfg *config.Config) (func(), error) {
 }
 
 // ---------------------------------------------------------------------------
-// Scanning checks (1-11)
+// Scanning checks (1-12)
 // ---------------------------------------------------------------------------
 
 func checkConfigValid(env *VerifyEnv) VerifyResult {
@@ -456,6 +459,44 @@ func checkVerifyForwardBlocked(env *VerifyEnv) VerifyResult {
 		return VerifyResult{Status: verifyStatusPass, Detail: "Blocklisted CONNECT rejected"}
 	}
 	return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("unexpected error: %v", err)}
+}
+
+// checkScanningWebSocket proves transport-parity for WebSocket: the scanner
+// pipeline runs against the target URL before the handshake completes, so a
+// blocklisted destination must produce 403 with no upgrade attempt.
+func checkScanningWebSocket(env *VerifyEnv) VerifyResult {
+	if !env.Cfg.WebSocketProxy.Enabled {
+		return VerifyResult{Status: verifyStatusFail, Detail: "websocket_proxy is disabled in config"}
+	}
+	targetURL := "ws://malware.example.com/"
+	wsURL := env.ProxyURL + "/ws?url=" + url.QueryEscape(targetURL)
+	resp, err := verifyGet(wsURL)
+	if err != nil {
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("ws request failed: %v", err)}
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		return VerifyResult{Status: verifyStatusFail, Detail: fmt.Sprintf("expected 403 from blocklist, got %d", resp.StatusCode)}
+	}
+	reason := resp.Header.Get(blockreason.HeaderReason)
+	layer := resp.Header.Get(blockreason.HeaderLayer)
+	if reason != string(blockreason.DomainBlocklist) || layer != scanner.ScannerBlocklist {
+		return VerifyResult{
+			Status: verifyStatusFail,
+			Detail: fmt.Sprintf(
+				"expected WebSocket blocklist headers %s=%s and %s=%s, got %s=%q and %s=%q",
+				blockreason.HeaderReason, blockreason.DomainBlocklist,
+				blockreason.HeaderLayer, scanner.ScannerBlocklist,
+				blockreason.HeaderReason, reason,
+				blockreason.HeaderLayer, layer,
+			),
+		}
+	}
+	return VerifyResult{
+		Status:   verifyStatusPass,
+		Detail:   "WebSocket upgrade blocked by domain blocklist",
+		Evidence: map[string]string{"reason": reason, "scanner": layer, "transport": "ws"},
+	}
 }
 
 func checkScanningDLP(env *VerifyEnv) VerifyResult {
@@ -720,7 +761,7 @@ func checkMCPToolProvenance(env *VerifyEnv) VerifyResult {
 }
 
 // ---------------------------------------------------------------------------
-// Containment checks (12-14)
+// Containment checks (13-15)
 // ---------------------------------------------------------------------------
 
 func checkNoDirectHTTP(env *VerifyEnv) VerifyResult {

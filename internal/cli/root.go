@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	clienvelope "github.com/luckyPipewrench/pipelock/internal/cli/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/cli/fleet"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
 	"github.com/luckyPipewrench/pipelock/internal/cli/learn"
@@ -85,6 +86,8 @@ Quick start:
 		contain.Cmd(),
 		// Mediation envelope trust management
 		clienvelope.Cmd(),
+		// Fleet operations
+		fleet.SinkCmd(),
 		// Diagnostics
 		diag.DoctorCmd(),
 		diag.DiagnoseCmd(),

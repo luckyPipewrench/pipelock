@@ -83,10 +83,15 @@ type Queue struct {
 }
 
 type diskRecord struct {
-	Version    int                          `json:"version"`
-	EnqueuedAt time.Time                    `json:"enqueued_at"`
-	Envelope   conductor.AuditBatchEnvelope `json:"envelope"`
-	Payload    []byte                       `json:"payload"`
+	Version       int                          `json:"version"`
+	EnqueuedAt    time.Time                    `json:"enqueued_at"`
+	Envelope      conductor.AuditBatchEnvelope `json:"envelope"`
+	Payload       []byte                       `json:"payload"`
+	RetryCount    uint64                       `json:"retry_count,omitempty"`
+	LastAttemptAt *time.Time                   `json:"last_attempt_at,omitempty"`
+	LastError     string                       `json:"last_error,omitempty"`
+	DroppedAt     *time.Time                   `json:"dropped_at,omitempty"`
+	DroppedReason string                       `json:"dropped_reason,omitempty"`
 }
 
 func Open(cfg Config) (*Queue, error) {
@@ -162,7 +167,7 @@ func (q *Queue) Enqueue(batch Batch) (string, error) {
 		return "", fmt.Errorf("auditbatcher: marshal record: %w", err)
 	}
 	path := filepath.Join(q.pendingDir, id)
-	if err := durableWrite(path, data, fileMode); err != nil {
+	if err := durableWrite(path, data); err != nil {
 		return "", err
 	}
 	return id, nil
@@ -240,6 +245,61 @@ func (q *Queue) Release(id string) error {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	return q.releaseLocked(id)
+}
+
+// ReleaseWithRetry returns an inflight record to pending and durably annotates
+// the retry count/reason before the rename. If the process crashes after the
+// annotation but before the rename, Open's inflight recovery preserves the
+// updated accounting when it moves the record back to pending.
+func (q *Queue) ReleaseWithRetry(id, reason string) error {
+	if q == nil {
+		return errors.New("auditbatcher: nil queue")
+	}
+	if err := validateRecordID(id); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := q.updateInflightRecordLocked(id, func(record *diskRecord) {
+		now := q.now().UTC()
+		record.RetryCount++
+		record.LastAttemptAt = &now
+		record.LastError = normalizeAccountingReason(reason)
+	}); err != nil {
+		return err
+	}
+	return q.releaseLocked(id)
+}
+
+// Drop moves an inflight record to the dead-letter directory and durably stamps
+// the terminal drop reason first. Dead records remain inspectable by operators.
+func (q *Queue) Drop(id, reason string) error {
+	if q == nil {
+		return errors.New("auditbatcher: nil queue")
+	}
+	if err := validateRecordID(id); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := q.updateInflightRecordLocked(id, func(record *diskRecord) {
+		now := q.now().UTC()
+		record.DroppedAt = &now
+		record.DroppedReason = normalizeAccountingReason(reason)
+		record.LastError = record.DroppedReason
+	}); err != nil {
+		return err
+	}
+	src := filepath.Join(q.inflightDir, id)
+	dst, err := uniqueDeadPath(q.deadDir, id)
+	if err != nil {
+		return err
+	}
+	return moveToDead(src, dst)
+}
+
+func (q *Queue) releaseLocked(id string) error {
 	src := filepath.Join(q.inflightDir, id)
 	dst := filepath.Join(q.pendingDir, id)
 	if _, err := os.Stat(dst); err == nil {
@@ -478,6 +538,62 @@ func uint64ToInt64(value uint64) (int64, error) {
 	return converted, nil
 }
 
+func (q *Queue) updateInflightRecordLocked(id string, mutate func(*diskRecord)) error {
+	path := filepath.Join(q.inflightDir, id)
+	record, err := readRecord(path, q.maxPayloadBytes)
+	if err != nil {
+		return fmt.Errorf("auditbatcher: annotate inflight %s: %w", id, err)
+	}
+	mutate(&record)
+	data, err := json.Marshal(record)
+	if err != nil {
+		return fmt.Errorf("auditbatcher: marshal annotated record %s: %w", id, err)
+	}
+	if err := durableWrite(path, data); err != nil {
+		return fmt.Errorf("auditbatcher: write annotated record %s: %w", id, err)
+	}
+	return nil
+}
+
+func normalizeAccountingReason(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	if reason == "" {
+		return "unspecified"
+	}
+	var b strings.Builder
+	b.Grow(len(reason))
+	lastUnderscore := false
+	for _, r := range reason {
+		ok := r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
+		if ok {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if (r == '_' || r == '-' || r == '.') && b.Len() > 0 {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore && b.Len() > 0 {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	normalized := strings.Trim(b.String(), "_-.")
+	if normalized == "" {
+		return "unspecified"
+	}
+	if len(normalized) > conductor.MaxDropReasonBytes {
+		normalized = normalized[:conductor.MaxDropReasonBytes]
+		normalized = strings.TrimRight(normalized, "_-.")
+	}
+	if normalized == "" {
+		return "unspecified"
+	}
+	return normalized
+}
+
 func listRecordFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Clean(dir))
 	if err != nil {
@@ -602,7 +718,7 @@ func ensurePathContained(root, path string) error {
 	return nil
 }
 
-func durableWrite(path string, data []byte, perm os.FileMode) error {
+func durableWrite(path string, data []byte) error {
 	path = filepath.Clean(path)
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
@@ -620,7 +736,7 @@ func durableWrite(path string, data []byte, perm os.FileMode) error {
 		_ = tmp.Close()
 		return fmt.Errorf("auditbatcher: write temp: %w", err)
 	}
-	if err := tmp.Chmod(perm); err != nil {
+	if err := tmp.Chmod(fileMode); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("auditbatcher: chmod temp: %w", err)
 	}

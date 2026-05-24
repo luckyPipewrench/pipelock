@@ -60,6 +60,7 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 	}
 	for field, value := range map[string]string{
 		"conductor.trust_roster_path":       cfg.TrustRosterPath,
+		"conductor.server_ca_file":          cfg.ServerCAFile,
 		"conductor.client_cert_path":        cfg.ClientCertPath,
 		"conductor.client_key_path":         cfg.ClientKeyPath,
 		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
@@ -72,6 +73,16 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 	for field, value := range map[string]string{
 		"conductor.bundle_cache_dir":        cfg.BundleCacheDir,
 		"conductor.durable_audit_queue_dir": cfg.DurableAuditQueueDir,
+	} {
+		if err := validateConductorPrivateParent(field, value); err != nil {
+			return err
+		}
+	}
+	for field, value := range map[string]string{
+		"conductor.trust_roster_path": cfg.TrustRosterPath,
+		"conductor.server_ca_file":    cfg.ServerCAFile,
+		"conductor.client_cert_path":  cfg.ClientCertPath,
+		"conductor.client_key_path":   cfg.ClientKeyPath,
 	} {
 		if err := validateConductorPrivateParent(field, value); err != nil {
 			return err

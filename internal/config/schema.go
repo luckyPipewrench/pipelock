@@ -319,6 +319,7 @@ type Conductor struct {
 	FleetID                string               `yaml:"fleet_id"`
 	InstanceID             string               `yaml:"instance_id"`
 	TrustRosterPath        string               `yaml:"trust_roster_path"`
+	ServerCAFile           string               `yaml:"server_ca_file"`
 	ClientCertPath         string               `yaml:"client_cert_path"`
 	ClientKeyPath          string               `yaml:"client_key_path"`
 	BundleCacheDir         string               `yaml:"bundle_cache_dir"`

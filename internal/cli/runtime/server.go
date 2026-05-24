@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -99,6 +100,7 @@ type Server struct {
 	envelopeEmitter *envelope.Emitter
 	captureWriter   *capture.Writer
 	recorder        *recorder.Recorder
+	conductorAudit  *auditbatcher.Transport
 	approver        *hitl.Approver
 
 	// lastReloadHash / lastReloadAt dedup fsnotify + SIGHUP stacking
@@ -280,6 +282,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.scanner = sc
 	m := metrics.New()
 	s.metrics = m
+	_, conductorAudit, conductorErr := buildConductorAuditTransport(cfg, m)
+	if conductorErr != nil {
+		s.cleanup()
+		return nil, conductorErr
+	}
+	s.conductorAudit = conductorAudit
 	sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})

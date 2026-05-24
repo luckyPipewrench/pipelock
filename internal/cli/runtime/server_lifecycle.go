@@ -205,6 +205,9 @@ func (s *Server) Start(ctx context.Context) error {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  RevPx:  http://%s -> %s (reverse proxy with body scanning)\n",
 			cfg.ReverseProxy.Listen, RedactEndpoint(cfg.ReverseProxy.Upstream))
 	}
+	if s.conductorAudit != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: audit transport enabled -> %s\n", RedactEndpoint(cfg.Conductor.ConductorURL))
+	}
 	if s.opts.CaptureOutput != "" {
 		if s.opts.CaptureDuration > 0 {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "  Capture: %s (duration: %s)\n", s.opts.CaptureOutput, s.opts.CaptureDuration)
@@ -221,6 +224,27 @@ func (s *Server) Start(ctx context.Context) error {
 		_, _ = fmt.Fprintln(s.opts.Stderr, "\nNote: agent process launching is not yet implemented (Phase 2).")
 		_, _ = fmt.Fprintln(s.opts.Stderr, "The fetch proxy is running — configure your agent to use:")
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  PIPELOCK_FETCH_URL=http://%s/fetch\n\n", cfg.FetchProxy.Listen)
+	}
+
+	var conductorWG sync.WaitGroup
+	if s.conductorAudit != nil {
+		conductorWG.Add(1)
+		go func() {
+			defer conductorWG.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor audit transport panic: %v\n", r)
+				}
+			}()
+			if err := s.conductorAudit.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.logger.LogError(audit.NewResourceLogContext("conductor_audit_transport", cfg.Conductor.ConductorURL), err)
+				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor audit transport stopped: %v\n", err)
+			}
+		}()
+		defer func() {
+			cancel()
+			conductorWG.Wait()
+		}()
 	}
 
 	// Start kill switch API on a separate port if configured. Follows

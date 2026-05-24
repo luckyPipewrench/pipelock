@@ -78,6 +78,17 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			newCfg.ScanAPI.ConnectionLimit = oldCfg.ScanAPI.ConnectionLimit
 			newCfg.ScanAPI.Timeouts = oldCfg.ScanAPI.Timeouts
 		}
+		if conductorRuntimeChanged(oldCfg, newCfg) {
+			attemptedHash := newCfg.Hash()
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: conductor settings changed — requires restart, ignoring\n")
+			// Surface to the audit channel as well as stderr. Conductor
+			// settings sit on the trust boundary with Boss: silently
+			// preserving them on reload is the right choice, but an
+			// operator (or attacker with config write) attempting the
+			// change should leave a record an SOC tool can find.
+			s.logger.LogConfigReload("ignored", "conductor settings restart-only", attemptedHash)
+			newCfg.Conductor = oldCfg.Conductor
+		}
 		// Block signing key rotation via reload. The receipt chain
 		// state is anchored to the current signing key; rotation
 		// mid-chain causes tail-signature verification to fail on

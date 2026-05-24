@@ -107,6 +107,12 @@ type Metrics struct {
 	captureSessionIDSanitized   *prometheus.CounterVec
 	captureActionClassSanitized *prometheus.CounterVec
 
+	// Conductor audit transport (conductor.go).
+	conductorAuditQueuePending  prometheus.Gauge
+	conductorAuditQueueInflight prometheus.Gauge
+	conductorAuditQueueDead     prometheus.Gauge
+	conductorAuditDeliveries    *prometheus.CounterVec
+
 	// Learn-and-lock observation pipeline (learn.go).
 	learnObservationEvents        *prometheus.CounterVec
 	learnRegulatedDataBlocked     *prometheus.CounterVec
@@ -178,6 +184,7 @@ func New() *Metrics {
 	m.registerKillSwitchMetrics(reg)
 	m.registerShieldMetrics(reg)
 	m.registerCaptureMetrics(reg)
+	m.registerConductorMetrics(reg)
 	m.registerLearnMetrics(reg)
 	m.registerEnvelopeMetrics(reg)
 

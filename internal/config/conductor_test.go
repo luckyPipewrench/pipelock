@@ -97,6 +97,16 @@ func TestValidateConductor_RejectsInvalidEnabledConfig(t *testing.T) {
 			want:   "conductor.client_cert_path must be an absolute path",
 		},
 		{
+			name:   "missing_server_ca",
+			mutate: func(c *Conductor) { c.ServerCAFile = "" },
+			want:   "conductor.server_ca_file required",
+		},
+		{
+			name:   "relative_server_ca",
+			mutate: func(c *Conductor) { c.ServerCAFile = "boss-ca.pem" },
+			want:   "conductor.server_ca_file must be an absolute path",
+		},
+		{
 			name:   "bad_poll_interval",
 			mutate: func(c *Conductor) { c.PollInterval = "0s" },
 			want:   "conductor.poll_interval must be > 0",
@@ -137,8 +147,6 @@ func TestValidateConductor_RejectsInvalidEnabledConfig(t *testing.T) {
 }
 
 func TestValidateConductor_RejectsWorldWritableParents(t *testing.T) {
-	cfg := Defaults()
-	conductor := validConductorConfig(t)
 	parent := filepath.Join(privateTempDir(t), "world")
 	if err := os.Mkdir(parent, 0o700); err != nil {
 		t.Fatalf("Mkdir() error = %v", err)
@@ -146,12 +154,47 @@ func TestValidateConductor_RejectsWorldWritableParents(t *testing.T) {
 	if err := os.Chmod(parent, 0o777); err != nil { //nolint:gosec // verifies rejection of unsafe parent permissions.
 		t.Fatalf("Chmod() error = %v", err)
 	}
-	conductor.BundleCacheDir = filepath.Join(parent, "bundles")
-	cfg.Conductor = conductor
+	tests := []struct {
+		name   string
+		mutate func(*Conductor)
+	}{
+		{
+			name:   "bundle_cache_dir",
+			mutate: func(c *Conductor) { c.BundleCacheDir = filepath.Join(parent, "bundles") },
+		},
+		{
+			name:   "durable_audit_queue_dir",
+			mutate: func(c *Conductor) { c.DurableAuditQueueDir = filepath.Join(parent, "audit-queue") },
+		},
+		{
+			name:   "trust_roster_path",
+			mutate: func(c *Conductor) { c.TrustRosterPath = filepath.Join(parent, "trust-roster.json") },
+		},
+		{
+			name:   "server_ca_file",
+			mutate: func(c *Conductor) { c.ServerCAFile = filepath.Join(parent, "boss-ca.pem") },
+		},
+		{
+			name:   "client_cert_path",
+			mutate: func(c *Conductor) { c.ClientCertPath = filepath.Join(parent, "client.crt") },
+		},
+		{
+			name:   "client_key_path",
+			mutate: func(c *Conductor) { c.ClientKeyPath = filepath.Join(parent, "client.key") },
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			conductor := validConductorConfig(t)
+			tc.mutate(&conductor)
+			cfg.Conductor = conductor
 
-	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "world-writable parent") {
-		t.Fatalf("Validate() = %v, want world-writable parent error", err)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "world-writable parent") {
+				t.Fatalf("Validate() = %v, want world-writable parent error", err)
+			}
+		})
 	}
 }
 
@@ -269,6 +312,7 @@ func validConductorConfig(t *testing.T) Conductor {
 		FleetID:                "prod",
 		InstanceID:             "pl-prod-1",
 		TrustRosterPath:        filepath.Join(root, "trust-roster.json"),
+		ServerCAFile:           filepath.Join(root, "boss-ca.pem"),
 		ClientCertPath:         filepath.Join(root, "client.crt"),
 		ClientKeyPath:          filepath.Join(root, "client.key"),
 		BundleCacheDir:         filepath.Join(root, "bundles"),

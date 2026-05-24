@@ -566,6 +566,7 @@ conductor:
   fleet_id: "prod"
   instance_id: "pl-prod-1"
   trust_roster_path: "/etc/pipelock/conductor/trust-roster.json"
+  server_ca_file: "/etc/pipelock/conductor/boss-ca.pem"
   client_cert_path: "/etc/pipelock/conductor/client.crt"
   client_key_path: "/etc/pipelock/conductor/client.key"
   bundle_cache_dir: "/var/lib/pipelock/conductor/bundles"
@@ -583,6 +584,7 @@ conductor:
 Config validation must reject:
 
 - missing mTLS paths when enabled
+- missing Boss server CA bundle when enabled
 - non-absolute cache paths
 - cache directory paths under world-writable parents
 - `created_skew_seconds > 300`

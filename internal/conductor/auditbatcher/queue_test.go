@@ -142,6 +142,76 @@ func TestQueueReleaseAndRecoverInflight(t *testing.T) {
 	assertStats(t, reopened, Stats{Pending: 1})
 }
 
+func TestQueueReleaseWithRetryPersistsAccounting(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	dir := t.TempDir()
+	q, err := Open(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	id, err := q.Enqueue(signedTestBatch(t, "batch-retry", priv))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	if _, err := q.Claim(); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if err := q.ReleaseWithRetry(id, "HTTP 503 temporary outage"); err != nil {
+		t.Fatalf("ReleaseWithRetry() error = %v", err)
+	}
+
+	reopened, err := Open(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Open(reopen) error = %v", err)
+	}
+	record, err := readRecord(filepath.Join(reopened.pendingDir, id), conductor.MaxAuditPayloadBytes)
+	if err != nil {
+		t.Fatalf("readRecord() error = %v", err)
+	}
+	if record.RetryCount != 1 {
+		t.Fatalf("RetryCount = %d, want 1", record.RetryCount)
+	}
+	if record.LastAttemptAt == nil {
+		t.Fatal("LastAttemptAt = nil, want timestamp")
+	}
+	if record.LastError != "http_503_temporary_outage" {
+		t.Fatalf("LastError = %q, want normalized retry reason", record.LastError)
+	}
+}
+
+func TestQueueDropMovesInflightToDeadWithReason(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	id, err := q.Enqueue(signedTestBatch(t, "batch-drop", priv))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	if _, err := q.Claim(); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if err := q.Drop(id, "HTTP 400 rejected"); err != nil {
+		t.Fatalf("Drop() error = %v", err)
+	}
+	assertStats(t, q, Stats{Dead: 1})
+
+	record, err := readRecord(filepath.Join(q.deadDir, id), conductor.MaxAuditPayloadBytes)
+	if err != nil {
+		t.Fatalf("readRecord(dead) error = %v", err)
+	}
+	if record.DroppedReason != "http_400_rejected" {
+		t.Fatalf("DroppedReason = %q, want normalized drop reason", record.DroppedReason)
+	}
+	if record.DroppedAt == nil {
+		t.Fatal("DroppedAt = nil, want timestamp")
+	}
+}
+
 func TestQueueReleaseRejectsExistingPendingTarget(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -965,14 +1035,14 @@ func TestFsyncDirMissingPath(t *testing.T) {
 }
 
 func TestDurableWriteAndMoveToDeadErrorPaths(t *testing.T) {
-	if err := durableWrite(filepath.Join(t.TempDir(), "missing", "record.json"), []byte("record"), fileMode); err == nil {
+	if err := durableWrite(filepath.Join(t.TempDir(), "missing", "record.json"), []byte("record")); err == nil {
 		t.Fatal("durableWrite(missing parent) error = nil, want create temp error")
 	}
 	existingDir := filepath.Join(t.TempDir(), "existing-dir")
 	if err := os.Mkdir(existingDir, dirMode); err != nil {
 		t.Fatalf("Mkdir(existingDir) error = %v", err)
 	}
-	if err := durableWrite(existingDir, []byte("record"), fileMode); err == nil || !strings.Contains(err.Error(), "rename temp") {
+	if err := durableWrite(existingDir, []byte("record")); err == nil || !strings.Contains(err.Error(), "rename temp") {
 		t.Fatalf("durableWrite(existing dir) = %v, want rename error", err)
 	}
 	if err := moveToDead(filepath.Join(t.TempDir(), "missing.json"), filepath.Join(t.TempDir(), "dead.json")); err == nil {

@@ -747,6 +747,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	oldCfg.ScanAPI.ConnectionLimit = 2
 	oldCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "1s", Write: "1s"}
 	oldCfg.FlightRecorder.SigningKeyPath = "/tmp/old-signing-key"
+	oldCfg.Conductor.ConductorURL = "https://boss-old.example"
 
 	newCfg := oldCfg.Clone()
 	newCfg.KillSwitch.APIListen = "127.0.0.1:28081"
@@ -755,6 +756,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	newCfg.ScanAPI.ConnectionLimit = 4
 	newCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "2s", Write: "2s"}
 	newCfg.FlightRecorder.SigningKeyPath = "/tmp/new-signing-key"
+	newCfg.Conductor.ConductorURL = "https://boss-new.example"
 	newCfg.ReverseProxy.Listen = "127.0.0.1:28084"
 	newCfg.ReverseProxy.Upstream = "http://127.0.0.1:2"
 
@@ -776,6 +778,9 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	if live.FlightRecorder.SigningKeyPath != oldCfg.FlightRecorder.SigningKeyPath {
 		t.Fatalf("signing key path = %q, want %q", live.FlightRecorder.SigningKeyPath, oldCfg.FlightRecorder.SigningKeyPath)
 	}
+	if live.Conductor != oldCfg.Conductor {
+		t.Fatalf("conductor settings not preserved: %+v", live.Conductor)
+	}
 	if live.ReverseProxy != oldCfg.ReverseProxy {
 		t.Fatalf("reverse proxy settings not preserved: %+v", live.ReverseProxy)
 	}
@@ -783,6 +788,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		"kill_switch.api_listen changed",
 		"metrics_listen changed",
 		"scan_api listener settings changed",
+		"conductor settings changed",
 		"flight_recorder.signing_key_path changed",
 		"reverse_proxy settings changed",
 	} {

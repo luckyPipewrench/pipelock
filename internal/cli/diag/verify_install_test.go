@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -61,8 +62,8 @@ func TestVerifyInstallCmd_AllPass(t *testing.T) {
 		if !strings.Contains(out, "Containment: unknown") {
 			t.Errorf("expected 'Containment: unknown' in output:\n%s", out)
 		}
-		if !strings.Contains(out, "11/14 passed") {
-			t.Errorf("expected '11/14 passed' in output:\n%s", out)
+		if !strings.Contains(out, "12/15 passed") {
+			t.Errorf("expected '12/15 passed' in output:\n%s", out)
 		}
 		if !strings.Contains(out, "3 not applicable") {
 			t.Errorf("expected '3 not applicable' in output:\n%s", out)
@@ -95,8 +96,8 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	if report.RunContext != ctx {
 		t.Errorf("expected %s context, got %s", ctx, report.RunContext)
 	}
-	if len(report.Checks) != 14 {
-		t.Errorf("expected 14 checks, got %d", len(report.Checks))
+	if len(report.Checks) != 15 {
+		t.Errorf("expected 15 checks, got %d", len(report.Checks))
 	}
 
 	// Scanning should always be verified with defaults.
@@ -108,8 +109,8 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	}
 
 	if ctx == cliutil.RunContextHost {
-		if report.Summary.Passed != 11 {
-			t.Errorf("expected 11 passed on host, got %d", report.Summary.Passed)
+		if report.Summary.Passed != 12 {
+			t.Errorf("expected 12 passed on host, got %d", report.Summary.Passed)
 		}
 		if report.Summary.NotApplicable != 3 {
 			t.Errorf("expected 3 not_applicable on host, got %d", report.Summary.NotApplicable)
@@ -118,9 +119,9 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 			t.Errorf("expected containment=unknown on host, got %s", report.Summary.Containment)
 		}
 	} else {
-		// In container/pod: at least 11 scanning checks pass.
-		if report.Summary.Passed < 11 {
-			t.Errorf("expected at least 11 passed, got %d", report.Summary.Passed)
+		// In container/pod: at least 12 scanning checks pass.
+		if report.Summary.Passed < 12 {
+			t.Errorf("expected at least 12 passed, got %d", report.Summary.Passed)
 		}
 	}
 
@@ -131,6 +132,7 @@ func TestVerifyInstallCmd_JSON(t *testing.T) {
 	}
 	expected := []string{
 		"config_valid", "proxy_health", "fetch_dlp", "forward_blocked",
+		"scanning_websocket",
 		"scanning_dlp", "scanning_injection", "scanning_policy",
 		"browser_shield", "file_sentry", "mcp_binary_integrity_smoke",
 		"mcp_tool_provenance_smoke",
@@ -199,7 +201,8 @@ mcp_input_scanning:
 		}
 	}
 	for _, name := range []string{
-		"forward_blocked", "scanning_dlp", "scanning_injection",
+		"forward_blocked", "scanning_websocket",
+		"scanning_dlp", "scanning_injection",
 		"scanning_policy", "browser_shield", "file_sentry",
 		"mcp_binary_integrity_smoke", "mcp_tool_provenance_smoke",
 	} {
@@ -246,8 +249,8 @@ func TestVerifyInstallCmd_OutputFile(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("invalid JSON in output file: %v", err)
 	}
-	if len(report.Checks) != 14 {
-		t.Errorf("expected 14 checks in file, got %d", len(report.Checks))
+	if len(report.Checks) != 15 {
+		t.Errorf("expected 15 checks in file, got %d", len(report.Checks))
 	}
 }
 
@@ -514,6 +517,7 @@ func testScanEnv(t *testing.T) *VerifyEnv {
 	t.Helper()
 	cfg := diagTestConfig()
 	cfg.ForwardProxy.Enabled = true
+	cfg.WebSocketProxy.Enabled = true
 	cfg.MCPToolPolicy = config.MCPToolPolicy{
 		Enabled: true,
 		Action:  config.ActionBlock,
@@ -603,6 +607,48 @@ func TestCheckVerifyForwardBlocked_Disabled(t *testing.T) {
 	}
 	if !strings.Contains(r.Detail, "disabled") {
 		t.Errorf("expected 'disabled' in detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckScanningWebSocket_Disabled(t *testing.T) {
+	env := testScanEnv(t)
+	env.Cfg.WebSocketProxy.Enabled = false
+	r := checkScanningWebSocket(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for disabled websocket proxy, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "disabled") {
+		t.Errorf("expected 'disabled' in detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckScanningWebSocket_Error(t *testing.T) {
+	env := testScanEnv(t)
+	env.ProxyURL = "http://127.0.0.1:1" // nothing listening
+	r := checkScanningWebSocket(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for unreachable proxy, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "ws request failed") {
+		t.Errorf("expected 'ws request failed' detail, got: %s", r.Detail)
+	}
+}
+
+func TestCheckScanningWebSocket_RejectsNonBlocklist403(t *testing.T) {
+	env := testScanEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(blockreason.HeaderReason, string(blockreason.KillSwitchActive))
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	env.ProxyURL = srv.URL
+
+	r := checkScanningWebSocket(env)
+	if r.Status != verifyStatusFail {
+		t.Errorf("expected fail for non-blocklist 403, got %s: %s", r.Status, r.Detail)
+	}
+	if !strings.Contains(r.Detail, "expected WebSocket blocklist headers") {
+		t.Errorf("expected blocklist header detail, got: %s", r.Detail)
 	}
 }
 

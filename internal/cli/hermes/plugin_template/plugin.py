@@ -52,10 +52,22 @@ def _invoke(payload: dict) -> dict:
     if config_path:
         argv.extend(["--config", config_path])
 
+    # Serialize before the subprocess call so a non-JSON-serializable tool
+    # argument or result (a custom object in tool_input/result) fails closed
+    # here instead of raising an uncaught TypeError. Hermes logs-and-continues
+    # on hook exceptions, so an escaped TypeError would silently skip the scan.
+    try:
+        payload_bytes = json.dumps(payload).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        return {
+            "decision": "block",
+            "reason": f"pipelock-hermes-hook: payload not serializable: {exc}",
+        }
+
     try:
         proc = subprocess.run(
             argv,
-            input=json.dumps(payload).encode("utf-8"),
+            input=payload_bytes,
             capture_output=True,
             timeout=DEFAULT_TIMEOUT_SECONDS,
             check=False,

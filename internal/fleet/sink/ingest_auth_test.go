@@ -6,10 +6,11 @@ package sink
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -303,6 +304,27 @@ func TestStore_RejectsSymlinkDBPath(t *testing.T) {
 	}
 	if _, err := OpenStore(context.Background(), link); err == nil {
 		t.Fatal("OpenStore accepted symlink DB path")
+	}
+}
+
+func TestStore_UsesResolvedParentPath(t *testing.T) {
+	dir := t.TempDir()
+	realParent := filepath.Join(dir, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(dir, "link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(context.Background(), filepath.Join(linkParent, "sink.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if _, err := os.Stat(filepath.Join(realParent, "sink.db")); err != nil {
+		t.Fatalf("resolved parent DB missing: %v", err)
 	}
 }
 
@@ -671,7 +693,7 @@ func TestStatusForError(t *testing.T) {
 		{"fork", ErrForkDetected, http.StatusConflict},
 		{"too_large", ErrRequestTooLarge, http.StatusRequestEntityTooLarge},
 		{"bad_request", ErrInvalidRequestBody, http.StatusBadRequest},
-		{"wrapped_unauthorized", errors.New("wrap"), http.StatusInternalServerError},
+		{"wrapped_unauthorized", fmt.Errorf("wrap: %w", ErrUnauthorized), http.StatusUnauthorized},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

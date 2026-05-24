@@ -190,8 +190,25 @@ func TestHandler_RejectsOffRosterSignature(t *testing.T) {
 }
 
 func TestHandler_DLPBeforeStore(t *testing.T) {
-	handler, store, priv := testHandler(t)
-	payload := []byte(`{"events":[{"message":"sk-proj-abcdefghijklmnopqrstuvwxyz123456"}]}`)
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(context.Background(), t.TempDir()+"/sink.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	handler, err := NewHandler(Options{
+		Store:      store,
+		Resolver:   staticResolver(pub),
+		DLPScanner: containsDLPScanner("fleet-sink-test-secret"),
+		Now:        func() time.Time { return sinkTestNow },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"events":[{"message":"fleet-sink-test-secret"}]}`)
 	env := signedEnvelope(t, "batch-1", 1, 1, payload, priv)
 
 	resp := postBatch(t, handler, env, payload)
@@ -204,6 +221,21 @@ func TestHandler_DLPBeforeStore(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("DLP-rejected payload was stored: %+v", got)
+	}
+}
+
+type containsDLPScanner string
+
+func (s containsDLPScanner) ScanTextForDLP(_ context.Context, text string) scanner.TextDLPResult {
+	if !strings.Contains(text, string(s)) {
+		return scanner.TextDLPResult{Clean: true}
+	}
+	return scanner.TextDLPResult{
+		Clean: false,
+		Matches: []scanner.TextDLPMatch{{
+			PatternName: "Fleet Sink Test Secret",
+			Severity:    config.SeverityCritical,
+		}},
 	}
 }
 

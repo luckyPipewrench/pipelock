@@ -44,11 +44,12 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(clean), 0o700); err != nil {
 		return nil, fmt.Errorf("create fleet sink store parent: %w", err)
 	}
-	if err := ensureStoreFile(clean); err != nil {
+	storePath, err := ensureStoreFile(clean)
+	if err != nil {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", clean)
+	db, err := sql.Open("sqlite", storePath)
 	if err != nil {
 		return nil, fmt.Errorf("open fleet sink store: %w", err)
 	}
@@ -71,30 +72,64 @@ func OpenStore(ctx context.Context, path string) (*Store, error) {
 	// SQLite may create sidecar files for WAL mode. Audit payloads
 	// contain raw evidence, so keep the database and any sidecars
 	// owner-only even under a permissive umask.
-	if err := chmodStoreFiles(clean); err != nil {
+	if err := chmodStoreFiles(storePath); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
 }
 
-func ensureStoreFile(path string) error {
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("fleet sink store path is a symlink: %s", path)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat fleet sink store: %w", err)
-	}
-	//nolint:gosec // path is explicit operator configuration; caller cleaned it and existing symlinks are rejected above.
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+func ensureStoreFile(path string) (string, error) {
+	clean := filepath.Clean(path)
+	parent, err := filepath.EvalSymlinks(filepath.Dir(clean))
 	if err != nil {
-		return fmt.Errorf("create fleet sink store: %w", err)
+		return "", fmt.Errorf("resolve fleet sink store parent: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close fleet sink store: %w", err)
+	storePath := filepath.Join(parent, filepath.Base(clean))
+	rel, err := filepath.Rel(parent, storePath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		if err != nil {
+			return "", fmt.Errorf("validate fleet sink store containment: %w", err)
+		}
+		return "", fmt.Errorf("fleet sink store path escapes parent: %s", clean)
 	}
-	return chmodStorePath(path)
+
+	f, err := openStoreFileNoFollow(storePath, true)
+	if errors.Is(err, os.ErrExist) {
+		if info, statErr := os.Lstat(storePath); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("fleet sink store path is a symlink: %s", storePath)
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return "", fmt.Errorf("stat fleet sink store: %w", statErr)
+		}
+		f, err = openStoreFileNoFollow(storePath, false)
+	}
+	if err != nil {
+		return "", fmt.Errorf("create fleet sink store: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat opened fleet sink store: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("fleet sink store path is not a regular file: %s", storePath)
+	}
+	if err := chmodStorePath(storePath); err != nil {
+		return "", err
+	}
+	return storePath, nil
+}
+
+func openStoreFileNoFollow(path string, create bool) (*os.File, error) {
+	flags := os.O_RDWR | storeNoFollowFlag
+	if create {
+		flags |= os.O_CREATE | os.O_EXCL
+	}
+	//nolint:gosec // path is explicit operator configuration; parent is resolved and final component is opened with O_NOFOLLOW where available.
+	return os.OpenFile(path, flags, 0o600)
 }
 
 func chmodStoreFiles(path string) error {

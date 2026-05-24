@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -306,9 +307,27 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// TODO: emit reload warnings for agent-scoped trusted_domains (enterprise profiles).
-	// Agent profiles live in the enterprise package, so diffing them here would require
-	// either a hook or moving the diff logic into the enterprise reload path.
+	// Per-agent trusted_domains expanded — mirrors the global trusted_domains
+	// warning above. A profile added entirely with trusted_domains is treated
+	// as an expansion (whole list is "new"). Profiles removed entirely are
+	// not flagged here; that's a profile rollback, not a trust expansion.
+	agentNames := make([]string, 0, len(updated.Agents))
+	for name := range updated.Agents {
+		agentNames = append(agentNames, name)
+	}
+	sort.Strings(agentNames)
+	for _, name := range agentNames {
+		oldProfile := old.Agents[name]
+		newProfile := updated.Agents[name]
+		added := passthroughDomainsAdded(oldProfile.TrustedDomains, newProfile.TrustedDomains)
+		if len(added) == 0 {
+			continue
+		}
+		warnings = append(warnings, ReloadWarning{
+			Field:   fmt.Sprintf("agents.%s.trusted_domains", name),
+			Message: fmt.Sprintf("agent %q trusted domains added: %s — SSRF internal-IP check bypassed for these hosts when this agent profile is active", name, strings.Join(added, ", ")),
+		})
+	}
 
 	// Request body scanning disabled
 	if old.RequestBodyScanning.Enabled && !updated.RequestBodyScanning.Enabled {

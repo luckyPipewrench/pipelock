@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -797,7 +798,16 @@ func TestLogWSScan_BundleRulesIncluded(t *testing.T) {
 	bundleRules := []BundleRuleHit{
 		{RuleID: "ws-rule-1", Bundle: "ws-bundle", BundleVersion: "2.0.0"},
 	}
-	logger.LogWSScan("ws://example.com/chat", DirectionServerToClient, testClientIP, "req-402", testActionWarn, 1, []string{"ws-rule-1"}, bundleRules)
+	logger.LogWSScan(WSScanEvent{
+		Target:       "ws://example.com/chat",
+		Direction:    DirectionServerToClient,
+		ClientIP:     testClientIP,
+		RequestID:    "req-402",
+		Action:       testActionWarn,
+		MatchCount:   1,
+		PatternNames: []string{"ws-rule-1"},
+		BundleRules:  bundleRules,
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1347,8 +1357,17 @@ func TestLogWSClose_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSClose("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent",
-		4096, 8192, 10, 2, 5*time.Second)
+	logger.LogWSClose(WSCloseEvent{
+		Target:         "ws://example.com/stream",
+		ClientIP:       "10.0.0.5",
+		RequestID:      "req-200",
+		Agent:          "test-agent",
+		ClientToServer: 4096,
+		ServerToClient: 8192,
+		TextFrames:     10,
+		BinaryFrames:   2,
+		Duration:       5 * time.Second,
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1385,8 +1404,17 @@ func TestLogWSClose_Filtered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSClose("ws://example.com/stream", "10.0.0.5", "req-200", "test-agent",
-		4096, 8192, 10, 2, 5*time.Second)
+	logger.LogWSClose(WSCloseEvent{
+		Target:         "ws://example.com/stream",
+		ClientIP:       "10.0.0.5",
+		RequestID:      "req-200",
+		Agent:          "test-agent",
+		ClientToServer: 4096,
+		ServerToClient: 8192,
+		TextFrames:     10,
+		BinaryFrames:   2,
+		Duration:       5 * time.Second,
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1451,7 +1479,15 @@ func TestLogWSScan_JSONFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSScan("ws://example.com/chat", DirectionServerToClient, testClientIP, "req-400", testActionWarn, 2, []string{"Prompt Injection", "Jailbreak"}, nil)
+	logger.LogWSScan(WSScanEvent{
+		Target:       "ws://example.com/chat",
+		Direction:    DirectionServerToClient,
+		ClientIP:     testClientIP,
+		RequestID:    "req-400",
+		Action:       testActionWarn,
+		MatchCount:   2,
+		PatternNames: []string{"Prompt Injection", "Jailbreak"},
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1491,7 +1527,15 @@ func TestLogWSScan_ClientToServer_DLPTechnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogWSScan("ws://example.com/chat", DirectionClientToServer, testClientIP, "req-401", "audit", 1, []string{"AWS Key"}, nil)
+	logger.LogWSScan(WSScanEvent{
+		Target:       "ws://example.com/chat",
+		Direction:    DirectionClientToServer,
+		ClientIP:     testClientIP,
+		RequestID:    "req-401",
+		Action:       "audit",
+		MatchCount:   1,
+		PatternNames: []string{"AWS Key"},
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -1720,12 +1764,23 @@ func TestNewMCPLogContext_RequiresResource(t *testing.T) {
 func TestNewLogContext_RejectsInvalidIdentifierCombinations(t *testing.T) {
 	t.Parallel()
 
-	_, err := newLogContext(testMethodGet, "https://example.com", "example.com:443", "", testClientIP, testReqID, "")
+	_, err := newLogContext(LogContextOpts{
+		Method:    testMethodGet,
+		URL:       "https://example.com",
+		Target:    "example.com:443",
+		ClientIP:  testClientIP,
+		RequestID: testReqID,
+	})
 	if !errors.Is(err, errLogContextIdentifierClash) {
 		t.Fatalf("err = %v, want %v", err, errLogContextIdentifierClash)
 	}
 
-	_, err = newLogContext(testMethodGet, "", "example.com:443", "", testClientIP, testReqID, "")
+	_, err = newLogContext(LogContextOpts{
+		Method:    testMethodGet,
+		Target:    "example.com:443",
+		ClientIP:  testClientIP,
+		RequestID: testReqID,
+	})
 	if err == nil || !strings.Contains(err.Error(), "target contexts require") {
 		t.Fatalf("err = %v, want target method validation error", err)
 	}
@@ -2075,7 +2130,15 @@ func TestEmit_LogWSScan(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSScan("ws://example.com", DirectionServerToClient, testClientIP, "req-6", testActionWarn, 1, []string{"injection"}, nil)
+	logger.LogWSScan(WSScanEvent{
+		Target:       "ws://example.com",
+		Direction:    DirectionServerToClient,
+		ClientIP:     testClientIP,
+		RequestID:    "req-6",
+		Action:       testActionWarn,
+		MatchCount:   1,
+		PatternNames: []string{"injection"},
+	})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -2093,7 +2156,15 @@ func TestEmit_LogWSScan_ClientToServer(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogWSScan("ws://example.com", DirectionClientToServer, testClientIP, "req-6b", "audit", 1, []string{"AWS Key"}, nil)
+	logger.LogWSScan(WSScanEvent{
+		Target:       "ws://example.com",
+		Direction:    DirectionClientToServer,
+		ClientIP:     testClientIP,
+		RequestID:    "req-6b",
+		Action:       "audit",
+		MatchCount:   1,
+		PatternNames: []string{"AWS Key"},
+	})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -3382,7 +3453,16 @@ func TestLogToolRedirect_JSONFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogToolRedirect("sess-1", "bash", "sha256:abc123 len=42", "safe-fetch", "audited handler", "redirect-curl", "redirected", 15)
+	logger.LogToolRedirect(ToolRedirectEvent{
+		SessionID:       "sess-1",
+		ToolName:        "bash",
+		ArgsDigest:      "sha256:abc123 len=42",
+		RedirectProfile: "safe-fetch",
+		RedirectReason:  "audited handler",
+		PolicyRule:      "redirect-curl",
+		Result:          "redirected",
+		LatencyMs:       15,
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -3419,7 +3499,16 @@ func TestLogToolRedirect_Emitter(t *testing.T) {
 	logger, sink := newLoggerWithEmitter(t)
 	defer logger.Close()
 
-	logger.LogToolRedirect("sess-2", "curl-tool", "sha256:def456 len=100", "safe-fetch", "audited", "rule-1", "redirected", 25)
+	logger.LogToolRedirect(ToolRedirectEvent{
+		SessionID:       "sess-2",
+		ToolName:        "curl-tool",
+		ArgsDigest:      "sha256:def456 len=100",
+		RedirectProfile: "safe-fetch",
+		RedirectReason:  "audited",
+		PolicyRule:      "rule-1",
+		Result:          "redirected",
+		LatencyMs:       25,
+	})
 
 	ev, ok := sink.lastEvent()
 	if !ok {
@@ -3451,7 +3540,15 @@ func TestLogToolRedirect_NoSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logger.LogToolRedirect("", "bash", "sha256:abc len=10", "p", "r", "rule", "blocked", 5)
+	logger.LogToolRedirect(ToolRedirectEvent{
+		ToolName:        "bash",
+		ArgsDigest:      "sha256:abc len=10",
+		RedirectProfile: "p",
+		RedirectReason:  "r",
+		PolicyRule:      "rule",
+		Result:          "blocked",
+		LatencyMs:       5,
+	})
 	logger.Close()
 
 	data, _ := os.ReadFile(filepath.Clean(path))
@@ -3642,5 +3739,144 @@ func TestLogContext_TargetField_Connect(t *testing.T) {
 	}
 	if _, hasResource := entry["resource"]; hasResource {
 		t.Error("resource field should be absent for CONNECT contexts")
+	}
+}
+
+func TestNewLogContext_OptionsPositive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		opts     LogContextOpts
+		wantCtx  LogContext
+		wantErr  bool
+		errCheck func(error) bool
+	}{
+		{
+			name: "http",
+			opts: LogContextOpts{Method: testMethodGet, URL: "https://example.com", ClientIP: testClientIP, RequestID: testReqID, Agent: testAgentName},
+			wantCtx: LogContext{
+				method: testMethodGet, url: "https://example.com",
+				clientIP: testClientIP, requestID: testReqID, agent: testAgentName,
+			},
+		},
+		{
+			name: "mcp_resource",
+			opts: LogContextOpts{Method: "MCP", Resource: "tool/bash", Agent: "claude"},
+			wantCtx: LogContext{
+				method: "MCP", resource: "tool/bash", agent: "claude",
+			},
+		},
+		{
+			name: "connect",
+			opts: LogContextOpts{Method: http.MethodConnect, Target: "host:443", ClientIP: testClientIP, RequestID: testReqID, Agent: testAgentName},
+			wantCtx: LogContext{
+				method: http.MethodConnect, target: "host:443",
+				clientIP: testClientIP, requestID: testReqID, agent: testAgentName,
+			},
+		},
+		{
+			name:     "target_without_connect_method",
+			opts:     LogContextOpts{Method: testMethodGet, Target: "host:443", ClientIP: testClientIP, RequestID: testReqID},
+			wantErr:  true,
+			errCheck: func(err error) bool { return strings.Contains(err.Error(), "target contexts require") },
+		},
+		{
+			name:     "two_identifiers",
+			opts:     LogContextOpts{Method: testMethodGet, URL: "https://example.com", Resource: "tool/x"},
+			wantErr:  true,
+			errCheck: func(err error) bool { return errors.Is(err, errLogContextIdentifierClash) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := newLogContext(tt.opts)
+			if tt.wantErr {
+				if err == nil || !tt.errCheck(err) {
+					t.Fatalf("err = %v, want match", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			if got != tt.wantCtx {
+				t.Fatalf("ctx = %+v, want %+v", got, tt.wantCtx)
+			}
+		})
+	}
+}
+
+func TestLogTaintDecision_LocalLogAndEmit(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+
+	ctx := mustHTTPLogContext(t, testMethodGet, "https://api.example.com/v1/send", "req-taint-1")
+	logger.LogTaintDecision(ctx, TaintDecision{
+		TaintLevel:  "elevated",
+		ActionClass: "egress",
+		Sensitivity: "high",
+		Authority:   "agent",
+		Decision:    "block",
+		Reason:      "external content reached sensitive action",
+		SourceURL:   "https://untrusted.example.org/page",
+		SourceKind:  "fetch",
+	})
+
+	ev, ok := sink.lastEvent()
+	if !ok {
+		t.Fatal("expected emitted event")
+	}
+	if ev.Type != "taint_decision" {
+		t.Errorf("type = %q, want taint_decision", ev.Type)
+	}
+	cases := map[string]any{
+		"session_taint_level": "elevated",
+		"action_class":        "egress",
+		"action_sensitivity":  "high",
+		"authority_kind":      "agent",
+		"decision":            "block",
+		"reason":              "external content reached sensitive action",
+		"source_url":          "https://untrusted.example.org/page",
+		"source_kind":         "fetch",
+	}
+	for k, want := range cases {
+		if got := ev.Fields[k]; got != want {
+			t.Errorf("fields[%s] = %v, want %v", k, got, want)
+		}
+	}
+}
+
+func TestLogTaintDecision_OmitsOptionalSourceFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := mustHTTPLogContext(t, testMethodGet, "https://api.example.com/x", "req-taint-2")
+	logger.LogTaintDecision(ctx, TaintDecision{
+		TaintLevel:  "none",
+		ActionClass: "read",
+		Sensitivity: "low",
+		Authority:   "agent",
+		Decision:    "allow",
+		Reason:      "no taint",
+		// SourceURL and SourceKind intentionally empty.
+	})
+	logger.Close()
+
+	data, _ := os.ReadFile(filepath.Clean(path))
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, has := entry["source_url"]; has {
+		t.Error("source_url should be omitted when empty (optStr)")
+	}
+	if _, has := entry["source_kind"]; has {
+		t.Error("source_kind should be omitted when empty (optStr)")
 	}
 }

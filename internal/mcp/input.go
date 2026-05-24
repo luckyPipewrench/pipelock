@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
@@ -486,14 +487,16 @@ func ForwardScannedInput(
 			}
 			auditLogger.LogTaintDecision(
 				mustMCPAuditContext(auditLogger, "MCP", toolCallName),
-				decision.Risk.Level.String(),
-				decision.ActionClass.String(),
-				decision.Sensitivity.String(),
-				decision.Authority.String(),
-				decision.Result.Decision.String(),
-				decision.Result.Reason,
-				decision.Risk.LastExternalURL,
-				decision.Risk.LastExternalKind,
+				audit.TaintDecision{
+					TaintLevel:  decision.Risk.Level.String(),
+					ActionClass: decision.ActionClass.String(),
+					Sensitivity: decision.Sensitivity.String(),
+					Authority:   decision.Authority.String(),
+					Decision:    decision.Result.Decision.String(),
+					Reason:      decision.Result.Reason,
+					SourceURL:   decision.Risk.LastExternalURL,
+					SourceKind:  decision.Risk.LastExternalKind,
+				},
 			)
 		}
 
@@ -904,7 +907,15 @@ func ForwardScannedInput(
 				}
 			}
 			if auditLogger != nil {
-				auditLogger.LogToolRedirect("", toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, result.LatencyMs)
+				auditLogger.LogToolRedirect(audit.ToolRedirectEvent{
+					ToolName:        toolName,
+					ArgsDigest:      argsDigest(toolArgs),
+					RedirectProfile: policyVerdict.RedirectProfile,
+					RedirectReason:  profile.Reason,
+					PolicyRule:      policyRuleName,
+					Result:          finalResult,
+					LatencyMs:       result.LatencyMs,
+				})
 			}
 		case config.ActionAsk:
 			// HITL for input scanning is impractical — fall back to block.

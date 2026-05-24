@@ -337,14 +337,13 @@ func ZalgoDensity(s string) int {
 
 // ZalgoSuspicious reports whether s contains combining mark density at or
 // above ZalgoSuspiciousThreshold. Convenience wrapper for callers that
-// only need the boolean signal (event emission, taint escalation).
+// only need the boolean signal.
 //
-// TODO(taint-system): wire this into internal/scanner/response.go so
-// responses flagged suspicious emit an emit.EventTextStego exposure
-// event. Until the taint/authority system lands, ForMatching already
-// neutralizes combining marks via StripCombiningMarks — the helper and
-// its emit event type are pre-defined so downstream code can key on
-// them without a second API rev later.
+// Wired into internal/scanner.Scanner.ScanResponse via the StegoDetected /
+// StegoDensity fields on ResponseScanResult. The signal is exposure-only:
+// ForMatching already neutralizes combining marks via StripCombiningMarks,
+// so pattern matching is unaffected. Downstream taint/authority code keys
+// on StegoDetected to surface emit.EventTextStego events.
 func ZalgoSuspicious(s string) bool {
 	return ZalgoDensity(s) >= ZalgoSuspiciousThreshold
 }

@@ -379,31 +379,46 @@ var (
 	errLogContextIdentifierClash  = errors.New("audit log context: url, target, and resource are mutually exclusive")
 )
 
-func newLogContext(method, url, target, resource, clientIP, requestID, agent string) (LogContext, error) {
+// LogContextOpts bundles the parameters newLogContext consumes so the
+// internal constructor stays under the >6-params options-struct rule
+// (project CLAUDE.md). External callers should keep using the typed
+// NewHTTPLogContext / NewMCPLogContext / NewConnectLogContext / etc.
+// helpers; LogContextOpts is internal plumbing.
+type LogContextOpts struct {
+	Method    string
+	URL       string
+	Target    string
+	Resource  string
+	ClientIP  string
+	RequestID string
+	Agent     string
+}
+
+func newLogContext(o LogContextOpts) (LogContext, error) {
 	identifierCount := 0
-	if url != "" {
+	if o.URL != "" {
 		identifierCount++
 	}
-	if target != "" {
+	if o.Target != "" {
 		identifierCount++
 	}
-	if resource != "" {
+	if o.Resource != "" {
 		identifierCount++
 	}
 	if identifierCount > 1 {
 		return LogContext{}, errLogContextIdentifierClash
 	}
-	if target != "" && method != http.MethodConnect {
+	if o.Target != "" && o.Method != http.MethodConnect {
 		return LogContext{}, fmt.Errorf("audit log context: target contexts require %q method", http.MethodConnect)
 	}
 	return LogContext{
-		method:    method,
-		url:       url,
-		target:    target,
-		resource:  resource,
-		clientIP:  clientIP,
-		requestID: requestID,
-		agent:     agent,
+		method:    o.Method,
+		url:       o.URL,
+		target:    o.Target,
+		resource:  o.Resource,
+		clientIP:  o.ClientIP,
+		requestID: o.RequestID,
+		agent:     o.Agent,
 	}, nil
 }
 
@@ -420,7 +435,7 @@ func NewHTTPLogContext(method, url, clientIP, requestID, agent string) (LogConte
 	if requestID == "" {
 		return LogContext{}, errLogContextMissingRequestID
 	}
-	return newLogContext(method, url, "", "", clientIP, requestID, agent)
+	return newLogContext(LogContextOpts{Method: method, URL: url, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 }
 
 // NewMCPLogContext creates a LogContext for MCP proxy requests. HTTP-specific
@@ -430,7 +445,7 @@ func NewMCPLogContext(method, resource, agent string) (LogContext, error) {
 	if resource == "" {
 		return LogContext{}, errLogContextMissingResource
 	}
-	return newLogContext(method, "", "", resource, "", "", agent)
+	return newLogContext(LogContextOpts{Method: method, Resource: resource, Agent: agent})
 }
 
 // NewConnectLogContext creates a LogContext for CONNECT tunnel operations.
@@ -444,25 +459,25 @@ func NewConnectLogContext(target, clientIP, requestID, agent string) (LogContext
 	if requestID == "" {
 		return LogContext{}, errLogContextMissingRequestID
 	}
-	return newLogContext(http.MethodConnect, "", target, "", clientIP, requestID, agent)
+	return newLogContext(LogContextOpts{Method: http.MethodConnect, Target: target, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 }
 
 // NewResourceLogContext creates a LogContext for operational events scoped to a
 // local resource such as a config path or listen address.
 func NewResourceLogContext(method, resource string) LogContext {
-	ctx, _ := newLogContext(method, "", "", resource, "", "", "")
+	ctx, _ := newLogContext(LogContextOpts{Method: method, Resource: resource})
 	return ctx
 }
 
 // NewRequestLogContext creates a LogContext scoped only to a request ID.
 func NewRequestLogContext(requestID string) LogContext {
-	ctx, _ := newLogContext("", "", "", "", "", requestID, "")
+	ctx, _ := newLogContext(LogContextOpts{RequestID: requestID})
 	return ctx
 }
 
 // NewMethodLogContext creates a LogContext scoped only to an operation name.
 func NewMethodLogContext(method string) LogContext {
-	ctx, _ := newLogContext(method, "", "", "", "", "", "")
+	ctx, _ := newLogContext(LogContextOpts{Method: method})
 	return ctx
 }
 
@@ -861,22 +876,36 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 	}
 }
 
+// TaintDecision bundles the per-event fields LogTaintDecision emits.
+// The accompanying LogContext on the call carries request-level
+// identifiers; TaintDecision carries the policy verdict and provenance.
+type TaintDecision struct {
+	TaintLevel  string
+	ActionClass string
+	Sensitivity string
+	Authority   string
+	Decision    string
+	Reason      string
+	SourceURL   string
+	SourceKind  string
+}
+
 // LogTaintDecision logs a taint-aware policy evaluation for a sensitive action.
-func (l *Logger) LogTaintDecision(ctx LogContext, taintLevel, actionClass, sensitivity, authority, decision, reason, sourceURL, sourceKind string) {
+func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 	e := newLogEntry(l.zl.Warn(), EventTaintDecision).
 		optStr("method", ctx.method).
 		str("url", ctx.url).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		optStr("agent", ctx.agent).
-		str("session_taint_level", taintLevel).
-		str("action_class", actionClass).
-		str("action_sensitivity", sensitivity).
-		str("authority_kind", authority).
-		str("decision", decision).
-		str("reason", reason).
-		optStr("source_url", sourceURL).
-		optStr("source_kind", sourceKind)
+		str("session_taint_level", d.TaintLevel).
+		str("action_class", d.ActionClass).
+		str("action_sensitivity", d.Sensitivity).
+		str("authority_kind", d.Authority).
+		str("decision", d.Decision).
+		str("reason", d.Reason).
+		optStr("source_url", d.SourceURL).
+		optStr("source_kind", d.SourceKind)
 	e.msg("taint policy decision")
 
 	if l.emitter != nil {
@@ -955,20 +984,35 @@ func (l *Logger) LogRedirect(originalURL, redirectURL, clientIP, requestID, agen
 	e.msg("redirect followed")
 }
 
-// LogToolRedirect logs an MCP tool call redirect event. This is distinct from
-// LogRedirect (HTTP redirect hops). result is "redirected" or "blocked" (on failure).
-func (l *Logger) LogToolRedirect(sessionID, toolName, argsDigest, redirectProfile, redirectReason, policyRule, result string, latencyMs int64) {
+// ToolRedirectEvent bundles the per-event fields LogToolRedirect emits.
+// SessionID is local-log only; the remaining fields surface to external
+// emission sinks.
+type ToolRedirectEvent struct {
+	SessionID       string
+	ToolName        string
+	ArgsDigest      string
+	RedirectProfile string
+	RedirectReason  string
+	PolicyRule      string
+	Result          string
+	LatencyMs       int64
+}
+
+// LogToolRedirect logs an MCP tool call redirect event. Distinct from
+// LogRedirect (HTTP redirect hops). Result is "redirected" or "blocked"
+// (on failure).
+func (l *Logger) LogToolRedirect(ev ToolRedirectEvent) {
 	e := newLogEntry(l.zl.Info(), EventToolRedirect).
-		str("tool_name", toolName).
-		str("args_digest", argsDigest).
-		str("redirect_profile", redirectProfile).
-		str("redirect_reason", redirectReason).
-		str("policy_rule", policyRule).
-		str("result", result).
-		int64Field("latency_ms", latencyMs)
+		str("tool_name", ev.ToolName).
+		str("args_digest", ev.ArgsDigest).
+		str("redirect_profile", ev.RedirectProfile).
+		str("redirect_reason", ev.RedirectReason).
+		str("policy_rule", ev.PolicyRule).
+		str("result", ev.Result).
+		int64Field("latency_ms", ev.LatencyMs)
 	// session_id is local-log only — not emitted to external sinks.
-	if sessionID != "" {
-		e.event = e.event.Str("session_id", sanitizeString(sessionID))
+	if ev.SessionID != "" {
+		e.event = e.event.Str("session_id", sanitizeString(ev.SessionID))
 	}
 	e.msg("tool call redirected")
 
@@ -1053,21 +1097,34 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 	e.msg("websocket opened")
 }
 
+// WSCloseEvent bundles the per-event fields LogWSClose emits.
+type WSCloseEvent struct {
+	Target         string
+	ClientIP       string
+	RequestID      string
+	Agent          string
+	ClientToServer int64
+	ServerToClient int64
+	TextFrames     int64
+	BinaryFrames   int64
+	Duration       time.Duration
+}
+
 // LogWSClose logs a WebSocket proxy connection teardown with traffic stats.
-func (l *Logger) LogWSClose(target, clientIP, requestID, agent string, clientToServer, serverToClient int64, textFrames, binaryFrames int64, duration time.Duration) {
+func (l *Logger) LogWSClose(ev WSCloseEvent) {
 	if !l.includeAllowed {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventWSClose).
-		str("target", target).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		str("agent", agent).
-		int64Field("client_to_server_bytes", clientToServer).
-		int64Field("server_to_client_bytes", serverToClient).
-		int64Field("text_frames", textFrames).
-		int64Field("binary_frames", binaryFrames).
-		durMS(duration)
+		str("target", ev.Target).
+		str("client_ip", ev.ClientIP).
+		str("request_id", ev.RequestID).
+		str("agent", ev.Agent).
+		int64Field("client_to_server_bytes", ev.ClientToServer).
+		int64Field("server_to_client_bytes", ev.ServerToClient).
+		int64Field("text_frames", ev.TextFrames).
+		int64Field("binary_frames", ev.BinaryFrames).
+		durMS(ev.Duration)
 	e.msg("websocket closed")
 }
 
@@ -1093,28 +1150,41 @@ func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, 
 	}
 }
 
+// WSScanEvent bundles the per-event fields LogWSScan emits.
+// Direction is one of DirectionClientToServer / DirectionServerToClient.
+type WSScanEvent struct {
+	Target       string
+	Direction    string
+	ClientIP     string
+	RequestID    string
+	Action       string
+	MatchCount   int
+	PatternNames []string
+	BundleRules  []BundleRuleHit
+}
+
 // LogWSScan logs a WebSocket frame scan hit (warn/strip action).
 // Direction determines the MITRE technique: client_to_server is DLP/exfil (T1048),
 // server_to_client is prompt injection detection (T1059).
-// When bundleRules is non-empty, bundle provenance is included in the audit event.
-func (l *Logger) LogWSScan(target, direction, clientIP, requestID, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
+// When BundleRules is non-empty, bundle provenance is included in the audit event.
+func (l *Logger) LogWSScan(ev WSScanEvent) {
 	scanner := string(EventResponseScan)
-	if direction == DirectionClientToServer {
+	if ev.Direction == DirectionClientToServer {
 		scanner = ScannerDLP
 	}
 	technique := TechniqueForScanner(scanner)
 
 	e := newLogEntry(l.zl.Warn(), EventWSScan).
-		str("target", target).
-		str("direction", direction).
-		str("client_ip", clientIP).
-		str("request_id", requestID).
-		str("action", action).
-		intField("match_count", matchCount).
-		strs("patterns", patternNames).
+		str("target", ev.Target).
+		str("direction", ev.Direction).
+		str("client_ip", ev.ClientIP).
+		str("request_id", ev.RequestID).
+		str("action", ev.Action).
+		intField("match_count", ev.MatchCount).
+		strs("patterns", ev.PatternNames).
 		str("mitre_technique", technique)
-	if len(bundleRules) > 0 {
-		e.bundleRulesField(bundleRules)
+	if len(ev.BundleRules) > 0 {
+		e.bundleRulesField(ev.BundleRules)
 	}
 	e.msg("websocket scan hit")
 

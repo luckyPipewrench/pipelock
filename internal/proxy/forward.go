@@ -952,14 +952,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardTaint.Result.Decision == session.PolicyAsk || forwardTaint.Result.Decision == session.PolicyBlock {
 		p.logger.LogTaintDecision(
 			actx,
-			forwardTaint.Risk.Level.String(),
-			forwardTaint.ActionClass.String(),
-			forwardTaint.Sensitivity.String(),
-			forwardTaint.Authority.String(),
-			forwardTaint.Result.Decision.String(),
-			forwardTaint.Result.Reason,
-			forwardTaint.Risk.LastExternalURL,
-			forwardTaint.Risk.LastExternalKind,
+			audit.TaintDecision{
+				TaintLevel:  forwardTaint.Risk.Level.String(),
+				ActionClass: forwardTaint.ActionClass.String(),
+				Sensitivity: forwardTaint.Sensitivity.String(),
+				Authority:   forwardTaint.Authority.String(),
+				Decision:    forwardTaint.Result.Decision.String(),
+				Reason:      forwardTaint.Result.Reason,
+				SourceURL:   forwardTaint.Risk.LastExternalURL,
+				SourceKind:  forwardTaint.Risk.LastExternalKind,
+			},
 		)
 	}
 	switch forwardTaint.Result.Decision {

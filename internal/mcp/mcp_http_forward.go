@@ -53,10 +53,14 @@ func RunHTTPProxy(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Per-invocation adaptive enforcement recorder.
+	// Per-invocation adaptive enforcement recorder. Mint the invocation
+	// key once so it can also feed scanHTTPInputDecision below, keeping
+	// CEE state and audit correlation scoped to this RunHTTPProxy call
+	// instead of a shared "default" bucket across unrelated invocations.
+	invocationKey := session.NextInvocationKey("mcp-http")
 	var rec session.Recorder
 	if opts.Store != nil {
-		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-http"))
+		rec = opts.Store.GetOrCreate(invocationKey)
 	}
 
 	safeClientOut := &syncWriter{w: clientOut}
@@ -132,7 +136,7 @@ func RunHTTPProxy(
 
 		// Input scanning — call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
-		decision := scanHTTPInputDecision(msg, safeLogW, "default", "default", fwdOpts)
+		decision := scanHTTPInputDecision(msg, safeLogW, invocationKey, invocationKey, fwdOpts)
 		if decision.Blocked != nil {
 			if !decision.Blocked.IsNotification {
 				var resp []byte
@@ -157,6 +161,11 @@ func RunHTTPProxy(
 
 		if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream evaluation failed: %v\n", gateErr)
+			// Notifications have no id; JSON-RPC forbids responses to
+			// them. Mirror the kill-switch and input-scan paths above.
+			if isRPCNotification(frame.ID) {
+				continue
+			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed"))
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send contract response: %v\n", wErr)
@@ -167,6 +176,9 @@ func RunHTTPProxy(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream scanner denied: %s\n", gate.Reason)
 			} else {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: contract upstream denied: %s\n", gate.Reason)
+			}
+			if isRPCNotification(frame.ID) {
+				continue
 			}
 			errResp := blockRequestResponse(mcpContractBlockRequest(frame.ID, gate, "pipelock: upstream URL blocked by live-lock contract"))
 			if wErr := safeClientOut.WriteMessage(errResp); wErr != nil {

@@ -204,8 +204,18 @@ func RunHTTPListenerProxy(
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("request body too large")))
+			// MaxBytesReader is the only ReadAll failure that means
+			// "body exceeded the limit"; truncated chunked bodies and
+			// client disconnects must report 400 so dashboards do not
+			// over-count 413s as oversize abuse.
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("request body too large")))
+			} else {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("request body read failed")))
+			}
 			return
 		}
 
@@ -456,7 +466,7 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
-		defer upResp.Body.Close() //nolint:errcheck // best-effort cleanup
+		defer func() { _ = upResp.Body.Close() }()
 
 		// 202 Accepted: notification acknowledged, no body.
 		if upResp.StatusCode == http.StatusAccepted {

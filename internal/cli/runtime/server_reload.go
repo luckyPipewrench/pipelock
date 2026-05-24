@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
@@ -89,6 +90,14 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
 				oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
 			newCfg.FlightRecorder.SigningKeyPath = oldCfg.FlightRecorder.SigningKeyPath
+		}
+		// Block file_sentry changes via reload. The watcher is built
+		// once at Start from the startup snapshot; reloading would
+		// leave the old watcher armed on stale paths while the live
+		// config reported the new ones. Restart to apply.
+		if !reflect.DeepEqual(oldCfg.FileSentry, newCfg.FileSentry) {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: file_sentry settings changed — watcher cannot rebind at runtime, ignoring (restart required)\n")
+			newCfg.FileSentry = oldCfg.FileSentry
 		}
 
 		// Dedupe identical-hash reload EVENTS within a short window.

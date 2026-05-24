@@ -3,7 +3,7 @@ module github.com/luckyPipewrench/pipelock
 go 1.25.0
 
 require (
-	github.com/CycloneDX/cyclonedx-go v0.10.0
+	github.com/CycloneDX/cyclonedx-go v0.11.0
 	github.com/common-fate/httpsig v0.2.1
 	github.com/dunglas/httpsfv v1.1.0
 	github.com/fsnotify/fsnotify v1.10.1

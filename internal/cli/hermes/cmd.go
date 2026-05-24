@@ -6,14 +6,17 @@
 // system. The package owns plugin extraction, install/verify/rollback
 // commands, and any future Hermes-specific glue.
 //
-// The MVP release ships:
+// Subcommands:
 //   - `pipelock hermes install` — extracts the embedded Python plugin tree
-//     into ~/.hermes/plugins/pipelock/ (mode-flag scaffolding only; full
-//     backend-aware install lands in a follow-up).
+//     into ~/.hermes/plugins/pipelock/ and wires the integration.
+//   - `pipelock hermes verify` — reports the installed coverage state.
+//   - `pipelock hermes rollback` — surgically removes the integration.
+//   - `pipelock hermes hook` — the subprocess entrypoint Hermes invokes per
+//     hook event (stdin JSON in, decision JSON out).
 //
-// The separate `pipelock-hermes-hook` binary (under cmd/) is the workhorse
-// invoked by Hermes for each hook event; this package handles configuration
-// of that integration rather than the runtime hot path itself.
+// The hook lives as a subcommand of the main pipelock binary (not a separate
+// binary) so it ships with every pipelock install, with no extra release
+// artifact to provision.
 package hermes
 
 import "github.com/spf13/cobra"
@@ -30,9 +33,12 @@ integration: extracts the Python plugin into ~/.hermes/plugins/pipelock/ so
 Hermes can call pipelock for pre_tool_call, transform_tool_result,
 pre_gateway_dispatch, and session-lifecycle hooks.
 
-The runtime hot path lives in the pipelock-hermes-hook binary; this command
-group manages installation, verification, and rollback of that integration.`,
+The 'hook' subcommand is the per-event subprocess entrypoint; 'install',
+'verify', and 'rollback' manage the integration.`,
 	}
 	cmd.AddCommand(installCmd())
+	cmd.AddCommand(verifyCmd())
+	cmd.AddCommand(rollbackCmd())
+	cmd.AddCommand(hookCmd())
 	return cmd
 }

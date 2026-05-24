@@ -124,6 +124,37 @@ func TestInstall_RotatesExistingFiles(t *testing.T) {
 	}
 }
 
+func TestInstall_RerunSkipsUnchangedFiles(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	first, err := Install(PluginTarget{Root: tmp})
+	if err != nil {
+		t.Fatalf("Install first pass: %v", err)
+	}
+	if first.FilesWritten == 0 {
+		t.Fatal("first install wrote zero files")
+	}
+
+	second, err := Install(PluginTarget{Root: tmp})
+	if err != nil {
+		t.Fatalf("Install second pass: %v", err)
+	}
+	if second.FilesWritten != 0 {
+		t.Fatalf("unchanged rerun wrote %d files, want 0", second.FilesWritten)
+	}
+	if len(second.BackupsCreated) != 0 {
+		t.Fatalf("unchanged rerun created backups: %v", second.BackupsCreated)
+	}
+	matches, err := filepath.Glob(filepath.Join(tmp, "*.bak.*"))
+	if err != nil {
+		t.Fatalf("glob backups: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("unchanged rerun left backup files: %v", matches)
+	}
+}
+
 func TestInstall_RejectsDirectoryCollision(t *testing.T) {
 	t.Parallel()
 
@@ -167,6 +198,175 @@ func TestEnsureContained(t *testing.T) {
 				t.Fatalf("ensureContained(%q) err=%v, wantErr=%v", tc.dest, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestWriteConfigSidecar_WriteAndRemove(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	dest := filepath.Join(root, configSidecarName)
+
+	if err := writeConfigSidecar(root, "/etc/pipelock/pipelock.yaml"); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	data, err := os.ReadFile(dest) //nolint:gosec // under t.TempDir()
+	if err != nil {
+		t.Fatalf("read sidecar: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "/etc/pipelock/pipelock.yaml" {
+		t.Fatalf("sidecar content = %q", string(data))
+	}
+
+	// Empty path removes the sidecar.
+	if err := writeConfigSidecar(root, ""); err != nil {
+		t.Fatalf("remove sidecar: %v", err)
+	}
+	if _, err := os.Stat(dest); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("sidecar not removed: %v", err)
+	}
+	// Removing an already-absent sidecar is a no-op, not an error.
+	if err := writeConfigSidecar(root, ""); err != nil {
+		t.Fatalf("remove absent sidecar errored: %v", err)
+	}
+
+	// Overwriting an existing sidecar rotates the old one to .bak.
+	if err := writeConfigSidecar(root, "/first/path.yaml"); err != nil {
+		t.Fatalf("write first: %v", err)
+	}
+	if err := writeConfigSidecar(root, "/second/path.yaml"); err != nil {
+		t.Fatalf("overwrite: %v", err)
+	}
+	final, err := os.ReadFile(dest) //nolint:gosec // under t.TempDir()
+	if err != nil {
+		t.Fatalf("read final: %v", err)
+	}
+	if strings.TrimSpace(string(final)) != "/second/path.yaml" {
+		t.Fatalf("overwrite did not take: %q", string(final))
+	}
+	matches, _ := filepath.Glob(dest + ".bak.*")
+	if len(matches) == 0 {
+		t.Fatal("overwrite did not rotate the prior sidecar to .bak")
+	}
+	if err := writeConfigSidecar(root, "/second/path.yaml"); err != nil {
+		t.Fatalf("rewrite unchanged sidecar: %v", err)
+	}
+	afterMatches, _ := filepath.Glob(dest + ".bak.*")
+	if len(afterMatches) != len(matches) {
+		t.Fatalf("unchanged sidecar rewrite created backup churn: before=%v after=%v", matches, afterMatches)
+	}
+}
+
+func TestRemovePluginTree_PreservesOperatorFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if _, err := Install(PluginTarget{Root: root}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	// An operator file the rollback must not delete.
+	operatorFile := filepath.Join(root, "operator-notes.txt")
+	if err := os.WriteFile(operatorFile, []byte("keep me"), pluginFilePerm); err != nil {
+		t.Fatalf("seed operator file: %v", err)
+	}
+
+	if err := removePluginTree(root); err != nil {
+		t.Fatalf("removePluginTree: %v", err)
+	}
+
+	// Managed files gone, operator file + dir preserved.
+	if pluginInstalled(root) {
+		t.Fatal("managed plugin files were not removed")
+	}
+	if _, err := os.Stat(operatorFile); err != nil {
+		t.Fatalf("rollback deleted operator file: %v", err)
+	}
+}
+
+func TestRemovePluginTree_RemovesEmptyDir(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sub := filepath.Join(root, "pipelock")
+	if _, err := Install(PluginTarget{Root: sub}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := removePluginTree(sub); err != nil {
+		t.Fatalf("removePluginTree: %v", err)
+	}
+	if _, err := os.Stat(sub); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("empty plugin dir not removed: %v", err)
+	}
+}
+
+func TestRemovePluginTree_AbsentRootIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	if err := removePluginTree(filepath.Join(t.TempDir(), "never-existed")); err != nil {
+		t.Fatalf("removePluginTree on absent root: %v", err)
+	}
+}
+
+func TestIsManagedPluginPath(t *testing.T) {
+	t.Parallel()
+
+	managed := []string{
+		"__init__.py", "plugin.py", "README.md", configSidecarName,
+		"plugin.py.bak.123", "pipelock.conf.456.tmp",
+	}
+	for _, name := range managed {
+		if !isManagedPluginPath(name) {
+			t.Fatalf("%q should be managed", name)
+		}
+	}
+	for _, name := range []string{"operator-notes.txt", "custom.py", ".env"} {
+		if isManagedPluginPath(name) {
+			t.Fatalf("%q should not be managed", name)
+		}
+	}
+}
+
+func TestPluginInstalled(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if pluginInstalled(root) {
+		t.Fatal("empty dir reported as installed")
+	}
+	if _, err := Install(PluginTarget{Root: root}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !pluginInstalled(root) {
+		t.Fatal("installed plugin not detected")
+	}
+}
+
+func TestRemovePluginTreeOnlyRemovesManagedFiles(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if _, err := Install(PluginTarget{Root: root}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	unknown := filepath.Join(root, "operator-note.txt")
+	if err := os.WriteFile(unknown, []byte("keep"), pluginFilePerm); err != nil {
+		t.Fatalf("seed unknown file: %v", err)
+	}
+	if err := writeConfigSidecar(root, "/etc/pipelock.yaml"); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+
+	if err := removePluginTree(root); err != nil {
+		t.Fatalf("removePluginTree: %v", err)
+	}
+	if pluginInstalled(root) {
+		t.Fatal("managed plugin files still look installed")
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatalf("rollback removed operator-created file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, configSidecarName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("managed config sidecar still exists: %v", err)
 	}
 }
 

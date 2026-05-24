@@ -216,6 +216,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMediationEnvelope(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateConductor(&warnings); err != nil {
+		return warnings, err
+	}
 	if err := c.validateMediaPolicy(); err != nil {
 		return warnings, err
 	}

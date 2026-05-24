@@ -526,6 +526,9 @@ func Defaults() *Config {
 			Mode:              LockModeShadow, // safe-by-default; live requires explicit opt-in
 			MinimumSignatures: 1,
 		},
+		Conductor: Conductor{
+			EmergencyStream: ptrBool(true),
+		},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source
 	// selector can distinguish them from user-supplied patterns. Set at

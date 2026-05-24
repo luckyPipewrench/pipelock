@@ -1513,6 +1513,11 @@ func (c *Config) validateFileSentry() error {
 			return fmt.Errorf("file_sentry: watch_paths[%d] must not be empty", i)
 		}
 	}
+	switch c.FileSentry.Action {
+	case "", ActionWarn, ActionBlock:
+	default:
+		return fmt.Errorf("invalid file_sentry.action %q: must be warn or block", c.FileSentry.Action)
+	}
 	return nil
 }
 

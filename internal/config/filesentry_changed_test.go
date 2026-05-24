@@ -14,6 +14,7 @@ func TestFileSentryChanged(t *testing.T) {
 		c := Defaults()
 		c.FileSentry.Enabled = true
 		c.FileSentry.BestEffort = false
+		c.FileSentry.Action = ActionWarn
 		c.FileSentry.WatchPaths = []string{"/tmp/watch"}
 		c.FileSentry.ScanContent = boolPtrCfg(true)
 		c.FileSentry.IgnorePatterns = []string{"*.log"}
@@ -38,6 +39,11 @@ func TestFileSentryChanged(t *testing.T) {
 		{
 			name:    "best_effort changed",
 			modify:  func(c *Config) { c.FileSentry.BestEffort = true },
+			changed: true,
+		},
+		{
+			name:    "action changed",
+			modify:  func(c *Config) { c.FileSentry.Action = ActionBlock },
 			changed: true,
 		},
 		{

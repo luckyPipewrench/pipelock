@@ -63,22 +63,17 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		return nil, fmt.Errorf("file sentry failed to arm watches (feature is enabled): %w", err)
 	}
 
-	consumerDone := make(chan struct{})
-	go func() {
-		defer close(consumerDone)
-		for f := range watcher.Findings() {
-			agent := ""
-			if f.IsAgent {
-				agent = " (agent process)"
-			}
-			_, _ = fmt.Fprintf(s.opts.Stderr,
-				"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
-				f.Path, f.PatternName, f.Severity, agent)
-			if s.metrics != nil {
-				s.metrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
-			}
-		}
-	}()
+	var findingHook filesentry.FindingHook
+	if s.metrics != nil {
+		findingHook = s.metrics.RecordFileSentryFinding
+	}
+	waitConsumer := filesentry.ConsumeFindings(filesentry.ConsumerOpts{
+		Watcher:   watcher,
+		Action:    cfg.FileSentry.Action,
+		Log:       s.opts.Stderr,
+		OnFinding: findingHook,
+		Cancel:    cancel,
+	})
 
 	go func() {
 		if err := watcher.Start(ctx); err != nil {
@@ -87,12 +82,12 @@ func (s *Server) startFileSentry(ctx context.Context, cfg *config.Config, cancel
 		}
 	}()
 
-	_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s)\n",
-		len(cfg.FileSentry.WatchPaths))
+	_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: file sentry watching %d path(s) (action=%s)\n",
+		len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action)
 
 	return func() {
 		_ = watcher.Close()
-		<-consumerDone
+		waitConsumer()
 	}, nil
 }
 

@@ -114,7 +114,12 @@ const (
 	// (it changes the destination IPs the SSRF check evaluates) and so it
 	// participates in the canonical view; the field is present but empty
 	// in Defaults().
-	goldenHashDefaults = "029a5449518889527136cdcb796b8746338d38a12ed0723b13ab24d7139c54a5"
+	// Re-bumped for file_sentry.action: adding the warn/block enforcement
+	// enum to FileSentry is a policy-semantics change. The default "warn"
+	// preserves current behavior; "block" causes the consumer to cancel
+	// the proxy ctx on agent-attributed findings, which is observably
+	// different enforcement.
+	goldenHashDefaults = "de4d3761e1b0ca49ea4521c0ace44350282ae9c382e8e15dc36b450971c6777c"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -175,7 +180,8 @@ const (
 	// Re-bumped for the dns.host_overrides addition: see goldenHashDefaults
 	// note. The rich fixture omits dns:, so the field is empty but still
 	// part of the canonical view.
-	goldenHashRichConfig = "86666b12e6ce89ee16b749e4926444b8b10505bfcfb85ea8516d1d77d3118d68"
+	// Re-bumped for file_sentry.action: same rationale as goldenHashDefaults.
+	goldenHashRichConfig = "c17e20708f463010ee973574fcc7d763133aeb5845b13cba8fa389ce6fb85476"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

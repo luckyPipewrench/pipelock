@@ -168,6 +168,13 @@ type FileSentry struct {
 	WatchPaths     []string `yaml:"watch_paths"`
 	ScanContent    *bool    `yaml:"scan_content"`    // nil = default true
 	IgnorePatterns []string `yaml:"ignore_patterns"` // glob patterns to skip
+	// Action selects the enforcement response when an agent-attributed write
+	// matches a DLP pattern. "warn" logs the finding and records a metric
+	// (current default). "block" additionally cancels the proxy context so the
+	// MCP child terminates, preventing the agent from continuing after a
+	// detected leak. Non-agent writes (editor saves, build output) never
+	// trigger the block path. Empty normalizes to "warn".
+	Action string `yaml:"action"`
 }
 
 // Sandbox configures process containment for child processes.

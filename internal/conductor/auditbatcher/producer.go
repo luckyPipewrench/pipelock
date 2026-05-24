@@ -25,6 +25,8 @@ import (
 const (
 	defaultProducerBuffer = 4096
 
+	checkpointEntryType = "checkpoint"
+
 	producerDropChannelFull       = "producer_channel_full"
 	producerDropEnqueueError      = "enqueue_error"
 	producerDropInvalidCheckpoint = "invalid_checkpoint"
@@ -79,14 +81,17 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	if len(cfg.AuditSigner) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("auditbatcher: producer private key length=%d want=%d", len(cfg.AuditSigner), ed25519.PrivateKeySize)
 	}
-	for field, value := range map[string]string{
-		"org_id":              cfg.OrgID,
-		"fleet_id":            cfg.FleetID,
-		"instance_id":         cfg.InstanceID,
-		"audit_signer_key_id": cfg.AuditSignerKeyID,
-		"recorder_key_id":     cfg.RecorderKeyID,
+	for _, id := range []struct {
+		field string
+		value string
+	}{
+		{field: "org_id", value: cfg.OrgID},
+		{field: "fleet_id", value: cfg.FleetID},
+		{field: "instance_id", value: cfg.InstanceID},
+		{field: "audit_signer_key_id", value: cfg.AuditSignerKeyID},
+		{field: "recorder_key_id", value: cfg.RecorderKeyID},
 	} {
-		if err := validateProducerIdentifier(field, value); err != nil {
+		if err := validateProducerIdentifier(id.field, id.value); err != nil {
 			return nil, err
 		}
 	}
@@ -134,8 +139,7 @@ func (p *Producer) ObserveRecorderEntry(entry recorder.Entry) {
 	select {
 	case p.entries <- entry:
 	default:
-		p.addDropped(producerDropChannelFull, 1)
-		p.recordDropMetric(producerDropChannelFull)
+		p.drop(producerDropChannelFull, 1)
 	}
 }
 
@@ -158,27 +162,24 @@ func (p *Producer) run() {
 	var pending []recorder.Entry
 	for entry := range p.entries {
 		if entry.Version != recorder.EntryVersion {
-			p.addDropped(producerDropInvalidCheckpoint, 1)
-			p.recordDropMetric(producerDropInvalidCheckpoint)
+			p.drop(producerDropInvalidCheckpoint, 1)
 			continue
 		}
 		if len(pending) > 0 && entry.Sequence != pending[len(pending)-1].Sequence+1 {
-			p.addDropped(producerDropSequenceGap, uint64(len(pending)))
-			p.recordDropMetric(producerDropSequenceGap)
+			p.drop(producerDropSequenceGap, uint64(len(pending)))
 			pending = nil
 		}
 		pending = append(pending, entry)
-		if entry.Type != "checkpoint" {
+		if entry.Type != checkpointEntryType {
 			continue
 		}
-		if err := p.enqueueSegment(pending); err != nil {
-			p.recordDropMetric(errorDropReason(err))
-		}
+		// enqueueSegment records its own drop accounting and metrics at
+		// each failure site, so the returned error is informational only.
+		_ = p.enqueueSegment(pending)
 		pending = nil
 	}
 	if len(pending) > 0 {
-		p.addDropped(producerDropShutdownPartial, uint64(len(pending)))
-		p.recordDropMetric(producerDropShutdownPartial)
+		p.drop(producerDropShutdownPartial, uint64(len(pending)))
 	}
 }
 
@@ -187,28 +188,38 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 		return nil
 	}
 	checkpoint := entries[len(entries)-1]
-	if checkpoint.Type != "checkpoint" {
+	if checkpoint.Type != checkpointEntryType {
 		return nil
 	}
+	// The recorder committed this checkpoint to its local hash chain before
+	// we observed it, so advance the chain tail unconditionally — even on a
+	// drop. The next segment's PreviousSegmentTail must reflect the true
+	// local chain; drops are accounted separately in DroppedAccounting. If a
+	// drop path left the tail un-advanced, the next segment would claim
+	// continuity across a checkpoint the recorder actually wrote, and a
+	// verifier replaying the local recorder file would reject the chain.
+	defer func() { p.previousSegmentTail = checkpoint.Hash }()
+
+	span := uint64(len(entries))
 	cp, err := checkpointDetail(checkpoint)
 	if err != nil {
-		p.addDropped(producerDropInvalidCheckpoint, uint64(len(entries)))
+		p.drop(producerDropInvalidCheckpoint, span)
 		return fmt.Errorf("%s: %w", producerDropInvalidCheckpoint, err)
 	}
 	payload, err := marshalEntriesJSONL(entries)
 	if err != nil {
-		p.addDropped(producerDropEnqueueError, uint64(len(entries)))
+		p.drop(producerDropEnqueueError, span)
 		return fmt.Errorf("%s: %w", producerDropEnqueueError, err)
 	}
 	if len(payload) > conductor.MaxAuditPayloadBytes {
-		p.addDropped(producerDropPayloadTooLarge, uint64(len(entries)))
-		p.previousSegmentTail = checkpoint.Hash
+		p.drop(producerDropPayloadTooLarge, span)
 		return fmt.Errorf("%s: payload=%d max=%d", producerDropPayloadTooLarge, len(payload), conductor.MaxAuditPayloadBytes)
 	}
-	envelope := p.envelope(entries, checkpoint, cp, payload)
+	includedDrops := p.droppedAccounting()
+	envelope := p.envelope(entries, checkpoint, cp, payload, includedDrops)
 	signed, err := SignEnvelope(envelope, p.auditSignerKeyID, p.auditSigner)
 	if err != nil {
-		p.addDropped(producerDropEnqueueError, uint64(len(entries)))
+		p.drop(producerDropEnqueueError, span)
 		return fmt.Errorf("%s: %w", producerDropEnqueueError, err)
 	}
 	if _, err := p.queue.Enqueue(Batch{Envelope: signed, Payload: payload}); err != nil {
@@ -216,16 +227,15 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 		if errors.Is(err, ErrQueueFull) {
 			reason = producerDropQueueFull
 		}
-		p.addDropped(reason, uint64(len(entries)))
+		p.drop(reason, span)
 		return fmt.Errorf("%s: %w", reason, err)
 	}
-	p.clearDropped()
-	p.previousSegmentTail = checkpoint.Hash
+	p.releaseDropped(includedDrops)
 	p.recordQueue()
 	return nil
 }
 
-func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte) conductor.AuditBatchEnvelope {
+func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry, cp recorder.CheckpointDetail, payload []byte, dropped conductor.DroppedAccounting) conductor.AuditBatchEnvelope {
 	sum := sha256.Sum256(payload)
 	return conductor.AuditBatchEnvelope{
 		SchemaVersion:      conductor.SchemaVersion,
@@ -240,7 +250,7 @@ func (p *Producer) envelope(entries []recorder.Entry, checkpoint recorder.Entry,
 		EventCount:         uint64(len(entries)),
 		PayloadSHA256:      hex.EncodeToString(sum[:]),
 		PayloadBytes:       uint64(len(payload)),
-		Dropped:            p.droppedAccounting(),
+		Dropped:            dropped,
 		Chain: conductor.EvidenceChain{
 			EntryVersion:           recorder.EntryVersion,
 			SegmentID:              segmentID(entries[0].SessionID, entries[0].Sequence, checkpoint.Sequence),
@@ -265,6 +275,18 @@ func (p *Producer) nextBatchID() string {
 		return fmt.Sprintf("audit-%020d", p.now().UTC().UnixNano())
 	}
 	return fmt.Sprintf("audit-%020d-%s", p.now().UTC().UnixNano(), hex.EncodeToString(random[:]))
+}
+
+// drop records a dropped-span count in one place: the in-memory accounting
+// that feeds the next envelope's DroppedAccounting AND the Prometheus drop
+// metric. Keeping them together prevents the map and the metric from ever
+// disagreeing on the reason label.
+func (p *Producer) drop(reason string, count uint64) {
+	if count == 0 {
+		return
+	}
+	p.addDropped(reason, count)
+	p.recordDropMetric(reason)
 }
 
 func (p *Producer) addDropped(reason string, count uint64) {
@@ -297,10 +319,20 @@ func (p *Producer) droppedAccounting() conductor.DroppedAccounting {
 	return out
 }
 
-func (p *Producer) clearDropped() {
+func (p *Producer) releaseDropped(included conductor.DroppedAccounting) {
+	if included.Count == 0 {
+		return
+	}
 	p.dropMu.Lock()
 	defer p.dropMu.Unlock()
-	clear(p.dropped)
+	for _, reason := range included.Reasons {
+		current := p.dropped[reason.Reason]
+		if current <= reason.Count {
+			delete(p.dropped, reason.Reason)
+			continue
+		}
+		p.dropped[reason.Reason] = current - reason.Count
+	}
 }
 
 func (p *Producer) recordQueue() {
@@ -388,25 +420,4 @@ func validateProducerIdentifier(field, value string) error {
 		}
 	}
 	return nil
-}
-
-func errorDropReason(err error) string {
-	if err == nil {
-		return producerDropEnqueueError
-	}
-	text := err.Error()
-	for _, reason := range []string{
-		producerDropChannelFull,
-		producerDropEnqueueError,
-		producerDropInvalidCheckpoint,
-		producerDropPayloadTooLarge,
-		producerDropQueueFull,
-		producerDropSequenceGap,
-		producerDropShutdownPartial,
-	} {
-		if strings.Contains(text, reason) {
-			return reason
-		}
-	}
-	return producerDropEnqueueError
 }

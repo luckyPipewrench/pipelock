@@ -423,6 +423,13 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.cleanup()
 			return nil, errors.New("conductor audit producer requires flight recorder")
 		}
+		// The flight-recorder signing key doubles as the audit-batch
+		// signer. Reuse is safe because the two signing schemes operate on
+		// disjoint byte sets: the recorder signs a bare 64-char hex chain
+		// hash, while the audit batch signs canonical JSON (`{...}`). No
+		// recorder signature can be replayed as a valid audit-batch
+		// signature or vice versa. Key ids stay separate (audit_signing_key_id
+		// vs recorder_key_id) so the sink-side roster can distinguish purpose.
 		producer, producerErr := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
 			Queue:            conductorQueue,
 			Metrics:          m,

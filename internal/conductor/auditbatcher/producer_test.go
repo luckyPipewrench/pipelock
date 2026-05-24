@@ -5,10 +5,13 @@ package auditbatcher
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -145,6 +148,193 @@ func TestProducer_CloseRacesWithObserver(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
+}
+
+// TestProducer_AdvancesChainTailOnDroppedSegment proves the evidence chain
+// stays continuous across a dropped segment. When a segment cannot ship (here:
+// a full durable queue) the recorder has already committed its checkpoint
+// locally, so previousSegmentTail must still advance — otherwise the next
+// segment would claim continuity across a checkpoint that actually exists in
+// the local recorder file, and a verifier replaying that file would reject the
+// chain.
+func TestProducer_AdvancesChainTailOnDroppedSegment(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue"), MaxPending: 1})
+	if err != nil {
+		t.Fatalf("Open queue: %v", err)
+	}
+	metrics := &transportMetricsRecorder{}
+	p := newTestProducer(t, q, metrics, priv)
+	defer func() { _ = p.Close() }()
+
+	// Segment A succeeds and fills the MaxPending=1 queue.
+	segA := checkpointSegment(0)
+	if err := p.enqueueSegment(segA); err != nil {
+		t.Fatalf("segA enqueue: %v", err)
+	}
+	if p.previousSegmentTail != segA[1].Hash {
+		t.Fatalf("tail after A = %q, want %q", p.previousSegmentTail, segA[1].Hash)
+	}
+
+	// Segment B is dropped because the queue is full, but its checkpoint was
+	// recorded locally — the tail must advance to B's checkpoint hash.
+	segB := checkpointSegment(2)
+	if err := p.enqueueSegment(segB); err == nil {
+		t.Fatal("segB enqueue: expected failure on full queue")
+	}
+	if p.previousSegmentTail != segB[1].Hash {
+		t.Fatalf("tail after dropped B = %q, want advanced to %q", p.previousSegmentTail, segB[1].Hash)
+	}
+	if got := metrics.delivery["drop:queue_full"]; got != 1 {
+		t.Fatalf("queue_full drop metric = %d, want 1", got)
+	}
+
+	// Free the queue and ship segment C. It must link back to dropped B's
+	// tail, demonstrating the chain is continuous across the gap.
+	if _, err := q.Claim(); err != nil {
+		t.Fatalf("Claim segA: %v", err)
+	}
+	segC := checkpointSegment(4)
+	if err := p.enqueueSegment(segC); err != nil {
+		t.Fatalf("segC enqueue: %v", err)
+	}
+	lease, err := q.Claim()
+	if err != nil {
+		t.Fatalf("Claim segC: %v", err)
+	}
+	if got := lease.Batch.Envelope.Chain.PreviousSegmentTail; got != segB[1].Hash {
+		t.Fatalf("segC PreviousSegmentTail = %q, want dropped-B tail %q", got, segB[1].Hash)
+	}
+	// The carried drop accounting from B must surface in C's signed envelope.
+	if lease.Batch.Envelope.Dropped.Count != uint64(len(segB)) {
+		t.Fatalf("segC dropped count = %d, want %d", lease.Batch.Envelope.Dropped.Count, len(segB))
+	}
+}
+
+// TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint covers the
+// invalid-checkpoint drop path: the tail still advances (the recorder wrote
+// the checkpoint) and the drop metric carries the right reason. Nothing is
+// enqueued.
+func TestProducer_AdvancesTailAndRecordsMetricOnInvalidCheckpoint(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatalf("Open queue: %v", err)
+	}
+	metrics := &transportMetricsRecorder{}
+	p := newTestProducer(t, q, metrics, priv)
+	defer func() { _ = p.Close() }()
+
+	seg := checkpointSegment(0)
+	seg[1].Detail = recorder.CheckpointDetail{} // strip the checkpoint signature
+	if err := p.enqueueSegment(seg); err == nil {
+		t.Fatal("expected invalid checkpoint error")
+	}
+	if p.previousSegmentTail != seg[1].Hash {
+		t.Fatalf("tail not advanced on invalid checkpoint: %q", p.previousSegmentTail)
+	}
+	if got := metrics.delivery["drop:invalid_checkpoint"]; got != 1 {
+		t.Fatalf("invalid_checkpoint drop metric = %d, want 1", got)
+	}
+	stats, err := q.Stats()
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if stats.Pending != 0 {
+		t.Fatalf("pending = %d, want 0 (nothing enqueued)", stats.Pending)
+	}
+}
+
+func TestProducer_ReleaseDroppedPreservesConcurrentDrops(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatalf("Open queue: %v", err)
+	}
+	p := newTestProducer(t, q, nil, priv)
+	defer func() { _ = p.Close() }()
+
+	p.drop(producerDropQueueFull, 2)
+	included := p.droppedAccounting()
+	p.drop(producerDropQueueFull, 1)
+	p.drop(producerDropChannelFull, 1)
+
+	p.releaseDropped(included)
+	got := p.droppedAccounting()
+	if got.Count != 2 {
+		t.Fatalf("dropped count after release = %d, want 2", got.Count)
+	}
+	reasons := map[string]uint64{}
+	for _, reason := range got.Reasons {
+		reasons[reason.Reason] = reason.Count
+	}
+	if reasons[producerDropQueueFull] != 1 {
+		t.Fatalf("remaining queue_full drops = %d, want 1", reasons[producerDropQueueFull])
+	}
+	if reasons[producerDropChannelFull] != 1 {
+		t.Fatalf("remaining channel_full drops = %d, want 1", reasons[producerDropChannelFull])
+	}
+}
+
+func newTestProducer(t *testing.T, q *Queue, metrics MetricsSink, priv ed25519.PrivateKey) *Producer {
+	t.Helper()
+	p, err := NewProducer(ProducerConfig{
+		Queue:            q,
+		Metrics:          metrics,
+		OrgID:            "org-main",
+		FleetID:          "prod",
+		InstanceID:       "pl-prod-1",
+		AuditSignerKeyID: "audit-key-1",
+		RecorderKeyID:    "recorder-key-1",
+		AuditSigner:      priv,
+		Now:              func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewProducer: %v", err)
+	}
+	return p
+}
+
+// checkpointSegment builds a [regular, checkpoint] entry pair with valid
+// 64-hex chain hashes and a well-formed checkpoint signature so the producer
+// can construct and sign a valid envelope. start and start+1 are the two
+// sequence numbers.
+func checkpointSegment(start uint64) []recorder.Entry {
+	reg := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  start,
+		SessionID: "proxy",
+		Type:      "action_receipt",
+		Hash:      segmentHashHex(fmt.Sprintf("head-%d", start)),
+	}
+	cp := recorder.Entry{
+		Version:   recorder.EntryVersion,
+		Sequence:  start + 1,
+		SessionID: "proxy",
+		Type:      "checkpoint",
+		Hash:      segmentHashHex(fmt.Sprintf("tail-%d", start+1)),
+		Detail: recorder.CheckpointDetail{
+			EntryCount: 2,
+			FirstSeq:   start,
+			LastSeq:    start + 1,
+			Signature:  strings.Repeat("ab", ed25519.SignatureSize),
+		},
+	}
+	return []recorder.Entry{reg, cp}
+}
+
+func segmentHashHex(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
 }
 
 func testRecorderEntry(summary string) recorder.Entry {

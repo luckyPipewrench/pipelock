@@ -265,17 +265,17 @@ func TestHTTPListener_ParitySplitSecret(t *testing.T) {
 	}
 }
 
-// TestHTTPListener_ParityEnvelopeAntiSpoofPassthrough pins the CURRENT
-// behaviour: the HTTP listener path does NOT call stripInboundMCPMeta
-// (stdio strips inbound com.pipelock/mediation, but the listener does
-// not). This test documents the divergence so a future refactor cannot
-// silently change it, and so a parity-fix PR that adds stripInboundMCPMeta
-// to the HTTP path flips this assertion deliberately.
+// TestHTTPListener_ParityEnvelopeAntiSpoofStripped enforces that the HTTP
+// listener path scrubs inbound com.pipelock/mediation envelopes via
+// stripInboundMCPMeta before parsing, scanning, or forwarding. Mirrors
+// the stdio behaviour (internal/mcp/input.go:213). Without this, an
+// agent could spoof the envelope pipelock injects and trick downstream
+// receipt verifiers into trusting attacker-supplied mediation metadata.
 //
-// If the listener starts stripping, update the assertion to expect
-// the spoofed key to be absent from the upstream request, and note
-// the fix PR in the comment. DO NOT silently flip the assertion.
-func TestHTTPListener_ParityEnvelopeAntiSpoofPassthrough(t *testing.T) {
+// History: the prior version of this test pinned the OPPOSITE behaviour
+// as a known parity gap. The strip was wired in scanHTTPInputDecision
+// alongside the documentation update in this commit.
+func TestHTTPListener_ParityEnvelopeAntiSpoofStripped(t *testing.T) {
 	var upstreamBody bytes.Buffer
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -289,19 +289,145 @@ func TestHTTPListener_ParityEnvelopeAntiSpoofPassthrough(t *testing.T) {
 	baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
 
 	// Spoofed com.pipelock/mediation in params._meta. A compliant agent
-	// should not populate this — only the proxy does. On stdio the key
-	// is stripped; on the HTTP listener today it is not.
+	// should never populate this; only pipelock does. Both stdio and the
+	// HTTP listener now strip the key before forwarding.
 	spoofed := `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"echo","arguments":{"hi":"there"},"_meta":{"com.pipelock/mediation":{"spoofed":true}}}}`
 	status, _ := parityHTTPPost(t, baseURL, spoofed)
 	if status != http.StatusOK && status != http.StatusAccepted {
 		t.Fatalf("unexpected status %d for spoofed request", status)
 	}
 
-	// Pin CURRENT behaviour: listener forwards the spoofed key verbatim.
-	// KNOWN PARITY GAP — stdio strips, HTTP listener does not. Flip this
-	// assertion when the gap is closed (separate PR).
-	if !bytes.Contains(upstreamBody.Bytes(), []byte(`"com.pipelock/mediation"`)) {
-		t.Fatalf("assertion change: listener now strips spoofed com.pipelock/mediation. Update this test to expect stripped behaviour and cross-reference the fix PR. Upstream body was:\n%s", upstreamBody.String())
+	if bytes.Contains(upstreamBody.Bytes(), []byte(`"com.pipelock/mediation"`)) {
+		t.Fatalf("listener forwarded spoofed com.pipelock/mediation to upstream — strip regression. Body was:\n%s", upstreamBody.String())
+	}
+	// Tool call payload itself must still reach upstream — strip is
+	// surgical, it must not gut legit tool fields.
+	if !bytes.Contains(upstreamBody.Bytes(), []byte(`"name":"echo"`)) {
+		t.Fatalf("listener strip dropped legitimate tool payload. Body was:\n%s", upstreamBody.String())
+	}
+}
+
+// TestHTTPListener_AntiSpoofMediationStripAdversarial exercises the
+// inbound mediation scrub against attack shapes that a passive PR-thread
+// reviewer might miss: a notification (no id field) that still carries
+// a spoofed envelope, and a multi-key _meta block where the scrub must
+// remove only com.pipelock/mediation and leave sibling metadata intact.
+// The strip is unconditional in the scanHTTPInputDecision wiring, so
+// both shapes must scrub regardless of any per-frame parse outcome.
+func TestHTTPListener_AntiSpoofMediationStripAdversarial(t *testing.T) {
+	tests := []struct {
+		name string
+		// inbound is the raw JSON-RPC bytes the client posts.
+		inbound string
+		// mustContain is a list of substrings that must appear in the
+		// upstream-received body. Used to confirm legitimate fields
+		// survive the scrub (sibling _meta keys, tool name, etc.).
+		mustContain []string
+		// mustNotContain is a list of substrings that must be absent
+		// from the upstream body. The spoofed envelope key is always
+		// in this set; per-case "spoofed payload" markers may be too.
+		mustNotContain []string
+	}{
+		{
+			name: "notification_no_id_stripped",
+			// JSON-RPC notifications have no "id" field. The strip
+			// must still apply — kill-switch / scan paths do not
+			// guard the strip, the strip runs first unconditionally.
+			inbound: `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":50,"_meta":{"com.pipelock/mediation":{"spoofed":"forged"}}}}`,
+			mustContain: []string{
+				`"method":"notifications/progress"`,
+				`"progress":50`,
+			},
+			mustNotContain: []string{
+				`"com.pipelock/mediation"`,
+				`"spoofed"`,
+				`"forged"`,
+			},
+		},
+		{
+			name: "preserves_sibling_meta_keys",
+			// Multi-key _meta. The strip must remove ONLY
+			// com.pipelock/mediation and leave every other key
+			// intact (clients may legitimately attach
+			// instrumentation, tracing IDs, etc.).
+			inbound: `{"jsonrpc":"2.0","id":99,"method":"tools/call","params":{"name":"echo","arguments":{"value":"hi"},"_meta":{"com.pipelock/mediation":{"spoofed":"forged"},"customer.tracing/id":"trace-abc-123","customer.feature/flag":"beta"}}}`,
+			mustContain: []string{
+				`"name":"echo"`,
+				`"customer.tracing/id":"trace-abc-123"`,
+				`"customer.feature/flag":"beta"`,
+			},
+			mustNotContain: []string{
+				`"com.pipelock/mediation"`,
+				`"spoofed"`,
+				`"forged"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamBody bytes.Buffer
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				b, _ := io.ReadAll(r.Body)
+				upstreamBody.Write(b)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":99,"result":{}}`))
+			}))
+			defer upstream.Close()
+
+			sc := testScannerForHTTP(t)
+			baseURL, _, _ := startListenerProxy(t, upstream.URL, sc, nil, nil, nil)
+
+			status, _ := parityHTTPPost(t, baseURL, tt.inbound)
+			// Notifications get 202 Accepted, regular requests 200 OK;
+			// either is success for the strip-wiring check.
+			if status != http.StatusOK && status != http.StatusAccepted {
+				t.Fatalf("unexpected status %d; upstream body: %s", status, upstreamBody.String())
+			}
+
+			body := upstreamBody.String()
+			for _, want := range tt.mustContain {
+				if !strings.Contains(body, want) {
+					t.Errorf("upstream body missing %q (legitimate field dropped by strip?). Body was:\n%s", want, body)
+				}
+			}
+			for _, banned := range tt.mustNotContain {
+				if strings.Contains(body, banned) {
+					t.Errorf("upstream body still contains %q (strip regression). Body was:\n%s", banned, body)
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPListener_AntiSpoofMediationStripDoesNotLaunderDuplicateKeys(t *testing.T) {
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":7,"result":{}}`))
+	}))
+	defer upstream.Close()
+
+	sc := testScannerForHTTP(t)
+	inputCfg := &InputScanConfig{
+		Enabled:      true,
+		Action:       config.ActionBlock,
+		OnParseError: config.ActionBlock,
+	}
+	baseURL, _, logBuf := startListenerProxy(t, upstream.URL, sc, inputCfg, nil, nil)
+
+	// This combines the spoofed mediation key with a duplicate method key.
+	// stripInboundMCPMeta must not unmarshal/remarshal and collapse the
+	// duplicate before ParseMCPFrame / ScanRequest can fail closed.
+	attack := `{"jsonrpc":"2.0","id":7,"method":"tools/list","method":"tools/call","params":{"name":"echo","_meta":{"com.pipelock/mediation":{"spoofed":"forged"}}}}`
+	_, body := parityHTTPPost(t, baseURL, attack)
+
+	if got := upstreamHits.Load(); got != 0 {
+		t.Fatalf("duplicate-key spoof was forwarded upstream %d time(s); response body:\n%s", got, body)
+	}
+	if !strings.Contains(strings.ToLower(logBuf.String()), "duplicate") {
+		t.Fatalf("log should identify duplicate-key parse block, got:\n%s", logBuf.String())
 	}
 }
 

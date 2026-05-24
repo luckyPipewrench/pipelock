@@ -40,6 +40,15 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
 func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) httpInputDecision {
+	// Strip any inbound com.pipelock/mediation from _meta before
+	// parsing, scanning, or forwarding. Prevents an agent (or compromised
+	// upstream that managed to send back through the listener) from
+	// spoofing the envelope pipelock injects. Mirrors the equivalent
+	// scrub on the stdio path at internal/mcp/input.go:213. The stdio
+	// strip runs unconditionally on every inbound line; the HTTP listener
+	// now matches.
+	msg = stripInboundMCPMeta(msg)
+
 	sc := opts.scanner()
 	inputCfg := opts.inputCfg()
 	policyCfg := opts.policyCfg()

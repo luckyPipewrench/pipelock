@@ -1227,6 +1227,14 @@ func marshalMCPWithMeta(original []byte, rpc, params map[string]json.RawMessage,
 // mediation metadata from passing through unmodified.
 // Returns the modified message or the original if parsing fails.
 func stripInboundMCPMeta(msg []byte) []byte {
+	trimmed := bytes.TrimSpace(msg)
+	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil && isDuplicateKeyBlock(err) {
+		// Do not unmarshal/remarshal duplicate-key payloads. The parser
+		// and scanner paths intentionally fail closed on duplicate keys;
+		// remarshal would collapse them before those checks can run.
+		return msg
+	}
+
 	var rpc map[string]json.RawMessage
 	if err := json.Unmarshal(msg, &rpc); err != nil {
 		return msg

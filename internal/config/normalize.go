@@ -598,6 +598,9 @@ func (c *Config) ApplyDefaults() {
 	if c.FileSentry.ScanContent == nil {
 		c.FileSentry.ScanContent = ptrBool(true)
 	}
+	if c.FileSentry.Action == "" {
+		c.FileSentry.Action = ActionWarn
+	}
 
 	// A2A scanning defaults
 	if c.A2AScanning.Enabled {

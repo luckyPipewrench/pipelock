@@ -1086,32 +1086,30 @@ signed action receipts for MCP decisions.`,
 				}
 
 				if watcher != nil {
-					// Consume findings: log to stderr and record metrics.
-					// The consumer runs until Close() closes the findings channel.
-					consumerDone := make(chan struct{})
-					go func() {
-						defer close(consumerDone)
-						for f := range watcher.Findings() {
-							agent := ""
-							if f.IsAgent {
-								agent = " (agent process)"
-							}
-							_, _ = fmt.Fprintf(logW,
-								"pipelock: [file_sentry] DLP match in %s: %s (severity=%s)%s\n",
-								f.Path, f.PatternName, f.Severity, agent)
-							if mcpMetrics != nil {
-								mcpMetrics.RecordFileSentryFinding(f.PatternName, f.Severity, f.IsAgent)
-							}
-						}
-					}()
+					// Consume findings: log to stderr, record metrics, and
+					// (in block action mode) cancel the proxy ctx on the
+					// first agent-attributed finding so the MCP child fails
+					// closed after a detected leak. See filesentry.ConsumeFindings
+					// for the full enforcement matrix.
+					var findingHook filesentry.FindingHook
+					if mcpMetrics != nil {
+						findingHook = mcpMetrics.RecordFileSentryFinding
+					}
+					waitConsumer := filesentry.ConsumeFindings(filesentry.ConsumerOpts{
+						Watcher:   watcher,
+						Action:    cfg.FileSentry.Action,
+						Log:       logW,
+						OnFinding: findingHook,
+						Cancel:    cancel,
+					})
 					// Single defer: close watcher (flushes + closes channel),
 					// then wait for consumer to finish processing.
 					defer func() {
 						_ = watcher.Close()
-						<-consumerDone
+						waitConsumer()
 					}()
-					_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s)\n",
-						len(cfg.FileSentry.WatchPaths))
+					_, _ = fmt.Fprintf(logW, "pipelock: file sentry watching %d path(s) (action=%s)\n",
+						len(cfg.FileSentry.WatchPaths), cfg.FileSentry.Action)
 
 					// onChildReady: called by RunProxy after cmd.Start() + TrackPID.
 					// Starts the file sentry event loop AFTER the child PID is registered,

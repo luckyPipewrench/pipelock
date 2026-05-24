@@ -13,13 +13,14 @@ This catches a class of exfiltration that the network proxy cannot see: an agent
 
 File sentry applies to **subprocess MCP mode only**. HTTP upstream, WebSocket, and listener modes have no local child process and are out of scope.
 
-This is **detection, not prevention**. File sentry alerts when secrets are written to disk. It does not block the write itself. Use the process sandbox (`--sandbox`) for filesystem restriction enforcement.
+File sentry detects writes; it does not intercept them. The write reaches disk before the scan completes. With `action: warn` (default), findings are alerted and the agent keeps running. With `action: block`, the proxy context is cancelled on the first agent-attributed finding, terminating the MCP child so the agent cannot continue acting on the leak. For write-time interception, layer Landlock or the process sandbox (`--sandbox`) on top.
 
 ## Configuration
 
 ```yaml
 file_sentry:
   enabled: true
+  action: warn               # warn (default) or block
   watch_paths:
     - "/workspace"           # agent working directory
     - "/tmp/agent-output"    # temp output directory
@@ -31,6 +32,11 @@ file_sentry:
     - "*.so"
     - "*.pyc"
 ```
+
+### Action
+
+- `warn` (default): every finding is logged to stderr and recorded as a Prometheus metric. The MCP child keeps running.
+- `block`: same logging + metrics, AND on the first finding attributed to a process in the agent tree (`IsAgent=true`), the proxy context is cancelled, which terminates the MCP child. Non-agent writes (editor saves, build output, other system processes touching the watched directory) never trigger the block path. The cancel fires exactly once per session.
 
 ### Watch Paths
 

@@ -679,6 +679,9 @@ func fileSentryChanged(old, updated *Config) bool {
 	if old.FileSentry.BestEffort != updated.FileSentry.BestEffort {
 		return true
 	}
+	if old.FileSentry.Action != updated.FileSentry.Action {
+		return true
+	}
 	if !slices.Equal(old.FileSentry.WatchPaths, updated.FileSentry.WatchPaths) {
 		return true
 	}

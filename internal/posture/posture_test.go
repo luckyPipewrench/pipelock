@@ -1203,3 +1203,140 @@ func TestCapsule_UnmarshalJSONRejectsTrailingPayload(t *testing.T) {
 		t.Fatal("expected error for trailing JSON payload")
 	}
 }
+
+func goldenCapsule() *Capsule {
+	return &Capsule{
+		SchemaVersion: "1",
+		GeneratedAt:   time.Date(2026, time.April, 11, 17, 45, 0, 0, time.UTC),
+		ExpiresAt:     time.Date(2026, time.May, 11, 17, 45, 0, 0, time.UTC),
+		ToolVersion:   "0.1.0-dev",
+		ConfigHash:    "abc123",
+		Evidence:      testEvidenceBundle(),
+		Signature:     strings.Repeat("d", 128),
+		SignerKeyID:   strings.Repeat("f", 64),
+	}
+}
+
+func TestRenderProofMarkdown_Golden(t *testing.T) {
+	t.Parallel()
+
+	got := RenderProofMarkdown(goldenCapsule())
+	want := `# Pipelock Posture Proof
+
+- Schema version: ` + "`1`" + `
+- Tool version: ` + "`0.1.0-dev`" + `
+- Generated at: 2026-04-11T17:45:00Z
+- Expires at: 2026-05-11T17:45:00Z
+- Config hash: ` + "`abc123`" + `
+- Signer key ID: ` + "`ffffffffffffffff…`" + `
+- Signature: ` + "`dddddddddddddddd…`" + `
+
+## Discover
+
+- Clients: 1
+- Servers: 2
+- Protected (pipelock): 1
+- Protected (other): 0
+- Unprotected: 1
+- Unknown: 0
+- High risk: 0
+- Parse errors: 0
+
+## Verify install
+
+- Flight recorder active: true
+- Proxying: true
+- Receipt count: 2
+
+## Simulate
+
+- Mode: balanced
+- Grade: A  (100%)
+- Passed: 2 / 2
+- Failed: 0
+- Known limitations: 0
+
+## Flight recorder
+
+- Receipt count: 2
+- Last receipt at: 2026-04-11T17:40:00Z
+
+| Scanner | Allow | Block | Warn |
+| --- | ---: | ---: | ---: |
+| alpha | 1 | 2 | 0 |
+| zeta | 0 | 0 | 1 |
+`
+	if got != want {
+		t.Fatalf("markdown mismatch:\n--- want ---\n%s\n--- got ---\n%s", want, got)
+	}
+}
+
+func TestRenderProofMarkdown_NilSafe(t *testing.T) {
+	t.Parallel()
+	got := RenderProofMarkdown(nil)
+	if got == "" {
+		t.Fatal("RenderProofMarkdown(nil) = empty string; want explicit no-evidence stub to prevent silent display-vs-reality drift")
+	}
+	if !strings.Contains(got, "Pipelock Posture Proof") {
+		t.Fatalf("RenderProofMarkdown(nil) = %q, want stub with proof header", got)
+	}
+	if !strings.Contains(got, "No evidence capsule available") {
+		t.Fatalf("RenderProofMarkdown(nil) = %q, want explicit no-evidence marker", got)
+	}
+}
+
+func TestRenderProofMarkdown_NoLastReceiptOrScenarios(t *testing.T) {
+	t.Parallel()
+	c := goldenCapsule()
+	c.Evidence.FlightRecorder.LastReceiptAt = nil
+	c.Evidence.FlightRecorder.ScannerVerdict = nil
+	c.Evidence.Simulate.Total = 0
+
+	got := RenderProofMarkdown(c)
+	if !strings.Contains(got, "Last receipt at: (none recorded)") {
+		t.Errorf("expected (none recorded) marker, got:\n%s", got)
+	}
+	if !strings.Contains(got, "No scenarios executed.") {
+		t.Errorf("expected scenarios fallback line, got:\n%s", got)
+	}
+	if strings.Contains(got, "| Scanner |") {
+		t.Errorf("scanner verdict table should be omitted when empty, got:\n%s", got)
+	}
+}
+
+func TestWriteProofMarkdown(t *testing.T) {
+	t.Parallel()
+
+	outDir := filepath.Join(t.TempDir(), "posture")
+	path, err := WriteProofMarkdown(outDir, goldenCapsule())
+	if err != nil {
+		t.Fatalf("WriteProofMarkdown(): %v", err)
+	}
+	if path != filepath.Join(outDir, ProofMarkdownFilename) {
+		t.Fatalf("WriteProofMarkdown path = %s, want %s", path, filepath.Join(outDir, ProofMarkdownFilename))
+	}
+
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatalf("os.ReadFile(): %v", err)
+	}
+	if !bytes.Contains(data, []byte("# Pipelock Posture Proof")) {
+		t.Fatalf("proof.md missing header, got: %s", data)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("os.Stat(): %v", err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("proof.md mode = %v, want 0o600", mode)
+	}
+}
+
+func TestWriteProofMarkdown_NilCapsule(t *testing.T) {
+	t.Parallel()
+	_, err := WriteProofMarkdown(t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "capsule is required") {
+		t.Fatalf("WriteProofMarkdown(nil) error = %v, want capsule required", err)
+	}
+}

@@ -42,6 +42,11 @@ const (
 	// ProofFilename is the JSON artifact written by posture emit.
 	ProofFilename = "proof.json"
 
+	// ProofMarkdownFilename is the human-readable proof artifact written
+	// alongside ProofFilename so operators (auditors, procurement reviewers)
+	// can read the posture summary without re-parsing the JSON.
+	ProofMarkdownFilename = "proof.md"
+
 	evidenceFilePrefix = "evidence-"
 )
 
@@ -234,6 +239,113 @@ func WriteProofJSON(outputDir string, capsule *Capsule) (string, error) {
 		return "", fmt.Errorf("write %s: %w", ProofFilename, err)
 	}
 	return path, nil
+}
+
+// WriteProofMarkdown writes proof.md atomically into the output directory.
+// The markdown summarizes the same evidence as proof.json in a form auditors
+// and procurement reviewers can read directly. proof.json remains the
+// load-bearing signed artifact; proof.md is presentation only and is not
+// signed.
+func WriteProofMarkdown(outputDir string, capsule *Capsule) (string, error) {
+	if capsule == nil {
+		return "", fmt.Errorf("capsule is required")
+	}
+
+	cleanDir := filepath.Clean(outputDir)
+	if err := os.MkdirAll(cleanDir, 0o750); err != nil {
+		return "", fmt.Errorf("create output directory: %w", err)
+	}
+
+	data := []byte(RenderProofMarkdown(capsule))
+	path := filepath.Join(cleanDir, ProofMarkdownFilename)
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		return "", fmt.Errorf("write %s: %w", ProofMarkdownFilename, err)
+	}
+	return path, nil
+}
+
+// RenderProofMarkdown renders a human-readable posture summary from the
+// capsule. Output is deterministic given the same capsule input — scanner
+// verdicts are sorted by scanner label and times are formatted as RFC 3339.
+//
+// A nil capsule produces an explicit "no evidence" stub rather than an empty
+// string so that a proof.md file written via a future code path that bypasses
+// WriteProofMarkdown's nil guard cannot read as "all clear" to an auditor.
+func RenderProofMarkdown(c *Capsule) string {
+	if c == nil {
+		return "# Pipelock Posture Proof\n\nNo evidence capsule available.\n"
+	}
+
+	signerShort := c.SignerKeyID
+	if len(signerShort) > 16 {
+		signerShort = signerShort[:16] + "…"
+	}
+	sigShort := c.Signature
+	if len(sigShort) > 16 {
+		sigShort = sigShort[:16] + "…"
+	}
+
+	var b strings.Builder
+	_, _ = fmt.Fprintf(&b, "# Pipelock Posture Proof\n\n")
+	_, _ = fmt.Fprintf(&b, "- Schema version: `%s`\n", c.SchemaVersion)
+	_, _ = fmt.Fprintf(&b, "- Tool version: `%s`\n", c.ToolVersion)
+	_, _ = fmt.Fprintf(&b, "- Generated at: %s\n", c.GeneratedAt.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(&b, "- Expires at: %s\n", c.ExpiresAt.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(&b, "- Config hash: `%s`\n", c.ConfigHash)
+	_, _ = fmt.Fprintf(&b, "- Signer key ID: `%s`\n", signerShort)
+	_, _ = fmt.Fprintf(&b, "- Signature: `%s`\n", sigShort)
+
+	d := c.Evidence.Discover
+	_, _ = fmt.Fprintf(&b, "\n## Discover\n\n")
+	_, _ = fmt.Fprintf(&b, "- Clients: %d\n", d.TotalClients)
+	_, _ = fmt.Fprintf(&b, "- Servers: %d\n", d.TotalServers)
+	_, _ = fmt.Fprintf(&b, "- Protected (pipelock): %d\n", d.ProtectedPipelock)
+	_, _ = fmt.Fprintf(&b, "- Protected (other): %d\n", d.ProtectedOther)
+	_, _ = fmt.Fprintf(&b, "- Unprotected: %d\n", d.Unprotected)
+	_, _ = fmt.Fprintf(&b, "- Unknown: %d\n", d.Unknown)
+	_, _ = fmt.Fprintf(&b, "- High risk: %d\n", d.HighRisk)
+	_, _ = fmt.Fprintf(&b, "- Parse errors: %d\n", d.ParseErrors)
+
+	vi := c.Evidence.VerifyInstall
+	_, _ = fmt.Fprintf(&b, "\n## Verify install\n\n")
+	_, _ = fmt.Fprintf(&b, "- Flight recorder active: %t\n", vi.FlightRecorderActive)
+	_, _ = fmt.Fprintf(&b, "- Proxying: %t\n", vi.Proxying)
+	_, _ = fmt.Fprintf(&b, "- Receipt count: %d\n", vi.ReceiptCount)
+
+	s := c.Evidence.Simulate
+	_, _ = fmt.Fprintf(&b, "\n## Simulate\n\n")
+	if s.Total > 0 {
+		_, _ = fmt.Fprintf(&b, "- Mode: %s\n", s.Mode)
+		_, _ = fmt.Fprintf(&b, "- Grade: %s  (%d%%)\n", s.Grade, s.Percentage)
+		_, _ = fmt.Fprintf(&b, "- Passed: %d / %d\n", s.Passed, s.Total)
+		_, _ = fmt.Fprintf(&b, "- Failed: %d\n", s.Failed)
+		_, _ = fmt.Fprintf(&b, "- Known limitations: %d\n", s.KnownLimits)
+	} else {
+		_, _ = fmt.Fprintf(&b, "- No scenarios executed.\n")
+	}
+
+	fr := c.Evidence.FlightRecorder
+	_, _ = fmt.Fprintf(&b, "\n## Flight recorder\n\n")
+	_, _ = fmt.Fprintf(&b, "- Receipt count: %d\n", fr.ReceiptCount)
+	if fr.LastReceiptAt != nil {
+		_, _ = fmt.Fprintf(&b, "- Last receipt at: %s\n", fr.LastReceiptAt.UTC().Format(time.RFC3339))
+	} else {
+		_, _ = fmt.Fprintf(&b, "- Last receipt at: (none recorded)\n")
+	}
+	if len(fr.ScannerVerdict) > 0 {
+		_, _ = fmt.Fprintf(&b, "\n| Scanner | Allow | Block | Warn |\n| --- | ---: | ---: | ---: |\n")
+		scanners := make([]string, 0, len(fr.ScannerVerdict))
+		for k := range fr.ScannerVerdict {
+			scanners = append(scanners, k)
+		}
+		sort.Strings(scanners)
+		for _, name := range scanners {
+			v := fr.ScannerVerdict[name]
+			_, _ = fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", name, v.Allow, v.Block, v.Warn)
+		}
+	}
+
+	return b.String()
 }
 
 // MarshalJSON emits deterministic canonical JSON for signature stability.

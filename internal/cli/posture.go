@@ -384,8 +384,11 @@ state, simulated scanner coverage, and flight recorder receipts.`,
 				return fmt.Errorf("write posture capsule: %w", err)
 			}
 
-			// TODO: write proof.md once the human-readable posture summary lands.
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", path)
+			mdPath, err := posturepkg.WriteProofMarkdown(outputDir, capsule)
+			if err != nil {
+				return fmt.Errorf("write posture markdown: %w", err)
+			}
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\nWrote %s\n", path, mdPath)
 			return nil
 		},
 	}

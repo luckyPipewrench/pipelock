@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -606,14 +607,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		auditLogger.LogTaintDecision(
 			mustMCPAuditContext(auditLogger, "MCP", toolName),
-			decision.Risk.Level.String(),
-			decision.ActionClass.String(),
-			decision.Sensitivity.String(),
-			decision.Authority.String(),
-			decision.Result.Decision.String(),
-			decision.Result.Reason,
-			decision.Risk.LastExternalURL,
-			decision.Risk.LastExternalKind,
+			audit.TaintDecision{
+				TaintLevel:  decision.Risk.Level.String(),
+				ActionClass: decision.ActionClass.String(),
+				Sensitivity: decision.Sensitivity.String(),
+				Authority:   decision.Authority.String(),
+				Decision:    decision.Result.Decision.String(),
+				Reason:      decision.Result.Reason,
+				SourceURL:   decision.Risk.LastExternalURL,
+				SourceKind:  decision.Risk.LastExternalKind,
+			},
 		)
 	}
 
@@ -1062,7 +1065,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		}
 		if auditLogger != nil {
-			auditLogger.LogToolRedirect(auditSessionKey, toolName, argsDigest(toolArgs), policyVerdict.RedirectProfile, profile.Reason, policyRuleName, finalResult, redirectResult.LatencyMs)
+			auditLogger.LogToolRedirect(audit.ToolRedirectEvent{
+				SessionID:       auditSessionKey,
+				ToolName:        toolName,
+				ArgsDigest:      argsDigest(toolArgs),
+				RedirectProfile: policyVerdict.RedirectProfile,
+				RedirectReason:  profile.Reason,
+				PolicyRule:      policyRuleName,
+				Result:          finalResult,
+				LatencyMs:       redirectResult.LatencyMs,
+			})
 		}
 		if finalResult == redirectResultRedirected {
 			receiptVerdict = config.ActionRedirect

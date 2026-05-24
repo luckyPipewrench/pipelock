@@ -720,9 +720,17 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordWSCompleted()
 	}
 	p.metrics.RecordWSStats(duration, stats.clientToServer, stats.serverToClient)
-	log.LogWSClose(targetURL, clientIP, requestID, agent,
-		stats.clientToServer, stats.serverToClient,
-		stats.textFrames, stats.binaryFrames, duration)
+	log.LogWSClose(audit.WSCloseEvent{
+		Target:         targetURL,
+		ClientIP:       clientIP,
+		RequestID:      requestID,
+		Agent:          agent,
+		ClientToServer: stats.clientToServer,
+		ServerToClient: stats.serverToClient,
+		TextFrames:     stats.textFrames,
+		BinaryFrames:   stats.binaryFrames,
+		Duration:       duration,
+	})
 
 	closeVerdict := config.ActionAllow
 	if stats.blocked {
@@ -1123,7 +1131,16 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		}
 
 		r.recordSignal(session.SignalNearMiss, log)
-		log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(dlpMatches), names, wsBundleRules)
+		log.LogWSScan(audit.WSScanEvent{
+			Target:       r.targetURL,
+			Direction:    audit.DirectionClientToServer,
+			ClientIP:     r.clientIP,
+			RequestID:    r.requestID,
+			Action:       "audit",
+			MatchCount:   len(dlpMatches),
+			PatternNames: names,
+			BundleRules:  wsBundleRules,
+		})
 	}
 
 	if len(addrFindings) > 0 {
@@ -1199,7 +1216,15 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		}
 
 		r.recordSignal(session.SignalNearMiss, log)
-		log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(addrFindings), names, nil)
+		log.LogWSScan(audit.WSScanEvent{
+			Target:       r.targetURL,
+			Direction:    audit.DirectionClientToServer,
+			ClientIP:     r.clientIP,
+			RequestID:    r.requestID,
+			Action:       scannerLabelAddressProtection,
+			MatchCount:   len(addrFindings),
+			PatternNames: names,
+		})
 	}
 
 	return false
@@ -1419,7 +1444,15 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			for i, f := range result.AddressFindings {
 				names[i] = f.Explanation
 			}
-			log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(result.AddressFindings), names, nil)
+			log.LogWSScan(audit.WSScanEvent{
+				Target:       r.targetURL,
+				Direction:    audit.DirectionClientToServer,
+				ClientIP:     r.clientIP,
+				RequestID:    r.requestID,
+				Action:       scannerLabelAddressProtection,
+				MatchCount:   len(result.AddressFindings),
+				PatternNames: names,
+			})
 			return false
 		}
 		r.recordSignal(session.SignalBlock, log)
@@ -1450,14 +1483,31 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	case config.ActionWarn:
 		r.recordSignal(session.SignalNearMiss, log)
 		if len(result.DLPMatches) > 0 {
-			log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, "audit", len(result.DLPMatches), dlpMatchNames(result.DLPMatches), dlpBundleRules(result.DLPMatches))
+			log.LogWSScan(audit.WSScanEvent{
+				Target:       r.targetURL,
+				Direction:    audit.DirectionClientToServer,
+				ClientIP:     r.clientIP,
+				RequestID:    r.requestID,
+				Action:       "audit",
+				MatchCount:   len(result.DLPMatches),
+				PatternNames: dlpMatchNames(result.DLPMatches),
+				BundleRules:  dlpBundleRules(result.DLPMatches),
+			})
 		}
 		if len(result.AddressFindings) > 0 {
 			names := make([]string, len(result.AddressFindings))
 			for i, f := range result.AddressFindings {
 				names[i] = f.Explanation
 			}
-			log.LogWSScan(r.targetURL, audit.DirectionClientToServer, r.clientIP, r.requestID, scannerLabelAddressProtection, len(result.AddressFindings), names, nil)
+			log.LogWSScan(audit.WSScanEvent{
+				Target:       r.targetURL,
+				Direction:    audit.DirectionClientToServer,
+				ClientIP:     r.clientIP,
+				RequestID:    r.requestID,
+				Action:       scannerLabelAddressProtection,
+				MatchCount:   len(result.AddressFindings),
+				PatternNames: names,
+			})
 		}
 	}
 
@@ -2121,9 +2171,27 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 							blocked = true
 							return
 						}
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionStrip, len(scanResult.Matches), patternNames, respBundleRules)
+						log.LogWSScan(audit.WSScanEvent{
+							Target:       r.targetURL,
+							Direction:    audit.DirectionServerToClient,
+							ClientIP:     r.clientIP,
+							RequestID:    r.requestID,
+							Action:       config.ActionStrip,
+							MatchCount:   len(scanResult.Matches),
+							PatternNames: patternNames,
+							BundleRules:  respBundleRules,
+						})
 					case config.ActionWarn:
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, config.ActionWarn, len(scanResult.Matches), patternNames, respBundleRules)
+						log.LogWSScan(audit.WSScanEvent{
+							Target:       r.targetURL,
+							Direction:    audit.DirectionServerToClient,
+							ClientIP:     r.clientIP,
+							RequestID:    r.requestID,
+							Action:       config.ActionWarn,
+							MatchCount:   len(scanResult.Matches),
+							PatternNames: patternNames,
+							BundleRules:  respBundleRules,
+						})
 					case config.ActionAsk:
 						// HITL not supported for WebSocket (no request/response cycle).
 						// Fail closed: block.
@@ -2134,7 +2202,16 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						blocked = true
 						return
 					default:
-						log.LogWSScan(r.targetURL, audit.DirectionServerToClient, r.clientIP, r.requestID, wsAction, len(scanResult.Matches), patternNames, respBundleRules)
+						log.LogWSScan(audit.WSScanEvent{
+							Target:       r.targetURL,
+							Direction:    audit.DirectionServerToClient,
+							ClientIP:     r.clientIP,
+							RequestID:    r.requestID,
+							Action:       wsAction,
+							MatchCount:   len(scanResult.Matches),
+							PatternNames: patternNames,
+							BundleRules:  respBundleRules,
+						})
 					}
 				}
 			}

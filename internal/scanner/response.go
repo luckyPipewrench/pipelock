@@ -21,6 +21,16 @@ type ResponseScanResult struct {
 	Clean              bool
 	Matches            []ResponseMatch
 	TransformedContent string // set for strip and ask actions
+
+	// StegoDetected fires when the raw response carries combining-mark density
+	// at or above normalize.ZalgoSuspiciousThreshold. The pattern-matching
+	// pipeline already neutralizes combining marks via StripCombiningMarks, so
+	// this is an exposure/provenance signal — Clean is NOT flipped on the
+	// basis of this field alone. The taint/authority policy layer may key on
+	// this signal in strict mode without changing the scanner's verdict
+	// contract today. Maps to emit.EventTextStego.
+	StegoDetected bool
+	StegoDensity  int // raw combining-mark density on original content
 }
 
 // ResponseMatch describes a single pattern match in response content.
@@ -43,8 +53,23 @@ type responseMatchSet struct {
 // Zero-width Unicode characters are stripped before scanning to prevent
 // evasion via invisible character insertion.
 // For "strip" action, replaces matches with [REDACTED: PatternName].
-func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScanResult {
+func (s *Scanner) ScanResponse(ctx context.Context, content string) (out ResponseScanResult) {
 	original := content
+
+	// Stego exposure signal. Computed on the raw content before normalization
+	// strips combining marks. The deferred setter stamps every return path —
+	// including the context_canceled and clean fast paths — so downstream
+	// consumers (taint/authority layer, audit emitters) can key on the
+	// signal without re-scanning. The signal does NOT flip Clean: the
+	// matching passes already neutralize combining marks via
+	// StripCombiningMarks, so this is an exposure/provenance event, not a
+	// block trigger.
+	stegoDensity := normalize.ZalgoDensity(original)
+	stegoDetected := stegoDensity >= normalize.ZalgoSuspiciousThreshold
+	defer func() {
+		out.StegoDensity = stegoDensity
+		out.StegoDetected = stegoDetected
+	}()
 
 	// Fail-closed: if context is already canceled, block immediately.
 	if ctx != nil && ctx.Err() != nil {

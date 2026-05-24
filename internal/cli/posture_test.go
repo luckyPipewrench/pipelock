@@ -56,11 +56,16 @@ func TestPostureEmitCmdSuccess(t *testing.T) {
 		t.Fatalf("cmd.Execute(): %v", err)
 	}
 
-	if !strings.Contains(stdout.String(), "Wrote "+filepath.Join(outDir, posturepkg.ProofFilename)) {
-		t.Fatalf("stdout = %q, want write message", stdout.String())
+	jsonPath := filepath.Join(outDir, posturepkg.ProofFilename)
+	mdPath := filepath.Join(outDir, posturepkg.ProofMarkdownFilename)
+	if !strings.Contains(stdout.String(), "Wrote "+jsonPath) {
+		t.Fatalf("stdout = %q, want proof.json write message", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Wrote "+mdPath) {
+		t.Fatalf("stdout = %q, want proof.md write message", stdout.String())
 	}
 
-	proofPath := filepath.Clean(filepath.Join(outDir, posturepkg.ProofFilename))
+	proofPath := filepath.Clean(jsonPath)
 	data, err := os.ReadFile(proofPath)
 	if err != nil {
 		t.Fatalf("os.ReadFile(): %v", err)
@@ -75,8 +80,12 @@ func TestPostureEmitCmdSuccess(t *testing.T) {
 		t.Fatalf("posture.Verify(): %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(outDir, "proof.md")); !os.IsNotExist(err) {
-		t.Fatalf("proof.md should not exist, got err=%v", err)
+	mdData, err := os.ReadFile(filepath.Clean(mdPath))
+	if err != nil {
+		t.Fatalf("os.ReadFile(proof.md): %v", err)
+	}
+	if !strings.Contains(string(mdData), "# Pipelock Posture Proof") {
+		t.Fatalf("proof.md missing header, got: %s", mdData)
 	}
 }
 

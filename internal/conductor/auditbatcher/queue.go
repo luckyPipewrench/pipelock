@@ -1,0 +1,519 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+// Package auditbatcher provides follower-side durable queuing primitives for
+// Conductor-bound audit batches. It intentionally sits outside emit.Emitter
+// because Conductor audit delivery must track retry and drop state instead of
+// being fire-and-forget.
+//
+// Concurrency model: a Queue is SINGLE-PROCESS per directory. The mutex
+// serializes access within one process; nothing prevents a second pipelock
+// process from opening the same dir and corrupting the queue via concurrent
+// renames. Operators must enforce one writer per durable_audit_queue_dir via
+// systemd, k8s leadership election, or simple deployment discipline.
+package auditbatcher
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/conductor"
+)
+
+const (
+	dirMode  = 0o700
+	fileMode = 0o600
+
+	defaultMaxPending = 1024
+	recordVersion     = 1
+	recordExt         = ".json"
+)
+
+var (
+	ErrQueueEmpty = errors.New("auditbatcher: queue empty")
+	ErrQueueFull  = errors.New("auditbatcher: queue full")
+)
+
+type Config struct {
+	Dir             string
+	MaxPending      int
+	MaxPayloadBytes uint64
+}
+
+type Batch struct {
+	Envelope conductor.AuditBatchEnvelope
+	Payload  []byte
+}
+
+type Lease struct {
+	ID    string
+	Batch Batch
+}
+
+type Stats struct {
+	Pending  int
+	Inflight int
+	Dead     int
+}
+
+type Queue struct {
+	dir             string
+	pendingDir      string
+	inflightDir     string
+	deadDir         string
+	maxPending      int
+	maxPayloadBytes uint64
+	now             func() time.Time
+	mu              sync.Mutex
+}
+
+type diskRecord struct {
+	Version    int                          `json:"version"`
+	EnqueuedAt time.Time                    `json:"enqueued_at"`
+	Envelope   conductor.AuditBatchEnvelope `json:"envelope"`
+	Payload    []byte                       `json:"payload"`
+}
+
+func Open(cfg Config) (*Queue, error) {
+	if strings.TrimSpace(cfg.Dir) == "" {
+		return nil, errors.New("auditbatcher: queue dir required")
+	}
+	cleanDir := filepath.Clean(cfg.Dir)
+	if cfg.MaxPending <= 0 {
+		cfg.MaxPending = defaultMaxPending
+	}
+	if cfg.MaxPayloadBytes == 0 {
+		cfg.MaxPayloadBytes = conductor.MaxAuditPayloadBytes
+	}
+	q := &Queue{
+		dir:             cleanDir,
+		pendingDir:      filepath.Join(cleanDir, "pending"),
+		inflightDir:     filepath.Join(cleanDir, "inflight"),
+		deadDir:         filepath.Join(cleanDir, "dead"),
+		maxPending:      cfg.MaxPending,
+		maxPayloadBytes: cfg.MaxPayloadBytes,
+		now:             func() time.Time { return time.Now().UTC() },
+	}
+	for _, dir := range []string{q.dir, q.pendingDir, q.inflightDir, q.deadDir} {
+		if err := ensurePrivateDir(dir); err != nil {
+			return nil, err
+		}
+	}
+	// Sweep .tmp-* debris from any prior crash mid-write. Live writes use
+	// CreateTemp+rename; only crashes leave .tmp-* files behind, and they
+	// otherwise accumulate forever (listRecordFiles correctly ignores them,
+	// so they're invisible to claim but visible to df). Opening fresh is the
+	// only safe time to remove them — no other writer could legitimately
+	// have a .tmp-* in flight before Open returns.
+	for _, dir := range []string{q.pendingDir, q.inflightDir, q.deadDir} {
+		if err := sweepStaleTempsLocked(dir); err != nil {
+			return nil, err
+		}
+	}
+	if err := q.recoverInflightLocked(); err != nil {
+		return nil, err
+	}
+	return q, nil
+}
+
+func (q *Queue) Enqueue(batch Batch) (string, error) {
+	if q == nil {
+		return "", errors.New("auditbatcher: nil queue")
+	}
+	if err := validateBatch(batch, q.maxPayloadBytes); err != nil {
+		return "", err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	pending, err := listRecordFiles(q.pendingDir)
+	if err != nil {
+		return "", err
+	}
+	if len(pending) >= q.maxPending {
+		return "", fmt.Errorf("%w: pending=%d max=%d", ErrQueueFull, len(pending), q.maxPending)
+	}
+	id, err := q.nextIDLocked(batch.Envelope.BatchID)
+	if err != nil {
+		return "", err
+	}
+	record := diskRecord{
+		Version:    recordVersion,
+		EnqueuedAt: q.now().UTC(),
+		Envelope:   batch.Envelope,
+		Payload:    append([]byte(nil), batch.Payload...),
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return "", fmt.Errorf("auditbatcher: marshal record: %w", err)
+	}
+	path := filepath.Join(q.pendingDir, id)
+	if err := durableWrite(path, data, fileMode); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+func (q *Queue) Claim() (*Lease, error) {
+	if q == nil {
+		return nil, errors.New("auditbatcher: nil queue")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	for {
+		files, err := listRecordFiles(q.pendingDir)
+		if err != nil {
+			return nil, err
+		}
+		if len(files) == 0 {
+			return nil, ErrQueueEmpty
+		}
+		id := files[0]
+		pendingPath := filepath.Join(q.pendingDir, id)
+		inflightPath := filepath.Join(q.inflightDir, id)
+		if err := os.Rename(pendingPath, inflightPath); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("auditbatcher: claim %s: %w", id, err)
+		}
+		if err := fsyncDir(q.pendingDir); err != nil {
+			return nil, err
+		}
+		if err := fsyncDir(q.inflightDir); err != nil {
+			return nil, err
+		}
+		record, err := readRecord(inflightPath, q.maxPayloadBytes)
+		if err != nil {
+			deadPath, pathErr := uniqueDeadPath(q.deadDir, id)
+			if pathErr != nil {
+				return nil, fmt.Errorf("auditbatcher: corrupt record %s: %w", id, errors.Join(err, pathErr))
+			}
+			if moveErr := moveToDead(inflightPath, deadPath); moveErr != nil {
+				return nil, fmt.Errorf("auditbatcher: corrupt record %s: %w", id, errors.Join(err, moveErr))
+			}
+			continue
+		}
+		return &Lease{ID: id, Batch: Batch{Envelope: record.Envelope, Payload: record.Payload}}, nil
+	}
+}
+
+func (q *Queue) Ack(id string) error {
+	if q == nil {
+		return errors.New("auditbatcher: nil queue")
+	}
+	if err := validateRecordID(id); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if err := os.Remove(filepath.Join(q.inflightDir, id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("auditbatcher: ack %s: %w", id, err)
+	}
+	return fsyncDir(q.inflightDir)
+}
+
+func (q *Queue) Release(id string) error {
+	if q == nil {
+		return errors.New("auditbatcher: nil queue")
+	}
+	if err := validateRecordID(id); err != nil {
+		return err
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	src := filepath.Join(q.inflightDir, id)
+	dst := filepath.Join(q.pendingDir, id)
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("auditbatcher: release %s: pending target already exists", id)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("auditbatcher: release %s stat target: %w", id, err)
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return fmt.Errorf("auditbatcher: release %s: %w", id, err)
+	}
+	if err := fsyncDir(q.inflightDir); err != nil {
+		return err
+	}
+	return fsyncDir(q.pendingDir)
+}
+
+func (q *Queue) Stats() (Stats, error) {
+	if q == nil {
+		return Stats{}, errors.New("auditbatcher: nil queue")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	pending, err := listRecordFiles(q.pendingDir)
+	if err != nil {
+		return Stats{}, err
+	}
+	inflight, err := listRecordFiles(q.inflightDir)
+	if err != nil {
+		return Stats{}, err
+	}
+	dead, err := listRecordFiles(q.deadDir)
+	if err != nil {
+		return Stats{}, err
+	}
+	return Stats{Pending: len(pending), Inflight: len(inflight), Dead: len(dead)}, nil
+}
+
+func (q *Queue) recoverInflightLocked() error {
+	files, err := listRecordFiles(q.inflightDir)
+	if err != nil {
+		return err
+	}
+	for _, id := range files {
+		src := filepath.Join(q.inflightDir, id)
+		dst, err := uniqueRecoveryPath(q.pendingDir, id)
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("auditbatcher: recover inflight %s: %w", id, err)
+		}
+	}
+	if err := fsyncDir(q.inflightDir); err != nil {
+		return err
+	}
+	return fsyncDir(q.pendingDir)
+}
+
+// uniqueRecoveryPath finds a free filename in pendingDir for a recovered
+// inflight record. The plain id is tried first; if taken, "recovered-<id>"
+// is tried, then "recovered-N-<id>" with an incrementing counter. A bounded
+// loop prevents an infinite wait — if the first 1024 candidates are all
+// taken, the queue dir is clearly in a state no automated recovery can
+// resolve and the operator must intervene.
+func uniqueRecoveryPath(pendingDir, id string) (string, error) {
+	return uniquePrefixedPath(pendingDir, id, "recovered", "recovery")
+}
+
+// uniqueDeadPath finds a free filename in deadDir for a quarantined corrupt
+// record. It preserves any existing dead-letter evidence with the same id.
+func uniqueDeadPath(deadDir, id string) (string, error) {
+	return uniquePrefixedPath(deadDir, id, "dead", "dead-letter")
+}
+
+func uniquePrefixedPath(dir, id, prefix, label string) (string, error) {
+	candidate := filepath.Join(dir, id)
+	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+		return candidate, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("auditbatcher: stat %s target: %w", label, err)
+	}
+	for i := 0; i < 1024; i++ {
+		var name string
+		if i == 0 {
+			name = prefix + "-" + id
+		} else {
+			name = fmt.Sprintf("%s-%d-%s", prefix, i, id)
+		}
+		candidate = filepath.Join(dir, name)
+		_, err := os.Stat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("auditbatcher: stat %s target: %w", label, err)
+		}
+	}
+	return "", fmt.Errorf("auditbatcher: too many existing %s candidates for %s", label, id)
+}
+
+// sweepStaleTempsLocked removes .tmp-* files left behind by a previous
+// process crash mid-durableWrite. Safe to call only at Open time, before any
+// goroutine can call Enqueue and create a legitimate .tmp-* file.
+func sweepStaleTempsLocked(dir string) error {
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return fmt.Errorf("auditbatcher: scan for stale temps in %s: %w", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".tmp-") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("auditbatcher: remove stale temp %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (q *Queue) nextIDLocked(batchID string) (string, error) {
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		return "", fmt.Errorf("auditbatcher: random queue id: %w", err)
+	}
+	return fmt.Sprintf("%020d-%s-%s%s", q.now().UTC().UnixNano(), batchID, hex.EncodeToString(random), recordExt), nil
+}
+
+func validateBatch(batch Batch, maxPayloadBytes uint64) error {
+	if uint64(len(batch.Payload)) > maxPayloadBytes {
+		return fmt.Errorf("%w: payload=%d max=%d", conductor.ErrPayloadTooLarge, len(batch.Payload), maxPayloadBytes)
+	}
+	if err := batch.Envelope.Validate(); err != nil {
+		return err
+	}
+	return batch.Envelope.ValidatePayload(batch.Payload)
+}
+
+func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return diskRecord{}, fmt.Errorf("auditbatcher: read record: %w", err)
+	}
+	var record diskRecord
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return diskRecord{}, fmt.Errorf("auditbatcher: decode record: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return diskRecord{}, errors.New("auditbatcher: trailing JSON document")
+	}
+	if record.Version != recordVersion {
+		return diskRecord{}, fmt.Errorf("auditbatcher: record version=%d want=%d", record.Version, recordVersion)
+	}
+	if record.EnqueuedAt.IsZero() {
+		return diskRecord{}, errors.New("auditbatcher: missing enqueued_at")
+	}
+	batch := Batch{Envelope: record.Envelope, Payload: record.Payload}
+	if err := validateBatch(batch, maxPayloadBytes); err != nil {
+		return diskRecord{}, err
+	}
+	return record, nil
+}
+
+func listRecordFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(filepath.Clean(dir))
+	if err != nil {
+		return nil, fmt.Errorf("auditbatcher: list %s: %w", dir, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasSuffix(name, recordExt) {
+			files = append(files, name)
+		}
+	}
+	sort.Strings(files)
+	return files, nil
+}
+
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(filepath.Clean(dir), dirMode); err != nil {
+		return fmt.Errorf("auditbatcher: create dir %s: %w", dir, err)
+	}
+	info, err := os.Lstat(filepath.Clean(dir))
+	if err != nil {
+		return fmt.Errorf("auditbatcher: stat dir %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("auditbatcher: dir %s must not be a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("auditbatcher: %s is not a directory", dir)
+	}
+	if info.Mode().Perm() != dirMode {
+		if err := os.Chmod(filepath.Clean(dir), dirMode); err != nil {
+			return fmt.Errorf("auditbatcher: chmod dir %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+func durableWrite(path string, data []byte, perm os.FileMode) error {
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("auditbatcher: create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("auditbatcher: write temp: %w", err)
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("auditbatcher: chmod temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("auditbatcher: fsync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("auditbatcher: close temp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("auditbatcher: rename temp: %w", err)
+	}
+	cleanup = false
+	return fsyncDir(dir)
+}
+
+func moveToDead(src, dst string) error {
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	if err := fsyncDir(filepath.Dir(src)); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(dst))
+}
+
+func fsyncDir(dir string) error {
+	f, err := os.Open(filepath.Clean(dir))
+	if err != nil {
+		return fmt.Errorf("auditbatcher: open dir for fsync %s: %w", dir, err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return fmt.Errorf("auditbatcher: fsync dir %s: %w", dir, err)
+	}
+	return nil
+}
+
+func validateRecordID(id string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("auditbatcher: empty queue id")
+	}
+	if filepath.Base(id) != id || strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("auditbatcher: invalid queue id %q", id)
+	}
+	if !strings.HasSuffix(id, recordExt) {
+		return fmt.Errorf("auditbatcher: invalid queue id extension %q", id)
+	}
+	return nil
+}

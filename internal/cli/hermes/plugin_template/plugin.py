@@ -58,7 +58,10 @@ def _invoke(payload: dict) -> dict:
     # on hook exceptions, so an escaped TypeError would silently skip the scan.
     try:
         payload_bytes = json.dumps(payload).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
+        # TypeError: non-serializable type. ValueError: circular reference.
+        # RecursionError: payload nested deeper than the interpreter limit.
+        # All three must block rather than escape into Hermes' log-and-continue.
         return {
             "decision": "block",
             "reason": f"pipelock-hermes-hook: payload not serializable: {exc}",

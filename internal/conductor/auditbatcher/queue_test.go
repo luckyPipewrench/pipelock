@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,6 +52,33 @@ func TestQueueEnqueueClaimAckRoundTrip(t *testing.T) {
 		t.Fatalf("Ack() error = %v", err)
 	}
 	assertStats(t, q, Stats{})
+}
+
+func TestNilQueueMethodsReturnErrors(t *testing.T) {
+	var q *Queue
+	if _, err := q.Enqueue(Batch{}); err == nil {
+		t.Fatal("Enqueue(nil) error = nil, want error")
+	}
+	if _, err := q.Claim(); err == nil {
+		t.Fatal("Claim(nil) error = nil, want error")
+	}
+	if err := q.Ack("00000000000000000001-batch-random.json"); err == nil {
+		t.Fatal("Ack(nil) error = nil, want error")
+	}
+	if err := q.Release("00000000000000000001-batch-random.json"); err == nil {
+		t.Fatal("Release(nil) error = nil, want error")
+	}
+	if _, err := q.Stats(); err == nil {
+		t.Fatal("Stats(nil) error = nil, want error")
+	}
+}
+
+func TestQueueClaimEmpty(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	_, err := q.Claim()
+	if !errors.Is(err, ErrQueueEmpty) {
+		t.Fatalf("Claim() = %v, want ErrQueueEmpty", err)
+	}
 }
 
 func TestQueuePersistsAcrossOpen(t *testing.T) {
@@ -113,6 +141,44 @@ func TestQueueReleaseAndRecoverInflight(t *testing.T) {
 	assertStats(t, reopened, Stats{Pending: 1})
 }
 
+func TestQueueReleaseRejectsExistingPendingTarget(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	id, err := q.Enqueue(signedTestBatch(t, "batch-release-collision", priv))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	if _, err := q.Claim(); err != nil {
+		t.Fatalf("Claim() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(q.pendingDir, id), []byte("collision"), fileMode); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := q.Release(id); err == nil || !strings.Contains(err.Error(), "pending target already exists") {
+		t.Fatalf("Release() = %v, want pending target collision", err)
+	}
+}
+
+func TestQueueAckMissingInflightIsIdempotent(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	if err := q.Ack("00000000000000000001-batch-missing.json"); err != nil {
+		t.Fatalf("Ack(missing) error = %v", err)
+	}
+}
+
+func TestQueueMethodsRejectInvalidIDs(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	if err := q.Ack("../escape.json"); err == nil {
+		t.Fatal("Ack(invalid) error = nil, want error")
+	}
+	if err := q.Release("../escape.json"); err == nil {
+		t.Fatal("Release(invalid) error = nil, want error")
+	}
+}
+
 func TestQueueFull(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -140,6 +206,45 @@ func TestQueueRejectsInvalidPayloadHash(t *testing.T) {
 	_, err = q.Enqueue(batch)
 	if !errors.Is(err, conductor.ErrHashMismatch) {
 		t.Fatalf("Enqueue() = %v, want ErrHashMismatch", err)
+	}
+}
+
+func TestQueueRejectsOversizePayloadBeforeEnvelopeValidation(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{MaxPayloadBytes: 1})
+	_, err = q.Enqueue(signedTestBatch(t, "batch-too-large", priv))
+	if !errors.Is(err, conductor.ErrPayloadTooLarge) {
+		t.Fatalf("Enqueue() = %v, want ErrPayloadTooLarge", err)
+	}
+}
+
+func TestQueueReturnsDirectoryErrors(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	if err := os.Rename(q.pendingDir, q.pendingDir+"-gone"); err != nil {
+		t.Fatalf("Rename(pending) error = %v", err)
+	}
+	if _, err := q.Enqueue(signedTestBatch(t, "batch-dir-error", priv)); err == nil {
+		t.Fatal("Enqueue() error = nil, want missing pending dir error")
+	}
+	if _, err := q.Claim(); err == nil {
+		t.Fatal("Claim() error = nil, want missing pending dir error")
+	}
+	if _, err := q.Stats(); err == nil {
+		t.Fatal("Stats() error = nil, want missing pending dir error")
+	}
+}
+
+func TestOpenRequiresQueueDir(t *testing.T) {
+	_, err := Open(Config{})
+	if err == nil || !strings.Contains(err.Error(), "queue dir required") {
+		t.Fatalf("Open() = %v, want queue dir required", err)
 	}
 }
 
@@ -179,6 +284,34 @@ func TestQueueMovesCorruptRecordToDead(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(q.deadDir, "dead-"+corruptID)); err != nil {
 		t.Fatalf("Stat(dead-<id>) error = %v; corrupt record should have used unique dead path", err)
+	}
+}
+
+func TestUniqueDeadPathSkipsExistingCollisionChain(t *testing.T) {
+	dir := t.TempDir()
+	id := "00000000000000000001-corrupt.json"
+	for _, name := range []string{id, "dead-" + id, "dead-1-" + id} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("occupied"), fileMode); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	path, err := uniqueDeadPath(dir, id)
+	if err != nil {
+		t.Fatalf("uniqueDeadPath() error = %v", err)
+	}
+	if got, want := filepath.Base(path), "dead-2-"+id; got != want {
+		t.Fatalf("uniqueDeadPath() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateRecordID(t *testing.T) {
+	for _, id := range []string{"", "../escape.json", "record.txt"} {
+		if err := validateRecordID(id); err == nil {
+			t.Fatalf("validateRecordID(%q) error = nil, want error", id)
+		}
+	}
+	if err := validateRecordID("00000000000000000001-batch-ok.json"); err != nil {
+		t.Fatalf("validateRecordID(valid) error = %v", err)
 	}
 }
 
@@ -226,6 +359,48 @@ func TestOpenRejectsSymlinkQueueDir(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsSymlinkQueueSubdir(t *testing.T) {
+	root := t.TempDir()
+	queueDir := filepath.Join(root, "queue")
+	if err := os.Mkdir(queueDir, dirMode); err != nil {
+		t.Fatalf("Mkdir(queue) error = %v", err)
+	}
+	target := filepath.Join(root, "outside")
+	if err := os.Mkdir(target, dirMode); err != nil {
+		t.Fatalf("Mkdir(outside) error = %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(queueDir, "pending")); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	_, err := Open(Config{Dir: queueDir})
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("Open() = %v, want symlink subdir rejection", err)
+	}
+}
+
+func TestOpenResolvesSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	realParent := filepath.Join(root, "real")
+	if err := os.Mkdir(realParent, dirMode); err != nil {
+		t.Fatalf("Mkdir(real) error = %v", err)
+	}
+	linkParent := filepath.Join(root, "link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	q, err := Open(Config{Dir: filepath.Join(linkParent, "queue")})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if strings.Contains(q.dir, string(filepath.Separator)+"link"+string(filepath.Separator)) {
+		t.Fatalf("q.dir = %q, want symlink parent resolved", q.dir)
+	}
+	if !strings.HasPrefix(q.pendingDir, q.dir+string(filepath.Separator)) {
+		t.Fatalf("pendingDir = %q, want under resolved root %q", q.pendingDir, q.dir)
+	}
+}
+
 func TestOpenSweepsStaleTempFiles(t *testing.T) {
 	// .tmp-* files left by a previous process crash mid-durableWrite must
 	// be cleaned up on Open. listRecordFiles already filters them so they
@@ -263,10 +438,10 @@ func TestOpenSweepsStaleTempFiles(t *testing.T) {
 }
 
 func TestRecoverInflightHandlesNameCollision(t *testing.T) {
-	// If pending/<id> AND pending/recovered-<id> both exist when recovery
-	// runs (two crashes mid-recovery for the same id), the old code
-	// silently clobbered the prior recovered file via os.Rename. The
-	// uniqueRecoveryPath loop must escalate to recovered-N-<id> instead.
+	// If pending/<id> AND pending/<id>-recovered both exist when recovery
+	// runs (two crashes mid-recovery for the same id), the recovery path
+	// must escalate to <id>-recovered-N while preserving the full original
+	// id prefix for FIFO ordering.
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("GenerateKey() error = %v", err)
@@ -284,14 +459,16 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 	if _, err := q.Claim(); err != nil {
 		t.Fatalf("Claim() error = %v", err)
 	}
-	// Simulate prior recovery debris: pending/<id> and pending/recovered-<id>
+	recoveredID := id + "-recovered" + recordExt
+	recoveredAgainID := id + "-recovered-1" + recordExt
+	// Simulate prior recovery debris: pending/<id> and pending/<id>-recovered
 	// both exist when the next Open() runs the recovery sweep.
 	originalContent := []byte(`{"version":1,"sentinel":"do-not-clobber"}`)
 	if err := os.WriteFile(filepath.Join(q.pendingDir, id), originalContent, fileMode); err != nil {
 		t.Fatalf("WriteFile(pending/<id>) error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(q.pendingDir, "recovered-"+id), originalContent, fileMode); err != nil {
-		t.Fatalf("WriteFile(pending/recovered-<id>) error = %v", err)
+	if err := os.WriteFile(filepath.Join(q.pendingDir, recoveredID), originalContent, fileMode); err != nil {
+		t.Fatalf("WriteFile(pending/<id>-recovered) error = %v", err)
 	}
 
 	if _, err := Open(Config{Dir: dir}); err != nil {
@@ -301,7 +478,7 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 	// fresh name (recovered-1-<id>).
 	for _, p := range []string{
 		filepath.Join(q.pendingDir, id),
-		filepath.Join(q.pendingDir, "recovered-"+id),
+		filepath.Join(q.pendingDir, recoveredID),
 	} {
 		got, err := os.ReadFile(filepath.Clean(p))
 		if err != nil {
@@ -311,8 +488,195 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 			t.Fatalf("%s was clobbered by recovery: got %q", p, got)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(q.pendingDir, "recovered-1-"+id)); err != nil {
-		t.Fatalf("Stat(recovered-1-<id>) error = %v; recovery should have placed inflight under fresh name", err)
+	if _, err := os.Stat(filepath.Join(q.pendingDir, recoveredAgainID)); err != nil {
+		t.Fatalf("Stat(<id>-recovered-1) error = %v; recovery should have placed inflight under fresh name", err)
+	}
+	files, err := listRecordFiles(q.pendingDir)
+	if err != nil {
+		t.Fatalf("listRecordFiles() error = %v", err)
+	}
+	if got, want := files[0], id; got != want {
+		t.Fatalf("first pending file = %q, want original timestamp prefix %q", got, want)
+	}
+}
+
+func TestReadRecordStrictDecodeFailures(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	batch := signedTestBatch(t, "batch-read-strict", priv)
+	record := validDiskRecord(batch)
+	for _, tc := range []struct {
+		name string
+		edit func(t *testing.T, record diskRecord) []byte
+		want string
+	}{
+		{
+			name: "unknown_field",
+			edit: func(t *testing.T, record diskRecord) []byte {
+				t.Helper()
+				data, err := json.Marshal(struct {
+					diskRecord
+					Unexpected string `json:"unexpected"`
+				}{diskRecord: record, Unexpected: "nope"})
+				if err != nil {
+					t.Fatalf("Marshal() error = %v", err)
+				}
+				return data
+			},
+			want: "unknown field",
+		},
+		{
+			name: "trailing_json",
+			edit: func(t *testing.T, record diskRecord) []byte {
+				t.Helper()
+				data, err := json.Marshal(record)
+				if err != nil {
+					t.Fatalf("Marshal() error = %v", err)
+				}
+				return append(data, []byte("\n{}")...)
+			},
+			want: "trailing JSON document",
+		},
+		{
+			name: "unsupported_version",
+			edit: func(t *testing.T, record diskRecord) []byte {
+				t.Helper()
+				record.Version++
+				data, err := json.Marshal(record)
+				if err != nil {
+					t.Fatalf("Marshal() error = %v", err)
+				}
+				return data
+			},
+			want: "record version",
+		},
+		{
+			name: "missing_enqueued_at",
+			edit: func(t *testing.T, record diskRecord) []byte {
+				t.Helper()
+				record.EnqueuedAt = time.Time{}
+				data, err := json.Marshal(record)
+				if err != nil {
+					t.Fatalf("Marshal() error = %v", err)
+				}
+				return data
+			},
+			want: "missing enqueued_at",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "record.json")
+			if err := os.WriteFile(path, tc.edit(t, record), fileMode); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			_, err := readRecord(path, conductor.MaxAuditPayloadBytes)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("readRecord() = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadRecordRejectsOversizeRecordBeforeDecode(t *testing.T) {
+	limit, err := recordReadLimit(1)
+	if err != nil {
+		t.Fatalf("recordReadLimit() error = %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "oversize.json")
+	data := make([]byte, 0)
+	for i := int64(0); i <= limit; i++ {
+		data = append(data, 0)
+	}
+	if err := os.WriteFile(path, data, fileMode); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	_, err = readRecord(path, 1)
+	if !errors.Is(err, conductor.ErrPayloadTooLarge) {
+		t.Fatalf("readRecord() = %v, want ErrPayloadTooLarge", err)
+	}
+}
+
+func TestReadRecordRejectsSymlinkRecord(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.json")
+	if err := writeDiskRecord(target, validDiskRecord(signedTestBatch(t, "batch-symlink-record", priv))); err != nil {
+		t.Fatalf("writeDiskRecord() error = %v", err)
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+	_, err = readRecord(link, conductor.MaxAuditPayloadBytes)
+	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("readRecord() = %v, want symlink rejection", err)
+	}
+}
+
+func TestReadRecordRejectsNonRegularRecord(t *testing.T) {
+	_, err := readRecord(t.TempDir(), conductor.MaxAuditPayloadBytes)
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("readRecord() = %v, want non-regular file rejection", err)
+	}
+}
+
+func TestReadRecordRejectsInvalidMaxPayloadLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "record.json")
+	if err := os.WriteFile(path, []byte("{}"), fileMode); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	_, err := readRecord(path, maxRecordReadBytes)
+	if err == nil || !strings.Contains(err.Error(), "max payload bytes too large") {
+		t.Fatalf("readRecord() = %v, want max payload limit error", err)
+	}
+}
+
+func TestEnsurePrivateDirRejectsNonDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue")
+	if err := os.WriteFile(path, []byte("not-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	_, err := ensurePrivateDir(path)
+	if err == nil {
+		t.Fatal("ensurePrivateDir() error = nil, want error")
+	}
+}
+
+func TestEnsurePrivateDirChmodsDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "queue")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	resolved, err := ensurePrivateDir(path)
+	if err != nil {
+		t.Fatalf("ensurePrivateDir() error = %v", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != dirMode {
+		t.Fatalf("mode = %o, want %o", got, dirMode)
+	}
+}
+
+func TestEnsurePathContainedRejectsEscape(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	escaped := filepath.Join(filepath.Dir(root), "root-escape", "pending")
+	if err := ensurePathContained(root, escaped); err == nil {
+		t.Fatal("ensurePathContained() error = nil, want escape rejection")
+	}
+}
+
+func TestFsyncDirMissingPath(t *testing.T) {
+	err := fsyncDir(filepath.Join(t.TempDir(), "missing"))
+	if err == nil || !strings.Contains(err.Error(), "open dir for fsync") {
+		t.Fatalf("fsyncDir() = %v, want open error", err)
 	}
 }
 
@@ -346,6 +710,23 @@ func signedTestBatch(t *testing.T, batchID string, priv ed25519.PrivateKey) Batc
 		t.Fatalf("SignEnvelope() error = %v", err)
 	}
 	return Batch{Envelope: signed, Payload: payload}
+}
+
+func validDiskRecord(batch Batch) diskRecord {
+	return diskRecord{
+		Version:    recordVersion,
+		EnqueuedAt: time.Date(2026, 5, 24, 1, 2, 3, 0, time.UTC),
+		Envelope:   batch.Envelope,
+		Payload:    batch.Payload,
+	}
+}
+
+func writeDiskRecord(path string, record diskRecord) error {
+	data, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, fileMode)
 }
 
 func validUnsignedEnvelope(t *testing.T, batchID string, payload []byte) conductor.AuditBatchEnvelope {

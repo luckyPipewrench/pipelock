@@ -14,7 +14,6 @@
 package auditbatcher
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -24,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -33,12 +33,14 @@ import (
 )
 
 const (
-	dirMode  = 0o700
+	dirMode  = 0o750
 	fileMode = 0o600
 
-	defaultMaxPending = 1024
-	recordVersion     = 1
-	recordExt         = ".json"
+	defaultMaxPending      = 1024
+	maxRecordMetadataBytes = 128 * 1024
+	maxRecordReadBytes     = uint64(1<<63 - 1)
+	recordVersion          = 1
+	recordExt              = ".json"
 )
 
 var (
@@ -97,19 +99,18 @@ func Open(cfg Config) (*Queue, error) {
 	if cfg.MaxPayloadBytes == 0 {
 		cfg.MaxPayloadBytes = conductor.MaxAuditPayloadBytes
 	}
+	dir, pendingDir, inflightDir, deadDir, err := ensurePrivateQueueDirs(cleanDir)
+	if err != nil {
+		return nil, err
+	}
 	q := &Queue{
-		dir:             cleanDir,
-		pendingDir:      filepath.Join(cleanDir, "pending"),
-		inflightDir:     filepath.Join(cleanDir, "inflight"),
-		deadDir:         filepath.Join(cleanDir, "dead"),
+		dir:             dir,
+		pendingDir:      pendingDir,
+		inflightDir:     inflightDir,
+		deadDir:         deadDir,
 		maxPending:      cfg.MaxPending,
 		maxPayloadBytes: cfg.MaxPayloadBytes,
 		now:             func() time.Time { return time.Now().UTC() },
-	}
-	for _, dir := range []string{q.dir, q.pendingDir, q.inflightDir, q.deadDir} {
-		if err := ensurePrivateDir(dir); err != nil {
-			return nil, err
-		}
 	}
 	// Sweep .tmp-* debris from any prior crash mid-write. Live writes use
 	// CreateTemp+rename; only crashes leave .tmp-* files behind, and they
@@ -294,13 +295,11 @@ func (q *Queue) recoverInflightLocked() error {
 }
 
 // uniqueRecoveryPath finds a free filename in pendingDir for a recovered
-// inflight record. The plain id is tried first; if taken, "recovered-<id>"
-// is tried, then "recovered-N-<id>" with an incrementing counter. A bounded
-// loop prevents an infinite wait — if the first 1024 candidates are all
-// taken, the queue dir is clearly in a state no automated recovery can
-// resolve and the operator must intervene.
+// inflight record. The plain id is tried first; if taken, recovery suffixes
+// are appended after the full original id so recovered records keep the same
+// timestamp prefix and do not sort behind newer queue entries.
 func uniqueRecoveryPath(pendingDir, id string) (string, error) {
-	return uniquePrefixedPath(pendingDir, id, "recovered", "recovery")
+	return uniqueRecoverySuffixPath(pendingDir, id)
 }
 
 // uniqueDeadPath finds a free filename in deadDir for a quarantined corrupt
@@ -333,6 +332,32 @@ func uniquePrefixedPath(dir, id, prefix, label string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("auditbatcher: too many existing %s candidates for %s", label, id)
+}
+
+func uniqueRecoverySuffixPath(dir, id string) (string, error) {
+	candidate := filepath.Join(dir, id)
+	if _, err := os.Stat(candidate); errors.Is(err, os.ErrNotExist) {
+		return candidate, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("auditbatcher: stat recovery target: %w", err)
+	}
+	for i := 0; i < 1024; i++ {
+		var name string
+		if i == 0 {
+			name = id + "-recovered" + recordExt
+		} else {
+			name = fmt.Sprintf("%s-recovered-%d%s", id, i, recordExt)
+		}
+		candidate = filepath.Join(dir, name)
+		_, err := os.Stat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", fmt.Errorf("auditbatcher: stat recovery target: %w", err)
+		}
+	}
+	return "", fmt.Errorf("auditbatcher: too many existing recovery candidates for %s", id)
 }
 
 // sweepStaleTempsLocked removes .tmp-* files left behind by a previous
@@ -377,12 +402,32 @@ func validateBatch(batch Batch, maxPayloadBytes uint64) error {
 }
 
 func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
-	data, err := os.ReadFile(filepath.Clean(path))
+	path = filepath.Clean(path)
+	limit, err := recordReadLimit(maxPayloadBytes)
 	if err != nil {
-		return diskRecord{}, fmt.Errorf("auditbatcher: read record: %w", err)
+		return diskRecord{}, err
 	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return diskRecord{}, fmt.Errorf("auditbatcher: stat record: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return diskRecord{}, fmt.Errorf("auditbatcher: record %s must not be a symlink", path)
+	}
+	if !info.Mode().IsRegular() {
+		return diskRecord{}, fmt.Errorf("auditbatcher: record %s is not a regular file", path)
+	}
+	if info.Size() > limit {
+		return diskRecord{}, fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return diskRecord{}, fmt.Errorf("auditbatcher: open record: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
 	var record diskRecord
-	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder := json.NewDecoder(io.LimitReader(f, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
 		return diskRecord{}, fmt.Errorf("auditbatcher: decode record: %w", err)
@@ -401,6 +446,28 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 		return diskRecord{}, err
 	}
 	return record, nil
+}
+
+func recordReadLimit(maxPayloadBytes uint64) (int64, error) {
+	if maxPayloadBytes > ((maxRecordReadBytes-maxRecordMetadataBytes)/4)*3-2 {
+		return 0, fmt.Errorf("auditbatcher: max payload bytes too large: %d", maxPayloadBytes)
+	}
+	encodedPayloadBytes := ((maxPayloadBytes + 2) / 3) * 4
+	if encodedPayloadBytes > maxRecordReadBytes-maxRecordMetadataBytes {
+		return 0, fmt.Errorf("auditbatcher: max payload bytes too large: %d", maxPayloadBytes)
+	}
+	return uint64ToInt64(encodedPayloadBytes + maxRecordMetadataBytes)
+}
+
+func uint64ToInt64(value uint64) (int64, error) {
+	if value > maxRecordReadBytes {
+		return 0, fmt.Errorf("auditbatcher: record read limit too large: %d", value)
+	}
+	converted, err := strconv.ParseInt(strconv.FormatUint(value, 10), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("auditbatcher: convert record read limit: %w", err)
+	}
+	return converted, nil
 }
 
 func listRecordFiles(dir string) ([]string, error) {
@@ -422,24 +489,71 @@ func listRecordFiles(dir string) ([]string, error) {
 	return files, nil
 }
 
-func ensurePrivateDir(dir string) error {
-	if err := os.MkdirAll(filepath.Clean(dir), dirMode); err != nil {
-		return fmt.Errorf("auditbatcher: create dir %s: %w", dir, err)
-	}
-	info, err := os.Lstat(filepath.Clean(dir))
+func ensurePrivateQueueDirs(dir string) (string, string, string, string, error) {
+	resolvedDir, err := ensurePrivateDir(dir)
 	if err != nil {
-		return fmt.Errorf("auditbatcher: stat dir %s: %w", dir, err)
+		return "", "", "", "", err
+	}
+	pendingDir := filepath.Join(resolvedDir, "pending")
+	inflightDir := filepath.Join(resolvedDir, "inflight")
+	deadDir := filepath.Join(resolvedDir, "dead")
+	for _, subdir := range []*string{&pendingDir, &inflightDir, &deadDir} {
+		resolvedSubdir, err := ensurePrivateDir(*subdir)
+		if err != nil {
+			return "", "", "", "", err
+		}
+		if err := ensurePathContained(resolvedDir, resolvedSubdir); err != nil {
+			return "", "", "", "", err
+		}
+		*subdir = resolvedSubdir
+	}
+	return resolvedDir, pendingDir, inflightDir, deadDir, nil
+}
+
+func ensurePrivateDir(dir string) (string, error) {
+	clean := filepath.Clean(dir)
+	if err := os.MkdirAll(clean, dirMode); err != nil {
+		return "", fmt.Errorf("auditbatcher: create dir %s: %w", dir, err)
+	}
+	info, err := os.Lstat(clean)
+	if err != nil {
+		return "", fmt.Errorf("auditbatcher: stat dir %s: %w", dir, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("auditbatcher: dir %s must not be a symlink", dir)
+		return "", fmt.Errorf("auditbatcher: dir %s must not be a symlink", dir)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("auditbatcher: %s is not a directory", dir)
+		return "", fmt.Errorf("auditbatcher: %s is not a directory", dir)
 	}
-	if info.Mode().Perm() != dirMode {
-		if err := os.Chmod(filepath.Clean(dir), dirMode); err != nil {
-			return fmt.Errorf("auditbatcher: chmod dir %s: %w", dir, err)
+	resolved, err := filepath.EvalSymlinks(clean)
+	if err != nil {
+		return "", fmt.Errorf("auditbatcher: resolve dir %s: %w", dir, err)
+	}
+	resolvedInfo, err := os.Lstat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("auditbatcher: stat resolved dir %s: %w", resolved, err)
+	}
+	if resolvedInfo.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("auditbatcher: resolved dir %s must not be a symlink", resolved)
+	}
+	if !resolvedInfo.IsDir() {
+		return "", fmt.Errorf("auditbatcher: resolved path %s is not a directory", resolved)
+	}
+	if resolvedInfo.Mode().Perm() != dirMode {
+		if err := os.Chmod(resolved, dirMode); err != nil {
+			return "", fmt.Errorf("auditbatcher: chmod dir %s: %w", resolved, err)
 		}
+	}
+	return resolved, nil
+}
+
+func ensurePathContained(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return fmt.Errorf("auditbatcher: resolve queue subdir %s: %w", path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("auditbatcher: queue subdir %s escapes root %s", path, root)
 	}
 	return nil
 }

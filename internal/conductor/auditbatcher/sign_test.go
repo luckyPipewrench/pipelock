@@ -6,6 +6,7 @@ package auditbatcher
 import (
 	"crypto/ed25519"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
@@ -37,5 +38,29 @@ func TestSignEnvelope_RejectsBadPrivateKey(t *testing.T) {
 	_, err := SignEnvelope(validUnsignedEnvelope(t, "batch-bad-key", []byte("payload")), "audit-key-1", ed25519.PrivateKey("bad"))
 	if err == nil {
 		t.Fatal("SignEnvelope() error = nil, want error")
+	}
+}
+
+func TestSignEnvelope_RejectsBadSignerKeyID(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	_, err = SignEnvelope(validUnsignedEnvelope(t, "batch-bad-signer", []byte("payload")), "-bad", priv)
+	if err == nil || !strings.Contains(err.Error(), "signature proof") {
+		t.Fatalf("SignEnvelope() = %v, want signature proof error", err)
+	}
+}
+
+func TestSignEnvelope_RejectsInvalidSignedEnvelope(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	envelope := validUnsignedEnvelope(t, "batch-invalid-envelope", []byte("payload"))
+	envelope.EventCount = 0
+	_, err = SignEnvelope(envelope, "audit-key-1", priv)
+	if err == nil || !strings.Contains(err.Error(), "signed envelope") {
+		t.Fatalf("SignEnvelope() = %v, want signed envelope error", err)
 	}
 }

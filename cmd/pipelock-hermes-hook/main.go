@@ -27,7 +27,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -198,7 +197,7 @@ func emit(w io.Writer, decision HookDecision) error {
 		// json.Marshal can fail on HookDecision only if a future field
 		// somehow encodes an unsupported type. Treat it as a programming
 		// error worth surfacing rather than swallowing.
-		return errors.New("pipelock-hermes-hook: marshal decision: " + err.Error())
+		return fmt.Errorf("pipelock-hermes-hook: marshal decision: %w", err)
 	}
 	if _, err := w.Write(append(buf, '\n')); err != nil {
 		return fmt.Errorf("pipelock-hermes-hook: write decision: %w", err)

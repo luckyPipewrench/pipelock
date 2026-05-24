@@ -74,7 +74,17 @@ func Install(target PluginTarget) (PluginInstallResult, error) {
 		return PluginInstallResult{}, fmt.Errorf("hermes: create install root: %w", err)
 	}
 
-	result := PluginInstallResult{Root: rootAbs}
+	// Resolve the install root through any symlinks once, after creating it,
+	// so the per-file containment check below compares against the real
+	// directory. Every dest must stay within this resolved root; a relPath
+	// that escaped it (now or after a future embedded-tree change) is
+	// refused rather than written outside the plugin tree.
+	rootReal, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return PluginInstallResult{}, fmt.Errorf("hermes: resolve install root symlinks: %w", err)
+	}
+
+	result := PluginInstallResult{Root: rootReal}
 	walkErr := fs.WalkDir(pluginFS, pluginRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -84,7 +94,10 @@ func Install(target PluginTarget) (PluginInstallResult, error) {
 		if relPath == "" {
 			return nil
 		}
-		dest := filepath.Join(rootAbs, relPath)
+		dest := filepath.Join(rootReal, relPath)
+		if err := ensureContained(rootReal, dest); err != nil {
+			return err
+		}
 
 		if d.IsDir() {
 			if err := os.MkdirAll(dest, pluginDirPerm); err != nil {
@@ -116,6 +129,19 @@ func Install(target PluginTarget) (PluginInstallResult, error) {
 		return result, walkErr
 	}
 	return result, nil
+}
+
+// ensureContained returns an error when dest is not within root. Mirrors the
+// containment guard used by `pipelock contain install` (walkAndChown): resolve
+// the relative path and reject any result that climbs out via "..". Protects
+// the plugin tree from path traversal even if the embedded source were ever
+// changed to include a "../" segment.
+func ensureContained(root, dest string) error {
+	rel, err := filepath.Rel(root, dest)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("hermes: refusing to write outside install root %s: %s", root, dest)
+	}
+	return nil
 }
 
 // rotateExisting renames dest to `<dest>.bak.<unix-nanos>` when dest exists

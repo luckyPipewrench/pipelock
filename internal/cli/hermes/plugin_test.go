@@ -143,6 +143,33 @@ func TestInstall_RejectsDirectoryCollision(t *testing.T) {
 	}
 }
 
+func TestEnsureContained(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join("/srv", "plugins", "pipelock")
+	cases := []struct {
+		name    string
+		dest    string
+		wantErr bool
+	}{
+		{"direct child", filepath.Join(root, "plugin.py"), false},
+		{"nested child", filepath.Join(root, "sub", "x.py"), false},
+		{"root itself", root, false},
+		{"parent escape", filepath.Join(root, "..", "evil"), true},
+		{"deep escape", filepath.Join(root, "..", "..", "etc", "passwd"), true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ensureContained(root, filepath.Clean(tc.dest))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ensureContained(%q) err=%v, wantErr=%v", tc.dest, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestRotateExisting_AbsentReturnsEmpty(t *testing.T) {
 	t.Parallel()
 

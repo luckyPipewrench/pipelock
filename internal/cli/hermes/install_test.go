@@ -207,8 +207,9 @@ func TestInstallCmd_ExecuteWiresRunE(t *testing.T) {
 }
 
 func TestRunInstall_PropagatesUserHomeDirError(t *testing.T) {
-	t.Parallel()
-
+	// No t.Parallel(): this test reassigns the package-level userHomeDir
+	// seam, which other tests read via runInstall. Running it serially
+	// avoids a data race on the shared global.
 	prev := userHomeDir
 	userHomeDir = func() (string, error) { return "", errors.New("no home for you") }
 	t.Cleanup(func() { userHomeDir = prev })

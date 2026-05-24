@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,10 +163,46 @@ func TestQueueReleaseRejectsExistingPendingTarget(t *testing.T) {
 	}
 }
 
+func TestQueueReleaseReportsTargetStatError(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	pendingFile := filepath.Join(t.TempDir(), "pending-file")
+	if err := os.WriteFile(pendingFile, []byte("not-a-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile(pendingFile) error = %v", err)
+	}
+	q.pendingDir = pendingFile
+
+	err := q.Release("00000000000000000001-batch.json")
+	if err == nil || !strings.Contains(err.Error(), "stat target") {
+		t.Fatalf("Release() = %v, want target stat error", err)
+	}
+}
+
+func TestQueueReleaseReportsRenameError(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	err := q.Release("00000000000000000001-missing.json")
+	if err == nil || !strings.Contains(err.Error(), "release") {
+		t.Fatalf("Release() = %v, want rename error", err)
+	}
+}
+
 func TestQueueAckMissingInflightIsIdempotent(t *testing.T) {
 	q := openTestQueue(t, Config{})
 	if err := q.Ack("00000000000000000001-batch-missing.json"); err != nil {
 		t.Fatalf("Ack(missing) error = %v", err)
+	}
+}
+
+func TestQueueAckReportsRemoveErrors(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	inflightFile := filepath.Join(t.TempDir(), "inflight-file")
+	if err := os.WriteFile(inflightFile, []byte("not-a-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile(inflightFile) error = %v", err)
+	}
+	q.inflightDir = inflightFile
+
+	err := q.Ack("00000000000000000001-batch.json")
+	if err == nil || !strings.Contains(err.Error(), "ack") {
+		t.Fatalf("Ack() = %v, want remove error", err)
 	}
 }
 
@@ -241,6 +278,24 @@ func TestQueueReturnsDirectoryErrors(t *testing.T) {
 	}
 }
 
+func TestQueueStatsReportsInflightAndDeadDirectoryErrors(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	if err := os.RemoveAll(q.inflightDir); err != nil {
+		t.Fatalf("RemoveAll(inflightDir) error = %v", err)
+	}
+	if _, err := q.Stats(); err == nil {
+		t.Fatal("Stats() error = nil, want missing inflight dir error")
+	}
+
+	q = openTestQueue(t, Config{})
+	if err := os.RemoveAll(q.deadDir); err != nil {
+		t.Fatalf("RemoveAll(deadDir) error = %v", err)
+	}
+	if _, err := q.Stats(); err == nil {
+		t.Fatal("Stats() error = nil, want missing dead dir error")
+	}
+}
+
 func TestQueueClaimDoesNotDeadLetterOperationalReadError(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -261,6 +316,43 @@ func TestQueueClaimDoesNotDeadLetterOperationalReadError(t *testing.T) {
 		t.Fatalf("Claim() = %v, must not classify operational error as corrupt", err)
 	}
 	assertStats(t, q, Stats{Inflight: 1})
+}
+
+func TestQueueClaimCorruptRecordReportsDeadLetterPathErrors(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	id := "00000000000000000001-corrupt.json"
+	if err := os.WriteFile(filepath.Join(q.pendingDir, id), []byte("{bad"), fileMode); err != nil {
+		t.Fatalf("WriteFile(corrupt) error = %v", err)
+	}
+	deadFile := filepath.Join(t.TempDir(), "dead-file")
+	if err := os.WriteFile(deadFile, []byte("not-a-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile(deadFile) error = %v", err)
+	}
+	q.deadDir = deadFile
+
+	_, err := q.Claim()
+	if err == nil || !strings.Contains(err.Error(), "stat dead-letter target") {
+		t.Fatalf("Claim() = %v, want dead-letter path stat error", err)
+	}
+}
+
+func TestQueueClaimCorruptRecordReportsMoveToDeadErrors(t *testing.T) {
+	q := openTestQueue(t, Config{})
+	id := "00000000000000000001-corrupt.json"
+	if err := os.WriteFile(filepath.Join(q.pendingDir, id), []byte("{bad"), fileMode); err != nil {
+		t.Fatalf("WriteFile(corrupt) error = %v", err)
+	}
+	if err := os.RemoveAll(q.deadDir); err != nil {
+		t.Fatalf("RemoveAll(deadDir) error = %v", err)
+	}
+
+	_, err := q.Claim()
+	if err == nil || !strings.Contains(err.Error(), "corrupt record") {
+		t.Fatalf("Claim() = %v, want corrupt record move error", err)
+	}
+	if !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("Claim() = %v, want ErrCorruptRecord", err)
+	}
 }
 
 func TestOpenRequiresQueueDir(t *testing.T) {
@@ -453,6 +545,38 @@ func TestOpenSweepsStaleTempFiles(t *testing.T) {
 	}
 }
 
+func TestSweepStaleTempsAndListRecordFilesFilterEntries(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".tmp-dir"), dirMode); err != nil {
+		t.Fatalf("Mkdir(.tmp-dir) error = %v", err)
+	}
+	for _, name := range []string{".tmp-crash", "note.txt", "b.json", "a.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("record"), fileMode); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", name, err)
+		}
+	}
+	if err := sweepStaleTempsLocked(dir); err != nil {
+		t.Fatalf("sweepStaleTempsLocked() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".tmp-crash")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale temp stat error = %v, want not exist", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".tmp-dir")); err != nil {
+		t.Fatalf("Stat(.tmp-dir) error = %v", err)
+	}
+	files, err := listRecordFiles(dir)
+	if err != nil {
+		t.Fatalf("listRecordFiles() error = %v", err)
+	}
+	if got, want := strings.Join(files, ","), "a.json,b.json"; got != want {
+		t.Fatalf("listRecordFiles() = %q, want %q", got, want)
+	}
+
+	if err := sweepStaleTempsLocked(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("sweepStaleTempsLocked(missing) error = nil, want error")
+	}
+}
+
 func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 	// If pending/<id> AND pending/<id>-recovered both exist when recovery
 	// runs (two crashes mid-recovery for the same id), the recovery path
@@ -513,6 +637,82 @@ func TestRecoverInflightHandlesNameCollision(t *testing.T) {
 	}
 	if got, want := files[0], id; got != want {
 		t.Fatalf("first pending file = %q, want original timestamp prefix %q", got, want)
+	}
+}
+
+func TestRecoverInflightReportsListPathAndRenameErrors(t *testing.T) {
+	q := &Queue{inflightDir: filepath.Join(t.TempDir(), "missing")}
+	if err := q.recoverInflightLocked(); err == nil {
+		t.Fatal("recoverInflightLocked() error = nil, want missing inflight dir error")
+	}
+
+	inflightDir := t.TempDir()
+	id := "00000000000000000001-recover.json"
+	if err := os.WriteFile(filepath.Join(inflightDir, id), []byte("record"), fileMode); err != nil {
+		t.Fatalf("WriteFile(inflight) error = %v", err)
+	}
+	pendingFile := filepath.Join(t.TempDir(), "pending-file")
+	if err := os.WriteFile(pendingFile, []byte("not-a-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile(pendingFile) error = %v", err)
+	}
+	q = &Queue{inflightDir: inflightDir, pendingDir: pendingFile}
+	if err := q.recoverInflightLocked(); err == nil || !strings.Contains(err.Error(), "stat recovery target") {
+		t.Fatalf("recoverInflightLocked() = %v, want recovery path stat error", err)
+	}
+
+	inflightDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(inflightDir, id), []byte("record"), fileMode); err != nil {
+		t.Fatalf("WriteFile(inflight) error = %v", err)
+	}
+	q = &Queue{inflightDir: inflightDir, pendingDir: filepath.Join(t.TempDir(), "missing", "pending")}
+	if err := q.recoverInflightLocked(); err == nil || !strings.Contains(err.Error(), "recover inflight") {
+		t.Fatalf("recoverInflightLocked() = %v, want rename error", err)
+	}
+}
+
+func TestUniquePathHelpersReportStatAndExhaustionErrors(t *testing.T) {
+	id := "00000000000000000001-collision.json"
+	dirFile := filepath.Join(t.TempDir(), "dir-file")
+	if err := os.WriteFile(dirFile, []byte("not-a-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile(dirFile) error = %v", err)
+	}
+	if _, err := uniqueDeadPath(dirFile, id); err == nil || !strings.Contains(err.Error(), "stat dead-letter target") {
+		t.Fatalf("uniqueDeadPath(file) = %v, want stat error", err)
+	}
+	if _, err := uniqueRecoveryPath(dirFile, id); err == nil || !strings.Contains(err.Error(), "stat recovery target") {
+		t.Fatalf("uniqueRecoveryPath(file) = %v, want stat error", err)
+	}
+
+	deadDir := t.TempDir()
+	for i := -1; i < 1024; i++ {
+		name := id
+		if i == 0 {
+			name = "dead-" + id
+		} else if i > 0 {
+			name = fmt.Sprintf("dead-%d-%s", i, id)
+		}
+		if err := os.WriteFile(filepath.Join(deadDir, name), []byte("occupied"), fileMode); err != nil {
+			t.Fatalf("WriteFile(dead collision %d) error = %v", i, err)
+		}
+	}
+	if _, err := uniqueDeadPath(deadDir, id); err == nil || !strings.Contains(err.Error(), "too many existing dead-letter") {
+		t.Fatalf("uniqueDeadPath(exhausted) = %v, want exhaustion error", err)
+	}
+
+	recoveryDir := t.TempDir()
+	for i := -1; i < 1024; i++ {
+		name := id
+		if i == 0 {
+			name = id + "-recovered" + recordExt
+		} else if i > 0 {
+			name = fmt.Sprintf("%s-recovered-%d%s", id, i, recordExt)
+		}
+		if err := os.WriteFile(filepath.Join(recoveryDir, name), []byte("occupied"), fileMode); err != nil {
+			t.Fatalf("WriteFile(recovery collision %d) error = %v", i, err)
+		}
+	}
+	if _, err := uniqueRecoveryPath(recoveryDir, id); err == nil || !strings.Contains(err.Error(), "too many existing recovery") {
+		t.Fatalf("uniqueRecoveryPath(exhausted) = %v, want exhaustion error", err)
 	}
 }
 
@@ -677,6 +877,36 @@ func TestReadRecordRejectsInvalidMaxPayloadLimit(t *testing.T) {
 	}
 }
 
+func TestReadRecordRejectsPayloadValidationFailure(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	record := validDiskRecord(signedTestBatch(t, "batch-read-bad-payload", priv))
+	record.Payload = []byte("tampered")
+	path := filepath.Join(t.TempDir(), "record.json")
+	if err := writeDiskRecord(path, record); err != nil {
+		t.Fatalf("writeDiskRecord() error = %v", err)
+	}
+
+	_, err = readRecord(path, conductor.MaxAuditPayloadBytes)
+	if !errors.Is(err, conductor.ErrHashMismatch) {
+		t.Fatalf("readRecord() = %v, want ErrHashMismatch", err)
+	}
+	if !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord() = %v, want ErrCorruptRecord", err)
+	}
+}
+
+func TestValidateBatchAndRecordLimitErrors(t *testing.T) {
+	if err := validateBatch(Batch{}, conductor.MaxAuditPayloadBytes); err == nil {
+		t.Fatal("validateBatch() error = nil, want invalid envelope error")
+	}
+	if _, err := uint64ToInt64(maxRecordReadBytes + 1); err == nil {
+		t.Fatal("uint64ToInt64() error = nil, want oversize error")
+	}
+}
+
 func TestEnsurePrivateDirRejectsNonDirectory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "queue")
 	if err := os.WriteFile(path, []byte("not-dir"), fileMode); err != nil {
@@ -685,6 +915,19 @@ func TestEnsurePrivateDirRejectsNonDirectory(t *testing.T) {
 	_, err := ensurePrivateDir(path)
 	if err == nil {
 		t.Fatal("ensurePrivateDir() error = nil, want error")
+	}
+}
+
+func TestRejectSymlinkAncestorsMissingAndNonDirectory(t *testing.T) {
+	if err := rejectSymlinkAncestors(filepath.Join(t.TempDir(), "missing", "queue")); err != nil {
+		t.Fatalf("rejectSymlinkAncestors(missing chain) error = %v", err)
+	}
+	parentFile := filepath.Join(t.TempDir(), "parent-file")
+	if err := os.WriteFile(parentFile, []byte("not-a-dir"), fileMode); err != nil {
+		t.Fatalf("WriteFile(parentFile) error = %v", err)
+	}
+	if err := rejectSymlinkAncestors(filepath.Join(parentFile, "queue")); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("rejectSymlinkAncestors(file parent) = %v, want non-directory error", err)
 	}
 }
 
@@ -718,6 +961,22 @@ func TestFsyncDirMissingPath(t *testing.T) {
 	err := fsyncDir(filepath.Join(t.TempDir(), "missing"))
 	if err == nil || !strings.Contains(err.Error(), "open dir for fsync") {
 		t.Fatalf("fsyncDir() = %v, want open error", err)
+	}
+}
+
+func TestDurableWriteAndMoveToDeadErrorPaths(t *testing.T) {
+	if err := durableWrite(filepath.Join(t.TempDir(), "missing", "record.json"), []byte("record"), fileMode); err == nil {
+		t.Fatal("durableWrite(missing parent) error = nil, want create temp error")
+	}
+	existingDir := filepath.Join(t.TempDir(), "existing-dir")
+	if err := os.Mkdir(existingDir, dirMode); err != nil {
+		t.Fatalf("Mkdir(existingDir) error = %v", err)
+	}
+	if err := durableWrite(existingDir, []byte("record"), fileMode); err == nil || !strings.Contains(err.Error(), "rename temp") {
+		t.Fatalf("durableWrite(existing dir) = %v, want rename error", err)
+	}
+	if err := moveToDead(filepath.Join(t.TempDir(), "missing.json"), filepath.Join(t.TempDir(), "dead.json")); err == nil {
+		t.Fatal("moveToDead(missing source) error = nil, want rename error")
 	}
 }
 

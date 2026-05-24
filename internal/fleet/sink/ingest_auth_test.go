@@ -310,7 +310,7 @@ func TestStore_RejectsSymlinkDBPath(t *testing.T) {
 func TestStore_UsesResolvedParentPath(t *testing.T) {
 	dir := t.TempDir()
 	realParent := filepath.Join(dir, "real")
-	if err := os.Mkdir(realParent, 0o700); err != nil {
+	if err := os.Mkdir(realParent, 0o750); err != nil {
 		t.Fatal(err)
 	}
 	linkParent := filepath.Join(dir, "link")

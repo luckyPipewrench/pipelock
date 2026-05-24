@@ -286,54 +286,54 @@ func RenderProofMarkdown(c *Capsule) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Pipelock Posture Proof\n\n")
-	fmt.Fprintf(&b, "- Schema version: `%s`\n", c.SchemaVersion)
-	fmt.Fprintf(&b, "- Tool version: `%s`\n", c.ToolVersion)
-	fmt.Fprintf(&b, "- Generated at: %s\n", c.GeneratedAt.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "- Expires at: %s\n", c.ExpiresAt.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, "- Config hash: `%s`\n", c.ConfigHash)
-	fmt.Fprintf(&b, "- Signer key ID: `%s`\n", signerShort)
-	fmt.Fprintf(&b, "- Signature: `%s`\n", sigShort)
+	_, _ = fmt.Fprintf(&b, "# Pipelock Posture Proof\n\n")
+	_, _ = fmt.Fprintf(&b, "- Schema version: `%s`\n", c.SchemaVersion)
+	_, _ = fmt.Fprintf(&b, "- Tool version: `%s`\n", c.ToolVersion)
+	_, _ = fmt.Fprintf(&b, "- Generated at: %s\n", c.GeneratedAt.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(&b, "- Expires at: %s\n", c.ExpiresAt.UTC().Format(time.RFC3339))
+	_, _ = fmt.Fprintf(&b, "- Config hash: `%s`\n", c.ConfigHash)
+	_, _ = fmt.Fprintf(&b, "- Signer key ID: `%s`\n", signerShort)
+	_, _ = fmt.Fprintf(&b, "- Signature: `%s`\n", sigShort)
 
 	d := c.Evidence.Discover
-	fmt.Fprintf(&b, "\n## Discover\n\n")
-	fmt.Fprintf(&b, "- Clients: %d\n", d.TotalClients)
-	fmt.Fprintf(&b, "- Servers: %d\n", d.TotalServers)
-	fmt.Fprintf(&b, "- Protected (pipelock): %d\n", d.ProtectedPipelock)
-	fmt.Fprintf(&b, "- Protected (other): %d\n", d.ProtectedOther)
-	fmt.Fprintf(&b, "- Unprotected: %d\n", d.Unprotected)
-	fmt.Fprintf(&b, "- Unknown: %d\n", d.Unknown)
-	fmt.Fprintf(&b, "- High risk: %d\n", d.HighRisk)
-	fmt.Fprintf(&b, "- Parse errors: %d\n", d.ParseErrors)
+	_, _ = fmt.Fprintf(&b, "\n## Discover\n\n")
+	_, _ = fmt.Fprintf(&b, "- Clients: %d\n", d.TotalClients)
+	_, _ = fmt.Fprintf(&b, "- Servers: %d\n", d.TotalServers)
+	_, _ = fmt.Fprintf(&b, "- Protected (pipelock): %d\n", d.ProtectedPipelock)
+	_, _ = fmt.Fprintf(&b, "- Protected (other): %d\n", d.ProtectedOther)
+	_, _ = fmt.Fprintf(&b, "- Unprotected: %d\n", d.Unprotected)
+	_, _ = fmt.Fprintf(&b, "- Unknown: %d\n", d.Unknown)
+	_, _ = fmt.Fprintf(&b, "- High risk: %d\n", d.HighRisk)
+	_, _ = fmt.Fprintf(&b, "- Parse errors: %d\n", d.ParseErrors)
 
 	vi := c.Evidence.VerifyInstall
-	fmt.Fprintf(&b, "\n## Verify install\n\n")
-	fmt.Fprintf(&b, "- Flight recorder active: %t\n", vi.FlightRecorderActive)
-	fmt.Fprintf(&b, "- Proxying: %t\n", vi.Proxying)
-	fmt.Fprintf(&b, "- Receipt count: %d\n", vi.ReceiptCount)
+	_, _ = fmt.Fprintf(&b, "\n## Verify install\n\n")
+	_, _ = fmt.Fprintf(&b, "- Flight recorder active: %t\n", vi.FlightRecorderActive)
+	_, _ = fmt.Fprintf(&b, "- Proxying: %t\n", vi.Proxying)
+	_, _ = fmt.Fprintf(&b, "- Receipt count: %d\n", vi.ReceiptCount)
 
 	s := c.Evidence.Simulate
-	fmt.Fprintf(&b, "\n## Simulate\n\n")
+	_, _ = fmt.Fprintf(&b, "\n## Simulate\n\n")
 	if s.Total > 0 {
-		fmt.Fprintf(&b, "- Mode: %s\n", s.Mode)
-		fmt.Fprintf(&b, "- Grade: %s  (%d%%)\n", s.Grade, s.Percentage)
-		fmt.Fprintf(&b, "- Passed: %d / %d\n", s.Passed, s.Total)
-		fmt.Fprintf(&b, "- Failed: %d\n", s.Failed)
-		fmt.Fprintf(&b, "- Known limitations: %d\n", s.KnownLimits)
+		_, _ = fmt.Fprintf(&b, "- Mode: %s\n", s.Mode)
+		_, _ = fmt.Fprintf(&b, "- Grade: %s  (%d%%)\n", s.Grade, s.Percentage)
+		_, _ = fmt.Fprintf(&b, "- Passed: %d / %d\n", s.Passed, s.Total)
+		_, _ = fmt.Fprintf(&b, "- Failed: %d\n", s.Failed)
+		_, _ = fmt.Fprintf(&b, "- Known limitations: %d\n", s.KnownLimits)
 	} else {
-		fmt.Fprintf(&b, "- No scenarios executed.\n")
+		_, _ = fmt.Fprintf(&b, "- No scenarios executed.\n")
 	}
 
 	fr := c.Evidence.FlightRecorder
-	fmt.Fprintf(&b, "\n## Flight recorder\n\n")
-	fmt.Fprintf(&b, "- Receipt count: %d\n", fr.ReceiptCount)
+	_, _ = fmt.Fprintf(&b, "\n## Flight recorder\n\n")
+	_, _ = fmt.Fprintf(&b, "- Receipt count: %d\n", fr.ReceiptCount)
 	if fr.LastReceiptAt != nil {
-		fmt.Fprintf(&b, "- Last receipt at: %s\n", fr.LastReceiptAt.UTC().Format(time.RFC3339))
+		_, _ = fmt.Fprintf(&b, "- Last receipt at: %s\n", fr.LastReceiptAt.UTC().Format(time.RFC3339))
 	} else {
-		fmt.Fprintf(&b, "- Last receipt at: (none recorded)\n")
+		_, _ = fmt.Fprintf(&b, "- Last receipt at: (none recorded)\n")
 	}
 	if len(fr.ScannerVerdict) > 0 {
-		fmt.Fprintf(&b, "\n| Scanner | Allow | Block | Warn |\n| --- | ---: | ---: | ---: |\n")
+		_, _ = fmt.Fprintf(&b, "\n| Scanner | Allow | Block | Warn |\n| --- | ---: | ---: | ---: |\n")
 		scanners := make([]string, 0, len(fr.ScannerVerdict))
 		for k := range fr.ScannerVerdict {
 			scanners = append(scanners, k)
@@ -341,7 +341,7 @@ func RenderProofMarkdown(c *Capsule) string {
 		sort.Strings(scanners)
 		for _, name := range scanners {
 			v := fr.ScannerVerdict[name]
-			fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", name, v.Allow, v.Block, v.Warn)
+			_, _ = fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", name, v.Allow, v.Block, v.Warn)
 		}
 	}
 

@@ -62,16 +62,17 @@ type Producer struct {
 }
 
 type ProducerConfig struct {
-	Queue            *Queue
-	Metrics          MetricsSink
-	OrgID            string
-	FleetID          string
-	InstanceID       string
-	AuditSignerKeyID string
-	RecorderKeyID    string
-	AuditSigner      ed25519.PrivateKey
-	BufferSize       int
-	Now              func() time.Time
+	Queue             *Queue
+	Metrics           MetricsSink
+	OrgID             string
+	FleetID           string
+	InstanceID        string
+	AuditSignerKeyID  string
+	RecorderKeyID     string
+	AuditSigner       ed25519.PrivateKey
+	RecorderPublicKey ed25519.PublicKey
+	BufferSize        int
+	Now               func() time.Time
 }
 
 func NewProducer(cfg ProducerConfig) (*Producer, error) {
@@ -80,6 +81,9 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	}
 	if len(cfg.AuditSigner) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("auditbatcher: producer private key length=%d want=%d", len(cfg.AuditSigner), ed25519.PrivateKeySize)
+	}
+	if len(cfg.RecorderPublicKey) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("auditbatcher: recorder public key length=%d want=%d", len(cfg.RecorderPublicKey), ed25519.PublicKeySize)
 	}
 	for _, id := range []struct {
 		field string
@@ -101,10 +105,6 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
 	}
-	pub, ok := cfg.AuditSigner.Public().(ed25519.PublicKey)
-	if !ok || len(pub) != ed25519.PublicKeySize {
-		return nil, errors.New("auditbatcher: producer public key unavailable")
-	}
 	p := &Producer{
 		queue:            cfg.Queue,
 		metrics:          cfg.Metrics,
@@ -113,7 +113,7 @@ func NewProducer(cfg ProducerConfig) (*Producer, error) {
 		instanceID:       cfg.InstanceID,
 		auditSignerKeyID: cfg.AuditSignerKeyID,
 		recorderKeyID:    cfg.RecorderKeyID,
-		followerPubHex:   hex.EncodeToString(pub),
+		followerPubHex:   hex.EncodeToString(cfg.RecorderPublicKey),
 		auditSigner:      append(ed25519.PrivateKey(nil), cfg.AuditSigner...),
 		now:              cfg.Now,
 		entries:          make(chan recorder.Entry, cfg.BufferSize),

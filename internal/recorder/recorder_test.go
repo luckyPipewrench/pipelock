@@ -72,6 +72,76 @@ func TestRecorder_Dir(t *testing.T) {
 	})
 }
 
+func TestRecorder_EntryObserver(t *testing.T) {
+	t.Run("observes_flushed_entry", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                t.TempDir(),
+			CheckpointInterval: 100,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		observer := &testEntryObserver{}
+		rec.SetObserver(observer)
+		if err := rec.Record(recorder.Entry{
+			SessionID: testSessionID,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   "observer proof",
+		}); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		observer.mu.Lock()
+		defer observer.mu.Unlock()
+		if len(observer.entries) != 1 {
+			t.Fatalf("observed entries = %d, want 1", len(observer.entries))
+		}
+		if observer.entries[0].Summary != "observer proof" {
+			t.Fatalf("observed summary = %q", observer.entries[0].Summary)
+		}
+	})
+
+	t.Run("observer_panic_isolated", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{
+			Enabled:            true,
+			Dir:                t.TempDir(),
+			CheckpointInterval: 100,
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		defer func() { _ = rec.Close() }()
+
+		rec.SetObserver(panicEntryObserver{})
+		if err := rec.Record(recorder.Entry{
+			SessionID: testSessionID,
+			Type:      testType,
+			Transport: testTransport,
+			Summary:   "panic proof",
+		}); err != nil {
+			t.Fatalf("Record with panicking observer: %v", err)
+		}
+	})
+
+	t.Run("disabled_recorder_ignores_observer", func(t *testing.T) {
+		rec, err := recorder.New(recorder.Config{Enabled: false}, nil, nil)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		observer := &testEntryObserver{}
+		rec.SetObserver(observer)
+		if err := rec.Record(recorder.Entry{Summary: "nop"}); err != nil {
+			t.Fatalf("Record disabled: %v", err)
+		}
+		if len(observer.entries) != 0 {
+			t.Fatalf("disabled recorder observed %d entries, want 0", len(observer.entries))
+		}
+	})
+}
+
 func TestRecorder_FileMode(t *testing.T) {
 	t.Parallel()
 
@@ -2108,3 +2178,20 @@ func TestRecorder_ReceiptRedaction(t *testing.T) {
 
 // filePermissions for test file creation.
 const filePermissions = 0o600
+
+type testEntryObserver struct {
+	mu      sync.Mutex
+	entries []recorder.Entry
+}
+
+func (o *testEntryObserver) ObserveRecorderEntry(entry recorder.Entry) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.entries = append(o.entries, entry)
+}
+
+type panicEntryObserver struct{}
+
+func (panicEntryObserver) ObserveRecorderEntry(recorder.Entry) {
+	panic("observer panic")
+}

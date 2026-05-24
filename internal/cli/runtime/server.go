@@ -423,6 +423,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.cleanup()
 			return nil, errors.New("conductor audit producer requires flight recorder")
 		}
+		recPubKey, ok := recPrivKey.Public().(ed25519.PublicKey)
+		if !ok || len(recPubKey) != ed25519.PublicKeySize {
+			s.cleanup()
+			return nil, errors.New("conductor audit producer requires recorder public key")
+		}
 		// The flight-recorder signing key doubles as the audit-batch
 		// signer. Reuse is safe because the two signing schemes operate on
 		// disjoint byte sets: the recorder signs a bare 64-char hex chain
@@ -431,14 +436,15 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		// signature or vice versa. Key ids stay separate (audit_signing_key_id
 		// vs recorder_key_id) so the sink-side roster can distinguish purpose.
 		producer, producerErr := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
-			Queue:            conductorQueue,
-			Metrics:          m,
-			OrgID:            cfg.Conductor.OrgID,
-			FleetID:          cfg.Conductor.FleetID,
-			InstanceID:       cfg.Conductor.InstanceID,
-			AuditSignerKeyID: cfg.Conductor.AuditSigningKeyID,
-			RecorderKeyID:    cfg.Conductor.RecorderKeyID,
-			AuditSigner:      recPrivKey,
+			Queue:             conductorQueue,
+			Metrics:           m,
+			OrgID:             cfg.Conductor.OrgID,
+			FleetID:           cfg.Conductor.FleetID,
+			InstanceID:        cfg.Conductor.InstanceID,
+			AuditSignerKeyID:  cfg.Conductor.AuditSigningKeyID,
+			RecorderKeyID:     cfg.Conductor.RecorderKeyID,
+			AuditSigner:       recPrivKey,
+			RecorderPublicKey: recPubKey,
 		})
 		if producerErr != nil {
 			s.cleanup()

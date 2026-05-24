@@ -23,23 +23,28 @@ import (
 )
 
 func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	auditPub, auditPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
-		t.Fatalf("GenerateKey: %v", err)
+		t.Fatalf("GenerateKey audit: %v", err)
+	}
+	recorderPub, recorderPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey recorder: %v", err)
 	}
 	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
 	if err != nil {
 		t.Fatalf("Open queue: %v", err)
 	}
 	producer, err := NewProducer(ProducerConfig{
-		Queue:            q,
-		OrgID:            "org-main",
-		FleetID:          "prod",
-		InstanceID:       "pl-prod-1",
-		AuditSignerKeyID: "audit-key-1",
-		RecorderKeyID:    "recorder-key-1",
-		AuditSigner:      priv,
-		Now:              func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },
+		Queue:             q,
+		OrgID:             "org-main",
+		FleetID:           "prod",
+		InstanceID:        "pl-prod-1",
+		AuditSignerKeyID:  "audit-key-1",
+		RecorderKeyID:     "recorder-key-1",
+		AuditSigner:       auditPriv,
+		RecorderPublicKey: recorderPub,
+		Now:               func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
@@ -51,7 +56,7 @@ func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 		Dir:                filepath.Join(t.TempDir(), "recorder"),
 		CheckpointInterval: 2,
 		SignCheckpoints:    true,
-	}, nil, priv)
+	}, nil, recorderPriv)
 	if err != nil {
 		t.Fatalf("recorder.New: %v", err)
 	}
@@ -73,7 +78,7 @@ func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 		if id != "audit-key-1" {
 			return conductor.SignatureKey{}, errors.New("unknown key")
 		}
-		return conductor.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
+		return conductor.SignatureKey{PublicKey: auditPub, KeyPurpose: signing.PurposeAuditBatchSigning}, nil
 	}); err != nil {
 		t.Fatalf("VerifySignatures: %v", err)
 	}
@@ -92,7 +97,7 @@ func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
 	if batch.Envelope.Chain.CheckpointSignerKeyID != "recorder-key-1" {
 		t.Fatalf("checkpoint signer = %q", batch.Envelope.Chain.CheckpointSignerKeyID)
 	}
-	if batch.Envelope.Chain.FollowerRecorderPubHex != hex.EncodeToString(pub) {
+	if batch.Envelope.Chain.FollowerRecorderPubHex != hex.EncodeToString(recorderPub) {
 		t.Fatalf("recorder public key mismatch")
 	}
 	var decoded []recorder.Entry
@@ -118,14 +123,15 @@ func TestProducer_CloseRacesWithObserver(t *testing.T) {
 		t.Fatalf("Open queue: %v", err)
 	}
 	producer, err := NewProducer(ProducerConfig{
-		Queue:            q,
-		OrgID:            "org-main",
-		FleetID:          "prod",
-		InstanceID:       "pl-prod-1",
-		AuditSignerKeyID: "audit-key-1",
-		RecorderKeyID:    "recorder-key-1",
-		AuditSigner:      priv,
-		BufferSize:       1,
+		Queue:             q,
+		OrgID:             "org-main",
+		FleetID:           "prod",
+		InstanceID:        "pl-prod-1",
+		AuditSignerKeyID:  "audit-key-1",
+		RecorderKeyID:     "recorder-key-1",
+		AuditSigner:       priv,
+		RecorderPublicKey: priv.Public().(ed25519.PublicKey),
+		BufferSize:        1,
 	})
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)
@@ -148,6 +154,89 @@ func TestProducer_CloseRacesWithObserver(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
+}
+
+func TestNewProducer_RequiresRecorderPublicKey(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatalf("Open queue: %v", err)
+	}
+	_, err = NewProducer(ProducerConfig{
+		Queue:            q,
+		OrgID:            "org-main",
+		FleetID:          "prod",
+		InstanceID:       "pl-prod-1",
+		AuditSignerKeyID: "audit-key-1",
+		RecorderKeyID:    "recorder-key-1",
+		AuditSigner:      priv,
+	})
+	if err == nil || !strings.Contains(err.Error(), "recorder public key length=0") {
+		t.Fatalf("NewProducer() = %v, want recorder public key length error", err)
+	}
+}
+
+func TestNewProducer_RejectsInvalidConfig(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+	if err != nil {
+		t.Fatalf("Open queue: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ProducerConfig)
+		want   string
+	}{
+		{
+			name:   "missing_queue",
+			mutate: func(cfg *ProducerConfig) { cfg.Queue = nil },
+			want:   "queue required",
+		},
+		{
+			name:   "bad_audit_signer",
+			mutate: func(cfg *ProducerConfig) { cfg.AuditSigner = ed25519.PrivateKey("short") },
+			want:   "private key length",
+		},
+		{
+			name:   "bad_recorder_public_key",
+			mutate: func(cfg *ProducerConfig) { cfg.RecorderPublicKey = ed25519.PublicKey("short") },
+			want:   "recorder public key length",
+		},
+		{
+			name:   "bad_identifier",
+			mutate: func(cfg *ProducerConfig) { cfg.InstanceID = "-bad" },
+			want:   "instance_id must start",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ProducerConfig{
+				Queue:             q,
+				OrgID:             "org-main",
+				FleetID:           "prod",
+				InstanceID:        "pl-prod-1",
+				AuditSignerKeyID:  "audit-key-1",
+				RecorderKeyID:     "recorder-key-1",
+				AuditSigner:       priv,
+				RecorderPublicKey: pub,
+			}
+			tc.mutate(&cfg)
+			producer, err := NewProducer(cfg)
+			if producer != nil {
+				_ = producer.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewProducer() = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
 }
 
 // TestProducer_AdvancesChainTailOnDroppedSegment proves the evidence chain
@@ -285,18 +374,103 @@ func TestProducer_ReleaseDroppedPreservesConcurrentDrops(t *testing.T) {
 	}
 }
 
+func TestProducer_EnqueueSegmentDropPaths(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func([]recorder.Entry) []recorder.Entry
+		want   string
+	}{
+		{
+			name: "marshal_error",
+			mutate: func(seg []recorder.Entry) []recorder.Entry {
+				seg[0].Detail = map[string]any{"bad": make(chan int)}
+				return seg
+			},
+			want: producerDropEnqueueError,
+		},
+		{
+			name: "payload_too_large",
+			mutate: func(seg []recorder.Entry) []recorder.Entry {
+				seg[0].Detail = map[string]any{"large": strings.Repeat("x", conductor.MaxAuditPayloadBytes)}
+				return seg
+			},
+			want: producerDropPayloadTooLarge,
+		},
+		{
+			name: "non_checkpoint_tail",
+			mutate: func(seg []recorder.Entry) []recorder.Entry {
+				seg[1].Type = "action_receipt"
+				return seg
+			},
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q, err := Open(Config{Dir: filepath.Join(t.TempDir(), "queue")})
+			if err != nil {
+				t.Fatalf("Open queue: %v", err)
+			}
+			p := newTestProducer(t, q, nil, priv)
+			defer func() { _ = p.Close() }()
+
+			seg := tc.mutate(checkpointSegment(0))
+			err = p.enqueueSegment(seg)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("enqueueSegment() = %v, want nil", err)
+				}
+				if got := p.droppedAccounting().Count; got != 0 {
+					t.Fatalf("dropped count = %d, want 0", got)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("enqueueSegment() = %v, want substring %q", err, tc.want)
+			}
+			accounting := p.droppedAccounting()
+			if accounting.Count != uint64(len(seg)) {
+				t.Fatalf("dropped count = %d, want %d", accounting.Count, len(seg))
+			}
+		})
+	}
+}
+
+func TestProducerHelpers(t *testing.T) {
+	if got := ed25519SignatureString("ed25519:abc"); got != "ed25519:abc" {
+		t.Fatalf("prefixed signature = %q", got)
+	}
+	if got := ed25519SignatureString("abc"); got != "ed25519:abc" {
+		t.Fatalf("unprefixed signature = %q", got)
+	}
+	if got := segmentID("", 1, 2); got != "segment-recorder-00000000000000000001-00000000000000000002" {
+		t.Fatalf("segmentID(empty) = %q", got)
+	}
+	if got := safeSegmentPart("a/b:c"); got != "abc" {
+		t.Fatalf("safeSegmentPart() = %q", got)
+	}
+	if got := safeSegmentPart("///"); got != "recorder" {
+		t.Fatalf("safeSegmentPart(empty) = %q", got)
+	}
+}
+
 func newTestProducer(t *testing.T, q *Queue, metrics MetricsSink, priv ed25519.PrivateKey) *Producer {
 	t.Helper()
 	p, err := NewProducer(ProducerConfig{
-		Queue:            q,
-		Metrics:          metrics,
-		OrgID:            "org-main",
-		FleetID:          "prod",
-		InstanceID:       "pl-prod-1",
-		AuditSignerKeyID: "audit-key-1",
-		RecorderKeyID:    "recorder-key-1",
-		AuditSigner:      priv,
-		Now:              func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },
+		Queue:             q,
+		Metrics:           metrics,
+		OrgID:             "org-main",
+		FleetID:           "prod",
+		InstanceID:        "pl-prod-1",
+		AuditSignerKeyID:  "audit-key-1",
+		RecorderKeyID:     "recorder-key-1",
+		AuditSigner:       priv,
+		RecorderPublicKey: priv.Public().(ed25519.PublicKey),
+		Now:               func() time.Time { return time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC) },
 	})
 	if err != nil {
 		t.Fatalf("NewProducer: %v", err)

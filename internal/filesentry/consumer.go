@@ -80,14 +80,12 @@ func ConsumeFindings(opts ConsumerOpts) func() {
 			if opts.OnFinding != nil {
 				opts.OnFinding(f.PatternName, f.Severity, f.IsAgent)
 			}
-			if blockMode && f.IsAgent && !cancelled {
+			if blockMode && f.IsAgent && opts.Cancel != nil && !cancelled {
 				cancelled = true
 				if opts.OnBlock != nil {
 					opts.OnBlock(f)
 				}
-				if opts.Cancel != nil {
-					opts.Cancel()
-				}
+				opts.Cancel()
 			}
 		}
 	}()

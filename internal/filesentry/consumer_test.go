@@ -134,6 +134,7 @@ func TestConsumeFindings_BlockMode_NonAgentOnly_NoCancel(t *testing.T) {
 
 func TestConsumeFindings_BlockMode_NilCancel_DegradesToWarn(t *testing.T) {
 	var buf bytes.Buffer
+	var blockFired atomic.Bool
 	w := makeWatcher(t,
 		Finding{Path: "/tmp/x", PatternName: "AWS", Severity: "critical", IsAgent: true},
 	)
@@ -142,11 +143,17 @@ func TestConsumeFindings_BlockMode_NilCancel_DegradesToWarn(t *testing.T) {
 		Action:  config.ActionBlock,
 		Log:     &buf,
 		Cancel:  nil,
+		// OnBlock observes the enforcement decision. With Cancel == nil
+		// there is no enforcement to observe, so OnBlock must not fire.
+		OnBlock: func(_ Finding) { blockFired.Store(true) },
 	})
 	wait()
 
 	if !strings.Contains(buf.String(), "DLP match in /tmp/x") {
 		t.Errorf("log line missing: %q", buf.String())
+	}
+	if blockFired.Load() {
+		t.Error("OnBlock must not fire when Cancel is nil (no enforcement actually happens)")
 	}
 }
 

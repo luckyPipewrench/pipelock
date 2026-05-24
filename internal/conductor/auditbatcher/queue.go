@@ -44,8 +44,9 @@ const (
 )
 
 var (
-	ErrQueueEmpty = errors.New("auditbatcher: queue empty")
-	ErrQueueFull  = errors.New("auditbatcher: queue full")
+	ErrQueueEmpty    = errors.New("auditbatcher: queue empty")
+	ErrQueueFull     = errors.New("auditbatcher: queue full")
+	ErrCorruptRecord = errors.New("auditbatcher: corrupt record")
 )
 
 type Config struct {
@@ -199,6 +200,9 @@ func (q *Queue) Claim() (*Lease, error) {
 		}
 		record, err := readRecord(inflightPath, q.maxPayloadBytes)
 		if err != nil {
+			if !errors.Is(err, ErrCorruptRecord) {
+				return nil, err
+			}
 			deadPath, pathErr := uniqueDeadPath(q.deadDir, id)
 			if pathErr != nil {
 				return nil, fmt.Errorf("auditbatcher: corrupt record %s: %w", id, errors.Join(err, pathErr))
@@ -412,13 +416,13 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 		return diskRecord{}, fmt.Errorf("auditbatcher: stat record: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return diskRecord{}, fmt.Errorf("auditbatcher: record %s must not be a symlink", path)
+		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record %s must not be a symlink", path))
 	}
 	if !info.Mode().IsRegular() {
-		return diskRecord{}, fmt.Errorf("auditbatcher: record %s is not a regular file", path)
+		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record %s is not a regular file", path))
 	}
 	if info.Size() > limit {
-		return diskRecord{}, fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit)
+		return diskRecord{}, corruptRecordError(fmt.Errorf("%w: record_bytes=%d cap=%d", conductor.ErrPayloadTooLarge, info.Size(), limit))
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -430,22 +434,26 @@ func readRecord(path string, maxPayloadBytes uint64) (diskRecord, error) {
 	decoder := json.NewDecoder(io.LimitReader(f, limit))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&record); err != nil {
-		return diskRecord{}, fmt.Errorf("auditbatcher: decode record: %w", err)
+		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: decode record: %w", err))
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return diskRecord{}, errors.New("auditbatcher: trailing JSON document")
+		return diskRecord{}, corruptRecordError(errors.New("auditbatcher: trailing JSON document"))
 	}
 	if record.Version != recordVersion {
-		return diskRecord{}, fmt.Errorf("auditbatcher: record version=%d want=%d", record.Version, recordVersion)
+		return diskRecord{}, corruptRecordError(fmt.Errorf("auditbatcher: record version=%d want=%d", record.Version, recordVersion))
 	}
 	if record.EnqueuedAt.IsZero() {
-		return diskRecord{}, errors.New("auditbatcher: missing enqueued_at")
+		return diskRecord{}, corruptRecordError(errors.New("auditbatcher: missing enqueued_at"))
 	}
 	batch := Batch{Envelope: record.Envelope, Payload: record.Payload}
 	if err := validateBatch(batch, maxPayloadBytes); err != nil {
-		return diskRecord{}, err
+		return diskRecord{}, corruptRecordError(err)
 	}
 	return record, nil
+}
+
+func corruptRecordError(err error) error {
+	return fmt.Errorf("%w: %w", ErrCorruptRecord, err)
 }
 
 func recordReadLimit(maxPayloadBytes uint64) (int64, error) {
@@ -512,10 +520,17 @@ func ensurePrivateQueueDirs(dir string) (string, string, string, string, error) 
 
 func ensurePrivateDir(dir string) (string, error) {
 	clean := filepath.Clean(dir)
+	abs, err := filepath.Abs(clean)
+	if err != nil {
+		return "", fmt.Errorf("auditbatcher: absolute dir %s: %w", dir, err)
+	}
+	if err := rejectSymlinkAncestors(abs); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(clean, dirMode); err != nil {
 		return "", fmt.Errorf("auditbatcher: create dir %s: %w", dir, err)
 	}
-	info, err := os.Lstat(clean)
+	info, err := os.Lstat(abs)
 	if err != nil {
 		return "", fmt.Errorf("auditbatcher: stat dir %s: %w", dir, err)
 	}
@@ -525,7 +540,7 @@ func ensurePrivateDir(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("auditbatcher: %s is not a directory", dir)
 	}
-	resolved, err := filepath.EvalSymlinks(clean)
+	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", fmt.Errorf("auditbatcher: resolve dir %s: %w", dir, err)
 	}
@@ -545,6 +560,35 @@ func ensurePrivateDir(dir string) (string, error) {
 		}
 	}
 	return resolved, nil
+}
+
+func rejectSymlinkAncestors(abs string) error {
+	dir := filepath.Dir(abs)
+	parents := make([]string, 0, 8)
+	for {
+		parents = append(parents, dir)
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	for i := len(parents) - 1; i >= 0; i-- {
+		info, err := os.Lstat(parents[i])
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("auditbatcher: stat dir ancestor %s: %w", parents[i], err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("auditbatcher: dir ancestor %s must not be a symlink", parents[i])
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("auditbatcher: dir ancestor %s is not a directory", parents[i])
+		}
+	}
+	return nil
 }
 
 func ensurePathContained(root, path string) error {

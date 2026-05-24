@@ -241,6 +241,28 @@ func TestQueueReturnsDirectoryErrors(t *testing.T) {
 	}
 }
 
+func TestQueueClaimDoesNotDeadLetterOperationalReadError(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	q := openTestQueue(t, Config{})
+	id := "00000000000000000001-batch-operational.json"
+	if err := writeDiskRecord(filepath.Join(q.pendingDir, id), validDiskRecord(signedTestBatch(t, "batch-operational", priv))); err != nil {
+		t.Fatalf("writeDiskRecord() error = %v", err)
+	}
+	q.maxPayloadBytes = maxRecordReadBytes
+
+	_, err = q.Claim()
+	if err == nil || !strings.Contains(err.Error(), "max payload bytes too large") {
+		t.Fatalf("Claim() = %v, want operational read error", err)
+	}
+	if errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("Claim() = %v, must not classify operational error as corrupt", err)
+	}
+	assertStats(t, q, Stats{Inflight: 1})
+}
+
 func TestOpenRequiresQueueDir(t *testing.T) {
 	_, err := Open(Config{})
 	if err == nil || !strings.Contains(err.Error(), "queue dir required") {
@@ -378,7 +400,7 @@ func TestOpenRejectsSymlinkQueueSubdir(t *testing.T) {
 	}
 }
 
-func TestOpenResolvesSymlinkParent(t *testing.T) {
+func TestOpenRejectsSymlinkParent(t *testing.T) {
 	root := t.TempDir()
 	realParent := filepath.Join(root, "real")
 	if err := os.Mkdir(realParent, dirMode); err != nil {
@@ -389,15 +411,9 @@ func TestOpenResolvesSymlinkParent(t *testing.T) {
 		t.Fatalf("Symlink() error = %v", err)
 	}
 
-	q, err := Open(Config{Dir: filepath.Join(linkParent, "queue")})
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	if strings.Contains(q.dir, string(filepath.Separator)+"link"+string(filepath.Separator)) {
-		t.Fatalf("q.dir = %q, want symlink parent resolved", q.dir)
-	}
-	if !strings.HasPrefix(q.pendingDir, q.dir+string(filepath.Separator)) {
-		t.Fatalf("pendingDir = %q, want under resolved root %q", q.pendingDir, q.dir)
+	_, err := Open(Config{Dir: filepath.Join(linkParent, "queue")})
+	if err == nil || !strings.Contains(err.Error(), "ancestor") || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("Open() = %v, want symlink ancestor rejection", err)
 	}
 }
 
@@ -575,6 +591,9 @@ func TestReadRecordStrictDecodeFailures(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("readRecord() = %v, want %q", err, tc.want)
 			}
+			if !errors.Is(err, ErrCorruptRecord) {
+				t.Fatalf("readRecord() = %v, want ErrCorruptRecord", err)
+			}
 		})
 	}
 }
@@ -596,6 +615,9 @@ func TestReadRecordRejectsOversizeRecordBeforeDecode(t *testing.T) {
 	if !errors.Is(err, conductor.ErrPayloadTooLarge) {
 		t.Fatalf("readRecord() = %v, want ErrPayloadTooLarge", err)
 	}
+	if !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord() = %v, want ErrCorruptRecord", err)
+	}
 }
 
 func TestReadRecordRejectsSymlinkRecord(t *testing.T) {
@@ -616,12 +638,28 @@ func TestReadRecordRejectsSymlinkRecord(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("readRecord() = %v, want symlink rejection", err)
 	}
+	if !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord() = %v, want ErrCorruptRecord", err)
+	}
 }
 
 func TestReadRecordRejectsNonRegularRecord(t *testing.T) {
 	_, err := readRecord(t.TempDir(), conductor.MaxAuditPayloadBytes)
 	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("readRecord() = %v, want non-regular file rejection", err)
+	}
+	if !errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord() = %v, want ErrCorruptRecord", err)
+	}
+}
+
+func TestReadRecordOperationalErrorsAreNotCorrupt(t *testing.T) {
+	_, err := readRecord(filepath.Join(t.TempDir(), "missing.json"), conductor.MaxAuditPayloadBytes)
+	if err == nil || !strings.Contains(err.Error(), "stat record") {
+		t.Fatalf("readRecord(missing) = %v, want stat error", err)
+	}
+	if errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord(missing) = %v, must not be corrupt classification", err)
 	}
 }
 
@@ -633,6 +671,9 @@ func TestReadRecordRejectsInvalidMaxPayloadLimit(t *testing.T) {
 	_, err := readRecord(path, maxRecordReadBytes)
 	if err == nil || !strings.Contains(err.Error(), "max payload bytes too large") {
 		t.Fatalf("readRecord() = %v, want max payload limit error", err)
+	}
+	if errors.Is(err, ErrCorruptRecord) {
+		t.Fatalf("readRecord() = %v, must not classify config limit error as corrupt", err)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/fleet"
 	"github.com/luckyPipewrench/pipelock/internal/cli/generate"
 	"github.com/luckyPipewrench/pipelock/internal/cli/git"
+	"github.com/luckyPipewrench/pipelock/internal/cli/hermes"
 	"github.com/luckyPipewrench/pipelock/internal/cli/learn"
 	"github.com/luckyPipewrench/pipelock/internal/cli/policy"
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
@@ -102,6 +103,8 @@ Quick start:
 		generate.Cmd(),
 		// Git
 		git.Cmd(),
+		// Hermes Agent (Nous Research) integration
+		hermes.Cmd(),
 		// Learn-and-lock observation pipeline
 		learn.Cmd(),
 		// Rules

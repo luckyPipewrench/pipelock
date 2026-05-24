@@ -423,10 +423,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			s.cleanup()
 			return nil, errors.New("conductor audit producer requires flight recorder")
 		}
-		recPubKey, ok := recPrivKey.Public().(ed25519.PublicKey)
-		if !ok || len(recPubKey) != ed25519.PublicKeySize {
+		recPubKey, keyErr := conductorRecorderPublicKey(recPrivKey)
+		if keyErr != nil {
 			s.cleanup()
-			return nil, errors.New("conductor audit producer requires recorder public key")
+			return nil, keyErr
 		}
 		// The flight-recorder signing key doubles as the audit-batch
 		// signer. Reuse is safe because the two signing schemes operate on
@@ -483,6 +483,17 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.refreshRuntimeState(nil, cfg, bundleResult, sc)
 
 	return s, nil
+}
+
+func conductorRecorderPublicKey(priv ed25519.PrivateKey) (ed25519.PublicKey, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, errors.New("conductor audit producer requires flight recorder signing key")
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok || len(pub) != ed25519.PublicKeySize {
+		return nil, errors.New("conductor audit producer requires recorder public key")
+	}
+	return pub, nil
 }
 
 // Shutdown cancels Start's internal context so the serve loop unblocks.

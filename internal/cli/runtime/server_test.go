@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"io"
 	"net"
 	"os"
@@ -399,6 +400,26 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 		if !buf.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, buf.String())
 		}
+	}
+}
+
+func TestConductorRecorderPublicKey(t *testing.T) {
+	if _, err := conductorRecorderPublicKey(nil); err == nil || !strings.Contains(err.Error(), "flight recorder signing key") {
+		t.Fatalf("nil key error = %v, want signing key error", err)
+	}
+	if _, err := conductorRecorderPublicKey(ed25519.PrivateKey("short")); err == nil || !strings.Contains(err.Error(), "flight recorder signing key") {
+		t.Fatalf("short key error = %v, want signing key error", err)
+	}
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	got, err := conductorRecorderPublicKey(priv)
+	if err != nil {
+		t.Fatalf("conductorRecorderPublicKey(valid): %v", err)
+	}
+	if string(got) != string(pub) {
+		t.Fatal("public key mismatch")
 	}
 }
 

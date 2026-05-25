@@ -62,6 +62,8 @@ var (
 	ErrInvalidStoreRecord  = errors.New("conductor control plane store record invalid")
 	ErrFollowerRequired    = errors.New("conductor follower identity required")
 	ErrPublisherForbidden  = errors.New("conductor publisher authorization failed")
+	ErrAuditSinkRequired   = errors.New("conductor audit sink required")
+	ErrAuditKeyRequired    = errors.New("conductor audit key resolver required")
 	ErrUnsupportedRollback = errors.New("conductor control plane rollback publication not implemented")
 )
 

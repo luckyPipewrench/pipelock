@@ -431,6 +431,21 @@ Responsibilities:
 
 Local audit batcher failures produce local recorder evidence and metrics.
 
+## Audit Ingest
+
+MVP server endpoint:
+
+```http
+POST /api/v1/conductor/audit/batches
+```
+
+The server derives follower identity from the authenticated transport, validates
+the signed audit batch envelope and payload together, verifies the follower
+audit-batch signature against the enrolled audit key for that identity, and only
+then hands the accepted batch to the configured audit sink. Durable central
+storage, DLP-before-indexing, search indexing, fork response workflow, and
+dashboard views are later slices.
+
 ## Audit Batch Schema
 
 Conductor-bound batches require recorder v2 entries. v1 entries are not accepted for

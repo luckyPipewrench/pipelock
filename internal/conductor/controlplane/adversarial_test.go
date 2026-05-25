@@ -123,6 +123,8 @@ func TestPublishMapsBodyTooLargeTo413(t *testing.T) {
 			return FollowerIdentity{OrgID: "org-main", FleetID: "prod", InstanceID: "pl-prod-1", Environment: "prod"}, nil
 		},
 		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -154,6 +156,8 @@ func TestLatestMapsFollowerValidationTo401(t *testing.T) {
 			return FollowerIdentity{OrgID: "org-main"}, nil
 		},
 		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -693,6 +697,8 @@ func TestNewHandlerDefaultsCapabilitiesAndClock(t *testing.T) {
 			return FollowerIdentity{OrgID: "o", FleetID: "f", InstanceID: "i", Environment: "e"}, nil
 		},
 		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler(zero opts) error = %v", err)

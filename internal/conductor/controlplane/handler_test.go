@@ -191,6 +191,8 @@ func newTestHandler(t *testing.T, store BundleStore, identity FollowerIdentityRe
 			}
 			return nil
 		},
+		AuditSink: discardAuditSink{},
+		AuditKeys: rejectingAuditKeyResolver,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)

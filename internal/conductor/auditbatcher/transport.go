@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	AuditBatchesPath         = "/api/v1/conductor/audit/batches"
+	AuditBatchesPath         = conductor.AuditBatchesPath
 	defaultTransportDelay    = time.Second
 	maxTransportErrorSnippet = 1024
 )

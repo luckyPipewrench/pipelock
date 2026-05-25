@@ -20,8 +20,10 @@ const (
 
 	PublishPolicyBundlePath = "/api/v1/conductor/policy-bundles"
 	LatestPolicyBundlePath  = "/api/v1/conductor/policy/latest"
+	AuditBatchesPath        = conductor.AuditBatchesPath
 
 	defaultMaxRequestBodyBytes = conductor.MaxConfigYAMLBytes * 2
+	defaultMaxAuditBodyBytes   = conductor.MaxAuditPayloadBytes * 2
 )
 
 // FollowerIdentityResolver returns the [FollowerIdentity] for an incoming
@@ -45,8 +47,11 @@ type HandlerOptions struct {
 	Capabilities        conductor.CapabilitiesResponse
 	Now                 func() time.Time
 	MaxRequestBodyBytes int64
+	MaxAuditBodyBytes   int64
 	FollowerIdentity    FollowerIdentityResolver
 	AuthorizePublisher  PublisherAuthorizer
+	AuditSink           AuditBatchSink
+	AuditKeys           AuditKeyResolver
 }
 
 type Handler struct {
@@ -54,8 +59,11 @@ type Handler struct {
 	capabilities       conductor.CapabilitiesResponse
 	now                func() time.Time
 	maxRequestBody     int64
+	maxAuditBody       int64
 	followerIdentity   FollowerIdentityResolver
 	authorizePublisher PublisherAuthorizer
+	auditSink          AuditBatchSink
+	auditKeys          AuditKeyResolver
 }
 
 type publishPolicyBundleRequest struct {
@@ -80,6 +88,12 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	if opts.AuthorizePublisher == nil {
 		return nil, ErrPublisherForbidden
 	}
+	if opts.AuditSink == nil {
+		return nil, ErrAuditSinkRequired
+	}
+	if opts.AuditKeys == nil {
+		return nil, ErrAuditKeyRequired
+	}
 	capabilities := opts.Capabilities
 	if capabilities.SchemaVersion == 0 {
 		capabilities = DefaultCapabilities(defaultConductorID)
@@ -95,13 +109,20 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	if maxBody <= 0 {
 		maxBody = defaultMaxRequestBodyBytes
 	}
+	maxAuditBody := opts.MaxAuditBodyBytes
+	if maxAuditBody <= 0 {
+		maxAuditBody = defaultMaxAuditBodyBytes
+	}
 	return &Handler{
 		store:              opts.Store,
 		capabilities:       capabilities,
 		now:                now,
 		maxRequestBody:     maxBody,
+		maxAuditBody:       maxAuditBody,
 		followerIdentity:   opts.FollowerIdentity,
 		authorizePublisher: opts.AuthorizePublisher,
+		auditSink:          opts.AuditSink,
+		auditKeys:          opts.AuditKeys,
 	}, nil
 }
 
@@ -134,6 +155,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handlePublishPolicyBundle(w, r)
 	case LatestPolicyBundlePath:
 		h.handleLatestPolicyBundle(w, r)
+	case AuditBatchesPath:
+		h.handleAuditBatch(w, r)
 	default:
 		http.NotFound(w, r)
 	}

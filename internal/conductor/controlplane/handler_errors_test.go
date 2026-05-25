@@ -31,10 +31,18 @@ func TestNewHandlerValidation(t *testing.T) {
 	if _, err := NewHandler(HandlerOptions{Store: store, FollowerIdentity: identity}); !errors.Is(err, ErrPublisherForbidden) {
 		t.Fatalf("NewHandler(nil publisher) error = %v, want ErrPublisherForbidden", err)
 	}
+	if _, err := NewHandler(HandlerOptions{Store: store, FollowerIdentity: identity, AuthorizePublisher: authorizer, AuditKeys: rejectingAuditKeyResolver}); !errors.Is(err, ErrAuditSinkRequired) {
+		t.Fatalf("NewHandler(nil audit sink) error = %v, want ErrAuditSinkRequired", err)
+	}
+	if _, err := NewHandler(HandlerOptions{Store: store, FollowerIdentity: identity, AuthorizePublisher: authorizer, AuditSink: discardAuditSink{}}); !errors.Is(err, ErrAuditKeyRequired) {
+		t.Fatalf("NewHandler(nil audit keys) error = %v, want ErrAuditKeyRequired", err)
+	}
 	if _, err := NewHandler(HandlerOptions{
 		Store:              store,
 		FollowerIdentity:   identity,
 		AuthorizePublisher: authorizer,
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
 		Capabilities:       conductor.CapabilitiesResponse{SchemaVersion: conductor.SchemaVersion},
 	}); err == nil {
 		t.Fatal("NewHandler(invalid capabilities) error = nil, want error")

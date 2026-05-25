@@ -17,6 +17,7 @@ import (
 
 const (
 	CapabilitiesPath           = "/api/v1/conductor/capabilities"
+	AuditBatchesPath           = "/api/v1/conductor/audit/batches"
 	MaxCapabilitiesBodyBytes   = 64 * 1024
 	defaultCapabilitiesTimeout = 10 * time.Second
 )

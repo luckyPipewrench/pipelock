@@ -219,9 +219,15 @@ func isReaperStoleExitError(err error) bool {
 // the pre-batch count by approximately the iteration count.
 func TestReaper_DoneChannelStopsGoroutine(t *testing.T) {
 	const iterations = 10
-	// Drain any pre-existing goroutines (test infra, prior test leftovers)
-	// by sleeping and re-sampling — gives Go's scheduler a chance to
-	// settle.
+	// Warm signal.Notify's package/runtime goroutines before taking the
+	// baseline. The assertion below is about startAdoptedReaper teardown, not
+	// about one-time SIGCHLD signal machinery initialized on first use.
+	warmDone := make(chan struct{})
+	startAdoptedReaper(0, warmDone)
+	close(warmDone)
+	// Drain any pre-existing goroutines (test infra, prior test leftovers,
+	// and the warm-up reaper) by sleeping and re-sampling — gives Go's
+	// scheduler a chance to settle.
 	time.Sleep(50 * time.Millisecond)
 	before := runtime.NumGoroutine()
 
@@ -238,9 +244,13 @@ func TestReaper_DoneChannelStopsGoroutine(t *testing.T) {
 		close(done)
 	}
 	// Give all goroutines a chance to observe close(done) and exit.
-	time.Sleep(100 * time.Millisecond)
-
-	after := runtime.NumGoroutine()
+	var after int
+	if !waitForCondition(t, 2*time.Second, func() bool {
+		after = runtime.NumGoroutine()
+		return after-before <= 2
+	}) {
+		after = runtime.NumGoroutine()
+	}
 	// Allow ±2 goroutines for unrelated test infra noise; iterations=10
 	// makes a true leak unmistakable (delta ≥ 10).
 	if delta := after - before; delta > 2 {

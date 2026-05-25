@@ -16,7 +16,9 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -34,6 +36,61 @@ const (
 	// hostile or misbehaving Boss.
 	conductorMaxResponseHeaderBytes = 64 * 1024
 )
+
+type ConductorApplyOptions struct {
+	Resolver      conductor.SignatureKeyResolver
+	Labels        map[string]string
+	Rollback      *conductor.RollbackAuthorization
+	AllowRollback bool
+}
+
+func buildConductorApplyCache(cfg *config.Config) (*applycache.Cache, error) {
+	if cfg == nil || !cfg.Conductor.Enabled {
+		return nil, nil
+	}
+	cache, err := applycache.Open(applycache.Config{Dir: cfg.Conductor.BundleCacheDir})
+	if err != nil {
+		return nil, fmt.Errorf("opening conductor apply cache: %w", err)
+	}
+	return cache, nil
+}
+
+func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts ConductorApplyOptions) (applycache.AppliedBundle, error) {
+	if s == nil {
+		return applycache.AppliedBundle{}, errors.New("nil runtime server")
+	}
+	if s.conductorApply == nil {
+		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
+	}
+	// Serialize the whole stage -> reload -> activate sequence: the durable
+	// last-known-good pointer must never diverge from the running config.
+	s.conductorApplyMu.Lock()
+	defer s.conductorApplyMu.Unlock()
+	cfg := s.currentConfig()
+	if cfg == nil && s.proxy != nil {
+		cfg = s.proxy.CurrentConfig()
+	}
+	if cfg == nil {
+		return applycache.AppliedBundle{}, errors.New("runtime config unavailable")
+	}
+	boundary := applycache.Boundary{
+		Cache: s.conductorApply,
+		Identity: applycache.Identity{
+			OrgID:      cfg.Conductor.OrgID,
+			FleetID:    cfg.Conductor.FleetID,
+			InstanceID: cfg.Conductor.InstanceID,
+			Labels:     opts.Labels,
+		},
+		Resolver:     opts.Resolver,
+		LocalVersion: cliutil.Version,
+		LoadConfig:   config.Load,
+		Reload:       s.Reload,
+	}
+	return boundary.Apply(bundle, applycache.ApplyOptions{
+		Rollback:      opts.Rollback,
+		AllowRollback: opts.AllowRollback,
+	})
+}
 
 func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*auditbatcher.Queue, *auditbatcher.Transport, error) {
 	if cfg == nil || !cfg.Conductor.Enabled {

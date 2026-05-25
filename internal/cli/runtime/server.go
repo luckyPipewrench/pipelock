@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
@@ -100,6 +101,7 @@ type Server struct {
 	envelopeEmitter   *envelope.Emitter
 	captureWriter     *capture.Writer
 	recorder          *recorder.Recorder
+	conductorApply    *applycache.Cache
 	conductorAudit    *auditbatcher.Transport
 	conductorProducer *auditbatcher.Producer
 	approver          *hitl.Approver
@@ -116,6 +118,13 @@ type Server struct {
 	// cancel itself does not synchronously deadlock on Start's defers.
 	cancelMu       sync.Mutex
 	internalCancel context.CancelFunc
+
+	// conductorApplyMu serializes ApplyConductorPolicyBundle so the
+	// stage -> reload -> activate sequence is atomic. Concurrent applies
+	// would otherwise be able to interleave such that one bundle wins the
+	// Reload while another wins Activate, leaving the durable last-known-good
+	// pointer out of sync with the running config.
+	conductorApplyMu sync.Mutex
 
 	stateMu            sync.RWMutex
 	toolPolicyCfg      *policy.Config
@@ -283,6 +292,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.scanner = sc
 	m := metrics.New()
 	s.metrics = m
+	conductorApply, conductorApplyErr := buildConductorApplyCache(cfg)
+	if conductorApplyErr != nil {
+		s.cleanup()
+		return nil, conductorApplyErr
+	}
+	s.conductorApply = conductorApply
 	conductorQueue, conductorAudit, conductorErr := buildConductorAuditTransport(cfg, m)
 	if conductorErr != nil {
 		s.cleanup()

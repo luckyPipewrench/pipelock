@@ -72,7 +72,11 @@ jobs:
   test:
     needs: [security-scan]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Bumped 15 -> 20 after the mcp-only/mcpwrap test suite (PR #610) landed
+    # ~1300 lines of new tests; Go 1.26 was hitting the 15m wall on a clean
+    # ubuntu-latest runner. 1.25 still finishes in ~9m so the headroom is
+    # for the slower 1.26 cell, not a general slowdown.
+    timeout-minutes: 20
     strategy:
       matrix:
         go-version: ['1.25', '1.26']

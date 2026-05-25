@@ -19,26 +19,27 @@ import (
 // Coverage classifications reported by verify.
 const (
 	coverageFull    = "full"    // plugin present + proxy env injected
-	coveragePartial = "partial" // plugin present XOR env injected
-	coverageNone    = "none"    // neither
+	coveragePartial = "partial" // some coverage: plugin, env, or wrapped MCP servers — but not full
+	coverageNone    = "none"    // none of plugin, env, or wrapped MCP servers
 )
 
 // verifyReport is the machine-readable result of `pipelock hermes verify`.
 type verifyReport struct {
-	PluginPresent   bool     `json:"plugin_present"`
-	PluginRoot      string   `json:"plugin_root"`
-	ConfigSidecar   string   `json:"config_sidecar,omitempty"`
-	PipelockConfig  string   `json:"pipelock_config,omitempty"`
-	ConfigReadable  *bool    `json:"pipelock_config_readable,omitempty"`
-	ConfigWarning   string   `json:"pipelock_config_warning,omitempty"`
-	PipelockBinary  string   `json:"pipelock_binary,omitempty"`
-	HookExecutable  bool     `json:"hook_executable"`
-	TerminalBackend string   `json:"terminal_backend"`
-	ProxyEnvPresent []string `json:"proxy_env_present"`
-	ProxyEnvMissing []string `json:"proxy_env_missing"`
-	NoProxyWarning  string   `json:"no_proxy_warning,omitempty"`
-	MCPServerCount  int      `json:"mcp_server_count"`
-	Coverage        string   `json:"coverage"`
+	PluginPresent     bool     `json:"plugin_present"`
+	PluginRoot        string   `json:"plugin_root"`
+	ConfigSidecar     string   `json:"config_sidecar,omitempty"`
+	PipelockConfig    string   `json:"pipelock_config,omitempty"`
+	ConfigReadable    *bool    `json:"pipelock_config_readable,omitempty"`
+	ConfigWarning     string   `json:"pipelock_config_warning,omitempty"`
+	PipelockBinary    string   `json:"pipelock_binary,omitempty"`
+	HookExecutable    bool     `json:"hook_executable"`
+	TerminalBackend   string   `json:"terminal_backend"`
+	ProxyEnvPresent   []string `json:"proxy_env_present"`
+	ProxyEnvMissing   []string `json:"proxy_env_missing"`
+	NoProxyWarning    string   `json:"no_proxy_warning,omitempty"`
+	MCPServerCount    int      `json:"mcp_server_count"`
+	MCPServersWrapped int      `json:"mcp_servers_wrapped"`
+	Coverage          string   `json:"coverage"`
 }
 
 // lookPipelock resolves the pipelock binary the plugin would invoke. Overridable
@@ -118,6 +119,7 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 		r.ProxyEnvMissing = missingProxyEnv(present)
 		envInjected = len(present) == len(proxyEnvNames)
 		r.MCPServerCount = mcpServerCount(cfg)
+		r.MCPServersWrapped = cfg.wrappedMCPServerCount()
 	} else {
 		r.ProxyEnvMissing = append([]string(nil), proxyEnvNames...)
 	}
@@ -127,16 +129,19 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 	}
 
 	pluginReady := r.PluginPresent && r.HookExecutable && sidecarOK
-	r.Coverage = classifyCoverage(pluginReady, envInjected)
+	r.Coverage = classifyCoverage(pluginReady, envInjected, r.MCPServersWrapped > 0)
 	return r
 }
 
-// classifyCoverage maps ready-plugin/env presence to a coverage label.
-func classifyCoverage(pluginReady, envInjected bool) string {
+// classifyCoverage maps plugin/env/mcp-wrap presence to a coverage label.
+// "full" requires the plugin (all surfaces) plus the proxy env names. Any one
+// of a ready plugin, injected env, or wrapped MCP servers (the mcp-only path)
+// is "partial" — real but not full-surface coverage.
+func classifyCoverage(pluginReady, envInjected, mcpWrapped bool) string {
 	switch {
 	case pluginReady && envInjected:
 		return coverageFull
-	case pluginReady || envInjected:
+	case pluginReady || envInjected || mcpWrapped:
 		return coveragePartial
 	default:
 		return coverageNone
@@ -261,7 +266,7 @@ func emitVerifyText(cmd *cobra.Command, r verifyReport) {
 		_, _ = fmt.Fprintf(out, "  missing: %s\n", strings.Join(r.ProxyEnvMissing, ", "))
 	}
 	if r.MCPServerCount > 0 {
-		_, _ = fmt.Fprintf(out, "MCP servers:      %d declared\n", r.MCPServerCount)
+		_, _ = fmt.Fprintf(out, "MCP servers:      %d declared, %d wrapped through pipelock\n", r.MCPServerCount, r.MCPServersWrapped)
 	}
 	if r.NoProxyWarning != "" {
 		_, _ = fmt.Fprintf(out, "WARNING: %s\n", r.NoProxyWarning)

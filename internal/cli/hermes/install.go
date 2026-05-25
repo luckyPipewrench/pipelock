@@ -4,11 +4,16 @@
 package hermes
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 )
 
 // Install mode constants.
@@ -18,9 +23,10 @@ const (
 	// backend. It does NOT also wire shell hooks: the plugin already covers
 	// every event, so adding shell hooks would double-scan each call.
 	ModeFull = "full"
-	// ModeMCPOnly rewrites mcp_servers through `pipelock mcp proxy` and skips
-	// the plugin. Labeled partial coverage: it sees MCP traffic only, not the
-	// terminal/file/browser/gateway surfaces the plugin covers.
+	// ModeMCPOnly rewrites mcp_servers through `pipelock mcp proxy` (preserving
+	// auth headers via a 0o600 header sidecar) and skips the plugin. Labeled
+	// partial coverage: it sees MCP traffic only, not the terminal/file/
+	// browser/gateway surfaces the plugin covers.
 	ModeMCPOnly = "mcp-only"
 )
 
@@ -106,12 +112,17 @@ func installCmd() *cobra.Command {
       are intentionally NOT wired to avoid double-scanning every event.
 
   --mode mcp-only
-      Not yet available. Will rewrite ~/.hermes/config.yaml mcp_servers
-      through 'pipelock mcp proxy' with auth-header preservation in a
-      follow-up release. Use --mode full today.
+      Rewrite ~/.hermes/config.yaml mcp_servers so each MCP server runs
+      through 'pipelock mcp proxy'. Stdio servers (command/args) get their
+      command wrapped; remote servers (url) are converted to a stdio proxy
+      with --upstream. Auth headers on remote servers are preserved in a
+      0600 header sidecar referenced via --header-file, so credential values
+      never appear in process argv. This does NOT install the plugin or wire
+      terminal env: it is partial coverage (MCP traffic only), not the
+      terminal/file/browser/gateway surfaces --mode full covers.
 
 The install is idempotent: config.yaml is backed up to a .bak file and
-re-runs do not duplicate entries.
+re-runs do not re-wrap already-wrapped servers or duplicate entries.
 
 Coverage note: terminal proxy passthrough is cooperative. pipelock sees
 sandbox traffic only when the proxy env VALUES are also set in Hermes'
@@ -123,7 +134,7 @@ network isolation.`,
 	}
 
 	cmd.Flags().StringVar(&opts.Mode, "mode", ModeFull,
-		"install mode: full (plugin + terminal env). mcp-only is not yet available")
+		"install mode: full (plugin + terminal env) or mcp-only (wrap mcp_servers through pipelock; partial coverage)")
 	cmd.Flags().StringVar(&opts.PluginRoot, "plugin-root", "",
 		"override the plugin install directory (default ~/.hermes/plugins/pipelock)")
 	cmd.Flags().StringVar(&opts.HermesConfig, "hermes-config", "",
@@ -143,17 +154,166 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 		return err
 	}
 	if opts.Mode == ModeMCPOnly {
-		// mcp-only rewrites mcp_servers through `pipelock mcp proxy` and must
-		// preserve MCP auth headers via the private header-sidecar pattern.
-		// Doing that correctly means extracting the shared sidecar logic from
-		// the setup package rather than re-implementing a header-dropping
-		// wrapper; that extraction ships in a follow-up. Fail honestly here
-		// rather than half-installing.
-		return errors.New("hermes install: --mode mcp-only is not yet available; " +
-			"use --mode full (plugin path). MCP-server wrapping with auth-header " +
-			"preservation lands in a follow-up release")
+		return installMCPOnly(cmd, opts)
 	}
 	return installFull(cmd, opts)
+}
+
+// installMCPOnly rewrites ~/.hermes/config.yaml's mcp_servers entries to route
+// each MCP server through `pipelock mcp proxy`, preserving auth headers via a
+// 0o600 header sidecar. It does NOT install the plugin or inject terminal env:
+// mcp-only is partial coverage by design (MCP traffic only). Idempotent —
+// already-wrapped servers are skipped — and config.yaml is backed up before
+// modification.
+func installMCPOnly(cmd *cobra.Command, opts *installOptions) error {
+	out := cmd.OutOrStdout()
+
+	exe, err := resolvePipelockExe()
+	if err != nil {
+		return err
+	}
+
+	cfg, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		return err
+	}
+	servers := cfg.mcpServers()
+	if len(servers) == 0 {
+		_, _ = fmt.Fprintf(out, "pipelock: no mcp_servers declared in %s; nothing to wrap\n", opts.HermesConfig)
+		_, _ = fmt.Fprintln(out, "pipelock: coverage = none (mcp-only requires MCP servers to wrap; use --mode full for plugin coverage)")
+		return nil
+	}
+
+	// If the full-mode plugin is already installed it scans MCP tool calls via
+	// pre_tool_call, so also wrapping mcp_servers double-scans MCP traffic
+	// (redundant receipts and latency, not a security hole). Warn rather than
+	// block — the operator explicitly chose mcp-only.
+	if pluginInstalled(opts.PluginRoot) {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
+			"warning: the pipelock Hermes plugin is already installed at %s and already scans MCP tool calls; "+
+				"wrapping mcp_servers as well will scan MCP traffic twice. Run 'pipelock hermes rollback' first if you want mcp-only coverage.\n",
+			opts.PluginRoot)
+	}
+
+	configFile := mcpProxyConfigForWrap(cmd, opts.PipelockConfig)
+
+	wrapped := 0
+	skipped := 0
+	failed := 0
+	var sidecarOps []mcpwrap.SidecarOp
+	for _, name := range sortedKeys(servers) {
+		server, ok := servers[name].(map[string]interface{})
+		if !ok {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping mcp server %q: entry is not a mapping\n", name)
+			failed++
+			continue
+		}
+		if mcpwrap.IsWrapped(server) {
+			skipped++
+			continue
+		}
+		newServer, meta, plan, wrapErr := mcpwrap.WrapServer(server, exe, configFile, opts.HermesConfig, name)
+		if wrapErr != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: skipping mcp server %q: %v\n", name, wrapErr)
+			failed++
+			continue
+		}
+		metaValue, err := metaToInterface(meta)
+		if err != nil {
+			return fmt.Errorf("hermes install: encode metadata for %q: %w", name, err)
+		}
+		newServer[mcpwrap.FieldPipelock] = metaValue
+		servers[name] = newServer
+		if plan != nil {
+			sidecarOps = append(sidecarOps, *plan)
+		}
+		wrapped++
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("hermes install: %d mcp server(s) could not be wrapped; fix the warnings above and rerun", failed)
+	}
+	if wrapped == 0 {
+		_, _ = fmt.Fprintf(out, "pipelock: all %d mcp server(s) already wrapped in %s\n", skipped, opts.HermesConfig)
+		return nil
+	}
+
+	// Sidecars first so a failed sidecar write leaves config.yaml untouched.
+	// ApplySidecarOps rolls back its own partial writes on failure.
+	if err := mcpwrap.ApplySidecarOps(sidecarOps); err != nil {
+		return fmt.Errorf("hermes install: writing header sidecar: %w", err)
+	}
+	backupPath, err := cfg.save(true)
+	if err != nil {
+		// Config write failed after sidecars landed: drop the orphaned sidecars
+		// so they do not point at a config that never referenced them.
+		mcpwrap.RollbackSidecarWrites(sidecarOps)
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "pipelock: wrapped %d mcp server(s) through pipelock mcp proxy in %s\n", wrapped, opts.HermesConfig)
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(out, "pipelock: %d server(s) already wrapped (left as-is)\n", skipped)
+	}
+	if len(sidecarOps) > 0 {
+		_, _ = fmt.Fprintf(out, "pipelock: wrote %d auth-header sidecar file(s) at 0600 under ~/.config/pipelock/wrap-headers\n", len(sidecarOps))
+	}
+	if configFile != "" {
+		_, _ = fmt.Fprintf(out, "pipelock: wrapped servers use config %s\n", configFile)
+	}
+	if backupPath != "" {
+		_, _ = fmt.Fprintf(out, "pipelock: backed up %s to %s\n", opts.HermesConfig, backupPath)
+	}
+	_, _ = fmt.Fprintln(out, "pipelock: coverage = partial (MCP server traffic only; terminal/file/browser/gateway NOT scanned)")
+	_, _ = fmt.Fprintln(out, "pipelock: use --mode full to also scan non-MCP tool events via the plugin")
+	return nil
+}
+
+// mcpProxyConfigForWrap returns the config path embedded into wrapped MCP
+// proxy invocations. Explicit --pipelock-config wins; otherwise mirror the
+// setup installers and discover the standard pipelock config path so a
+// successful-looking wrap does not silently spawn proxies with built-in
+// defaults that disable MCP scanning features.
+func mcpProxyConfigForWrap(cmd *cobra.Command, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if discovered := cliutil.DiscoverConfigPath(); discovered != "" {
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: using config %s for wrapped MCP proxy\n", discovered)
+		return discovered
+	}
+	_, _ = fmt.Fprintln(cmd.ErrOrStderr(),
+		"warning: no pipelock config found at PIPELOCK_CONFIG, $XDG_CONFIG_HOME/pipelock/pipelock.yaml, ~/.config/pipelock/pipelock.yaml, or /etc/pipelock/pipelock.yaml. The wrapped MCP proxy will run with built-in defaults; MCP input scanning, tool scanning, tool policy, and the flight recorder are disabled in the defaults. Pass --pipelock-config explicitly or place a config at one of the standard locations to enable scanning.")
+	return ""
+}
+
+// resolvePipelockExe resolves the absolute pipelock binary path to embed in the
+// wrapped server command, following symlinks so the entry survives PATH shims.
+func resolvePipelockExe() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("hermes install: finding pipelock binary: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return "", fmt.Errorf("hermes install: resolving pipelock binary path: %w", err)
+	}
+	return resolved, nil
+}
+
+// metaToInterface converts the typed wrap metadata into a generic value with
+// JSON field names so it round-trips through YAML marshal/unmarshal and stays
+// readable by mcpwrap.ParseMeta on unwrap (which decodes via JSON tags).
+func metaToInterface(meta *mcpwrap.Meta) (interface{}, error) {
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return nil, err
+	}
+	var out interface{}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // installFull performs the plugin-only install: extract the plugin, record the

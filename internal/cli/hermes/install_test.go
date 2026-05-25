@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 )
 
 // fullOpts builds installOptions wired entirely under tmp so tests never touch
@@ -146,22 +148,65 @@ func TestRunInstall_RecordsAbsolutePipelockConfig(t *testing.T) {
 	}
 }
 
-func TestRunInstall_MCPOnlyFailsHonestly(t *testing.T) {
+func TestRunInstall_MCPOnlyWrapsStdioServer(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
 	opts := fullOpts(tmp)
 	opts.Mode = ModeMCPOnly
+	// Pin the config explicitly so the wrap does not fall back to
+	// cliutil.DiscoverConfigPath() and pick up machine state (keeps this
+	// parallel test hermetic; t.Setenv is unavailable under t.Parallel).
+	opts.PipelockConfig = filepath.Join(tmp, "pipelock.yaml")
+	seed := "mcp_servers:\n" +
+		"  github:\n" +
+		"    command: npx\n" +
+		"    args: [\"-y\", \"server-github\"]\n" +
+		"    env:\n" +
+		"      TOKEN: secret\n"
+	if err := os.WriteFile(opts.HermesConfig, []byte(seed), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
 
 	cmd := installCmd()
-	cmd.SetOut(&bytes.Buffer{})
-
-	err := runInstall(cmd, opts)
-	if err == nil {
-		t.Fatal("mcp-only install did not return an error")
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runInstall(cmd, opts); err != nil {
+		t.Fatalf("mcp-only install: %v", err)
 	}
-	if !strings.Contains(err.Error(), "not yet available") {
-		t.Fatalf("error does not explain mcp-only deferral: %v", err)
+
+	cfg, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+	gh, ok := cfg.mcpServers()["github"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("github server missing or wrong type: %T", cfg.mcpServers()["github"])
+	}
+	if !mcpwrap.IsWrapped(gh) {
+		t.Fatal("github server not wrapped (no _pipelock metadata)")
+	}
+	// Hermes omits the type field; the wrapped (still type-less) entry must not
+	// gain one, since Hermes infers stdio from the command key.
+	if _, hasType := gh["type"]; hasType {
+		t.Errorf("wrapped type-less entry gained a type field: %v", gh["type"])
+	}
+	joined := strings.Join(mcpwrap.InterfaceSliceToStrings(gh["args"]), " ")
+	for _, want := range []string{"mcp proxy", "--env TOKEN", "-- npx -y server-github"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("wrapped args %q missing %q", joined, want)
+		}
+	}
+
+	// Idempotent: a second run wraps nothing new.
+	out.Reset()
+	cmd2 := installCmd()
+	cmd2.SetOut(&out)
+	if err := runInstall(cmd2, opts); err != nil {
+		t.Fatalf("second mcp-only install: %v", err)
+	}
+	if !strings.Contains(out.String(), "already wrapped") {
+		t.Fatalf("re-run not idempotent: %q", out.String())
 	}
 }
 

@@ -32,17 +32,20 @@ func TestClassifyCoverage(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		plugin, env bool
-		want        string
+		plugin, env, mcpWrapped bool
+		want                    string
 	}{
-		{true, true, coverageFull},
-		{true, false, coveragePartial},
-		{false, true, coveragePartial},
-		{false, false, coverageNone},
+		{true, true, false, coverageFull},
+		{true, true, true, coverageFull},
+		{true, false, false, coveragePartial},
+		{false, true, false, coveragePartial},
+		{false, false, true, coveragePartial}, // mcp-only path
+		{true, false, true, coveragePartial},
+		{false, false, false, coverageNone},
 	}
 	for _, tc := range cases {
-		if got := classifyCoverage(tc.plugin, tc.env); got != tc.want {
-			t.Fatalf("classifyCoverage(%v,%v) = %q, want %q", tc.plugin, tc.env, got, tc.want)
+		if got := classifyCoverage(tc.plugin, tc.env, tc.mcpWrapped); got != tc.want {
+			t.Fatalf("classifyCoverage(%v,%v,%v) = %q, want %q", tc.plugin, tc.env, tc.mcpWrapped, got, tc.want)
 		}
 	}
 }

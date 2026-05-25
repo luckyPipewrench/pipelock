@@ -82,6 +82,7 @@ type diskBundleRecord struct {
 	Version    int                    `json:"version"`
 	VerifiedAt time.Time              `json:"verified_at"`
 	BundleHash string                 `json:"bundle_hash"`
+	BaseHash   string                 `json:"base_hash,omitempty"`
 	Bundle     conductor.PolicyBundle `json:"bundle"`
 }
 
@@ -147,10 +148,12 @@ func (c *Cache) stageVerified(bundle conductor.PolicyBundle, opts verifyOptions)
 	defer c.mu.Unlock()
 
 	current, currentErr := c.readActiveLocked()
+	baseHash := ""
 	if currentErr != nil && !errors.Is(currentErr, ErrNoValidBundle) {
 		return VerifiedBundle{}, currentErr
 	}
 	if currentErr == nil {
+		baseHash = current.BundleHash
 		if err := authorizeVersionTransition(now, current.Bundle, bundle, opts); err != nil {
 			return VerifiedBundle{}, err
 		}
@@ -160,6 +163,7 @@ func (c *Cache) stageVerified(bundle conductor.PolicyBundle, opts verifyOptions)
 		Version:    recordVersion,
 		VerifiedAt: now,
 		BundleHash: bundleHash,
+		BaseHash:   baseHash,
 		Bundle:     bundle,
 	}
 	recordBytes, err := json.Marshal(record)
@@ -200,6 +204,16 @@ func (c *Cache) activate(verified VerifiedBundle) error {
 		record.Bundle.Version != verified.Bundle.Version ||
 		record.Bundle.PolicyHash != verified.Bundle.PolicyHash {
 		return fmt.Errorf("%w: staged bundle does not match activation request", ErrInvalidActiveRecord)
+	}
+	current, currentErr := c.readActiveLocked()
+	if currentErr != nil && !errors.Is(currentErr, ErrNoValidBundle) {
+		return currentErr
+	}
+	if currentErr == nil && !strings.EqualFold(record.BaseHash, current.BundleHash) {
+		return fmt.Errorf("%w: active bundle changed since staging", ErrInvalidActiveRecord)
+	}
+	if errors.Is(currentErr, ErrNoValidBundle) && record.BaseHash != "" {
+		return fmt.Errorf("%w: active bundle removed since staging", ErrInvalidActiveRecord)
 	}
 	configName := verified.BundleHash + configExt
 	configPath := filepath.Join(c.configsDir, configName)
@@ -386,6 +400,11 @@ func readBundleRecord(path string) (diskBundleRecord, error) {
 	}
 	if err := validateHash(record.BundleHash); err != nil {
 		return diskBundleRecord{}, fmt.Errorf("%w: %w", ErrInvalidActiveRecord, err)
+	}
+	if record.BaseHash != "" {
+		if err := validateHash(record.BaseHash); err != nil {
+			return diskBundleRecord{}, fmt.Errorf("%w: %w", ErrInvalidActiveRecord, err)
+		}
 	}
 	hash, err := record.Bundle.CanonicalHash()
 	if err != nil {

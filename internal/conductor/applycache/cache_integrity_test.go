@@ -139,6 +139,7 @@ func TestBundleRecordRejectsTampering(t *testing.T) {
 		{"wrong_record_version", func(r *diskBundleRecord) { r.Version = 999 }},
 		{"missing_verified_at", func(r *diskBundleRecord) { r.VerifiedAt = time.Time{} }},
 		{"non_hex_stored_hash", func(r *diskBundleRecord) { r.BundleHash = strings.Repeat("z", 64) }},
+		{"non_hex_base_hash", func(r *diskBundleRecord) { r.BaseHash = strings.Repeat("z", 64) }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -164,6 +165,45 @@ func TestBundleRecordRejectsTampering(t *testing.T) {
 				t.Fatalf("Active() after %s = nil, want rejection", tc.name)
 			}
 		})
+	}
+}
+
+// TestActivateRejectsStaleStagedBase proves activation is compare-and-swapped
+// against the active bundle observed at stage time. Without this, concurrent
+// apply paths could reload one bundle and activate another older staged bundle.
+func TestActivateRejectsStaleStagedBase(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+	opts := testVerifyOptions(key)
+
+	v1 := signedTestBundle(t, key, "bundle-1", 1, "")
+	if _, err := cache.storeVerified(v1, opts); err != nil {
+		t.Fatalf("storeVerified(v1): %v", err)
+	}
+	v1Hash, err := v1.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(v1): %v", err)
+	}
+
+	v2 := signedTestBundle(t, key, "bundle-2", 2, v1Hash)
+	stagedV2, err := cache.stageVerified(v2, opts)
+	if err != nil {
+		t.Fatalf("stageVerified(v2): %v", err)
+	}
+
+	v3 := signedTestBundle(t, key, "bundle-3", 3, v1Hash)
+	if _, err := cache.storeVerified(v3, opts); err != nil {
+		t.Fatalf("storeVerified(v3): %v", err)
+	}
+	if err := cache.activate(stagedV2); !errors.Is(err, ErrInvalidActiveRecord) {
+		t.Fatalf("activate(stale v2) = %v, want ErrInvalidActiveRecord", err)
+	}
+	active, err := cache.Active()
+	if err != nil {
+		t.Fatalf("Active(): %v", err)
+	}
+	if active.Bundle.BundleID != "bundle-3" {
+		t.Fatalf("active bundle = %q, want bundle-3", active.Bundle.BundleID)
 	}
 }
 

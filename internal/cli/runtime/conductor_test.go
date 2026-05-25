@@ -6,12 +6,15 @@ package runtime
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/http"
@@ -19,11 +22,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func TestNewConductorMTLSClientConfiguresClientCertificate(t *testing.T) {
@@ -225,6 +232,194 @@ func TestConductorRuntimeChanged(t *testing.T) {
 	if !conductorRuntimeChanged(oldCfg, newCfg) {
 		t.Fatal("conductorRuntimeChanged(changed) = false, want true")
 	}
+}
+
+func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
+	s, signer, recorderKeyPath, recorderDir := newConductorApplyTestServer(t)
+	bundle := signedRuntimePolicyBundle(t, signer, "bundle-1", 1, "", strings.Join([]string{
+		"mode: strict",
+		"api_allowlist:",
+		"  - api.example.com",
+		"flight_recorder:",
+		"  enabled: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  checkpoint_interval: 1",
+		"  sign_checkpoints: true",
+		"  signing_key_path: " + strconv.Quote(recorderKeyPath),
+		"",
+	}, "\n"))
+
+	applied, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()})
+	if err != nil {
+		t.Fatalf("ApplyConductorPolicyBundle() error = %v", err)
+	}
+	if applied.Bundle.BundleID != "bundle-1" || applied.ReloadedConfigHash == "" {
+		t.Fatalf("applied bundle = %q hash=%q, want bundle-1 with config hash", applied.Bundle.BundleID, applied.ReloadedConfigHash)
+	}
+	active, err := s.conductorApply.Active()
+	if err != nil {
+		t.Fatalf("Active() error = %v", err)
+	}
+	if active.Bundle.BundleID != "bundle-1" || active.ConfigPath != applied.ConfigPath {
+		t.Fatalf("active bundle = %q path=%q, want bundle-1 path=%q", active.Bundle.BundleID, active.ConfigPath, applied.ConfigPath)
+	}
+	if live := s.proxy.CurrentConfig(); live == nil || live.Mode != config.ModeStrict {
+		t.Fatalf("live mode = %v, want strict", live)
+	}
+}
+
+func TestApplyConductorPolicyBundleFailsClosed(t *testing.T) {
+	if _, err := (*Server)(nil).ApplyConductorPolicyBundle(conductor.PolicyBundle{}, ConductorApplyOptions{}); err == nil {
+		t.Fatal("nil server ApplyConductorPolicyBundle() = nil, want error")
+	}
+	if _, err := (&Server{}).ApplyConductorPolicyBundle(conductor.PolicyBundle{}, ConductorApplyOptions{}); !errors.Is(err, applycache.ErrCacheRequired) {
+		t.Fatalf("missing cache ApplyConductorPolicyBundle() = %v, want ErrCacheRequired", err)
+	}
+	cache, err := applycache.Open(applycache.Config{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("applycache.Open(): %v", err)
+	}
+	if _, err := (&Server{conductorApply: cache}).ApplyConductorPolicyBundle(conductor.PolicyBundle{}, ConductorApplyOptions{}); err == nil || !strings.Contains(err.Error(), "runtime config unavailable") {
+		t.Fatalf("missing config ApplyConductorPolicyBundle() = %v, want runtime config error", err)
+	}
+}
+
+type runtimePolicySigner struct {
+	id   string
+	pub  ed25519.PublicKey
+	priv ed25519.PrivateKey
+}
+
+func newRuntimePolicySigner(t *testing.T) runtimePolicySigner {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey() error = %v", err)
+	}
+	return runtimePolicySigner{id: "policy-signer-1", pub: pub, priv: priv}
+}
+
+func (s runtimePolicySigner) resolver() conductor.SignatureKeyResolver {
+	return func(signerKeyID string) (conductor.SignatureKey, error) {
+		if signerKeyID != s.id {
+			return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+		}
+		return conductor.SignatureKey{
+			PublicKey:  s.pub,
+			KeyPurpose: signing.PurposePolicyBundleSigning,
+			NotBefore:  time.Now().Add(-time.Hour),
+			NotAfter:   time.Now().Add(time.Hour),
+		}, nil
+	}
+}
+
+func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, string, string) {
+	t.Helper()
+	tmp, err := os.MkdirTemp(".", ".runtime-conductor-apply-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
+	tmp, err = filepath.Abs(tmp)
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	keyPath := filepath.Join(tmp, "recorder.key")
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	clientPEM, clientKeyPEM := testTLSClientCert(t)
+	trustPath := filepath.Join(tmp, "trust-roster.json")
+	caPath := filepath.Join(tmp, "boss-ca.pem")
+	clientCertPath := filepath.Join(tmp, "client.crt")
+	clientKeyPath := filepath.Join(tmp, "client.key")
+	writePrivateTestFile(t, trustPath, []byte(`{"keys":[]}`))
+	writePrivateTestFile(t, caPath, clientPEM)
+	writePrivateTestFile(t, clientCertPath, clientPEM)
+	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+
+	recorderDir := filepath.Join(tmp, "recorder")
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  checkpoint_interval: 1",
+		"  sign_checkpoints: true",
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"conductor:",
+		"  enabled: true",
+		"  conductor_url: https://conductor.example",
+		"  org_id: org-main",
+		"  fleet_id: prod",
+		"  instance_id: pl-prod-1",
+		"  trust_roster_path: " + strconv.Quote(trustPath),
+		"  server_ca_file: " + strconv.Quote(caPath),
+		"  client_cert_path: " + strconv.Quote(clientCertPath),
+		"  client_key_path: " + strconv.Quote(clientKeyPath),
+		"  bundle_cache_dir: " + strconv.Quote(filepath.Join(tmp, "bundles")),
+		"  durable_audit_queue_dir: " + strconv.Quote(filepath.Join(tmp, "audit-queue")),
+		"  audit_signing_key_id: audit-key-1",
+		"  recorder_key_id: recorder-key-1",
+		"",
+	}, "\n"))
+
+	buf := &syncBuffer{}
+	server, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: buf, Stderr: buf})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { server.cleanup() })
+	if server.conductorApply == nil {
+		t.Fatal("conductor apply cache should be initialized")
+	}
+	return server, newRuntimePolicySigner(t), keyPath, recorderDir
+}
+
+func signedRuntimePolicyBundle(t *testing.T, signer runtimePolicySigner, id string, version uint64, previousHash, configYAML string) conductor.PolicyBundle {
+	t.Helper()
+	now := time.Now().UTC()
+	payload := conductor.PolicyBundlePayload{ConfigYAML: configYAML}
+	payloadHash, err := payload.PayloadHash()
+	if err != nil {
+		t.Fatalf("PayloadHash() error = %v", err)
+	}
+	policyHash, err := payload.PolicyHash()
+	if err != nil {
+		t.Fatalf("PolicyHash() error = %v", err)
+	}
+	bundle := conductor.PolicyBundle{
+		SchemaVersion:      conductor.SchemaVersion,
+		BundleID:           id,
+		OrgID:              "org-main",
+		FleetID:            "prod",
+		Environment:        "prod",
+		Audience:           conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
+		Version:            version,
+		PreviousBundleHash: previousHash,
+		CreatedAt:          now.Add(-time.Minute),
+		NotBefore:          now.Add(-time.Minute),
+		ExpiresAt:          now.Add(time.Hour),
+		MinPipelockVersion: "0.0.1",
+		PolicyHash:         policyHash,
+		PayloadSHA256:      payloadHash,
+		Payload:            payload,
+	}
+	preimage, err := bundle.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage() error = %v", err)
+	}
+	bundle.Signatures = []conductor.SignatureProof{{
+		SignerKeyID: signer.id,
+		KeyPurpose:  signing.PurposePolicyBundleSigning,
+		Algorithm:   conductor.SignatureAlgorithmEd25519,
+		Signature:   conductor.SignaturePrefixEd25519 + hex.EncodeToString(ed25519.Sign(signer.priv, preimage)),
+	}}
+	return bundle
 }
 
 func mustHostname(t *testing.T, raw string) string {

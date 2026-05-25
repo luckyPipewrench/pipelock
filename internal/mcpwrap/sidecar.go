@@ -61,34 +61,42 @@ func (o SidecarOp) IsDelete() bool { return o.kind == sidecarOpDelete }
 
 // ApplySidecarOps performs the writes and deletes described by ops. On a write
 // failure it deletes any sidecars written earlier in the same call so callers
-// never observe a partially-applied plan. Delete ops are best-effort (absent
-// paths are ignored) so they cannot trigger the rollback path.
+// never observe a partially-applied plan, and returns immediately. Delete
+// failures (other than an already-absent file) are collected and returned
+// joined so a caller can surface a credential sidecar that could not be
+// removed rather than reporting a clean rollback while the file lingers. A
+// missing file is not an error.
 func ApplySidecarOps(ops []SidecarOp) error {
 	written := make([]string, 0, len(ops))
+	var deleteErrs []error
 	for _, op := range ops {
 		switch op.kind {
 		case sidecarOpWrite:
 			if err := commitHeaderSidecar(op.path, op.body); err != nil {
 				for _, p := range written {
-					removeHeaderSidecar(p)
+					_ = removeHeaderSidecar(p)
 				}
 				return err
 			}
 			written = append(written, op.path)
 		case sidecarOpDelete:
-			removeHeaderSidecar(op.path)
+			if err := removeHeaderSidecar(op.path); err != nil {
+				deleteErrs = append(deleteErrs, err)
+			}
 		}
 	}
-	return nil
+	return errors.Join(deleteErrs...)
 }
 
 // RollbackSidecarWrites deletes every sidecar referenced by a write op. Used
 // when a later step (the canonical config atomic write) fails after
-// ApplySidecarOps has already landed sidecars on disk.
+// ApplySidecarOps has already landed sidecars on disk. Best-effort: a delete
+// that fails here leaves a sidecar behind, but the caller is already returning
+// the original failure.
 func RollbackSidecarWrites(ops []SidecarOp) {
 	for _, op := range ops {
 		if op.kind == sidecarOpWrite {
-			removeHeaderSidecar(op.path)
+			_ = removeHeaderSidecar(op.path)
 		}
 	}
 }
@@ -278,13 +286,17 @@ func commitHeaderSidecar(path string, body []byte) error {
 	return nil
 }
 
-// removeHeaderSidecar deletes the sidecar file. Best-effort; absent paths or
-// already-deleted files are not surfaced as errors.
-func removeHeaderSidecar(path string) {
+// removeHeaderSidecar deletes the sidecar file. An empty path or an
+// already-absent file is not an error; any other removal failure is returned so
+// callers can surface a credential file that could not be deleted.
+func removeHeaderSidecar(path string) error {
 	if path == "" {
-		return
+		return nil
 	}
-	_ = os.Remove(filepath.Clean(path))
+	if err := os.Remove(filepath.Clean(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing header sidecar %s: %w", path, err)
+	}
+	return nil
 }
 
 // validateHeader rejects empty/invalid header names, reserved transport-managed

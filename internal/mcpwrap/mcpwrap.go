@@ -169,7 +169,12 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 			return nil, nil, nil, fmt.Errorf("stdio server missing command")
 		}
 		_, meta.ArgsPresent = server[FieldArgs]
-		originalArgs := InterfaceSliceToStrings(server[FieldArgs])
+		// Reject (rather than silently drop) non-string args: dropping one would
+		// change the command the wrapped child actually runs.
+		originalArgs, err := stringArgs(server[FieldArgs])
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("stdio server %w", err)
+		}
 		meta.OriginalCommand = originalCmd
 		meta.OriginalArgs = originalArgs
 
@@ -377,15 +382,44 @@ func BuildEnvFlags(server map[string]interface{}) []string {
 	}
 	sort.Strings(keys)
 
-	flags := make([]string, 0, len(envMap)*2)
+	// Cap hint is len(keys) (not len*2) to avoid a multiplication CodeQL flags
+	// as a potential allocation-size overflow; append grows it as needed.
+	flags := make([]string, 0, len(keys))
 	for _, key := range keys {
 		flags = append(flags, "--env", key)
 	}
 	return flags
 }
 
+// stringArgs converts a decoded args value to []string, returning an error on
+// any non-string element instead of dropping it. Used on the wrap path, where
+// silently dropping a numeric or boolean arg would change the command the
+// wrapped child runs. A nil/absent value yields nil with no error.
+func stringArgs(v interface{}) ([]string, error) {
+	switch slice := v.(type) {
+	case nil:
+		return nil, nil
+	case []string:
+		return append([]string(nil), slice...), nil
+	case []interface{}:
+		out := make([]string, 0, len(slice))
+		for i, item := range slice {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("args[%d] is %T, want string (quote it in the config)", i, item)
+			}
+			out = append(out, s)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("args must be a list, got %T", v)
+	}
+}
+
 // InterfaceSliceToStrings converts a []interface{} (from JSON/YAML unmarshal)
-// to []string, dropping non-string elements.
+// to []string, dropping non-string elements. Used on read paths where lenient
+// coercion is acceptable; the wrap path uses stringArgs, which rejects
+// non-string elements.
 func InterfaceSliceToStrings(v interface{}) []string {
 	switch slice := v.(type) {
 	case []interface{}:

@@ -103,8 +103,13 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 		// Delete header sidecars only after the restored config is committed,
 		// so a save failure leaves the wrapped config and its sidecars intact
 		// for a retry rather than orphaning a config that points at gone files.
+		// Surface any deletion failure: a sidecar holds credential headers, so a
+		// silent failure would leave a secret on disk while reporting success.
 		if len(sidecarOps) > 0 {
-			_ = mcpwrap.ApplySidecarOps(sidecarOps)
+			if err := mcpwrap.ApplySidecarOps(sidecarOps); err != nil {
+				_, _ = fmt.Fprintf(out, "pipelock: warning: could not delete one or more header sidecar files; "+
+					"remove them manually under ~/.config/pipelock/wrap-headers: %v\n", err)
+			}
 		}
 	}
 	if len(removed) > 0 {

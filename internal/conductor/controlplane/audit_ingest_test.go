@@ -406,32 +406,39 @@ func TestAuditIngestRejectsStructurallyInvalidEnvelope(t *testing.T) {
 
 // TestAuditIngestSinkCanRetainPayload verifies the public retention contract:
 // after an accepted request returns, a sink-retained payload remains stable even
-// if the caller mutates the original source slice used to build the request.
+// after a later ingest delivers a different payload.
 func TestAuditIngestSinkCanRetainPayload(t *testing.T) {
-	payload := []byte(`{"entry":"original"}`)
+	payload1 := []byte(`{"entry":"original"}`)
+	payload2 := []byte(`{"entry":"next"}`)
 	pub, priv := testAuditSigner(t)
 	sink := &nonCopyingAuditSink{}
 	handler := newAuditIngestTestHandler(t, sink, auditKeyResolverFor(pub), 0)
-	req := signedAuditIngestRequest(t, defaultFollowerIdentity(), payload, priv, testNow)
+	req1 := signedAuditIngestRequest(t, defaultFollowerIdentity(), payload1, priv, testNow)
+	req2 := signedAuditIngestRequest(t, defaultFollowerIdentity(), payload2, priv, testNow)
 
-	w := postAuditBatch(t, handler, req)
+	w := postAuditBatch(t, handler, req1)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body=%s, want 202", w.Code, w.Body.String())
 	}
-	// Mutate the source slice after the call. The sink-retained slice must
-	// be unaffected.
-	for i := range payload {
-		payload[i] = 0
+	w = postAuditBatch(t, handler, req2)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status2 = %d body=%s, want 202", w.Code, w.Body.String())
 	}
-	if string(sink.last.Payload) != `{"entry":"original"}` {
-		t.Fatalf("sink slice mutated: %q", string(sink.last.Payload))
+	if len(sink.batches) != 2 {
+		t.Fatalf("sink batch count = %d, want 2", len(sink.batches))
+	}
+	if string(sink.batches[0].Payload) != `{"entry":"original"}` {
+		t.Fatalf("first retained payload mutated: %q", string(sink.batches[0].Payload))
+	}
+	if string(sink.batches[1].Payload) != `{"entry":"next"}` {
+		t.Fatalf("second retained payload = %q, want next payload", string(sink.batches[1].Payload))
 	}
 }
 
-type nonCopyingAuditSink struct{ last AcceptedAuditBatch }
+type nonCopyingAuditSink struct{ batches []AcceptedAuditBatch }
 
 func (s *nonCopyingAuditSink) IngestAuditBatch(_ context.Context, batch AcceptedAuditBatch) error {
-	s.last = batch
+	s.batches = append(s.batches, batch)
 	return nil
 }
 

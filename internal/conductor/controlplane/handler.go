@@ -189,7 +189,7 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 	}
 	identity, err := h.followerIdentity(r)
 	if err != nil {
-		writeError(w, http.StatusUnauthorized, err)
+		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
 		return
 	}
 	record, err := h.store.Latest(r.Context(), identity, h.now())
@@ -242,7 +242,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		// rather than a generic bad request; a resolver that produces
 		// an incomplete identity is functionally indistinguishable from
 		// a missing one.
-		writeError(w, http.StatusUnauthorized, err)
+		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
 	default:
 		writeError(w, http.StatusBadRequest, err)
 	}

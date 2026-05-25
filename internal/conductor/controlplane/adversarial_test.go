@@ -127,7 +127,7 @@ func TestPublishMapsBodyTooLargeTo413(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
 	}
-	big := strings.NewReader(`{"bundle":{"bundle_id":"` + stringsOf("a", 256) + `"}}`)
+	big := strings.NewReader(`{"bundle":{"bundle_id":"` + strings.Repeat("a", 256) + `"}}`)
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, big)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -194,7 +194,7 @@ func TestLoadRejectsBrokenForwardChain(t *testing.T) {
 		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
 		configYAML:   "mode: strict\napi_allowlist:\n  - api2.example.com\n",
 	})
-	v2Rec, _, err := store.Publish(t.Context(), v2, PublishOptions{Now: testNow})
+	_, _, err = store.Publish(t.Context(), v2, PublishOptions{Now: testNow})
 	if err != nil {
 		t.Fatalf("Publish(v2) error = %v", err)
 	}
@@ -205,7 +205,6 @@ func TestLoadRejectsBrokenForwardChain(t *testing.T) {
 	if _, err := OpenFileBundleStore(store.dir); !errors.Is(err, ErrInvalidStoreRecord) {
 		t.Fatalf("OpenFileBundleStore(broken chain) error = %v, want ErrInvalidStoreRecord", err)
 	}
-	_ = v2Rec
 }
 
 // TestSweepTempFilesOnOpen drops a stale temp file mimicking a crashed write
@@ -475,7 +474,7 @@ func TestPublishRejectsInitialBundleWithPreviousHash(t *testing.T) {
 	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
 		id:           "bundle-1",
 		version:      1,
-		previousHash: stringsOf("a", 64),
+		previousHash: strings.Repeat("a", 64),
 		audience:     conductor.Audience{InstanceIDs: []string{"*"}},
 	})
 	if _, _, err := store.Publish(t.Context(), bundle, PublishOptions{Now: testNow}); !errors.Is(err, ErrBundleConflict) {

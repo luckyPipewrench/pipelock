@@ -42,6 +42,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
@@ -547,6 +548,9 @@ func fsyncDir(dir string) error {
 	}
 	defer func() { _ = f.Close() }()
 	if err := f.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
 		return fmt.Errorf("conductor control plane fsync dir %s: %w", dir, err)
 	}
 	return nil

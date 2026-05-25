@@ -12,6 +12,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/assess"
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cli/canary"
+	cliconductor "github.com/luckyPipewrench/pipelock/internal/cli/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/cli/contain"
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
 	clienvelope "github.com/luckyPipewrench/pipelock/internal/cli/envelope"
@@ -82,6 +83,8 @@ Quick start:
 		audit.Cmd(),
 		// Canary tokens
 		canary.Cmd(),
+		// Conductor control plane
+		cliconductor.Cmd(),
 		audit.ReportCmd(),
 		audit.SimulateCmd(),
 		// Containment (workstation-tier)

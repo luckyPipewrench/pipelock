@@ -216,6 +216,37 @@ server derives follower identity from the authenticated transport and returns
 the newest currently valid bundle whose org, fleet, environment, and audience
 match that follower, or `204 No Content` when no bundle applies.
 
+MVP runtime wiring is exposed as:
+
+```sh
+pipelock conductor serve \
+  --listen 127.0.0.1:8895 \
+  --storage-dir /var/lib/pipelock/conductor-server \
+  --tls-cert /etc/pipelock/conductor/server.crt \
+  --tls-key /etc/pipelock/conductor/server.key \
+  --client-ca /etc/pipelock/conductor/follower-ca.pem \
+  --publisher-token-file /etc/pipelock/conductor/publisher-token \
+  --trusted-audit-key id=audit-key-1,file=/etc/pipelock/conductor/audit-key.pub,org=org-main,fleet=prod
+```
+
+The command requires TLS 1.3 plus client-certificate verification. Follower
+identity is derived from a verified SPIFFE URI SAN in the client certificate:
+`spiffe://<trust-domain>/orgs/<org>/fleets/<fleet>/instances/<instance>/environments/<environment>`.
+The trust-domain match is case-insensitive (the SPIFFE spec restricts trust
+domains to lowercase ASCII), but each path component is validated as a
+canonical conductor identifier: only `[a-zA-Z0-9_.-]`, no leading `_`, `-`,
+or `.`, and bounded length. SANs that unescape to a forbidden byte (null,
+slash, control character) are rejected at the transport boundary before
+reaching any store or sink.
+
+Policy publication uses a bearer token read from disk so the token does not
+appear in process arguments. Every `--trusted-audit-key` MUST carry `org=`;
+a cross-org audit key would let any enrolled follower in any org sign batches
+that authenticate against that key. Optional `fleet=`/`instance=` narrow the
+scope further. Accepted audit batches are written to a durable local spool;
+indexed query, retention policy, and fork analytics remain a later storage
+layer.
+
 ### Bundle Envelope
 
 ```json

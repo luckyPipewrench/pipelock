@@ -1129,6 +1129,16 @@ func requireNonEmpty(field, value string) error {
 	return nil
 }
 
+// ValidateIdentifier is the canonical conductor identifier check. Use it from
+// any package that receives operator- or transport-supplied identifiers
+// (org_id, fleet_id, instance_id, environment, bundle_id, ...). Diverging
+// identifier semantics between conductor base and conductor/controlplane risks
+// stream-key collisions when SPIFFE SANs unescape to bytes that the base layer
+// would reject (null bytes, slashes, control characters).
+func ValidateIdentifier(field, value string) error {
+	return validateIdentifier(field, value)
+}
+
 func validateIdentifier(field, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%w: %s", ErrMissingField, field)

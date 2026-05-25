@@ -206,19 +206,32 @@ func (s *FileBundleStore) Latest(_ context.Context, follower FollowerIdentity, n
 	return best, nil
 }
 
+// Validate rejects identities whose components are empty OR contain anything
+// the canonical conductor identifier validator rejects: bytes outside
+// [a-zA-Z0-9_.-], leading '_'/'-'/'.', or anything longer than
+// [conductor.MaxIDBytes]. The SPIFFE URI parser unescapes SAN path components
+// with [url.PathUnescape], so without this check a SAN of
+// 'spiffe://td/orgs/a%00b/fleets/.../...' would deliver an OrgID containing a
+// null byte and bypass the '\x00'-separator invariant in streamKey.
+//
+// Identity errors map to HTTP 401 via writeStoreError. Wrapping the inner
+// detail with [ErrFollowerRequired] preserves that mapping; the inner
+// [conductor.ErrInvalidIdentifier] is kept in the chain for diagnostics but
+// is not surfaced to clients.
 func (f FollowerIdentity) Validate() error {
-	switch {
-	case strings.TrimSpace(f.OrgID) == "":
-		return fmt.Errorf("%w: org_id", ErrFollowerRequired)
-	case strings.TrimSpace(f.FleetID) == "":
-		return fmt.Errorf("%w: fleet_id", ErrFollowerRequired)
-	case strings.TrimSpace(f.InstanceID) == "":
-		return fmt.Errorf("%w: instance_id", ErrFollowerRequired)
-	case strings.TrimSpace(f.Environment) == "":
-		return fmt.Errorf("%w: environment", ErrFollowerRequired)
-	default:
-		return nil
+	for _, c := range []struct {
+		field, value string
+	}{
+		{"org_id", f.OrgID},
+		{"fleet_id", f.FleetID},
+		{"instance_id", f.InstanceID},
+		{"environment", f.Environment},
+	} {
+		if err := conductor.ValidateIdentifier(c.field, c.value); err != nil {
+			return fmt.Errorf("%w: %s", ErrFollowerRequired, c.field)
+		}
 	}
+	return nil
 }
 
 func (s *FileBundleStore) load() error {

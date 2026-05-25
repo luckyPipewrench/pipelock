@@ -70,3 +70,19 @@ func TestFleetSinkHelpRegistered(t *testing.T) {
 		t.Fatalf("help output = %q, want trusted audit key flag", got)
 	}
 }
+
+func TestConductorServeHelpRegistered(t *testing.T) {
+	cmd := rootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"conductor", "serve", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("conductor serve help: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "--publisher-token-file") || !strings.Contains(got, "--client-ca") {
+		t.Fatalf("help output = %q, want conductor serve auth flags", got)
+	}
+}

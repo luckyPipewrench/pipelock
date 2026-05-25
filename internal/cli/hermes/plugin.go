@@ -4,6 +4,7 @@
 package hermes
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -32,7 +33,8 @@ const (
 type PluginTarget struct {
 	// Root is the directory the plugin tree is materialised into. It is
 	// created if missing. Existing files at conflicting paths are rotated to
-	// a sibling `.bak.<timestamp>` before being overwritten.
+	// a sibling `.bak.<timestamp>` before being overwritten when their content
+	// differs from the embedded plugin file.
 	Root string
 }
 
@@ -47,16 +49,96 @@ type PluginInstallResult struct {
 	BackupsCreated []string
 }
 
+// configSidecarName is the file the installer writes into the plugin dir to
+// record the pipelock config path the hook should use. The bundled Python
+// plugin reads it (see plugin_template/plugin.py CONFIG_SIDECAR) so config
+// flows without depending on Hermes' runtime environment.
+const configSidecarName = "pipelock.conf"
+
 // ResolveDefaultPluginRoot returns the default install root computed from the
 // supplied home directory. It does not touch the filesystem.
 func ResolveDefaultPluginRoot(home string) string {
 	return filepath.Join(home, DefaultPluginSubpath)
 }
 
+// writeConfigSidecar records configPath in <root>/pipelock.conf so the plugin
+// passes it to `pipelock hermes hook --config`. A blank configPath removes any
+// existing sidecar (the hook falls back to built-in defaults). root must be
+// the already-resolved plugin directory.
+func writeConfigSidecar(root, configPath string) error {
+	dest := filepath.Join(root, configSidecarName)
+	if configPath == "" {
+		if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("hermes: remove stale config sidecar: %w", err)
+		}
+		return nil
+	}
+	_, _, err := writeManagedFile(dest, []byte(configPath+"\n"))
+	return err
+}
+
+// removePluginTree removes only pipelock-managed plugin files from root. Used
+// by rollback. It intentionally does not os.RemoveAll(root): --plugin-root is
+// operator-controlled, and deleting unknown files from an override path would
+// be a surprising destructive action. If the directory becomes empty after the
+// managed files are removed, it is removed too.
+func removePluginTree(root string) error {
+	clean := filepath.Clean(root)
+	if clean == "" || clean == "/" || clean == "." {
+		return fmt.Errorf("hermes: refusing to remove unsafe plugin root %q", root)
+	}
+	entries, err := os.ReadDir(clean)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("hermes: read plugin tree %s: %w", clean, err)
+	}
+	for _, entry := range entries {
+		if !isManagedPluginPath(entry.Name()) {
+			continue
+		}
+		path := filepath.Join(clean, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("hermes: remove plugin file %s: %w", path, err)
+		}
+	}
+	// Remove the plugin directory only if it is now empty. Ignore "not empty"
+	// so operator-created files survive rollback.
+	if err := os.Remove(clean); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if entries, readErr := os.ReadDir(clean); readErr == nil && len(entries) > 0 {
+			return nil
+		}
+		return fmt.Errorf("hermes: remove plugin dir %s: %w", clean, err)
+	}
+	return nil
+}
+
+func isManagedPluginPath(name string) bool {
+	for _, base := range []string{"__init__.py", "plugin.py", "README.md", configSidecarName} {
+		if name == base || strings.HasPrefix(name, base+".bak.") ||
+			(strings.HasPrefix(name, base+".") && strings.HasSuffix(name, ".tmp")) {
+			return true
+		}
+	}
+	return false
+}
+
+// pluginInstalled reports whether the core plugin files are present under root.
+func pluginInstalled(root string) bool {
+	for _, name := range []string{"__init__.py", "plugin.py"} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // Install materialises the embedded plugin tree into target.Root. It is
-// idempotent across reruns: existing files at the same paths are rotated to
-// `<name>.bak.<unix-nanos>` before being overwritten, mirroring the
-// `pipelock contain install` rotation pattern.
+// idempotent across reruns: byte-identical files are left in place, while
+// changed files at the same paths are rotated to `<name>.bak.<unix-nanos>`
+// before being overwritten, mirroring the `pipelock contain install` rotation
+// pattern without backup churn.
 //
 // The installer never deletes files it did not write. Operators with hand-
 // edited plugins keep their changes under the `.bak.*` siblings.
@@ -111,24 +193,63 @@ func Install(target PluginTarget) (PluginInstallResult, error) {
 			return fmt.Errorf("hermes: read embedded %s: %w", path, readErr)
 		}
 
-		backup, backupErr := rotateExisting(dest)
-		if backupErr != nil {
-			return backupErr
+		backup, wrote, writeErr := writeManagedFile(dest, data)
+		if writeErr != nil {
+			return writeErr
 		}
 		if backup != "" {
 			result.BackupsCreated = append(result.BackupsCreated, backup)
 		}
-
-		if err := writeFileAtomic(dest, data); err != nil {
-			return err
+		if wrote {
+			result.FilesWritten++
 		}
-		result.FilesWritten++
 		return nil
 	})
 	if walkErr != nil {
 		return result, walkErr
 	}
 	return result, nil
+}
+
+// writeManagedFile writes data to dest only when the existing file differs.
+// Different existing files are rotated first; identical files are left in place
+// so rerunning install does not create noisy .bak churn.
+func writeManagedFile(dest string, data []byte) (backup string, wrote bool, err error) {
+	same, err := regularFileContentEqual(dest, data)
+	if err != nil {
+		return "", false, err
+	}
+	if same {
+		return "", false, nil
+	}
+
+	backup, err = rotateExisting(dest)
+	if err != nil {
+		return "", false, err
+	}
+	if err := writeFileAtomic(dest, data); err != nil {
+		return "", false, err
+	}
+	return backup, true, nil
+}
+
+func regularFileContentEqual(dest string, data []byte) (bool, error) {
+	info, err := os.Lstat(dest)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("hermes: stat %s: %w", dest, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	//nolint:gosec // install intentionally compares an operator-selected plugin file before rotating it.
+	existing, err := os.ReadFile(dest)
+	if err != nil {
+		return false, fmt.Errorf("hermes: read %s: %w", dest, err)
+	}
+	return bytes.Equal(existing, data), nil
 }
 
 // ensureContained returns an error when dest is not within root. Mirrors the

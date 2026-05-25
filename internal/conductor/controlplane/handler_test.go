@@ -63,6 +63,29 @@ func TestHandlerPublishesAndServesLatestBundle(t *testing.T) {
 	}
 }
 
+func TestIfNoneMatchMatches(t *testing.T) {
+	etag := `"abc123"`
+	tests := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "empty", raw: "", want: false},
+		{name: "exact", raw: etag, want: true},
+		{name: "wildcard", raw: "*", want: true},
+		{name: "comma list", raw: `"other", "abc123"`, want: true},
+		{name: "weak candidate", raw: `W/"abc123"`, want: true},
+		{name: "miss", raw: `"other"`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ifNoneMatchMatches(tt.raw, etag); got != tt.want {
+				t.Fatalf("ifNoneMatchMatches(%q, %q) = %v, want %v", tt.raw, etag, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHandlerCapabilities(t *testing.T) {
 	handler := newTestHandler(t, mustStore(t), nil)
 	w := httptest.NewRecorder()

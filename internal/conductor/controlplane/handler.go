@@ -16,6 +16,8 @@ import (
 )
 
 const (
+	defaultConductorID = "conductor"
+
 	PublishPolicyBundlePath = "/api/v1/conductor/policy-bundles"
 	LatestPolicyBundlePath  = "/api/v1/conductor/policy/latest"
 
@@ -80,7 +82,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	}
 	capabilities := opts.Capabilities
 	if capabilities.SchemaVersion == 0 {
-		capabilities = DefaultCapabilities("conductor")
+		capabilities = DefaultCapabilities(defaultConductorID)
 	}
 	if err := capabilities.ValidateWithLocalThresholdCap(conductor.MaxCapabilityThreshold); err != nil {
 		return nil, err
@@ -105,7 +107,7 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 
 func DefaultCapabilities(conductorID string) conductor.CapabilitiesResponse {
 	if strings.TrimSpace(conductorID) == "" {
-		conductorID = "conductor"
+		conductorID = defaultConductorID
 	}
 	return conductor.CapabilitiesResponse{
 		SchemaVersion:          conductor.SchemaVersion,
@@ -202,13 +204,30 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	etag := fmt.Sprintf("%q", record.BundleHash)
-	if r.Header.Get("If-None-Match") == etag {
+	if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
 		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	w.Header().Set("ETag", etag)
 	writeJSON(w, http.StatusOK, record.Bundle)
+}
+
+func ifNoneMatchMatches(raw, etag string) bool {
+	if raw == "" {
+		return false
+	}
+	want := strings.TrimPrefix(etag, "W/")
+	for _, part := range strings.Split(raw, ",") {
+		candidate := strings.TrimSpace(part)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == want {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeStrictJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dest any) error {

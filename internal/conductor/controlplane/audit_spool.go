@@ -39,6 +39,9 @@ func (s *FileAuditSpool) IngestAuditBatch(ctx context.Context, batch AcceptedAud
 	if s == nil {
 		return ErrAuditSinkRequired
 	}
+	if ctx == nil {
+		return fmt.Errorf("%w: context", ErrAuditSinkRequired)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -47,6 +50,13 @@ func (s *FileAuditSpool) IngestAuditBatch(ctx context.Context, batch AcceptedAud
 	}
 	if err := batch.Identity.Validate(); err != nil {
 		return err
+	}
+	actualHash, err := batch.Envelope.CanonicalHash()
+	if err != nil {
+		return err
+	}
+	if actualHash != batch.EnvelopeHash {
+		return fmt.Errorf("%w: envelope_hash mismatch", ErrInvalidStoreRecord)
 	}
 	record := spooledAuditBatch{
 		Identity:     batch.Identity,

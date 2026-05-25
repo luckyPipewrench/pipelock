@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -88,7 +89,11 @@ func serveCmd() *cobra.Command {
 }
 
 func runServe(cmd *cobra.Command, opts serveOptions) error {
-	handler, tlsConfig, err := buildServeHandler(cmd.Context(), opts)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	handler, tlsConfig, err := buildServeHandler(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -102,8 +107,13 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 * 1024,
 	}
-	runCtx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", opts.listen)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = ln.Close() }()
 	go func() {
 		<-runCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -111,7 +121,7 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 		_ = server.Shutdown(shutdownCtx)
 	}()
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: conductor listening on %s\n", opts.listen)
-	if err := server.ListenAndServeTLS(opts.tlsCert, opts.tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := server.ServeTLS(ln, opts.tlsCert, opts.tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

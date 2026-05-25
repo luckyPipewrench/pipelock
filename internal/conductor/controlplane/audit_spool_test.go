@@ -20,31 +20,14 @@ func TestFileAuditSpoolPersistsAcceptedBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileAuditSpool() error = %v", err)
 	}
-	hash := strings.Repeat("a", 64)
 	payload := []byte(`{"entry":"ok"}`)
-	batch := AcceptedAuditBatch{
-		Identity: FollowerIdentity{
-			OrgID:       "org-main",
-			FleetID:     "prod",
-			InstanceID:  "pl-prod-1",
-			Environment: "prod",
-		},
-		Envelope: conductor.AuditBatchEnvelope{
-			BatchID:    "batch-1",
-			OrgID:      "org-main",
-			FleetID:    "prod",
-			InstanceID: "pl-prod-1",
-		},
-		EnvelopeHash: hash,
-		Payload:      payload,
-		ReceivedAt:   testNow,
-	}
+	batch := acceptedSpoolBatch(t, "batch-1", payload)
 	if err := spool.IngestAuditBatch(context.Background(), batch); err != nil {
 		t.Fatalf("IngestAuditBatch() error = %v", err)
 	}
 	payload[0] = '['
 
-	data, err := os.ReadFile(filepath.Clean(filepath.Join(spool.dir, hash+".json"))) //nolint:gosec // Test reads from a temp dir plus fixed hash filename.
+	data, err := os.ReadFile(filepath.Clean(filepath.Join(spool.dir, batch.EnvelopeHash+".json"))) //nolint:gosec // Test reads from a temp dir plus fixed hash filename.
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
@@ -65,8 +48,24 @@ func TestFileAuditSpoolRejectsInvalidInput(t *testing.T) {
 	if err := spool.IngestAuditBatch(context.Background(), AcceptedAuditBatch{EnvelopeHash: "bad"}); !errors.Is(err, ErrInvalidStoreRecord) {
 		t.Fatalf("IngestAuditBatch(bad hash) error = %v, want ErrInvalidStoreRecord", err)
 	}
+	var nilCtx context.Context
+	if err := spool.IngestAuditBatch(nilCtx, AcceptedAuditBatch{}); !errors.Is(err, ErrAuditSinkRequired) {
+		t.Fatalf("IngestAuditBatch(nil context) error = %v, want ErrAuditSinkRequired", err)
+	}
 	if err := (*FileAuditSpool)(nil).IngestAuditBatch(context.Background(), AcceptedAuditBatch{}); !errors.Is(err, ErrAuditSinkRequired) {
 		t.Fatalf("nil IngestAuditBatch error = %v, want ErrAuditSinkRequired", err)
+	}
+}
+
+func TestFileAuditSpoolRejectsEnvelopeHashMismatch(t *testing.T) {
+	spool, err := OpenFileAuditSpool(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileAuditSpool() error = %v", err)
+	}
+	batch := acceptedSpoolBatch(t, "batch-1", []byte(`{"entry":"ok"}`))
+	batch.EnvelopeHash = strings.Repeat("f", 64)
+	if err := spool.IngestAuditBatch(context.Background(), batch); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("IngestAuditBatch(hash mismatch) error = %v, want ErrInvalidStoreRecord", err)
 	}
 }
 
@@ -110,26 +109,42 @@ func TestFileAuditSpoolFileMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenFileAuditSpool() error = %v", err)
 	}
-	hash := strings.Repeat("b", 64)
-	batch := AcceptedAuditBatch{
-		Identity: FollowerIdentity{
-			OrgID:       "org-main",
-			FleetID:     "prod",
-			InstanceID:  "pl-prod-1",
-			Environment: "prod",
-		},
-		EnvelopeHash: hash,
-		Payload:      []byte(`{"ok":true}`),
-		ReceivedAt:   testNow,
-	}
+	batch := acceptedSpoolBatch(t, "batch-1", []byte(`{"ok":true}`))
 	if err := spool.IngestAuditBatch(context.Background(), batch); err != nil {
 		t.Fatalf("IngestAuditBatch() error = %v", err)
 	}
-	info, err := os.Stat(filepath.Clean(filepath.Join(spool.dir, hash+".json"))) //nolint:gosec // Test reads from a temp dir plus fixed hash filename.
+	info, err := os.Stat(filepath.Clean(filepath.Join(spool.dir, batch.EnvelopeHash+".json"))) //nolint:gosec // Test reads from a temp dir plus fixed hash filename.
 	if err != nil {
 		t.Fatalf("Stat() error = %v", err)
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("spool file mode = %v, want 0o600", info.Mode().Perm())
+	}
+}
+
+func acceptedSpoolBatch(t *testing.T, batchID string, payload []byte) AcceptedAuditBatch {
+	t.Helper()
+	identity := FollowerIdentity{
+		OrgID:       "org-main",
+		FleetID:     "prod",
+		InstanceID:  "pl-prod-1",
+		Environment: "prod",
+	}
+	envelope := conductor.AuditBatchEnvelope{
+		BatchID:    batchID,
+		OrgID:      identity.OrgID,
+		FleetID:    identity.FleetID,
+		InstanceID: identity.InstanceID,
+	}
+	hash, err := envelope.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash() error = %v", err)
+	}
+	return AcceptedAuditBatch{
+		Identity:     identity,
+		Envelope:     envelope,
+		EnvelopeHash: hash,
+		Payload:      payload,
+		ReceivedAt:   testNow,
 	}
 }

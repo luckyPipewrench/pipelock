@@ -101,6 +101,44 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 	}
 }
 
+func TestRunServeReturnsTLSLoadError(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "publisher-token")
+	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(token): %v", err)
+	}
+	caPath := filepath.Join(dir, "client-ca.pem")
+	if err := os.WriteFile(caPath, testCAPEM(t), 0o600); err != nil {
+		t.Fatalf("WriteFile(ca): %v", err)
+	}
+	cmd := serveCmd()
+	var out strings.Builder
+	cmd.SetOut(&out)
+	err = runServe(cmd, serveOptions{
+		listen:              "127.0.0.1:0",
+		storageDir:          filepath.Join(dir, "store"),
+		conductorID:         "conductor-test",
+		followerTrustDomain: defaultTrustDomain,
+		publisherTokenFile:  tokenPath,
+		trustedAuditKeys: []string{
+			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
+		},
+		tlsCert:  filepath.Join(dir, "missing-server.pem"),
+		tlsKey:   filepath.Join(dir, "missing-server.key"),
+		clientCA: caPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing-server.pem") {
+		t.Fatalf("runServe() error = %v, want missing TLS cert error", err)
+	}
+	if !strings.Contains(out.String(), "pipelock: conductor listening on 127.0.0.1:0") {
+		t.Fatalf("runServe() output = %q, want listening line", out.String())
+	}
+}
+
 func TestParseAuditKeySpec(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		spec, err := parseAuditKeySpec("id=k1,inline=abc,org=o,fleet=f,instance=i")

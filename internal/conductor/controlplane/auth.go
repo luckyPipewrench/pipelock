@@ -4,6 +4,7 @@
 package controlplane
 
 import (
+	"crypto/ed25519"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const followerURIScheme = "spiffe"
@@ -96,7 +98,7 @@ func BearerPublisherAuthorizer(rawCredential string) (PublisherAuthorizer, error
 		}
 		raw := r.Header.Get("Authorization")
 		prefix, got, ok := strings.Cut(raw, " ")
-		if !ok || prefix != "Bearer" || subtle.ConstantTimeCompare([]byte(got), []byte(expectedCredential)) != 1 {
+		if !ok || !strings.EqualFold(prefix, "Bearer") || subtle.ConstantTimeCompare([]byte(got), []byte(expectedCredential)) != 1 {
 			return ErrPublisherForbidden
 		}
 		return nil
@@ -119,14 +121,30 @@ func StaticAuditKeyResolver(keys []StaticAuditKey) (AuditKeyResolver, error) {
 	byID := make(map[string]StaticAuditKey, len(keys))
 	for _, key := range keys {
 		key.KeyID = strings.TrimSpace(key.KeyID)
-		if key.KeyID == "" {
-			return nil, fmt.Errorf("%w: key_id", ErrAuditKeyRequired)
+		if err := conductor.ValidateIdentifier("key_id", key.KeyID); err != nil {
+			return nil, fmt.Errorf("%w: key_id %q", ErrAuditKeyRequired, key.KeyID)
 		}
-		if len(key.Key.PublicKey) == 0 {
-			return nil, fmt.Errorf("%w: public_key", ErrAuditKeyRequired)
+		if len(key.Key.PublicKey) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("%w: public_key for key %q", ErrAuditKeyRequired, key.KeyID)
+		}
+		if key.Key.KeyPurpose != signing.PurposeAuditBatchSigning {
+			return nil, fmt.Errorf("%w: key_purpose for key %q", ErrAuditKeyRequired, key.KeyID)
 		}
 		if strings.TrimSpace(key.OrgID) == "" {
 			return nil, fmt.Errorf("%w: org_id required for key %q (cross-org audit keys are not permitted)", ErrAuditKeyRequired, key.KeyID)
+		}
+		if err := conductor.ValidateIdentifier("org_id", key.OrgID); err != nil {
+			return nil, fmt.Errorf("%w: org_id for key %q", ErrAuditKeyRequired, key.KeyID)
+		}
+		if key.FleetID != "" {
+			if err := conductor.ValidateIdentifier("fleet_id", key.FleetID); err != nil {
+				return nil, fmt.Errorf("%w: fleet_id for key %q", ErrAuditKeyRequired, key.KeyID)
+			}
+		}
+		if key.InstanceID != "" {
+			if err := conductor.ValidateIdentifier("instance_id", key.InstanceID); err != nil {
+				return nil, fmt.Errorf("%w: instance_id for key %q", ErrAuditKeyRequired, key.KeyID)
+			}
 		}
 		if _, exists := byID[key.KeyID]; exists {
 			return nil, fmt.Errorf("%w: duplicate key_id %q", ErrAuditKeyRequired, key.KeyID)

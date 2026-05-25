@@ -714,6 +714,15 @@ func TestIsIdentifierRejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestValidateIdentifierExport(t *testing.T) {
+	if err := ValidateIdentifier("org_id", "org-main"); err != nil {
+		t.Fatalf("ValidateIdentifier(valid) error = %v", err)
+	}
+	if err := ValidateIdentifier("org_id", "-org"); !errors.Is(err, ErrInvalidIdentifier) {
+		t.Fatalf("ValidateIdentifier(invalid) error = %v, want ErrInvalidIdentifier", err)
+	}
+}
+
 func TestRemoteKillMessage_RejectsSamePublicKeyAcrossSignerIDs(t *testing.T) {
 	// A roster that maps two distinct IDs to the same public key would
 	// otherwise satisfy threshold with one underlying signer. This is the

@@ -114,7 +114,7 @@ func TestBearerPublisherAuthorizer(t *testing.T) {
 		{name: "no header", wantErr: true},
 		{name: "wrong scheme", setHeader: true, header: "Basic secret-token", wantErr: true},
 		{name: "wrong token", setHeader: true, header: "Bearer wrong", wantErr: true},
-		{name: "lowercase scheme", setHeader: true, header: "bearer secret-token", wantErr: true},
+		{name: "lowercase scheme", setHeader: true, header: "bearer secret-token"},
 		{name: "empty token", setHeader: true, header: "Bearer ", wantErr: true},
 		{name: "valid", setHeader: true, header: "Bearer secret-token"},
 	}
@@ -199,6 +199,36 @@ func TestStaticAuditKeyResolverRejectsCrossOrgKey(t *testing.T) {
 			name:    "missing public key",
 			keys:    []StaticAuditKey{{KeyID: "k1", OrgID: "org-main"}},
 			wantSub: "public_key",
+		},
+		{
+			name:    "short public key",
+			keys:    []StaticAuditKey{{KeyID: "k1", Key: conductor.SignatureKey{PublicKey: ed25519.PublicKey("short"), KeyPurpose: signing.PurposeAuditBatchSigning}, OrgID: "org-main"}},
+			wantSub: "public_key",
+		},
+		{
+			name:    "wrong purpose",
+			keys:    []StaticAuditKey{{KeyID: "k1", Key: conductor.SignatureKey{PublicKey: pub, KeyPurpose: signing.PurposePolicyBundleSigning}, OrgID: "org-main"}},
+			wantSub: "key_purpose",
+		},
+		{
+			name:    "invalid key id",
+			keys:    []StaticAuditKey{{KeyID: "-k1", Key: key, OrgID: "org-main"}},
+			wantSub: "key_id",
+		},
+		{
+			name:    "invalid org id",
+			keys:    []StaticAuditKey{{KeyID: "k1", Key: key, OrgID: "-org"}},
+			wantSub: "org_id",
+		},
+		{
+			name:    "invalid fleet id",
+			keys:    []StaticAuditKey{{KeyID: "k1", Key: key, OrgID: "org-main", FleetID: "fleet/prod"}},
+			wantSub: "fleet_id",
+		},
+		{
+			name:    "invalid instance id",
+			keys:    []StaticAuditKey{{KeyID: "k1", Key: key, OrgID: "org-main", InstanceID: "pl prod"}},
+			wantSub: "instance_id",
 		},
 		{
 			name: "duplicate key id",

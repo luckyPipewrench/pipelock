@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,6 +226,79 @@ func TestBoundaryApplyDoesNotActivateWhenReloadFails(t *testing.T) {
 	}
 	if _, activeErr := cache.Active(); !errors.Is(activeErr, ErrNoValidBundle) {
 		t.Fatalf("Active() after failed reload = %v, want ErrNoValidBundle", activeErr)
+	}
+}
+
+func TestBoundaryApplyRequiresCacheAndReload(t *testing.T) {
+	key := newTestKey(t)
+	bundle := signedTestBundle(t, key, "bundle-1", 1, "")
+	base := Boundary{
+		Identity:     testIdentity(),
+		Resolver:     testResolver(key),
+		LocalVersion: "1.2.3",
+		Now:          func() time.Time { return testNow },
+	}
+	if _, err := base.Apply(bundle, ApplyOptions{}); !errors.Is(err, ErrCacheRequired) {
+		t.Fatalf("Apply(missing cache) = %v, want ErrCacheRequired", err)
+	}
+	base.Cache = openTestCache(t)
+	if _, err := base.Apply(bundle, ApplyOptions{}); err == nil {
+		t.Fatal("Apply(missing reload) = nil, want error")
+	}
+}
+
+func TestBoundaryApplySurfacesStageAndLoadFailures(t *testing.T) {
+	key := newTestKey(t)
+	bundle := signedTestBundle(t, key, "bundle-1", 1, "")
+	boundary := Boundary{
+		Cache:        openTestCache(t),
+		Identity:     testIdentity(),
+		Resolver:     testResolver(key),
+		LocalVersion: "1.2.3",
+		Now:          func() time.Time { return testNow },
+		Reload:       func(_ *config.Config) error { return nil },
+	}
+	wrongAudience := boundary
+	wrongAudience.Identity.InstanceID = "other"
+	if _, err := wrongAudience.Apply(bundle, ApplyOptions{}); !errors.Is(err, conductor.ErrAudienceMismatch) {
+		t.Fatalf("Apply(wrong audience) = %v, want ErrAudienceMismatch", err)
+	}
+
+	boundary.LoadConfig = func(string) (*config.Config, error) {
+		return nil, errors.New("load rejected")
+	}
+	if _, err := boundary.Apply(bundle, ApplyOptions{}); err == nil || !strings.Contains(err.Error(), "loading verified") {
+		t.Fatalf("Apply(load failure) = %v, want loading error", err)
+	}
+}
+
+func TestBoundaryApplyDoesNotActivateWhenActivationFails(t *testing.T) {
+	key := newTestKey(t)
+	cache := openTestCache(t)
+	var loadedPath string
+	boundary := Boundary{
+		Cache:        cache,
+		Identity:     testIdentity(),
+		Resolver:     testResolver(key),
+		LocalVersion: "1.2.3",
+		Now:          func() time.Time { return testNow },
+		LoadConfig: func(path string) (*config.Config, error) {
+			loadedPath = path
+			return config.Load(path)
+		},
+		Reload: func(_ *config.Config) error {
+			if err := os.Remove(loadedPath); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	_, err := boundary.Apply(signedTestBundle(t, key, "bundle-1", 1, ""), ApplyOptions{})
+	if err == nil || !strings.Contains(err.Error(), "activating verified") {
+		t.Fatalf("Apply(activation failure) = %v, want activating error", err)
+	}
+	if _, activeErr := cache.Active(); !errors.Is(activeErr, ErrNoValidBundle) {
+		t.Fatalf("Active() after failed activation = %v, want ErrNoValidBundle", activeErr)
 	}
 }
 

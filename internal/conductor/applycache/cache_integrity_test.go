@@ -468,9 +468,124 @@ func TestValidateRegularFileUnit(t *testing.T) {
 	}
 }
 
+func TestNilCacheMethodsFailClosed(t *testing.T) {
+	var cache *Cache
+	if _, err := cache.stageVerified(conductor.PolicyBundle{}, verifyOptions{}); !errors.Is(err, ErrCacheRequired) {
+		t.Fatalf("stageVerified(nil cache) = %v, want ErrCacheRequired", err)
+	}
+	if err := cache.activate(VerifiedBundle{}); !errors.Is(err, ErrCacheRequired) {
+		t.Fatalf("activate(nil cache) = %v, want ErrCacheRequired", err)
+	}
+	if _, err := cache.Active(); !errors.Is(err, ErrCacheRequired) {
+		t.Fatalf("Active(nil cache) = %v, want ErrCacheRequired", err)
+	}
+}
+
+func TestNowUTCDefaults(t *testing.T) {
+	cache := &Cache{now: func() time.Time { return testNow }}
+	if got := cache.nowUTC(verifyOptions{}); !got.Equal(testNow) {
+		t.Fatalf("nowUTC(cache clock) = %s, want %s", got, testNow)
+	}
+	if got := (&Cache{}).nowUTC(verifyOptions{}); got.IsZero() {
+		t.Fatal("nowUTC(default clock) returned zero time")
+	}
+}
+
 func TestOpenRejectsEmptyDir(t *testing.T) {
 	if _, err := Open(Config{Dir: "  "}); !errors.Is(err, ErrCacheRequired) {
 		t.Fatalf("Open(blank dir) = %v, want ErrCacheRequired", err)
+	}
+}
+
+func TestOpenRejectsFileAndSymlinkAncestor(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "cache-file")
+	if err := os.WriteFile(filePath, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("write file path: %v", err)
+	}
+	if _, err := Open(Config{Dir: filePath}); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("Open(file path) = %v, want not-directory error", err)
+	}
+
+	realParent := filepath.Join(dir, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatalf("mkdir real parent: %v", err)
+	}
+	linkParent := filepath.Join(dir, "link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatalf("symlink parent: %v", err)
+	}
+	if _, err := Open(Config{Dir: filepath.Join(linkParent, "cache")}); err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
+		t.Fatalf("Open(symlink ancestor) = %v, want symlink rejection", err)
+	}
+}
+
+func TestDurableHelpersRejectBadPathsAndSweepTemps(t *testing.T) {
+	dir := t.TempDir()
+	if err := durableWrite(filepath.Join(dir, "missing", "record.json"), []byte("{}")); err == nil {
+		t.Fatal("durableWrite(missing parent) = nil, want error")
+	}
+	if err := fsyncDir(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("fsyncDir(missing) = nil, want error")
+	}
+	if err := sweepStaleTemps(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("sweepStaleTemps(missing) = nil, want error")
+	}
+
+	tmpFile := filepath.Join(dir, ".tmp-stale")
+	keepFile := filepath.Join(dir, "keep")
+	tmpDir := filepath.Join(dir, ".tmp-dir")
+	if err := os.WriteFile(tmpFile, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale temp: %v", err)
+	}
+	if err := os.WriteFile(keepFile, []byte("keep"), 0o600); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
+	if err := os.Mkdir(tmpDir, 0o700); err != nil {
+		t.Fatalf("mkdir temp dir: %v", err)
+	}
+	if err := sweepStaleTemps(dir); err != nil {
+		t.Fatalf("sweepStaleTemps(): %v", err)
+	}
+	if _, err := os.Stat(tmpFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale temp stat = %v, want removed", err)
+	}
+	if _, err := os.Stat(keepFile); err != nil {
+		t.Fatalf("keep file stat = %v, want present", err)
+	}
+	if _, err := os.Stat(tmpDir); err != nil {
+		t.Fatalf("temp dir stat = %v, want present", err)
+	}
+}
+
+func TestStageVerifiedFailsClosedWhenCacheDirsMissing(t *testing.T) {
+	key := newTestKey(t)
+	bundle := signedTestBundle(t, key, "bundle-1", 1, "")
+	opts := testVerifyOptions(key)
+	root := t.TempDir()
+
+	missingBundles := &Cache{
+		dir:        root,
+		bundlesDir: filepath.Join(root, "missing-bundles"),
+		configsDir: t.TempDir(),
+		now:        func() time.Time { return testNow },
+	}
+	if _, err := missingBundles.stageVerified(bundle, opts); err == nil {
+		t.Fatal("stageVerified(missing bundles dir) = nil, want error")
+	}
+
+	bundlesDir := filepath.Join(root, "bundles")
+	if err := os.Mkdir(bundlesDir, 0o700); err != nil {
+		t.Fatalf("mkdir bundles dir: %v", err)
+	}
+	missingConfigs := &Cache{
+		dir:        root,
+		bundlesDir: bundlesDir,
+		configsDir: filepath.Join(root, "missing-configs"),
+		now:        func() time.Time { return testNow },
+	}
+	if _, err := missingConfigs.stageVerified(bundle, opts); err == nil {
+		t.Fatal("stageVerified(missing configs dir) = nil, want error")
 	}
 }
 

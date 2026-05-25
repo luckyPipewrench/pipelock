@@ -234,6 +234,26 @@ func TestConductorRuntimeChanged(t *testing.T) {
 	}
 }
 
+func TestBuildConductorApplyCacheRejectsInvalidDir(t *testing.T) {
+	if cache, err := buildConductorApplyCache(nil); err != nil || cache != nil {
+		t.Fatalf("buildConductorApplyCache(nil) = cache=%v err=%v, want nil nil", cache, err)
+	}
+	cfg := config.Defaults()
+	if cache, err := buildConductorApplyCache(cfg); err != nil || cache != nil {
+		t.Fatalf("buildConductorApplyCache(disabled) = cache=%v err=%v, want nil nil", cache, err)
+	}
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "cache-file")
+	if err := os.WriteFile(filePath, []byte("not a dir"), 0o600); err != nil {
+		t.Fatalf("write cache file path: %v", err)
+	}
+	cfg.Conductor.Enabled = true
+	cfg.Conductor.BundleCacheDir = filePath
+	if _, err := buildConductorApplyCache(cfg); err == nil || !strings.Contains(err.Error(), "opening conductor apply cache") {
+		t.Fatalf("buildConductorApplyCache(file dir) = %v, want wrapped cache error", err)
+	}
+}
+
 func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	s, signer, recorderKeyPath, recorderDir := newConductorApplyTestServer(t)
 	bundle := signedRuntimePolicyBundle(t, signer, "bundle-1", 1, "", strings.Join([]string{

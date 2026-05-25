@@ -202,6 +202,20 @@ must not silently drop Conductor-bound audit.
 
 Policy bundles distribute policy content only. License fields are forbidden.
 
+MVP server endpoints:
+
+```http
+PUT /api/v1/conductor/policy-bundles
+POST /api/v1/conductor/policy-bundles
+GET /api/v1/conductor/policy/latest
+```
+
+`PUT` and `POST` publish signed bundle envelopes through the operator/admin
+surface. `GET /api/v1/conductor/policy/latest` is a follower API endpoint: the
+server derives follower identity from the authenticated transport and returns
+the newest currently valid bundle whose org, fleet, environment, and audience
+match that follower, or `204 No Content` when no bundle applies.
+
 ### Bundle Envelope
 
 ```json

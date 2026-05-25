@@ -254,11 +254,17 @@ func commitHeaderSidecar(path string, body []byte) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("creating sidecar dir %s: %w", dir, err)
 	}
-	// Re-tighten the parent in case it pre-existed with a looser mode. gosec
-	// G302 fires on the 0o700 directory mode because it treats the rule as
-	// file-only; directories need the execute bit to be enterable.
-	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // 0o700 is correct for a private directory
-		return fmt.Errorf("locking down sidecar dir %s: %w", dir, err)
+	// MkdirAll creates the dir 0o700, but a pre-existing dir may be looser.
+	// Refuse to write credential files into a directory group/others can enter
+	// rather than silently widening exposure. (An os.Chmod to 0o700 would auto-
+	// fix it, but gosec flags a 0o700 chmod and surfacing the misconfiguration
+	// is the safer choice for a credential carrier.)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("stat sidecar dir %s: %w", dir, err)
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("sidecar dir %s is too permissive (%04o); restrict it to 0700", dir, info.Mode().Perm())
 	}
 
 	tmp, err := os.CreateTemp(dir, ".headers-*.tmp")

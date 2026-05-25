@@ -334,11 +334,13 @@ func TestSinkCmd_RunOnLoopback(t *testing.T) {
 		"--trusted-audit-key", "id=audit-signer,inline=" + signing.EncodePublicKey(pub),
 		"--listen", "127.0.0.1:0",
 	})
-	// Cancel almost immediately so the listener exits cleanly via Shutdown.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
+	// Cancel via the readiness seam, not a fixed sleep: this fires after setup
+	// (including the store migration) completes and just before the listener
+	// blocks, so the listener exits cleanly via Shutdown without racing setup.
+	// A 50ms sleep here flaked under CI load by cancelling mid-migration.
+	prev := sinkReadyHook
+	sinkReadyHook = cancel
+	t.Cleanup(func() { sinkReadyHook = prev })
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("SinkCmd.Execute() = %v", err)
 	}

@@ -28,6 +28,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
+// sinkReadyHook, when non-nil, is invoked after the store, handler, and
+// shutdown goroutine are wired but immediately before the listener blocks.
+// Production leaves it nil (zero behavior change). Tests set it to trigger a
+// deterministic shutdown once setup has completed, instead of racing setup
+// (notably the store migration) against a fixed sleep.
+var sinkReadyHook func()
+
 func SinkCmd() *cobra.Command {
 	var listenAddr string
 	var storageDir string
@@ -104,6 +111,13 @@ func SinkCmd() *cobra.Command {
 				defer cancel()
 				_ = server.Shutdown(shutdownCtx)
 			}()
+
+			// Setup is complete here (store migrated, handler built, shutdown
+			// wired). Tests use this seam to cancel at a deterministic point so
+			// ListenAndServe is exercised and exits cleanly via Shutdown.
+			if sinkReadyHook != nil {
+				sinkReadyHook()
+			}
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: fleet sink listening on %s\n", listenAddr)
 			if tlsCert != "" || tlsKey != "" {

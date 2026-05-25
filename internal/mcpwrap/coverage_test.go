@@ -129,25 +129,22 @@ func TestValidHeaderValue_NonASCII(t *testing.T) {
 	}
 }
 
-// TestCommitHeaderSidecar_RetightensLooseDir verifies the parent dir is forced
-// to 0o700 even when it pre-existed with a looser mode.
-func TestCommitHeaderSidecar_RetightensLooseDir(t *testing.T) {
+// TestCommitHeaderSidecar_RejectsLooseDir verifies that writing a credential
+// sidecar into a pre-existing group/other-accessible directory is refused
+// rather than silently widening exposure.
+func TestCommitHeaderSidecar_RejectsLooseDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
 	dir := filepath.Join(home, ".config", "pipelock", "wrap-headers")
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // intentionally loose to verify commitHeaderSidecar re-tightens to 0700
+	// 0o750 grants group access; 0o750 is within G301's allowed range, so no
+	// lint suppression is needed to create it for the test.
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir loose: %v", err)
 	}
 	path := filepath.Join(dir, "x.headers")
-	if err := commitHeaderSidecar(path, []byte("X: 1\n")); err != nil {
-		t.Fatalf("commitHeaderSidecar: %v", err)
-	}
-	info, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("stat dir: %v", err)
-	}
-	if info.Mode().Perm() != 0o700 {
-		t.Errorf("dir perms = %o, want 700 (should be re-tightened)", info.Mode().Perm())
+	err := commitHeaderSidecar(path, []byte("X: 1\n"))
+	if err == nil || !strings.Contains(err.Error(), "too permissive") {
+		t.Fatalf("commitHeaderSidecar err = %v, want a 'too permissive' rejection", err)
 	}
 }

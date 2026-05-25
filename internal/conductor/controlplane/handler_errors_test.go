@@ -42,16 +42,18 @@ func TestNewHandlerValidation(t *testing.T) {
 }
 
 func TestHandlerMapsStoreErrors(t *testing.T) {
+	internalErr := errors.New("database password leaked")
 	for _, tc := range []struct {
 		name string
 		err  error
 		code int
+		body string
 	}{
 		{name: "conflict", err: ErrBundleConflict, code: http.StatusConflict},
 		{name: "rollback", err: ErrUnsupportedRollback, code: http.StatusConflict},
 		{name: "too-large", err: conductor.ErrPayloadTooLarge, code: http.StatusRequestEntityTooLarge},
 		{name: "expired", err: conductor.ErrExpired, code: http.StatusUnprocessableEntity},
-		{name: "generic", err: errors.New("bad bundle"), code: http.StatusBadRequest},
+		{name: "internal", err: internalErr, code: http.StatusInternalServerError, body: "internal server error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := newTestHandler(t, fakeStore{publishErr: tc.err}, nil)
@@ -61,6 +63,12 @@ func TestHandlerMapsStoreErrors(t *testing.T) {
 			handler.ServeHTTP(w, req)
 			if w.Code != tc.code {
 				t.Fatalf("status = %d body=%s, want %d", w.Code, w.Body.String(), tc.code)
+			}
+			if tc.body != "" && !strings.Contains(w.Body.String(), tc.body) {
+				t.Fatalf("body = %s, want %q", w.Body.String(), tc.body)
+			}
+			if strings.Contains(w.Body.String(), internalErr.Error()) {
+				t.Fatalf("body leaked internal error: %s", w.Body.String())
 			}
 		})
 	}
@@ -77,8 +85,11 @@ func TestHandlerLatestNoBundleAndStoreError(t *testing.T) {
 	handler = newTestHandler(t, fakeStore{latestErr: errors.New("store unavailable")}, nil)
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, LatestPolicyBundlePath, nil))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("latest store error status = %d body=%s, want 400", w.Code, w.Body.String())
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("latest store error status = %d body=%s, want 500", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "internal server error") || strings.Contains(w.Body.String(), "store unavailable") {
+		t.Fatalf("latest store error body = %s, want generic internal error", w.Body.String())
 	}
 }
 

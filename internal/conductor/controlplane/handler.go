@@ -244,7 +244,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		// a missing one.
 		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
 	default:
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
 	}
 }
 

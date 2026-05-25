@@ -508,7 +508,7 @@ func TestOpenRejectsFileAndSymlinkAncestor(t *testing.T) {
 	}
 
 	realParent := filepath.Join(dir, "real")
-	if err := os.Mkdir(realParent, 0o700); err != nil {
+	if err := os.Mkdir(realParent, 0o750); err != nil {
 		t.Fatalf("mkdir real parent: %v", err)
 	}
 	linkParent := filepath.Join(dir, "link")
@@ -541,7 +541,7 @@ func TestDurableHelpersRejectBadPathsAndSweepTemps(t *testing.T) {
 	if err := os.WriteFile(keepFile, []byte("keep"), 0o600); err != nil {
 		t.Fatalf("write keep file: %v", err)
 	}
-	if err := os.Mkdir(tmpDir, 0o700); err != nil {
+	if err := os.Mkdir(tmpDir, 0o750); err != nil {
 		t.Fatalf("mkdir temp dir: %v", err)
 	}
 	if err := sweepStaleTemps(dir); err != nil {
@@ -575,7 +575,7 @@ func TestStageVerifiedFailsClosedWhenCacheDirsMissing(t *testing.T) {
 	}
 
 	bundlesDir := filepath.Join(root, "bundles")
-	if err := os.Mkdir(bundlesDir, 0o700); err != nil {
+	if err := os.Mkdir(bundlesDir, 0o750); err != nil {
 		t.Fatalf("mkdir bundles dir: %v", err)
 	}
 	missingConfigs := &Cache{

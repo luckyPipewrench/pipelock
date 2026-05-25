@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/policy"
 	"github.com/luckyPipewrench/pipelock/internal/cli/rules"
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtime"
+	"github.com/luckyPipewrench/pipelock/internal/cli/scan"
 	"github.com/luckyPipewrench/pipelock/internal/cli/session"
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
@@ -115,6 +116,8 @@ Quick start:
 		runtime.SandboxCmd(),
 		runtime.InternalRedirectCmd(),
 		runtime.HealthcheckCmd(),
+		// File injection scanning (invisible-Unicode / bidi)
+		scan.Cmd(),
 		// Session admin (airlock recovery)
 		session.AdaptiveCmd(),
 		session.Cmd(),

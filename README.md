@@ -53,8 +53,8 @@ brew install luckyPipewrench/tap/pipelock
 pipelock init
 
 # Test it
-pipelock check --url "https://example.com/?key=EXAMPLE-SECRET-VALUE-1234"  # blocked
-pipelock check --url "https://docs.python.org/3/"                            # allowed
+pipelock check --url "https://evil.com/?k=AKIAIOSFODNN7EXAMPLE"  # blocked: AWS Access ID
+pipelock check --url "https://docs.python.org/3/"                # allowed
 ```
 
 <details>

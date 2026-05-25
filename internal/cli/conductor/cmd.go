@@ -75,7 +75,7 @@ func serveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.listen, "listen", opts.listen, "address for the Conductor HTTPS listener")
-	cmd.Flags().StringVar(&opts.storageDir, "storage-dir", "", "directory for Conductor policy bundles and audit spool")
+	cmd.Flags().StringVar(&opts.storageDir, "storage-dir", "", "directory for Conductor policy bundles and audit store")
 	cmd.Flags().StringVar(&opts.conductorID, "conductor-id", opts.conductorID, "Conductor ID advertised in capabilities")
 	cmd.Flags().StringVar(&opts.followerTrustDomain, "follower-trust-domain", opts.followerTrustDomain, "SPIFFE trust domain for follower mTLS identities")
 	cmd.Flags().StringVar(&opts.publisherTokenFile, "publisher-token-file", "", "file containing bearer token required for policy publish requests")
@@ -154,7 +154,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, *t
 	if err != nil {
 		return nil, nil, err
 	}
-	spool, err := controlplane.OpenFileAuditSpool(filepath.Join(opts.storageDir, "audit-spool"))
+	auditStore, err := controlplane.OpenSQLiteAuditStore(ctx, filepath.Join(opts.storageDir, "audit.db"))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -163,7 +163,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, *t
 		Capabilities:       controlplane.DefaultCapabilities(opts.conductorID),
 		FollowerIdentity:   identity,
 		AuthorizePublisher: authorizer,
-		AuditSink:          spool,
+		AuditSink:          auditStore,
 		AuditKeys:          auditKeys,
 	})
 	if err != nil {

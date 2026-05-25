@@ -857,6 +857,10 @@ func TestSecureDirRejectsRelativeAndNonDirectory(t *testing.T) {
 	if _, err := secureDir("./relative"); err == nil {
 		t.Fatal("secureDir(relative) error = nil, want error")
 	}
+	root := filepath.VolumeName(os.TempDir()) + string(os.PathSeparator)
+	if _, err := secureDir(root); err == nil {
+		t.Fatalf("secureDir(root %q) error = nil, want error", root)
+	}
 	// A path that exists as a regular file must be rejected. MkdirAll on
 	// an existing file returns ENOTDIR before we reach the EvalSymlinks
 	// branch. The rejection happens, just via a different error path.

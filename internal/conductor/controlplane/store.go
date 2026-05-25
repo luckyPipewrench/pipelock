@@ -64,6 +64,8 @@ var (
 	ErrPublisherForbidden  = errors.New("conductor publisher authorization failed")
 	ErrAuditSinkRequired   = errors.New("conductor audit sink required")
 	ErrAuditKeyRequired    = errors.New("conductor audit key resolver required")
+	ErrAuditBatchConflict  = errors.New("conductor audit batch conflicts with accepted batch")
+	ErrAuditForkDetected   = errors.New("conductor audit sequence fork detected")
 	ErrUnsupportedRollback = errors.New("conductor control plane rollback publication not implemented")
 )
 
@@ -504,6 +506,9 @@ func secureDir(dir string) (string, error) {
 	if !filepath.IsAbs(clean) {
 		return "", fmt.Errorf("conductor control plane dir must be absolute: %s", dir)
 	}
+	if isFilesystemRoot(clean) {
+		return "", fmt.Errorf("conductor control plane dir must not be filesystem root: %s", dir)
+	}
 	if err := os.MkdirAll(clean, bundleStoreDirMode); err != nil {
 		return "", fmt.Errorf("conductor control plane create dir %s: %w", clean, err)
 	}
@@ -524,6 +529,13 @@ func secureDir(dir string) (string, error) {
 		}
 	}
 	return resolved, nil
+}
+
+func isFilesystemRoot(path string) bool {
+	clean := filepath.Clean(path)
+	volume := filepath.VolumeName(clean)
+	root := volume + string(os.PathSeparator)
+	return clean == filepath.Clean(root)
 }
 
 func durableWrite(path string, data []byte, mode os.FileMode) error {

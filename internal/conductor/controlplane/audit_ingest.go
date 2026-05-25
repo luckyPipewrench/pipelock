@@ -107,7 +107,7 @@ func (h *Handler) handleAuditBatch(w http.ResponseWriter, r *http.Request) {
 		Payload:      append([]byte(nil), req.Payload...),
 		ReceivedAt:   acceptedAt,
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+		writeAuditSinkError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, ingestAuditBatchResponse{
@@ -135,6 +135,32 @@ func validateAuditBatchForIdentity(
 	return envelope.VerifySignaturesAt(now, func(signerKeyID string) (conductor.SignatureKey, error) {
 		return resolve(identity, signerKeyID)
 	})
+}
+
+// writeAuditSinkError maps errors returned by an AuditBatchSink implementation
+// (e.g. SQLiteAuditStore) to the right HTTP status. Sinks may re-run
+// defensive validation that the handler already performed (envelope/identity
+// audience binding, envelope hash, payload hash), so the same error types
+// surface here. Without this classification a conflicting batch_id or a
+// detected sequence fork would arrive as HTTP 500, prompting follower clients
+// to treat a permanent rejection as transient and retry forever.
+func writeAuditSinkError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrAuditBatchConflict), errors.Is(err, ErrAuditForkDetected):
+		writeError(w, http.StatusConflict, err)
+	case errors.Is(err, conductor.ErrAudienceMismatch):
+		writeError(w, http.StatusForbidden, conductor.ErrAudienceMismatch)
+	case errors.Is(err, ErrInvalidStoreRecord):
+		writeError(w, http.StatusBadRequest, err)
+	case errors.Is(err, ErrFollowerRequired):
+		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
+	case errors.Is(err, conductor.ErrPayloadTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+	case errors.Is(err, conductor.ErrHashMismatch):
+		writeError(w, http.StatusUnprocessableEntity, err)
+	default:
+		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+	}
 }
 
 func writeAuditIngestError(w http.ResponseWriter, err error) {

@@ -243,9 +243,12 @@ Policy publication uses a bearer token read from disk so the token does not
 appear in process arguments. Every `--trusted-audit-key` MUST carry `org=`;
 a cross-org audit key would let any enrolled follower in any org sign batches
 that authenticate against that key. Optional `fleet=`/`instance=` narrow the
-scope further. Accepted audit batches are written to a durable local spool;
-indexed query, retention policy, and fork analytics remain a later storage
-layer.
+scope further. Accepted audit batches are written to a local SQLite raw-evidence
+store with idempotency on `(org, fleet, instance, batch_id)` and fork rejection
+on overlapping sequence ranges with divergent payload or segment-tail hashes.
+The storage directory is sensitive operator-controlled state; HTTP query/export
+endpoints, retention policy, redacted indexing, and analytics remain later
+slices.
 
 ### Bundle Envelope
 
@@ -473,9 +476,10 @@ POST /api/v1/conductor/audit/batches
 The server derives follower identity from the authenticated transport, validates
 the signed audit batch envelope and payload together, verifies the follower
 audit-batch signature against the enrolled audit key for that identity, and only
-then hands the accepted batch to the configured audit sink. Durable central
-storage, DLP-before-indexing, search indexing, fork response workflow, and
-dashboard views are later slices.
+then hands the accepted batch to the configured audit sink. The current runtime
+sink is a local SQLite raw-evidence store; redacted storage/search indexing,
+DLP-before-indexing, fork response workflow, and dashboard views are later
+slices.
 
 ## Audit Batch Schema
 
@@ -579,7 +583,9 @@ secrets before storing or indexing.
 
 ## Privacy and Storage
 
-Default storage is redacted. Raw evidence escrow is separate and opt-in.
+Default indexed/queryable storage is redacted. The current local SQLite runtime
+store is raw evidence escrow and must be treated as sensitive
+operator-controlled state until the redacted storage/indexing layer lands.
 
 Storage classes:
 

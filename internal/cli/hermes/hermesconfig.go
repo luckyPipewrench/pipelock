@@ -12,6 +12,8 @@ import (
 	"sort"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 )
 
 const (
@@ -227,6 +229,36 @@ func noProxyValue() string {
 		}
 	}
 	return ""
+}
+
+// mcpServers returns the live mcp_servers map from the config, or nil when the
+// section is absent or malformed. Mutations to the returned map (or its server
+// entries) are reflected by save().
+func (c *hermesConfig) mcpServers() map[string]interface{} {
+	servers, _ := c.root[mcpServersKey].(map[string]interface{})
+	return servers
+}
+
+// wrappedMCPServerCount counts mcp_servers entries already wrapped by pipelock.
+func (c *hermesConfig) wrappedMCPServerCount() int {
+	n := 0
+	for _, raw := range c.mcpServers() {
+		if s, ok := raw.(map[string]interface{}); ok && mcpwrap.IsWrapped(s) {
+			n++
+		}
+	}
+	return n
+}
+
+// sortedKeys returns the map keys sorted, for deterministic iteration so wrap
+// output and sidecar ordering are stable across runs.
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // mergeStringList ensures every value in add is present in m[key], which is

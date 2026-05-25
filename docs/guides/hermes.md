@@ -1,0 +1,103 @@
+# Using Pipelock with Hermes
+
+[Hermes](https://hermes-agent.nousresearch.com) (Nous Research) is a Python agent with a rich in-process hook API and roughly seventy built-in tools — `terminal`, `browser`, `web_extract`, file read/write, image generation, and MCP servers among them. Unlike an IDE that only speaks MCP, most of Hermes' egress never touches an MCP server, so Pipelock offers two integration modes with deliberately different coverage.
+
+## Why Hermes Needs an Agent Firewall
+
+| Workflow | What Hermes accesses | What could go wrong |
+|---|---|---|
+| `terminal` / `execute_code` | Shell, network, filesystem | Direct exfiltration that never passes through MCP |
+| `web_extract` / `browser` | Arbitrary URLs and page content | Prompt injection in fetched content steering later tool calls |
+| MCP tool execution | Databases, APIs, remote services | Tool poisoning, rug-pull updates, chain attacks |
+| Cross-session memory | `MEMORY.md`, session DB | An injected instruction surviving across resume |
+
+## Two Install Modes
+
+| Mode | Command | What it wires | Coverage |
+|---|---|---|---|
+| **full** (default) | `pipelock hermes install --mode full` | Python plugin (`pre_tool_call`, `transform_tool_result`, `pre_gateway_dispatch`, session lifecycle) **plus** proxy env names injected into the terminal backend | All tool surfaces — terminal, file, browser, web, gateway, MCP |
+| **mcp-only** | `pipelock hermes install --mode mcp-only` | Rewrites `mcp_servers` to route each server through `pipelock mcp proxy` | **Partial** — MCP server traffic only |
+
+`--mode full` is the high-leverage path: the plugin sees every tool's structured arguments before execution and every result before it returns, so Pipelock scans surfaces a network proxy never sees. `--mode mcp-only` is for operators who only want MCP traffic wrapped and do not want a plugin installed — it is honestly labeled partial coverage and does not touch the terminal, file, browser, or gateway surfaces.
+
+## Quick Start
+
+```bash
+# 1. Install pipelock
+brew install luckyPipewrench/tap/pipelock
+
+# 2a. Full coverage (recommended): plugin + terminal env passthrough
+pipelock hermes install --mode full --pipelock-config ~/.config/pipelock/pipelock.yaml
+
+# 2b. OR MCP-only coverage: wrap mcp_servers, no plugin
+pipelock hermes install --mode mcp-only --pipelock-config ~/.config/pipelock/pipelock.yaml
+
+# 3. Confirm what was wired
+pipelock hermes verify
+```
+
+Both modes are idempotent — re-running wraps only new entries and never duplicates work — and back up `~/.hermes/config.yaml` to a timestamped `.bak` before any change.
+
+### Terminal coverage is cooperative
+
+`--mode full` adds Pipelock's proxy environment **names** (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, …) to the terminal backend's `env_passthrough`. For terminal traffic to actually route through Pipelock you must also set those env **values** in Hermes' own environment and the backend must honor them. This is cooperative proxying, not binary-enforced network isolation; pair it with `pipelock contain`, a sandbox, or a network policy where you need a hard boundary.
+
+## MCP-Only Mode: Auth-Header Preservation
+
+When `--mode mcp-only` wraps a remote (`url`) MCP server that carries auth `headers`, the credential is **not** placed on the wrapped command line — process arguments are world-visible via `/proc/<pid>/cmdline`. Instead the header lines are written to an operator-private `0600` sidecar under `~/.config/pipelock/wrap-headers/` and referenced through `--header-file`:
+
+```yaml
+# before
+mcp_servers:
+  remote:
+    url: https://mcp.example.com
+    headers:
+      Authorization: "Bearer sk-…"
+
+# after `pipelock hermes install --mode mcp-only`
+mcp_servers:
+  remote:
+    command: /usr/local/bin/pipelock
+    args: [mcp, proxy, --config, …, --header-file, ~/.config/pipelock/wrap-headers/<hash>.headers, --upstream, https://mcp.example.com]
+    _pipelock: { … }   # original entry, restored by rollback
+```
+
+The original headers are retained in the `_pipelock` metadata so `rollback` restores the entry faithfully — the same file-level exposure as the source `headers:` block. The sidecar's job is to prevent the *new* argv exposure that wrapping would otherwise introduce.
+
+## What Gets Scanned
+
+| Direction | full | mcp-only | Scanning |
+|---|---|---|---|
+| Any tool call args (`terminal`, `write_file`, `web_extract`, …) | ✅ | — | DLP, input injection, tool-policy rules |
+| Any tool result | ✅ | — | Response injection (6-pass normalisation), redaction |
+| Hermes → MCP server | ✅ | ✅ | DLP + injection on `tools/call` arguments |
+| MCP server → Hermes | ✅ | ✅ | Response injection, tool-poisoning, chain detection |
+| Gateway dispatch | ✅ | — | `pre_gateway_dispatch` skip/rewrite/allow |
+
+## Verify and Roll Back
+
+```bash
+pipelock hermes verify            # human-readable coverage report
+pipelock hermes verify --json     # machine-readable
+
+pipelock hermes rollback          # surgical: unwrap mcp_servers, strip proxy env, remove plugin
+pipelock hermes rollback --restore-backup ~/.hermes/config.yaml.bak.<ts>   # explicit recovery
+```
+
+`verify` reports coverage honestly: `full` means the plugin is installed **and** the proxy env names are present; `partial` means some coverage (plugin, env, or wrapped MCP servers) but not all surfaces; `none` means nothing is wired. It also reports how many MCP servers are declared versus wrapped. Rollback is surgical by default and undoes both modes — it unwraps any wrapped `mcp_servers` (deleting their header sidecars) and strips the proxy env names — so you do not have to remember which mode you installed.
+
+## Choosing a Config
+
+| Preset | Action | Best for |
+|---|---|---|
+| `balanced.yaml` | warn | Getting started, tuning phase |
+| `strict.yaml` | block | High-security workflows |
+| `hostile-model.yaml` | block | Running an uncensored or jailbroken model |
+
+Start with `balanced.yaml` to see what gets flagged, then move to a blocking preset once you have verified no false positives.
+
+## See also
+
+- [Cline guide](cline.md) — the same MCP-wrap pattern for an MCP-native IDE
+- [OpenClaw guide](openclaw.md) — agent framework integration
+- [Receipt verification](receipt-verification.md) — independent audit of what each tool call did

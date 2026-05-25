@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 )
 
 // rollbackOptions captures `pipelock hermes rollback` flags.
@@ -84,19 +86,39 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 		return restoreFromBackup(cmd, opts)
 	}
 
-	// Surgical removal: strip pipelock proxy env names from config.yaml.
+	// Surgical removal: unwrap any pipelock-wrapped mcp_servers (mcp-only
+	// artifacts) and strip pipelock proxy env names (full-mode artifacts) from
+	// config.yaml. Both are handled regardless of which mode installed them, so
+	// the operator need not remember.
 	cfg, err := loadHermesConfig(opts.HermesConfig)
 	if err != nil {
 		return err
 	}
+	unwrapped, sidecarOps := unwrapHermesMCPServers(cmd, cfg)
 	removed := cfg.removeTerminalEnv()
-	if len(removed) > 0 {
+	if len(removed) > 0 || unwrapped > 0 {
 		if _, err := cfg.save(true); err != nil {
 			return err
 		}
+		// Delete header sidecars only after the restored config is committed,
+		// so a save failure leaves the wrapped config and its sidecars intact
+		// for a retry rather than orphaning a config that points at gone files.
+		// Surface any deletion failure: a sidecar holds credential headers, so a
+		// silent failure would leave a secret on disk while reporting success.
+		if len(sidecarOps) > 0 {
+			if err := mcpwrap.ApplySidecarOps(sidecarOps); err != nil {
+				_, _ = fmt.Fprintf(out, "pipelock: warning: could not delete one or more header sidecar files; "+
+					"remove them manually under ~/.config/pipelock/wrap-headers: %v\n", err)
+			}
+		}
+	}
+	if len(removed) > 0 {
 		_, _ = fmt.Fprintf(out, "pipelock: removed %d proxy env name(s) from terminal passthrough\n", len(removed))
 	} else {
 		_, _ = fmt.Fprintln(out, "pipelock: no pipelock proxy env names found in config")
+	}
+	if unwrapped > 0 {
+		_, _ = fmt.Fprintf(out, "pipelock: unwrapped %d mcp server(s) in %s\n", unwrapped, opts.HermesConfig)
 	}
 
 	if opts.KeepPlugin {
@@ -112,6 +134,37 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 		_, _ = fmt.Fprintf(out, "pipelock: no plugin directory at %s\n", opts.PluginRoot)
 	}
 	return nil
+}
+
+// unwrapHermesMCPServers restores every pipelock-wrapped mcp_servers entry,
+// mutating cfg in place. Per-entry unwrap failures are warned and skipped (the
+// entry is left wrapped) so one corrupt _pipelock block does not block the rest
+// of the rollback. Returns the count unwrapped and the sidecar delete ops,
+// which the caller MUST apply only after the restored config is committed.
+func unwrapHermesMCPServers(cmd *cobra.Command, cfg *hermesConfig) (int, []mcpwrap.SidecarOp) {
+	servers := cfg.mcpServers()
+	if len(servers) == 0 {
+		return 0, nil
+	}
+	unwrapped := 0
+	var ops []mcpwrap.SidecarOp
+	for _, name := range sortedKeys(servers) {
+		server, ok := servers[name].(map[string]interface{})
+		if !ok || !mcpwrap.IsWrapped(server) {
+			continue
+		}
+		restored, op, err := mcpwrap.UnwrapServer(server)
+		if err != nil {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not unwrap mcp server %q: %v\n", name, err)
+			continue
+		}
+		servers[name] = restored
+		if op != nil {
+			ops = append(ops, *op)
+		}
+		unwrapped++
+	}
+	return unwrapped, ops
 }
 
 // restoreFromBackup overwrites config.yaml with the named backup file.

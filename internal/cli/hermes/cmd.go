@@ -40,5 +40,6 @@ The 'hook' subcommand is the per-event subprocess entrypoint; 'install',
 	cmd.AddCommand(verifyCmd())
 	cmd.AddCommand(rollbackCmd())
 	cmd.AddCommand(hookCmd())
+	cmd.AddCommand(anchorsCmd())
 	return cmd
 }

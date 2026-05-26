@@ -246,9 +246,12 @@ that authenticate against that key. Optional `fleet=`/`instance=` narrow the
 scope further. Accepted audit batches are written to a local SQLite raw-evidence
 store with idempotency on `(org, fleet, instance, batch_id)` and fork rejection
 on overlapping sequence ranges with divergent payload or segment-tail hashes.
-The storage directory is sensitive operator-controlled state; HTTP query/export
-endpoints, retention policy, redacted indexing, and analytics remain later
-slices.
+The storage directory is sensitive operator-controlled state. The MVP exposes
+`GET /api/v1/conductor/audit/batches` as an operator/admin metadata query
+endpoint; it requires audit-query authorization and at least `org_id`, returns
+metadata-only batch summaries, and does not export raw payload bytes. Raw
+export endpoints, retention policy, redacted indexing, and analytics remain
+later slices.
 
 ### Bundle Envelope
 

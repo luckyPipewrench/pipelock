@@ -384,8 +384,9 @@ func TestHandlerListAuditBatchQueryValidation(t *testing.T) {
 		target     string
 		auditor    string
 		wantStatus int
+		wantBody   string
 	}{
-		{name: "auditor required", target: AuditBatchesPath + "?org_id=org-main", wantStatus: http.StatusForbidden},
+		{name: "auditor required", target: AuditBatchesPath + "?org_id=org-main", wantStatus: http.StatusForbidden, wantBody: ErrAuditQueryForbidden.Error()},
 		{name: "org required", target: AuditBatchesPath, auditor: "ok", wantStatus: http.StatusBadRequest},
 		{name: "invalid org", target: AuditBatchesPath + "?org_id=-org", auditor: "ok", wantStatus: http.StatusBadRequest},
 		{name: "invalid limit", target: AuditBatchesPath + "?org_id=org-main&limit=0", auditor: "ok", wantStatus: http.StatusBadRequest},
@@ -402,6 +403,9 @@ func TestHandlerListAuditBatchQueryValidation(t *testing.T) {
 			handler.ServeHTTP(w, req)
 			if w.Code != c.wantStatus {
 				t.Fatalf("status = %d body=%s, want %d", w.Code, w.Body.String(), c.wantStatus)
+			}
+			if c.wantBody != "" && !strings.Contains(w.Body.String(), c.wantBody) {
+				t.Fatalf("body = %s, want substring %q", w.Body.String(), c.wantBody)
 			}
 		})
 	}
@@ -432,7 +436,7 @@ func newAuditQueryTestHandler(t *testing.T, auditStore *SQLiteAuditStore) *Handl
 			if r.Header.Get("X-Pipelock-Auditor") == "ok" {
 				return nil
 			}
-			return ErrPublisherForbidden
+			return ErrAuditQueryForbidden
 		},
 		AuditSink: auditStore,
 		AuditKeys: rejectingAuditKeyResolver,

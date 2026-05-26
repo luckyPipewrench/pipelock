@@ -176,5 +176,6 @@ func staticAuditKeyMatches(key StaticAuditKey, identity FollowerIdentity) bool {
 func IsAuthConfigError(err error) bool {
 	return errors.Is(err, ErrFollowerRequired) ||
 		errors.Is(err, ErrPublisherForbidden) ||
+		errors.Is(err, ErrAuditQueryForbidden) ||
 		errors.Is(err, ErrAuditKeyRequired)
 }

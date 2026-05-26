@@ -62,6 +62,7 @@ var (
 	ErrInvalidStoreRecord  = errors.New("conductor control plane store record invalid")
 	ErrFollowerRequired    = errors.New("conductor follower identity required")
 	ErrPublisherForbidden  = errors.New("conductor publisher authorization failed")
+	ErrAuditQueryForbidden = errors.New("conductor audit query authorization failed")
 	ErrAuditSinkRequired   = errors.New("conductor audit sink required")
 	ErrAuditKeyRequired    = errors.New("conductor audit key resolver required")
 	ErrAuditBatchConflict  = errors.New("conductor audit batch conflicts with accepted batch")

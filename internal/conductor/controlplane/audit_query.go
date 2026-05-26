@@ -28,7 +28,7 @@ type listAuditBatchesResponse struct {
 // handleListAuditBatches serves operator/admin audit-metadata reads.
 func (h *Handler) handleListAuditBatches(w http.ResponseWriter, r *http.Request) {
 	if err := h.authorizeAuditQuery(r); err != nil {
-		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		writeError(w, http.StatusForbidden, ErrAuditQueryForbidden)
 		return
 	}
 	if h.auditQuerier == nil {

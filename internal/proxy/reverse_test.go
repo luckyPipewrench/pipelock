@@ -1381,8 +1381,12 @@ func TestReverseProxy_HeaderDLPSuppressedCriticalAllowed(t *testing.T) {
 	cfg.RequestBodyScanning.ScanHeaders = true
 	cfg.RequestBodyScanning.HeaderMode = "all"
 	cfg.Suppress = []config.SuppressEntry{{
-		Rule:   "AWS Access ID",
-		Path:   "/api/*",
+		Rule: "AWS Access ID",
+		// Destination-style glob (scheme + host + path) exercises the
+		// upstream target the reverse-proxy header DLP now passes to the
+		// suppress filter, not the relative-path r.URL.String() that the
+		// proxy sees from the client.
+		Path:   "http://*/api/*",
 		Reason: "trusted destination auth header",
 	}}
 

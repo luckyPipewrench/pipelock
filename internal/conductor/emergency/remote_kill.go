@@ -24,16 +24,21 @@ var (
 	ErrRemoteKillStateRequired = errors.New("conductor remote kill replay state path required")
 )
 
-const maxRemoteKillStateBytes = 16 * 1024
+const (
+	RemoteKillStateFileName = "remote-kill-state.json"
+	maxRemoteKillStateBytes = 16 * 1024
+)
 
 type KillSwitchSetter interface {
 	SetConductorRemote(active bool, message string)
 }
 
 type remoteKillState struct {
-	LastCounter     uint64    `json:"last_counter"`
-	LastMessageHash string    `json:"last_message_hash"`
-	AppliedAt       time.Time `json:"applied_at"`
+	LastCounter     uint64                    `json:"last_counter"`
+	LastMessageHash string                    `json:"last_message_hash"`
+	State           conductor.KillSwitchState `json:"state"`
+	Reason          string                    `json:"reason"`
+	AppliedAt       time.Time                 `json:"applied_at"`
 }
 
 type RemoteKillApplier struct {
@@ -96,21 +101,59 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 		return err
 	}
 	if hash == state.LastMessageHash {
-		err := fmt.Errorf("%w: duplicate message_hash=%s", ErrRemoteKillSuperseded, hash)
-		a.logReject("counter", err)
-		return err
+		return a.applyPersistedDecisionLocked(state)
 	}
 	if msg.Counter <= state.LastCounter {
 		err := fmt.Errorf("%w: counter=%d last=%d", ErrRemoteKillSuperseded, msg.Counter, state.LastCounter)
-		a.logReject("counter", err)
+		a.logReject("stale_counter", err)
 		return err
 	}
 	a.KillSwitch.SetConductorRemote(msg.State == conductor.KillSwitchActive, msg.Reason)
 	return writeRemoteKillState(a.StatePath, remoteKillState{
 		LastCounter:     msg.Counter,
 		LastMessageHash: hash,
+		State:           msg.State,
+		Reason:          msg.Reason,
 		AppliedAt:       now,
 	})
+}
+
+func (a *RemoteKillApplier) RestorePersistedState() error {
+	if a == nil {
+		return errors.New("conductor remote kill applier required")
+	}
+	if a.KillSwitch == nil {
+		return errors.New("conductor remote kill applier kill switch required")
+	}
+	if a.StatePath == "" {
+		return ErrRemoteKillStateRequired
+	}
+	if a.DisableRemoteKill {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	state, err := readRemoteKillState(a.StatePath)
+	if err != nil {
+		return err
+	}
+	if state.LastMessageHash == "" {
+		return nil
+	}
+	return a.applyPersistedDecisionLocked(state)
+}
+
+func (a *RemoteKillApplier) applyPersistedDecisionLocked(state remoteKillState) error {
+	switch state.State {
+	case conductor.KillSwitchActive, conductor.KillSwitchInactive:
+	default:
+		return fmt.Errorf("invalid conductor remote kill persisted state %q", state.State)
+	}
+	if len(state.Reason) > conductor.MaxReasonBytes {
+		return fmt.Errorf("invalid conductor remote kill persisted reason: %d bytes > cap %d", len(state.Reason), conductor.MaxReasonBytes)
+	}
+	a.KillSwitch.SetConductorRemote(state.State == conductor.KillSwitchActive, state.Reason)
+	return nil
 }
 
 func (a *RemoteKillApplier) logReject(reason string, err error) {

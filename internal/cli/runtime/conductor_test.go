@@ -13,8 +13,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -30,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -222,6 +225,130 @@ func TestConductorServerNameStripsPort(t *testing.T) {
 	}
 }
 
+func TestBuildConductorTrustResolverLoadsPinnedRoster(t *testing.T) {
+	dir := t.TempDir()
+	remotePub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rosterPath := filepath.Join(dir, "trust-roster.json")
+	rootFingerprint := writeRuntimeTrustRoster(t, rosterPath, remotePub, "remote-kill-1", signing.PurposeRemoteKillSigning)
+
+	resolver, err := buildConductorTrustResolver(config.Conductor{
+		TrustRosterPath:            rosterPath,
+		TrustRosterRootFingerprint: rootFingerprint,
+	}, func() time.Time { return time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatalf("buildConductorTrustResolver() error = %v", err)
+	}
+	key, err := resolver("remote-kill-1")
+	if err != nil {
+		t.Fatalf("resolver(remote-kill-1) error = %v", err)
+	}
+	if key.KeyPurpose != signing.PurposeRemoteKillSigning {
+		t.Fatalf("KeyPurpose = %q, want %q", key.KeyPurpose, signing.PurposeRemoteKillSigning)
+	}
+	if !key.NotBefore.Equal(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)) || !key.NotAfter.IsZero() {
+		t.Fatalf("key windows = not_before=%s not_after=%s", key.NotBefore, key.NotAfter)
+	}
+	if string(key.PublicKey) != string(remotePub) {
+		t.Fatal("resolver returned wrong public key")
+	}
+	if _, err := resolver("missing"); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("resolver(missing) error = %v, want ErrSignatureVerification", err)
+	}
+}
+
+func TestBuildConductorRemoteKillPollerHonorsDisableWithoutRoster(t *testing.T) {
+	dir := t.TempDir()
+	clientPEM, clientKeyPEM := testTLSClientCert(t)
+	caPath := filepath.Join(dir, "boss-ca.pem")
+	clientCertPath := filepath.Join(dir, "client.crt")
+	clientKeyPath := filepath.Join(dir, "client.key")
+	writePrivateTestFile(t, caPath, clientPEM)
+	writePrivateTestFile(t, clientCertPath, clientPEM)
+	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+
+	poller, err := buildConductorRemoteKillPoller(&config.Config{
+		Conductor: config.Conductor{
+			Enabled:               true,
+			ConductorURL:          "https://conductor.example",
+			OrgID:                 "org-main",
+			FleetID:               "prod",
+			InstanceID:            "pl-prod-1",
+			TrustRosterPath:       filepath.Join(dir, "missing-roster.json"),
+			ServerCAFile:          caPath,
+			ClientCertPath:        clientCertPath,
+			ClientKeyPath:         clientKeyPath,
+			BundleCacheDir:        filepath.Join(dir, "bundles"),
+			PollInterval:          "30s",
+			HonorRemoteKillSwitch: false,
+		},
+	}, &testRuntimeKillSwitch{}, io.Discard)
+	if err != nil {
+		t.Fatalf("buildConductorRemoteKillPoller() error = %v", err)
+	}
+	if poller == nil {
+		t.Fatal("poller = nil, want disabled-mode poller for visible rejected messages")
+	}
+}
+
+func TestBuildConductorRemoteKillPollerRestoresPersistedState(t *testing.T) {
+	dir := t.TempDir()
+	remotePub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	trustPath := filepath.Join(dir, "trust-roster.json")
+	rootFingerprint := writeRuntimeTrustRoster(t, trustPath, remotePub, "remote-kill-1", signing.PurposeRemoteKillSigning)
+	clientPEM, clientKeyPEM := testTLSClientCert(t)
+	caPath := filepath.Join(dir, "boss-ca.pem")
+	clientCertPath := filepath.Join(dir, "client.crt")
+	clientKeyPath := filepath.Join(dir, "client.key")
+	bundleCacheDir := filepath.Join(dir, "bundles")
+	writePrivateTestFile(t, caPath, clientPEM)
+	writePrivateTestFile(t, clientCertPath, clientPEM)
+	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+	statePath := filepath.Join(bundleCacheDir, "remote-kill-state.json")
+	if err := os.MkdirAll(bundleCacheDir, 0o750); err != nil {
+		t.Fatalf("MkdirAll(bundle cache): %v", err)
+	}
+	writePrivateTestFile(t, statePath, []byte(`{
+  "last_counter": 7,
+  "last_message_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state": "active",
+  "reason": "persisted emergency stop",
+  "applied_at": "2026-05-23T12:00:00Z"
+}`))
+	ks := &testRuntimeKillSwitch{}
+	poller, err := buildConductorRemoteKillPoller(&config.Config{
+		Conductor: config.Conductor{
+			Enabled:                    true,
+			ConductorURL:               "https://conductor.example",
+			OrgID:                      "org-main",
+			FleetID:                    "prod",
+			InstanceID:                 "pl-prod-1",
+			TrustRosterPath:            trustPath,
+			TrustRosterRootFingerprint: rootFingerprint,
+			ServerCAFile:               caPath,
+			ClientCertPath:             clientCertPath,
+			ClientKeyPath:              clientKeyPath,
+			BundleCacheDir:             bundleCacheDir,
+			PollInterval:               "30s",
+			HonorRemoteKillSwitch:      true,
+		},
+	}, ks, io.Discard)
+	if err != nil {
+		t.Fatalf("buildConductorRemoteKillPoller() error = %v", err)
+	}
+	if poller == nil {
+		t.Fatal("poller = nil")
+	}
+	if !ks.active || ks.message != "persisted emergency stop" {
+		t.Fatalf("kill switch = active=%v message=%q, want restored active", ks.active, ks.message)
+	}
+}
+
 func TestConductorRuntimeChanged(t *testing.T) {
 	oldCfg := config.Defaults()
 	newCfg := oldCfg.Clone()
@@ -385,6 +512,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, st
 		"  durable_audit_queue_dir: " + strconv.Quote(filepath.Join(tmp, "audit-queue")),
 		"  audit_signing_key_id: audit-key-1",
 		"  recorder_key_id: recorder-key-1",
+		"  honor_remote_kill_switch: false",
 		"",
 	}, "\n"))
 
@@ -453,6 +581,63 @@ func mustHostname(t *testing.T, raw string) string {
 		t.Fatalf("url %s has no host", raw)
 	}
 	return host
+}
+
+type testRuntimeKillSwitch struct {
+	active  bool
+	message string
+}
+
+func (t *testRuntimeKillSwitch) SetConductorRemote(active bool, message string) {
+	t.active = active
+	t.message = message
+}
+
+func writeRuntimeTrustRoster(t *testing.T, path string, pub ed25519.PublicKey, keyID string, purpose signing.KeyPurpose) string {
+	t.Helper()
+	rootPub, rootPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	rootFingerprint, err := signing.Fingerprint(rootPub)
+	if err != nil {
+		t.Fatalf("Fingerprint(root): %v", err)
+	}
+	body := contract.KeyRoster{
+		SchemaVersion:  1,
+		RosterSignedBy: "roster-root-1",
+		DataClassRoot:  string(contract.DataClassInternal),
+		Keys: []contract.KeyInfo{
+			{
+				KeyID:        "roster-root-1",
+				KeyPurpose:   signing.PurposeRosterRoot.String(),
+				PublicKeyHex: hex.EncodeToString(rootPub),
+				ValidFrom:    "2026-01-01T00:00:00Z",
+				Status:       contract.KeyStatusRoot,
+			},
+			{
+				KeyID:        keyID,
+				KeyPurpose:   purpose.String(),
+				PublicKeyHex: hex.EncodeToString(pub),
+				ValidFrom:    "2026-01-01T00:00:00Z",
+				Status:       contract.KeyStatusActive,
+			},
+		},
+	}
+	preimage, err := body.SignablePreimage()
+	if err != nil {
+		t.Fatalf("SignablePreimage(roster): %v", err)
+	}
+	envelope := contract.RosterEnvelope{
+		Body:      body,
+		Signature: "ed25519:" + hex.EncodeToString(ed25519.Sign(rootPriv, preimage)),
+	}
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatalf("Marshal(roster): %v", err)
+	}
+	writePrivateTestFile(t, path, data)
+	return rootFingerprint
 }
 
 // newTestTLSServer builds a single-leaf CA + server cert, starts an httptest

@@ -88,6 +88,7 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 		cfg.Taint.Enabled = true
 		cfg.Learn.Privacy.PublicAllowlistDefault = true
 		cfg.HealthWatchdog.Enabled = true
+		cfg.Conductor.HonorRemoteKillSwitch = true
 		return
 	}
 
@@ -185,6 +186,9 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	// gets the watchdog; explicit `enabled: false` is required to opt out.
 	hw, _ := raw["health_watchdog"].(map[string]interface{})
 	setBoolDefault(hw, "enabled", &cfg.HealthWatchdog.Enabled)
+
+	conductor, _ := raw["conductor"].(map[string]interface{})
+	setBoolDefault(conductor, "honor_remote_kill_switch", &cfg.Conductor.HonorRemoteKillSwitch)
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.

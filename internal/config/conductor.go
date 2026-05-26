@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -71,6 +73,14 @@ func (c *Config) validateConductor(warnings *[]Warning) error {
 	}
 	if strings.TrimSpace(c.FlightRecorder.SigningKeyPath) == "" {
 		return fmt.Errorf("flight_recorder.signing_key_path required when conductor.enabled is true")
+	}
+	if cfg.HonorRemoteKillSwitch {
+		if strings.TrimSpace(cfg.TrustRosterRootFingerprint) == "" {
+			return fmt.Errorf("conductor.trust_roster_root_fingerprint required when conductor.enabled and honor_remote_kill_switch are true")
+		}
+		if _, _, err := signing.ParseFingerprint(cfg.TrustRosterRootFingerprint); err != nil {
+			return fmt.Errorf("conductor.trust_roster_root_fingerprint: %w", err)
+		}
 	}
 	for field, value := range map[string]string{
 		"conductor.trust_roster_path":       cfg.TrustRosterPath,

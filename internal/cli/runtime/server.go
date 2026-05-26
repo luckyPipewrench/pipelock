@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
+	"github.com/luckyPipewrench/pipelock/internal/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -89,22 +90,23 @@ type Server struct {
 	cfg          *config.Config
 	bundleResult *rules.LoadResult
 
-	sentry            *plsentry.Client
-	logger            *audit.Logger
-	emitter           *emit.Emitter
-	scanner           *scanner.Scanner
-	metrics           *metrics.Metrics
-	killswitch        *killswitch.Controller
-	ksAPI             *killswitch.APIHandler
-	proxy             *proxy.Proxy
-	receiptEmitter    *receipt.Emitter
-	envelopeEmitter   *envelope.Emitter
-	captureWriter     *capture.Writer
-	recorder          *recorder.Recorder
-	conductorApply    *applycache.Cache
-	conductorAudit    *auditbatcher.Transport
-	conductorProducer *auditbatcher.Producer
-	approver          *hitl.Approver
+	sentry              *plsentry.Client
+	logger              *audit.Logger
+	emitter             *emit.Emitter
+	scanner             *scanner.Scanner
+	metrics             *metrics.Metrics
+	killswitch          *killswitch.Controller
+	ksAPI               *killswitch.APIHandler
+	proxy               *proxy.Proxy
+	receiptEmitter      *receipt.Emitter
+	envelopeEmitter     *envelope.Emitter
+	captureWriter       *capture.Writer
+	recorder            *recorder.Recorder
+	conductorApply      *applycache.Cache
+	conductorAudit      *auditbatcher.Transport
+	conductorRemoteKill *emergency.RemoteKillPoller
+	conductorProducer   *auditbatcher.Producer
+	approver            *hitl.Approver
 
 	// lastReloadHash / lastReloadAt dedup fsnotify + SIGHUP stacking
 	// inside Reload. Two stacked Changes() events with the same hash
@@ -315,6 +317,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	ksAPI := killswitch.NewAPIHandler(ks)
 	s.ksAPI = ksAPI
+	conductorRemoteKill, conductorRemoteKillErr := buildConductorRemoteKillPoller(cfg, ks, opts.Stderr)
+	if conductorRemoteKillErr != nil {
+		s.cleanup()
+		return nil, conductorRemoteKillErr
+	}
+	s.conductorRemoteKill = conductorRemoteKill
 
 	var proxyOpts []proxy.Option
 	s.hasApprover = cfg.ResponseScanning.Action == config.ActionAsk

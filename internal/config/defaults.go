@@ -527,7 +527,8 @@ func Defaults() *Config {
 			MinimumSignatures: 1,
 		},
 		Conductor: Conductor{
-			EmergencyStream: ptrBool(true),
+			HonorRemoteKillSwitch: true,
+			EmergencyStream:       ptrBool(true),
 		},
 	}
 	// Mark all compiled defaults with provenance so the standard tier source

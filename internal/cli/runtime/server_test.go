@@ -381,6 +381,7 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 		"  durable_audit_queue_dir: " + strconv.Quote(filepath.Join(tmp, "audit-queue")),
 		"  audit_signing_key_id: audit-key-1",
 		"  recorder_key_id: recorder-key-1",
+		"  honor_remote_kill_switch: false",
 		"",
 	}, "\n"))
 

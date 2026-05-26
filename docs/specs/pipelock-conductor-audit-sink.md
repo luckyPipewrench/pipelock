@@ -412,15 +412,22 @@ must not contain control characters.
 
 Follower behavior:
 
-- Default `conductor.honor_remote_kill_switch` is false unless a managed-fleet
-  preset explicitly enables it.
-- When disabled, followers reject remote kill messages, emit local evidence, and
-  report the rejection to Conductor.
+- Default `conductor.honor_remote_kill_switch` is true; operators must
+  explicitly set it to false to opt out of applying otherwise valid remote kill
+  messages.
+- Followers poll the Conductor remote-kill endpoint over follower mTLS and
+  apply signed messages through the local `conductor_remote` kill-switch source.
+- When disabled, followers reject remote kill messages locally and emit a
+  structured rejection log.
 - When enabled, remote kill messages require `remote-kill-signing` threshold
-  signatures.
+  signatures verified against the pinned trust roster root fingerprint.
 - Accepted remote kill state is OR-composed as a separate kill source.
-- Every accepted, rejected, expired, and superseded remote kill message is
-  written to local recorder evidence with the full signed envelope.
+- Accepted messages update a durable local replay-state file containing the last
+  applied counter and canonical message hash. Rejected, expired, superseded,
+  and disabled messages emit structured local logs.
+- The replay-state file is local follower trust state: it must remain writable
+  only by the Pipelock process owner, and the other kill-switch sources
+  (config, API, signal, sentinel) remain independently OR-composed.
 
 MVP Conductor behavior:
 
@@ -441,8 +448,9 @@ MVP Conductor behavior:
 
 ## Emergency Stream
 
-Pure polling is insufficient for emergency state. Followers maintain an
-SSE/long-poll connection on the follower mTLS listener:
+MVP followers poll emergency-control endpoints on the configured
+`poll_interval`. For lower-latency emergency fanout, followers may maintain an
+SSE/long-poll connection on the follower mTLS listener in a follow-up:
 
 ```http
 GET /api/v1/conductor/emergency-stream
@@ -756,6 +764,7 @@ conductor:
   fleet_id: "prod"
   instance_id: "pl-prod-1"
   trust_roster_path: "/etc/pipelock/conductor/trust-roster.json"
+  trust_roster_root_fingerprint: "sha256:<64 lowercase hex chars>"
   server_ca_file: "/etc/pipelock/conductor/boss-ca.pem"
   client_cert_path: "/etc/pipelock/conductor/client.crt"
   client_key_path: "/etc/pipelock/conductor/client.key"
@@ -764,7 +773,7 @@ conductor:
   audit_signing_key_id: "instance-audit-1"
   recorder_key_id: "instance-recorder-1"
   poll_interval: "30s"
-  honor_remote_kill_switch: false
+  honor_remote_kill_switch: true
   created_skew_seconds: 60
   max_min_version_major_skew: 0
   max_min_version_minor_skew: 1
@@ -782,6 +791,12 @@ flight_recorder:
 When `conductor.enabled` is true, the flight recorder must be enabled with
 signed checkpoints and a configured signing key. `audit_signing_key_id` and
 `recorder_key_id` default to `instance_id` when omitted.
+
+Upgrade note: existing Conductor-enabled followers that only use audit batching
+must either set `trust_roster_root_fingerprint` and ship a roster containing
+`remote-kill-signing` keys, or explicitly set
+`honor_remote_kill_switch: false`. The default is to honor remote kills, so
+configs that omit both the fingerprint and the explicit opt-out fail validation.
 
 Config validation must reject:
 
@@ -936,7 +951,7 @@ Required test coverage:
 - Bundle with license fields is rejected.
 - Rollback without authorization is rejected.
 - Rollback authorization is single-use.
-- Remote kill is rejected when `honor_remote_kill_switch` is false.
+- Remote kill is rejected when `honor_remote_kill_switch` is explicitly false.
 - Remote kill without threshold signatures is rejected.
 - Remote kill and rollback reasons reject control characters.
 - Bundle apply is atomic under partial write.

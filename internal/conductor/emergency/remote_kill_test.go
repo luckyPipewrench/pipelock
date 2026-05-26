@@ -50,8 +50,8 @@ func TestRemoteKillApplier(t *testing.T) {
 	if !ks.active || ks.message != msg.Reason {
 		t.Fatalf("kill switch = active=%v message=%q, want active reason", ks.active, ks.message)
 	}
-	if err := applier.Apply(msg); !errors.Is(err, ErrRemoteKillSuperseded) {
-		t.Fatalf("Apply(reuse) error = %v, want ErrRemoteKillSuperseded", err)
+	if err := applier.Apply(msg); err != nil {
+		t.Fatalf("Apply(reuse) error = %v, want idempotent re-apply", err)
 	}
 
 	var state remoteKillState
@@ -65,18 +65,25 @@ func TestRemoteKillApplier(t *testing.T) {
 	if state.LastCounter != msg.Counter || state.LastMessageHash == "" || !state.AppliedAt.Equal(testNow) {
 		t.Fatalf("state = %+v, want counter/hash/applied_at", state)
 	}
+	if state.State != conductor.KillSwitchActive || state.Reason != msg.Reason {
+		t.Fatalf("state decision = state=%q reason=%q, want active reason", state.State, state.Reason)
+	}
 
+	restartedKS := &captureKillSwitch{}
 	restarted := &RemoteKillApplier{
 		OrgID:      "org-main",
 		FleetID:    "prod",
 		InstanceID: "pl-prod-1",
 		Resolver:   resolver,
-		KillSwitch: &captureKillSwitch{},
+		KillSwitch: restartedKS,
 		StatePath:  applier.StatePath,
 		Now:        func() time.Time { return testNow },
 	}
-	if err := restarted.Apply(msg); !errors.Is(err, ErrRemoteKillSuperseded) {
-		t.Fatalf("Apply(after restart) error = %v, want ErrRemoteKillSuperseded", err)
+	if err := restarted.Apply(msg); err != nil {
+		t.Fatalf("Apply(after restart same message) error = %v, want idempotent re-apply", err)
+	}
+	if !restartedKS.active || restartedKS.message != msg.Reason {
+		t.Fatalf("restarted kill switch = active=%v message=%q, want active reason", restartedKS.active, restartedKS.message)
 	}
 }
 
@@ -239,12 +246,38 @@ func TestRemoteKillApplierInactiveClearsSource(t *testing.T) {
 	}
 }
 
+func TestRemoteKillApplierRestoresPersistedState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := writeRemoteKillState(statePath, remoteKillState{
+		LastCounter:     12,
+		LastMessageHash: strings.Repeat("a", 64),
+		State:           conductor.KillSwitchActive,
+		Reason:          "persisted emergency stop",
+		AppliedAt:       testNow.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("writeRemoteKillState: %v", err)
+	}
+	ks := &captureKillSwitch{}
+	applier := &RemoteKillApplier{
+		KillSwitch: ks,
+		StatePath:  statePath,
+	}
+	if err := applier.RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState() error = %v", err)
+	}
+	if !ks.active || ks.message != "persisted emergency stop" {
+		t.Fatalf("kill switch = active=%v message=%q, want restored active", ks.active, ks.message)
+	}
+}
+
 func TestRemoteKillApplierRejectsStaleCounter(t *testing.T) {
 	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	if err := writeRemoteKillState(statePath, remoteKillState{
 		LastCounter:     msg.Counter + 1,
 		LastMessageHash: "older-hash",
+		State:           conductor.KillSwitchActive,
+		Reason:          "older active kill",
 		AppliedAt:       testNow.Add(-time.Minute),
 	}); err != nil {
 		t.Fatalf("writeRemoteKillState: %v", err)

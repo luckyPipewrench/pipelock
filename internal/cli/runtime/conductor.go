@@ -6,8 +6,11 @@ package runtime
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,8 +23,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
+	"github.com/luckyPipewrench/pipelock/internal/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
@@ -125,6 +130,94 @@ func buildConductorAuditTransport(cfg *config.Config, m *metrics.Metrics) (*audi
 		return nil, nil, fmt.Errorf("creating conductor audit transport: %w", err)
 	}
 	return q, tr, nil
+}
+
+func buildConductorRemoteKillPoller(cfg *config.Config, ks emergency.KillSwitchSetter, logWriter io.Writer) (*emergency.RemoteKillPoller, error) {
+	if cfg == nil || !cfg.Conductor.Enabled {
+		return nil, nil
+	}
+	client, err := newConductorMTLSClient(cfg.Conductor)
+	if err != nil {
+		return nil, err
+	}
+	var resolver conductor.SignatureKeyResolver
+	if cfg.Conductor.HonorRemoteKillSwitch {
+		resolver, err = buildConductorTrustResolver(cfg.Conductor, time.Now)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		resolver = func(string) (conductor.SignatureKey, error) {
+			return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+		}
+	}
+	interval, err := time.ParseDuration(cfg.Conductor.PollInterval)
+	if err != nil {
+		return nil, fmt.Errorf("parsing conductor remote kill poll interval: %w", err)
+	}
+	if logWriter == nil {
+		logWriter = io.Discard
+	}
+	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})).
+		With("service", "pipelock", "component", "conductor_remote_kill")
+	applier := &emergency.RemoteKillApplier{
+		OrgID:             cfg.Conductor.OrgID,
+		FleetID:           cfg.Conductor.FleetID,
+		InstanceID:        cfg.Conductor.InstanceID,
+		Resolver:          resolver,
+		KillSwitch:        ks,
+		StatePath:         filepath.Join(cfg.Conductor.BundleCacheDir, emergency.RemoteKillStateFileName),
+		DisableRemoteKill: !cfg.Conductor.HonorRemoteKillSwitch,
+		Now:               time.Now,
+		Logger:            logger,
+	}
+	if err := applier.RestorePersistedState(); err != nil {
+		return nil, fmt.Errorf("restoring conductor remote kill state: %w", err)
+	}
+	return emergency.NewRemoteKillPoller(emergency.RemoteKillPollerConfig{
+		BaseURL:      cfg.Conductor.ConductorURL,
+		Client:       client,
+		Applier:      applier,
+		PollInterval: interval,
+		Logger:       logger,
+	})
+}
+
+func buildConductorTrustResolver(cfg config.Conductor, now func() time.Time) (conductor.SignatureKeyResolver, error) {
+	if now == nil {
+		now = time.Now
+	}
+	roster, err := signing.LoadRoster(cfg.TrustRosterPath, cfg.TrustRosterRootFingerprint)
+	if err != nil {
+		return nil, fmt.Errorf("loading conductor trust roster: %w", err)
+	}
+	return func(signerKeyID string) (conductor.SignatureKey, error) {
+		key, err := roster.ResolveKey(signerKeyID, now().UTC())
+		if err != nil {
+			return conductor.SignatureKey{}, fmt.Errorf("%w: %w", conductor.ErrSignatureVerification, err)
+		}
+		pub, err := hex.DecodeString(key.PublicKeyHex)
+		if err != nil {
+			return conductor.SignatureKey{}, fmt.Errorf("%w: public_key_hex: %w", conductor.ErrSignatureVerification, err)
+		}
+		notBefore, err := time.Parse(time.RFC3339, key.ValidFrom)
+		if err != nil {
+			return conductor.SignatureKey{}, fmt.Errorf("%w: valid_from: %w", conductor.ErrSignatureVerification, err)
+		}
+		var notAfter time.Time
+		if key.ValidUntil != nil {
+			notAfter, err = time.Parse(time.RFC3339, *key.ValidUntil)
+			if err != nil {
+				return conductor.SignatureKey{}, fmt.Errorf("%w: valid_until: %w", conductor.ErrSignatureVerification, err)
+			}
+		}
+		return conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.KeyPurpose(key.KeyPurpose),
+			NotBefore:  notBefore,
+			NotAfter:   notAfter,
+		}, nil
+	}, nil
 }
 
 func newConductorMTLSClient(cfg config.Conductor) (*http.Client, error) {

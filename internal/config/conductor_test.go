@@ -140,6 +140,16 @@ func TestValidateConductor_RejectsInvalidEnabledConfig(t *testing.T) {
 			want:   "conductor.server_ca_file required",
 		},
 		{
+			name:   "missing_trust_roster_root_fingerprint",
+			mutate: func(c *Conductor) { c.TrustRosterRootFingerprint = "" },
+			want:   "conductor.trust_roster_root_fingerprint required",
+		},
+		{
+			name:   "bad_trust_roster_root_fingerprint",
+			mutate: func(c *Conductor) { c.TrustRosterRootFingerprint = "bad" },
+			want:   "conductor.trust_roster_root_fingerprint",
+		},
+		{
 			name:   "relative_server_ca",
 			mutate: func(c *Conductor) { c.ServerCAFile = "boss-ca.pem" },
 			want:   "conductor.server_ca_file must be an absolute path",
@@ -344,29 +354,60 @@ func TestLoad_ConductorEmergencyStreamDefaulting(t *testing.T) {
 	}
 }
 
+func TestLoad_ConductorHonorRemoteKillSwitchDefaulting(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{name: "conductor_section_omitted", yaml: "mode: balanced\n", want: true},
+		{name: "conductor_section_null", yaml: "mode: balanced\nconductor: null\n", want: true},
+		{name: "field_omitted", yaml: "mode: balanced\nconductor: {}\n", want: true},
+		{name: "null", yaml: "mode: balanced\nconductor:\n  honor_remote_kill_switch: null\n", want: true},
+		{name: "explicit_true", yaml: "mode: balanced\nconductor:\n  honor_remote_kill_switch: true\n", want: true},
+		{name: "explicit_false", yaml: "mode: balanced\nconductor:\n  honor_remote_kill_switch: false\n", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if got := cfg.Conductor.HonorRemoteKillSwitch; got != tc.want {
+				t.Fatalf("HonorRemoteKillSwitch = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func validConductorConfig(t *testing.T) Conductor {
 	t.Helper()
 	root := privateTempDir(t)
 	return Conductor{
-		Enabled:                true,
-		ConductorURL:           "https://conductor.example",
-		OrgID:                  "org_main",
-		FleetID:                "prod",
-		InstanceID:             "pl-prod-1",
-		TrustRosterPath:        filepath.Join(root, "trust-roster.json"),
-		ServerCAFile:           filepath.Join(root, "boss-ca.pem"),
-		ClientCertPath:         filepath.Join(root, "client.crt"),
-		ClientKeyPath:          filepath.Join(root, "client.key"),
-		BundleCacheDir:         filepath.Join(root, "bundles"),
-		DurableAuditQueueDir:   filepath.Join(root, "audit-queue"),
-		PollInterval:           "30s",
-		HonorRemoteKillSwitch:  false,
-		EmergencyStream:        ptrBool(true),
-		CreatedSkewSeconds:     60,
-		MaxMinVersionMajorSkew: 0,
-		MaxMinVersionMinorSkew: 1,
-		MaxCapabilityThreshold: 7,
-		StalePolicy:            ConductorStalePolicy{GraceMultiplier: 1, AfterGrace: ConductorStaleStrictDenyAll},
+		Enabled:                    true,
+		ConductorURL:               "https://conductor.example",
+		OrgID:                      "org_main",
+		FleetID:                    "prod",
+		InstanceID:                 "pl-prod-1",
+		TrustRosterPath:            filepath.Join(root, "trust-roster.json"),
+		TrustRosterRootFingerprint: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ServerCAFile:               filepath.Join(root, "boss-ca.pem"),
+		ClientCertPath:             filepath.Join(root, "client.crt"),
+		ClientKeyPath:              filepath.Join(root, "client.key"),
+		BundleCacheDir:             filepath.Join(root, "bundles"),
+		DurableAuditQueueDir:       filepath.Join(root, "audit-queue"),
+		PollInterval:               "30s",
+		HonorRemoteKillSwitch:      true,
+		EmergencyStream:            ptrBool(true),
+		CreatedSkewSeconds:         60,
+		MaxMinVersionMajorSkew:     0,
+		MaxMinVersionMinorSkew:     1,
+		MaxCapabilityThreshold:     7,
+		StalePolicy:                ConductorStalePolicy{GraceMultiplier: 1, AfterGrace: ConductorStaleStrictDenyAll},
 	}
 }
 

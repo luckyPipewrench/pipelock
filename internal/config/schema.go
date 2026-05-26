@@ -338,27 +338,28 @@ const (
 // fleet. It is local control-plane plumbing, not scanner policy, and is
 // excluded from CanonicalPolicyHash.
 type Conductor struct {
-	Enabled                bool                 `yaml:"enabled"`
-	ConductorURL           string               `yaml:"conductor_url"`
-	OrgID                  string               `yaml:"org_id"`
-	FleetID                string               `yaml:"fleet_id"`
-	InstanceID             string               `yaml:"instance_id"`
-	TrustRosterPath        string               `yaml:"trust_roster_path"`
-	ServerCAFile           string               `yaml:"server_ca_file"`
-	ClientCertPath         string               `yaml:"client_cert_path"`
-	ClientKeyPath          string               `yaml:"client_key_path"`
-	BundleCacheDir         string               `yaml:"bundle_cache_dir"`
-	DurableAuditQueueDir   string               `yaml:"durable_audit_queue_dir"`
-	AuditSigningKeyID      string               `yaml:"audit_signing_key_id"`
-	RecorderKeyID          string               `yaml:"recorder_key_id"`
-	PollInterval           string               `yaml:"poll_interval"`
-	HonorRemoteKillSwitch  bool                 `yaml:"honor_remote_kill_switch"`
-	EmergencyStream        *bool                `yaml:"emergency_stream"`
-	CreatedSkewSeconds     int                  `yaml:"created_skew_seconds"`
-	MaxMinVersionMajorSkew int                  `yaml:"max_min_version_major_skew"`
-	MaxMinVersionMinorSkew int                  `yaml:"max_min_version_minor_skew"`
-	MaxCapabilityThreshold int                  `yaml:"max_capability_threshold"`
-	StalePolicy            ConductorStalePolicy `yaml:"stale_policy"`
+	Enabled                    bool                 `yaml:"enabled"`
+	ConductorURL               string               `yaml:"conductor_url"`
+	OrgID                      string               `yaml:"org_id"`
+	FleetID                    string               `yaml:"fleet_id"`
+	InstanceID                 string               `yaml:"instance_id"`
+	TrustRosterPath            string               `yaml:"trust_roster_path"`
+	TrustRosterRootFingerprint string               `yaml:"trust_roster_root_fingerprint"`
+	ServerCAFile               string               `yaml:"server_ca_file"`
+	ClientCertPath             string               `yaml:"client_cert_path"`
+	ClientKeyPath              string               `yaml:"client_key_path"`
+	BundleCacheDir             string               `yaml:"bundle_cache_dir"`
+	DurableAuditQueueDir       string               `yaml:"durable_audit_queue_dir"`
+	AuditSigningKeyID          string               `yaml:"audit_signing_key_id"`
+	RecorderKeyID              string               `yaml:"recorder_key_id"`
+	PollInterval               string               `yaml:"poll_interval"`
+	HonorRemoteKillSwitch      bool                 `yaml:"honor_remote_kill_switch"`
+	EmergencyStream            *bool                `yaml:"emergency_stream"`
+	CreatedSkewSeconds         int                  `yaml:"created_skew_seconds"`
+	MaxMinVersionMajorSkew     int                  `yaml:"max_min_version_major_skew"`
+	MaxMinVersionMinorSkew     int                  `yaml:"max_min_version_minor_skew"`
+	MaxCapabilityThreshold     int                  `yaml:"max_capability_threshold"`
+	StalePolicy                ConductorStalePolicy `yaml:"stale_policy"`
 }
 
 // ConductorStalePolicy controls local behavior after the active bundle expires.

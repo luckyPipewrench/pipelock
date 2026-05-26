@@ -361,7 +361,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 		scanAPILn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ScanAPI.Listen)
 		if lnErr != nil {
-			return wrapBindError("scan_api.listen", cfg.ScanAPI.Listen, lnErr)
+			err := wrapBindError("scan_api.listen", cfg.ScanAPI.Listen, lnErr)
+			if s.sentry != nil {
+				s.sentry.CaptureError(err)
+			}
+			return err
 		}
 		if cfg.ScanAPI.ConnectionLimit > 0 {
 			scanAPILn = netutil.LimitListener(scanAPILn, cfg.ScanAPI.ConnectionLimit)
@@ -480,7 +484,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// would be silently swallowed until shutdown.
 		mcpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", s.opts.MCPListen)
 		if lnErr != nil {
-			err := wrapBindError("mcp_listen", s.opts.MCPListen, lnErr)
+			err := wrapBindErrorNoDoctorHint("mcp_listen", s.opts.MCPListen, lnErr)
 			if s.sentry != nil {
 				s.sentry.CaptureError(err)
 			}
@@ -632,7 +636,7 @@ func (s *Server) Start(ctx context.Context) error {
 		for addr, name := range agentPorts {
 			ln, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
 			if lnErr != nil {
-				err := wrapBindError(fmt.Sprintf("agents[%s].listen", name), addr, lnErr)
+				err := wrapBindErrorNoDoctorHint(fmt.Sprintf("agents[%s].listen", name), addr, lnErr)
 				if s.sentry != nil {
 					s.sentry.CaptureError(err)
 				}

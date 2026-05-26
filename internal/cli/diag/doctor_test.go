@@ -431,9 +431,17 @@ func TestDoctorChecksCoverConfiguredBranches(t *testing.T) {
 		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
 			t.Fatalf("empty paths check = %+v, want fail", check)
 		}
+		// required:false missing path: degrades to warn (matches the new
+		// startup behavior where non-required misses log degraded and
+		// continue rather than crash-loop).
 		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: filepath.Join(dir, "missing")}}
+		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusWarn {
+			t.Fatalf("missing optional path check = %+v, want warn (degraded)", check)
+		}
+		// required:true missing path: hard fail.
+		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: filepath.Join(dir, "missing"), Required: true}}
 		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
-			t.Fatalf("missing path check = %+v, want fail", check)
+			t.Fatalf("missing required path check = %+v, want fail", check)
 		}
 		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: watchDir}}
 		check := checkDoctorFileSentry(cfg)

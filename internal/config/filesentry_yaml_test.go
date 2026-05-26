@@ -129,6 +129,22 @@ func TestWatchPath_UnmarshalYAML_RejectsEmptyPath(t *testing.T) {
 	}
 }
 
+func TestWatchPath_UnmarshalYAML_RejectsEmptyScalar(t *testing.T) {
+	// Empty scalar would silently resolve to the config directory via
+	// load.go's relative-path normalization. Reject at decode time.
+	input := []byte(`
+- ""
+`)
+	var paths []WatchPath
+	err := yaml.Unmarshal(input, &paths)
+	if err == nil {
+		t.Fatal("expected error for empty scalar watch_paths entry")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error %q does not mention emptiness", err.Error())
+	}
+}
+
 func TestWatchPath_UnmarshalYAML_RejectsNonStringScalar(t *testing.T) {
 	// A bare boolean or integer is not a valid path; reject rather than
 	// coerce to its literal representation.

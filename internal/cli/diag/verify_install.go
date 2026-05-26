@@ -343,7 +343,7 @@ func EnableDefaultVerifyProofs(cfg *config.Config) (func(), error) {
 	// anything else operators might drop here.
 	scanContent := true
 	cfg.FileSentry.Enabled = true
-	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: verifyDir}}
+	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: verifyDir, Required: true}}
 	cfg.FileSentry.ScanContent = &scanContent
 
 	exe, err := os.Executable()
@@ -613,7 +613,7 @@ func checkFileSentry(env *VerifyEnv) VerifyResult {
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	fsCfg := env.Cfg.FileSentry
-	fsCfg.WatchPaths = []config.WatchPath{{Path: dir}}
+	fsCfg.WatchPaths = []config.WatchPath{{Path: dir, Required: true}}
 	if fsCfg.ScanContent == nil {
 		scanContent := true
 		fsCfg.ScanContent = &scanContent

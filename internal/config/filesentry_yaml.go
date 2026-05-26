@@ -32,6 +32,12 @@ func (w *WatchPath) UnmarshalYAML(value *yaml.Node) error {
 		if value.Tag != "" && value.Tag != "!!str" {
 			return fmt.Errorf("file_sentry.watch_paths entry must be a string or {path, required} mapping (got YAML tag %s)", value.Tag)
 		}
+		// Empty scalar ("- "" "") would later be resolved against the config
+		// directory by load.go's relative-path normalization and silently
+		// watch the wrong location. Reject at decode time instead.
+		if value.Value == "" {
+			return fmt.Errorf("file_sentry.watch_paths entry must not be an empty string")
+		}
 		w.Path = value.Value
 		w.Required = false
 		return nil

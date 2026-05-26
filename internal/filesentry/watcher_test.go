@@ -1117,15 +1117,37 @@ func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
 	}
 	defer func() { _ = w.Close() }()
 
-	if err := w.Arm(); err != nil {
-		t.Fatalf("Arm: mixed paths should not error, got: %v", err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	armAndStart(t, w, ctx)
+
 	degraded := w.DegradedPaths()
 	if len(degraded) != 1 {
 		t.Fatalf("expected 1 degraded entry (the missing aux), got %d", len(degraded))
 	}
 	if degraded[0].Path != "/nonexistent/aux" {
 		t.Errorf("degraded path = %q, want /nonexistent/aux", degraded[0].Path)
+	}
+
+	// Prove the healthy path is actually armed: writing a secret to it
+	// must produce a finding on the channel. Without this assertion, a
+	// regression that silently dropped the armable path would still pass
+	// the degraded-bookkeeping check above.
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(filepath.Join(healthy, "leak.json"), []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	select {
+	case f := <-w.Findings():
+		if f.PatternName == "" {
+			t.Error("healthy path was armed but produced finding with empty PatternName")
+		}
+		if f.Path != filepath.Join(healthy, "leak.json") {
+			t.Errorf("finding path = %q, want %q", f.Path, filepath.Join(healthy, "leak.json"))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for finding from healthy path (was it actually armed?)")
 	}
 }
 

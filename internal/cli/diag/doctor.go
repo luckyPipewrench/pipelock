@@ -553,11 +553,18 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 			Next:    "enable with reachable watch_paths where workspace drift should be detected",
 		}
 	}
-	watchStrings := make([]string, len(cfg.FileSentry.WatchPaths))
-	for i, wp := range cfg.FileSentry.WatchPaths {
-		watchStrings[i] = wp.Path
+	// Split required vs optional paths so the doctor exit code aligns with
+	// runtime behavior: optional (required:false) misses degrade at startup,
+	// they should not turn doctor into a hard failure. Required misses still
+	// fail.
+	var requiredPaths, optionalPaths []string
+	for _, wp := range cfg.FileSentry.WatchPaths {
+		if wp.Required {
+			requiredPaths = append(requiredPaths, wp.Path)
+		} else {
+			optionalPaths = append(optionalPaths, wp.Path)
+		}
 	}
-	missing := missingReadablePaths(watchStrings...)
 	check := doctorReportCheck{
 		Name:       "file_sentry",
 		Surface:    doctorSurfaceMCP,
@@ -570,9 +577,18 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 		check.Detail = "enabled but no watch_paths are configured"
 		return check
 	}
-	if len(missing) > 0 {
+	requiredMissing := missingReadablePaths(requiredPaths...)
+	optionalMissing := missingReadablePaths(optionalPaths...)
+	if len(requiredMissing) > 0 {
 		check.Status = doctorStatusFail
-		check.Detail = "watch path(s) not readable: " + strings.Join(missing, ", ")
+		check.Detail = "required watch path(s) not readable: " + strings.Join(requiredMissing, ", ")
+		return check
+	}
+	if len(optionalMissing) > 0 {
+		check.Status = doctorStatusWarn
+		check.Reachable = true
+		check.Detail = "optional watch path(s) not readable (will degrade at startup, not fail): " + strings.Join(optionalMissing, ", ")
+		check.Next = "either mark these required:true to fail-fast, or remove them from watch_paths"
 		return check
 	}
 	check.Status = doctorStatusWarn

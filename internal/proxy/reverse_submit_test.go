@@ -102,6 +102,33 @@ func submitProfileReverseProxy(t *testing.T, cfg *config.Config, upstreamURL *ur
 	return proxy
 }
 
+// submitProfileReverseProxyWithDialer is submitProfileReverseProxy plus a
+// SetSafeDialer call, so dialer-path tests can inject a sentinel dial func.
+// A nil dialer exercises the no-op branch of SetSafeDialer.
+func submitProfileReverseProxyWithDialer(t *testing.T, cfg *config.Config, upstreamURL *url.URL, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *httptest.Server {
+	t.Helper()
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+
+	logger, _ := audit.New("json", "stdout", "", false, false)
+	t.Cleanup(logger.Close)
+
+	m := metrics.New()
+	ks := killswitch.New(cfg)
+
+	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
+	handler.SetSafeDialer(dial)
+	proxy := newIPv4Server(t, handler)
+	t.Cleanup(proxy.Close)
+	return proxy
+}
+
 // TestSubmitProfile_BodyDLPBlocksBeforeForward is the gating CI test
 // from the submit-mode design doc. A DLP-positive body sent to the
 // configured allowed path must:

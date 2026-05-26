@@ -2415,7 +2415,7 @@ reverse_proxy:
 | `max_body_bytes` | required | Positive listener body cap. The effective cap is the smaller of this value and `request_body_scanning.max_body_bytes`. |
 | `request_timeout_seconds` | required | Positive total request timeout for the submit listener, including scanning and upstream forwarding. |
 
-`profile: submit` does not by itself install the fetch/forward proxy dial-time SSRF-safe transport. The submit listener still constrains destination by exact configured host+port and runs the upstream URL through the scanner before forwarding.
+`profile: submit` dials the upstream through the same SSRF-safe dial path the fetch and forward proxies use: DNS is resolved and every resolved IP is validated against the internal CIDR blocks before the connection is made, closing the DNS-rebinding window. Generic reverse-proxy mode (no `profile`) keeps the default dialer, since the operator is presumed to have already chosen that upstream. In addition, the submit listener constrains the destination to the exact configured host+port and runs the upstream URL through the scanner before forwarding.
 
 ### CLI flags
 

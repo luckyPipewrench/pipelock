@@ -79,6 +79,9 @@ func TestWatchPath_UnmarshalYAML_MixedList(t *testing.T) {
 		{Path: "/new/required/path", Required: true},
 		{Path: "/another/legacy", Required: false},
 	}
+	if len(paths) != len(want) {
+		t.Fatalf("len = %d, want %d", len(paths), len(want))
+	}
 	for i, p := range paths {
 		if p.Path != want[i].Path || p.Required != want[i].Required {
 			t.Errorf("[%d] = %+v, want %+v", i, p, want[i])

@@ -503,7 +503,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// Scan request headers for DLP patterns (secret exfiltration via headers).
 	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
-		headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
+		headerResult := scanRequestHeadersForTarget(r.Context(), r.Header, cfg, sc, r.URL.String())
 		if headerResult != nil {
 			hasFinding = true
 			action := cfg.RequestBodyScanning.Action

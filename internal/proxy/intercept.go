@@ -961,7 +961,7 @@ func newInterceptHandler(
 
 		// Request header DLP scanning.
 		if ic.Config.RequestBodyScanning.Enabled && ic.Config.RequestBodyScanning.ScanHeaders {
-			headerResult := scanRequestHeaders(r.Context(), r.Header, ic.Config, ic.Scanner)
+			headerResult := scanRequestHeadersForTarget(r.Context(), r.Header, ic.Config, ic.Scanner, targetURL)
 
 			// Capture observer: record intercept header DLP verdict for policy replay.
 			if ic.Proxy != nil {

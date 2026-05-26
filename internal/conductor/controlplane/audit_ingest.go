@@ -146,20 +146,16 @@ func validateAuditBatchForIdentity(
 // to treat a permanent rejection as transient and retry forever.
 func writeAuditSinkError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrAuditBatchConflict), errors.Is(err, ErrAuditForkDetected):
-		writeError(w, http.StatusConflict, err)
-	case errors.Is(err, conductor.ErrAudienceMismatch):
-		writeError(w, http.StatusForbidden, conductor.ErrAudienceMismatch)
+	case errors.Is(err, ErrAuditBatchConflict):
+		writeError(w, http.StatusConflict, ErrAuditBatchConflict)
+	case errors.Is(err, ErrAuditForkDetected):
+		writeError(w, http.StatusConflict, ErrAuditForkDetected)
 	case errors.Is(err, ErrInvalidStoreRecord):
-		writeError(w, http.StatusBadRequest, err)
+		writeError(w, http.StatusBadRequest, ErrInvalidStoreRecord)
 	case errors.Is(err, ErrFollowerRequired):
 		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
-	case errors.Is(err, conductor.ErrPayloadTooLarge):
-		writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
-	case errors.Is(err, conductor.ErrHashMismatch):
-		writeError(w, http.StatusUnprocessableEntity, err)
 	default:
-		writeError(w, http.StatusInternalServerError, errors.New("internal server error"))
+		writeAuditIngestError(w, err)
 	}
 }
 

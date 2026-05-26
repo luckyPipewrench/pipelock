@@ -584,14 +584,15 @@ secrets before storing or indexing.
 ## Privacy and Storage
 
 Default indexed/queryable storage is redacted. The current local SQLite runtime
-store is raw evidence escrow and must be treated as sensitive
-operator-controlled state until the redacted storage/indexing layer lands.
+store is the active raw-escrow path and must be treated as sensitive
+operator-controlled state until redacted storage/indexing lands.
 
 Storage classes:
 
 - Accepted batch envelope: append-only, per follower.
-- Search index: redacted fields only.
-- Raw escrow: optional encrypted object storage, separate access controls.
+- Runtime SQLite raw-escrow: active local store, restricted to operator access.
+- Redacted storage/indexing: future query/search layer, redacted fields only.
+- Optional object escrow: future encrypted object storage with separate access controls.
 - Transparency log artifacts: public or auditor-visible hashes, no payloads.
 
 App-level append-only is not WORM. Production compliance deployments should use

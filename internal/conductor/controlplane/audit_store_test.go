@@ -21,20 +21,27 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
 )
 
+const (
+	testAuditBatchID  = "audit-batch-1"
+	testAuditKeyID    = "audit-key-1"
+	testAuditPayload  = `{"event":"ok"}`
+	testAuditPayload2 = `{"event":"two"}`
+)
+
 func TestSQLiteAuditStoreIngestsQueriesAndDeduplicates(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "audit.db")
 	store := openTestSQLiteAuditStore(t, storePath)
 	defer func() { _ = store.Close() }()
 
-	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 10, []byte(`{"event":"ok"}`), testNow)
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 	summary, err := store.put(context.Background(), batch)
 	if err != nil {
 		t.Fatalf("put() error = %v", err)
 	}
-	if summary.BatchID != "audit-batch-1" || summary.EnvelopeHash != batch.EnvelopeHash || summary.PayloadBytes != uint64(len(batch.Payload)) {
+	if summary.BatchID != testAuditBatchID || summary.EnvelopeHash != batch.EnvelopeHash || summary.PayloadBytes != uint64(len(batch.Payload)) {
 		t.Fatalf("summary = %+v", summary)
 	}
-	if len(summary.SignatureKeyIDs) != 1 || summary.SignatureKeyIDs[0] != "audit-key-1" {
+	if len(summary.SignatureKeyIDs) != 1 || summary.SignatureKeyIDs[0] != testAuditKeyID {
 		t.Fatalf("signature key ids = %#v", summary.SignatureKeyIDs)
 	}
 
@@ -74,11 +81,11 @@ func TestSQLiteAuditStoreRejectsConflictingBatchID(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()
 
-	first := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 10, []byte(`{"event":"one"}`), testNow)
+	first := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(`{"event":"one"}`), testNow)
 	if _, err := store.put(context.Background(), first); err != nil {
 		t.Fatalf("first put() error = %v", err)
 	}
-	conflict := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 10, []byte(`{"event":"two"}`), testNow)
+	conflict := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload2), testNow)
 	if _, err := store.put(context.Background(), conflict); !errors.Is(err, ErrAuditBatchConflict) {
 		t.Fatalf("conflicting put() error = %v, want ErrAuditBatchConflict", err)
 	}
@@ -88,11 +95,11 @@ func TestSQLiteAuditStoreDetectsSequenceFork(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()
 
-	first := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 12, []byte(`{"event":"one"}`), testNow)
+	first := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 12, []byte(`{"event":"one"}`), testNow)
 	if _, err := store.put(context.Background(), first); err != nil {
 		t.Fatalf("first put() error = %v", err)
 	}
-	fork := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-2", 11, 13, []byte(`{"event":"two"}`), testNow.Add(time.Second))
+	fork := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-2", 11, 13, []byte(testAuditPayload2), testNow.Add(time.Second))
 	if _, err := store.put(context.Background(), fork); !errors.Is(err, ErrAuditForkDetected) {
 		t.Fatalf("fork put() error = %v, want ErrAuditForkDetected", err)
 	}
@@ -106,7 +113,7 @@ func TestSQLiteAuditStoreReturnsExistingSummaryOnIdempotentRetry(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()
 
-	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 10, []byte(`{"event":"ok"}`), testNow)
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 	first, err := store.put(context.Background(), batch)
 	if err != nil {
 		t.Fatalf("first put() error = %v", err)
@@ -127,7 +134,7 @@ func TestSQLiteAuditStoreListOrdersAndLimits(t *testing.T) {
 	identity := defaultFollowerIdentity()
 	for i := 0; i < 3; i++ {
 		seq := uint64(10 + i)
-		batch := signedAcceptedAuditBatch(t, identity, "batch-"+strconv.Itoa(i), seq, seq, []byte(`{"event":"ok"}`), testNow.Add(time.Duration(i)*time.Second))
+		batch := signedAcceptedAuditBatch(t, identity, "batch-"+strconv.Itoa(i), seq, seq, []byte(testAuditPayload), testNow.Add(time.Duration(i)*time.Second))
 		if _, err := store.put(context.Background(), batch); err != nil {
 			t.Fatalf("put(%d) error = %v", i, err)
 		}
@@ -170,7 +177,7 @@ func TestSQLiteAuditStoreRejectsNilContext(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	var nilCtx context.Context
-	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 10, []byte(`{"event":"ok"}`), testNow)
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 	if _, err := OpenSQLiteAuditStore(nilCtx, filepath.Join(t.TempDir(), "audit.db")); !errors.Is(err, ErrAuditSinkRequired) {
 		t.Fatalf("OpenSQLiteAuditStore(nil) error = %v, want ErrAuditSinkRequired", err)
 	}
@@ -186,9 +193,6 @@ func TestSQLiteAuditStoreRejectsNilContext(t *testing.T) {
 }
 
 func TestSQLiteAuditStoreRevalidatesAcceptedBatchBoundary(t *testing.T) {
-	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
-	defer func() { _ = store.Close() }()
-
 	cases := []struct {
 		name    string
 		mutate  func(*AcceptedAuditBatch)
@@ -225,7 +229,10 @@ func TestSQLiteAuditStoreRevalidatesAcceptedBatchBoundary(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), "audit-batch-1", 10, 10, []byte(`{"event":"ok"}`), testNow)
+			store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+			defer func() { _ = store.Close() }()
+
+			batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 			c.mutate(&batch)
 			if err := store.IngestAuditBatch(context.Background(), batch); !errors.Is(err, c.wantErr) {
 				t.Fatalf("IngestAuditBatch() error = %v, want %v", err, c.wantErr)
@@ -241,7 +248,7 @@ func TestSQLiteAuditStoreRevalidatesAcceptedBatchBoundary(t *testing.T) {
 // indistinguishable from transient failures.
 func TestAuditIngestSurfacesSinkErrorsAsHTTP(t *testing.T) {
 	pub, priv := testAuditSigner(t)
-	payload := []byte(`{"event":"ok"}`)
+	payload := []byte(testAuditPayload)
 	cases := []struct {
 		name     string
 		sinkErr  error
@@ -253,6 +260,7 @@ func TestAuditIngestSurfacesSinkErrorsAsHTTP(t *testing.T) {
 		{"invalid store record", ErrInvalidStoreRecord, 400},
 		{"payload too large", conductor.ErrPayloadTooLarge, 413},
 		{"hash mismatch", conductor.ErrHashMismatch, 422},
+		{"expired", conductor.ErrExpired, 422},
 		{"unclassified", errors.New("disk full"), 500},
 	}
 	for _, c := range cases {
@@ -325,7 +333,7 @@ func signedAcceptedAuditBatch(
 			FollowerRecorderPubHex: hex.EncodeToString(recorderPub),
 		},
 	}
-	signed, err := auditbatcher.SignEnvelope(envelope, "audit-key-1", priv)
+	signed, err := auditbatcher.SignEnvelope(envelope, testAuditKeyID, priv)
 	if err != nil {
 		t.Fatalf("SignEnvelope() error = %v", err)
 	}

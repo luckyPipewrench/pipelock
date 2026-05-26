@@ -199,6 +199,46 @@ func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
 	}
 }
 
+func TestScopedBearerAuthorizersRejectInvalidConfigAndHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		creds []ScopedBearerCredential
+	}{
+		{name: "empty"},
+		{name: "empty token", creds: []ScopedBearerCredential{{Role: RoleAdmin}}},
+		{name: "bad role", creds: []ScopedBearerCredential{{Token: "token", Role: PrincipalRole("owner")}}},
+		{name: "bad org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, OrgID: "-org"}}},
+		{name: "bad fleet", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "fleet/prod"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ScopedBearerAdminAuthorizer(tc.creds); !errors.Is(err, ErrPublisherForbidden) {
+				t.Fatalf("ScopedBearerAdminAuthorizer() error = %v, want ErrPublisherForbidden", err)
+			}
+		})
+	}
+
+	admin, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{{Token: "admin-token", Role: RoleAdmin}})
+	if err != nil {
+		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+	}
+	for _, req := range []*http.Request{
+		nil,
+		bearerRequestWithRawAuthorization(t, ""),
+		bearerRequestWithRawAuthorization(t, "Basic admin-token"),
+	} {
+		if err := admin(req); !errors.Is(err, ErrPublisherForbidden) {
+			t.Fatalf("admin(%v) error = %v, want ErrPublisherForbidden", req, err)
+		}
+	}
+
+	if !IsAuthConfigError(ErrFollowerRequired) || !IsAuthConfigError(ErrPublisherForbidden) || !IsAuthConfigError(ErrAuditQueryForbidden) || !IsAuthConfigError(ErrAuditKeyRequired) {
+		t.Fatal("IsAuthConfigError() returned false for known auth config errors")
+	}
+	if IsAuthConfigError(errors.New("other")) {
+		t.Fatal("IsAuthConfigError(other) = true, want false")
+	}
+}
+
 func TestStaticAuditKeyResolverHonorsIdentityBinding(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -320,6 +360,18 @@ func bearerRequest(t *testing.T, path, token string) *http.Request {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+func bearerRequestWithRawAuthorization(t *testing.T, raw string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if raw != "" {
+		req.Header.Set("Authorization", raw)
+	}
 	return req
 }
 

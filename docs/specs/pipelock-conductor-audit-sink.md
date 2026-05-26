@@ -141,6 +141,16 @@ Enrollment bootstraps follower identity. It is not optional.
 10. All future follower calls derive identity from the mTLS certificate, not
     from request fields.
 
+### Out-of-band Certificate Provisioning
+
+The server-side MVP assumes follower mTLS certificates are provisioned by an
+external CA, manual issuance workflow, or separate PKI automation before the
+follower uses the mTLS listener. The certificate identity MUST use the same
+`org_id`, `fleet_id`, `instance_id`, and `environment` recorded during
+enrollment, encoded as the SPIFFE URI SAN described below. Enrollment records
+the audit public key and active instance binding; it does not prove possession
+of the eventual mTLS private key or issue the leaf certificate in this slice.
+
 ### Singleton Rule
 
 Conductor must prevent silent instance cloning. A second enrollment for an active

@@ -34,6 +34,7 @@ const (
 var (
 	ErrEnrollmentStoreRequired  = errors.New("conductor enrollment store required")
 	ErrEnrollmentTokenInvalid   = errors.New("conductor enrollment token invalid")
+	ErrEnrollmentTokenConflict  = errors.New("conductor enrollment token conflicts with existing token")
 	ErrEnrollmentTokenConsumed  = errors.New("conductor enrollment token consumed")
 	ErrEnrollmentTokenExpired   = errors.New("conductor enrollment token expired")
 	ErrEnrollmentActiveInstance = errors.New("conductor follower instance already enrolled")
@@ -159,7 +160,7 @@ func (s *FileEnrollmentStore) CreateEnrollmentToken(_ context.Context, spec Enro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.data.Tokens[spec.TokenID]; exists {
-		return IssuedEnrollmentToken{}, ErrBundleConflict
+		return IssuedEnrollmentToken{}, ErrEnrollmentTokenConflict
 	}
 	s.data.Tokens[spec.TokenID] = record
 	if err := s.saveLocked(); err != nil {
@@ -402,7 +403,7 @@ func writeEnrollmentError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrEnrollmentTokenInvalid), errors.Is(err, ErrEnrollmentTokenConsumed), errors.Is(err, ErrEnrollmentTokenExpired):
 		writeError(w, http.StatusUnauthorized, ErrEnrollmentTokenInvalid)
-	case errors.Is(err, ErrEnrollmentActiveInstance), errors.Is(err, ErrBundleConflict):
+	case errors.Is(err, ErrEnrollmentActiveInstance), errors.Is(err, ErrEnrollmentTokenConflict):
 		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, conductor.ErrInvalidValidityWindow),
 		errors.Is(err, conductor.ErrInvalidIdentifier),

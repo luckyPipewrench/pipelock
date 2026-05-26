@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
@@ -361,6 +362,11 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	ctx = context.WithValue(ctx, ctxKeyReverseEnvelopeCfg, cfg)
 	ctx = context.WithValue(ctx, ctxKeyReverseScanner, sc)
 	r = r.WithContext(ctx)
+	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit && cfg.ReverseProxy.RequestTimeoutSeconds > 0 {
+		timeoutCtx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.ReverseProxy.RequestTimeoutSeconds)*time.Second)
+		defer cancel()
+		r = r.WithContext(timeoutCtx)
+	}
 
 	if err := verifyInboundEnvelope(r, cfg, snap.inboundVerifier); err != nil {
 		recordInboundEnvelopeVerify(rp.metrics, cfg, err)
@@ -435,6 +441,42 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			blockInfoFor(blockreason.KillSwitchActive, ""),
 			"kill switch active")
 		return
+	}
+
+	// Submit-profile gate (no-op when cfg.ReverseProxy.Profile == "").
+	// Runs BEFORE URL DLP and body scanning so denied requests do not
+	// consume scanner cycles and so the operator's tighter rules (method
+	// allowlist, exact-path match, raw-path canonicality, body cap) are
+	// applied before generic checks.
+	if gate := evaluateSubmitProfileGate(cfg, r); !gate.Allowed {
+		rp.metrics.RecordReverseProxyRequest(r.Method, strconv.Itoa(gate.Status))
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
+		writeReverseProxyBlock(w, gate.Status, gate.Block, gate.Reason)
+		return
+	}
+
+	// Submit-profile upstream-URL scan (no-op when profile is empty).
+	// The generic reverse proxy skips the full URL pipeline because the
+	// upstream is operator-configured; submit profile tightens this so
+	// the scanner still flags blocklist hits, rate-limit-blown
+	// destinations, or pattern-matching anomalies on the upstream URL
+	// before we forward. The target is the full upstream URL the
+	// request will actually reach, not the path-only r.URL the proxy
+	// sees from the client.
+	if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
+		urlResult := sc.Scan(r.Context(), targetURL)
+		if !urlResult.Allowed {
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
+			reason := urlResult.Reason
+			if reason == "" {
+				reason = "submit profile: upstream URL scan denied"
+			}
+			writeReverseProxyBlock(w, http.StatusForbidden,
+				blockInfo(urlResult.Scanner),
+				reason)
+			return
+		}
 	}
 
 	// Scan request path and query for DLP patterns. Secrets embedded in

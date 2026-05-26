@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1623,7 +1625,163 @@ func (c *Config) validateReverseProxy() error {
 	if c.ReverseProxy.Listen == "" {
 		return fmt.Errorf("reverse_proxy.listen is required when reverse_proxy is enabled")
 	}
+	return c.validateReverseProxyProfile(u)
+}
+
+// ReverseProxyProfileSubmit is the constrained profile selector for the
+// reverse proxy listener. Empty profile (the default) preserves the
+// generic behavior; "submit" enables the full submission-profile gate.
+const ReverseProxyProfileSubmit = "submit"
+
+// validateReverseProxyProfile enforces the per-profile config rules.
+// u is the already-parsed upstream URL from validateReverseProxy.
+func (c *Config) validateReverseProxyProfile(u *url.URL) error {
+	rp := c.ReverseProxy
+	switch rp.Profile {
+	case "":
+		// Generic reverse proxy. No additional fields required, but if any
+		// submit-profile-only fields ARE set, fail loudly rather than let
+		// the operator believe submit semantics are in effect.
+		if hasSubmitProfileFields(rp) {
+			return fmt.Errorf("reverse_proxy: allowed_methods/allowed_paths/trusted_upstream/max_body_bytes/request_timeout_seconds are only valid when profile is %q; set profile or remove these fields", ReverseProxyProfileSubmit)
+		}
+		return nil
+	case ReverseProxyProfileSubmit:
+		return c.validateReverseProxySubmit(u)
+	default:
+		return fmt.Errorf("reverse_proxy.profile %q is not a known profile (allowed: \"\" or %q)", rp.Profile, ReverseProxyProfileSubmit)
+	}
+}
+
+// hasSubmitProfileFields reports whether any submit-profile-only fields are
+// set on a generic reverse_proxy config. Used to reject silent misconfig
+// where an operator typo'd or removed `profile: submit` but left the
+// submit-only fields populated.
+func hasSubmitProfileFields(rp ReverseProxy) bool {
+	switch {
+	case len(rp.AllowedMethods) > 0:
+		return true
+	case len(rp.AllowedPaths) > 0:
+		return true
+	case rp.TrustedUpstream != (ReverseProxyTrustedUpstream{}):
+		return true
+	case rp.MaxBodyBytes != 0:
+		return true
+	case rp.RequestTimeoutSeconds != 0:
+		return true
+	}
+	return false
+}
+
+// validateReverseProxySubmit enforces submit-profile config rules. See the
+// design doc at projects/pipelock/sprints/pipelock-submit-mode-design.md
+// for the per-rule rationale.
+func (c *Config) validateReverseProxySubmit(u *url.URL) error {
+	rp := c.ReverseProxy
+	tu := rp.TrustedUpstream
+
+	if tu == (ReverseProxyTrustedUpstream{}) {
+		return fmt.Errorf("reverse_proxy.trusted_upstream is required when profile is %q", ReverseProxyProfileSubmit)
+	}
+	tu.Host = normalizeReverseProxySubmitHost(tu.Host)
+	if tu.Host == "" {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.host is required when profile is %q", ReverseProxyProfileSubmit)
+	}
+	c.ReverseProxy.TrustedUpstream.Host = tu.Host
+	if tu.Port <= 0 || tu.Port > 65535 {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.port must be 1-65535, got %d", tu.Port)
+	}
+	// Reason is required for auditability. Trim first so a config of
+	// "   " or "\t" cannot satisfy the required guard with no actual
+	// audit content. Persist the trimmed value so downstream callers
+	// (logs, doctor output) get the canonical form.
+	if strings.TrimSpace(tu.Reason) == "" {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.reason is required so the trust grant is auditable")
+	}
+	c.ReverseProxy.TrustedUpstream.Reason = strings.TrimSpace(tu.Reason)
+	if strings.TrimSpace(tu.Added) == "" {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.added is required (date the entry was created)")
+	}
+	if _, err := time.Parse("2006-01-02", tu.Added); err != nil {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.added %q must be YYYY-MM-DD: %w", tu.Added, err)
+	}
+	if tu.Expires != "" {
+		expiresAt, err := time.Parse("2006-01-02", tu.Expires)
+		if err != nil {
+			return fmt.Errorf("reverse_proxy.trusted_upstream.expires %q must be YYYY-MM-DD: %w", tu.Expires, err)
+		}
+		// End-of-day in UTC for the day named. An entry whose Expires is
+		// "2026-05-26" stays valid through 2026-05-26 23:59:59 UTC.
+		expiresEnd := expiresAt.Add(24*time.Hour - time.Second)
+		if expiresEnd.Before(time.Now().UTC()) {
+			return fmt.Errorf("reverse_proxy.trusted_upstream.expires %q is in the past", tu.Expires)
+		}
+	}
+
+	// IP literals on the trusted_upstream host defeat the "narrow,
+	// auditable, hostname-bound" intent. Match the existing scanner
+	// constraint that trusted destinations must be hostnames.
+	if net.ParseIP(tu.Host) != nil {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.host %q is an IP literal; use a hostname", tu.Host)
+	}
+
+	upstreamHost, upstreamPortStr, splitErr := net.SplitHostPort(u.Host)
+	if splitErr != nil {
+		// No explicit port. Submit profile requires explicit port so the
+		// trusted_upstream binding is unambiguous.
+		return fmt.Errorf("reverse_proxy.upstream %q must include an explicit port for profile %q", rp.Upstream, ReverseProxyProfileSubmit)
+	}
+	upstreamHost = normalizeReverseProxySubmitHost(upstreamHost)
+	if upstreamHost != tu.Host {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.host %q does not match upstream host %q", tu.Host, upstreamHost)
+	}
+	upstreamPort, portErr := strconv.Atoi(upstreamPortStr)
+	if portErr != nil {
+		return fmt.Errorf("reverse_proxy.upstream port %q is not a valid number: %w", upstreamPortStr, portErr)
+	}
+	if upstreamPort != tu.Port {
+		return fmt.Errorf("reverse_proxy.trusted_upstream.port %d does not match upstream port %d", tu.Port, upstreamPort)
+	}
+
+	if len(rp.AllowedPaths) == 0 {
+		return fmt.Errorf("reverse_proxy.allowed_paths is required when profile is %q", ReverseProxyProfileSubmit)
+	}
+	for i, p := range rp.AllowedPaths {
+		if p.Exact == "" {
+			return fmt.Errorf("reverse_proxy.allowed_paths[%d].exact is required (no other matcher kind supported in v1)", i)
+		}
+		if !strings.HasPrefix(p.Exact, "/") {
+			return fmt.Errorf("reverse_proxy.allowed_paths[%d].exact %q must start with /", i, p.Exact)
+		}
+		// Strict canonicality: reject path entries whose canonical decoded
+		// form differs from the operator's literal value, so the matcher
+		// at request time has only one shape to compare against.
+		if cleaned := path.Clean(p.Exact); cleaned != p.Exact {
+			return fmt.Errorf("reverse_proxy.allowed_paths[%d].exact %q is not canonical (use %q)", i, p.Exact, cleaned)
+		}
+	}
+
+	for i, m := range rp.AllowedMethods {
+		switch strings.ToUpper(m) {
+		case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+			http.MethodPatch, http.MethodDelete, http.MethodOptions:
+		default:
+			return fmt.Errorf("reverse_proxy.allowed_methods[%d] %q is not a recognized HTTP method", i, m)
+		}
+	}
+
+	if rp.MaxBodyBytes <= 0 {
+		return fmt.Errorf("reverse_proxy.max_body_bytes must be positive when profile is %q", ReverseProxyProfileSubmit)
+	}
+	if rp.RequestTimeoutSeconds <= 0 {
+		return fmt.Errorf("reverse_proxy.request_timeout_seconds must be positive when profile is %q", ReverseProxyProfileSubmit)
+	}
+
 	return nil
+}
+
+func normalizeReverseProxySubmitHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 func (c *Config) validateSandbox() error {

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -875,7 +876,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	if live.Conductor != oldCfg.Conductor {
 		t.Fatalf("conductor settings not preserved: %+v", live.Conductor)
 	}
-	if live.ReverseProxy != oldCfg.ReverseProxy {
+	if !reflect.DeepEqual(live.ReverseProxy, oldCfg.ReverseProxy) {
 		t.Fatalf("reverse proxy settings not preserved: %+v", live.ReverseProxy)
 	}
 	for _, want := range []string{

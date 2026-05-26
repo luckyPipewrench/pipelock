@@ -77,34 +77,17 @@ func submitProfileTestConfig(upstreamURL string) (*config.Config, *url.URL) {
 }
 
 // submitProfileReverseProxy spins up a NewReverseProxy fronting a test
-// upstream, using the same wiring reverseTestSetup uses but parameterized
-// on cfg + upstream URL since submit-profile tests need to control both.
+// upstream, parameterized on cfg + upstream URL since submit-profile tests
+// need to control both. Equivalent to the dialer variant with a nil dialer.
 func submitProfileReverseProxy(t *testing.T, cfg *config.Config, upstreamURL *url.URL) *httptest.Server {
 	t.Helper()
-
-	sc := scanner.New(cfg)
-	t.Cleanup(sc.Close)
-
-	var cfgPtr atomic.Pointer[config.Config]
-	var scPtr atomic.Pointer[scanner.Scanner]
-	cfgPtr.Store(cfg)
-	scPtr.Store(sc)
-
-	logger, _ := audit.New("json", "stdout", "", false, false)
-	t.Cleanup(logger.Close)
-
-	m := metrics.New()
-	ks := killswitch.New(cfg)
-
-	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, m, ks, nil, nil)
-	proxy := newIPv4Server(t, handler)
-	t.Cleanup(proxy.Close)
-	return proxy
+	return submitProfileReverseProxyWithDialer(t, cfg, upstreamURL, nil)
 }
 
-// submitProfileReverseProxyWithDialer is submitProfileReverseProxy plus a
-// SetSafeDialer call, so dialer-path tests can inject a sentinel dial func.
-// A nil dialer exercises the no-op branch of SetSafeDialer.
+// submitProfileReverseProxyWithDialer builds the submit-profile reverse proxy
+// test server and applies SetSafeDialer(dial). A nil dialer leaves the handler
+// on its default transport (and exercises the no-op branch of SetSafeDialer),
+// which is why the plain submitProfileReverseProxy delegates here.
 func submitProfileReverseProxyWithDialer(t *testing.T, cfg *config.Config, upstreamURL *url.URL, dial func(ctx context.Context, network, addr string) (net.Conn, error)) *httptest.Server {
 	t.Helper()
 

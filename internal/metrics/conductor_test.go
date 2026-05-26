@@ -4,6 +4,7 @@
 package metrics
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -37,12 +38,12 @@ func TestConductorAuditMetrics(t *testing.T) {
 
 func TestConductorServerMetrics(t *testing.T) {
 	m := New()
-	m.RecordConductorServerRequest("/readyz", "GET", 200, 25*time.Millisecond)
+	m.RecordConductorServerRequest("/readyz", http.MethodGet, 200, 25*time.Millisecond)
 	m.RecordConductorServerAuditIngest("accepted", "ok")
 	m.RecordConductorServerAuditIngest("rejected", "bad_request")
 	m.RecordConductorServerAuditQuery("listed", "ok")
 
-	if got := testutil.ToFloat64(m.conductorServerRequests.WithLabelValues("/readyz", "GET", "200")); got != 1 {
+	if got := testutil.ToFloat64(m.conductorServerRequests.WithLabelValues("/readyz", http.MethodGet, "200")); got != 1 {
 		t.Fatalf("server request counter = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(m.conductorServerAuditIngest.WithLabelValues("accepted", "ok")); got != 1 {

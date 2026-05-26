@@ -30,7 +30,7 @@ import (
 
 const (
 	defaultListen       = "127.0.0.1:8895"
-	defaultProbeListen  = ":9092"
+	defaultProbeListen  = "127.0.0.1:9092"
 	defaultTrustDomain  = "pipelock.local"
 	serveShutdownPeriod = 10 * time.Second
 )

@@ -175,14 +175,14 @@ listener configured by `pipelock conductor serve --probe-listen`:
 
 These endpoints do not run application-level publisher or follower
 authorization and are not served by the mTLS follower listener. Deployments
-should bind `--probe-listen` to an operator-only interface or protect it with a
-pod NetworkPolicy, firewall rule, or IP allowlist. Kubernetes deployments often
-need the default wildcard bind so kubelet can reach the pod; non-Kubernetes
-deployments should prefer `--probe-listen=127.0.0.1:9092` unless a remote
-scraper requires otherwise. Conductor request logs are structured JSON on stderr
-with bounded fields (`event`, `route`, `method`, `status`, `status_class`,
-`duration`) and deliberately omit raw URLs, query strings, headers, and request
-bodies.
+default to loopback-only binding at `127.0.0.1:9092`. Deployments should keep
+`--probe-listen` on an operator-only interface or protect it with a pod
+NetworkPolicy, firewall rule, or IP allowlist. Kubernetes deployments often
+need an explicit wildcard bind such as `--probe-listen=:9092` so kubelet can
+reach the pod. Conductor request logs are structured JSON on stderr with
+bounded fields (`event`, `route`, `method`, `status`, `status_class`,
+`duration`) and deliberately omit raw URLs, query strings, headers, and
+request bodies.
 
 Listener addresses are restart-only. This mirrors the existing Pipelock pattern
 for scan API, kill switch API, and metrics listeners.

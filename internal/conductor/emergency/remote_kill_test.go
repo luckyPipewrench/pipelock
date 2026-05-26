@@ -208,6 +208,15 @@ func TestRemoteKillStateFileValidation(t *testing.T) {
 	if _, err := readRemoteKillState(large); err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Fatalf("readRemoteKillState(large) error = %v, want too large", err)
 	}
+
+	blockedDir := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blockedDir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile(blocked dir): %v", err)
+	}
+	if err := writeRemoteKillState(filepath.Join(blockedDir, "state.json"), remoteKillState{LastCounter: 1}); err == nil ||
+		!strings.Contains(err.Error(), "create conductor remote kill state dir") {
+		t.Fatalf("writeRemoteKillState(blocked dir) error = %v, want create dir error", err)
+	}
 }
 
 func TestRemoteKillApplierInactiveClearsSource(t *testing.T) {
@@ -227,6 +236,30 @@ func TestRemoteKillApplierInactiveClearsSource(t *testing.T) {
 	}
 	if ks.active {
 		t.Fatal("kill switch active after inactive message, want false")
+	}
+}
+
+func TestRemoteKillApplierRejectsStaleCounter(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := writeRemoteKillState(statePath, remoteKillState{
+		LastCounter:     msg.Counter + 1,
+		LastMessageHash: "older-hash",
+		AppliedAt:       testNow.Add(-time.Minute),
+	}); err != nil {
+		t.Fatalf("writeRemoteKillState: %v", err)
+	}
+	applier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}
+	if err := applier.Apply(msg); !errors.Is(err, ErrRemoteKillSuperseded) {
+		t.Fatalf("Apply(stale counter) error = %v, want ErrRemoteKillSuperseded", err)
 	}
 }
 

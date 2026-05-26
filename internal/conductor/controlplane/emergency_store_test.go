@@ -145,6 +145,15 @@ func TestFileEmergencyStoreRejectsInvalidState(t *testing.T) {
 	if _, err := OpenFileEmergencyStore(dir); !errors.Is(err, ErrInvalidEmergencyRecord) {
 		t.Fatalf("OpenFileEmergencyStore(directory state) err=%v, want ErrInvalidEmergencyRecord", err)
 	}
+
+	dir = t.TempDir()
+	large := filepath.Join(dir, emergencyStateFileName)
+	if err := os.WriteFile(large, []byte(strings.Repeat("x", maxEmergencyStateJSONSize+1)), 0o600); err != nil {
+		t.Fatalf("WriteFile(large): %v", err)
+	}
+	if _, err := OpenFileEmergencyStore(dir); !errors.Is(err, conductor.ErrPayloadTooLarge) {
+		t.Fatalf("OpenFileEmergencyStore(large) err=%v, want ErrPayloadTooLarge", err)
+	}
 }
 
 func TestRollbackLookupValidate(t *testing.T) {
@@ -166,6 +175,215 @@ func TestRollbackLookupValidate(t *testing.T) {
 	badTarget.TargetVersion = valid.CurrentVersion
 	if err := badTarget.Validate(); !errors.Is(err, conductor.ErrInvalidRollback) {
 		t.Fatalf("Validate(bad target) error = %v, want ErrInvalidRollback", err)
+	}
+}
+
+func TestFileEmergencyStoreLoadsRollbackStateAndRejectsDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	auth := signedRollbackAuthorization(t, "rollback-load", 7, testNow)
+	hash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	record := StoredRollbackAuthorization{
+		Authorization:     auth,
+		AuthorizationHash: hash,
+		PublishedAt:       testNow,
+	}
+	if err := writeEmergencyState(filepath.Join(dir, emergencyStateFileName), emergencyStateRecord{Rollbacks: []StoredRollbackAuthorization{record}}); err != nil {
+		t.Fatalf("writeEmergencyState(rollback): %v", err)
+	}
+	store, err := OpenFileEmergencyStore(dir)
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore(rollback) error = %v", err)
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	got, err := store.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow)
+	if err != nil || got.Authorization.AuthorizationID != auth.AuthorizationID {
+		t.Fatalf("LatestRollbackAuthorization(reopened) = %+v, %v; want %q", got.Authorization, err, auth.AuthorizationID)
+	}
+
+	duplicateHashDir := t.TempDir()
+	if err := writeEmergencyState(filepath.Join(duplicateHashDir, emergencyStateFileName), emergencyStateRecord{
+		Rollbacks: []StoredRollbackAuthorization{record, record},
+	}); err != nil {
+		t.Fatalf("writeEmergencyState(duplicate hash): %v", err)
+	}
+	if _, err := OpenFileEmergencyStore(duplicateHashDir); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("OpenFileEmergencyStore(duplicate rollback hash) err=%v, want ErrInvalidEmergencyRecord", err)
+	}
+
+	duplicateIDDir := t.TempDir()
+	newer := signedRollbackAuthorization(t, auth.AuthorizationID, 8, testNow.Add(time.Minute))
+	newerHash, err := newer.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(newer rollback): %v", err)
+	}
+	newerRecord := StoredRollbackAuthorization{
+		Authorization:     newer,
+		AuthorizationHash: newerHash,
+		PublishedAt:       testNow.Add(time.Minute),
+	}
+	if err := writeEmergencyState(filepath.Join(duplicateIDDir, emergencyStateFileName), emergencyStateRecord{
+		Rollbacks: []StoredRollbackAuthorization{record, newerRecord},
+	}); err != nil {
+		t.Fatalf("writeEmergencyState(duplicate id): %v", err)
+	}
+	if _, err := OpenFileEmergencyStore(duplicateIDDir); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("OpenFileEmergencyStore(duplicate rollback id) err=%v, want ErrInvalidEmergencyRecord", err)
+	}
+}
+
+func TestEmergencyStoreValidationAndOrderingHelpers(t *testing.T) {
+	msg := signedRemoteKillMessage(t, "kill-helper", 3, conductor.KillSwitchActive, testNow)
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(remote kill): %v", err)
+	}
+	remoteRecord := StoredRemoteKill{Message: msg, MessageHash: hash, PublishedAt: testNow}
+	if err := validateStoredRemoteKill(remoteRecord); err != nil {
+		t.Fatalf("validateStoredRemoteKill(valid) error = %v", err)
+	}
+	remoteRecord.PublishedAt = time.Time{}
+	if err := validateStoredRemoteKill(remoteRecord); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("validateStoredRemoteKill(missing published_at) error = %v, want ErrInvalidEmergencyRecord", err)
+	}
+	remoteRecord = StoredRemoteKill{Message: msg, MessageHash: "bad-hash", PublishedAt: testNow}
+	if err := validateStoredRemoteKill(remoteRecord); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("validateStoredRemoteKill(hash mismatch) error = %v, want ErrInvalidEmergencyRecord", err)
+	}
+
+	auth := signedRollbackAuthorization(t, "rollback-helper", 3, testNow)
+	authHash, err := auth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(rollback): %v", err)
+	}
+	rollbackRecord := StoredRollbackAuthorization{Authorization: auth, AuthorizationHash: authHash, PublishedAt: testNow}
+	if err := validateStoredRollback(rollbackRecord); err != nil {
+		t.Fatalf("validateStoredRollback(valid) error = %v", err)
+	}
+	rollbackRecord.PublishedAt = time.Time{}
+	if err := validateStoredRollback(rollbackRecord); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("validateStoredRollback(missing published_at) error = %v, want ErrInvalidEmergencyRecord", err)
+	}
+	rollbackRecord = StoredRollbackAuthorization{Authorization: auth, AuthorizationHash: "bad-hash", PublishedAt: testNow}
+	if err := validateStoredRollback(rollbackRecord); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("validateStoredRollback(hash mismatch) error = %v, want ErrInvalidEmergencyRecord", err)
+	}
+
+	olderMsg := signedRemoteKillMessage(t, "kill-old", 9, conductor.KillSwitchActive, testNow)
+	newerMsg := signedRemoteKillMessage(t, "kill-new", 9, conductor.KillSwitchActive, testNow.Add(time.Minute))
+	olderHash, err := olderMsg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(old remote): %v", err)
+	}
+	newerHash, err := newerMsg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(new remote): %v", err)
+	}
+	if !newerRemoteKill(
+		StoredRemoteKill{Message: newerMsg, MessageHash: newerHash, PublishedAt: testNow.Add(time.Minute)},
+		StoredRemoteKill{Message: olderMsg, MessageHash: olderHash, PublishedAt: testNow},
+	) {
+		t.Fatal("newerRemoteKill(created_at) = false, want true")
+	}
+	if got := newerRemoteKill(
+		StoredRemoteKill{Message: olderMsg, MessageHash: "b", PublishedAt: testNow},
+		StoredRemoteKill{Message: olderMsg, MessageHash: "a", PublishedAt: testNow},
+	); !got {
+		t.Fatal("newerRemoteKill(hash tie-breaker) = false, want true")
+	}
+
+	olderAuth := signedRollbackAuthorization(t, "rollback-old", 9, testNow)
+	newerAuth := signedRollbackAuthorization(t, "rollback-new", 9, testNow.Add(time.Minute))
+	olderAuthHash, err := olderAuth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(old rollback): %v", err)
+	}
+	newerAuthHash, err := newerAuth.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash(new rollback): %v", err)
+	}
+	if !newerRollback(
+		StoredRollbackAuthorization{Authorization: newerAuth, AuthorizationHash: newerAuthHash, PublishedAt: testNow.Add(time.Minute)},
+		StoredRollbackAuthorization{Authorization: olderAuth, AuthorizationHash: olderAuthHash, PublishedAt: testNow},
+	) {
+		t.Fatal("newerRollback(created_at) = false, want true")
+	}
+	if got := newerRollback(
+		StoredRollbackAuthorization{Authorization: olderAuth, AuthorizationHash: "b", PublishedAt: testNow},
+		StoredRollbackAuthorization{Authorization: olderAuth, AuthorizationHash: "a", PublishedAt: testNow},
+	); !got {
+		t.Fatal("newerRollback(hash tie-breaker) = false, want true")
+	}
+}
+
+func TestEmergencyStoreEdgeCases(t *testing.T) {
+	var nilStore *FileEmergencyStore
+	msg := signedRemoteKillMessage(t, "kill-edge", 1, conductor.KillSwitchActive, testNow)
+	if _, _, err := nilStore.PublishRemoteKill(context.Background(), msg, testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
+		t.Fatalf("PublishRemoteKill(nil) err=%v, want ErrEmergencyStoreRequired", err)
+	}
+	if _, err := nilStore.LatestRemoteKill(context.Background(), defaultFollowerIdentity(), testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
+		t.Fatalf("LatestRemoteKill(nil) err=%v, want ErrEmergencyStoreRequired", err)
+	}
+	auth := signedRollbackAuthorization(t, "rollback-edge", 1, testNow)
+	if _, _, err := nilStore.PublishRollbackAuthorization(context.Background(), auth, testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
+		t.Fatalf("PublishRollbackAuthorization(nil) err=%v, want ErrEmergencyStoreRequired", err)
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: auth.CurrentBundleID,
+		CurrentVersion:  auth.CurrentVersion,
+		TargetBundleID:  auth.TargetBundleID,
+		TargetVersion:   auth.TargetVersion,
+	}
+	if _, err := nilStore.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow); !errors.Is(err, ErrEmergencyStoreRequired) {
+		t.Fatalf("LatestRollbackAuthorization(nil) err=%v, want ErrEmergencyStoreRequired", err)
+	}
+
+	store := mustEmergencyStore(t)
+	badMsg := msg
+	badMsg.MessageID = ""
+	if _, _, err := store.PublishRemoteKill(context.Background(), badMsg, testNow); !errors.Is(err, conductor.ErrMissingField) {
+		t.Fatalf("PublishRemoteKill(invalid) err=%v, want ErrMissingField", err)
+	}
+	if _, created, err := store.PublishRemoteKill(context.Background(), msg, testNow); err != nil || !created {
+		t.Fatalf("PublishRemoteKill(edge) created=%v err=%v, want created", created, err)
+	}
+	conflict := signedRemoteKillMessage(t, msg.MessageID, 2, conductor.KillSwitchInactive, testNow.Add(time.Minute))
+	if _, _, err := store.PublishRemoteKill(context.Background(), conflict, testNow.Add(time.Minute)); !errors.Is(err, ErrEmergencyConflict) {
+		t.Fatalf("PublishRemoteKill(conflict) err=%v, want ErrEmergencyConflict", err)
+	}
+	badFollower := defaultFollowerIdentity()
+	badFollower.OrgID = ""
+	if _, err := store.LatestRemoteKill(context.Background(), badFollower, testNow); !errors.Is(err, ErrFollowerRequired) {
+		t.Fatalf("LatestRemoteKill(invalid follower) err=%v, want ErrFollowerRequired", err)
+	}
+
+	badAuth := auth
+	badAuth.AuthorizationID = ""
+	if _, _, err := store.PublishRollbackAuthorization(context.Background(), badAuth, testNow); !errors.Is(err, conductor.ErrMissingField) {
+		t.Fatalf("PublishRollbackAuthorization(invalid) err=%v, want ErrMissingField", err)
+	}
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), auth, testNow); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(edge) created=%v err=%v, want created", created, err)
+	}
+	authConflict := signedRollbackAuthorization(t, auth.AuthorizationID, 2, testNow.Add(time.Minute))
+	if _, _, err := store.PublishRollbackAuthorization(context.Background(), authConflict, testNow.Add(time.Minute)); !errors.Is(err, ErrEmergencyConflict) {
+		t.Fatalf("PublishRollbackAuthorization(conflict) err=%v, want ErrEmergencyConflict", err)
+	}
+	if _, err := store.LatestRollbackAuthorization(context.Background(), badFollower, lookup, testNow); !errors.Is(err, ErrFollowerRequired) {
+		t.Fatalf("LatestRollbackAuthorization(invalid follower) err=%v, want ErrFollowerRequired", err)
+	}
+	badLookup := lookup
+	badLookup.TargetVersion = 0
+	if _, err := store.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), badLookup, testNow); !errors.Is(err, conductor.ErrMissingField) {
+		t.Fatalf("LatestRollbackAuthorization(invalid lookup) err=%v, want ErrMissingField", err)
 	}
 }
 

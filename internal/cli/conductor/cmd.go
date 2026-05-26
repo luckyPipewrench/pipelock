@@ -9,6 +9,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,16 +24,20 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
-	defaultListen      = "127.0.0.1:8895"
-	defaultTrustDomain = "pipelock.local"
+	defaultListen       = "127.0.0.1:8895"
+	defaultProbeListen  = "127.0.0.1:9092"
+	defaultTrustDomain  = "pipelock.local"
+	serveShutdownPeriod = 10 * time.Second
 )
 
 type serveOptions struct {
 	listen              string
+	probeListen         string
 	storageDir          string
 	conductorID         string
 	followerTrustDomain string
@@ -40,6 +46,7 @@ type serveOptions struct {
 	tlsCert             string
 	tlsKey              string
 	clientCA            string
+	logWriter           io.Writer
 }
 
 type auditKeySpec struct {
@@ -63,6 +70,7 @@ func Cmd() *cobra.Command {
 func serveCmd() *cobra.Command {
 	opts := serveOptions{
 		listen:              defaultListen,
+		probeListen:         defaultProbeListen,
 		conductorID:         "conductor",
 		followerTrustDomain: defaultTrustDomain,
 	}
@@ -75,6 +83,7 @@ func serveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.listen, "listen", opts.listen, "address for the Conductor HTTPS listener")
+	cmd.Flags().StringVar(&opts.probeListen, "probe-listen", opts.probeListen, "plain HTTP address for Conductor health, readiness, and metrics probes; empty disables the probe listener")
 	cmd.Flags().StringVar(&opts.storageDir, "storage-dir", "", "directory for Conductor policy bundles and audit store")
 	cmd.Flags().StringVar(&opts.conductorID, "conductor-id", opts.conductorID, "Conductor ID advertised in capabilities")
 	cmd.Flags().StringVar(&opts.followerTrustDomain, "follower-trust-domain", opts.followerTrustDomain, "SPIFFE trust domain for follower mTLS identities")
@@ -93,7 +102,10 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	handler, tlsConfig, err := buildServeHandler(ctx, opts)
+	if opts.logWriter == nil {
+		opts.logWriter = cmd.ErrOrStderr()
+	}
+	handler, probeHandler, tlsConfig, err := buildServeHandler(ctx, opts)
 	if err != nil {
 		return err
 	}
@@ -107,57 +119,107 @@ func runServe(cmd *cobra.Command, opts serveOptions) error {
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 * 1024,
 	}
-	runCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	baseCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	runCtx, stop := signal.NotifyContext(baseCtx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", opts.listen)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = ln.Close() }()
+	var probeLn net.Listener
+	if strings.TrimSpace(opts.probeListen) != "" {
+		probeLn, err = (&net.ListenConfig{}).Listen(runCtx, "tcp", opts.probeListen)
+		if err != nil {
+			return fmt.Errorf("probe bind %s: %w", opts.probeListen, err)
+		}
+		defer func() { _ = probeLn.Close() }()
+	}
+	var probeServer *http.Server
+	if probeLn != nil {
+		probeServer = &http.Server{
+			Addr:              opts.probeListen,
+			Handler:           probeHandler,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    64 * 1024,
+		}
+	}
 	go func() {
 		<-runCtx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), serveShutdownPeriod)
+		defer cancelShutdown()
 		_ = server.Shutdown(shutdownCtx)
+		if probeServer != nil {
+			_ = probeServer.Shutdown(shutdownCtx)
+		}
 	}()
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: conductor listening on %s\n", opts.listen)
-	if err := server.ServeTLS(ln, opts.tlsCert, opts.tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return err
+	serverCount := 1
+	errCh := make(chan error, 2)
+	go func() {
+		if err := server.ServeTLS(ln, opts.tlsCert, opts.tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+	if probeServer != nil {
+		serverCount++
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: conductor probes listening on %s\n", opts.probeListen)
+		go func() {
+			if err := probeServer.Serve(probeLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- err
+				return
+			}
+			errCh <- nil
+		}()
 	}
-	return nil
+	var firstErr error
+	for range serverCount {
+		if err := <-errCh; err != nil && firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+	return firstErr
 }
 
-func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, *tls.Config, error) {
+func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, http.Handler, *tls.Config, error) {
 	if strings.TrimSpace(opts.storageDir) == "" {
-		return nil, nil, errors.New("--storage-dir is required")
+		return nil, nil, nil, errors.New("--storage-dir is required")
 	}
 	if err := validateServeTLSFlags(opts); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	publisherToken, err := loadTokenFile(opts.publisherTokenFile)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	authorizer, err := controlplane.BearerPublisherAuthorizer(publisherToken)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	identity, err := controlplane.MTLSFollowerIdentityResolver(opts.followerTrustDomain)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	auditKeys, err := buildAuditKeyResolver(opts.trustedAuditKeys)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	store, err := controlplane.OpenFileBundleStore(filepath.Join(opts.storageDir, "policy-bundles"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	auditStore, err := controlplane.OpenSQLiteAuditStore(ctx, filepath.Join(opts.storageDir, "audit.db"))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
+	m := metrics.New()
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:              store,
 		Capabilities:       controlplane.DefaultCapabilities(opts.conductorID),
@@ -165,18 +227,27 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, *t
 		AuthorizePublisher: authorizer,
 		AuditSink:          auditStore,
 		AuditKeys:          auditKeys,
+		Metrics:            m,
+		Logger:             conductorRequestLogger(opts.logWriter),
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	tlsConfig, err := serveTLSConfig(opts.clientCA)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return handler, tlsConfig, nil
+	return handler, handler.ProbeHandler(), tlsConfig, nil
+}
+
+func conductorRequestLogger(w io.Writer) *slog.Logger {
+	if w == nil {
+		return nil
+	}
+	return slog.New(slog.NewJSONHandler(w, nil))
 }
 
 func validateServeTLSFlags(opts serveOptions) error {

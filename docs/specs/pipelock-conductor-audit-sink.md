@@ -160,6 +160,30 @@ Conductor uses separate listeners:
 | Operator Admin API | bearer/session auth plus IP allowlist | human/admin control |
 | Public Artifact API | public or CDN-gated | public verification keys and transparency artifacts |
 
+The server MVP exposes operator endpoints on a separate plain-HTTP probe
+listener configured by `pipelock conductor serve --probe-listen`:
+
+- `GET /health` and `GET /healthz` return a minimal liveness response.
+- `GET /readyz` reports policy store, audit sink, audit query, and audit-key
+  resolver state. Policy store, audit sink, and audit-key resolver are required
+  for readiness; audit query support is reported as a feature-presence flag.
+- `GET /metrics` returns Prometheus metrics, including
+  `pipelock_conductor_server_requests_total`,
+  `pipelock_conductor_server_request_duration_seconds`,
+  `pipelock_conductor_server_audit_ingest_total`, and
+  `pipelock_conductor_server_audit_queries_total`.
+
+These endpoints do not run application-level publisher or follower
+authorization and are not served by the mTLS follower listener. Deployments
+default to loopback-only binding at `127.0.0.1:9092`. Deployments should keep
+`--probe-listen` on an operator-only interface or protect it with a pod
+NetworkPolicy, firewall rule, or IP allowlist. Kubernetes deployments often
+need an explicit wildcard bind such as `--probe-listen=:9092` so kubelet can
+reach the pod. Conductor request logs are structured JSON on stderr with
+bounded fields (`event`, `route`, `method`, `status`, `status_class`,
+`duration`) and deliberately omit raw URLs, query strings, headers, and
+request bodies.
+
 Listener addresses are restart-only. This mirrors the existing Pipelock pattern
 for scan API, kill switch API, and metrics listeners.
 

@@ -41,7 +41,7 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		t.Fatalf("WriteFile(ca): %v", err)
 	}
 
-	handler, tlsConfig, err := buildServeHandler(context.Background(), serveOptions{
+	handler, probeHandler, tlsConfig, err := buildServeHandler(context.Background(), serveOptions{
 		listen:              defaultListen,
 		storageDir:          filepath.Join(dir, "store"),
 		conductorID:         "conductor-test",
@@ -67,10 +67,31 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("capabilities status = %d body=%s, want 200", w.Code, w.Body.String())
 	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.ReadyzPath, nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("main ready status = %d body=%s, want 404", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.ReadyzPath, nil)
+	w = httptest.NewRecorder()
+	probeHandler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"audit_query_supported":true`) {
+		t.Fatalf("ready status = %d body=%s, want audit query support", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, controlplane.MetricsPath, nil)
+	w = httptest.NewRecorder()
+	probeHandler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "pipelock_conductor_server_requests_total") {
+		t.Fatalf("metrics status = %d body=%s, want conductor metrics", w.Code, w.Body.String())
+	}
 }
 
 func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
-	_, _, err := buildServeHandler(context.Background(), serveOptions{
+	_, _, _, err := buildServeHandler(context.Background(), serveOptions{
 		storageDir: "/tmp/store",
 		tlsCert:    "server.pem",
 		tlsKey:     "server.key",
@@ -88,7 +109,7 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(token): %v", err)
 	}
-	_, _, err = buildServeHandler(context.Background(), serveOptions{
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
 		storageDir:          filepath.Join(dir, "store"),
 		followerTrustDomain: defaultTrustDomain,
 		tlsCert:             "server.pem",

@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 const (
@@ -21,6 +23,10 @@ const (
 	PublishPolicyBundlePath = "/api/v1/conductor/policy-bundles"
 	LatestPolicyBundlePath  = "/api/v1/conductor/policy/latest"
 	AuditBatchesPath        = conductor.AuditBatchesPath
+	HealthPath              = "/health"
+	HealthzPath             = "/healthz"
+	MetricsPath             = "/metrics"
+	ReadyzPath              = "/readyz"
 
 	defaultMaxRequestBodyBytes = conductor.MaxConfigYAMLBytes * 2
 	defaultMaxAuditBodyBytes   = conductor.MaxAuditPayloadBytes * 2
@@ -53,6 +59,8 @@ type HandlerOptions struct {
 	AuthorizeAuditQuery PublisherAuthorizer
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
+	Metrics             *metrics.Metrics
+	Logger              *slog.Logger
 }
 
 type Handler struct {
@@ -69,6 +77,8 @@ type Handler struct {
 	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
 	auditQuerier AuditBatchQuerier
 	auditKeys    AuditKeyResolver
+	metrics      *metrics.Metrics
+	logger       *slog.Logger
 }
 
 type publishPolicyBundleRequest struct {
@@ -81,6 +91,22 @@ type publishPolicyBundleResponse struct {
 	Version     uint64    `json:"version"`
 	PublishedAt time.Time `json:"published_at"`
 	Created     bool      `json:"created"`
+}
+
+type healthResponse struct {
+	Status string `json:"status"`
+}
+
+type readyResponse struct {
+	Status     string          `json:"status"`
+	Subsystems readySubsystems `json:"subsystems"`
+}
+
+type readySubsystems struct {
+	PolicyStore         bool `json:"policy_store"`
+	AuditSink           bool `json:"audit_sink"`
+	AuditQuerySupported bool `json:"audit_query_supported"`
+	AuditKeyResolver    bool `json:"audit_key_resolver"`
 }
 
 func NewHandler(opts HandlerOptions) (*Handler, error) {
@@ -135,6 +161,8 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		auditSink:           opts.AuditSink,
 		auditQuerier:        auditQuerier,
 		auditKeys:           opts.AuditKeys,
+		metrics:             opts.Metrics,
+		logger:              opts.Logger,
 	}, nil
 }
 
@@ -160,6 +188,28 @@ func DefaultCapabilities(conductorID string) conductor.CapabilitiesResponse {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.serveMeasured(w, r, h.serveControlHTTP)
+}
+
+func (h *Handler) ProbeHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.serveMeasured(w, r, h.serveProbeHTTP)
+	})
+}
+
+func (h *Handler) serveMeasured(w http.ResponseWriter, r *http.Request, serve func(http.ResponseWriter, *http.Request)) {
+	route := conductorRoute(r.URL.Path)
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start)
+		status := rec.status
+		h.recordRequest(r, route, status, duration)
+	}()
+	serve(rec, r)
+}
+
+func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case conductor.CapabilitiesPath:
 		h.handleCapabilities(w, r)
@@ -172,6 +222,160 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h *Handler) serveProbeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case HealthPath, HealthzPath:
+		h.handleHealth(w, r)
+	case MetricsPath:
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if h.metrics == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.metrics.PrometheusHandler().ServeHTTP(w, r)
+	case ReadyzPath:
+		h.handleReady(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (h *Handler) recordRequest(r *http.Request, route string, status int, duration time.Duration) {
+	h.metrics.RecordConductorServerRequest(route, r.Method, status, duration)
+	if route == AuditBatchesPath {
+		switch r.Method {
+		case http.MethodPost:
+			h.metrics.RecordConductorServerAuditIngest(conductorOperationOutcome(status, "accepted"), conductorStatusReason(status))
+		case http.MethodGet:
+			h.metrics.RecordConductorServerAuditQuery(conductorOperationOutcome(status, "listed"), conductorStatusReason(status))
+		}
+	}
+	if h.logger == nil {
+		return
+	}
+	h.logger.InfoContext(r.Context(), "conductor_request",
+		slog.String("event", "conductor_request"),
+		slog.String("route", route),
+		slog.String("method", r.Method),
+		slog.Int("status", status),
+		slog.String("status_class", statusClass(status)),
+		slog.Duration("duration", duration),
+	)
+}
+
+func conductorRoute(path string) string {
+	switch path {
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
+		return path
+	default:
+		return "unknown"
+	}
+}
+
+func conductorOperationOutcome(status int, success string) string {
+	switch {
+	case status >= 200 && status < 300:
+		return success
+	case status == http.StatusNotImplemented:
+		return "unsupported"
+	case status >= 400 && status < 500:
+		return "rejected"
+	default:
+		return "error"
+	}
+}
+
+func conductorStatusReason(status int) string {
+	switch status {
+	case http.StatusOK, http.StatusAccepted:
+		return "ok"
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusRequestEntityTooLarge:
+		return "payload_too_large"
+	case http.StatusUnprocessableEntity:
+		return "unprocessable_entity"
+	case http.StatusNotImplemented:
+		return "unsupported"
+	default:
+		return statusClass(status)
+	}
+}
+
+func statusClass(status int) string {
+	switch {
+	case status >= 100 && status < 200:
+		return "1xx"
+	case status >= 200 && status < 300:
+		return "2xx"
+	case status >= 300 && status < 400:
+		return "3xx"
+	case status >= 400 && status < 500:
+		return "4xx"
+	case status >= 500 && status < 600:
+		return "5xx"
+	default:
+		return "unknown"
+	}
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(p)
+}
+
+func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
+}
+
+func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	subsystems := readySubsystems{
+		PolicyStore:         h.store != nil,
+		AuditSink:           h.auditSink != nil,
+		AuditQuerySupported: h.auditQuerier != nil,
+		AuditKeyResolver:    h.auditKeys != nil,
+	}
+	status := http.StatusOK
+	state := "ready"
+	if !subsystems.PolicyStore || !subsystems.AuditSink || !subsystems.AuditKeyResolver {
+		status = http.StatusServiceUnavailable
+		state = "not_ready"
+	}
+	writeJSON(w, status, readyResponse{
+		Status:     state,
+		Subsystems: subsystems,
+	})
 }
 
 func (h *Handler) handleCapabilities(w http.ResponseWriter, r *http.Request) {

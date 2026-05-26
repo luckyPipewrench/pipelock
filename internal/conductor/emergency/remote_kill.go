@@ -159,7 +159,7 @@ func readRemoteKillState(path string) (remoteKillState, error) {
 func writeRemoteKillState(path string, state remoteKillState) error {
 	clean := filepath.Clean(path)
 	dir := filepath.Dir(clean)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create conductor remote kill state dir: %w", err)
 	}
 	data, err := json.MarshalIndent(state, "", "  ")

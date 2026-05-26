@@ -134,6 +134,9 @@ func (s *FileEmergencyStore) PublishRemoteKill(_ context.Context, msg conductor.
 	s.remoteKillHashes[hash] = record
 	s.remoteKillIDs[msg.MessageID] = hash
 	if err := s.writeLocked(); err != nil {
+		s.remoteKills = s.remoteKills[:len(s.remoteKills)-1]
+		delete(s.remoteKillHashes, hash)
+		delete(s.remoteKillIDs, msg.MessageID)
 		return StoredRemoteKill{}, false, err
 	}
 	return record, true, nil
@@ -208,6 +211,9 @@ func (s *FileEmergencyStore) PublishRollbackAuthorization(_ context.Context, aut
 	s.rollbackHashes[hash] = record
 	s.rollbackAuthIDMap[auth.AuthorizationID] = hash
 	if err := s.writeLocked(); err != nil {
+		s.rollbacks = s.rollbacks[:len(s.rollbacks)-1]
+		delete(s.rollbackHashes, hash)
+		delete(s.rollbackAuthIDMap, auth.AuthorizationID)
 		return StoredRollbackAuthorization{}, false, err
 	}
 	return record, true, nil

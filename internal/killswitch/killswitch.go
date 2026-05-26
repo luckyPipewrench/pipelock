@@ -30,7 +30,7 @@ const EnvAPIToken = config.EnvKillSwitchAPIToken
 type Decision struct {
 	Active         bool
 	Message        string
-	Source         string // "config", "api", "signal", "sentinel"
+	Source         string // "config", "api", "conductor_remote", "signal", "sentinel"
 	IsNotification bool   // MCP only: true if the message has no "id" field
 }
 
@@ -104,7 +104,7 @@ func buildRuntime(cfg *config.Config) *runtime {
 }
 
 // IsActive returns true if the kill switch is currently active from any source.
-// It checks the four activation sources without applying any endpoint or IP
+// It checks all activation sources without applying any endpoint or IP
 // exemptions. Use this for non-HTTP callers (e.g. the Scan API handler) that
 // perform their own exemption logic.
 func (c *Controller) IsActive() bool {
@@ -131,7 +131,7 @@ func (c *Controller) IsActiveForIP(clientIP string) Decision {
 
 // IsActiveHTTP checks whether the kill switch should deny an HTTP request.
 // Checks exemptions (health/metrics/API endpoints, allowlisted IPs) before
-// computing the active state from the four sources.
+// computing the active state from all sources.
 func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	rt := c.cfg.Load()
 
@@ -180,7 +180,7 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 
 // IsActiveMCP checks whether the kill switch should deny an MCP message.
 // MCP has no health/metrics endpoints and no IP-based allowlisting, so this
-// only checks the four activation sources. It also detects whether the
+// only checks the activation sources. It also detects whether the
 // message is a notification (no "id" field) for the caller to decide
 // whether to drop silently or send a JSON-RPC error.
 func (c *Controller) IsActiveMCP(msg []byte) Decision {
@@ -272,9 +272,9 @@ func (c *Controller) Sources() map[string]bool {
 	return sources
 }
 
-// computeDecision evaluates the four activation sources in priority order.
+// computeDecision evaluates activation sources in priority order.
 func (c *Controller) computeDecision(rt *runtime) Decision {
-	// Priority: config > api > signal > sentinel.
+	// Priority: config > api > conductor_remote > signal > sentinel.
 	if rt.cfgEnabled {
 		return Decision{Active: true, Message: rt.message, Source: "config"}
 	}

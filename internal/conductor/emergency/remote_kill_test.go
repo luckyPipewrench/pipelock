@@ -4,12 +4,15 @@
 package emergency
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +82,7 @@ func TestRemoteKillApplier(t *testing.T) {
 
 func TestRemoteKillApplierDisabledAndWrongPurpose(t *testing.T) {
 	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
+	var logs bytes.Buffer
 	applier := &RemoteKillApplier{
 		OrgID:             "org-main",
 		FleetID:           "prod",
@@ -88,15 +92,67 @@ func TestRemoteKillApplierDisabledAndWrongPurpose(t *testing.T) {
 		StatePath:         filepath.Join(t.TempDir(), "remote-kill-state.json"),
 		DisableRemoteKill: true,
 		Now:               func() time.Time { return testNow },
+		Logger:            slog.New(slog.NewJSONHandler(&logs, nil)),
 	}
 	if err := applier.Apply(msg); !errors.Is(err, ErrRemoteKillDisabled) {
 		t.Fatalf("Apply(disabled) error = %v, want ErrRemoteKillDisabled", err)
+	}
+	if !strings.Contains(logs.String(), `"reason":"disabled"`) {
+		t.Fatalf("logs = %s, want disabled rejection reason", logs.String())
 	}
 
 	applier.DisableRemoteKill = false
 	msg.Signatures[0].KeyPurpose = signing.PurposePolicyBundleSigning
 	if err := applier.Apply(msg); !errors.Is(err, conductor.ErrWrongKeyPurpose) {
 		t.Fatalf("Apply(wrong purpose) error = %v, want ErrWrongKeyPurpose", err)
+	}
+}
+
+func TestRemoteKillApplierRejectsInvalidInputs(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
+	var nilApplier *RemoteKillApplier
+	if err := nilApplier.Apply(msg); err == nil {
+		t.Fatal("Apply(nil applier) error = nil, want error")
+	}
+	if err := (&RemoteKillApplier{StatePath: filepath.Join(t.TempDir(), "state.json")}).Apply(msg); err == nil {
+		t.Fatal("Apply(nil kill switch) error = nil, want error")
+	}
+
+	applier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-2",
+		Resolver:   resolver,
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  filepath.Join(t.TempDir(), "state.json"),
+		Now:        func() time.Time { return testNow },
+	}
+	if err := applier.Apply(msg); !errors.Is(err, conductor.ErrAudienceMismatch) {
+		t.Fatalf("Apply(audience mismatch) error = %v, want ErrAudienceMismatch", err)
+	}
+
+	expired := msg
+	expired.NotBefore = testNow.Add(-2 * time.Hour)
+	expired.ExpiresAt = testNow.Add(-time.Hour)
+	applier.InstanceID = "pl-prod-1"
+	if err := applier.Apply(expired); !errors.Is(err, conductor.ErrExpired) {
+		t.Fatalf("Apply(expired) error = %v, want ErrExpired", err)
+	}
+
+	badSig := msg
+	badSig.Signatures = append([]conductor.SignatureProof(nil), msg.Signatures...)
+	badSig.Signatures[0].Signature = conductor.SignaturePrefixEd25519 + strings.Repeat("0", ed25519.SignatureSize*2)
+	if err := applier.Apply(badSig); !errors.Is(err, conductor.ErrSignatureVerification) {
+		t.Fatalf("Apply(bad signature) error = %v, want ErrSignatureVerification", err)
+	}
+
+	blockedPath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blockedPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile(blocked path): %v", err)
+	}
+	applier.StatePath = filepath.Join(blockedPath, "state.json")
+	if err := applier.Apply(msg); err == nil || !strings.Contains(err.Error(), "read conductor remote kill state") {
+		t.Fatalf("Apply(state path blocked) error = %v, want state read error", err)
 	}
 }
 
@@ -112,6 +168,65 @@ func TestRemoteKillApplierRequiresStatePath(t *testing.T) {
 	}
 	if err := applier.Apply(msg); !errors.Is(err, ErrRemoteKillStateRequired) {
 		t.Fatalf("Apply(no state path) error = %v, want ErrRemoteKillStateRequired", err)
+	}
+}
+
+func TestRemoteKillStateFileValidation(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	if state, err := readRemoteKillState(missing); err != nil || state.LastCounter != 0 {
+		t.Fatalf("readRemoteKillState(missing) = %+v, %v; want zero nil", state, err)
+	}
+
+	dirState := filepath.Join(t.TempDir(), "state.json")
+	if err := os.Mkdir(dirState, 0o750); err != nil {
+		t.Fatalf("Mkdir(state): %v", err)
+	}
+	if _, err := readRemoteKillState(dirState); err == nil || !strings.Contains(err.Error(), "invalid conductor remote kill state file") {
+		t.Fatalf("readRemoteKillState(directory) error = %v, want invalid file", err)
+	}
+
+	trailing := filepath.Join(t.TempDir(), "trailing.json")
+	if err := os.WriteFile(trailing, []byte(`{"last_counter":1}{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(trailing): %v", err)
+	}
+	if _, err := readRemoteKillState(trailing); err == nil || !strings.Contains(err.Error(), "trailing JSON document") {
+		t.Fatalf("readRemoteKillState(trailing) error = %v, want trailing JSON error", err)
+	}
+
+	unknown := filepath.Join(t.TempDir(), "unknown.json")
+	if err := os.WriteFile(unknown, []byte(`{"last_counter":1,"unknown":true}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(unknown): %v", err)
+	}
+	if _, err := readRemoteKillState(unknown); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("readRemoteKillState(unknown) error = %v, want unknown field error", err)
+	}
+
+	large := filepath.Join(t.TempDir(), "large.json")
+	if err := os.WriteFile(large, bytes.Repeat([]byte("x"), maxRemoteKillStateBytes+1), 0o600); err != nil {
+		t.Fatalf("WriteFile(large): %v", err)
+	}
+	if _, err := readRemoteKillState(large); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("readRemoteKillState(large) error = %v, want too large", err)
+	}
+}
+
+func TestRemoteKillApplierInactiveClearsSource(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 10, conductor.KillSwitchInactive)
+	ks := &captureKillSwitch{active: true}
+	applier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: ks,
+		StatePath:  filepath.Join(t.TempDir(), "state.json"),
+		Now:        func() time.Time { return testNow },
+	}
+	if err := applier.Apply(msg); err != nil {
+		t.Fatalf("Apply(inactive) error = %v", err)
+	}
+	if ks.active {
+		t.Fatal("kill switch active after inactive message, want false")
 	}
 }
 

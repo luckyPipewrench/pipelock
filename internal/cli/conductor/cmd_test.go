@@ -4,6 +4,7 @@
 package conductor
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -313,6 +314,66 @@ func TestParseControlKeySpec(t *testing.T) {
 				t.Fatalf("parseControlKeySpec(%q) error = %v, want substring %q", c.input, err, c.errSub)
 			}
 		})
+	}
+}
+
+func TestBuildKeyResolversLoadTrustedKeys(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "control.pub")
+	if err := os.WriteFile(keyPath, []byte(signing.EncodePublicKey(pub)), 0o600); err != nil {
+		t.Fatalf("WriteFile(control key): %v", err)
+	}
+
+	controlResolver, err := buildControlKeyResolver([]string{
+		"id=remote-key,purpose=remote-kill-signing,file=" + keyPath,
+		"id=rollback-key,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
+	})
+	if err != nil {
+		t.Fatalf("buildControlKeyResolver() error = %v", err)
+	}
+	remoteKey, err := controlResolver("remote-key")
+	if err != nil {
+		t.Fatalf("controlResolver(remote-key) error = %v", err)
+	}
+	if remoteKey.KeyPurpose != signing.PurposeRemoteKillSigning || !bytes.Equal(remoteKey.PublicKey, pub) {
+		t.Fatalf("remote key = %+v, want remote kill key", remoteKey)
+	}
+	if _, err := controlResolver("missing-key"); !errors.Is(err, conductorcore.ErrSignatureVerification) {
+		t.Fatalf("controlResolver(missing) error = %v, want ErrSignatureVerification", err)
+	}
+	if _, err := buildControlKeyResolver(nil); !errors.Is(err, controlplane.ErrEmergencyKeyRequired) {
+		t.Fatalf("buildControlKeyResolver(empty) error = %v, want ErrEmergencyKeyRequired", err)
+	}
+	if _, err := buildControlKeyResolver([]string{
+		"id=dup,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
+		"id=dup,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
+	}); err == nil || !strings.Contains(err.Error(), "duplicate --trusted-control-key id") {
+		t.Fatalf("buildControlKeyResolver(duplicate) error = %v, want duplicate id", err)
+	}
+
+	auditResolver, err := buildAuditKeyResolver([]string{
+		"id=audit-key,file=" + keyPath + ",org=org-main,fleet=prod,instance=pl-prod-1",
+	})
+	if err != nil {
+		t.Fatalf("buildAuditKeyResolver() error = %v", err)
+	}
+	auditKey, err := auditResolver(controlplane.FollowerIdentity{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+	}, "audit-key")
+	if err != nil {
+		t.Fatalf("auditResolver(audit-key) error = %v", err)
+	}
+	if auditKey.KeyPurpose != signing.PurposeAuditBatchSigning || !bytes.Equal(auditKey.PublicKey, pub) {
+		t.Fatalf("audit key = %+v, want audit batch key", auditKey)
+	}
+	if _, err := buildAuditKeyResolver(nil); !errors.Is(err, controlplane.ErrAuditKeyRequired) {
+		t.Fatalf("buildAuditKeyResolver(empty) error = %v, want ErrAuditKeyRequired", err)
 	}
 }
 

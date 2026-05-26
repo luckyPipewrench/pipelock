@@ -8,6 +8,9 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,22 +71,101 @@ func TestFileEmergencyStoreRollbackLookup(t *testing.T) {
 	if _, _, err := store.PublishRollbackAuthorization(context.Background(), stale, testNow.Add(time.Minute)); !errors.Is(err, ErrEmergencyStaleCounter) {
 		t.Fatalf("PublishRollbackAuthorization(stale) err=%v, want ErrEmergencyStaleCounter", err)
 	}
+	newer := signedRollbackAuthorization(t, "rollback-2", 8, testNow.Add(2*time.Minute))
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), newer, testNow.Add(2*time.Minute)); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(newer) created=%v err=%v, want created", created, err)
+	}
 	lookup := RollbackLookup{
 		CurrentBundleID: auth.CurrentBundleID,
 		CurrentVersion:  auth.CurrentVersion,
 		TargetBundleID:  auth.TargetBundleID,
 		TargetVersion:   auth.TargetVersion,
 	}
-	got, err := store.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow.Add(time.Minute))
+	got, err := store.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("LatestRollbackAuthorization() error = %v", err)
 	}
-	if got.Authorization.AuthorizationID != auth.AuthorizationID {
-		t.Fatalf("LatestRollbackAuthorization() = %q, want %q", got.Authorization.AuthorizationID, auth.AuthorizationID)
+	if got.Authorization.AuthorizationID != newer.AuthorizationID {
+		t.Fatalf("LatestRollbackAuthorization() = %q, want %q", got.Authorization.AuthorizationID, newer.AuthorizationID)
 	}
 	lookup.TargetVersion = 1
-	if _, err := store.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow.Add(time.Minute)); !errors.Is(err, ErrEmergencyNotFound) {
+	if _, err := store.LatestRollbackAuthorization(context.Background(), defaultFollowerIdentity(), lookup, testNow.Add(3*time.Minute)); !errors.Is(err, ErrEmergencyNotFound) {
 		t.Fatalf("LatestRollbackAuthorization(miss) err = %v, want ErrEmergencyNotFound", err)
+	}
+}
+
+func TestFileEmergencyStoreRollsBackMemoryOnWriteFailure(t *testing.T) {
+	store := mustEmergencyStore(t)
+	msg := signedRemoteKillMessage(t, "kill-write-fail", 1, conductor.KillSwitchActive, testNow)
+	store.statePath = filepath.Join(store.dir, "missing", emergencyStateFileName)
+	if _, _, err := store.PublishRemoteKill(context.Background(), msg, testNow); err == nil {
+		t.Fatal("PublishRemoteKill(write failure) error = nil, want error")
+	}
+	if len(store.remoteKills) != 0 || len(store.remoteKillHashes) != 0 || len(store.remoteKillIDs) != 0 {
+		t.Fatalf("remote kill indexes after failed write = len(slice)=%d hashes=%d ids=%d, want empty",
+			len(store.remoteKills), len(store.remoteKillHashes), len(store.remoteKillIDs))
+	}
+	store.statePath = filepath.Join(store.dir, emergencyStateFileName)
+	if _, created, err := store.PublishRemoteKill(context.Background(), msg, testNow); err != nil || !created {
+		t.Fatalf("PublishRemoteKill(after rollback) created=%v err=%v, want created", created, err)
+	}
+
+	store = mustEmergencyStore(t)
+	auth := signedRollbackAuthorization(t, "rollback-write-fail", 1, testNow)
+	store.statePath = filepath.Join(store.dir, "missing", emergencyStateFileName)
+	if _, _, err := store.PublishRollbackAuthorization(context.Background(), auth, testNow); err == nil {
+		t.Fatal("PublishRollbackAuthorization(write failure) error = nil, want error")
+	}
+	if len(store.rollbacks) != 0 || len(store.rollbackHashes) != 0 || len(store.rollbackAuthIDMap) != 0 {
+		t.Fatalf("rollback indexes after failed write = len(slice)=%d hashes=%d ids=%d, want empty",
+			len(store.rollbacks), len(store.rollbackHashes), len(store.rollbackAuthIDMap))
+	}
+	store.statePath = filepath.Join(store.dir, emergencyStateFileName)
+	if _, created, err := store.PublishRollbackAuthorization(context.Background(), auth, testNow); err != nil || !created {
+		t.Fatalf("PublishRollbackAuthorization(after rollback) created=%v err=%v, want created", created, err)
+	}
+}
+
+func TestFileEmergencyStoreRejectsInvalidState(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := OpenFileEmergencyStore(""); err == nil || !strings.Contains(err.Error(), "dir required") {
+		t.Fatalf("OpenFileEmergencyStore(empty) err=%v, want dir required", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, emergencyStateFileName), []byte(`{"remote_kills":[]}{}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(trailing): %v", err)
+	}
+	if _, err := OpenFileEmergencyStore(dir); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("OpenFileEmergencyStore(trailing) err=%v, want ErrInvalidEmergencyRecord", err)
+	}
+
+	dir = t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, emergencyStateFileName), 0o750); err != nil {
+		t.Fatalf("Mkdir(state path): %v", err)
+	}
+	if _, err := OpenFileEmergencyStore(dir); !errors.Is(err, ErrInvalidEmergencyRecord) {
+		t.Fatalf("OpenFileEmergencyStore(directory state) err=%v, want ErrInvalidEmergencyRecord", err)
+	}
+}
+
+func TestRollbackLookupValidate(t *testing.T) {
+	valid := RollbackLookup{
+		CurrentBundleID: "bundle-current",
+		CurrentVersion:  42,
+		TargetBundleID:  "bundle-target",
+		TargetVersion:   41,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("Validate(valid) error = %v", err)
+	}
+	missing := valid
+	missing.CurrentVersion = 0
+	if err := missing.Validate(); !errors.Is(err, conductor.ErrMissingField) {
+		t.Fatalf("Validate(missing version) error = %v, want ErrMissingField", err)
+	}
+	badTarget := valid
+	badTarget.TargetVersion = valid.CurrentVersion
+	if err := badTarget.Validate(); !errors.Is(err, conductor.ErrInvalidRollback) {
+		t.Fatalf("Validate(bad target) error = %v, want ErrInvalidRollback", err)
 	}
 }
 

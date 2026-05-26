@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
-	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +35,14 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(token): %v", err)
 	}
+	auditorTokenPath := filepath.Join(dir, "auditor-token")
+	if err := os.WriteFile(auditorTokenPath, []byte("auditor-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auditor token): %v", err)
+	}
+	adminTokenPath := filepath.Join(dir, "admin-token")
+	if err := os.WriteFile(adminTokenPath, []byte("admin-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(admin token): %v", err)
+	}
 	caPath := filepath.Join(dir, "client-ca.pem")
 	if err := os.WriteFile(caPath, testCAPEM(t), 0o600); err != nil {
 		t.Fatalf("WriteFile(ca): %v", err)
@@ -47,6 +54,8 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		conductorID:         "conductor-test",
 		followerTrustDomain: defaultTrustDomain,
 		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
 		trustedAuditKeys: []string{
 			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
 		},
@@ -117,8 +126,41 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		clientCA:            caPath,
 		publisherTokenFile:  tokenPath,
 	})
-	if !errors.Is(err, controlplane.ErrAuditKeyRequired) {
-		t.Fatalf("buildServeHandler() error = %v, want ErrAuditKeyRequired", err)
+	if err == nil || err.Error() != "--auditor-token-file is required" {
+		t.Fatalf("buildServeHandler() error = %v, want --auditor-token-file required", err)
+	}
+	auditorTokenPath := filepath.Join(dir, "auditor-token")
+	if err := os.WriteFile(auditorTokenPath, []byte("auditor-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auditor token): %v", err)
+	}
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+	})
+	if err == nil || err.Error() != "--admin-token-file is required" {
+		t.Fatalf("buildServeHandler() error = %v, want --admin-token-file required", err)
+	}
+	adminTokenPath := filepath.Join(dir, "admin-token")
+	if err := os.WriteFile(adminTokenPath, []byte("admin-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(admin token): %v", err)
+	}
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+	})
+	if err != nil {
+		t.Fatalf("buildServeHandler(no trusted audit keys) error = %v, want nil", err)
 	}
 }
 
@@ -131,6 +173,14 @@ func TestRunServeReturnsTLSLoadError(t *testing.T) {
 	tokenPath := filepath.Join(dir, "publisher-token")
 	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile(token): %v", err)
+	}
+	auditorTokenPath := filepath.Join(dir, "auditor-token")
+	if err := os.WriteFile(auditorTokenPath, []byte("auditor-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auditor token): %v", err)
+	}
+	adminTokenPath := filepath.Join(dir, "admin-token")
+	if err := os.WriteFile(adminTokenPath, []byte("admin-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(admin token): %v", err)
 	}
 	caPath := filepath.Join(dir, "client-ca.pem")
 	if err := os.WriteFile(caPath, testCAPEM(t), 0o600); err != nil {
@@ -145,6 +195,8 @@ func TestRunServeReturnsTLSLoadError(t *testing.T) {
 		conductorID:         "conductor-test",
 		followerTrustDomain: defaultTrustDomain,
 		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
 		trustedAuditKeys: []string{
 			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
 		},
@@ -199,7 +251,7 @@ func TestParseAuditKeySpec(t *testing.T) {
 }
 
 func TestLoadTokenFileRejectsMissingAndEmpty(t *testing.T) {
-	if _, err := loadTokenFile(""); err == nil || !strings.Contains(err.Error(), "required") {
+	if _, err := loadTokenFile("--token-file", ""); err == nil || !strings.Contains(err.Error(), "required") {
 		t.Fatalf("loadTokenFile(empty path) error = %v, want required", err)
 	}
 	dir := t.TempDir()
@@ -207,14 +259,14 @@ func TestLoadTokenFileRejectsMissingAndEmpty(t *testing.T) {
 	if err := os.WriteFile(empty, []byte("  \n\t"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if _, err := loadTokenFile(empty); err == nil || !strings.Contains(err.Error(), "empty") {
+	if _, err := loadTokenFile("--token-file", empty); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("loadTokenFile(whitespace) error = %v, want empty", err)
 	}
 	tok := filepath.Join(dir, "tok")
 	if err := os.WriteFile(tok, []byte("  hello-token  \n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	got, err := loadTokenFile(tok)
+	got, err := loadTokenFile("--token-file", tok)
 	if err != nil {
 		t.Fatalf("loadTokenFile() error = %v", err)
 	}

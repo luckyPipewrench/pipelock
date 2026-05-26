@@ -138,6 +138,108 @@ func TestBearerPublisherAuthorizer(t *testing.T) {
 	}
 }
 
+func TestScopedBearerAuthorizersEnforceRoleAndScope(t *testing.T) {
+	publisher, err := ScopedBearerBundleAuthorizer([]ScopedBearerCredential{{
+		Token:   "publish-token",
+		Role:    RolePublisher,
+		OrgID:   "org-main",
+		FleetID: "prod",
+	}})
+	if err != nil {
+		t.Fatalf("ScopedBearerBundleAuthorizer() error = %v", err)
+	}
+	auditor, err := ScopedBearerAuditQueryAuthorizer([]ScopedBearerCredential{
+		{Token: "audit-token", Role: RoleAuditor, OrgID: "org-main", FleetID: "prod"},
+		{Token: "admin-token", Role: RoleAdmin},
+	})
+	if err != nil {
+		t.Fatalf("ScopedBearerAuditQueryAuthorizer() error = %v", err)
+	}
+	admin, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{{
+		Token: "admin-token",
+		Role:  RoleAdmin,
+	}})
+	if err != nil {
+		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+	}
+
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
+	})
+	if err := publisher(bearerRequest(t, PublishPolicyBundlePath, "publish-token"), bundle); err != nil {
+		t.Fatalf("publisher(valid) error = %v", err)
+	}
+	wrongFleet := bundle
+	wrongFleet.FleetID = "dev"
+	if err := publisher(bearerRequest(t, PublishPolicyBundlePath, "publish-token"), wrongFleet); !errors.Is(err, ErrPublisherForbidden) {
+		t.Fatalf("publisher(wrong fleet) error = %v, want ErrPublisherForbidden", err)
+	}
+	if err := publisher(bearerRequest(t, PublishPolicyBundlePath, "audit-token"), bundle); !errors.Is(err, ErrPublisherForbidden) {
+		t.Fatalf("publisher(auditor token) error = %v, want ErrPublisherForbidden", err)
+	}
+
+	query := AuditBatchQuery{OrgID: "org-main", FleetID: "prod"}
+	if err := auditor(bearerRequest(t, AuditBatchesPath, "audit-token"), query); err != nil {
+		t.Fatalf("auditor(valid) error = %v", err)
+	}
+	query.FleetID = "dev"
+	if err := auditor(bearerRequest(t, AuditBatchesPath, "audit-token"), query); !errors.Is(err, ErrAuditQueryForbidden) {
+		t.Fatalf("auditor(wrong fleet) error = %v, want ErrAuditQueryForbidden", err)
+	}
+	if err := auditor(bearerRequest(t, AuditBatchesPath, "admin-token"), query); err != nil {
+		t.Fatalf("auditor(admin override) error = %v", err)
+	}
+	if err := admin(bearerRequest(t, EnrollmentTokensPath, "publish-token")); !errors.Is(err, ErrPublisherForbidden) {
+		t.Fatalf("admin(publisher token) error = %v, want ErrPublisherForbidden", err)
+	}
+	if err := admin(bearerRequest(t, EnrollmentTokensPath, "admin-token")); err != nil {
+		t.Fatalf("admin(valid) error = %v", err)
+	}
+}
+
+func TestScopedBearerAuthorizersRejectInvalidConfigAndHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		creds []ScopedBearerCredential
+	}{
+		{name: "empty"},
+		{name: "empty token", creds: []ScopedBearerCredential{{Role: RoleAdmin}}},
+		{name: "bad role", creds: []ScopedBearerCredential{{Token: "token", Role: PrincipalRole("owner")}}},
+		{name: "bad org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, OrgID: "-org"}}},
+		{name: "bad fleet", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "fleet/prod"}}},
+		{name: "fleet without org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "prod"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := ScopedBearerAdminAuthorizer(tc.creds); !errors.Is(err, ErrPublisherForbidden) {
+				t.Fatalf("ScopedBearerAdminAuthorizer() error = %v, want ErrPublisherForbidden", err)
+			}
+		})
+	}
+
+	admin, err := ScopedBearerAdminAuthorizer([]ScopedBearerCredential{{Token: "admin-token", Role: RoleAdmin}})
+	if err != nil {
+		t.Fatalf("ScopedBearerAdminAuthorizer() error = %v", err)
+	}
+	for _, req := range []*http.Request{
+		nil,
+		bearerRequestWithRawAuthorization(t, ""),
+		bearerRequestWithRawAuthorization(t, "Basic admin-token"),
+	} {
+		if err := admin(req); !errors.Is(err, ErrPublisherForbidden) {
+			t.Fatalf("admin(%v) error = %v, want ErrPublisherForbidden", req, err)
+		}
+	}
+
+	if !IsAuthConfigError(ErrFollowerRequired) || !IsAuthConfigError(ErrPublisherForbidden) || !IsAuthConfigError(ErrAuditQueryForbidden) || !IsAuthConfigError(ErrAuditKeyRequired) {
+		t.Fatal("IsAuthConfigError() returned false for known auth config errors")
+	}
+	if IsAuthConfigError(errors.New("other")) {
+		t.Fatal("IsAuthConfigError(other) = true, want false")
+	}
+}
+
 func TestStaticAuditKeyResolverHonorsIdentityBinding(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -250,6 +352,28 @@ func TestStaticAuditKeyResolverRejectsCrossOrgKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+func bearerRequest(t *testing.T, path, token string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+func bearerRequestWithRawAuthorization(t *testing.T, raw string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, EnrollmentTokensPath, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if raw != "" {
+		req.Header.Set("Authorization", raw)
+	}
+	return req
 }
 
 func httptestRequestWithTLS(state *tls.ConnectionState) *http.Request {

@@ -23,6 +23,8 @@ const (
 	PublishPolicyBundlePath = "/api/v1/conductor/policy-bundles"
 	LatestPolicyBundlePath  = "/api/v1/conductor/policy/latest"
 	AuditBatchesPath        = conductor.AuditBatchesPath
+	EnrollPath              = "/api/v1/conductor/enroll"
+	EnrollmentTokensPath    = "/api/v1/conductor/enrollment-tokens" //nolint:gosec // route constant, not a credential
 	HealthPath              = "/health"
 	HealthzPath             = "/healthz"
 	MetricsPath             = "/metrics"
@@ -48,6 +50,16 @@ type FollowerIdentityResolver func(*http.Request) (FollowerIdentity, error)
 // a non-nil error causes the publish endpoint to respond with HTTP 403.
 type PublisherAuthorizer func(*http.Request) error
 
+// BundleAuthorizer authorizes a parsed policy bundle after transport/client
+// authentication has already succeeded. It exists so production wiring can
+// enforce org/fleet scoped publisher credentials instead of treating bearer
+// possession as global publish authority.
+type BundleAuthorizer func(*http.Request, conductor.PolicyBundle) error
+
+// AuditQueryAuthorizer authorizes a parsed metadata query. It MUST scope
+// callers to the org/fleet they are permitted to inspect.
+type AuditQueryAuthorizer func(*http.Request, AuditBatchQuery) error
+
 type HandlerOptions struct {
 	Store               BundleStore
 	Capabilities        conductor.CapabilitiesResponse
@@ -56,9 +68,12 @@ type HandlerOptions struct {
 	MaxAuditBodyBytes   int64
 	FollowerIdentity    FollowerIdentityResolver
 	AuthorizePublisher  PublisherAuthorizer
-	AuthorizeAuditQuery PublisherAuthorizer
+	AuthorizeBundle     BundleAuthorizer
+	AuthorizeAuditQuery AuditQueryAuthorizer
+	AuthorizeAdmin      PublisherAuthorizer
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
+	Enrollments         EnrollmentStore
 	Metrics             *metrics.Metrics
 	Logger              *slog.Logger
 }
@@ -71,12 +86,15 @@ type Handler struct {
 	maxAuditBody        int64
 	followerIdentity    FollowerIdentityResolver
 	authorizePublisher  PublisherAuthorizer
-	authorizeAuditQuery PublisherAuthorizer
+	authorizeBundle     BundleAuthorizer
+	authorizeAuditQuery AuditQueryAuthorizer
+	authorizeAdmin      PublisherAuthorizer
 	auditSink           AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
 	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
 	auditQuerier AuditBatchQuerier
 	auditKeys    AuditKeyResolver
+	enrollments  EnrollmentStore
 	metrics      *metrics.Metrics
 	logger       *slog.Logger
 }
@@ -91,6 +109,36 @@ type publishPolicyBundleResponse struct {
 	Version     uint64    `json:"version"`
 	PublishedAt time.Time `json:"published_at"`
 	Created     bool      `json:"created"`
+}
+
+type createEnrollmentTokenRequest struct {
+	TokenID     string    `json:"token_id"`
+	OrgID       string    `json:"org_id"`
+	FleetID     string    `json:"fleet_id"`
+	InstanceID  string    `json:"instance_id"`
+	Environment string    `json:"environment"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+type createEnrollmentTokenResponse struct {
+	TokenID   string    `json:"token_id"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type enrollRequest struct {
+	Token          string `json:"token"`
+	AuditKeyID     string `json:"audit_key_id"`
+	AuditPublicKey string `json:"audit_public_key"`
+}
+
+type enrollResponse struct {
+	OrgID       string    `json:"org_id"`
+	FleetID     string    `json:"fleet_id"`
+	InstanceID  string    `json:"instance_id"`
+	Environment string    `json:"environment"`
+	AuditKeyID  string    `json:"audit_key_id"`
+	EnrolledAt  time.Time `json:"enrolled_at"`
 }
 
 type healthResponse struct {
@@ -146,7 +194,21 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	}
 	authorizeAuditQuery := opts.AuthorizeAuditQuery
 	if authorizeAuditQuery == nil {
-		authorizeAuditQuery = opts.AuthorizePublisher
+		authorizeAuditQuery = func(*http.Request, AuditBatchQuery) error {
+			return ErrAuditQueryForbidden
+		}
+	}
+	authorizeBundle := opts.AuthorizeBundle
+	if authorizeBundle == nil {
+		authorizeBundle = func(*http.Request, conductor.PolicyBundle) error {
+			return ErrPublisherForbidden
+		}
+	}
+	authorizeAdmin := opts.AuthorizeAdmin
+	if authorizeAdmin == nil {
+		authorizeAdmin = func(*http.Request) error {
+			return ErrPublisherForbidden
+		}
 	}
 	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
 	return &Handler{
@@ -157,10 +219,13 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		maxAuditBody:        maxAuditBody,
 		followerIdentity:    opts.FollowerIdentity,
 		authorizePublisher:  opts.AuthorizePublisher,
+		authorizeBundle:     authorizeBundle,
 		authorizeAuditQuery: authorizeAuditQuery,
+		authorizeAdmin:      authorizeAdmin,
 		auditSink:           opts.AuditSink,
 		auditQuerier:        auditQuerier,
 		auditKeys:           opts.AuditKeys,
+		enrollments:         opts.Enrollments,
 		metrics:             opts.Metrics,
 		logger:              opts.Logger,
 	}, nil
@@ -213,6 +278,10 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
 	case conductor.CapabilitiesPath:
 		h.handleCapabilities(w, r)
+	case EnrollmentTokensPath:
+		h.handleEnrollmentTokens(w, r)
+	case EnrollPath:
+		h.handleEnroll(w, r)
 	case PublishPolicyBundlePath:
 		h.handlePublishPolicyBundle(w, r)
 	case LatestPolicyBundlePath:
@@ -270,7 +339,7 @@ func (h *Handler) recordRequest(r *http.Request, route string, status int, durat
 
 func conductorRoute(path string) string {
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
 		return path
 	default:
 		return "unknown"
@@ -403,6 +472,10 @@ func (h *Handler) handlePublishPolicyBundle(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.authorizeBundle(r, req.Bundle); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
 		return
 	}
 	record, created, err := h.store.Publish(r.Context(), req.Bundle, PublishOptions{Now: h.now()})

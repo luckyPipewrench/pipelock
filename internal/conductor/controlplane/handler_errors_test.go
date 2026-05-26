@@ -4,10 +4,13 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +49,57 @@ func TestNewHandlerValidation(t *testing.T) {
 		Capabilities:       conductor.CapabilitiesResponse{SchemaVersion: conductor.SchemaVersion},
 	}); err == nil {
 		t.Fatal("NewHandler(invalid capabilities) error = nil, want error")
+	}
+}
+
+func TestHandlerDefaultAuthorizersDenyNewScopedOperations(t *testing.T) {
+	enrollments, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	auditStore := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = auditStore.Close() }()
+	handler, err := NewHandler(HandlerOptions{
+		Store:        mustStore(t),
+		Capabilities: DefaultCapabilities("conductor-test"),
+		Now:          func() time.Time { return testNow },
+		FollowerIdentity: func(*http.Request) (FollowerIdentity, error) {
+			return defaultFollowerIdentity(), nil
+		},
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuditSink:          auditStore,
+		AuditKeys:          rejectingAuditKeyResolver,
+		Enrollments:        enrollments,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	bundle := signedControlBundle(t, newTestSigner(t), bundleSpec{
+		id:       "bundle-1",
+		version:  1,
+		audience: conductor.Audience{InstanceIDs: []string{"pl-prod-1"}},
+	})
+	body, err := json.Marshal(publishPolicyBundleRequest{Bundle: bundle})
+	if err != nil {
+		t.Fatalf("Marshal(bundle) error = %v", err)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodPut, PublishPolicyBundlePath, bytes.NewReader(body)))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("publish status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"?org_id=org-main", nil))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("audit query status = %d body=%s, want 403", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodPost, EnrollmentTokensPath, strings.NewReader(`{}`)))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("enrollment token status = %d body=%s, want 403", w.Code, w.Body.String())
 	}
 }
 

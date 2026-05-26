@@ -420,7 +420,7 @@ func TestHandlerListAuditBatchSurfacesSinkError(t *testing.T) {
 			return defaultFollowerIdentity(), nil
 		},
 		AuthorizePublisher:  func(*http.Request) error { return nil },
-		AuthorizeAuditQuery: func(*http.Request) error { return nil },
+		AuthorizeAuditQuery: func(*http.Request, AuditBatchQuery) error { return nil },
 		AuditSink:           failingAuditQuerySink{err: ErrAuditBatchConflict},
 		AuditKeys:           rejectingAuditKeyResolver,
 	})
@@ -459,7 +459,7 @@ func newAuditQueryTestHandler(t *testing.T, auditStore *SQLiteAuditStore) *Handl
 		AuthorizePublisher: func(*http.Request) error {
 			return errors.New("publisher authorizer must not authorize audit query")
 		},
-		AuthorizeAuditQuery: func(r *http.Request) error {
+		AuthorizeAuditQuery: func(r *http.Request, _ AuditBatchQuery) error {
 			if r.Header.Get("X-Pipelock-Auditor") == "ok" {
 				return nil
 			}

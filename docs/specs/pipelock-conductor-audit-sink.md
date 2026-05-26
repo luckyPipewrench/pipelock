@@ -120,26 +120,45 @@ Enrollment bootstraps follower identity. It is not optional.
 ### Recommended MVP
 
 1. Operator creates a one-shot enrollment token in Conductor.
-2. Token includes `org_id`, `fleet_id`, `instance_id`, allowed environment,
-   allowed IP/CIDR hint, expiry, nonce, and token ID.
-3. Token is signed by `enrollment-token-signing`.
+2. Token state binds `token_id`, `org_id`, `fleet_id`, `instance_id`,
+   `environment`, expiry, creation time, and a stored token hash.
+3. The raw token is returned once from
+   `POST /api/v1/conductor/enrollment-tokens`; Conductor persists only the
+   token hash and consumption metadata.
 4. Follower starts with the token and Conductor trust root.
 5. Follower generates local private keys:
    - mTLS leaf key
    - audit batch signing key
    - optional local receipt signing key if not already configured
-6. Follower calls `POST /api/v1/enroll` over TLS.
-7. Conductor verifies token, checks token unused, validates singleton
-   `instance_id`, and issues an mTLS leaf certificate.
+6. Follower calls `POST /api/v1/conductor/enroll` with the one-shot token,
+   audit key ID, and encoded audit public key.
+7. Conductor verifies the token, checks token unused, validates singleton
+   `instance_id`, and stores the active follower identity. Certificate
+   issuance remains an integration slice; the server-side MVP does not mint
+   mTLS leaf certificates.
 8. Conductor stores the follower audit public key and expected instance metadata.
 9. Token is marked consumed permanently.
 10. All future follower calls derive identity from the mTLS certificate, not
     from request fields.
 
+### Out-of-band Certificate Provisioning
+
+The server-side MVP assumes follower mTLS certificates are provisioned by an
+external CA, manual issuance workflow, or separate PKI automation before the
+follower uses the mTLS listener. The certificate identity MUST use the same
+`org_id`, `fleet_id`, `instance_id`, and `environment` recorded during
+enrollment, encoded as the SPIFFE URI SAN described below. On the first
+authenticated mTLS connection, the server MUST validate the verified SPIFFE URI
+SAN against that enrollment record and reject mismatched org, fleet, instance,
+or environment values. Enrollment records the audit public key and active
+instance binding; it does not prove possession of the eventual mTLS private key
+or issue the leaf certificate in this slice.
+
 ### Singleton Rule
 
-Conductor must prevent silent instance cloning. A second enrollment for an active
-`instance_id` fails unless an admin revokes or rotates the prior identity.
+Conductor must prevent silent instance cloning. A second enrollment for the same
+active `org_id`, `fleet_id`, `instance_id`, and `environment` fails unless an
+admin revokes or rotates the prior identity.
 
 ### Rotation
 
@@ -250,7 +269,11 @@ pipelock conductor serve \
   --tls-key /etc/pipelock/conductor/server.key \
   --client-ca /etc/pipelock/conductor/follower-ca.pem \
   --publisher-token-file /etc/pipelock/conductor/publisher-token \
-  --trusted-audit-key id=audit-key-1,file=/etc/pipelock/conductor/audit-key.pub,org=org-main,fleet=prod
+  --auditor-token-file /etc/pipelock/conductor/auditor-token \
+  --admin-token-file /etc/pipelock/conductor/admin-token \
+  --probe-listen 127.0.0.1:9092
+# Optional bootstrap fallback; every trusted audit key must include org=.
+# --trusted-audit-key id=audit-key-1,file=/etc/pipelock/conductor/audit-key.pub,org=org-main,fleet=prod
 ```
 
 The command requires TLS 1.3 plus client-certificate verification. Follower
@@ -263,14 +286,21 @@ or `.`, and bounded length. SANs that unescape to a forbidden byte (null,
 slash, control character) are rejected at the transport boundary before
 reaching any store or sink.
 
-Policy publication uses a bearer token read from disk so the token does not
-appear in process arguments. Every `--trusted-audit-key` MUST carry `org=`;
-a cross-org audit key would let any enrolled follower in any org sign batches
-that authenticate against that key. Optional `fleet=`/`instance=` narrow the
-scope further. Accepted audit batches are written to a local SQLite raw-evidence
-store with idempotency on `(org, fleet, instance, batch_id)` and fork rejection
-on overlapping sequence ranges with divergent payload or segment-tail hashes.
-The storage directory is sensitive operator-controlled state. The MVP exposes
+Policy publication, audit metadata query, and enrollment-token creation use
+separate bearer tokens read from disk so tokens do not appear in process
+arguments. Enrollment state is stored in `enrollments.json` under
+`--storage-dir`; the file contains one-shot token hashes, consumption metadata,
+active follower identity records, and enrolled audit public keys. Static
+trusted audit keys are optional bootstrap/fallback inputs. When configured,
+every `--trusted-audit-key` MUST carry `org=`; a cross-org audit key would let
+any enrolled follower in any org sign batches that authenticate against that
+key. Optional `fleet=`/`instance=` narrow the scope further. Enrolled follower
+keys are resolved first by exact org/fleet/instance and key ID. Accepted audit
+batches are written to a
+local SQLite raw-evidence store with idempotency on `(org, fleet, instance,
+batch_id)` and fork rejection on overlapping sequence ranges with divergent
+payload or segment-tail hashes. The storage directory is sensitive
+operator-controlled state. The MVP exposes
 `GET /api/v1/conductor/audit/batches` as an operator/admin metadata query
 endpoint; it requires audit-query authorization and at least `org_id`, returns
 metadata-only batch summaries, and does not export raw payload bytes. Raw
@@ -497,17 +527,26 @@ Local audit batcher failures produce local recorder evidence and metrics.
 MVP server endpoint:
 
 ```http
+POST /api/v1/conductor/enrollment-tokens
+POST /api/v1/conductor/enroll
 POST /api/v1/conductor/audit/batches
 GET /api/v1/conductor/audit/batches?org_id=...
 ```
 
+`POST /api/v1/conductor/enrollment-tokens` is an admin endpoint that creates a
+one-shot token for a specific org/fleet/instance/environment and expiry.
+`POST /api/v1/conductor/enroll` consumes that token, records the follower audit
+public key, and rejects token reuse or a second enrollment for an already-active
+instance.
+
 The server derives follower identity from the authenticated transport, validates
 the signed audit batch envelope and payload together, verifies the follower
-audit-batch signature against the enrolled audit key for that identity, and only
-then hands the accepted batch to the configured audit sink. The current runtime
-sink is a local SQLite raw-evidence store; redacted storage/search indexing,
-DLP-before-indexing, fork response workflow, and dashboard views are later
-slices.
+audit-batch signature against the enrolled audit key for that identity, and
+only then hands the accepted batch to the configured audit sink. Static trusted
+audit keys remain available as a bootstrap fallback when no enrolled key matches
+the exact identity and key ID. The current runtime sink is a local SQLite
+raw-evidence store; redacted storage/search indexing, DLP-before-indexing, fork
+response workflow, and dashboard views are later slices.
 
 `GET /api/v1/conductor/audit/batches` is an operator/admin API endpoint. It
 requires audit-query authorization, requires at least `org_id`, and returns

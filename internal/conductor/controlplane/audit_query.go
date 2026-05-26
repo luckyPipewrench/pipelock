@@ -27,10 +27,6 @@ type listAuditBatchesResponse struct {
 
 // handleListAuditBatches serves operator/admin audit-metadata reads.
 func (h *Handler) handleListAuditBatches(w http.ResponseWriter, r *http.Request) {
-	if err := h.authorizeAuditQuery(r); err != nil {
-		writeError(w, http.StatusForbidden, ErrAuditQueryForbidden)
-		return
-	}
 	if h.auditQuerier == nil {
 		writeError(w, http.StatusNotImplemented, errors.New("audit query not supported by configured audit sink"))
 		return
@@ -38,6 +34,10 @@ func (h *Handler) handleListAuditBatches(w http.ResponseWriter, r *http.Request)
 	query, err := parseAuditBatchQuery(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.authorizeAuditQuery(r, query); err != nil {
+		writeError(w, http.StatusForbidden, ErrAuditQueryForbidden)
 		return
 	}
 	batches, err := h.auditQuerier.ListAuditBatches(r.Context(), query)

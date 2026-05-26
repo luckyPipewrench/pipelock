@@ -42,6 +42,8 @@ type serveOptions struct {
 	conductorID         string
 	followerTrustDomain string
 	publisherTokenFile  string
+	auditorTokenFile    string
+	adminTokenFile      string
 	trustedAuditKeys    []string
 	tlsCert             string
 	tlsKey              string
@@ -88,6 +90,8 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.conductorID, "conductor-id", opts.conductorID, "Conductor ID advertised in capabilities")
 	cmd.Flags().StringVar(&opts.followerTrustDomain, "follower-trust-domain", opts.followerTrustDomain, "SPIFFE trust domain for follower mTLS identities")
 	cmd.Flags().StringVar(&opts.publisherTokenFile, "publisher-token-file", "", "file containing bearer token required for policy publish requests")
+	cmd.Flags().StringVar(&opts.auditorTokenFile, "auditor-token-file", "", "file containing bearer token required for audit metadata query requests")
+	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing bearer token required for Conductor admin requests")
 	cmd.Flags().StringArrayVar(&opts.trustedAuditKeys, "trusted-audit-key", nil,
 		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]'; "+
 			"org= is required so a key cannot authenticate batches across orgs; repeatable")
@@ -195,7 +199,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err := validateServeTLSFlags(opts); err != nil {
 		return nil, nil, nil, err
 	}
-	publisherToken, err := loadTokenFile(opts.publisherTokenFile)
+	publisherToken, err := loadTokenFile("--publisher-token-file", opts.publisherTokenFile)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -203,13 +207,45 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	auditorToken, err := loadTokenFile("--auditor-token-file", opts.auditorTokenFile)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	adminToken, err := loadTokenFile("--admin-token-file", opts.adminTokenFile)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	publishAuthorizer, err := controlplane.ScopedBearerBundleAuthorizer([]controlplane.ScopedBearerCredential{{
+		Token: publisherToken,
+		Role:  controlplane.RolePublisher,
+	}})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	auditQueryAuthorizer, err := controlplane.ScopedBearerAuditQueryAuthorizer([]controlplane.ScopedBearerCredential{
+		{Token: auditorToken, Role: controlplane.RoleAuditor},
+		{Token: adminToken, Role: controlplane.RoleAdmin},
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	adminAuthorizer, err := controlplane.ScopedBearerAdminAuthorizer([]controlplane.ScopedBearerCredential{{
+		Token: adminToken,
+		Role:  controlplane.RoleAdmin,
+	}})
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	identity, err := controlplane.MTLSFollowerIdentityResolver(opts.followerTrustDomain)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	auditKeys, err := buildAuditKeyResolver(opts.trustedAuditKeys)
-	if err != nil {
-		return nil, nil, nil, err
+	var auditKeys controlplane.AuditKeyResolver
+	if len(opts.trustedAuditKeys) > 0 {
+		auditKeys, err = buildAuditKeyResolver(opts.trustedAuditKeys)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 	store, err := controlplane.OpenFileBundleStore(filepath.Join(opts.storageDir, "policy-bundles"))
 	if err != nil {
@@ -219,16 +255,24 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	enrollments, err := controlplane.OpenFileEnrollmentStore(filepath.Join(opts.storageDir, "enrollments.json"))
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	m := metrics.New()
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
-		Store:              store,
-		Capabilities:       controlplane.DefaultCapabilities(opts.conductorID),
-		FollowerIdentity:   identity,
-		AuthorizePublisher: authorizer,
-		AuditSink:          auditStore,
-		AuditKeys:          auditKeys,
-		Metrics:            m,
-		Logger:             conductorRequestLogger(opts.logWriter),
+		Store:               store,
+		Capabilities:        controlplane.DefaultCapabilities(opts.conductorID),
+		FollowerIdentity:    identity,
+		AuthorizePublisher:  authorizer,
+		AuthorizeBundle:     publishAuthorizer,
+		AuthorizeAuditQuery: auditQueryAuthorizer,
+		AuthorizeAdmin:      adminAuthorizer,
+		AuditSink:           auditStore,
+		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, auditKeys),
+		Enrollments:         enrollments,
+		Metrics:             m,
+		Logger:              conductorRequestLogger(opts.logWriter),
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -279,17 +323,17 @@ func serveTLSConfig(clientCAPath string) (*tls.Config, error) {
 	}, nil
 }
 
-func loadTokenFile(path string) (string, error) {
+func loadTokenFile(flag, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
-		return "", errors.New("--publisher-token-file is required")
+		return "", fmt.Errorf("%s is required", flag)
 	}
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return "", fmt.Errorf("read publisher token file: %w", err)
+		return "", fmt.Errorf("read %s: %w", flag, err)
 	}
 	token := strings.TrimSpace(string(data))
 	if token == "" {
-		return "", errors.New("publisher token file is empty")
+		return "", fmt.Errorf("%s is empty", flag)
 	}
 	return token, nil
 }

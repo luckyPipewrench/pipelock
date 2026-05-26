@@ -18,12 +18,27 @@ import (
 
 const followerURIScheme = "spiffe"
 
+type PrincipalRole string
+
+const (
+	RoleAdmin     PrincipalRole = "admin"
+	RolePublisher PrincipalRole = "publisher"
+	RoleAuditor   PrincipalRole = "auditor"
+)
+
 type StaticAuditKey struct {
 	KeyID      string
 	Key        conductor.SignatureKey
 	OrgID      string
 	FleetID    string
 	InstanceID string
+}
+
+type ScopedBearerCredential struct {
+	Token   string
+	Role    PrincipalRole
+	OrgID   string
+	FleetID string
 }
 
 func MTLSFollowerIdentityResolver(trustDomain string) (FollowerIdentityResolver, error) {
@@ -103,6 +118,117 @@ func BearerPublisherAuthorizer(rawCredential string) (PublisherAuthorizer, error
 		}
 		return nil
 	}, nil
+}
+
+func ScopedBearerAdminAuthorizer(creds []ScopedBearerCredential) (PublisherAuthorizer, error) {
+	normalized, err := normalizeScopedBearerCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	return func(r *http.Request) error {
+		cred, ok := matchBearerCredential(r, normalized)
+		if !ok || cred.Role != RoleAdmin {
+			return ErrPublisherForbidden
+		}
+		return nil
+	}, nil
+}
+
+func ScopedBearerBundleAuthorizer(creds []ScopedBearerCredential) (BundleAuthorizer, error) {
+	normalized, err := normalizeScopedBearerCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	return func(r *http.Request, bundle conductor.PolicyBundle) error {
+		cred, ok := matchBearerCredential(r, normalized)
+		if !ok || cred.Role != RolePublisher || !scopedCredentialAllows(cred, bundle.OrgID, bundle.FleetID) {
+			return ErrPublisherForbidden
+		}
+		return nil
+	}, nil
+}
+
+func ScopedBearerAuditQueryAuthorizer(creds []ScopedBearerCredential) (AuditQueryAuthorizer, error) {
+	normalized, err := normalizeScopedBearerCredentials(creds)
+	if err != nil {
+		return nil, err
+	}
+	return func(r *http.Request, q AuditBatchQuery) error {
+		cred, ok := matchBearerCredential(r, normalized)
+		if !ok {
+			return ErrAuditQueryForbidden
+		}
+		switch cred.Role {
+		case RoleAdmin, RoleAuditor:
+			if scopedCredentialAllows(cred, q.OrgID, q.FleetID) {
+				return nil
+			}
+		}
+		return ErrAuditQueryForbidden
+	}, nil
+}
+
+func normalizeScopedBearerCredentials(creds []ScopedBearerCredential) ([]ScopedBearerCredential, error) {
+	if len(creds) == 0 {
+		return nil, ErrPublisherForbidden
+	}
+	out := make([]ScopedBearerCredential, 0, len(creds))
+	for _, cred := range creds {
+		cred.Token = strings.TrimSpace(cred.Token)
+		cred.Role = PrincipalRole(strings.TrimSpace(string(cred.Role)))
+		cred.OrgID = strings.TrimSpace(cred.OrgID)
+		cred.FleetID = strings.TrimSpace(cred.FleetID)
+		if cred.Token == "" {
+			return nil, ErrPublisherForbidden
+		}
+		switch cred.Role {
+		case RoleAdmin, RolePublisher, RoleAuditor:
+		default:
+			return nil, ErrPublisherForbidden
+		}
+		if cred.OrgID != "" {
+			if err := conductor.ValidateIdentifier("org_id", cred.OrgID); err != nil {
+				return nil, fmt.Errorf("%w: org_id", ErrPublisherForbidden)
+			}
+		}
+		if cred.FleetID != "" {
+			if cred.OrgID == "" {
+				return nil, fmt.Errorf("%w: org_id required when fleet_id is scoped", ErrPublisherForbidden)
+			}
+			if err := conductor.ValidateIdentifier("fleet_id", cred.FleetID); err != nil {
+				return nil, fmt.Errorf("%w: fleet_id", ErrPublisherForbidden)
+			}
+		}
+		out = append(out, cred)
+	}
+	return out, nil
+}
+
+func matchBearerCredential(r *http.Request, creds []ScopedBearerCredential) (ScopedBearerCredential, bool) {
+	if r == nil {
+		return ScopedBearerCredential{}, false
+	}
+	raw := r.Header.Get("Authorization")
+	prefix, got, ok := strings.Cut(raw, " ")
+	if !ok || !strings.EqualFold(prefix, "Bearer") {
+		return ScopedBearerCredential{}, false
+	}
+	for _, cred := range creds {
+		if subtle.ConstantTimeCompare([]byte(got), []byte(cred.Token)) == 1 {
+			return cred, true
+		}
+	}
+	return ScopedBearerCredential{}, false
+}
+
+func scopedCredentialAllows(cred ScopedBearerCredential, orgID, fleetID string) bool {
+	if cred.OrgID != "" && cred.OrgID != orgID {
+		return false
+	}
+	if cred.FleetID != "" && cred.FleetID != fleetID {
+		return false
+	}
+	return true
 }
 
 // StaticAuditKeyResolver builds an [AuditKeyResolver] from a fixed roster of

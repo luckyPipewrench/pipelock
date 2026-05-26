@@ -154,6 +154,54 @@ func TestFileEnrollmentStoreRejectsDuplicateActiveInstance(t *testing.T) {
 	}
 }
 
+func TestFileEnrollmentStoreSeparatesEnvironments(t *testing.T) {
+	store, err := OpenFileEnrollmentStore(filepath.Join(t.TempDir(), "enrollments.json"))
+	if err != nil {
+		t.Fatalf("OpenFileEnrollmentStore() error = %v", err)
+	}
+	prod := defaultFollowerIdentity()
+	dev := prod
+	dev.Environment = "dev"
+	first, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "token-prod",
+		Identity: prod,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken(prod) error = %v", err)
+	}
+	second, err := store.CreateEnrollmentToken(context.Background(), EnrollmentTokenSpec{
+		TokenID:  "token-dev",
+		Identity: dev,
+		Expires:  testNow.Add(time.Hour),
+		Now:      testNow,
+	})
+	if err != nil {
+		t.Fatalf("CreateEnrollmentToken(dev) error = %v", err)
+	}
+	pub, _ := testAuditSigner(t)
+	consume := ConsumeEnrollmentTokenRequest{
+		AuditKeyID: "audit-key-1",
+		AuditKey: conductor.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: signing.PurposeAuditBatchSigning,
+		},
+		Now: testNow,
+	}
+	consume.Token = first.Token
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), consume); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken(prod) error = %v", err)
+	}
+	consume.Token = second.Token
+	if _, err := store.ConsumeEnrollmentToken(context.Background(), consume); err != nil {
+		t.Fatalf("ConsumeEnrollmentToken(dev) error = %v", err)
+	}
+	if _, err := store.ResolveEnrolledAuditKey(dev, "audit-key-1"); err != nil {
+		t.Fatalf("ResolveEnrolledAuditKey(dev) error = %v", err)
+	}
+}
+
 func TestFileEnrollmentStoreValidatesInputsAndPersists(t *testing.T) {
 	if _, err := OpenFileEnrollmentStore(""); err == nil {
 		t.Fatal("OpenFileEnrollmentStore(empty) error = nil, want error")

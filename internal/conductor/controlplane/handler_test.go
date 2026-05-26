@@ -319,16 +319,20 @@ func newTestHandler(t *testing.T, store BundleStore, identity FollowerIdentityRe
 			}, nil
 		}
 	}
+	publisher := func(r *http.Request) error {
+		if r.Header.Get("X-Pipelock-Publisher") != "ok" {
+			return ErrPublisherForbidden
+		}
+		return nil
+	}
 	handler, err := NewHandler(HandlerOptions{
-		Store:            store,
-		Capabilities:     DefaultCapabilities("conductor-test"),
-		Now:              func() time.Time { return testNow },
-		FollowerIdentity: identity,
-		AuthorizePublisher: func(r *http.Request) error {
-			if r.Header.Get("X-Pipelock-Publisher") != "ok" {
-				return ErrPublisherForbidden
-			}
-			return nil
+		Store:              store,
+		Capabilities:       DefaultCapabilities("conductor-test"),
+		Now:                func() time.Time { return testNow },
+		FollowerIdentity:   identity,
+		AuthorizePublisher: publisher,
+		AuthorizeBundle: func(r *http.Request, _ conductor.PolicyBundle) error {
+			return publisher(r)
 		},
 		AuditSink: discardAuditSink{},
 		AuditKeys: rejectingAuditKeyResolver,

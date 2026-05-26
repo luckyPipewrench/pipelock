@@ -194,19 +194,21 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	}
 	authorizeAuditQuery := opts.AuthorizeAuditQuery
 	if authorizeAuditQuery == nil {
-		authorizeAuditQuery = func(r *http.Request, _ AuditBatchQuery) error {
-			return opts.AuthorizePublisher(r)
+		authorizeAuditQuery = func(*http.Request, AuditBatchQuery) error {
+			return ErrAuditQueryForbidden
 		}
 	}
 	authorizeBundle := opts.AuthorizeBundle
 	if authorizeBundle == nil {
-		authorizeBundle = func(r *http.Request, _ conductor.PolicyBundle) error {
-			return opts.AuthorizePublisher(r)
+		authorizeBundle = func(*http.Request, conductor.PolicyBundle) error {
+			return ErrPublisherForbidden
 		}
 	}
 	authorizeAdmin := opts.AuthorizeAdmin
 	if authorizeAdmin == nil {
-		authorizeAdmin = opts.AuthorizePublisher
+		authorizeAdmin = func(*http.Request) error {
+			return ErrPublisherForbidden
+		}
 	}
 	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
 	return &Handler{

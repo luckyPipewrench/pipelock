@@ -209,6 +209,7 @@ func TestScopedBearerAuthorizersRejectInvalidConfigAndHeaders(t *testing.T) {
 		{name: "bad role", creds: []ScopedBearerCredential{{Token: "token", Role: PrincipalRole("owner")}}},
 		{name: "bad org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, OrgID: "-org"}}},
 		{name: "bad fleet", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "fleet/prod"}}},
+		{name: "fleet without org", creds: []ScopedBearerCredential{{Token: "token", Role: RoleAuditor, FleetID: "prod"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ScopedBearerAdminAuthorizer(tc.creds); !errors.Is(err, ErrPublisherForbidden) {

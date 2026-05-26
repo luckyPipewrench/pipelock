@@ -429,5 +429,5 @@ func hashEnrollmentToken(token string) string {
 }
 
 func followerEnrollmentKey(identity FollowerIdentity) string {
-	return identity.OrgID + "\x00" + identity.FleetID + "\x00" + identity.InstanceID
+	return identity.OrgID + "\x00" + identity.FleetID + "\x00" + identity.InstanceID + "\x00" + identity.Environment
 }

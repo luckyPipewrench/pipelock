@@ -192,6 +192,9 @@ func normalizeScopedBearerCredentials(creds []ScopedBearerCredential) ([]ScopedB
 			}
 		}
 		if cred.FleetID != "" {
+			if cred.OrgID == "" {
+				return nil, fmt.Errorf("%w: org_id required when fleet_id is scoped", ErrPublisherForbidden)
+			}
 			if err := conductor.ValidateIdentifier("fleet_id", cred.FleetID); err != nil {
 				return nil, fmt.Errorf("%w: fleet_id", ErrPublisherForbidden)
 			}

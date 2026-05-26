@@ -147,14 +147,18 @@ The server-side MVP assumes follower mTLS certificates are provisioned by an
 external CA, manual issuance workflow, or separate PKI automation before the
 follower uses the mTLS listener. The certificate identity MUST use the same
 `org_id`, `fleet_id`, `instance_id`, and `environment` recorded during
-enrollment, encoded as the SPIFFE URI SAN described below. Enrollment records
-the audit public key and active instance binding; it does not prove possession
-of the eventual mTLS private key or issue the leaf certificate in this slice.
+enrollment, encoded as the SPIFFE URI SAN described below. On the first
+authenticated mTLS connection, the server MUST validate the verified SPIFFE URI
+SAN against that enrollment record and reject mismatched org, fleet, instance,
+or environment values. Enrollment records the audit public key and active
+instance binding; it does not prove possession of the eventual mTLS private key
+or issue the leaf certificate in this slice.
 
 ### Singleton Rule
 
-Conductor must prevent silent instance cloning. A second enrollment for an active
-`instance_id` fails unless an admin revokes or rotates the prior identity.
+Conductor must prevent silent instance cloning. A second enrollment for the same
+active `org_id`, `fleet_id`, `instance_id`, and `environment` fails unless an
+admin revokes or rotates the prior identity.
 
 ### Rotation
 
@@ -268,6 +272,8 @@ pipelock conductor serve \
   --auditor-token-file /etc/pipelock/conductor/auditor-token \
   --admin-token-file /etc/pipelock/conductor/admin-token \
   --probe-listen 127.0.0.1:9092
+# Optional bootstrap fallback; every trusted audit key must include org=.
+# --trusted-audit-key id=audit-key-1,file=/etc/pipelock/conductor/audit-key.pub,org=org-main,fleet=prod
 ```
 
 The command requires TLS 1.3 plus client-certificate verification. Follower

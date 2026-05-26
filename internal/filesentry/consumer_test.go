@@ -22,6 +22,7 @@ type stubWatcher struct{ ch chan Finding }
 func (s *stubWatcher) Arm() error                    { return nil }
 func (s *stubWatcher) Start(_ context.Context) error { return nil }
 func (s *stubWatcher) Findings() <-chan Finding      { return s.ch }
+func (s *stubWatcher) DegradedPaths() []DegradedPath { return nil }
 func (s *stubWatcher) Close() error                  { return nil }
 
 // makeWatcher seeds a buffered channel with the given findings and closes

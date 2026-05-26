@@ -22,8 +22,9 @@ file_sentry:
   enabled: true
   action: warn               # warn (default) or block
   watch_paths:
-    - "/workspace"           # agent working directory
-    - "/tmp/agent-output"    # temp output directory
+    - "/workspace"           # optional by default; degraded if unavailable
+    - path: "/tmp/agent-output"
+      required: true         # startup fails if this watch cannot be installed
   scan_content: true
   ignore_patterns:
     - "node_modules/**"
@@ -41,6 +42,17 @@ file_sentry:
 ### Watch Paths
 
 Directories are watched recursively. New subdirectories created after startup are automatically added to the watch. Paths are resolved to absolute paths at startup.
+
+Each entry can be either a bare string or a mapping:
+
+```yaml
+watch_paths:
+  - "/workspace"             # required:false
+  - path: "/var/agent-secrets"
+    required: true
+```
+
+Bare string entries default to `required: false`. If a non-required watch cannot be installed, pipelock logs a degraded path and continues arming the remaining paths. Use `required: true` for directories whose monitoring is part of the security boundary; startup fails closed if that watch cannot be installed. Unknown mapping fields are rejected so typos do not silently disable the hard-fail opt-in.
 
 ### Ignore Patterns
 

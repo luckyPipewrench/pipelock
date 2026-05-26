@@ -91,7 +91,8 @@ func Load(path string) (*Config, error) {
 	// Relative paths with ".." traversal are rejected to prevent
 	// unintentional escapes. Absolute paths are allowed as-is since the
 	// user explicitly chose the target directory.
-	for i, p := range cfg.FileSentry.WatchPaths {
+	for i, wp := range cfg.FileSentry.WatchPaths {
+		p := wp.Path
 		if !filepath.IsAbs(p) {
 			resolved := filepath.Clean(filepath.Join(configDir, p))
 			// Verify the resolved path is still under the config directory.
@@ -103,9 +104,9 @@ func Load(path string) (*Config, error) {
 			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 				return nil, fmt.Errorf("file_sentry: watch_paths[%d] %q escapes config directory (use absolute path instead)", i, p)
 			}
-			cfg.FileSentry.WatchPaths[i] = resolved
+			cfg.FileSentry.WatchPaths[i].Path = resolved
 		} else {
-			cfg.FileSentry.WatchPaths[i] = filepath.Clean(cfg.FileSentry.WatchPaths[i])
+			cfg.FileSentry.WatchPaths[i].Path = filepath.Clean(p)
 		}
 	}
 

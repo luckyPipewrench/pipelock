@@ -1888,8 +1888,8 @@ func TestRunCmd_MCPListenStartupFailure(t *testing.T) {
 		cancel()
 		t.Fatal("expected bind error, but run succeeded")
 	}
-	if !strings.Contains(cmdErr.Error(), "MCP listener bind") {
-		t.Errorf("expected 'MCP listener bind' error, got: %v", cmdErr)
+	if !strings.Contains(cmdErr.Error(), "mcp_listen bind") {
+		t.Errorf("expected 'mcp_listen bind' error, got: %v", cmdErr)
 	}
 }
 

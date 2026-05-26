@@ -5,6 +5,7 @@
 ```sh
 pipelock doctor --config /etc/pipelock/pipelock.yaml
 pipelock doctor --config /etc/pipelock/pipelock.yaml --json
+pipelock doctor --config /etc/pipelock/pipelock.yaml --check-ports
 ```
 
 The command does not make network requests. It checks local config, file readability, selected environment variables, and deployment prerequisites that can be inferred from the current process.
@@ -23,6 +24,7 @@ The command does not make network requests. It checks local config, file readabi
 | `file_sentry` | MCP | Whether file_sentry is enabled and its watch paths are readable by the process arming the watcher. |
 | `sentry` | Host | Whether Sentry telemetry is enabled and a DSN is present without printing the DSN value. |
 | `direct_egress_boundary` | Host | Reminder that proxy env vars are not a wall; direct egress requires `pipelock contain`, sandboxing, NetworkPolicy, firewalling, or equivalent controls. |
+| `port_collisions:*` | Host | With `--check-ports`, whether configured listener ports are already held by another process. On Linux, this uses `/proc/net/tcp*` plus `/proc/<pid>/fd`; run as root when cross-user process ownership hides PID details. Non-Linux hosts report the check as unavailable. |
 
 ## Exit Codes
 

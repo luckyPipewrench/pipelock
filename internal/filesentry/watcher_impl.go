@@ -47,6 +47,20 @@ type fsWatcher struct {
 	timers   map[string]*time.Timer // per-path debounce timers
 	pidSnap  map[string]bool        // per-path agent attribution snapshot at event time
 	closed   bool
+	// degradedPaths records configured watch_paths whose Arm() install failed
+	// when the path was not marked required:true. Populated by Arm() and
+	// exposed via DegradedPaths() so health endpoints can surface "armed but
+	// degraded" without lying about coverage.
+	degradedPaths []DegradedPath
+}
+
+// DegradedPath records a configured watch_paths entry whose install failed
+// during Arm() but was not marked required:true. Operators see these via
+// the watcher's DegradedPaths() / health surface so degraded coverage is
+// visible, not silent.
+type DegradedPath struct {
+	Path  string
+	Error string
 }
 
 // NewWatcher creates a file watcher that monitors configured directories for
@@ -81,17 +95,62 @@ func (w *fsWatcher) logError(err error) {
 // Arm installs watches on all configured directories synchronously.
 // Call this before launching the child process to ensure no writes
 // are missed during the startup window.
+//
+// Per-path failure semantics:
+//   - WatchPath.Required=true: install failure aborts Arm with a wrapped error.
+//     Use for paths whose monitoring is part of the security boundary.
+//   - WatchPath.Required=false (default): install failure is recorded as a
+//     degraded path (visible via DegradedPaths) and reported through the
+//     optional onError callback, but Arm continues installing the remaining
+//     paths. This lets a missing or transiently-inaccessible aux path stop
+//     crash-looping the proxy when the primary watch is still healthy.
+//
+// Required:false matches the operator expectation that an optional watch
+// path that "happens to be unreadable today" should not crash-loop the
+// proxy. Operators who want hard-fail behavior for a specific path opt in
+// with required:true on that entry.
 func (w *fsWatcher) Arm() error {
-	for _, p := range w.cfg.WatchPaths {
-		abs, err := filepath.Abs(p)
+	w.mu.Lock()
+	w.degradedPaths = w.degradedPaths[:0]
+	w.mu.Unlock()
+	for _, wp := range w.cfg.WatchPaths {
+		abs, err := filepath.Abs(wp.Path)
 		if err != nil {
-			return fmt.Errorf("filesentry: resolve path %q: %w", p, err)
+			if wp.Required {
+				return fmt.Errorf("filesentry: resolve path %q: %w", wp.Path, err)
+			}
+			w.recordDegraded(wp.Path, err)
+			continue
 		}
 		if err := w.addRecursive(abs); err != nil {
-			return fmt.Errorf("filesentry: watch %q: %w", abs, err)
+			if wp.Required {
+				return fmt.Errorf("filesentry: watch %q: %w", abs, err)
+			}
+			w.recordDegraded(wp.Path, err)
+			continue
 		}
 	}
 	return nil
+}
+
+// recordDegraded captures a non-required Arm-time install failure for later
+// visibility through DegradedPaths() and the optional onError callback.
+func (w *fsWatcher) recordDegraded(path string, cause error) {
+	w.mu.Lock()
+	w.degradedPaths = append(w.degradedPaths, DegradedPath{Path: path, Error: cause.Error()})
+	w.mu.Unlock()
+	w.logError(fmt.Errorf("filesentry: watch %q failed (degraded, required:false): %w", path, cause))
+}
+
+// DegradedPaths returns watch_paths entries whose Arm() install failed and
+// whose entry was not marked required:true. Returned slice is a copy safe
+// for concurrent inspection from a health endpoint.
+func (w *fsWatcher) DegradedPaths() []DegradedPath {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]DegradedPath, len(w.degradedPaths))
+	copy(out, w.degradedPaths)
+	return out
 }
 
 // Start processes filesystem events until ctx is cancelled. Blocks until done.

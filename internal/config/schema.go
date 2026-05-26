@@ -159,15 +159,33 @@ type TrustedKey struct {
 	Tier      string `yaml:"tier,omitempty"`
 }
 
+// WatchPath is a single file_sentry watch entry. YAML accepts either a bare
+// string ("/foo") for legacy/default behavior, or a mapping
+// ({path: "/foo", required: true}) when the operator wants to opt that path
+// into hard-fail-on-arm semantics.
+//
+// Required=false (the default) means a failure to install the watch (missing
+// path, permission denied, inotify exhaustion on that specific subtree) is
+// recorded as degraded health but does not abort startup. Other paths still
+// arm. This is the soft-fail path operators get for free.
+//
+// Required=true means the watch MUST install. If Arm() cannot install it,
+// startup fails closed. Use this for paths whose monitoring is part of the
+// security boundary (e.g. credential stores under your control).
+type WatchPath struct {
+	Path     string `yaml:"path"`
+	Required bool   `yaml:"required"`
+}
+
 // FileSentry configures real-time filesystem monitoring for agent processes.
 // Detects secrets written to disk by agent subprocesses that bypass
 // the MCP tool call path. Applies to subprocess MCP mode only.
 type FileSentry struct {
-	Enabled        bool     `yaml:"enabled"`
-	BestEffort     bool     `yaml:"best_effort"` // degrade gracefully when watch setup fails (e.g. inotify exhaustion)
-	WatchPaths     []string `yaml:"watch_paths"`
-	ScanContent    *bool    `yaml:"scan_content"`    // nil = default true
-	IgnorePatterns []string `yaml:"ignore_patterns"` // glob patterns to skip
+	Enabled        bool        `yaml:"enabled"`
+	BestEffort     bool        `yaml:"best_effort"` // degrade gracefully when watch setup fails (e.g. inotify exhaustion)
+	WatchPaths     []WatchPath `yaml:"watch_paths"`
+	ScanContent    *bool       `yaml:"scan_content"`    // nil = default true
+	IgnorePatterns []string    `yaml:"ignore_patterns"` // glob patterns to skip
 	// Action selects the enforcement response when an agent-attributed write
 	// matches a DLP pattern. "warn" logs the finding and records a metric
 	// (current default). "block" additionally cancels the proxy context so the

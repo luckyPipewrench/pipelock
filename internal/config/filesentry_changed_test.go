@@ -15,7 +15,7 @@ func TestFileSentryChanged(t *testing.T) {
 		c.FileSentry.Enabled = true
 		c.FileSentry.BestEffort = false
 		c.FileSentry.Action = ActionWarn
-		c.FileSentry.WatchPaths = []string{"/tmp/watch"}
+		c.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp/watch"}}
 		c.FileSentry.ScanContent = boolPtrCfg(true)
 		c.FileSentry.IgnorePatterns = []string{"*.log"}
 		return c
@@ -48,12 +48,14 @@ func TestFileSentryChanged(t *testing.T) {
 		},
 		{
 			name:    "watch_paths changed",
-			modify:  func(c *Config) { c.FileSentry.WatchPaths = []string{"/tmp/other"} },
+			modify:  func(c *Config) { c.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp/other"}} },
 			changed: true,
 		},
 		{
-			name:    "watch_paths added",
-			modify:  func(c *Config) { c.FileSentry.WatchPaths = append(c.FileSentry.WatchPaths, "/tmp/extra") },
+			name: "watch_paths added",
+			modify: func(c *Config) {
+				c.FileSentry.WatchPaths = append(c.FileSentry.WatchPaths, WatchPath{Path: "/tmp/extra"})
+			},
 			changed: true,
 		},
 		{

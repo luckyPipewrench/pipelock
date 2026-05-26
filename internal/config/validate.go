@@ -1508,8 +1508,8 @@ func (c *Config) validateFileSentry() error {
 	if len(c.FileSentry.WatchPaths) == 0 {
 		return fmt.Errorf("file_sentry: watch_paths must be non-empty when enabled")
 	}
-	for i, p := range c.FileSentry.WatchPaths {
-		if p == "" {
+	for i, wp := range c.FileSentry.WatchPaths {
+		if wp.Path == "" {
 			return fmt.Errorf("file_sentry: watch_paths[%d] must not be empty", i)
 		}
 	}

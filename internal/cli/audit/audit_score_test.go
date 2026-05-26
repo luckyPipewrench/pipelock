@@ -95,7 +95,7 @@ func TestScoreConfig_FullyConfigured(t *testing.T) {
 	cfg.GitProtection.PrePushScan = true
 	cfg.GitProtection.BlockedCommands = []string{"force-push"}
 	cfg.FileSentry.Enabled = true
-	cfg.FileSentry.WatchPaths = []string{"/etc/secrets"}
+	cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: "/etc/secrets"}}
 
 	result := ScoreConfig(cfg, "test.yaml")
 

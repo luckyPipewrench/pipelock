@@ -42,7 +42,7 @@ func TestWatcher_DetectsSecretWrite(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -88,7 +88,7 @@ func TestWatcher_CleanFileNoFinding(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -134,7 +134,7 @@ func TestWatcher_IgnoredPatterns(t *testing.T) {
 
 	cfg := &config.FileSentry{
 		Enabled:        true,
-		WatchPaths:     []string{dir},
+		WatchPaths:     []config.WatchPath{{Path: dir}},
 		ScanContent:    ptrBool(true),
 		IgnorePatterns: []string{"node_modules/**"},
 	}
@@ -174,7 +174,7 @@ func TestWatcher_SubdirCreation(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -231,7 +231,7 @@ func TestWatcher_ScanContentDisabled(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(false),
 	}
 
@@ -270,7 +270,7 @@ func TestWatcher_CloseIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -297,7 +297,7 @@ func TestWatcher_OversizedFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -346,7 +346,7 @@ func TestWatcher_EmptyFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -384,7 +384,7 @@ func TestWatcher_WithLineageAttribution(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -439,7 +439,7 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -495,7 +495,7 @@ func TestWatcher_ErrorHandlerInvoked(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -526,7 +526,7 @@ func TestWatcher_NilErrorHandler(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -552,7 +552,7 @@ func TestWatcher_PIDSnapshotAtEventTime(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -595,7 +595,7 @@ func TestWatcher_NilLineageNoSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -637,7 +637,7 @@ func TestWatcher_ScanContentNilDefaultsTrue(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: nil, // omitted
 	}
 
@@ -699,7 +699,7 @@ func TestWatcher_CloseFlushesLastWrite(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -751,7 +751,7 @@ func TestWatcher_CloseFlushScanDisabled(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(false),
 	}
 
@@ -799,7 +799,7 @@ func TestWatcher_CloseFlushEmptyFile(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -844,7 +844,7 @@ func TestWatcher_StartContextCancelled(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -885,7 +885,7 @@ func TestWatcher_FindingsChannelFull(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -943,7 +943,10 @@ done:
 }
 
 func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
-	// Arm should fail closed when a subdirectory is unreadable.
+	// Arm should fail closed when a subdirectory under a required:true
+	// watch path is unreadable. Required:true preserves the historical
+	// hard-fail; the non-required variant is covered separately and is
+	// expected to soft-fail (degraded) on the same input.
 	dir := t.TempDir()
 	if os.Geteuid() == 0 {
 		t.Skip("chmod 000 does not restrict root")
@@ -961,7 +964,7 @@ func TestWatcher_PermissionDeniedSubdir(t *testing.T) {
 
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir, Required: true}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -988,7 +991,7 @@ func TestWatcher_StartReturnsOnClose(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -1017,9 +1020,12 @@ func TestWatcher_StartReturnsOnClose(t *testing.T) {
 }
 
 func TestWatcher_ArmNonexistentPath(t *testing.T) {
+	// Required:true preserves the historical "Arm errors on missing path"
+	// semantic that operators got automatically before per-path opt-in.
+	// The soft-fail behavior for required:false is covered separately.
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{"/nonexistent/path/that/does/not/exist"},
+		WatchPaths:  []config.WatchPath{{Path: "/nonexistent/path/that/does/not/exist", Required: true}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -1036,7 +1042,90 @@ func TestWatcher_ArmNonexistentPath(t *testing.T) {
 	defer func() { _ = w.Close() }()
 
 	if err := w.Arm(); err == nil {
-		t.Error("expected error for nonexistent watch path")
+		t.Error("expected error for nonexistent required watch path")
+	}
+}
+
+// TestWatcher_ArmNonexistentPathSoftFail verifies that a non-required
+// watch path that cannot install is recorded as degraded rather than
+// aborting Arm(). This is the per-path soft-fail semantic that prevents
+// one missing or transiently-unreadable aux path from crash-looping the
+// proxy. The required:true variant is covered by TestWatcher_ArmNonexistentPath.
+func TestWatcher_ArmNonexistentPathSoftFail(t *testing.T) {
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: "/nonexistent/path/that/does/not/exist"}},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	var errCallbacks int
+	onError := func(error) { errCallbacks++ }
+	w, err := NewWatcher(cfg, sc, nil, onError)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: non-required path should soft-fail, got error: %v", err)
+	}
+	degraded := w.DegradedPaths()
+	if len(degraded) != 1 {
+		t.Fatalf("expected 1 degraded path, got %d", len(degraded))
+	}
+	if degraded[0].Path != "/nonexistent/path/that/does/not/exist" {
+		t.Errorf("degraded path = %q, want /nonexistent/...", degraded[0].Path)
+	}
+	if degraded[0].Error == "" {
+		t.Error("expected non-empty error message on degraded path")
+	}
+	if errCallbacks != 1 {
+		t.Errorf("expected exactly one onError callback, got %d", errCallbacks)
+	}
+}
+
+// TestWatcher_ArmMixedPathsArmsTheArmable verifies that an Arm() with a
+// healthy path AND a non-required missing path arms the healthy one and
+// records the missing one as degraded — neither failing the whole proxy
+// nor silently swallowing the missing path.
+func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
+	healthy := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled: true,
+		WatchPaths: []config.WatchPath{
+			{Path: healthy},
+			{Path: "/nonexistent/aux"},
+		},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	if err := w.Arm(); err != nil {
+		t.Fatalf("Arm: mixed paths should not error, got: %v", err)
+	}
+	degraded := w.DegradedPaths()
+	if len(degraded) != 1 {
+		t.Fatalf("expected 1 degraded entry (the missing aux), got %d", len(degraded))
+	}
+	if degraded[0].Path != "/nonexistent/aux" {
+		t.Errorf("degraded path = %q, want /nonexistent/aux", degraded[0].Path)
 	}
 }
 
@@ -1049,7 +1138,7 @@ func TestWatcher_ArmRejectsFilePath(t *testing.T) {
 
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{filePath},
+		WatchPaths:  []config.WatchPath{{Path: filePath, Required: true}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -1074,7 +1163,7 @@ func TestWatcher_RenameIntoPlace(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 
@@ -1125,7 +1214,7 @@ func TestWatcher_FileRemovalNoFinding(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{
 		Enabled:     true,
-		WatchPaths:  []string{dir},
+		WatchPaths:  []config.WatchPath{{Path: dir}},
 		ScanContent: ptrBool(true),
 	}
 

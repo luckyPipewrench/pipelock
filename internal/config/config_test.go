@@ -738,7 +738,7 @@ func TestValidate_FileSentryEmptyWatchPaths(t *testing.T) {
 func TestValidate_FileSentryValid(t *testing.T) {
 	cfg := Defaults()
 	cfg.FileSentry.Enabled = true
-	cfg.FileSentry.WatchPaths = []string{"."}
+	cfg.FileSentry.WatchPaths = []WatchPath{{Path: "."}}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid file_sentry should not error: %v", err)
 	}
@@ -756,7 +756,7 @@ func TestValidate_FileSentryDisabledNoWatchPaths(t *testing.T) {
 func TestValidate_FileSentryEmptyStringInWatchPaths(t *testing.T) {
 	cfg := Defaults()
 	cfg.FileSentry.Enabled = true
-	cfg.FileSentry.WatchPaths = []string{""}
+	cfg.FileSentry.WatchPaths = []WatchPath{{Path: ""}}
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for empty string in watch_paths")
 	}
@@ -765,7 +765,7 @@ func TestValidate_FileSentryEmptyStringInWatchPaths(t *testing.T) {
 func TestValidate_FileSentryActionInvalid(t *testing.T) {
 	cfg := Defaults()
 	cfg.FileSentry.Enabled = true
-	cfg.FileSentry.WatchPaths = []string{"."}
+	cfg.FileSentry.WatchPaths = []WatchPath{{Path: "."}}
 	cfg.FileSentry.Action = "panic"
 	if err := cfg.Validate(); err == nil {
 		t.Error("expected error for invalid file_sentry.action")
@@ -776,7 +776,7 @@ func TestValidate_FileSentryActionWarnOrBlockOrEmpty(t *testing.T) {
 	for _, action := range []string{"", ActionWarn, ActionBlock} {
 		cfg := Defaults()
 		cfg.FileSentry.Enabled = true
-		cfg.FileSentry.WatchPaths = []string{"."}
+		cfg.FileSentry.WatchPaths = []WatchPath{{Path: "."}}
 		cfg.FileSentry.Action = action
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("action %q should be valid: %v", action, err)
@@ -988,13 +988,13 @@ file_sentry:
 	}
 
 	for _, wp := range cfg.FileSentry.WatchPaths {
-		if !filepath.IsAbs(wp) {
-			t.Errorf("watch_path %q should be absolute after Load", wp)
+		if !filepath.IsAbs(wp.Path) {
+			t.Errorf("watch_path %q should be absolute after Load", wp.Path)
 		}
 		// Must be rooted under the config directory, not CWD.
-		rel, relErr := filepath.Rel(dir, wp)
+		rel, relErr := filepath.Rel(dir, wp.Path)
 		if relErr != nil || strings.HasPrefix(rel, "..") {
-			t.Errorf("watch_path %q is not under config dir %q (rel=%q)", wp, dir, rel)
+			t.Errorf("watch_path %q is not under config dir %q (rel=%q)", wp.Path, dir, rel)
 		}
 	}
 }
@@ -1047,8 +1047,8 @@ file_sentry:
 	if err != nil {
 		t.Fatalf("Load: absolute path should be allowed, got: %v", err)
 	}
-	if cfg.FileSentry.WatchPaths[0] != outsideDir {
-		t.Errorf("expected %q, got %q", outsideDir, cfg.FileSentry.WatchPaths[0])
+	if cfg.FileSentry.WatchPaths[0].Path != outsideDir {
+		t.Errorf("expected %q, got %q", outsideDir, cfg.FileSentry.WatchPaths[0].Path)
 	}
 }
 
@@ -1084,8 +1084,8 @@ file_sentry:
 		t.Fatalf("Load: %v", err)
 	}
 	for _, wp := range cfg.FileSentry.WatchPaths {
-		if !filepath.IsAbs(wp) {
-			t.Errorf("watch_path %q should be absolute", wp)
+		if !filepath.IsAbs(wp.Path) {
+			t.Errorf("watch_path %q should be absolute", wp.Path)
 		}
 	}
 }
@@ -9912,7 +9912,7 @@ func TestValidateReload_FileSentryChanged(t *testing.T) {
 	old := Defaults()
 	updated := Defaults()
 	updated.FileSentry.Enabled = true
-	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	updated.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
@@ -9930,12 +9930,12 @@ func TestValidateReload_FileSentryBestEffortChanged(t *testing.T) {
 	old := Defaults()
 	old.FileSentry.Enabled = true
 	old.FileSentry.Action = ActionWarn
-	old.FileSentry.WatchPaths = []string{"/tmp"}
+	old.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	updated := Defaults()
 	updated.FileSentry.Enabled = true
 	updated.FileSentry.BestEffort = true
 	updated.FileSentry.Action = ActionWarn
-	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	updated.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
@@ -9953,11 +9953,11 @@ func TestValidateReload_FileSentryActionChanged(t *testing.T) {
 	old := Defaults()
 	old.FileSentry.Enabled = true
 	old.FileSentry.Action = ActionWarn
-	old.FileSentry.WatchPaths = []string{"/tmp"}
+	old.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	updated := Defaults()
 	updated.FileSentry.Enabled = true
 	updated.FileSentry.Action = ActionBlock
-	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	updated.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
@@ -9975,11 +9975,11 @@ func TestValidateReload_FileSentryWatchPathsChanged(t *testing.T) {
 	old := Defaults()
 	old.FileSentry.Enabled = true
 	old.FileSentry.Action = ActionWarn
-	old.FileSentry.WatchPaths = []string{"/tmp"}
+	old.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	updated := Defaults()
 	updated.FileSentry.Enabled = true
 	updated.FileSentry.Action = ActionWarn
-	updated.FileSentry.WatchPaths = []string{"/tmp", "/var"}
+	updated.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}, {Path: "/var"}}
 	warnings := ValidateReload(old, updated)
 	found := false
 	for _, w := range warnings {
@@ -9997,11 +9997,11 @@ func TestValidateReload_FileSentryUnchanged_NoWarning(t *testing.T) {
 	old := Defaults()
 	old.FileSentry.Enabled = true
 	old.FileSentry.Action = ActionWarn
-	old.FileSentry.WatchPaths = []string{"/tmp"}
+	old.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	updated := Defaults()
 	updated.FileSentry.Enabled = true
 	updated.FileSentry.Action = ActionWarn
-	updated.FileSentry.WatchPaths = []string{"/tmp"}
+	updated.FileSentry.WatchPaths = []WatchPath{{Path: "/tmp"}}
 	warnings := ValidateReload(old, updated)
 	for _, w := range warnings {
 		if w.Field == fieldFileSentry {

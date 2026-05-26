@@ -1678,7 +1678,9 @@ Real-time filesystem monitoring for agent subprocesses. Detects secrets written 
 file_sentry:
   enabled: false
   watch_paths:
-    - "."
+    - "."                         # required:false; degraded if unavailable
+    - path: "/var/agent-secrets"  # required:true; startup fails if unavailable
+      required: true
   scan_content: true
   ignore_patterns:
     - "node_modules/**"
@@ -1690,10 +1692,12 @@ file_sentry:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable filesystem monitoring. Opt-in. |
-| `watch_paths` | `[]` | Directories to monitor recursively. Relative paths are resolved against the config file directory (not CWD). Required when enabled. |
+| `watch_paths` | `[]` | Directories to monitor recursively. Relative paths are resolved against the config file directory (not CWD). Required when enabled. Entries may be bare strings or `{path, required}` mappings. Bare strings default to `required: false`. |
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
 | `action` | `warn` | Enforcement response when an agent-attributed write matches a DLP pattern. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after a detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
+
+When a `watch_paths` entry is `required: false`, startup records a degraded path and continues if that watch cannot be installed. Set `required: true` on paths that are part of the security boundary; startup fails closed if those watches cannot be installed. Unknown fields in mapping entries are rejected so typos such as `require: true` do not silently disable the hard-fail opt-in.
 
 Findings are reported as stderr warnings and Prometheus metrics (`pipelock_file_sentry_findings_total`). Structured audit log emission (`file_sentry_dlp` event type) is defined but not yet wired to the webhook/syslog pipeline. On Linux, process lineage tracking attributes file writes to the agent's process tree via `PR_SET_CHILD_SUBREAPER` and `/proc` walking.
 

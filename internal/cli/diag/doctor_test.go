@@ -431,11 +431,11 @@ func TestDoctorChecksCoverConfiguredBranches(t *testing.T) {
 		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
 			t.Fatalf("empty paths check = %+v, want fail", check)
 		}
-		cfg.FileSentry.WatchPaths = []string{filepath.Join(dir, "missing")}
+		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: filepath.Join(dir, "missing")}}
 		if check := checkDoctorFileSentry(cfg); check.Status != doctorStatusFail {
 			t.Fatalf("missing path check = %+v, want fail", check)
 		}
-		cfg.FileSentry.WatchPaths = []string{watchDir}
+		cfg.FileSentry.WatchPaths = []config.WatchPath{{Path: watchDir}}
 		check := checkDoctorFileSentry(cfg)
 		if check.Status != doctorStatusWarn || !check.Reachable {
 			t.Fatalf("readable path check = %+v, want reachable warning", check)

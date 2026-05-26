@@ -65,6 +65,7 @@ func DoctorCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
 	var noColor bool
+	var checkPorts bool
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -87,6 +88,26 @@ this" report.`,
 				return cliutil.ExitCodeError(2, err)
 			}
 			report := buildDoctorReport(cfg, cfgLabel)
+			if checkPorts {
+				report.Checks = append(report.Checks, checkPortsReport(cfg)...)
+				// Rebuild summary tallies so the appended port checks count
+				// against pass/warn/fail exit codes alongside the built-in
+				// checks. Re-tally rather than incremental-add so the same
+				// code path produces summary either way.
+				report.Summary = doctorSummary{}
+				for _, check := range report.Checks {
+					switch check.Status {
+					case doctorStatusOK:
+						report.Summary.OK++
+					case doctorStatusWarn:
+						report.Summary.Warnings++
+					case doctorStatusFail:
+						report.Summary.Failures++
+					default:
+						report.Summary.Info++
+					}
+				}
+			}
 			if jsonOutput {
 				report.RootRunBanner = doctorRootBannerMessage()
 				enc := json.NewEncoder(cmd.OutOrStdout())
@@ -110,6 +131,7 @@ this" report.`,
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file (default: built-in defaults)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable color output")
+	cmd.Flags().BoolVar(&checkPorts, "check-ports", false, "report which process holds each configured listener port (Linux /proc; run as root for cross-user visibility)")
 
 	return cmd
 }
@@ -531,7 +553,11 @@ func checkDoctorFileSentry(cfg *config.Config) doctorReportCheck {
 			Next:    "enable with reachable watch_paths where workspace drift should be detected",
 		}
 	}
-	missing := missingReadablePaths(cfg.FileSentry.WatchPaths...)
+	watchStrings := make([]string, len(cfg.FileSentry.WatchPaths))
+	for i, wp := range cfg.FileSentry.WatchPaths {
+		watchStrings[i] = wp.Path
+	}
+	missing := missingReadablePaths(watchStrings...)
 	check := doctorReportCheck{
 		Name:       "file_sentry",
 		Surface:    doctorSurfaceMCP,

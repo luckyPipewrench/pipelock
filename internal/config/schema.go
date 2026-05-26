@@ -500,6 +500,70 @@ type ReverseProxy struct {
 	Enabled  bool   `yaml:"enabled"`
 	Listen   string `yaml:"listen"`   // listen address (e.g. ":8888")
 	Upstream string `yaml:"upstream"` // upstream URL (e.g. "http://localhost:7899")
+
+	// Profile selects a constrained reverse-proxy behavior. Empty (default)
+	// preserves the existing generic reverse proxy. "submit" tightens the
+	// listener for narrow internal POST submissions: method+path allowlist,
+	// per-listener trusted_upstream gate, body DLP enforced BEFORE
+	// forwarding, request timeout, and full upstream URL scan. Dial-time
+	// SSRF-safe transport is a follow-up hardening path, not part of this
+	// profile field by itself.
+	//
+	// `profile:` is distinct from top-level `mode:` (strict/balanced/audit).
+	// Top-level mode is enforcement posture; profile is listener shape.
+	Profile string `yaml:"profile"`
+
+	// AllowedMethods constrains which HTTP methods the listener accepts.
+	// Empty in submit profile means "POST only" at request time.
+	AllowedMethods []string `yaml:"allowed_methods"`
+
+	// AllowedPaths constrains which paths the listener accepts. v1 supports
+	// exact-match only. The matcher compares against the canonical decoded
+	// request path; raw paths containing encoded traversal (%2e%2e/),
+	// encoded slash/backslash (%2f, %5c), semicolon path params, or
+	// canonicalization changes are rejected at request time.
+	AllowedPaths []ReverseProxyPathRule `yaml:"allowed_paths"`
+
+	// TrustedUpstream declares that the configured upstream host+port is
+	// the only destination this listener will reach. The host+port must
+	// exact-match the host+port parsed from Upstream. Required when
+	// profile is "submit".
+	TrustedUpstream ReverseProxyTrustedUpstream `yaml:"trusted_upstream"`
+
+	// MaxBodyBytes caps request body size at the listener level. Effective
+	// cap when used with body scanning is
+	// min(MaxBodyBytes, request_body_scanning.max_body_bytes); requests
+	// exceeding the cap return 413 BEFORE forwarding.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+
+	// RequestTimeoutSeconds bounds total per-request time including upstream
+	// dial + body forwarding. Required positive when profile is "submit".
+	RequestTimeoutSeconds int `yaml:"request_timeout_seconds"`
+}
+
+// ReverseProxyPathRule is one entry under reverse_proxy.allowed_paths.
+// Only the exact form is supported in v1; the YAML decoder rejects
+// unknown fields so adding a future "prefix:" or "regex:" cannot be
+// silently misconfigured.
+type ReverseProxyPathRule struct {
+	Exact string `yaml:"exact"`
+}
+
+// ReverseProxyTrustedUpstream is a per-listener trust declaration that
+// scopes the SSRF allowlist to exactly the upstream this listener is
+// configured to talk to. It is intentionally narrower than the global
+// SSRF allowlist: a host listed here is trusted ONLY for the port also
+// listed here, and ONLY for this listener.
+//
+// Required fields when profile is "submit": Host, Port, Reason, Added.
+// Expires is optional but recommended; if present, an expired entry
+// fails the load.
+type ReverseProxyTrustedUpstream struct {
+	Host    string `yaml:"host"`
+	Port    int    `yaml:"port"`
+	Reason  string `yaml:"reason"`
+	Added   string `yaml:"added"`   // RFC 3339 date (YYYY-MM-DD)
+	Expires string `yaml:"expires"` // RFC 3339 date (YYYY-MM-DD), optional
 }
 
 // GitProtection configures git-aware security features.

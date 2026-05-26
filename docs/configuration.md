@@ -2383,6 +2383,40 @@ reverse_proxy:
 | `listen` | (required) | Listen address for the reverse proxy |
 | `upstream` | (required) | Upstream service URL to forward to |
 
+### Submit Profile
+
+`profile: submit` narrows a reverse-proxy listener for controlled submission endpoints. It preserves the generic reverse-proxy body and response scanning, then adds method and path gates, a trusted upstream declaration, an explicit body cap, a per-request timeout, and a full upstream URL scan before forwarding.
+
+```yaml
+reverse_proxy:
+  enabled: true
+  listen: "127.0.0.1:8890"
+  upstream: "https://submit.example.com:443"
+  profile: submit
+  allowed_methods: ["POST"]
+  allowed_paths:
+    - exact: "/v1/batch"
+  trusted_upstream:
+    host: "submit.example.com"
+    port: 443
+    reason: "submission endpoint"
+    added: "2026-05-26"
+    expires: "2026-08-24"
+  max_body_bytes: 1048576
+  request_timeout_seconds: 10
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `profile` | `""` | Empty keeps generic reverse-proxy behavior. `submit` enables the constrained submission gate. |
+| `allowed_methods` | `["POST"]` | HTTP methods allowed by the submit listener. Values must be known methods. |
+| `allowed_paths` | required | Exact canonical paths allowed by the submit listener. Entries must start with `/`; encoded dot, slash, backslash, semicolon path parameters, and non-canonical request paths are rejected. |
+| `trusted_upstream` | required | Auditable host+port trust declaration. `host` and `port` must exactly match `upstream`; IP literals are rejected; `reason` and `added` are required; expired `expires` dates fail config load. |
+| `max_body_bytes` | required | Positive listener body cap. The effective cap is the smaller of this value and `request_body_scanning.max_body_bytes`. |
+| `request_timeout_seconds` | required | Positive total request timeout for the submit listener, including scanning and upstream forwarding. |
+
+`profile: submit` does not by itself install the fetch/forward proxy dial-time SSRF-safe transport. The submit listener still constrains destination by exact configured host+port and runs the upstream URL through the scanner before forwarding.
+
 ### CLI flags
 
 ```bash

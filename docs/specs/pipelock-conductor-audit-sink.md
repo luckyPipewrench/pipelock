@@ -471,6 +471,7 @@ MVP server endpoint:
 
 ```http
 POST /api/v1/conductor/audit/batches
+GET /api/v1/conductor/audit/batches?org_id=...
 ```
 
 The server derives follower identity from the authenticated transport, validates
@@ -480,6 +481,10 @@ then hands the accepted batch to the configured audit sink. The current runtime
 sink is a local SQLite raw-evidence store; redacted storage/search indexing,
 DLP-before-indexing, fork response workflow, and dashboard views are later
 slices.
+
+`GET /api/v1/conductor/audit/batches` is an operator/admin API endpoint. It
+requires audit-query authorization, requires at least `org_id`, and returns
+metadata-only batch summaries. It does not export raw payload bytes.
 
 ## Audit Batch Schema
 

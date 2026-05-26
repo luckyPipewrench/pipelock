@@ -50,20 +50,25 @@ type HandlerOptions struct {
 	MaxAuditBodyBytes   int64
 	FollowerIdentity    FollowerIdentityResolver
 	AuthorizePublisher  PublisherAuthorizer
+	AuthorizeAuditQuery PublisherAuthorizer
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
 }
 
 type Handler struct {
-	store              BundleStore
-	capabilities       conductor.CapabilitiesResponse
-	now                func() time.Time
-	maxRequestBody     int64
-	maxAuditBody       int64
-	followerIdentity   FollowerIdentityResolver
-	authorizePublisher PublisherAuthorizer
-	auditSink          AuditBatchSink
-	auditKeys          AuditKeyResolver
+	store               BundleStore
+	capabilities        conductor.CapabilitiesResponse
+	now                 func() time.Time
+	maxRequestBody      int64
+	maxAuditBody        int64
+	followerIdentity    FollowerIdentityResolver
+	authorizePublisher  PublisherAuthorizer
+	authorizeAuditQuery PublisherAuthorizer
+	auditSink           AuditBatchSink
+	// nil auditQuerier means the configured sink does not implement
+	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
+	auditQuerier AuditBatchQuerier
+	auditKeys    AuditKeyResolver
 }
 
 type publishPolicyBundleRequest struct {
@@ -113,16 +118,23 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	if maxAuditBody <= 0 {
 		maxAuditBody = defaultMaxAuditBodyBytes
 	}
+	authorizeAuditQuery := opts.AuthorizeAuditQuery
+	if authorizeAuditQuery == nil {
+		authorizeAuditQuery = opts.AuthorizePublisher
+	}
+	auditQuerier, _ := opts.AuditSink.(AuditBatchQuerier)
 	return &Handler{
-		store:              opts.Store,
-		capabilities:       capabilities,
-		now:                now,
-		maxRequestBody:     maxBody,
-		maxAuditBody:       maxAuditBody,
-		followerIdentity:   opts.FollowerIdentity,
-		authorizePublisher: opts.AuthorizePublisher,
-		auditSink:          opts.AuditSink,
-		auditKeys:          opts.AuditKeys,
+		store:               opts.Store,
+		capabilities:        capabilities,
+		now:                 now,
+		maxRequestBody:      maxBody,
+		maxAuditBody:        maxAuditBody,
+		followerIdentity:    opts.FollowerIdentity,
+		authorizePublisher:  opts.AuthorizePublisher,
+		authorizeAuditQuery: authorizeAuditQuery,
+		auditSink:           opts.AuditSink,
+		auditQuerier:        auditQuerier,
+		auditKeys:           opts.AuditKeys,
 	}, nil
 }
 

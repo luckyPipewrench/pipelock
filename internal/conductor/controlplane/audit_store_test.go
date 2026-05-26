@@ -9,7 +9,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -276,6 +279,134 @@ func TestAuditIngestSurfacesSinkErrorsAsHTTP(t *testing.T) {
 	}
 }
 
+func TestHandlerListsAuditBatchSummaries(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	first := signedAcceptedAuditBatch(t, identity, testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	second := signedAcceptedAuditBatch(t, identity, "audit-batch-2", 11, 11, []byte(testAuditPayload2), testNow.Add(time.Second))
+	if err := store.IngestAuditBatch(context.Background(), first); err != nil {
+		t.Fatalf("IngestAuditBatch(first) error = %v", err)
+	}
+	if err := store.IngestAuditBatch(context.Background(), second); err != nil {
+		t.Fatalf("IngestAuditBatch(second) error = %v", err)
+	}
+	handler := newAuditQueryTestHandler(t, store)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"?org_id=org-main&fleet_id=prod&limit=1", nil)
+	req.Header.Set("X-Pipelock-Auditor", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "payload_blob") || strings.Contains(w.Body.String(), testAuditPayload) {
+		t.Fatalf("list response leaked raw payload data: %s", w.Body.String())
+	}
+	var got listAuditBatchesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if got.Count != 1 || len(got.Batches) != 1 {
+		t.Fatalf("list count=%d len=%d, want 1", got.Count, len(got.Batches))
+	}
+	if got.Batches[0].BatchID != "audit-batch-2" || got.Batches[0].OrgID != identity.OrgID {
+		t.Fatalf("list batch = %+v", got.Batches[0])
+	}
+}
+
+// TestHandlerListsEmptyResultAsEmptyArray defends against future regressions
+// where ListAuditBatches returns nil instead of an empty slice. Clients
+// (operator UIs, CLI) parse the JSON `batches` field as an array; a `null`
+// value crashes naive consumers. Pin the contract here.
+func TestHandlerListsEmptyResultAsEmptyArray(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+	handler := newAuditQueryTestHandler(t, store)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"?org_id=org-empty", nil)
+	req.Header.Set("X-Pipelock-Auditor", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("empty list status = %d body=%s, want 200", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), `"batches":null`) {
+		t.Fatalf("empty list emitted batches=null instead of []: %s", w.Body.String())
+	}
+	var got listAuditBatchesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode empty list: %v", err)
+	}
+	if got.Count != 0 || len(got.Batches) != 0 {
+		t.Fatalf("empty list = %+v, want count=0", got)
+	}
+}
+
+// TestHandlerListReturns501WhenSinkLacksQuerier locks the contract that a
+// sink which only implements ingest and not query surfaces a permanent 501
+// rather than a transient-looking 500. Operators learn it's a config gap,
+// not a server-side fault to retry.
+func TestHandlerListReturns501WhenSinkLacksQuerier(t *testing.T) {
+	handler, err := NewHandler(HandlerOptions{
+		Store:        mustStore(t),
+		Capabilities: DefaultCapabilities("conductor-test"),
+		Now:          func() time.Time { return testNow },
+		FollowerIdentity: func(*http.Request) (FollowerIdentity, error) {
+			return defaultFollowerIdentity(), nil
+		},
+		AuthorizePublisher: func(*http.Request) error { return nil },
+		AuditSink:          discardAuditSink{},
+		AuditKeys:          rejectingAuditKeyResolver,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"?org_id=org-main", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d body=%s, want 501", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "audit query not supported") {
+		t.Fatalf("501 body missing capability message: %s", w.Body.String())
+	}
+}
+
+func TestHandlerListAuditBatchQueryValidation(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+	handler := newAuditQueryTestHandler(t, store)
+
+	cases := []struct {
+		name       string
+		target     string
+		auditor    string
+		wantStatus int
+	}{
+		{name: "auditor required", target: AuditBatchesPath + "?org_id=org-main", wantStatus: http.StatusForbidden},
+		{name: "org required", target: AuditBatchesPath, auditor: "ok", wantStatus: http.StatusBadRequest},
+		{name: "invalid org", target: AuditBatchesPath + "?org_id=-org", auditor: "ok", wantStatus: http.StatusBadRequest},
+		{name: "invalid limit", target: AuditBatchesPath + "?org_id=org-main&limit=0", auditor: "ok", wantStatus: http.StatusBadRequest},
+		{name: "duplicate org", target: AuditBatchesPath + "?org_id=org-main&org_id=other", auditor: "ok", wantStatus: http.StatusBadRequest},
+		{name: "unknown parameter", target: AuditBatchesPath + "?org_id=org-main&payload=true", auditor: "ok", wantStatus: http.StatusBadRequest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, c.target, nil)
+			if c.auditor != "" {
+				req.Header.Set("X-Pipelock-Auditor", c.auditor)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != c.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", w.Code, w.Body.String(), c.wantStatus)
+			}
+		})
+	}
+}
+
 func openTestSQLiteAuditStore(t *testing.T, path string) *SQLiteAuditStore {
 	t.Helper()
 	store, err := OpenSQLiteAuditStore(context.Background(), path)
@@ -283,6 +414,33 @@ func openTestSQLiteAuditStore(t *testing.T, path string) *SQLiteAuditStore {
 		t.Fatalf("OpenSQLiteAuditStore() error = %v", err)
 	}
 	return store
+}
+
+func newAuditQueryTestHandler(t *testing.T, auditStore *SQLiteAuditStore) *Handler {
+	t.Helper()
+	handler, err := NewHandler(HandlerOptions{
+		Store:        mustStore(t),
+		Capabilities: DefaultCapabilities("conductor-test"),
+		Now:          func() time.Time { return testNow },
+		FollowerIdentity: func(*http.Request) (FollowerIdentity, error) {
+			return defaultFollowerIdentity(), nil
+		},
+		AuthorizePublisher: func(*http.Request) error {
+			return errors.New("publisher authorizer must not authorize audit query")
+		},
+		AuthorizeAuditQuery: func(r *http.Request) error {
+			if r.Header.Get("X-Pipelock-Auditor") == "ok" {
+				return nil
+			}
+			return ErrPublisherForbidden
+		},
+		AuditSink: auditStore,
+		AuditKeys: rejectingAuditKeyResolver,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	return handler
 }
 
 func signedAcceptedAuditBatch(

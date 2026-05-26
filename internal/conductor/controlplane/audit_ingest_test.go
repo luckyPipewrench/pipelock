@@ -121,9 +121,9 @@ func TestHandlerAuditBatchStrictJSONAndMethod(t *testing.T) {
 	handler := newAuditIngestTestHandler(t, &captureAuditSink{}, auditKeyResolverFor(pub), 64)
 
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath, nil))
-	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != http.MethodPost {
-		t.Fatalf("wrong method status=%d allow=%q, want 405 POST", w.Code, w.Header().Get("Allow"))
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodDelete, AuditBatchesPath, nil))
+	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET, POST" {
+		t.Fatalf("wrong method status=%d allow=%q, want 405 GET, POST", w.Code, w.Header().Get("Allow"))
 	}
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, AuditBatchesPath, strings.NewReader(`{"envelope":{},"payload":"","extra":true}`))

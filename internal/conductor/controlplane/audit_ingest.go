@@ -67,8 +67,13 @@ type ingestAuditBatchResponse struct {
 }
 
 func (h *Handler) handleAuditBatch(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeMethodNotAllowed(w, http.MethodPost)
+	switch r.Method {
+	case http.MethodGet:
+		h.handleListAuditBatches(w, r)
+		return
+	case http.MethodPost:
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPost)
 		return
 	}
 	identity, err := h.followerIdentity(r)

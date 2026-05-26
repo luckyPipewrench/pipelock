@@ -187,6 +187,8 @@ func effectiveSubmitBodyCap(cfg *config.Config) int64 {
 //   - %5c or %5C (encoded backslash — Windows path traversal in some parsers)
 //   - %25 (encoded percent — blocks double-encoded traversal like %252e%252e)
 //   - ; (semicolon path parameter — RFC 3986 leftover that some routers strip)
+//   - %3b or %3B (encoded semicolon — would decode to ; after the gate
+//     runs, defeating the literal-semicolon rejection above)
 func submitProfileRawPathRejection(rawPath string) (string, bool) {
 	upper := strings.ToUpper(rawPath)
 	switch {
@@ -198,6 +200,8 @@ func submitProfileRawPathRejection(rawPath string) (string, bool) {
 		return "encoded slash (%2f)", false
 	case strings.Contains(upper, "%5C"):
 		return "encoded backslash (%5c)", false
+	case strings.Contains(upper, "%3B"):
+		return "encoded semicolon (%3b)", false
 	case strings.Contains(rawPath, ";"):
 		return "semicolon path parameter", false
 	}

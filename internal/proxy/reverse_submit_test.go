@@ -23,6 +23,17 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+// upstreamURLFromHTTPTest parses a host:port out of an httptest.Server URL
+// (e.g., "http://127.0.0.1:NNNN"). Used by the URL-scan isolation test
+// when configuring a blocklist entry that matches only the upstream host.
+func upstreamURLFromHTTPTest(httpURL string) string {
+	u, err := url.Parse(httpURL)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
 // submitProfileTestConfig builds a config wired up for submit profile,
 // targeting the upstream URL passed in. Skips Validate() because httptest
 // URLs are IP literals (127.0.0.1) and submit profile rejects IP literals
@@ -180,6 +191,7 @@ func TestSubmitProfile_PathRejection(t *testing.T) {
 		{"encoded-slash", "/v1%2fbatch", http.StatusBadRequest, true},
 		{"encoded-backslash", "/v1%5cbatch", http.StatusBadRequest, true},
 		{"semicolon-param", "/v1/batch;foo=bar", http.StatusBadRequest, true},
+		{"encoded-semicolon", "/v1/batch%3bfoo=bar", http.StatusBadRequest, true},
 		{"double-slash-canonicalizes", "//v1//batch", http.StatusBadRequest, true},
 	}
 	for _, tc := range tests {
@@ -252,16 +264,22 @@ func TestSubmitProfile_URLScanUsesScannerBlockReason(t *testing.T) {
 	}))
 	defer upstream.Close()
 
+	// Isolate the NEW upstream-URL scan path from the pre-existing
+	// path+query DLP scan: use a blocklist trigger that only fires on
+	// the full upstream URL (which includes the upstream's host), not
+	// on the path-only r.URL.RequestURI() that the path-DLP scan sees.
+	// Without this isolation, a credential in ?token=... would also fire
+	// the path-DLP scan and the test could not tell which code path
+	// produced the 403.
+	upstreamHost, _, splitErr := net.SplitHostPort(upstreamURLFromHTTPTest(upstream.URL))
+	if splitErr != nil {
+		t.Fatalf("split upstream host: %v", splitErr)
+	}
 	cfg, upstreamURL := submitProfileTestConfig(upstream.URL)
+	cfg.FetchProxy.Monitoring.Blocklist = []string{upstreamHost}
 	proxy := submitProfileReverseProxy(t, cfg, upstreamURL)
 
-	// Build the DLP-tripping URL via variables so the source at the
-	// request call site does not display a credential-in-URL literal
-	// that the pipelock self-scan in CI would flag. The runtime URL
-	// is identical; only the source form changes.
-	tripValue := fakeAPIKey()
-	reqURL := proxy.URL + "/v1/batch?" + "token=" + tripValue
-
+	reqURL := proxy.URL + "/v1/batch"
 	req, _ := http.NewRequestWithContext(context.Background(),
 		http.MethodPost, reqURL, strings.NewReader(`{"clean":true}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -274,11 +292,15 @@ func TestSubmitProfile_URLScanUsesScannerBlockReason(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", resp.StatusCode)
 	}
-	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.DLPMatch) {
-		t.Errorf("block reason = %q, want %s", got, blockreason.DLPMatch)
+	// The upstream URL scan denies on domain_blocklist; this proves the
+	// submit-profile URL scan ran (the path-only DLP scan cannot trigger
+	// blocklist denials because it operates on r.URL.RequestURI() which
+	// has no host component).
+	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.DomainBlocklist) {
+		t.Errorf("block reason = %q, want %s", got, blockreason.DomainBlocklist)
 	}
 	if upstreamHit.Load() {
-		t.Error("upstream invoked despite upstream URL DLP denial")
+		t.Error("upstream invoked despite upstream URL scan denial")
 	}
 }
 
@@ -396,6 +418,8 @@ func TestSubmitProfileRawPathRejection(t *testing.T) {
 		{"/v1%2Fbatch", true, "encoded slash"},
 		{"/v1%5cbatch", true, "encoded backslash"},
 		{"/v1/batch;foo=bar", true, "semicolon"},
+		{"/v1/batch%3bfoo=bar", true, "encoded semicolon"},
+		{"/v1/batch%3Bfoo=bar", true, "encoded semicolon"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.path, func(t *testing.T) {

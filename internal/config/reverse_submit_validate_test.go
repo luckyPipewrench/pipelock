@@ -126,6 +126,28 @@ func TestValidate_ReverseProxySubmit_ReasonRequired(t *testing.T) {
 	}
 }
 
+func TestValidate_ReverseProxySubmit_ReasonWhitespaceRejected(t *testing.T) {
+	// A reason of "   \t  " satisfies the != "" check but provides no
+	// audit content. Validation must trim before evaluating the guard.
+	cfg := submitValidCfg()
+	cfg.ReverseProxy.TrustedUpstream.Reason = "   \t  "
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "reason is required") {
+		t.Fatalf("got %v, want whitespace-only-reason rejection", err)
+	}
+}
+
+func TestValidate_ReverseProxySubmit_ReasonTrimmedOnAccept(t *testing.T) {
+	cfg := submitValidCfg()
+	cfg.ReverseProxy.TrustedUpstream.Reason = "   audit grant w/ trim   "
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid trimmed reason rejected: %v", err)
+	}
+	if got := cfg.ReverseProxy.TrustedUpstream.Reason; got != "audit grant w/ trim" {
+		t.Errorf("reason = %q, want trimmed value", got)
+	}
+}
+
 func TestValidate_ReverseProxySubmit_AddedRequired(t *testing.T) {
 	cfg := submitValidCfg()
 	cfg.ReverseProxy.TrustedUpstream.Added = ""

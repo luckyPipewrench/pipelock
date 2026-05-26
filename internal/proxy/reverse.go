@@ -449,7 +449,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// allowlist, exact-path match, raw-path canonicality, body cap) are
 	// applied before generic checks.
 	if gate := evaluateSubmitProfileGate(cfg, r); !gate.Allowed {
-		rp.metrics.RecordReverseProxyRequest(r.Method, http.StatusText(gate.Status))
+		rp.metrics.RecordReverseProxyRequest(r.Method, strconv.Itoa(gate.Status))
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, scannerLabelSubmitProfile)
 		writeReverseProxyBlock(w, gate.Status, gate.Block, gate.Reason)
 		return

@@ -1691,10 +1691,15 @@ func (c *Config) validateReverseProxySubmit(u *url.URL) error {
 	if tu.Port <= 0 || tu.Port > 65535 {
 		return fmt.Errorf("reverse_proxy.trusted_upstream.port must be 1-65535, got %d", tu.Port)
 	}
-	if tu.Reason == "" {
+	// Reason is required for auditability. Trim first so a config of
+	// "   " or "\t" cannot satisfy the required guard with no actual
+	// audit content. Persist the trimmed value so downstream callers
+	// (logs, doctor output) get the canonical form.
+	if strings.TrimSpace(tu.Reason) == "" {
 		return fmt.Errorf("reverse_proxy.trusted_upstream.reason is required so the trust grant is auditable")
 	}
-	if tu.Added == "" {
+	c.ReverseProxy.TrustedUpstream.Reason = strings.TrimSpace(tu.Reason)
+	if strings.TrimSpace(tu.Added) == "" {
 		return fmt.Errorf("reverse_proxy.trusted_upstream.added is required (date the entry was created)")
 	}
 	if _, err := time.Parse("2006-01-02", tu.Added); err != nil {

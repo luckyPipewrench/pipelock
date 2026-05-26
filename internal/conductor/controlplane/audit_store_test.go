@@ -411,6 +411,33 @@ func TestHandlerListAuditBatchQueryValidation(t *testing.T) {
 	}
 }
 
+func TestHandlerListAuditBatchSurfacesSinkError(t *testing.T) {
+	handler, err := NewHandler(HandlerOptions{
+		Store:        mustStore(t),
+		Capabilities: DefaultCapabilities("conductor-test"),
+		Now:          func() time.Time { return testNow },
+		FollowerIdentity: func(*http.Request) (FollowerIdentity, error) {
+			return defaultFollowerIdentity(), nil
+		},
+		AuthorizePublisher:  func(*http.Request) error { return nil },
+		AuthorizeAuditQuery: func(*http.Request) error { return nil },
+		AuditSink:           failingAuditQuerySink{err: ErrAuditBatchConflict},
+		AuditKeys:           rejectingAuditKeyResolver,
+	})
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"?org_id=org-main", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%s, want 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), ErrAuditBatchConflict.Error()) {
+		t.Fatalf("body = %s, want sink error", w.Body.String())
+	}
+}
+
 func openTestSQLiteAuditStore(t *testing.T, path string) *SQLiteAuditStore {
 	t.Helper()
 	store, err := OpenSQLiteAuditStore(context.Background(), path)
@@ -445,6 +472,18 @@ func newAuditQueryTestHandler(t *testing.T, auditStore *SQLiteAuditStore) *Handl
 		t.Fatalf("NewHandler() error = %v", err)
 	}
 	return handler
+}
+
+type failingAuditQuerySink struct {
+	err error
+}
+
+func (s failingAuditQuerySink) IngestAuditBatch(context.Context, AcceptedAuditBatch) error {
+	return nil
+}
+
+func (s failingAuditQuerySink) ListAuditBatches(context.Context, AuditBatchQuery) ([]AuditBatchSummary, error) {
+	return nil, s.err
 }
 
 func signedAcceptedAuditBatch(

@@ -279,6 +279,7 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if opts.auditRetention > 0 {
 		result, err := auditStore.PruneAuditBatchesBefore(ctx, time.Now().UTC().Add(-opts.auditRetention))
 		if err != nil {
+			_ = auditStore.Close()
 			return nil, nil, nil, err
 		}
 		logAuditPruneResult(opts.logWriter, result)

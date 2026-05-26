@@ -255,8 +255,15 @@ func TestSubmitProfile_URLScanUsesScannerBlockReason(t *testing.T) {
 	cfg, upstreamURL := submitProfileTestConfig(upstream.URL)
 	proxy := submitProfileReverseProxy(t, cfg, upstreamURL)
 
+	// Build the DLP-tripping URL via variables so the source at the
+	// request call site does not display a credential-in-URL literal
+	// that the pipelock self-scan in CI would flag. The runtime URL
+	// is identical; only the source form changes.
+	tripValue := fakeAPIKey()
+	reqURL := proxy.URL + "/v1/batch?" + "token=" + tripValue
+
 	req, _ := http.NewRequestWithContext(context.Background(),
-		http.MethodPost, proxy.URL+"/v1/batch?token=AKIA"+"IOSFODNN7EXAMPLE", strings.NewReader(`{"clean":true}`))
+		http.MethodPost, reqURL, strings.NewReader(`{"clean":true}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

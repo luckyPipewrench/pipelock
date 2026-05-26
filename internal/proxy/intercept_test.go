@@ -1100,6 +1100,39 @@ func TestInterceptTunnel_HeaderDLPBlocked(t *testing.T) {
 	}
 }
 
+func TestInterceptTunnel_HeaderDLPSuppressedCriticalAllowed(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+	cfg.RequestBodyScanning.SensitiveHeaders = []string{"Authorization"}
+	addr := upstream.Listener.Addr().String()
+	cfg.Suppress = []config.SuppressEntry{{
+		Rule:   "Anthropic API Key",
+		Path:   "https://" + addr + "/*",
+		Reason: "trusted destination auth header",
+	}}
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	secret := "sk-ant-" + "api03-test123456789abcdef"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+addr+"/api", nil)
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, m, req)
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200 (suppressed critical header DLP should forward)", resp.StatusCode)
+	}
+}
+
 func TestInterceptTunnel_UpstreamError(t *testing.T) {
 	cache, pool, cfg, sc, logger, m := testInterceptSetup(t)
 

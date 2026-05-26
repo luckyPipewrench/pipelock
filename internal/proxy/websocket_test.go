@@ -1411,6 +1411,50 @@ func TestWSProxyHeaderDLPBlocksAllowlistedHost(t *testing.T) {
 	// Connection should be rejected with DLP match.
 }
 
+func TestWSProxyHeaderDLPSuppressedCriticalAllowed(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
+		cfg.Suppress = []config.SuppressEntry{{
+			Rule:   "Anthropic API Key",
+			Path:   "ws://" + backendAddr,
+			Reason: "trusted websocket auth header",
+		}}
+	})
+	defer proxyCleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://%s", proxyAddr, backendAddr)
+
+	dialer := ws.Dialer{
+		Header: ws.HandshakeHeaderHTTP(http.Header{
+			"Authorization": []string{"Bearer " + secret},
+		}),
+		Timeout: 5 * time.Second,
+	}
+
+	conn, _, _, err := dialer.Dial(ctx, wsURL)
+	if err != nil {
+		t.Fatalf("expected suppressed header DLP to allow websocket dial: %v", err)
+	}
+	defer conn.Close() //nolint:errcheck // test
+
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(testWSHello)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(reply) != testWSHello {
+		t.Fatalf("reply = %q, want %q", reply, testWSHello)
+	}
+}
+
 func TestWSProxyHeaderDLPBlockCookie(t *testing.T) {
 	// Cookies containing secrets should be blocked when ForwardCookies is enabled.
 	proxyAddr, cleanup := setupWSProxy(t, func(cfg *config.Config) {

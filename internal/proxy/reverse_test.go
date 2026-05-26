@@ -1376,6 +1376,46 @@ func TestReverseProxy_HeaderDLPBlocked(t *testing.T) {
 	}
 }
 
+func TestReverseProxy_HeaderDLPSuppressedCriticalAllowed(t *testing.T) {
+	cfg := reverseTestConfig()
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.HeaderMode = "all"
+	cfg.Suppress = []config.SuppressEntry{{
+		Rule: "AWS Access ID",
+		// Destination-style glob (scheme + host + path) exercises the
+		// upstream target the reverse-proxy header DLP now passes to the
+		// suppress filter, not the relative-path r.URL.String() that the
+		// proxy sees from the client.
+		Path:   "http://*/api/*",
+		Reason: "trusted destination auth header",
+	}}
+
+	var upstreamHit atomic.Bool
+	upstream := func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}
+
+	proxy := reverseTestSetup(t, cfg, upstream)
+
+	apiKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, proxy.URL+"/api/data", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 (suppressed critical header DLP should forward), got %d", resp.StatusCode)
+	}
+	if !upstreamHit.Load() {
+		t.Fatal("upstream not reached — suppressed header DLP must forward to upstream")
+	}
+}
+
 func TestReverseProxy_OversizedResponseBlocked(t *testing.T) {
 	cfg := reverseTestConfig()
 

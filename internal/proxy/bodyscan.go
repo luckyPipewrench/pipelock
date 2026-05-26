@@ -956,7 +956,28 @@ func isNoisyHeaderName(name string) bool {
 // (no allowlist skip) because agents can exfiltrate secrets in auth headers
 // to any host.
 func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner) *BodyScanResult {
+	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, "", nil)
+}
+
+func scanRequestHeadersForTarget(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string) *BodyScanResult {
+	return scanRequestHeadersWithSuppress(ctx, headers, cfg, sc, target, cfg.Suppress)
+}
+
+func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry) *BodyScanResult {
 	bodyCfg := cfg.RequestBodyScanning
+	resultForMatches := func(headerName string, matches []scanner.TextDLPMatch) *BodyScanResult {
+		if len(suppress) > 0 {
+			matches = unsuppressedDLPMatches(matches, target, suppress)
+			if len(matches) == 0 {
+				return nil
+			}
+		}
+		return &BodyScanResult{
+			Clean:      false,
+			DLPMatches: matches,
+			HeaderName: headerName,
+		}
+	}
 
 	// Build the set of headers to scan based on mode.
 	var headersToScan map[string][]string
@@ -1000,10 +1021,8 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 		if bodyCfg.HeaderMode == config.HeaderModeAll {
 			result := sc.ScanTextForDLP(ctx, name)
 			if !result.Clean {
-				return &BodyScanResult{
-					Clean:      false,
-					DLPMatches: result.Matches,
-					HeaderName: name,
+				if headerResult := resultForMatches(name, result.Matches); headerResult != nil {
+					return headerResult
 				}
 			}
 			// Include header name in joined scan to catch secrets split
@@ -1015,10 +1034,8 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 			allValues = append(allValues, v)
 			result := sc.ScanTextForDLP(ctx, v)
 			if !result.Clean {
-				return &BodyScanResult{
-					Clean:      false,
-					DLPMatches: result.Matches,
-					HeaderName: name,
+				if headerResult := resultForMatches(name, result.Matches); headerResult != nil {
+					return headerResult
 				}
 			}
 			// In "all" mode, scan name+value concatenation to catch secrets
@@ -1027,10 +1044,8 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 				combined := name + v
 				combinedResult := sc.ScanTextForDLP(ctx, combined)
 				if !combinedResult.Clean {
-					return &BodyScanResult{
-						Clean:      false,
-						DLPMatches: combinedResult.Matches,
-						HeaderName: name,
+					if headerResult := resultForMatches(name, combinedResult.Matches); headerResult != nil {
+						return headerResult
 					}
 				}
 			}
@@ -1045,10 +1060,8 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 		joined := strings.Join(allValues, "\n")
 		result := sc.ScanTextForDLP(ctx, joined)
 		if !result.Clean {
-			return &BodyScanResult{
-				Clean:      false,
-				DLPMatches: result.Matches,
-				HeaderName: "(joined)",
+			if headerResult := resultForMatches("(joined)", result.Matches); headerResult != nil {
+				return headerResult
 			}
 		}
 	}
@@ -1063,12 +1076,12 @@ func scanRequestHeaders(ctx context.Context, headers http.Header, cfg *config.Co
 // handles the response format (http.Error vs writeJSON) since it differs
 // between forward proxy and fetch handler.
 func (p *Proxy) evalHeaderDLP(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner,
-	logger *audit.Logger, actx audit.LogContext, hostname string, start time.Time,
+	logger *audit.Logger, actx audit.LogContext, hostname, target string, start time.Time,
 ) (blocked bool, hadFinding bool) {
 	if !cfg.RequestBodyScanning.Enabled || !cfg.RequestBodyScanning.ScanHeaders {
 		return false, false
 	}
-	headerResult := scanRequestHeaders(ctx, headers, cfg, sc)
+	headerResult := scanRequestHeadersForTarget(ctx, headers, cfg, sc, target)
 	if headerResult == nil {
 		return false, false
 	}

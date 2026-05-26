@@ -833,6 +833,29 @@ func TestScanRequestHeaders_SplitSecretRepeatedValues(t *testing.T) {
 	}
 }
 
+func TestScanRequestHeadersForTarget_SuppressedValueDoesNotMaskLaterUnsuppressedValue(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Suppress = []config.SuppressEntry{{
+		Rule:   "AWS Access ID",
+		Path:   "https://api.example.com/*",
+		Reason: "allow scoped provider credential",
+	}}
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	headers := http.Header{}
+	headers.Add("Authorization", "Bearer "+fakeAPIKey())
+	headers.Add("Authorization", "Bearer "+fakeAnthropicKey())
+
+	result := scanRequestHeadersForTarget(context.Background(), headers, cfg, sc, "https://api.example.com/v1/messages")
+	if result == nil || result.Clean {
+		t.Fatal("expected unsuppressed DLP match after suppressed header value")
+	}
+	if got := result.DLPMatches[0].PatternName; got != "Anthropic API Key" {
+		t.Fatalf("pattern = %q, want Anthropic API Key", got)
+	}
+}
+
 // TestScanRequestHeaders_AllowlistedHost verifies that header scanning applies
 // regardless of destination host. The allowlist controls URL-level blocking, not
 // header DLP bypass.
@@ -1270,6 +1293,51 @@ func TestForwardProxy_HeaderScan_SecretInAuth(t *testing.T) {
 
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 for header with secret, got %d", resp.StatusCode)
+	}
+}
+
+func TestForwardProxy_HeaderScan_SuppressedCriticalHeaderAllowed(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.RequestBodyScanning.ScanHeaders = true
+		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+		cfg.Suppress = []config.SuppressEntry{{
+			Rule:   "AWS Access ID",
+			Path:   upstream.URL + "/*",
+			Reason: "trusted destination auth header",
+		}}
+	})
+	defer cleanup()
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL+"/test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+fakeAPIKey())
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(_ *http.Request) (*url.URL, error) {
+				return &url.URL{Scheme: "http", Host: proxyAddr}, nil
+			},
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for destination-suppressed header DLP, got %d", resp.StatusCode)
 	}
 }
 

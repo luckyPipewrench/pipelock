@@ -503,7 +503,14 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// Scan request headers for DLP patterns (secret exfiltration via headers).
 	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
-		headerResult := scanRequestHeaders(r.Context(), r.Header, cfg, sc)
+		// Pass the full upstream destination (scheme://host[:port]/path) so
+		// destination-scoped suppress globs (e.g. "https://api.example.com/*")
+		// resolve against the URL the request will actually reach, not the
+		// path-only r.URL.String() the reverse proxy sees from the client.
+		dlpTarget := *rp.upstream
+		dlpTarget.Path = joinReversePaths(rp.upstream.Path, r.URL.Path)
+		dlpTarget.RawPath = ""
+		headerResult := scanRequestHeadersForTarget(r.Context(), r.Header, cfg, sc, dlpTarget.String())
 		if headerResult != nil {
 			hasFinding = true
 			action := cfg.RequestBodyScanning.Action

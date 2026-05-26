@@ -404,7 +404,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
-	if blocked, hardBlock, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg.EnforceEnabled()); blocked {
+	if blocked, hardBlock, reason := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL); blocked {
 		// Capture observer: record WS header DLP verdict for policy replay.
 		p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 			Subsurface:        "dlp_ws_header",
@@ -819,7 +819,7 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 // dlpScanWSHeaders runs DLP scanning on all forwarded header values before the
 // upstream handshake. Headers are scanned regardless of destination (no
 // allowlist skip) because agents can exfiltrate secrets in any header value.
-func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, enforceEnabled bool) (blocked bool, hardBlock bool, reason string) {
+func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string) (blocked bool, hardBlock bool, reason string) {
 	// Scan all headers that buildWSForwardHeaders may forward. This covers
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
 	// can exfiltrate data in any of these values.
@@ -833,11 +833,15 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 		}
 		result := sc.ScanTextForDLP(ctx, val)
 		if !result.Clean {
-			names := make([]string, len(result.Matches))
-			for i, m := range result.Matches {
+			matches := unsuppressedDLPMatches(result.Matches, targetURL, cfg.Suppress)
+			if len(matches) == 0 {
+				continue
+			}
+			names := make([]string, len(matches))
+			for i, m := range matches {
 				names[i] = m.PatternName
 			}
-			return true, shouldHardBlockCriticalDLP(result.Matches, enforceEnabled), fmt.Sprintf("DLP match in %s header: %s", key, strings.Join(names, ", "))
+			return true, shouldHardBlockCriticalDLP(matches, cfg.EnforceEnabled()), fmt.Sprintf("DLP match in %s header: %s", key, strings.Join(names, ", "))
 		}
 	}
 	return false, false, ""

@@ -173,7 +173,7 @@ func TestHandlerMetricsAndRequestLogging(t *testing.T) {
 			return FollowerIdentity{}, ErrFollowerRequired
 		},
 		AuthorizePublisher: func(*http.Request) error { return ErrPublisherForbidden },
-		AuditSink:          discardAuditSink{},
+		AuditSink:          failingAuditQuerySink{},
 		AuditKeys:          rejectingAuditKeyResolver,
 		Metrics:            m,
 		Logger:             slog.New(slog.NewJSONHandler(&logs, nil)),

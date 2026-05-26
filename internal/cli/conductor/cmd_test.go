@@ -232,6 +232,56 @@ func TestBuildServeHandlerRejectsNegativeAuditRetention(t *testing.T) {
 	}
 }
 
+func TestBuildServeHandlerPrunesAuditRetention(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "publisher-token")
+	if err := os.WriteFile(tokenPath, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(token): %v", err)
+	}
+	auditorTokenPath := filepath.Join(dir, "auditor-token")
+	if err := os.WriteFile(auditorTokenPath, []byte("auditor-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(auditor token): %v", err)
+	}
+	adminTokenPath := filepath.Join(dir, "admin-token")
+	if err := os.WriteFile(adminTokenPath, []byte("admin-token\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(admin token): %v", err)
+	}
+	caPath := filepath.Join(dir, "client-ca.pem")
+	if err := os.WriteFile(caPath, testCAPEM(t), 0o600); err != nil {
+		t.Fatalf("WriteFile(ca): %v", err)
+	}
+	var logs strings.Builder
+	handler, _, _, err := buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+		auditRetention:      time.Hour,
+		logWriter:           &logs,
+		trustedControlKeys: []string{
+			"id=remote-key-1,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
+			"id=rollback-key-1,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildServeHandler(retention) error = %v", err)
+	}
+	if handler == nil {
+		t.Fatal("buildServeHandler(retention) handler = nil")
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("retention logs = %q, want empty for zero pruned rows", logs.String())
+	}
+}
+
 func TestLogAuditPruneResult(t *testing.T) {
 	var buf strings.Builder
 	logAuditPruneResult(&buf, controlplane.AuditPruneResult{

@@ -242,6 +242,17 @@ func TestSQLiteAuditStoreRejectsNilContext(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditStorePruneReturnsExecError(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	_, err := store.PruneAuditBatchesBefore(context.Background(), testNow)
+	if err == nil || !strings.Contains(err.Error(), "prune conductor audit batches") {
+		t.Fatalf("PruneAuditBatchesBefore(closed) error = %v, want prune error", err)
+	}
+}
+
 func TestSQLiteAuditStoreRevalidatesAcceptedBatchBoundary(t *testing.T) {
 	cases := []struct {
 		name    string

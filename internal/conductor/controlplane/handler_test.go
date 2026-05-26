@@ -66,6 +66,93 @@ func TestHandlerPublishesAndServesLatestBundle(t *testing.T) {
 	}
 }
 
+func TestHandlerPublishesAndServesEmergencyControls(t *testing.T) {
+	msg, killResolver := signedRemoteKillMessageWithResolver(t, "kill-handler", 3, conductor.KillSwitchActive, testNow)
+	auth, rollbackResolver := signedRollbackAuthorizationWithResolver(t, "rollback-handler", 4, testNow)
+	handler := newTestHandlerWithEmergencyKeys(t, killResolver, rollbackResolver)
+	body, err := json.Marshal(publishRemoteKillRequest{Message: msg})
+	if err != nil {
+		t.Fatalf("Marshal(remote kill): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RemoteKillPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("publish remote kill status=%d body=%s, want 201", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, RemoteKillPath, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("latest remote kill status=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var gotKill conductor.RemoteKillMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &gotKill); err != nil {
+		t.Fatalf("decode remote kill: %v", err)
+	}
+	if gotKill.MessageID != msg.MessageID {
+		t.Fatalf("remote kill message_id=%q, want %q", gotKill.MessageID, msg.MessageID)
+	}
+
+	body, err = json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("publish rollback status=%d body=%s, want 201", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		RollbackAuthorizationsPath+"?current_bundle_id=bundle-current&current_version=42&target_bundle_id=bundle-target&target_version=41", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("latest rollback status=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	var gotRollback conductor.RollbackAuthorization
+	if err := json.Unmarshal(w.Body.Bytes(), &gotRollback); err != nil {
+		t.Fatalf("decode rollback: %v", err)
+	}
+	if gotRollback.AuthorizationID != auth.AuthorizationID {
+		t.Fatalf("rollback authorization_id=%q, want %q", gotRollback.AuthorizationID, auth.AuthorizationID)
+	}
+}
+
+func TestHandlerRejectsOverlongEmergencyValidity(t *testing.T) {
+	msg, killResolver := signedRemoteKillMessageWithTTL(t, "kill-long", 3, conductor.KillSwitchActive, testNow, DefaultRemoteKillMaxValidity+time.Minute)
+	auth, rollbackResolver := signedRollbackAuthorizationWithTTL(t, "rollback-long", 4, testNow, DefaultRollbackMaxValidity+time.Minute)
+	handler := newTestHandlerWithEmergencyKeys(t, killResolver, rollbackResolver)
+
+	body, err := json.Marshal(publishRemoteKillRequest{Message: msg})
+	if err != nil {
+		t.Fatalf("Marshal(remote kill): %v", err)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPut, RemoteKillPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("publish overlong remote kill status=%d body=%s, want 422", w.Code, w.Body.String())
+	}
+
+	body, err = json.Marshal(publishRollbackAuthorizationRequest{Authorization: auth})
+	if err != nil {
+		t.Fatalf("Marshal(rollback): %v", err)
+	}
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, RollbackAuthorizationsPath, strings.NewReader(string(body)))
+	req.Header.Set("X-Pipelock-Admin", "ok")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("publish overlong rollback status=%d body=%s, want 422", w.Code, w.Body.String())
+	}
+}
+
 func TestIfNoneMatchMatches(t *testing.T) {
 	etag := `"abc123"`
 	tests := []struct {
@@ -309,6 +396,28 @@ func TestHandlerMethodChecks(t *testing.T) {
 
 func newTestHandler(t *testing.T, store BundleStore, identity FollowerIdentityResolver) *Handler {
 	t.Helper()
+	return newTestHandlerWithOptions(t, store, identity, nil)
+}
+
+func newTestHandlerWithEmergencyKeys(t *testing.T, resolvers ...conductor.SignatureKeyResolver) *Handler {
+	t.Helper()
+	resolver := func(keyID string) (conductor.SignatureKey, error) {
+		for _, resolve := range resolvers {
+			if resolve == nil {
+				continue
+			}
+			key, err := resolve(keyID)
+			if err == nil {
+				return key, nil
+			}
+		}
+		return conductor.SignatureKey{}, conductor.ErrSignatureVerification
+	}
+	return newTestHandlerWithOptions(t, mustStore(t), nil, resolver)
+}
+
+func newTestHandlerWithOptions(t *testing.T, store BundleStore, identity FollowerIdentityResolver, emergencyKeys conductor.SignatureKeyResolver) *Handler {
+	t.Helper()
 	if identity == nil {
 		identity = func(*http.Request) (FollowerIdentity, error) {
 			return FollowerIdentity{
@@ -336,6 +445,14 @@ func newTestHandler(t *testing.T, store BundleStore, identity FollowerIdentityRe
 		},
 		AuditSink: discardAuditSink{},
 		AuditKeys: rejectingAuditKeyResolver,
+		AuthorizeAdmin: func(r *http.Request) error {
+			if r.Header.Get("X-Pipelock-Admin") != "ok" {
+				return ErrPublisherForbidden
+			}
+			return nil
+		},
+		EmergencyControls: mustEmergencyStore(t),
+		EmergencyKeys:     emergencyKeys,
 	})
 	if err != nil {
 		t.Fatalf("NewHandler() error = %v", err)
@@ -348,6 +465,15 @@ func mustStore(t *testing.T) *FileBundleStore {
 	store, err := OpenFileBundleStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("OpenFileBundleStore() error = %v", err)
+	}
+	return store
+}
+
+func mustEmergencyStore(t *testing.T) *FileEmergencyStore {
+	t.Helper()
+	store, err := OpenFileEmergencyStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("OpenFileEmergencyStore() error = %v", err)
 	}
 	return store
 }

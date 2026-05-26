@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,18 +21,23 @@ import (
 const (
 	defaultConductorID = "conductor"
 
-	PublishPolicyBundlePath = "/api/v1/conductor/policy-bundles"
-	LatestPolicyBundlePath  = "/api/v1/conductor/policy/latest"
-	AuditBatchesPath        = conductor.AuditBatchesPath
-	EnrollPath              = "/api/v1/conductor/enroll"
-	EnrollmentTokensPath    = "/api/v1/conductor/enrollment-tokens" //nolint:gosec // route constant, not a credential
-	HealthPath              = "/health"
-	HealthzPath             = "/healthz"
-	MetricsPath             = "/metrics"
-	ReadyzPath              = "/readyz"
+	PublishPolicyBundlePath    = "/api/v1/conductor/policy-bundles"
+	LatestPolicyBundlePath     = "/api/v1/conductor/policy/latest"
+	RemoteKillPath             = "/api/v1/conductor/remote-kill"
+	RollbackAuthorizationsPath = "/api/v1/conductor/rollback-authorizations"
+	AuditBatchesPath           = conductor.AuditBatchesPath
+	EnrollPath                 = "/api/v1/conductor/enroll"
+	EnrollmentTokensPath       = "/api/v1/conductor/enrollment-tokens" //nolint:gosec // route constant, not a credential
+	HealthPath                 = "/health"
+	HealthzPath                = "/healthz"
+	MetricsPath                = "/metrics"
+	ReadyzPath                 = "/readyz"
 
 	defaultMaxRequestBodyBytes = conductor.MaxConfigYAMLBytes * 2
 	defaultMaxAuditBodyBytes   = conductor.MaxAuditPayloadBytes * 2
+
+	DefaultRemoteKillMaxValidity = 72 * time.Hour
+	DefaultRollbackMaxValidity   = 24 * time.Hour
 )
 
 // FollowerIdentityResolver returns the [FollowerIdentity] for an incoming
@@ -74,6 +80,10 @@ type HandlerOptions struct {
 	AuditSink           AuditBatchSink
 	AuditKeys           AuditKeyResolver
 	Enrollments         EnrollmentStore
+	EmergencyControls   EmergencyStore
+	EmergencyKeys       conductor.SignatureKeyResolver
+	RemoteKillMaxTTL    time.Duration
+	RollbackMaxTTL      time.Duration
 	Metrics             *metrics.Metrics
 	Logger              *slog.Logger
 }
@@ -92,11 +102,15 @@ type Handler struct {
 	auditSink           AuditBatchSink
 	// nil auditQuerier means the configured sink does not implement
 	// [AuditBatchQuerier], so GET returns 501 rather than a retryable 500.
-	auditQuerier AuditBatchQuerier
-	auditKeys    AuditKeyResolver
-	enrollments  EnrollmentStore
-	metrics      *metrics.Metrics
-	logger       *slog.Logger
+	auditQuerier      AuditBatchQuerier
+	auditKeys         AuditKeyResolver
+	enrollments       EnrollmentStore
+	emergencyControls EmergencyStore
+	emergencyKeys     conductor.SignatureKeyResolver
+	remoteKillMaxTTL  time.Duration
+	rollbackMaxTTL    time.Duration
+	metrics           *metrics.Metrics
+	logger            *slog.Logger
 }
 
 type publishPolicyBundleRequest struct {
@@ -139,6 +153,30 @@ type enrollResponse struct {
 	Environment string    `json:"environment"`
 	AuditKeyID  string    `json:"audit_key_id"`
 	EnrolledAt  time.Time `json:"enrolled_at"`
+}
+
+type publishRemoteKillRequest struct {
+	Message conductor.RemoteKillMessage `json:"message"`
+}
+
+type publishRemoteKillResponse struct {
+	MessageID   string    `json:"message_id"`
+	MessageHash string    `json:"message_hash"`
+	Counter     uint64    `json:"counter"`
+	PublishedAt time.Time `json:"published_at"`
+	Created     bool      `json:"created"`
+}
+
+type publishRollbackAuthorizationRequest struct {
+	Authorization conductor.RollbackAuthorization `json:"authorization"`
+}
+
+type publishRollbackAuthorizationResponse struct {
+	AuthorizationID   string    `json:"authorization_id"`
+	AuthorizationHash string    `json:"authorization_hash"`
+	Counter           uint64    `json:"counter"`
+	PublishedAt       time.Time `json:"published_at"`
+	Created           bool      `json:"created"`
 }
 
 type healthResponse struct {
@@ -192,6 +230,14 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 	if maxAuditBody <= 0 {
 		maxAuditBody = defaultMaxAuditBodyBytes
 	}
+	remoteKillMaxTTL := opts.RemoteKillMaxTTL
+	if remoteKillMaxTTL <= 0 {
+		remoteKillMaxTTL = DefaultRemoteKillMaxValidity
+	}
+	rollbackMaxTTL := opts.RollbackMaxTTL
+	if rollbackMaxTTL <= 0 {
+		rollbackMaxTTL = DefaultRollbackMaxValidity
+	}
 	authorizeAuditQuery := opts.AuthorizeAuditQuery
 	if authorizeAuditQuery == nil {
 		authorizeAuditQuery = func(*http.Request, AuditBatchQuery) error {
@@ -226,6 +272,10 @@ func NewHandler(opts HandlerOptions) (*Handler, error) {
 		auditQuerier:        auditQuerier,
 		auditKeys:           opts.AuditKeys,
 		enrollments:         opts.Enrollments,
+		emergencyControls:   opts.EmergencyControls,
+		emergencyKeys:       opts.EmergencyKeys,
+		remoteKillMaxTTL:    remoteKillMaxTTL,
+		rollbackMaxTTL:      rollbackMaxTTL,
 		metrics:             opts.Metrics,
 		logger:              opts.Logger,
 	}, nil
@@ -282,6 +332,10 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleEnrollmentTokens(w, r)
 	case EnrollPath:
 		h.handleEnroll(w, r)
+	case RemoteKillPath:
+		h.handleRemoteKill(w, r)
+	case RollbackAuthorizationsPath:
+		h.handleRollbackAuthorizations(w, r)
 	case PublishPolicyBundlePath:
 		h.handlePublishPolicyBundle(w, r)
 	case LatestPolicyBundlePath:
@@ -339,7 +393,7 @@ func (h *Handler) recordRequest(r *http.Request, route string, status int, durat
 
 func conductorRoute(path string) string {
 	switch path {
-	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
+	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
 		return path
 	default:
 		return "unknown"
@@ -525,6 +579,223 @@ func (h *Handler) handleLatestPolicyBundle(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, record.Bundle)
 }
 
+func (h *Handler) handleRemoteKill(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleLatestRemoteKill(w, r)
+	case http.MethodPut, http.MethodPost:
+		h.handlePublishRemoteKill(w, r)
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPost)
+	}
+}
+
+func (h *Handler) handlePublishRemoteKill(w http.ResponseWriter, r *http.Request) {
+	if h.emergencyControls == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
+		return
+	}
+	if err := h.authorizeAdmin(r); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		return
+	}
+	if h.emergencyKeys == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyKeyRequired)
+		return
+	}
+	var req publishRemoteKillRequest
+	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	now := h.now()
+	if err := validateMaxValidity(req.Message.NotBefore, req.Message.ExpiresAt, h.remoteKillMaxTTL); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := req.Message.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	record, created, err := h.emergencyControls.PublishRemoteKill(r.Context(), req.Message, now)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, publishRemoteKillResponse{
+		MessageID:   record.Message.MessageID,
+		MessageHash: record.MessageHash,
+		Counter:     record.Message.Counter,
+		PublishedAt: record.PublishedAt,
+		Created:     created,
+	})
+}
+
+func (h *Handler) handleLatestRemoteKill(w http.ResponseWriter, r *http.Request) {
+	if h.emergencyControls == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
+		return
+	}
+	identity, err := h.followerIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
+		return
+	}
+	record, err := h.emergencyControls.LatestRemoteKill(r.Context(), identity, h.now())
+	if err != nil {
+		if errors.Is(err, ErrEmergencyNotFound) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, record.Message)
+}
+
+func (h *Handler) handleRollbackAuthorizations(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleLatestRollbackAuthorization(w, r)
+	case http.MethodPut, http.MethodPost:
+		h.handlePublishRollbackAuthorization(w, r)
+	default:
+		writeMethodNotAllowed(w, http.MethodGet, http.MethodPut, http.MethodPost)
+	}
+}
+
+func (h *Handler) handlePublishRollbackAuthorization(w http.ResponseWriter, r *http.Request) {
+	if h.emergencyControls == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
+		return
+	}
+	if err := h.authorizeAdmin(r); err != nil {
+		writeError(w, http.StatusForbidden, ErrPublisherForbidden)
+		return
+	}
+	if h.emergencyKeys == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyKeyRequired)
+		return
+	}
+	var req publishRollbackAuthorizationRequest
+	if err := decodeStrictJSON(w, r, h.maxRequestBody, &req); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, conductor.ErrPayloadTooLarge)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	now := h.now()
+	if err := validateMaxValidity(req.Authorization.CreatedAt, req.Authorization.ExpiresAt, h.rollbackMaxTTL); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if err := req.Authorization.VerifySignaturesAt(now, h.emergencyKeys); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	record, created, err := h.emergencyControls.PublishRollbackAuthorization(r.Context(), req.Authorization, now)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	writeJSON(w, status, publishRollbackAuthorizationResponse{
+		AuthorizationID:   record.Authorization.AuthorizationID,
+		AuthorizationHash: record.AuthorizationHash,
+		Counter:           record.Authorization.Counter,
+		PublishedAt:       record.PublishedAt,
+		Created:           created,
+	})
+}
+
+func (h *Handler) handleLatestRollbackAuthorization(w http.ResponseWriter, r *http.Request) {
+	if h.emergencyControls == nil {
+		writeError(w, http.StatusNotImplemented, ErrEmergencyStoreRequired)
+		return
+	}
+	identity, err := h.followerIdentity(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, ErrFollowerRequired)
+		return
+	}
+	lookup, err := rollbackLookupFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	record, err := h.emergencyControls.LatestRollbackAuthorization(r.Context(), identity, lookup, h.now())
+	if err != nil {
+		if errors.Is(err, ErrEmergencyNotFound) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, record.Authorization)
+}
+
+func rollbackLookupFromRequest(r *http.Request) (RollbackLookup, error) {
+	q := r.URL.Query()
+	currentVersion, err := parseRequiredUint64Query(q.Get("current_version"), "current_version")
+	if err != nil {
+		return RollbackLookup{}, err
+	}
+	targetVersion, err := parseRequiredUint64Query(q.Get("target_version"), "target_version")
+	if err != nil {
+		return RollbackLookup{}, err
+	}
+	lookup := RollbackLookup{
+		CurrentBundleID: q.Get("current_bundle_id"),
+		CurrentVersion:  currentVersion,
+		TargetBundleID:  q.Get("target_bundle_id"),
+		TargetVersion:   targetVersion,
+	}
+	if err := lookup.Validate(); err != nil {
+		return RollbackLookup{}, err
+	}
+	return lookup, nil
+}
+
+func parseRequiredUint64Query(value, field string) (uint64, error) {
+	if strings.TrimSpace(value) == "" {
+		return 0, fmt.Errorf("%w: %s", conductor.ErrMissingField, field)
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", field, err)
+	}
+	return parsed, nil
+}
+
+func validateMaxValidity(start, expires time.Time, maxTTL time.Duration) error {
+	if maxTTL <= 0 {
+		return nil
+	}
+	if start.IsZero() || expires.IsZero() || !expires.After(start) {
+		return conductor.ErrInvalidValidityWindow
+	}
+	if expires.Sub(start) > maxTTL {
+		return fmt.Errorf("%w: validity %s exceeds max %s", conductor.ErrInvalidValidityWindow, expires.Sub(start), maxTTL)
+	}
+	return nil
+}
+
 func ifNoneMatchMatches(raw, etag string) bool {
 	if raw == "" {
 		return false
@@ -561,11 +832,18 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, de
 
 func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrBundleConflict), errors.Is(err, ErrUnsupportedRollback):
+	case errors.Is(err, ErrBundleConflict), errors.Is(err, ErrUnsupportedRollback), errors.Is(err, ErrEmergencyConflict), errors.Is(err, ErrEmergencyStaleCounter):
 		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, conductor.ErrPayloadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, err)
 	case errors.Is(err, conductor.ErrExpired):
+		writeError(w, http.StatusUnprocessableEntity, err)
+	case errors.Is(err, conductor.ErrInvalidRollback), errors.Is(err, conductor.ErrInvalidState),
+		errors.Is(err, conductor.ErrInvalidAudience), errors.Is(err, conductor.ErrMissingField),
+		errors.Is(err, conductor.ErrInvalidValidityWindow), errors.Is(err, conductor.ErrInvalidReason),
+		errors.Is(err, conductor.ErrThresholdRequired), errors.Is(err, conductor.ErrWrongKeyPurpose),
+		errors.Is(err, conductor.ErrInvalidIdentifier), errors.Is(err, conductor.ErrInvalidSignature),
+		errors.Is(err, conductor.ErrSignatureVerification), errors.Is(err, conductor.ErrNotYetValid):
 		writeError(w, http.StatusUnprocessableEntity, err)
 	case errors.Is(err, ErrFollowerRequired):
 		// The transport-derived identity reached the store but did not

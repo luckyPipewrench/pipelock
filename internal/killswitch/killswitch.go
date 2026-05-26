@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package killswitch implements an emergency deny-all controller for Pipelock.
-// Four activation sources (config, API, SIGUSR1, sentinel file) are OR-composed:
+// Five activation sources (config, API, Conductor remote kill, SIGUSR1, sentinel
+// file) are OR-composed:
 // any one being active engages the kill switch and denies all requests.
 package killswitch
 
@@ -33,11 +34,13 @@ type Decision struct {
 	IsNotification bool   // MCP only: true if the message has no "id" field
 }
 
-// Controller manages the kill switch state across four activation sources.
+// Controller manages the kill switch state across five activation sources.
 type Controller struct {
 	cfg          atomic.Pointer[runtime]
 	api          atomic.Bool
 	sigusr1      atomic.Bool
+	conductor    atomic.Bool
+	conductorMsg atomic.Value
 	separatePort atomic.Bool // true when API runs on a dedicated port (no main-port exemption)
 }
 
@@ -238,6 +241,12 @@ func (c *Controller) SetAPI(active bool) {
 	c.api.Store(active)
 }
 
+// SetConductorRemote sets the Conductor remote-kill activation source.
+func (c *Controller) SetConductorRemote(active bool, message string) {
+	c.conductorMsg.Store(message)
+	c.conductor.Store(active)
+}
+
 // SetSeparateAPIPort marks whether the kill switch API runs on a separate
 // listener. When true, IsActiveHTTP skips the /api/v1/* exemption on the
 // main port — the agent cannot reach the API to deactivate its own kill switch.
@@ -249,9 +258,10 @@ func (c *Controller) SetSeparateAPIPort(sep bool) {
 func (c *Controller) Sources() map[string]bool {
 	rt := c.cfg.Load()
 	sources := map[string]bool{
-		"config": rt.cfgEnabled,
-		"api":    c.api.Load(),
-		"signal": c.sigusr1.Load(),
+		"config":           rt.cfgEnabled,
+		"api":              c.api.Load(),
+		"signal":           c.sigusr1.Load(),
+		"conductor_remote": c.conductor.Load(),
 	}
 	if rt.sentinelFile != "" {
 		_, err := os.Stat(rt.sentinelFile)
@@ -270,6 +280,13 @@ func (c *Controller) computeDecision(rt *runtime) Decision {
 	}
 	if c.api.Load() {
 		return Decision{Active: true, Message: rt.message, Source: "api"}
+	}
+	if c.conductor.Load() {
+		msg, _ := c.conductorMsg.Load().(string)
+		if msg == "" {
+			msg = rt.message
+		}
+		return Decision{Active: true, Message: msg, Source: "conductor_remote"}
 	}
 	if c.sigusr1.Load() {
 		return Decision{Active: true, Message: rt.message, Source: "signal"}

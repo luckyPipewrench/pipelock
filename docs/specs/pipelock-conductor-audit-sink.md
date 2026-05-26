@@ -251,6 +251,12 @@ MVP server endpoints:
 PUT /api/v1/conductor/policy-bundles
 POST /api/v1/conductor/policy-bundles
 GET /api/v1/conductor/policy/latest
+PUT /api/v1/conductor/remote-kill
+POST /api/v1/conductor/remote-kill
+GET /api/v1/conductor/remote-kill
+PUT /api/v1/conductor/rollback-authorizations
+POST /api/v1/conductor/rollback-authorizations
+GET /api/v1/conductor/rollback-authorizations
 ```
 
 `PUT` and `POST` publish signed bundle envelopes through the operator/admin
@@ -258,6 +264,10 @@ surface. `GET /api/v1/conductor/policy/latest` is a follower API endpoint: the
 server derives follower identity from the authenticated transport and returns
 the newest currently valid bundle whose org, fleet, environment, and audience
 match that follower, or `204 No Content` when no bundle applies.
+Emergency control publish endpoints require admin authorization and trusted
+control keys with the matching key purpose. Follower `GET` endpoints derive
+identity from mTLS and return the newest currently valid signed message scoped
+to that follower, or `204 No Content` when no emergency control applies.
 
 MVP runtime wiring is exposed as:
 
@@ -271,6 +281,10 @@ pipelock conductor serve \
   --publisher-token-file /etc/pipelock/conductor/publisher-token \
   --auditor-token-file /etc/pipelock/conductor/auditor-token \
   --admin-token-file /etc/pipelock/conductor/admin-token \
+  --trusted-control-key id=remote-key-1,purpose=remote-kill-signing,file=/etc/pipelock/conductor/remote-kill.pub \
+  --trusted-control-key id=rollback-key-1,purpose=policy-bundle-rollback,file=/etc/pipelock/conductor/rollback.pub \
+  --remote-kill-max-validity 72h \
+  --rollback-max-validity 24h \
   --probe-listen 127.0.0.1:9092
 # Optional bootstrap fallback; every trusted audit key must include org=.
 # --trusted-audit-key id=audit-key-1,file=/etc/pipelock/conductor/audit-key.pub,org=org-main,fleet=prod
@@ -294,7 +308,11 @@ active follower identity records, and enrolled audit public keys. Static
 trusted audit keys are optional bootstrap/fallback inputs. When configured,
 every `--trusted-audit-key` MUST carry `org=`; a cross-org audit key would let
 any enrolled follower in any org sign batches that authenticate against that
-key. Optional `fleet=`/`instance=` narrow the scope further. Enrolled follower
+key. Optional `fleet=`/`instance=` narrow the scope further. Trusted control
+keys are required for emergency-control publication and are purpose-scoped to
+`remote-kill-signing` or `policy-bundle-rollback`; wrong-purpose signatures are
+rejected before storage. Conductor also rejects emergency-control messages whose
+validity windows exceed the configured maximums before storing them. Enrolled follower
 keys are resolved first by exact org/fleet/instance and key ID. Accepted audit
 batches are written to a
 local SQLite raw-evidence store with idempotency on `(org, fleet, instance,
@@ -404,6 +422,23 @@ Follower behavior:
 - Every accepted, rejected, expired, and superseded remote kill message is
   written to local recorder evidence with the full signed envelope.
 
+MVP Conductor behavior:
+
+- Admins publish signed messages with `PUT` or `POST
+  /api/v1/conductor/remote-kill`.
+- Conductor verifies threshold signatures against trusted `remote-kill-signing`
+  control keys and enforces the configured max validity window before storing
+  the message durably.
+- Followers poll `GET /api/v1/conductor/remote-kill`; Conductor returns only
+  currently valid messages whose org, fleet, and audience match the
+  authenticated follower identity.
+- Followers still verify signatures locally before applying the kill switch
+  source. Conductor-side verification prevents storing unauthenticated operator
+  input; follower-side verification preserves local enforcement authority.
+- Operators should prefer narrow audience label selectors over broad fleet-wide
+  selectors. A wildcard or fleet-wide remote kill should be published only when
+  the operational intent is to affect every matching follower.
+
 ## Emergency Stream
 
 Pure polling is insufficient for emergency state. Followers maintain an
@@ -451,6 +486,23 @@ single-use authorization counter. `target_version` must be strictly less than
 
 Follower accepts it once, then pins the lower bundle as the new freshness
 baseline. Reuse is rejected and logged as a security event.
+
+MVP Conductor behavior:
+
+- Admins publish signed authorizations with `PUT` or `POST
+  /api/v1/conductor/rollback-authorizations`.
+- Conductor verifies threshold signatures against trusted
+  `policy-bundle-rollback` control keys and enforces the configured max
+  validity window before storing the authorization durably.
+- Followers poll `GET /api/v1/conductor/rollback-authorizations` with exact
+  `current_bundle_id`, `current_version`, `target_bundle_id`, and
+  `target_version` query parameters.
+- Conductor returns only currently valid authorizations scoped to the
+  authenticated follower identity and exact rollback tuple, or `204 No Content`
+  when no authorization applies.
+- Rollbacks are single-step authorizations. A chain such as `42 -> 41 -> 40`
+  requires separate signed authorizations for each exact current/target tuple;
+  a prior authorization does not imply approval for the whole chain.
 
 ## Bundle Apply Pipeline
 

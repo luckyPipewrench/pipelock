@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +59,10 @@ func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 		adminTokenFile:      adminTokenPath,
 		trustedAuditKeys: []string{
 			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
+		},
+		trustedControlKeys: []string{
+			"id=remote-key-1,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
+			"id=rollback-key-1,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
 		},
 		tlsCert:  filepath.Join(dir, "server.pem"),
 		tlsKey:   filepath.Join(dir, "server.key"),
@@ -159,6 +164,27 @@ func TestBuildServeHandlerRequiresAuthInputs(t *testing.T) {
 		auditorTokenFile:    auditorTokenPath,
 		adminTokenFile:      adminTokenPath,
 	})
+	if err == nil || !errors.Is(err, controlplane.ErrEmergencyKeyRequired) {
+		t.Fatalf("buildServeHandler(no trusted control keys) error = %v, want ErrEmergencyKeyRequired", err)
+	}
+	pub, _, genErr := ed25519.GenerateKey(rand.Reader)
+	if genErr != nil {
+		t.Fatalf("GenerateKey(control): %v", genErr)
+	}
+	_, _, _, err = buildServeHandler(context.Background(), serveOptions{
+		storageDir:          filepath.Join(dir, "store"),
+		followerTrustDomain: defaultTrustDomain,
+		tlsCert:             "server.pem",
+		tlsKey:              "server.key",
+		clientCA:            caPath,
+		publisherTokenFile:  tokenPath,
+		auditorTokenFile:    auditorTokenPath,
+		adminTokenFile:      adminTokenPath,
+		trustedControlKeys: []string{
+			"id=remote-key-1,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
+			"id=rollback-key-1,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
+		},
+	})
 	if err != nil {
 		t.Fatalf("buildServeHandler(no trusted audit keys) error = %v, want nil", err)
 	}
@@ -199,6 +225,10 @@ func TestRunServeReturnsTLSLoadError(t *testing.T) {
 		adminTokenFile:      adminTokenPath,
 		trustedAuditKeys: []string{
 			"id=audit-key-1,inline=" + signing.EncodePublicKey(pub) + ",org=org-main",
+		},
+		trustedControlKeys: []string{
+			"id=remote-key-1,purpose=remote-kill-signing,inline=" + signing.EncodePublicKey(pub),
+			"id=rollback-key-1,purpose=policy-bundle-rollback,inline=" + signing.EncodePublicKey(pub),
 		},
 		tlsCert:  filepath.Join(dir, "missing-server.pem"),
 		tlsKey:   filepath.Join(dir, "missing-server.key"),
@@ -245,6 +275,42 @@ func TestParseAuditKeySpec(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), c.errSub) {
 				t.Fatalf("parseAuditKeySpec(%q) error = %v, want substring %q", c.input, err, c.errSub)
+			}
+		})
+	}
+}
+
+func TestParseControlKeySpec(t *testing.T) {
+	spec, err := parseControlKeySpec("id=k1,purpose=remote-kill-signing,inline=abc")
+	if err != nil {
+		t.Fatalf("parseControlKeySpec() error = %v", err)
+	}
+	if spec.id != "k1" || spec.inline != "abc" || spec.purpose != signing.PurposeRemoteKillSigning {
+		t.Fatalf("spec = %+v", spec)
+	}
+
+	rejections := []struct {
+		name   string
+		input  string
+		errSub string
+	}{
+		{"missing id", "purpose=remote-kill-signing,inline=abc", "id= required"},
+		{"missing material", "id=k1,purpose=remote-kill-signing", "exactly one of inline= or file="},
+		{"both inline and file", "id=k1,purpose=remote-kill-signing,inline=abc,file=/tmp/x", "exactly one of inline= or file="},
+		{"invalid purpose", "id=k1,purpose=policy-bundle-signing,inline=abc", "purpose= must be"},
+		{"duplicate field", "id=k1,id=k2,purpose=remote-kill-signing,inline=abc", "duplicate key"},
+		{"unknown field", "id=k1,purpose=remote-kill-signing,inline=abc,org=o", "unknown field"},
+		{"empty input", "", "empty"},
+		{"no equals", "id-k1,inline=abc", "expected k=v pairs"},
+	}
+	for _, c := range rejections {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := parseControlKeySpec(c.input)
+			if err == nil {
+				t.Fatalf("parseControlKeySpec(%q) error = nil, want %q", c.input, c.errSub)
+			}
+			if !strings.Contains(err.Error(), c.errSub) {
+				t.Fatalf("parseControlKeySpec(%q) error = %v, want substring %q", c.input, err, c.errSub)
 			}
 		})
 	}

@@ -45,6 +45,9 @@ type serveOptions struct {
 	auditorTokenFile    string
 	adminTokenFile      string
 	trustedAuditKeys    []string
+	trustedControlKeys  []string
+	remoteKillMaxTTL    time.Duration
+	rollbackMaxTTL      time.Duration
 	tlsCert             string
 	tlsKey              string
 	clientCA            string
@@ -58,6 +61,13 @@ type auditKeySpec struct {
 	orgID      string
 	fleetID    string
 	instanceID string
+}
+
+type controlKeySpec struct {
+	id      string
+	inline  string
+	file    string
+	purpose signing.KeyPurpose
 }
 
 func Cmd() *cobra.Command {
@@ -75,6 +85,8 @@ func serveCmd() *cobra.Command {
 		probeListen:         defaultProbeListen,
 		conductorID:         "conductor",
 		followerTrustDomain: defaultTrustDomain,
+		remoteKillMaxTTL:    controlplane.DefaultRemoteKillMaxValidity,
+		rollbackMaxTTL:      controlplane.DefaultRollbackMaxValidity,
 	}
 	cmd := &cobra.Command{
 		Use:   "serve",
@@ -95,6 +107,10 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&opts.trustedAuditKeys, "trusted-audit-key", nil,
 		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]'; "+
 			"org= is required so a key cannot authenticate batches across orgs; repeatable")
+	cmd.Flags().StringArrayVar(&opts.trustedControlKeys, "trusted-control-key", nil,
+		"trusted emergency control key as comma-separated kv pairs: 'id=ID,purpose=(remote-kill-signing|policy-bundle-rollback),(inline=BASE64|file=/path)'; repeatable")
+	cmd.Flags().DurationVar(&opts.remoteKillMaxTTL, "remote-kill-max-validity", opts.remoteKillMaxTTL, "maximum validity window for published Conductor remote-kill messages")
+	cmd.Flags().DurationVar(&opts.rollbackMaxTTL, "rollback-max-validity", opts.rollbackMaxTTL, "maximum validity window for published Conductor rollback authorizations")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS server private key file")
 	cmd.Flags().StringVar(&opts.clientCA, "client-ca", "", "client CA PEM bundle for follower mTLS")
@@ -259,6 +275,14 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	emergencyControls, err := controlplane.OpenFileEmergencyStore(filepath.Join(opts.storageDir, "emergency-controls"))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	emergencyKeys, err := buildControlKeyResolver(opts.trustedControlKeys)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	m := metrics.New()
 	handler, err := controlplane.NewHandler(controlplane.HandlerOptions{
 		Store:               store,
@@ -271,6 +295,10 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 		AuditSink:           auditStore,
 		AuditKeys:           controlplane.CompositeAuditKeyResolver(enrollments, auditKeys),
 		Enrollments:         enrollments,
+		EmergencyControls:   emergencyControls,
+		EmergencyKeys:       emergencyKeys,
+		RemoteKillMaxTTL:    opts.remoteKillMaxTTL,
+		RollbackMaxTTL:      opts.rollbackMaxTTL,
 		Metrics:             m,
 		Logger:              conductorRequestLogger(opts.logWriter),
 	})
@@ -366,6 +394,37 @@ func buildAuditKeyResolver(values []string) (controlplane.AuditKeyResolver, erro
 	return controlplane.StaticAuditKeyResolver(keys)
 }
 
+func buildControlKeyResolver(values []string) (conductorcore.SignatureKeyResolver, error) {
+	if len(values) == 0 {
+		return nil, controlplane.ErrEmergencyKeyRequired
+	}
+	keys := make(map[string]conductorcore.SignatureKey, len(values))
+	for _, value := range values {
+		spec, err := parseControlKeySpec(value)
+		if err != nil {
+			return nil, err
+		}
+		pub, err := loadControlPublicKey(spec)
+		if err != nil {
+			return nil, fmt.Errorf("load trusted control key %q: %w", spec.id, err)
+		}
+		if _, dup := keys[spec.id]; dup {
+			return nil, fmt.Errorf("duplicate --trusted-control-key id %q", spec.id)
+		}
+		keys[spec.id] = conductorcore.SignatureKey{
+			PublicKey:  pub,
+			KeyPurpose: spec.purpose,
+		}
+	}
+	return func(keyID string) (conductorcore.SignatureKey, error) {
+		key, ok := keys[keyID]
+		if !ok {
+			return conductorcore.SignatureKey{}, conductorcore.ErrSignatureVerification
+		}
+		return key, nil
+	}, nil
+}
+
 func parseAuditKeySpec(raw string) (auditKeySpec, error) {
 	if strings.TrimSpace(raw) == "" {
 		return auditKeySpec{}, errors.New("invalid --trusted-audit-key: empty")
@@ -416,7 +475,63 @@ func parseAuditKeySpec(raw string) (auditKeySpec, error) {
 	return spec, nil
 }
 
+func parseControlKeySpec(raw string) (controlKeySpec, error) {
+	if strings.TrimSpace(raw) == "" {
+		return controlKeySpec{}, errors.New("invalid --trusted-control-key: empty")
+	}
+	spec := controlKeySpec{}
+	seen := make(map[string]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		k, v, ok := strings.Cut(part, "=")
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if !ok || k == "" {
+			return controlKeySpec{}, fmt.Errorf("invalid --trusted-control-key %q: expected k=v pairs", raw)
+		}
+		if _, dup := seen[k]; dup {
+			return controlKeySpec{}, fmt.Errorf("invalid --trusted-control-key %q: duplicate key %q", raw, k)
+		}
+		seen[k] = struct{}{}
+		switch k {
+		case "id":
+			spec.id = v
+		case "inline":
+			spec.inline = v
+		case "file":
+			spec.file = v
+		case "purpose":
+			spec.purpose = signing.KeyPurpose(v)
+		default:
+			return controlKeySpec{}, fmt.Errorf("invalid --trusted-control-key %q: unknown field %q", raw, k)
+		}
+	}
+	if spec.id == "" {
+		return controlKeySpec{}, fmt.Errorf("invalid --trusted-control-key %q: id= required", raw)
+	}
+	if (spec.inline == "" && spec.file == "") || (spec.inline != "" && spec.file != "") {
+		return controlKeySpec{}, fmt.Errorf("invalid --trusted-control-key %q: exactly one of inline= or file= required", raw)
+	}
+	switch spec.purpose {
+	case signing.PurposeRemoteKillSigning, signing.PurposePolicyBundleRollback:
+		return spec, nil
+	default:
+		return controlKeySpec{}, fmt.Errorf("invalid --trusted-control-key %q: purpose= must be %q or %q", raw,
+			signing.PurposeRemoteKillSigning, signing.PurposePolicyBundleRollback)
+	}
+}
+
 func loadAuditPublicKey(spec auditKeySpec) ([]byte, error) {
+	if spec.inline != "" {
+		return signing.ParsePublicKey(spec.inline)
+	}
+	return signing.LoadPublicKeyFile(filepath.Clean(spec.file))
+}
+
+func loadControlPublicKey(spec controlKeySpec) ([]byte, error) {
 	if spec.inline != "" {
 		return signing.ParsePublicKey(spec.inline)
 	}

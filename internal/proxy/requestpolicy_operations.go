@@ -75,9 +75,15 @@ func multipartOperationsField(ct string, body []byte) ([]byte, bool) {
 			return nil, false
 		}
 		if part.FormName() == "operations" {
-			data, readErr := io.ReadAll(io.LimitReader(part, multipartOperationsMaxBytes))
+			// Read one past the cap so an over-cap field is detected and
+			// rejected rather than silently truncated: classifying a partial
+			// payload could miss a dangerous operation padded past the limit.
+			data, readErr := io.ReadAll(io.LimitReader(part, multipartOperationsMaxBytes+1))
 			_ = part.Close()
 			if readErr != nil {
+				return nil, false
+			}
+			if len(data) > multipartOperationsMaxBytes {
 				return nil, false
 			}
 			return data, true

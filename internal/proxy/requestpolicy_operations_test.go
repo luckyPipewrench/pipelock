@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -115,6 +116,28 @@ func TestMultipartOperationsField(t *testing.T) {
 	_ = w.Close()
 	if _, ok := multipartOperationsField(w.FormDataContentType(), nob.Bytes()); ok {
 		t.Error("body without an operations field should fail extraction")
+	}
+}
+
+func TestMultipartOperationsField_OverCapFailsClosed(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	fw, err := w.CreateFormField("operations")
+	if err != nil {
+		t.Fatalf("CreateFormField: %v", err)
+	}
+	// An operations field larger than the cap must be rejected, not truncated
+	// and classified — otherwise a dangerous op padded past the cap is hidden.
+	huge := gqlJSONBody("mutation { deleteRecord(pad: \"" + strings.Repeat("a", multipartOperationsMaxBytes) + "\") { id } }")
+	if _, err := fw.Write([]byte(huge)); err != nil {
+		t.Fatalf("write operations: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, ok := multipartOperationsField(w.FormDataContentType(), buf.Bytes()); ok {
+		t.Fatal("an over-cap multipart operations field must fail closed (ok=false)")
 	}
 }
 

@@ -229,6 +229,41 @@ type SandboxFilesystem struct {
 	AllowWrite []string `yaml:"allow_write"`
 }
 
+// RequestPolicy configures explicit outbound API operation safety rails. It is
+// an allow-by-default deny-list: a request forwards unless a rule matches.
+// Gated by its own Enabled flag, independent of request_body_scanning — it
+// composes with the learn-lock contract gate (a ratified allowlist) and with
+// DLP, and is neither. See the request-policy operation-rails design.
+type RequestPolicy struct {
+	Enabled bool                `yaml:"enabled"`
+	Rules   []RequestPolicyRule `yaml:"rules"`
+}
+
+// RequestPolicyRule is one operation safety rail. v1 matches on route only
+// (host / method / path / content type); GraphQL and JSON operation predicates
+// are reserved for later phases. Action is per-rule (block or warn) — there is
+// deliberately no section-level default_action knob, so the section can never
+// be configured into default-deny.
+type RequestPolicyRule struct {
+	Name   string             `yaml:"name"`   // bounded, metric-label-safe identifier
+	Action string             `yaml:"action"` // block | warn
+	Shadow bool               `yaml:"shadow"` // log the would-be action, forward anyway
+	Route  RequestPolicyRoute `yaml:"route"`
+	Reason string             `yaml:"reason"` // operator-facing explanation (never logged with content)
+}
+
+// RequestPolicyRoute selects which requests a rule applies to. An empty
+// constraint matches any value for that dimension; a request matches the route
+// only when every non-empty constraint is satisfied. Within a single dimension
+// (e.g. multiple hosts, or path_prefixes plus path_patterns) matching is OR.
+type RequestPolicyRoute struct {
+	Hosts        []string `yaml:"hosts"`         // exact host or *.suffix wildcard
+	Methods      []string `yaml:"methods"`       // HTTP verbs; normalized to uppercase
+	PathPrefixes []string `yaml:"path_prefixes"` // literal prefixes of the normalized path
+	PathPatterns []string `yaml:"path_patterns"` // RE2 patterns against the normalized path
+	ContentTypes []string `yaml:"content_types"` // media types (parameters stripped)
+}
+
 // Config is the top-level Pipelock configuration.
 type Config struct {
 	Version                  int                     `yaml:"version"`
@@ -252,6 +287,7 @@ type Config struct {
 	AdaptiveEnforcement      AdaptiveEnforcement     `yaml:"adaptive_enforcement"`
 	MCPSessionBinding        MCPSessionBinding       `yaml:"mcp_session_binding"`
 	RequestBodyScanning      RequestBodyScanning     `yaml:"request_body_scanning"`
+	RequestPolicy            RequestPolicy           `yaml:"request_policy"`
 	KillSwitch               KillSwitch              `yaml:"kill_switch"`
 	HealthWatchdog           HealthWatchdog          `yaml:"health_watchdog" json:"-"` // operational liveness, excluded from canonical policy hash
 	Sentry                   SentryConfig            `yaml:"sentry"`

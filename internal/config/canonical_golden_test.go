@@ -119,7 +119,11 @@ const (
 	// preserves current behavior; "block" causes the consumer to cancel
 	// the proxy ctx on agent-attributed findings, which is observably
 	// different enforcement.
-	goldenHashDefaults = "e167ea2ed69766c470bb7964e4163d6ad083d1d63719adc7e44752bced596041"
+	// Re-bumped for the request_policy section: adding the request_policy
+	// operation-rails config (allow-by-default deny/warn rules over outbound
+	// API operations) is a policy-semantics change. The field is present but
+	// empty (disabled, no rules) in Defaults(), so it shifts the baseline hash.
+	goldenHashDefaults = "c591ad369bde2755f41825b90f2486503c0d314d76295402f7771b173ea80d60"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -181,7 +185,10 @@ const (
 	// note. The rich fixture omits dns:, so the field is empty but still
 	// part of the canonical view.
 	// Re-bumped for file_sentry.action: same rationale as goldenHashDefaults.
-	goldenHashRichConfig = "e67707c35590ea0f4a6504bbadb13c3c2aa709778181e4edc6892c1c6dca0e3f"
+	// Re-bumped for the request_policy section: same rationale as
+	// goldenHashDefaults. The rich fixture omits request_policy, so the field
+	// is empty but still part of the canonical view; the hash shifts in lockstep.
+	goldenHashRichConfig = "36f684e7200b427c16c38e2dfeef3d7404760207b58bdfb9c2f191b1f4769a53"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

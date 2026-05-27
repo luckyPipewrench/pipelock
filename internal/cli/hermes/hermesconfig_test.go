@@ -200,6 +200,151 @@ func TestStringListHelpers(t *testing.T) {
 	}
 }
 
+func TestHermesConfig_EnablePlugin_CreatesSection(t *testing.T) {
+	t.Parallel()
+
+	cfg := &hermesConfig{root: map[string]interface{}{}}
+	if cfg.pluginEnabled() {
+		t.Fatal("plugin reported enabled on empty config")
+	}
+	added, err := cfg.enablePlugin()
+	if err != nil {
+		t.Fatalf("enablePlugin: %v", err)
+	}
+	if !added {
+		t.Fatal("enablePlugin reported no change on first enable")
+	}
+	if !cfg.pluginEnabled() {
+		t.Fatal("plugin not enabled after enablePlugin")
+	}
+	// Idempotent: a second enable reports no change.
+	again, err := cfg.enablePlugin()
+	if err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	if again {
+		t.Fatal("re-enable falsely reported a change")
+	}
+}
+
+func TestHermesConfig_EnablePlugin_PreservesOtherPlugins(t *testing.T) {
+	t.Parallel()
+
+	cfg := &hermesConfig{root: map[string]interface{}{
+		pluginsKey: map[string]interface{}{
+			enabledKey: []interface{}{"disk-cleanup", "image_gen/openai"},
+		},
+	}}
+	if _, err := cfg.enablePlugin(); err != nil {
+		t.Fatalf("enablePlugin: %v", err)
+	}
+	plugins := cfg.root[pluginsKey].(map[string]interface{})
+	got := toStringSet(plugins[enabledKey])
+	for _, want := range []string{"disk-cleanup", "image_gen/openai", pluginRegistryName} {
+		if !got[want] {
+			t.Fatalf("enabled set missing %q: %v", want, got)
+		}
+	}
+}
+
+func TestHermesConfig_DisablePlugin_RemovesOnlyPipelock(t *testing.T) {
+	t.Parallel()
+
+	cfg := &hermesConfig{root: map[string]interface{}{
+		pluginsKey: map[string]interface{}{
+			enabledKey: []interface{}{"disk-cleanup", pluginRegistryName},
+		},
+	}}
+	removed, err := cfg.disablePlugin()
+	if err != nil {
+		t.Fatalf("disablePlugin: %v", err)
+	}
+	if !removed {
+		t.Fatal("disablePlugin reported nothing removed")
+	}
+	if cfg.pluginEnabled() {
+		t.Fatal("plugin still enabled after disable")
+	}
+	plugins := cfg.root[pluginsKey].(map[string]interface{})
+	if !toStringSet(plugins[enabledKey])["disk-cleanup"] {
+		t.Fatal("disable dropped the operator's other plugin")
+	}
+}
+
+func TestHermesConfig_DisablePlugin_AbsentIsNoOp(t *testing.T) {
+	t.Parallel()
+
+	cfg := &hermesConfig{root: map[string]interface{}{}}
+	removed, err := cfg.disablePlugin()
+	if err != nil {
+		t.Fatalf("disablePlugin on empty config: %v", err)
+	}
+	if removed {
+		t.Fatal("disablePlugin falsely reported a removal on empty config")
+	}
+}
+
+func TestHermesConfig_PluginsSection_MalformedErrors(t *testing.T) {
+	t.Parallel()
+
+	// A non-mapping plugins value (a list here) must not be silently
+	// clobbered: refuse to edit and surface an error.
+	cfg := &hermesConfig{path: "config.yaml", root: map[string]interface{}{
+		pluginsKey: []interface{}{"oops-this-is-a-list"},
+	}}
+	if _, err := cfg.enablePlugin(); err == nil {
+		t.Fatal("enablePlugin did not error on a non-mapping plugins section")
+	}
+	if _, err := cfg.disablePlugin(); err == nil {
+		t.Fatal("disablePlugin did not error on a non-mapping plugins section")
+	}
+	// A malformed section means nothing is enabled, per Hermes' own gating.
+	if cfg.pluginEnabled() {
+		t.Fatal("pluginEnabled true for a malformed plugins section")
+	}
+}
+
+func TestHermesConfig_EnabledListMalformedErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		root map[string]interface{}
+	}{
+		{
+			name: "scalar enabled value",
+			root: map[string]interface{}{
+				pluginsKey: map[string]interface{}{
+					enabledKey: "disk-cleanup",
+				},
+			},
+		},
+		{
+			name: "non-string enabled entry",
+			root: map[string]interface{}{
+				pluginsKey: map[string]interface{}{
+					enabledKey: []interface{}{"disk-cleanup", 7},
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &hermesConfig{path: "config.yaml", root: tc.root}
+			if _, err := cfg.enablePlugin(); err == nil {
+				t.Fatal("enablePlugin did not error on malformed plugins.enabled")
+			}
+			if _, err := cfg.disablePlugin(); err == nil {
+				t.Fatal("disablePlugin did not error on malformed plugins.enabled")
+			}
+		})
+	}
+}
+
 func TestResolveDefaultHermesConfig(t *testing.T) {
 	t.Parallel()
 

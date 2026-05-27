@@ -16,7 +16,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
 .PHONY: all build build-verifier test bench bench-egress bench-egress-long bench-egress-release lint clean docker install fmt vet tidy-check fuzz stats docs-check \
-	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check
+	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check hermes-e2e
 
 all: build
 
@@ -53,6 +53,14 @@ test-cover:
 	go test -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
+
+# hermes-e2e runs the live-Hermes integration proof: it installs a pinned
+# hermes-agent into a throwaway venv, does a real `pipelock hermes install
+# --mode full`, and drives Hermes' own plugin machinery to confirm the plugin
+# loads, enables, and blocks an adversarial tool call. Requires python3 +
+# network (pip). Behind the hermes_e2e build tag so it never runs in `make test`.
+hermes-e2e:
+	go test -tags hermes_e2e -run TestHermesLiveE2E -count=1 -v ./internal/cli/hermes/...
 
 bench:
 	go test -bench=. -benchmem -count=3 -run=^$$ ./internal/scanner/ ./internal/mcp/

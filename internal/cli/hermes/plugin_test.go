@@ -47,7 +47,7 @@ func TestInstall_WritesEmbeddedTree(t *testing.T) {
 		t.Fatalf("Install on fresh directory should not rotate files; got %v", result.BackupsCreated)
 	}
 
-	for _, name := range []string{"__init__.py", "plugin.py", "README.md"} {
+	for _, name := range []string{"__init__.py", "plugin.py", manifestName, "README.md"} {
 		path := filepath.Join(root, name)
 		info, err := os.Stat(path)
 		if err != nil {
@@ -311,8 +311,8 @@ func TestIsManagedPluginPath(t *testing.T) {
 	t.Parallel()
 
 	managed := []string{
-		"__init__.py", "plugin.py", "README.md", configSidecarName,
-		"plugin.py.bak.123", "pipelock.conf.456.tmp",
+		"__init__.py", "plugin.py", manifestName, "README.md", configSidecarName,
+		"plugin.py.bak.123", "pipelock.conf.456.tmp", "plugin.yaml.bak.789",
 	}
 	for _, name := range managed {
 		if !isManagedPluginPath(name) {

@@ -35,10 +35,24 @@ const (
 	// mcpServersKey is the config.yaml section declaring MCP servers.
 	mcpServersKey = "mcp_servers"
 
+	// pluginsKey is the config.yaml section configuring Hermes' plugin loader.
+	pluginsKey = "plugins"
+	// enabledKey is the opt-in allow-list under plugins: Hermes loads a
+	// standalone plugin only when its registry key/name appears here
+	// (hermes_cli/plugins.py _get_enabled_plugins + discover_and_load gating).
+	enabledKey = "enabled"
+
 	// backendDocker is the terminal backend that uses dockerForwardEnvKey in
 	// addition to envPassthroughKey.
 	backendDocker = "docker"
 )
+
+// pluginRegistryName is the name pipelock writes into plugins.enabled and the
+// name field of the embedded plugin.yaml. Hermes matches plugins.enabled
+// entries against the plugin's registry key OR its manifest name; pinning both
+// to this constant makes the enable check deterministic regardless of the
+// install directory name.
+const pluginRegistryName = "pipelock"
 
 // proxyEnvNames are the environment variable names forwarded to Hermes
 // terminal backends so sandboxed tool execution inherits pipelock's proxy and
@@ -237,6 +251,125 @@ func noProxyValue() string {
 func (c *hermesConfig) mcpServers() map[string]interface{} {
 	servers, _ := c.root[mcpServersKey].(map[string]interface{})
 	return servers
+}
+
+// pluginsSection returns the plugins mapping. When create is true and the
+// section is absent it is created. An existing plugins value that is not a
+// mapping is an error: Hermes ignores a malformed plugins section entirely
+// (opt-in default), and silently overwriting operator config we cannot parse
+// would be surprising and could disable plugins they enabled by hand.
+func (c *hermesConfig) pluginsSection(create bool) (map[string]interface{}, error) {
+	raw, ok := c.root[pluginsKey]
+	if !ok || raw == nil {
+		if !create {
+			return nil, nil
+		}
+		m := map[string]interface{}{}
+		c.root[pluginsKey] = m
+		return m, nil
+	}
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("hermes: config %s has a non-mapping %q section; refusing to edit %s.%s",
+			c.path, pluginsKey, pluginsKey, enabledKey)
+	}
+	return m, nil
+}
+
+// enablePlugin ensures the pipelock plugin is present in plugins.enabled,
+// additively (existing entries are preserved). Returns whether it was newly
+// added.
+func (c *hermesConfig) enablePlugin() (bool, error) {
+	plugins, err := c.pluginsSection(true)
+	if err != nil {
+		return false, err
+	}
+	current, err := c.enabledPlugins(plugins)
+	if err != nil {
+		return false, err
+	}
+	for _, name := range current {
+		if name == pluginRegistryName {
+			return false, nil
+		}
+	}
+	current = append(current, pluginRegistryName)
+	plugins[enabledKey] = toInterfaceSlice(current)
+	return true, nil
+}
+
+// disablePlugin removes the pipelock plugin from plugins.enabled. Returns
+// whether it was present. removeStringList deletes the enabled key when the
+// list empties; an otherwise-empty plugins section is left in place (it may
+// hold operator keys).
+func (c *hermesConfig) disablePlugin() (bool, error) {
+	plugins, err := c.pluginsSection(false)
+	if err != nil {
+		return false, err
+	}
+	if plugins == nil {
+		return false, nil
+	}
+	current, err := c.enabledPlugins(plugins)
+	if err != nil {
+		return false, err
+	}
+	if len(current) == 0 {
+		return false, nil
+	}
+	kept := current[:0]
+	removed := false
+	for _, name := range current {
+		if name == pluginRegistryName {
+			removed = true
+			continue
+		}
+		kept = append(kept, name)
+	}
+	if !removed {
+		return false, nil
+	}
+	if len(kept) == 0 {
+		delete(plugins, enabledKey)
+	} else {
+		plugins[enabledKey] = toInterfaceSlice(kept)
+	}
+	return true, nil
+}
+
+// pluginEnabled reports whether the pipelock plugin appears in plugins.enabled.
+// Mirrors Hermes' gating: a malformed/absent section means nothing is enabled.
+func (c *hermesConfig) pluginEnabled() bool {
+	plugins, ok := c.root[pluginsKey].(map[string]interface{})
+	if !ok {
+		return false
+	}
+	return toStringSet(plugins[enabledKey])[pluginRegistryName]
+}
+
+// enabledPlugins returns plugins.enabled as a strict string list. This is
+// deliberately stricter than mergeStringList: silently replacing a malformed
+// enabled list could disable operator-managed plugins we cannot preserve.
+func (c *hermesConfig) enabledPlugins(plugins map[string]interface{}) ([]string, error) {
+	raw, ok := plugins[enabledKey]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("hermes: config %s has a non-list %s.%s; refusing to edit plugin enablement",
+			c.path, pluginsKey, enabledKey)
+	}
+	out := make([]string, 0, len(items))
+	for i, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("hermes: config %s has a non-string entry at %s.%s[%d]; refusing to edit plugin enablement",
+				c.path, pluginsKey, enabledKey, i)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // wrappedMCPServerCount counts mcp_servers entries already wrapped by pipelock.

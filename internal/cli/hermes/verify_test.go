@@ -124,6 +124,16 @@ func TestBuildVerifyReport_None(t *testing.T) {
 	}
 }
 
+// seedEnabledPluginConfig writes a Hermes config that enables the pipelock
+// plugin (and nothing else) at path, using the canonical registry name.
+func seedEnabledPluginConfig(t *testing.T, path string) {
+	t.Helper()
+	body := "plugins:\n  enabled:\n    - " + pluginRegistryName + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("seed enabled-plugin config: %v", err)
+	}
+}
+
 func TestBuildVerifyReport_PartialPluginOnly(t *testing.T) {
 	// No t.Parallel(): stubs the package-level lookPipelock seam.
 	stubPipelock(t, true)
@@ -132,13 +142,72 @@ func TestBuildVerifyReport_PartialPluginOnly(t *testing.T) {
 	if _, err := Install(PluginTarget{Root: pluginRoot}); err != nil {
 		t.Fatalf("plugin install: %v", err)
 	}
-	// No config -> no env injected -> partial.
+	// Plugin enabled (so it is genuinely ready) but no terminal env injected
+	// -> partial: a ready plugin path with no env, not full.
+	hermesCfg := filepath.Join(tmp, "config.yaml")
+	seedEnabledPluginConfig(t, hermesCfg)
 	report := buildVerifyReport(&installOptions{
 		PluginRoot:   pluginRoot,
-		HermesConfig: filepath.Join(tmp, "config.yaml"),
+		HermesConfig: hermesCfg,
 	})
 	if report.Coverage != coveragePartial {
 		t.Fatalf("coverage = %q, want partial", report.Coverage)
+	}
+}
+
+// TestBuildVerifyReport_PresentButDisabledIsNotReady proves the core honesty
+// fix: a plugin whose files (and manifest) are on disk but which is NOT in
+// plugins.enabled never loads under Hermes, so it must not count as coverage.
+// Before the fix, verify reported this state as protective; that was false
+// protection on the default path.
+func TestBuildVerifyReport_PresentButDisabledIsNotReady(t *testing.T) {
+	// No t.Parallel(): stubs the package-level lookPipelock seam.
+	stubPipelock(t, true)
+	tmp := t.TempDir()
+	pluginRoot := filepath.Join(tmp, "plugins", "pipelock")
+	if _, err := Install(PluginTarget{Root: pluginRoot}); err != nil {
+		t.Fatalf("plugin install: %v", err)
+	}
+	// Config present but plugin NOT enabled, and no env injected.
+	hermesCfg := filepath.Join(tmp, "config.yaml")
+	if err := os.WriteFile(hermesCfg, []byte("model: gpt-4\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	report := buildVerifyReport(&installOptions{PluginRoot: pluginRoot, HermesConfig: hermesCfg})
+	if !report.PluginPresent || !report.ManifestPresent {
+		t.Fatalf("expected files+manifest present: present=%v manifest=%v", report.PluginPresent, report.ManifestPresent)
+	}
+	if report.PluginEnabled {
+		t.Fatal("plugin falsely reported enabled with no plugins.enabled entry")
+	}
+	if report.Coverage != coverageNone {
+		t.Fatalf("coverage = %q, want none for a present-but-disabled plugin with no env", report.Coverage)
+	}
+}
+
+// TestBuildVerifyReport_EnabledButManifestMissingIsNotReady proves the manifest
+// gate: even an enabled, file-present plugin is inert if plugin.yaml is gone,
+// because Hermes skips manifest-less plugin directories at discovery.
+func TestBuildVerifyReport_EnabledButManifestMissingIsNotReady(t *testing.T) {
+	// No t.Parallel(): stubs the package-level lookPipelock seam.
+	stubPipelock(t, true)
+	tmp := t.TempDir()
+	pluginRoot := filepath.Join(tmp, "plugins", "pipelock")
+	if _, err := Install(PluginTarget{Root: pluginRoot}); err != nil {
+		t.Fatalf("plugin install: %v", err)
+	}
+	// Remove the manifest Hermes requires for discovery.
+	if err := os.Remove(filepath.Join(pluginRoot, manifestName)); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+	hermesCfg := filepath.Join(tmp, "config.yaml")
+	seedEnabledPluginConfig(t, hermesCfg)
+	report := buildVerifyReport(&installOptions{PluginRoot: pluginRoot, HermesConfig: hermesCfg})
+	if report.ManifestPresent {
+		t.Fatal("manifest reported present after removal")
+	}
+	if report.Coverage != coverageNone {
+		t.Fatalf("coverage = %q, want none when the manifest is missing", report.Coverage)
 	}
 }
 
@@ -156,6 +225,11 @@ func TestBuildVerifyReport_DockerMissingForwardEnvIsPartial(t *testing.T) {
 	}}
 	term := cfg.root[terminalKey].(map[string]interface{})
 	mergeStringList(term, envPassthroughKey, proxyEnvNames)
+	// Enable the plugin so it is ready; the missing docker_forward_env (not a
+	// disabled plugin) is what makes the env ineffective and the result partial.
+	if _, err := cfg.enablePlugin(); err != nil {
+		t.Fatalf("enable plugin: %v", err)
+	}
 	if _, err := cfg.save(false); err != nil {
 		t.Fatalf("save seed config: %v", err)
 	}
@@ -264,6 +338,40 @@ func TestVerifyCmd_TextOutput(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Coverage:") {
 		t.Fatalf("text output missing Coverage line: %q", out.String())
+	}
+}
+
+func TestVerifyCmd_TextFullCoverageIsHonest(t *testing.T) {
+	// No t.Parallel(): stubs the package-level lookPipelock seam.
+	stubPipelock(t, true)
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	configPath := filepath.Join(tmp, "pipelock.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: monitor\n"), 0o600); err != nil {
+		t.Fatalf("seed pipelock config: %v", err)
+	}
+	opts.PipelockConfig = configPath
+	icmd := installCmd()
+	icmd.SetOut(&bytes.Buffer{})
+	if err := runInstall(icmd, opts); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	cmd := verifyCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--plugin-root", opts.PluginRoot, "--hermes-config", opts.HermesConfig})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	s := out.String()
+	// Full coverage must surface manifest + enabled state AND stay honest that
+	// terminal egress is cooperative — never a bare "full" that reads as
+	// enforced network isolation.
+	for _, want := range []string{"Manifest present: true", "Plugin enabled:   true", "Coverage:", "full", "cooperative"} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("verify text missing %q:\n%s", want, s)
+		}
 	}
 }
 

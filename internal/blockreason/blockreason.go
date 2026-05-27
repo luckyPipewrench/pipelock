@@ -49,6 +49,10 @@ const (
 	// receiptLen is the fixed Crockford-base32 ULID length. Receipts that
 	// don't match this length are rejected at WithReceipt time.
 	receiptLen = 26
+	// uuidReceiptLen is the canonical hyphenated UUID length (8-4-4-4-12).
+	// The receipt subsystem's correlation handle (receipt.NewActionID) is a
+	// UUIDv7 in this form, so the receipt header accepts it alongside ULIDs.
+	uuidReceiptLen = 36
 )
 
 // Reason is a machine-readable block-reason code. The full vocabulary is
@@ -113,6 +117,14 @@ const (
 	ContractInvalidPath    Reason = "contract_invalid_path"
 	ContractObservedOnly   Reason = "contract_observed_only"
 
+	// Request policy layer. Operator-defined outbound API operation safety
+	// rail (request_policy): even within otherwise-allowed traffic, a named
+	// dangerous provider operation is denied. Default-allow; rules block or
+	// warn only. Not a Scanner* pipeline layer, so blocks leave the
+	// X-Pipelock-Block-Reason-Layer header unset — the reason code conveys
+	// the layer (cf. the MCP and contract layers).
+	RequestPolicyDeny Reason = "request_policy_deny"
+
 	// BlockReasonOverflow is the dedicated sentinel CloseFramePayload uses
 	// when an Info has somehow accumulated a Reason value too long to fit
 	// the bare {block_reason: <code>} payload within RFC 6455's 123-byte
@@ -164,6 +176,7 @@ var validReasons = map[Reason]struct{}{
 	ContractNonDefaultPort: {},
 	ContractInvalidPath:    {},
 	ContractObservedOnly:   {},
+	RequestPolicyDeny:      {},
 }
 
 // AllReasons returns every Reason in the canonical allowlist. The returned
@@ -226,7 +239,7 @@ var (
 	ErrInvalidSeverity = errors.New("blockreason: severity is not in the v1 vocabulary")
 	ErrInvalidRetry    = errors.New("blockreason: retry is not in the v1 vocabulary")
 	ErrInvalidLayer    = errors.New("blockreason: layer must be ASCII alphanumeric/underscore and within length bound")
-	ErrInvalidReceipt  = errors.New("blockreason: receipt must be ULID-shaped (Crockford base32, 26 chars) or empty")
+	ErrInvalidReceipt  = errors.New("blockreason: receipt must be a 26-char Crockford-base32 ULID or a canonical 36-char UUIDv7 (the receipt action_id), or empty")
 )
 
 // Info is the operational metadata for a block.
@@ -287,10 +300,14 @@ func (i Info) WithLayer(layer string) (Info, error) {
 }
 
 // WithReceipt returns a copy of i with the Receipt set. Receipt MUST be
-// either empty or a 26-character Crockford-base32 ULID (the format the
-// receipt subsystem emits). The strict validation prevents arbitrary
-// strings — and therefore arbitrary attacker-controlled metadata — from
-// reaching agent-visible response headers via the Receipt slot.
+// empty, a 26-character Crockford-base32 ULID, or a canonical 36-character
+// hyphenated UUIDv7. The receipt subsystem's correlation handle
+// (receipt.NewActionID) is a UUIDv7 in the latter form, so a block path can
+// stamp the actual receipt action_id here for agent-side correlation. Both
+// accepted forms are fixed-length and drawn from a bounded alphabet, so the
+// strict validation still prevents arbitrary strings — and therefore
+// arbitrary attacker-controlled metadata — from reaching agent-visible
+// response headers via the Receipt slot.
 func (i Info) WithReceipt(receipt string) (Info, error) {
 	if !validReceipt(receipt) {
 		return Info{}, fmt.Errorf("%w: %q", ErrInvalidReceipt, receipt)
@@ -334,21 +351,65 @@ func isReceiptByte(c byte) bool {
 	return false
 }
 
-// validReceipt permits only the receipt byte alphabet at the fixed
-// receiptLen, or empty (clears the optional Receipt field).
+// validReceipt permits an empty receipt (clears the optional field), a
+// 26-char Crockford-base32 ULID, or a canonical 36-char hyphenated UUIDv7. The
+// two accepted forms are distinguished by length, so a value that is neither
+// (wrong length, or right length but malformed body) is rejected.
 func validReceipt(s string) bool {
-	if s == "" {
+	switch len(s) {
+	case 0:
 		return true
-	}
-	if len(s) != receiptLen {
+	case receiptLen:
+		return validULIDBody(s)
+	case uuidReceiptLen:
+		return validUUIDv7Body(s)
+	default:
 		return false
 	}
+}
+
+// validULIDBody reports whether every byte of s is in the Crockford-base32
+// ULID alphabet. Length is checked by the caller.
+func validULIDBody(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if !isReceiptByte(s[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+// validUUIDv7Body reports whether s is a canonical hyphenated UUIDv7: hex
+// digits with hyphens at positions 8, 13, 18, and 23 (the 8-4-4-4-12
+// grouping), version nibble 7, and RFC 4122 variant bits. Length is checked by
+// the caller. Hex is accepted case-insensitively to tolerate either textual
+// rendering; the receipt subsystem emits lowercase.
+func validUUIDv7Body(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if s[i] != '-' {
+				return false
+			}
+			continue
+		}
+		if !isHexByte(s[i]) {
+			return false
+		}
+	}
+	return s[14] == '7' && isRFC4122VariantByte(s[19])
+}
+
+// isHexByte returns true for ASCII hexadecimal digits in either case.
+func isHexByte(c byte) bool {
+	return (c >= '0' && c <= '9') ||
+		(c >= 'a' && c <= 'f') ||
+		(c >= 'A' && c <= 'F')
+}
+
+// isRFC4122VariantByte reports whether c is the variant nibble of an RFC 4122
+// UUID: the two most significant bits are 10, so the nibble is 8-b (either case).
+func isRFC4122VariantByte(c byte) bool {
+	return c == '8' || c == '9' || c == 'a' || c == 'A' || c == 'b' || c == 'B'
 }
 
 // SetHeaders writes all four required headers (reason, version, severity,
@@ -511,7 +572,8 @@ func RetryFor(reason Reason) Retry {
 		AuthorityMismatch,
 		NotEnabled,
 		CompressedResponse,
-		BrowserShieldOversize:
+		BrowserShieldOversize,
+		RequestPolicyDeny:
 		return RetryPolicy
 	case ContractInvalidPath:
 		return RetryCanonicalize

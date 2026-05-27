@@ -363,7 +363,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 - **[AutoGen](docs/guides/autogen.md):** `StdioServerParams`, `mcp_server_tools()`
 - **[CrewAI](docs/guides/crewai.md):** `MCPServerStdio` wrapping, `MCPServerAdapter`
 - **[LangGraph](docs/guides/langgraph.md):** `MultiServerMCPClient`, `StateGraph`
-- **[Hermes](docs/guides/hermes.md):** Plugin (all tool surfaces) or MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
+- **[Hermes](docs/guides/hermes.md):** full-plugin coverage (default, plugin-visible tool surfaces) or lighter MCP-only wrapping for Nous Research's agent, with auth-header sidecar preservation
 - **[JetBrains/Junie](docs/guides/jetbrains.md):** MCP proxy wrapping for IntelliJ, PyCharm, GoLand ([walkthrough](https://pipelab.org/learn/jetbrains-integration/))
 - **Cursor:** use `configs/cursor.yaml` with the same MCP proxy pattern as [Claude Code](docs/guides/claude-code.md) ([walkthrough](https://pipelab.org/learn/cursor-integration/))
 - **[OpenClaw](docs/guides/openclaw.md):** Gateway sidecar, init container, config wrapping

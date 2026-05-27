@@ -121,12 +121,37 @@ def _invoke(payload: dict) -> dict:
     return decoded
 
 
-def _pre_tool_call(tool_name: str, args: Any, task_id: str) -> Optional[dict]:
+# Hermes dispatches every hook as ``cb(**kwargs)`` (hermes_cli/plugins.py
+# invoke_hook) and wraps the call in a bare ``except Exception`` that only logs
+# a warning. A hook whose signature rejects a kwarg Hermes passes raises
+# TypeError, which Hermes swallows — the scan never runs and the agent proceeds
+# unscanned (fail-OPEN). To stay fail-closed at the boundary, every hook accepts
+# the full kwarg set Hermes sends today AND a trailing ``**_unused`` so a future
+# Hermes that adds a kwarg cannot reintroduce the TypeError-swallow gap.
+#
+# The named kwargs below are verified against the real Hermes call sites in
+# hermes_agent 0.13.0 and 0.14.0 (identical):
+#   pre_tool_call           plugins.py get_pre_tool_call_block_message()
+#   transform_tool_result   model_tools.py tool-dispatch seam
+#   on_session_start/_end   run_agent.py run_conversation()
+#   pre_gateway_dispatch    gateway/run.py dispatch guard
+# The signature regression test (plugin_signature_test.go) drives each hook with
+# exactly these kwarg sets and fails CI if a signature stops accepting them.
+
+
+def _pre_tool_call(
+    tool_name: str = "",
+    args: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    **_unused: Any,
+) -> Optional[dict]:
     result = _invoke({
         "hook_event_name": "pre_tool_call",
         "tool_name": tool_name,
         "tool_input": args if isinstance(args, (dict, list, str, int, float, bool)) else str(args),
-        "extra": {"task_id": task_id},
+        "extra": {"task_id": task_id, "session_id": session_id, "tool_call_id": tool_call_id},
     })
     if result.get("decision") == "block":
         return {
@@ -137,16 +162,20 @@ def _pre_tool_call(tool_name: str, args: Any, task_id: str) -> Optional[dict]:
 
 
 def _transform_tool_result(
-    tool_name: str,
-    arguments: Any,
-    result: Any,
-    task_id: str,
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    duration_ms: Any = None,
+    **_unused: Any,
 ) -> Optional[str]:
     scan = _invoke({
         "hook_event_name": "transform_tool_result",
         "tool_name": tool_name,
-        "tool_input": {"arguments": arguments, "result": result},
-        "extra": {"task_id": task_id},
+        "tool_input": {"args": args, "result": result},
+        "extra": {"task_id": task_id, "session_id": session_id, "tool_call_id": tool_call_id},
     })
     if scan.get("decision") == "block":
         reason = scan.get("reason") or "pipelock redacted this tool result"
@@ -154,7 +183,12 @@ def _transform_tool_result(
     return None
 
 
-def _pre_gateway_dispatch(event: Any, gateway: Any, session_store: Any) -> Optional[dict]:
+def _pre_gateway_dispatch(
+    event: Any = None,
+    gateway: Any = None,
+    session_store: Any = None,
+    **_unused: Any,
+) -> Optional[dict]:
     text = getattr(event, "text", "") or ""
     sender = getattr(event, "sender", "") or ""
     scan = _invoke({
@@ -163,22 +197,40 @@ def _pre_gateway_dispatch(event: Any, gateway: Any, session_store: Any) -> Optio
         "tool_input": {"text": text, "sender": sender},
     })
     if scan.get("decision") == "block":
-        return {"action": "skip"}
+        return {"action": "skip", "reason": scan.get("reason") or "pipelock blocked inbound message"}
     return None
 
 
-def _on_session_start(session_id: str) -> None:
+def _on_session_start(
+    session_id: str = "",
+    model: str = "",
+    platform: str = "",
+    **_unused: Any,
+) -> None:
     _invoke({
         "hook_event_name": "on_session_start",
         "session_id": session_id,
+        "extra": {"model": model, "platform": platform},
     })
 
 
-def _on_session_end(session_id: str, completed: bool = False, interrupted: bool = False) -> None:
+def _on_session_end(
+    session_id: str = "",
+    completed: bool = False,
+    interrupted: bool = False,
+    model: str = "",
+    platform: str = "",
+    **_unused: Any,
+) -> None:
     _invoke({
         "hook_event_name": "on_session_end",
         "session_id": session_id,
-        "extra": {"completed": completed, "interrupted": interrupted},
+        "extra": {
+            "completed": completed,
+            "interrupted": interrupted,
+            "model": model,
+            "platform": platform,
+        },
     })
 
 

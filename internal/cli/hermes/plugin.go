@@ -55,6 +55,12 @@ type PluginInstallResult struct {
 // flows without depending on Hermes' runtime environment.
 const configSidecarName = "pipelock.conf"
 
+// manifestName is the Hermes plugin manifest. Hermes' loader skips any plugin
+// directory without it (hermes_cli/plugins.py _scan_directory_level), so its
+// presence is a precondition for the plugin loading at all. verify treats a
+// missing manifest as "plugin cannot be discovered" rather than ready.
+const manifestName = "plugin.yaml"
+
 // ResolveDefaultPluginRoot returns the default install root computed from the
 // supplied home directory. It does not touch the filesystem.
 func ResolveDefaultPluginRoot(home string) string {
@@ -115,7 +121,7 @@ func removePluginTree(root string) error {
 }
 
 func isManagedPluginPath(name string) bool {
-	for _, base := range []string{"__init__.py", "plugin.py", "README.md", configSidecarName} {
+	for _, base := range []string{"__init__.py", "plugin.py", manifestName, "README.md", configSidecarName} {
 		if name == base || strings.HasPrefix(name, base+".bak.") ||
 			(strings.HasPrefix(name, base+".") && strings.HasSuffix(name, ".tmp")) {
 			return true
@@ -132,6 +138,13 @@ func pluginInstalled(root string) bool {
 		}
 	}
 	return true
+}
+
+// pluginManifestPresent reports whether the Hermes plugin manifest exists under
+// root. Without it Hermes never discovers the plugin, so verify requires it
+// before reporting protective coverage on the plugin path.
+func pluginManifestPresent(root string) bool {
+	return fileExists(filepath.Join(root, manifestName))
 }
 
 // Install materialises the embedded plugin tree into target.Root. It is

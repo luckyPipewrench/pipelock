@@ -67,6 +67,80 @@ func TestRollback_SurgicalRemovesPipelockState(t *testing.T) {
 	}
 }
 
+func TestRollback_DisablesPluginPreservingOthers(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	// Operator had another plugin enabled before pipelock was installed.
+	if err := os.WriteFile(opts.HermesConfig,
+		[]byte("plugins:\n  enabled:\n    - disk-cleanup\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	icmd := installCmd()
+	icmd.SetOut(&bytes.Buffer{})
+	if err := runInstall(icmd, opts); err != nil {
+		t.Fatalf("full install: %v", err)
+	}
+	cfg, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		t.Fatalf("reload after install: %v", err)
+	}
+	if !cfg.pluginEnabled() {
+		t.Fatal("precondition: pipelock should be enabled after full install")
+	}
+
+	cmd := rollbackCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	ropts := &rollbackOptions{PluginRoot: opts.PluginRoot, HermesConfig: opts.HermesConfig}
+	if err := runRollback(cmd, ropts); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	after, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		t.Fatalf("reload after rollback: %v", err)
+	}
+	if after.pluginEnabled() {
+		t.Fatal("rollback left pipelock in plugins.enabled")
+	}
+	plugins, ok := after.root[pluginsKey].(map[string]interface{})
+	if !ok || !toStringSet(plugins[enabledKey])["disk-cleanup"] {
+		t.Fatalf("rollback dropped the operator's other enabled plugin: %#v", after.root[pluginsKey])
+	}
+	if !strings.Contains(out.String(), "removed plugin") {
+		t.Fatalf("rollback output missing disable line: %q", out.String())
+	}
+}
+
+func TestRollback_MalformedPluginsSectionErrors(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "config.yaml")
+	// A non-mapping plugins section must surface an error rather than be
+	// silently clobbered during the surgical removal.
+	if err := os.WriteFile(cfgPath, []byte("plugins:\n  - not-a-mapping\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := rollbackCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	ropts := &rollbackOptions{
+		PluginRoot:   filepath.Join(tmp, "plugins", "pipelock"),
+		HermesConfig: cfgPath,
+	}
+	err := runRollback(cmd, ropts)
+	if err == nil {
+		t.Fatal("rollback did not error on a malformed plugins section")
+	}
+	if !strings.Contains(err.Error(), pluginsKey) {
+		t.Fatalf("error %q does not mention the plugins section", err.Error())
+	}
+}
+
 func TestRollback_KeepPlugin(t *testing.T) {
 	t.Parallel()
 

@@ -68,6 +68,8 @@ jobs:
             internal/contract/testdata/golden/
             internal/contract/testdata/invalid/
             internal/signing/testdata/golden/
+            internal/cli/hermes/testdata/hermes_e2e_driver.py
+            internal/cli/hermes/hermes_e2e_test.go
 
   test:
     needs: [security-scan]

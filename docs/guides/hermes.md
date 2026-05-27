@@ -15,10 +15,12 @@
 
 | Mode | Command | What it wires | Coverage |
 |---|---|---|---|
-| **full** (default) | `pipelock hermes install --mode full` | Python plugin (`pre_tool_call`, `transform_tool_result`, `pre_gateway_dispatch`, session lifecycle) **plus** proxy env names injected into the terminal backend | All tool surfaces — terminal, file, browser, web, gateway, MCP |
+| **full** (default) | `pipelock hermes install --mode full` | Python plugin (`pre_tool_call`, `transform_tool_result`, `pre_gateway_dispatch`, session lifecycle), enabled in `plugins.enabled`, **plus** proxy env names injected into the terminal backend | Plugin-visible tool surfaces; terminal network egress still requires the proxy env values to be set and honored |
 | **mcp-only** | `pipelock hermes install --mode mcp-only` | Rewrites `mcp_servers` to route each server through `pipelock mcp proxy` | **Partial** — MCP server traffic only |
 
-`--mode full` is the high-leverage path: the plugin sees every tool's structured arguments before execution and every result before it returns, so Pipelock scans surfaces a network proxy never sees. `--mode mcp-only` is for operators who only want MCP traffic wrapped and do not want a plugin installed — it is honestly labeled partial coverage and does not touch the terminal, file, browser, or gateway surfaces.
+`--mode full` is the default because the plugin sees every tool's structured arguments before execution and every result before it returns, so Pipelock scans surfaces a network proxy never sees: a terminal command's arguments, a file write's contents, a tool result before the model reads it. The plugin's load → enable → fire → block path is proven end-to-end against a live Hermes by the `make hermes-e2e` integration test (it installs a pinned Hermes, drives Hermes' own plugin manager, and asserts a secret-bearing tool call is blocked through the real binary). The one cooperative arm is terminal egress: Pipelock sees terminal network traffic only when the proxy env **values** are also set in Hermes' environment and the backend honors them (see below).
+
+`--mode mcp-only` is the lighter opt-in: it wraps every declared MCP server with no Python plugin and no terminal env changes. It is honestly labeled partial coverage — it does not touch the terminal, file, browser, or gateway surfaces. Choose it when you only want MCP traffic wrapped, or when a network-level pipelock deployment (forward proxy + sandbox) already covers the rest of the agent's egress.
 
 ## Quick Start
 
@@ -26,10 +28,10 @@
 # 1. Install pipelock
 brew install luckyPipewrench/tap/pipelock
 
-# 2a. Full coverage (recommended): plugin + terminal env passthrough
+# 2. Full coverage (default): plugin-visible tool surfaces + terminal env passthrough
 pipelock hermes install --mode full --pipelock-config ~/.config/pipelock/pipelock.yaml
 
-# 2b. OR MCP-only coverage: wrap mcp_servers, no plugin
+# 2b. OR lighter MCP-only coverage: wrap mcp_servers, no plugin
 pipelock hermes install --mode mcp-only --pipelock-config ~/.config/pipelock/pipelock.yaml
 
 # 3. Confirm what was wired
@@ -74,6 +76,8 @@ The original headers are retained in the `_pipelock` metadata so `rollback` rest
 | MCP server → Hermes | ✅ | ✅ | Response injection, tool-poisoning, chain detection |
 | Gateway dispatch | ✅ | — | `pre_gateway_dispatch` skip/rewrite/allow |
 
+The **full** column reflects what the plugin scans once enabled; the plugin path is proven end-to-end against a live Hermes by `make hermes-e2e`. The **mcp-only** column is the lighter opt-in path for MCP traffic only.
+
 ## Verify and Roll Back
 
 ```bash
@@ -84,7 +88,7 @@ pipelock hermes rollback          # surgical: unwrap mcp_servers, strip proxy en
 pipelock hermes rollback --restore-backup ~/.hermes/config.yaml.bak.<ts>   # explicit recovery
 ```
 
-`verify` reports coverage honestly: `full` means the plugin is installed **and** the proxy env names are present; `partial` means some coverage (plugin, env, or wrapped MCP servers) but not all surfaces; `none` means nothing is wired. It also reports how many MCP servers are declared versus wrapped. Rollback is surgical by default and undoes both modes — it unwraps any wrapped `mcp_servers` (deleting their header sidecars) and strips the proxy env names — so you do not have to remember which mode you installed.
+`verify` reports coverage honestly, and counts the plugin as ready only when it will actually load and fire under Hermes: the plugin files are present, the `plugin.yaml` manifest exists (Hermes skips manifest-less plugin directories), the plugin is enabled in `plugins.enabled` (standalone plugins are opt-in), the hook binary is resolvable, and the config sidecar is sane. File presence alone is **not** coverage. `full` means a ready plugin **and** the proxy env names are present; `partial` means some coverage (a ready plugin, env, or wrapped MCP servers) but not all surfaces; `none` means nothing is wired. `verify` annotates a `full` result to note that terminal egress is cooperative (it routes through Pipelock only when the proxy env values are set in Hermes' environment); the plugin hook path itself is proven by `make hermes-e2e`. It also reports how many MCP servers are declared versus wrapped. Rollback is surgical by default and undoes both modes — it unwraps any wrapped `mcp_servers` (deleting their header sidecars), strips the proxy env names, and removes the plugin from `plugins.enabled` — so you do not have to remember which mode you installed.
 
 ## Choosing a Config
 

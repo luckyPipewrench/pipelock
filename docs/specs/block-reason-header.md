@@ -15,7 +15,7 @@ This document is the canonical schema. Once an agent in production reads `dlp_ma
 | `X-Pipelock-Block-Reason-Severity` | yes (on every block) | `critical` | Matches pipelock's existing severity vocabulary: `info`, `warn`, `critical`. |
 | `X-Pipelock-Block-Reason-Retry` | yes (on every block) | `none` | Retry hint: `none` (permanent), `transient` (retry with backoff), `policy` (retry only after policy change). |
 | `X-Pipelock-Block-Reason-Layer` | optional | `dlp` | Scanner pipeline layer label. Uses `internal/scanner/` `Scanner*` constants verbatim so operators can correlate header-driven agent behavior with their existing audit logs and Prometheus labels. See the layer-label vocabulary below. |
-| `X-Pipelock-Block-Reason-Receipt` | optional | `01J0GNYZ7XSQRTQ8FPYM5BHX2K` | Receipt ID. Exactly 26 characters, Crockford-base32 (ULID alphabet: `0-9` plus `A-Z` minus `I`, `L`, `O`, `U`). Lets the agent fetch the matching receipt (via the receipt-transports endpoint) for additional context. The strict format keeps the slot opaque so attacker-controlled metadata cannot reach agent-visible response headers. |
+| `X-Pipelock-Block-Reason-Receipt` | optional | `0190a3c4-1234-7abc-89ab-0123456789ab` | Receipt ID for fetching the matching receipt (via the receipt-transports endpoint) for additional context. Either a 26-character Crockford-base32 ULID (`0-9` plus `A-Z` minus `I`, `L`, `O`, `U`) **or** a canonical 36-character hyphenated UUIDv7 — the receipt subsystem's correlation handle (`action_id`) uses that UUIDv7 form. Both accepted forms are fixed-length and drawn from a bounded alphabet, so the slot stays opaque and attacker-controlled metadata cannot reach agent-visible response headers. |
 
 Absent headers are treated as a generic block. Agents that don't read the headers continue to work unchanged — the headers are purely additive.
 
@@ -114,6 +114,16 @@ Emitted by the runtime evaluator when an active learn-and-lock contract claims j
 | `contract_invalid_path` | Active contract enforce rule matched the host but the request path failed RFC 3986 canonicalization. | `warn` | `retry-with-canonical-path` |
 | `contract_observed_only` | Shadow / capture annotation: contract path would have blocked under live mode but the configured mode did not enforce. Never emitted on a block surface. | `info` | `none` |
 
+### Request policy layer
+
+Emitted by the `request_policy` operation safety rail: even within otherwise-allowed traffic, an operator (or signed bundle) rule names a dangerous outbound API operation and denies it. The layer is default-allow; rules block or warn only. It is not a `Scanner*` pipeline layer, so blocks leave `X-Pipelock-Block-Reason-Layer` unset and the reason code conveys the layer (the same convention the MCP and contract layers follow).
+
+| Code | When | Severity | Retry |
+|---|---|---|---|
+| `request_policy_deny` | A `request_policy` rule denied a named-dangerous outbound API operation. | `critical` | `policy` |
+
+Warn/shadow `request_policy` telemetry is not a block surface and does not emit this header. Enforced `request_policy_deny` blocks carry `severity: critical`.
+
 ## Severity
 
 Aligns with `internal/config/schema.go` constants:
@@ -140,7 +150,7 @@ The header is **operational metadata only**. The following must never appear in 
 - Agent identifiers, session IDs, or any user-attributable data.
 - Internal IPs, private hostnames, or cluster-internal details.
 
-The optional `X-Pipelock-Block-Reason-Receipt` header carries an opaque ULID. The 26-character Crockford-base32 format is enforced by the emit package's `WithReceipt` validator; non-conforming receipts are rejected at construction so call sites cannot smuggle arbitrary strings into the slot. The receipt itself (fetched separately via the receipt-transports endpoint) may contain richer context, but the header value is just the opaque ID.
+The optional `X-Pipelock-Block-Reason-Receipt` header carries an opaque receipt ID — either a 26-character Crockford-base32 ULID or a canonical 36-character hyphenated UUIDv7 (the `action_id` form the receipt subsystem emits). The blockreason package's `WithReceipt` validator enforces both fixed-length, bounded-alphabet shapes; non-conforming receipts are rejected at construction so call sites cannot smuggle arbitrary strings into the slot. The receipt itself (fetched separately via the receipt-transports endpoint) may contain richer context, but the header value is just the opaque ID.
 
 The required header values (`Reason`, `Severity`, `Retry`) are validated against fixed allowlists at construction. The `Layer` value is restricted to ASCII alphanumeric and underscore (the shape of `internal/scanner/Scanner*` constants). Any value that does not match its validator is rejected before the header reaches the wire.
 

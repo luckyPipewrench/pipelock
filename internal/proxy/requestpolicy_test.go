@@ -11,6 +11,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
+// Canonical request_policy_deny header values, derived from the blockreason
+// vocabulary so these assertions stay in sync with the contract instead of
+// repeating wire-string literals.
+const (
+	wantPolicyReason   = string(blockreason.RequestPolicyDeny)
+	wantPolicySeverity = string(blockreason.SeverityCritical)
+	wantPolicyRetry    = string(blockreason.RetryPolicy)
+)
+
 // TestRequestPolicyBlockInfo_HeaderShape asserts a request_policy_deny block
 // carries the canonical reason/severity/retry and intentionally omits the
 // layer header. request_policy is not a scanner.Scanner* pipeline layer, so
@@ -36,14 +45,14 @@ func TestRequestPolicyBlockInfo_HeaderShape(t *testing.T) {
 
 	h := make(http.Header)
 	info.SetHeaders(h)
-	if got := h.Get(blockreason.HeaderReason); got != "request_policy_deny" {
-		t.Errorf("%s = %q, want request_policy_deny", blockreason.HeaderReason, got)
+	if got := h.Get(blockreason.HeaderReason); got != wantPolicyReason {
+		t.Errorf("%s = %q, want %s", blockreason.HeaderReason, got, wantPolicyReason)
 	}
-	if got := h.Get(blockreason.HeaderSeverity); got != "critical" {
-		t.Errorf("%s = %q, want critical", blockreason.HeaderSeverity, got)
+	if got := h.Get(blockreason.HeaderSeverity); got != wantPolicySeverity {
+		t.Errorf("%s = %q, want %s", blockreason.HeaderSeverity, got, wantPolicySeverity)
 	}
-	if got := h.Get(blockreason.HeaderRetry); got != "policy" {
-		t.Errorf("%s = %q, want policy", blockreason.HeaderRetry, got)
+	if got := h.Get(blockreason.HeaderRetry); got != wantPolicyRetry {
+		t.Errorf("%s = %q, want %s", blockreason.HeaderRetry, got, wantPolicyRetry)
 	}
 	if got := h.Get(blockreason.HeaderLayer); got != "" {
 		t.Errorf("%s = %q, want empty (layer header omitted)", blockreason.HeaderLayer, got)
@@ -109,14 +118,14 @@ func TestRequestPolicyBlockInfo_ReceiptGatedOnEmitter(t *testing.T) {
 				t.Errorf("%s = %q, want %q", blockreason.HeaderReceipt, got, tc.wantReceipt)
 			}
 			// The block's required headers must always emit, receipt or not.
-			if got := h.Get(blockreason.HeaderReason); got != "request_policy_deny" {
-				t.Errorf("%s = %q, want request_policy_deny", blockreason.HeaderReason, got)
+			if got := h.Get(blockreason.HeaderReason); got != wantPolicyReason {
+				t.Errorf("%s = %q, want %s", blockreason.HeaderReason, got, wantPolicyReason)
 			}
-			if got := h.Get(blockreason.HeaderSeverity); got != "critical" {
-				t.Errorf("%s = %q, want critical", blockreason.HeaderSeverity, got)
+			if got := h.Get(blockreason.HeaderSeverity); got != wantPolicySeverity {
+				t.Errorf("%s = %q, want %s", blockreason.HeaderSeverity, got, wantPolicySeverity)
 			}
-			if got := h.Get(blockreason.HeaderRetry); got != "policy" {
-				t.Errorf("%s = %q, want policy", blockreason.HeaderRetry, got)
+			if got := h.Get(blockreason.HeaderRetry); got != wantPolicyRetry {
+				t.Errorf("%s = %q, want %s", blockreason.HeaderRetry, got, wantPolicyRetry)
 			}
 		})
 	}

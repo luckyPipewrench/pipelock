@@ -233,11 +233,13 @@ func (s *Server) Start(ctx context.Context) error {
 				defer func() {
 					if r := recover(); r != nil {
 						_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor remote kill poller panic: %v\n", r)
+						cancel()
 					}
 				}()
 				if err := s.conductorRemoteKill.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 					s.logger.LogError(audit.NewResourceLogContext("conductor_remote_kill_poller", cfg.Conductor.ConductorURL), err)
 					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor remote kill poller stopped: %v\n", err)
+					cancel()
 				}
 			}()
 		}

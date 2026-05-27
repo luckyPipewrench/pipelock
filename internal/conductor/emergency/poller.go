@@ -94,7 +94,7 @@ func (p *RemoteKillPoller) Run(ctx context.Context) error {
 	}
 	for {
 		if err := p.PollOnce(ctx); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			if errors.Is(err, context.Canceled) || (errors.Is(err, context.DeadlineExceeded) && ctx.Err() != nil) {
 				return err
 			}
 			p.logPollError(err)

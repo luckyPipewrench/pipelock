@@ -417,14 +417,19 @@ Follower behavior:
   messages.
 - Followers poll the Conductor remote-kill endpoint over follower mTLS and
   apply signed messages through the local `conductor_remote` kill-switch source.
+  `conductor_remote` is the local kill-switch input that accepts signed
+  Conductor remote-kill messages after follower-side verification; when honoring
+  is disabled, the source rejects messages and leaves the existing local kill
+  state unchanged.
 - When disabled, followers reject remote kill messages locally and emit a
   structured rejection log.
 - When enabled, remote kill messages require `remote-kill-signing` threshold
   signatures verified against the pinned trust roster root fingerprint.
 - Accepted remote kill state is OR-composed as a separate kill source.
 - Accepted messages update a durable local replay-state file containing the last
-  applied counter and canonical message hash. Rejected, expired, superseded,
-  and disabled messages emit structured local logs.
+  applied counter and canonical message hash. The file is stored under the
+  Conductor bundle cache directory as `remote-kill-state.json`. Rejected,
+  expired, superseded, and disabled messages emit structured local logs.
 - The replay-state file is local follower trust state: it must remain writable
   only by the Pipelock process owner, and the other kill-switch sources
   (config, API, signal, sentinel) remain independently OR-composed.
@@ -792,11 +797,12 @@ When `conductor.enabled` is true, the flight recorder must be enabled with
 signed checkpoints and a configured signing key. `audit_signing_key_id` and
 `recorder_key_id` default to `instance_id` when omitted.
 
-Upgrade note: existing Conductor-enabled followers that only use audit batching
-must either set `trust_roster_root_fingerprint` and ship a roster containing
-`remote-kill-signing` keys, or explicitly set
-`honor_remote_kill_switch: false`. The default is to honor remote kills, so
-configs that omit both the fingerprint and the explicit opt-out fail validation.
+Upgrade note: `honor_remote_kill_switch` defaults to true. Existing
+Conductor-enabled followers that only use audit batching must either set
+`trust_roster_root_fingerprint` and ship a roster containing
+`remote-kill-signing` keys, or explicitly set `honor_remote_kill_switch: false`
+to opt out. Configs that omit `honor_remote_kill_switch`, or set it to true,
+without the fingerprint and roster fail validation.
 
 Config validation must reject:
 

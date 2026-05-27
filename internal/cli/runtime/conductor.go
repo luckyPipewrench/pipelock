@@ -171,8 +171,10 @@ func buildConductorRemoteKillPoller(cfg *config.Config, ks emergency.KillSwitchS
 		Now:               time.Now,
 		Logger:            logger,
 	}
-	if err := applier.RestorePersistedState(); err != nil {
-		return nil, fmt.Errorf("restoring conductor remote kill state: %w", err)
+	if !applier.DisableRemoteKill {
+		if err := applier.RestorePersistedState(); err != nil {
+			return nil, fmt.Errorf("restoring conductor remote kill state: %w", err)
+		}
 	}
 	return emergency.NewRemoteKillPoller(emergency.RemoteKillPollerConfig{
 		BaseURL:      cfg.Conductor.ConductorURL,

@@ -131,7 +131,7 @@ func TestRemoteKillPollerEndpointValidation(t *testing.T) {
 		{name: "valid_slash", base: "https://conductor.example/", ok: true},
 		{name: "http", base: "http://conductor.example"},
 		{name: "path", base: "https://conductor.example/base"},
-		{name: "query", base: "https://conductor.example?token=x"},
+		{name: "query", base: "https://conductor.example?debug=true"},
 		{name: "userinfo", base: "https://user@conductor.example"},
 	}
 	for _, tc := range tests {
@@ -155,6 +155,45 @@ func TestRemoteKillPollerEndpointValidation(t *testing.T) {
 				t.Fatal("NewRemoteKillPoller() error = nil, want error")
 			}
 		})
+	}
+}
+
+type retryDeadlineRemoteKillClient struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (c *retryDeadlineRemoteKillClient) Do(req *http.Request) (*http.Response, error) {
+	c.calls++
+	if c.calls == 1 {
+		return nil, context.DeadlineExceeded
+	}
+	c.cancel()
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
+func TestRemoteKillPollerRetriesTransientDeadlineExceeded(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client := &retryDeadlineRemoteKillClient{cancel: cancel}
+	poller := &RemoteKillPoller{
+		client:           client,
+		applier:          &RemoteKillApplier{},
+		endpoint:         "https://conductor.example" + RemoteKillPath,
+		pollInterval:     time.Millisecond,
+		maxResponseBytes: defaultRemoteKillResponseBytes,
+	}
+
+	err := poller.Run(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context.Canceled", err)
+	}
+	if client.calls < 2 {
+		t.Fatalf("client calls = %d, want retry after transient deadline", client.calls)
 	}
 }
 

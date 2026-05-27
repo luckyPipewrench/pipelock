@@ -147,7 +147,7 @@ func TestExtractGraphQL_Evasions(t *testing.T) {
 	t.Run("json unicode-escaped field name decodes and is caught", func(t *testing.T) {
 		// The JSON layer decodes d -> 'd' before the GraphQL lexer sees it,
 		// so the real field name surfaces.
-		body := []byte(`{"query":"mutation { deleteRecord }"}`)
+		body := []byte(`{"query":"mutation { \u0064eleteRecord }"}`)
 		ops, ok, opaque := ExtractGraphQL(body)
 		if !ok || opaque {
 			t.Fatalf("expected parseOK non-opaque, got ok=%v opaque=%v", ok, opaque)

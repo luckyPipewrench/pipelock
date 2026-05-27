@@ -884,13 +884,18 @@ func validateRequestPolicyGraphQL(rule string, g *RequestPolicyGraphQL) error {
 			return fmt.Errorf("request_policy rule %q graphql operation_type %q must be query, mutation, or subscription", rule, t)
 		}
 	}
-	for _, p := range g.RootFieldPatterns {
-		if strings.TrimSpace(p) == "" {
+	for i, p := range g.RootFieldPatterns {
+		pat := strings.TrimSpace(p)
+		if pat == "" {
 			return fmt.Errorf("request_policy rule %q has empty graphql root_field_pattern", rule)
 		}
-		if _, err := regexp.Compile(p); err != nil {
+		if _, err := regexp.Compile(pat); err != nil {
 			return fmt.Errorf("request_policy rule %q has invalid graphql root_field_pattern %q: %w", rule, p, err)
 		}
+		// Persist the trimmed pattern so the runtime predicate compiles the same
+		// value: surrounding whitespace would otherwise compile into the regex
+		// and silently under-match, weakening the rule.
+		g.RootFieldPatterns[i] = pat
 	}
 	return nil
 }

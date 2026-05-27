@@ -283,14 +283,18 @@ func TestValidateRequestPolicy_GraphQL(t *testing.T) {
 			Route:  RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
 			GraphQL: &RequestPolicyGraphQL{
 				OperationTypes:    []string{"Mutation"},
-				RootFieldPatterns: []string{`(?i)delete`},
+				RootFieldPatterns: []string{"  (?i)delete  "},
 			},
 		})
 		if _, err := c.ValidateWithWarnings(); err != nil {
 			t.Fatalf("valid graphql predicate rejected: %v", err)
 		}
-		if got := c.RequestPolicy.Rules[0].GraphQL.OperationTypes[0]; got != "mutation" {
+		gql := c.RequestPolicy.Rules[0].GraphQL
+		if got := gql.OperationTypes[0]; got != "mutation" {
 			t.Errorf("operation type not lowercased: %q", got)
+		}
+		if got := gql.RootFieldPatterns[0]; got != "(?i)delete" {
+			t.Errorf("root_field_pattern not trimmed/persisted: %q", got)
 		}
 	})
 

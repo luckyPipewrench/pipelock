@@ -101,7 +101,19 @@ func (a *RemoteKillApplier) Apply(msg conductor.RemoteKillMessage) error {
 		return err
 	}
 	if hash == state.LastMessageHash {
-		return a.applyPersistedDecisionLocked(state)
+		switch state.State {
+		case conductor.KillSwitchActive, conductor.KillSwitchInactive:
+			return a.applyPersistedDecisionLocked(state)
+		default:
+			a.KillSwitch.SetConductorRemote(msg.State == conductor.KillSwitchActive, msg.Reason)
+			return writeRemoteKillState(a.StatePath, remoteKillState{
+				LastCounter:     msg.Counter,
+				LastMessageHash: hash,
+				State:           msg.State,
+				Reason:          msg.Reason,
+				AppliedAt:       now,
+			})
+		}
 	}
 	if msg.Counter <= state.LastCounter {
 		err := fmt.Errorf("%w: counter=%d last=%d", ErrRemoteKillSuperseded, msg.Counter, state.LastCounter)

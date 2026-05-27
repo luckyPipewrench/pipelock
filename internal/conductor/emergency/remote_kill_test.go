@@ -371,6 +371,49 @@ func TestRemoteKillApplierRejectsStaleCounter(t *testing.T) {
 	}
 }
 
+func TestRemoteKillApplierBackfillsLegacyStateOnDuplicateHash(t *testing.T) {
+	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
+	hash, err := msg.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash() error = %v", err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	legacyState, err := json.Marshal(map[string]any{
+		"last_counter":      msg.Counter,
+		"last_message_hash": hash,
+		"applied_at":        testNow.Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("Marshal(legacy state) error = %v", err)
+	}
+	if err := os.WriteFile(statePath, legacyState, 0o600); err != nil {
+		t.Fatalf("WriteFile(legacy state) error = %v", err)
+	}
+	ks := &captureKillSwitch{}
+	applier := &RemoteKillApplier{
+		OrgID:      "org-main",
+		FleetID:    "prod",
+		InstanceID: "pl-prod-1",
+		Resolver:   resolver,
+		KillSwitch: ks,
+		StatePath:  statePath,
+		Now:        func() time.Time { return testNow },
+	}
+	if err := applier.Apply(msg); err != nil {
+		t.Fatalf("Apply(legacy duplicate hash) error = %v", err)
+	}
+	if !ks.active || ks.message != msg.Reason {
+		t.Fatalf("kill switch = active=%v message=%q, want active reason", ks.active, ks.message)
+	}
+	state, err := readRemoteKillState(statePath)
+	if err != nil {
+		t.Fatalf("readRemoteKillState(backfilled) error = %v", err)
+	}
+	if state.State != msg.State || state.Reason != msg.Reason || state.LastMessageHash != hash {
+		t.Fatalf("backfilled state = %+v, want state/reason/hash from verified message", state)
+	}
+}
+
 func signedRemoteKill(t *testing.T, counter uint64, state conductor.KillSwitchState) (conductor.RemoteKillMessage, conductor.SignatureKeyResolver) {
 	t.Helper()
 	pub1, priv1, err := ed25519.GenerateKey(nil)

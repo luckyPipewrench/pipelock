@@ -5,6 +5,9 @@ package reqpolicy
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -35,7 +38,8 @@ type compiledBatch struct {
 // raw body bytes.
 type batchSubRequest struct {
 	method string
-	url    string
+	path   string
+	query  string
 	body   []byte
 }
 
@@ -104,13 +108,14 @@ func (m *Matcher) evaluateBatch(meta RequestMeta, body []byte, depth int) (best 
 }
 
 // evaluateSubRequest evaluates one batch sub-request against the rule set:
-// route on (host, sub.method, normalized sub.url) plus any GraphQL operation in
-// the sub-request body. A sub-request that itself targets a batch endpoint is
-// recursed (bounded by maxBatchDepth); beyond the bound it fails closed. A
-// graphql rule whose route matches a sub whose body cannot be classified yields
-// the on_parse_error / on_opaque_operation action (fail closed by default).
+// route on (host, sub.method, normalized sub.path) plus any GraphQL operation
+// in the sub-request body or URL query. A sub-request that itself targets a
+// batch endpoint is recursed (bounded by maxBatchDepth); beyond the bound it
+// fails closed. A graphql rule whose route matches a sub whose body cannot be
+// classified yields the on_parse_error / on_opaque_operation action (fail
+// closed by default).
 func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int) Decision {
-	subMeta := RequestMeta{Host: host, Method: sub.method, Path: sub.url}
+	subMeta := RequestMeta{Host: host, Method: sub.method, Path: sub.path}
 	if m.MatchesBatch(subMeta) {
 		if depth+1 >= maxBatchDepth {
 			// Too deeply nested to inspect: fail closed regardless of config.
@@ -118,11 +123,11 @@ func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int
 		}
 		d, parseOK := m.evaluateBatch(subMeta, sub.body, depth+1)
 		if !parseOK {
-			d = Stricter(d, m.uninspectableSub(subMeta, m.onParseError))
+			d = Stricter(d, m.UninspectableBatch(subMeta, m.onParseError))
 		}
 		return d
 	}
-	ops, parseOK, opaque := ExtractGraphQL(sub.body)
+	ops, parseOK, opaque := extractSubRequestGraphQL(sub)
 	subMeta.Operations = ops
 	d := m.Evaluate(subMeta)
 	switch {
@@ -143,12 +148,22 @@ func (m *Matcher) uninspectableSub(meta RequestMeta, action string) Decision {
 	return m.EvaluateUninspectable(meta, action)
 }
 
+func extractSubRequestGraphQL(sub batchSubRequest) (ops []RequestOperation, parseOK, opaque bool) {
+	if len(sub.body) == 0 && strings.EqualFold(strings.TrimSpace(sub.method), http.MethodGet) {
+		if ops, parseOK, opaque, ok := ExtractGraphQLFromQuery(sub.query); ok {
+			return ops, parseOK, opaque
+		}
+	}
+	return ExtractGraphQL(sub.body)
+}
+
 // parseSubRequests extracts the sub-requests from a JSON batch envelope using
 // the configured field names. It returns ok=false when the body is not a JSON
 // object, the requests field is absent or not an array, or the array exceeds
-// the configured cap (over-cap fails closed rather than silently inspecting a
-// prefix). A sub-request's body is kept as raw JSON bytes for downstream
-// operation extraction.
+// the configured cap. Missing or non-string method/url fields also fail closed:
+// a sub-request whose route cannot be classified must not silently evaluate as
+// method="" path="/". A sub-request's body is kept as raw JSON bytes for
+// downstream operation extraction.
 func (b *compiledBatch) parseSubRequests(body []byte) ([]batchSubRequest, bool) {
 	if len(body) == 0 {
 		return nil, false
@@ -170,17 +185,51 @@ func (b *compiledBatch) parseSubRequests(body []byte) ([]batchSubRequest, bool) 
 	}
 	subs := make([]batchSubRequest, 0, len(items))
 	for _, item := range items {
-		var sub batchSubRequest
-		if raw, ok := item[b.methodField]; ok {
-			_ = json.Unmarshal(raw, &sub.method)
+		method, ok := requiredStringField(item, b.methodField)
+		if !ok {
+			return nil, false
 		}
-		if raw, ok := item[b.urlField]; ok {
-			_ = json.Unmarshal(raw, &sub.url)
+		rawURL, ok := requiredStringField(item, b.urlField)
+		if !ok {
+			return nil, false
 		}
+		subPath, subQuery, ok := splitBatchSubRequestURL(rawURL)
+		if !ok {
+			return nil, false
+		}
+		sub := batchSubRequest{method: method, path: subPath, query: subQuery}
 		if raw, ok := item[b.bodyField]; ok {
 			sub.body = []byte(raw)
 		}
 		subs = append(subs, sub)
 	}
 	return subs, true
+}
+
+func requiredStringField(item map[string]json.RawMessage, field string) (string, bool) {
+	raw, ok := item[field]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	return s, s != ""
+}
+
+func splitBatchSubRequestURL(raw string) (subPath, rawQuery string, ok bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "", false
+	}
+	subPath = u.EscapedPath()
+	if subPath == "" {
+		subPath = u.Path
+	}
+	if subPath == "" {
+		subPath = "/"
+	}
+	return subPath, u.RawQuery, true
 }

@@ -5,11 +5,9 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"mime"
 	"mime/multipart"
-	"net/url"
 
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 )
@@ -41,8 +39,8 @@ func extractRequestPolicyOperations(in requestPolicyInput) (ops []reqpolicy.Requ
 		return reqpolicy.ExtractGraphQL(opsJSON)
 	}
 	if len(in.Body) == 0 {
-		if opsJSON, ok := graphqlOperationsFromQuery(in.Query); ok {
-			return reqpolicy.ExtractGraphQL(opsJSON)
+		if ops, parseOK, opaque, ok := reqpolicy.ExtractGraphQLFromQuery(in.Query); ok {
+			return ops, parseOK, opaque
 		}
 	}
 	return reqpolicy.ExtractGraphQL(in.Body)
@@ -90,31 +88,4 @@ func multipartOperationsField(ct string, body []byte) ([]byte, bool) {
 		}
 		_ = part.Close()
 	}
-}
-
-// graphqlOperationsFromQuery builds the GraphQL-over-HTTP JSON from a URL query
-// string carrying a GraphQL-over-GET request (?query=...&operationName=...). It
-// returns ok=false when there is no query parameter. variables are ignored:
-// operation type and root-field classification never depend on them.
-func graphqlOperationsFromQuery(rawQuery string) ([]byte, bool) {
-	if rawQuery == "" {
-		return nil, false
-	}
-	vals, err := url.ParseQuery(rawQuery)
-	if err != nil {
-		return nil, false
-	}
-	q := vals.Get("query")
-	if q == "" {
-		return nil, false
-	}
-	doc := struct {
-		Query         string `json:"query"`
-		OperationName string `json:"operationName,omitempty"`
-	}{Query: q, OperationName: vals.Get("operationName")}
-	b, err := json.Marshal(doc)
-	if err != nil {
-		return nil, false
-	}
-	return b, true
 }

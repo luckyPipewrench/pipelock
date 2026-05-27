@@ -4,6 +4,7 @@
 package reqpolicy_test
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -102,14 +103,56 @@ func TestEvaluateBatch_GraphQLSubRequestBlocks(t *testing.T) {
 	}
 }
 
+func TestEvaluateBatch_GraphQLOverGETSubRequestBlocks(t *testing.T) {
+	t.Parallel()
+	gqlRule := config.RequestPolicyRule{
+		Name:   "block-mutation",
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{Methods: []string{"GET"}, PathPatterns: []string{`/graphql$`}},
+		GraphQL: &config.RequestPolicyGraphQL{
+			OperationTypes:    []string{"mutation"},
+			RootFieldPatterns: []string{`^deleteRecord$`},
+		},
+	}
+	m := batchMatcher(t, gqlRule)
+	query := url.QueryEscape(`mutation { deleteRecord { id } }`)
+	body := []byte(`{"requests":[{"method":"GET","url":"/graphql?query=` + query + `"}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Action != config.ActionBlock {
+		t.Fatalf("a GraphQL-over-GET mutation in a batch must block; got action=%q parseOK=%v", d.Action, parseOK)
+	}
+}
+
+func TestEvaluateBatch_GraphQLOverGETBenignAllows(t *testing.T) {
+	t.Parallel()
+	gqlRule := config.RequestPolicyRule{
+		Name:   "block-mutation",
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{Methods: []string{"GET"}, PathPatterns: []string{`/graphql$`}},
+		GraphQL: &config.RequestPolicyGraphQL{
+			OperationTypes:    []string{"mutation"},
+			RootFieldPatterns: []string{`^deleteRecord$`},
+		},
+	}
+	m := batchMatcher(t, gqlRule)
+	query := url.QueryEscape(`query { viewer { id } }`)
+	body := []byte(`{"requests":[{"method":"GET","url":"/graphql?query=` + query + `"}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Matched() {
+		t.Fatalf("a benign GraphQL-over-GET query in a batch must allow; got matched=%v parseOK=%v", d.Matched(), parseOK)
+	}
+}
+
 func TestEvaluateBatch_UnparseableEnvelopeFailsClosed(t *testing.T) {
 	t.Parallel()
 	m := batchMatcher(t, deleteRule())
 	for _, body := range [][]byte{
-		[]byte(`{"requests": not json`),    // malformed
-		[]byte(`{"items":[]}`),             // wrong requests field
-		[]byte(`{"requests":"not-array"}`), // requests not an array
-		nil,                                // empty
+		[]byte(`{"requests": not json`),                                       // malformed
+		[]byte(`{"items":[]}`),                                                // wrong requests field
+		[]byte(`{"requests":"not-array"}`),                                    // requests not an array
+		[]byte(`{"requests":[{"url":"/v1.0/me/sendMail"}]}`),                  // missing method
+		[]byte(`{"requests":[{"method":"POST"}]}`),                            // missing url
+		[]byte(`{"requests":[{"method":123,"url":"/v1.0/me/sendMail"}]}`),     // method not a string
+		[]byte(`{"requests":[{"method":"POST","url":"/v1.0/me/sendMail%"}]}`), // invalid url escape
+		nil, // empty
 	} {
 		if _, parseOK := m.EvaluateBatch(batchMeta(), body); parseOK {
 			t.Fatalf("envelope %q should not parse (fail closed)", body)
@@ -152,6 +195,30 @@ func TestEvaluateBatch_NestedBatchBlocksInnerDangerousOp(t *testing.T) {
 	body := []byte(`{"requests":[{"method":"POST","url":"/v1.0/$batch","body":` + inner + `}]}`)
 	if d, _ := m.EvaluateBatch(batchMeta(), body); d.Action != config.ActionBlock {
 		t.Fatalf("a sendMail nested one level deep in $batch must block; got %q", d.Action)
+	}
+}
+
+func TestEvaluateBatch_NestedUnparseableBatchFailsClosed(t *testing.T) {
+	t.Parallel()
+	m := batchMatcher(t, deleteRule())
+	body := []byte(`{"requests":[{"method":"POST","url":"/v1.0/$batch","body":{"notRequests":[]}}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Action != config.ActionBlock || d.RuleName != "batch" {
+		t.Fatalf("an unparseable nested batch must fail closed as batch; got action=%q rule=%q parseOK=%v", d.Action, d.RuleName, parseOK)
+	}
+}
+
+func TestEvaluateBatch_AbsoluteSubRequestURLUsesPath(t *testing.T) {
+	t.Parallel()
+	rule := config.RequestPolicyRule{
+		Name:   "block-sendmail-prefix",
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{PathPrefixes: []string{`/v1.0/me/sendMail`}},
+		Reason: "sendMail is blocked for the agent runtime",
+	}
+	m := batchMatcher(t, rule)
+	body := []byte(`{"requests":[{"method":"POST","url":"https://graph.example.com/v1.0/me/sendMail?ignored=true","body":{}}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Action != config.ActionBlock {
+		t.Fatalf("an absolute sub-request URL must route-match by path; got action=%q parseOK=%v", d.Action, parseOK)
 	}
 }
 

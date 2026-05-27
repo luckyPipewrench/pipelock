@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 )
 
 const gqlDeleteMutation = "mutation { deleteRecord { id } }"
@@ -70,26 +71,24 @@ func multipartGraphQLBody(t *testing.T, query string) ([]byte, string) {
 
 // --- Unit: surface extractors ----------------------------------------------
 
-func TestGraphqlOperationsFromQuery(t *testing.T) {
+func TestExtractGraphQLFromQuery(t *testing.T) {
 	t.Parallel()
-	raw := "query=" + url.QueryEscape(gqlDeleteMutation) + "&operationName=Del"
-	got, ok := graphqlOperationsFromQuery(raw)
-	if !ok {
-		t.Fatal("expected ok for a query parameter")
+	raw := "query=" + url.QueryEscape("mutation Del { deleteRecord { id } }") + "&operationName=Del"
+	ops, parseOK, opaque, ok := reqpolicy.ExtractGraphQLFromQuery(raw)
+	if !ok || !parseOK || opaque {
+		t.Fatalf("ExtractGraphQLFromQuery = ok %v parseOK %v opaque %v, want ok parseable non-opaque", ok, parseOK, opaque)
 	}
-	// The result is GraphQL-over-HTTP JSON carrying the query and operationName;
-	// the dispatch test below proves it classifies as a mutation.
-	if !bytes.Contains(got, []byte("deleteRecord")) || !bytes.Contains(got, []byte(`"operationName":"Del"`)) {
-		t.Fatalf("query JSON = %s, want query + operationName", got)
+	if len(ops) != 1 || ops[0].Kind != "mutation" || ops[0].Name != "Del" || len(ops[0].RootFields) != 1 || ops[0].RootFields[0] != "deleteRecord" {
+		t.Fatalf("ops = %#v, want Del mutation deleteRecord", ops)
 	}
 
-	if _, ok := graphqlOperationsFromQuery(""); ok {
+	if _, _, _, ok := reqpolicy.ExtractGraphQLFromQuery(""); ok {
 		t.Error("empty query string should not produce operations")
 	}
-	if _, ok := graphqlOperationsFromQuery("foo=bar"); ok {
+	if _, _, _, ok := reqpolicy.ExtractGraphQLFromQuery("foo=bar"); ok {
 		t.Error("query string without a query param should not produce operations")
 	}
-	if _, ok := graphqlOperationsFromQuery("query=%zz"); ok {
+	if _, _, _, ok := reqpolicy.ExtractGraphQLFromQuery("query=%zz"); ok {
 		t.Error("a malformed query string should not produce operations")
 	}
 }

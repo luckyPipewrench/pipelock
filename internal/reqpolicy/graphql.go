@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -96,6 +97,34 @@ func ExtractGraphQL(body []byte) (ops []RequestOperation, parseOK, opaque bool) 
 	default:
 		return nil, false, false
 	}
+}
+
+// ExtractGraphQLFromQuery builds a GraphQL-over-HTTP JSON request from a URL
+// query string carrying GraphQL-over-GET parameters (?query=...&operationName=...)
+// and classifies it with ExtractGraphQL. variables are ignored: operation type
+// and root-field classification never depend on them.
+func ExtractGraphQLFromQuery(rawQuery string) (ops []RequestOperation, parseOK, opaque bool, ok bool) {
+	if rawQuery == "" {
+		return nil, false, false, false
+	}
+	vals, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return nil, false, false, false
+	}
+	q := vals.Get("query")
+	if q == "" {
+		return nil, false, false, false
+	}
+	doc := struct {
+		Query         string `json:"query"`
+		OperationName string `json:"operationName,omitempty"`
+	}{Query: q, OperationName: vals.Get("operationName")}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return nil, false, false, false
+	}
+	ops, parseOK, opaque = ExtractGraphQL(b)
+	return ops, parseOK, opaque, true
 }
 
 func extractOne(req gqlRequest) (ops []RequestOperation, parseOK, opaque bool) {

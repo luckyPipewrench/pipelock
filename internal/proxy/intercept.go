@@ -1140,6 +1140,36 @@ func newInterceptHandler(
 			return
 		}
 
+		// request_policy runs before the contract gate so a contract allow can
+		// never suppress an operation-policy block.
+		if ic.Proxy != nil {
+			rpInput := requestPolicyInput{
+				Host:        r.URL.Hostname(),
+				Method:      r.Method,
+				Path:        r.URL.EscapedPath(),
+				ContentType: r.Header.Get(headerContentType),
+				Headers:     r.Header,
+				Body:        interceptBodyBytes,
+				BodyRead:    interceptBodyBytes != nil || r.Body == nil || r.Body == http.NoBody,
+				Transport:   "intercept",
+				Target:      targetURL,
+				RequestID:   ic.RequestID,
+				Agent:       ic.Agent,
+				AuditCtx:    actx,
+				Emit:        func(o receipt.EmitOpts) { interceptEmitReceipt(ic, o) },
+			}
+			if rp := ic.Proxy.prepareRequestPolicyBody(r, &rpInput); rp.Block {
+				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)
+				writeBlockedError(w, rp.Info, "blocked by request policy: "+rp.Reason, http.StatusForbidden)
+				return
+			}
+			if rp := ic.Proxy.applyRequestPolicy(rpInput); rp.Block {
+				ic.Metrics.RecordTLSRequestBlocked(blockLayerRequestPolicy)
+				writeBlockedError(w, rp.Info, "blocked by request policy: "+rp.Reason, http.StatusForbidden)
+				return
+			}
+		}
+
 		gate, gateErr := EvaluateGate(ContractGateInput{
 			Loader:          interceptContractLoader(ic),
 			Agent:           ic.Agent,

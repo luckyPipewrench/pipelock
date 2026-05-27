@@ -208,6 +208,58 @@ func TestEvaluate_EnforcedPreferredOverShadow(t *testing.T) {
 	}
 }
 
+func TestMatcher_OperationHelpers(t *testing.T) {
+	r := apiWriteRule()
+	r.GraphQL = &config.RequestPolicyGraphQL{
+		OperationTypes:    []string{gqlMutation},
+		RootFieldPatterns: []string{`^deleteRecord$`},
+	}
+	m, err := NewMatcher(&config.RequestPolicy{
+		Enabled:           true,
+		OnParseError:      config.ActionWarn,
+		OnOpaqueOperation: config.ActionBlock,
+		Rules:             []config.RequestPolicyRule{r},
+	})
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+	meta := RequestMeta{Host: "api.service.example.com", Method: "POST", Path: "/api/write", ContentType: "application/json"}
+	if !m.NeedsOperations(meta) {
+		t.Fatal("route-matched GraphQL rule should need operation extraction")
+	}
+	if m.NeedsOperations(RequestMeta{Host: "api.service.example.com", Method: "GET", Path: "/api/write", ContentType: "application/json"}) {
+		t.Fatal("non-route-matching request should not need operation extraction")
+	}
+	if got := m.OnParseError(); got != config.ActionWarn {
+		t.Fatalf("OnParseError = %q, want warn", got)
+	}
+	if got := m.OnOpaqueOperation(); got != config.ActionBlock {
+		t.Fatalf("OnOpaqueOperation = %q, want block", got)
+	}
+	parseDecision := m.EvaluateUninspectable(meta, m.OnParseError())
+	if parseDecision.Action != config.ActionWarn || parseDecision.RuleName != "api-write" {
+		t.Fatalf("parse decision = %+v, want warn from api-write", parseDecision)
+	}
+	if got := m.EvaluateUninspectable(meta, config.ActionAllow); got.Matched() {
+		t.Fatalf("allow uninspectable action should produce no decision, got %+v", got)
+	}
+	var nilM *Matcher
+	if nilM.OnParseError() != config.ActionBlock || nilM.OnOpaqueOperation() != config.ActionBlock {
+		t.Fatal("nil matcher should default fail-closed actions to block")
+	}
+}
+
+func TestStricter(t *testing.T) {
+	block := Decision{Action: config.ActionBlock, RuleName: "block"}
+	warn := Decision{Action: config.ActionWarn, RuleName: "warn"}
+	if got := Stricter(warn, block); got.RuleName != "block" {
+		t.Fatalf("Stricter(warn, block) = %+v, want block", got)
+	}
+	if got := Stricter(block, warn); got.RuleName != "block" {
+		t.Fatalf("Stricter(block, warn) = %+v, want block", got)
+	}
+}
+
 func TestNewMatcher_BadPattern(t *testing.T) {
 	_, err := NewMatcher(&config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{{
 		Name:   "bad",

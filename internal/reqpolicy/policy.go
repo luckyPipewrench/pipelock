@@ -6,10 +6,10 @@
 //
 // It is independent of request_body_scanning and complementary to the
 // learn-lock contract gate — it is neither a DLP scanner nor a behavioral
-// allowlist. v1 matches on route only (host / effective method / normalized
-// path / content type); GraphQL and JSON operation predicates are added in
-// later phases. The Matcher precompiles rule regexes once at config (re)load;
-// Evaluate is allocation-light and safe on the hot request path.
+// allowlist. It matches on route (host / effective method / normalized path /
+// content type) and optional extracted operations such as GraphQL root fields.
+// The Matcher precompiles rule regexes once at config (re)load; Evaluate is
+// allocation-light and safe on the hot request path.
 package reqpolicy
 
 import (
@@ -85,8 +85,10 @@ type compiledRule struct {
 // NewMatcher at config (re)load and swap it atomically alongside the rest of
 // the runtime config.
 type Matcher struct {
-	enabled bool
-	rules   []compiledRule
+	enabled           bool
+	onParseError      string
+	onOpaqueOperation string
+	rules             []compiledRule
 }
 
 // NewMatcher compiles cfg into a Matcher. It returns an error if any
@@ -99,6 +101,14 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 		return m, nil
 	}
 	m.enabled = true
+	m.onParseError = cfg.OnParseError
+	if m.onParseError == "" {
+		m.onParseError = config.ActionBlock
+	}
+	m.onOpaqueOperation = cfg.OnOpaqueOperation
+	if m.onOpaqueOperation == "" {
+		m.onOpaqueOperation = config.ActionBlock
+	}
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
 		cr := compiledRule{
@@ -148,6 +158,24 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 	return m, nil
 }
 
+// OnParseError returns the configured action when an operation predicate's
+// route matches but the request body cannot be parsed.
+func (m *Matcher) OnParseError() string {
+	if m == nil || m.onParseError == "" {
+		return config.ActionBlock
+	}
+	return m.onParseError
+}
+
+// OnOpaqueOperation returns the configured action when an operation predicate's
+// route matches but the operation is opaque (for example APQ hash-only).
+func (m *Matcher) OnOpaqueOperation() string {
+	if m == nil || m.onOpaqueOperation == "" {
+		return config.ActionBlock
+	}
+	return m.onOpaqueOperation
+}
+
 // Evaluate runs meta against the ruleset and returns the strictest matching
 // Decision. Block beats warn; among equal-strictness matches an enforced rule
 // is preferred over a shadow rule so a real block is never masked by a shadow
@@ -168,6 +196,56 @@ func (m *Matcher) Evaluate(meta RequestMeta) Decision {
 		}
 	}
 	return best
+}
+
+// NeedsOperations reports whether any operation predicate route matches this
+// request. Transports use this to decide whether they must read/parse a body
+// independently of request_body_scanning.
+func (m *Matcher) NeedsOperations(meta RequestMeta) bool {
+	if m == nil || !m.enabled {
+		return false
+	}
+	for i := range m.rules {
+		cr := &m.rules[i]
+		if cr.graphql != nil && cr.routeMatches(meta) {
+			return true
+		}
+	}
+	return false
+}
+
+// EvaluateUninspectable returns the strictest route-matching operation rule
+// decision using action for parse-error or opaque-operation fail-closed cases.
+// A configured action=allow yields no decision.
+func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string) Decision {
+	if m == nil || !m.enabled || action == "" || action == config.ActionAllow {
+		return Decision{}
+	}
+	var best Decision
+	for i := range m.rules {
+		cr := &m.rules[i]
+		if cr.graphql == nil || !cr.routeMatches(meta) {
+			continue
+		}
+		cand := Decision{Action: action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
+		if betterDecision(cand, best) {
+			best = cand
+		}
+	}
+	return best
+}
+
+// Stricter returns the stricter of two decisions using the same ordering
+// Evaluate applies internally: block > warn > allow, and at equal action an
+// enforced decision beats a shadow one. A transport that evaluates the same
+// request under more than one effective method — to stop a method-override
+// header from downgrading a method-scoped rule, per EffectiveMethod's caveat —
+// combines the per-method results with this.
+func Stricter(a, b Decision) Decision {
+	if betterDecision(a, b) {
+		return a
+	}
+	return b
 }
 
 // betterDecision reports whether cand should replace cur as the selected
@@ -195,6 +273,16 @@ func actionRank(a string) int {
 }
 
 func (cr *compiledRule) matches(meta RequestMeta) bool {
+	if !cr.routeMatches(meta) {
+		return false
+	}
+	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
+		return false
+	}
+	return true
+}
+
+func (cr *compiledRule) routeMatches(meta RequestMeta) bool {
 	if len(cr.hosts) > 0 && !hostMatches(NormalizeHost(meta.Host), cr.hosts) {
 		return false
 	}
@@ -210,9 +298,6 @@ func (cr *compiledRule) matches(meta RequestMeta) bool {
 		if _, ok := cr.contentTypes[NormalizeContentType(meta.ContentType)]; !ok {
 			return false
 		}
-	}
-	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
-		return false
 	}
 	return true
 }

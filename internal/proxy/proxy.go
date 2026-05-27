@@ -45,6 +45,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
+	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
@@ -216,6 +217,12 @@ func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
 			return info
 		}
 	}
+	// A request_policy block on a redirect hop must surface its own reason
+	// code (and policy retry hint), not the generic redirect_scan_denied — the
+	// layer header alone would otherwise misreport the enforcing layer.
+	if blockedErr != nil && blockedErr.layer == blockLayerRequestPolicy {
+		return blockInfoFor(blockreason.RequestPolicyDeny, "")
+	}
 	layer := ""
 	if blockedErr != nil {
 		layer = blockedErr.layer
@@ -310,6 +317,7 @@ type Proxy struct {
 	fragmentBufferPtr   atomic.Pointer[scanner.FragmentBuffer] // nil when fragment reassembly disabled
 	redactionRuntimePtr atomic.Pointer[redactionRuntime]       // nil when redaction disabled
 	redactMatcherPtr    atomic.Pointer[redact.Matcher]         // nil when redaction disabled
+	reqPolicyPtr        atomic.Pointer[reqpolicy.Matcher]      // nil when request_policy disabled
 	contractLoaderPtr   atomic.Pointer[contractruntime.Loader] // nil when learn_lock is disabled
 	logger              *audit.Logger
 	metrics             *metrics.Metrics
@@ -523,6 +531,10 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		return nil, err
 	}
 
+	if err := p.setupRequestPolicy(cfg); err != nil {
+		return nil, err
+	}
+
 	// Create session admin API handler when an API token is configured.
 	// Mirrors the kill switch env-var override: PIPELOCK_KILLSWITCH_API_TOKEN
 	// takes precedence over the YAML value.
@@ -625,6 +637,26 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
 			}
 			scannerMatched := !result.Allowed
+
+			// request_policy runs before the contract gate so a contract
+			// allow can never suppress an operation-policy block.
+			if rpRes := p.applyRequestPolicy(requestPolicyInput{
+				Host:        req.URL.Hostname(),
+				Method:      req.Method,
+				Path:        req.URL.EscapedPath(),
+				ContentType: req.Header.Get(headerContentType),
+				Headers:     req.Header,
+				BodyRead:    false,
+				Transport:   redirectTransport,
+				Target:      redirectURL,
+				RequestID:   requestID,
+				Agent:       agentName,
+				AuditCtx:    newHTTPAuditContext(logger, req.Method, redirectURL, clientIP, requestID, agentName),
+				Emit:        p.emitReceipt,
+			}); rpRes.Block {
+				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
+			}
+
 			contractLoader, _ := req.Context().Value(ctxKeyAgentContractLoader).(*contractruntime.Loader)
 			if contractLoader == nil {
 				contractLoader = p.currentContractLoader()
@@ -1209,6 +1241,19 @@ func (p *Proxy) RedactMatcherPtr() *atomic.Pointer[redact.Matcher] {
 	return &p.redactMatcherPtr
 }
 
+// ApplyRequestPolicy exposes the request_policy evaluation for use by
+// independently constructed handlers (e.g. ReverseProxyHandler) that
+// cannot call the unexported method directly.
+func (p *Proxy) ApplyRequestPolicy(in requestPolicyInput) requestPolicyResult {
+	return p.applyRequestPolicy(in)
+}
+
+// PrepareRequestPolicyBody reads and re-wraps a request body when an
+// operation predicate needs it and no earlier scanner buffered it.
+func (p *Proxy) PrepareRequestPolicyBody(r *http.Request, in *requestPolicyInput) requestPolicyResult {
+	return p.prepareRequestPolicyBody(r, in)
+}
+
 // Reload atomically swaps the config and scanner for hot-reload support.
 // The old scanner is closed to release its rate limiter goroutine.
 // Session manager lifecycle is toggled when session_profiling.enabled changes.
@@ -1299,6 +1344,19 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		}
 		return false
 	}
+	// Stage the request_policy matcher before publication. Config validation
+	// already compiled these patterns, so an error here is defense in depth;
+	// fail closed by aborting the reload and keeping the old matcher.
+	newReqPolicy, reqPolicyErr := reqpolicy.NewMatcher(&cfg.RequestPolicy)
+	if reqPolicyErr != nil {
+		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
+			fmt.Errorf("request_policy matcher reload failed, keeping old config: %w", reqPolicyErr))
+		sc.Close()
+		if newEd != nil {
+			newEd.Close()
+		}
+		return false
+	}
 
 	// Publish both emitters now that staging has fully succeeded. The
 	// atomic.Pointer swaps are individually atomic; between them, a
@@ -1348,6 +1406,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	} else {
 		p.redactMatcherPtr.Store(nil)
 	}
+	// Publish the staged request_policy matcher (always non-nil; a disabled
+	// section yields an allow-everything matcher).
+	p.reqPolicyPtr.Store(newReqPolicy)
 
 	if !publishCfgBeforeRedaction {
 		p.cfgPtr.Store(cfg)
@@ -3551,6 +3612,32 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				})
 			return
 		}
+	}
+
+	// request_policy runs before the contract gate so a contract allow can
+	// never suppress an operation-policy block.
+	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+		Host:        parsed.Hostname(),
+		Method:      http.MethodGet,
+		Path:        parsed.EscapedPath(),
+		ContentType: r.Header.Get(headerContentType),
+		Headers:     r.Header,
+		BodyRead:    true,
+		Transport:   TransportFetch,
+		Target:      displayURL,
+		RequestID:   requestID,
+		Agent:       agent,
+		AuditCtx:    actx,
+		Emit:        p.emitReceipt,
+	}); rpRes.Block {
+		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
+		writeBlockedJSON(w, rpRes.Info, http.StatusForbidden, FetchResponse{
+			URL:         displayURL,
+			Agent:       agent,
+			Blocked:     true,
+			BlockReason: "blocked by request policy: " + rpRes.Reason,
+		})
+		return
 	}
 
 	killSwitchActive := false

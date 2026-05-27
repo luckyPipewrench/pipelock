@@ -427,6 +427,28 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// request_policy runs before the contract gate so a contract allow can
+	// never suppress an operation-policy block.
+	connectRPInput := requestPolicyInput{
+		Host:        host,
+		Method:      http.MethodConnect,
+		Path:        "/",
+		ContentType: "",
+		Headers:     r.Header,
+		BodyRead:    true,
+		Transport:   TransportConnect,
+		Target:      syntheticURL,
+		RequestID:   requestID,
+		Agent:       agent,
+		AuditCtx:    targetCtx,
+		Emit:        p.emitReceipt,
+	}
+	if rp := p.applyRequestPolicy(connectRPInput); rp.Block {
+		p.metrics.RecordTunnelBlocked(agentLabel)
+		writeBlockedError(w, rp.Info, "CONNECT blocked by request policy: "+rp.Reason, http.StatusForbidden)
+		return
+	}
+
 	killSwitchActive := false
 	if p.ks != nil {
 		killSwitchActive = p.ks.IsActiveHTTP(r).Active
@@ -1419,6 +1441,34 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				"blocked: "+ceeRes.Reason, http.StatusForbidden)
 			return
 		}
+	}
+
+	// request_policy runs before the contract gate so a contract allow can
+	// never suppress an operation-policy block.
+	rpInput := requestPolicyInput{
+		Host:        r.URL.Hostname(),
+		Method:      r.Method,
+		Path:        r.URL.EscapedPath(),
+		ContentType: r.Header.Get(headerContentType),
+		Headers:     r.Header,
+		Body:        forwardBodyBytes,
+		BodyRead:    forwardBodyBytes != nil || r.Body == nil || r.Body == http.NoBody,
+		Transport:   TransportForward,
+		Target:      targetURL,
+		RequestID:   requestID,
+		Agent:       agent,
+		AuditCtx:    actx,
+		Emit:        p.emitReceipt,
+	}
+	if rp := p.prepareRequestPolicyBody(r, &rpInput); rp.Block {
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
+		writeBlockedError(w, rp.Info, "blocked by request policy: "+rp.Reason, http.StatusForbidden)
+		return
+	}
+	if rp := p.applyRequestPolicy(rpInput); rp.Block {
+		p.metrics.RecordBlocked(r.URL.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
+		writeBlockedError(w, rp.Info, "blocked by request policy: "+rp.Reason, http.StatusForbidden)
+		return
 	}
 
 	killSwitchActive := false

@@ -606,6 +606,8 @@ func (s *Server) Start(ctx context.Context) error {
 		rpHandler.SetReceiptEmitter(s.proxy.ReceiptEmitterPtr())
 		rpHandler.SetContractLoader(s.proxy.ContractLoaderPtr())
 		rpHandler.SetReloadLock(s.proxy.ReloadLock())
+		rpHandler.SetRequestPolicyFn(s.proxy.ApplyRequestPolicy)
+		rpHandler.SetRequestPolicyPrepareFn(s.proxy.PrepareRequestPolicyBody)
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())
 		// Submit profile dials through the SSRF-safe dial path (resolve +
 		// validate every IP against internal CIDRs before connecting),

@@ -76,6 +76,8 @@ type ReverseProxyHandler struct {
 	envelopeVerifierPtr *atomic.Pointer[envelope.Verifier]
 	receiptEmitterPtr   *atomic.Pointer[receipt.Emitter]
 	contractLoaderPtr   *atomic.Pointer[contractruntime.Loader]
+	reqPolicyFn         func(requestPolicyInput) requestPolicyResult                 // nil = disabled
+	reqPolicyPrepareFn  func(*http.Request, *requestPolicyInput) requestPolicyResult // nil = no body pre-read
 	reloadMu            *sync.RWMutex
 }
 
@@ -194,6 +196,21 @@ func (rp *ReverseProxyHandler) SetReceiptEmitter(ptr *atomic.Pointer[receipt.Emi
 // SetContractLoader sets the atomic pointer to the learn-lock loader.
 func (rp *ReverseProxyHandler) SetContractLoader(ptr *atomic.Pointer[contractruntime.Loader]) {
 	rp.contractLoaderPtr = ptr
+}
+
+// SetRequestPolicyFn wires the request_policy evaluation into the
+// reverse-proxy handler. The function is typically Proxy.applyRequestPolicy
+// (a method value). When nil, request_policy is a no-op and the handler
+// proceeds directly to the contract gate.
+func (rp *ReverseProxyHandler) SetRequestPolicyFn(fn func(requestPolicyInput) requestPolicyResult) {
+	rp.reqPolicyFn = fn
+}
+
+// SetRequestPolicyPrepareFn wires the optional request_policy body pre-reader.
+// It is needed only when request_body_scanning did not already buffer a body
+// and an operation predicate requires body inspection.
+func (rp *ReverseProxyHandler) SetRequestPolicyPrepareFn(fn func(*http.Request, *requestPolicyInput) requestPolicyResult) {
+	rp.reqPolicyPrepareFn = fn
 }
 
 // emitReceipt records a signed action receipt for a reverse-proxy
@@ -626,6 +643,41 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			requestScannerVerdict = scannerVerdictForContinuingAction(verdict, cfg.EnforceEnabled())
 		}
 		reverseBodyBytes = bodyBytes
+	}
+
+	// request_policy runs before the contract gate so a contract allow can
+	// never suppress an operation-policy block.
+	if rp.reqPolicyFn != nil {
+		rpInput := requestPolicyInput{
+			Host:        r.URL.Hostname(),
+			Method:      r.Method,
+			Path:        r.URL.EscapedPath(),
+			ContentType: r.Header.Get(headerContentType),
+			Headers:     r.Header,
+			Body:        reverseBodyBytes,
+			BodyRead:    reverseBodyBytes != nil || r.Body == nil || r.Body == http.NoBody,
+			Transport:   TransportReverse,
+			Target:      targetURL,
+			RequestID:   requestID,
+			Agent:       agent,
+			AuditCtx:    newHTTPAuditContext(rp.logger, r.Method, targetURL, clientIP, requestID, agent),
+			Emit:        rp.emitReceipt,
+		}
+		if rp.reqPolicyPrepareFn != nil {
+			if rpRes := rp.reqPolicyPrepareFn(r, &rpInput); rpRes.Block {
+				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerRequestPolicy)
+				writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info, "blocked by request policy: "+rpRes.Reason)
+				return
+			}
+			reverseBodyBytes = rpInput.Body
+		}
+		if rpRes := rp.reqPolicyFn(rpInput); rpRes.Block {
+			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
+			rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, blockLayerRequestPolicy)
+			writeReverseProxyBlock(w, http.StatusForbidden, rpRes.Info, "blocked by request policy: "+rpRes.Reason)
+			return
+		}
 	}
 
 	gate, gateErr := EvaluateGate(ContractGateInput{

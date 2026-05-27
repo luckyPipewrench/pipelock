@@ -486,6 +486,27 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// request_policy runs before the contract gate so a contract allow can
+	// never suppress an operation-policy block.
+	if rpRes := p.applyRequestPolicy(requestPolicyInput{
+		Host:        parsed.Hostname(),
+		Method:      http.MethodGet,
+		Path:        parsed.EscapedPath(),
+		ContentType: r.Header.Get(headerContentType),
+		Headers:     r.Header,
+		BodyRead:    true,
+		Transport:   TransportWS,
+		Target:      targetURL,
+		RequestID:   requestID,
+		Agent:       agent,
+		AuditCtx:    actx,
+		Emit:        p.emitReceipt,
+	}); rpRes.Block {
+		p.metrics.RecordWSBlocked()
+		writeBlockedError(w, rpRes.Info, "WebSocket blocked by request policy: "+rpRes.Reason, http.StatusForbidden)
+		return
+	}
+
 	killSwitchActive := false
 	if p.ks != nil {
 		killSwitchActive = p.ks.IsActiveHTTP(r).Active

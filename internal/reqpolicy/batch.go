@@ -23,6 +23,14 @@ const maxBatchDepth = 4
 // nested batch) rather than a specific operator rule.
 const batchRuleName = "batch"
 
+// jsonContentType is the media type inferred for a batch sub-request that
+// carries a body. OData-style JSON batch envelopes hold JSON sub-request
+// bodies, so a content-type-scoped rule (e.g. content_types:
+// ["application/json"]) still applies to an operation wrapped in a batch. A
+// bodyless sub-request keeps an empty content-type, matching a real bodyless
+// request that carries no Content-Type header.
+const jsonContentType = "application/json"
+
 // compiledBatch is a precompiled batch endpoint: a route to match plus the JSON
 // envelope field names and a sub-request cap.
 type compiledBatch struct {
@@ -116,6 +124,9 @@ func (m *Matcher) evaluateBatch(meta RequestMeta, body []byte, depth int) (best 
 // closed by default).
 func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int) Decision {
 	subMeta := RequestMeta{Host: host, Method: sub.method, Path: sub.path}
+	if len(sub.body) > 0 {
+		subMeta.ContentType = jsonContentType
+	}
 	if m.MatchesBatch(subMeta) {
 		if depth+1 >= maxBatchDepth {
 			// Too deeply nested to inspect: fail closed regardless of config.
@@ -198,7 +209,11 @@ func (b *compiledBatch) parseSubRequests(body []byte) ([]batchSubRequest, bool) 
 			return nil, false
 		}
 		sub := batchSubRequest{method: method, path: subPath, query: subQuery}
-		if raw, ok := item[b.bodyField]; ok {
+		// A JSON null body is treated as no body: json.RawMessage("null") is
+		// non-nil, so without this guard a GET sub-request carrying "body":null
+		// would skip the GraphQL-over-GET query path and fail closed on an
+		// unparseable "null" body instead of evaluating its query string.
+		if raw, ok := item[b.bodyField]; ok && string(raw) != "null" {
 			sub.body = []byte(raw)
 		}
 		subs = append(subs, sub)

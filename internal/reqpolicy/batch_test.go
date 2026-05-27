@@ -141,6 +141,61 @@ func TestEvaluateBatch_GraphQLOverGETBenignAllows(t *testing.T) {
 	}
 }
 
+func TestEvaluateBatch_GETNullBodyEvaluatesQuery(t *testing.T) {
+	t.Parallel()
+	gqlRule := config.RequestPolicyRule{
+		Name:   "block-mutation",
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{Methods: []string{"GET"}, PathPatterns: []string{`/graphql$`}},
+		GraphQL: &config.RequestPolicyGraphQL{
+			OperationTypes:    []string{"mutation"},
+			RootFieldPatterns: []string{`^deleteRecord$`},
+		},
+	}
+	m := batchMatcher(t, gqlRule)
+
+	// An explicit JSON null body must be treated as no body so the GraphQL-over-GET
+	// query string is still evaluated, not failed closed as an unparseable body.
+	benign := url.QueryEscape(`query { viewer { id } }`)
+	body := []byte(`{"requests":[{"method":"GET","url":"/graphql?query=` + benign + `","body":null}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Matched() {
+		t.Fatalf("GET sub-request with null body and benign query must allow; got matched=%v parseOK=%v", d.Matched(), parseOK)
+	}
+
+	// The query string is still inspected: a dangerous mutation with a null body blocks.
+	mutation := url.QueryEscape(`mutation { deleteRecord { id } }`)
+	body = []byte(`{"requests":[{"method":"GET","url":"/graphql?query=` + mutation + `","body":null}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Action != config.ActionBlock {
+		t.Fatalf("GET sub-request with null body and mutation query must block; got action=%q parseOK=%v", d.Action, parseOK)
+	}
+}
+
+func TestEvaluateBatch_ContentTypeScopedRuleMatchesSubRequest(t *testing.T) {
+	t.Parallel()
+	rule := config.RequestPolicyRule{
+		Name:   "block-sendmail-json",
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{PathPatterns: []string{`/sendMail$`}, ContentTypes: []string{"application/json"}},
+		Reason: "sendMail is blocked for the agent runtime",
+	}
+	m := batchMatcher(t, rule)
+
+	// A sub-request body is JSON by envelope definition, so a content-type-scoped
+	// rule must still match an operation wrapped in a batch.
+	body := []byte(`{"requests":[{"method":"POST","url":"/v1.0/me/sendMail","body":{"message":{}}}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), body); !parseOK || d.Action != config.ActionBlock {
+		t.Fatalf("content-type-scoped rule must match a JSON-body batch sub-request; got action=%q parseOK=%v", d.Action, parseOK)
+	}
+
+	// The inferred content-type is body-gated: a bodyless sub-request carries no
+	// content-type, matching a real bodyless request, so the JSON-scoped rule
+	// does not fire (consistent with a direct bodyless request).
+	bodyless := []byte(`{"requests":[{"method":"GET","url":"/v1.0/me/sendMail"}]}`)
+	if d, parseOK := m.EvaluateBatch(batchMeta(), bodyless); !parseOK || d.Matched() {
+		t.Fatalf("content-type-scoped rule must not match a bodyless sub-request; got matched=%v parseOK=%v", d.Matched(), parseOK)
+	}
+}
+
 func TestEvaluateBatch_UnparseableEnvelopeFailsClosed(t *testing.T) {
 	t.Parallel()
 	m := batchMatcher(t, deleteRule())

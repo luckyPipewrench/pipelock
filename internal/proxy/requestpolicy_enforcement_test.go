@@ -733,8 +733,11 @@ func TestRequestPolicy_RedirectHopGraphQLOverGETBenignForwards(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	if got := w.Header().Get("X-Pipelock-Block-Reason"); got == "request_policy_deny" {
-		t.Fatal("benign GraphQL-over-GET redirect hop must not fail closed as opaque")
+	if w.Code != http.StatusOK {
+		t.Fatalf("benign GraphQL-over-GET redirect hop: status = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("X-Pipelock-Block-Reason"); got != "" {
+		t.Fatalf("benign GraphQL-over-GET redirect hop must not be blocked; got reason %q", got)
 	}
 }
 

@@ -132,12 +132,13 @@ func TestNewRemoteKillPollerValidationAndDefaults(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		cfg  RemoteKillPollerConfig
-		want string
+		name         string
+		cfg          RemoteKillPollerConfig
+		want         string
+		wantRequired bool
 	}{
-		{name: "nil_client", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Applier: applier}, want: "HTTP client"},
-		{name: "nil_applier", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client}, want: "applier"},
+		{name: "nil_client", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Applier: applier}, want: "HTTP client", wantRequired: true},
+		{name: "nil_applier", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client}, want: "applier", wantRequired: true},
 		{name: "short_interval", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client, Applier: applier, PollInterval: time.Millisecond}, want: "poll interval"},
 		{name: "negative_max_response", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client, Applier: applier, MaxResponseBytes: -1}, want: "max response bytes"},
 		{name: "bad_url_parse", cfg: RemoteKillPollerConfig{BaseURL: "://bad", Client: client, Applier: applier}, want: "parse conductor remote kill base URL"},
@@ -147,6 +148,9 @@ func TestNewRemoteKillPollerValidationAndDefaults(t *testing.T) {
 			_, err := NewRemoteKillPoller(tc.cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("NewRemoteKillPoller() error = %v, want substring %q", err, tc.want)
+			}
+			if tc.wantRequired && !errors.Is(err, ErrRemoteKillPollerRequired) {
+				t.Fatalf("NewRemoteKillPoller() error = %v, want ErrRemoteKillPollerRequired", err)
 			}
 		})
 	}

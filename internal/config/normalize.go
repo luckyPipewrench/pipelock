@@ -278,6 +278,24 @@ func (c *Config) ApplyDefaults() {
 	if c.RequestPolicy.OnOpaqueOperation == "" {
 		c.RequestPolicy.OnOpaqueOperation = ActionBlock
 	}
+	for i := range c.RequestPolicy.Batch {
+		b := &c.RequestPolicy.Batch[i]
+		if b.RequestsField == "" {
+			b.RequestsField = "requests"
+		}
+		if b.MethodField == "" {
+			b.MethodField = "method"
+		}
+		if b.URLField == "" {
+			b.URLField = "url"
+		}
+		if b.BodyField == "" {
+			b.BodyField = "body"
+		}
+		if b.MaxSubRequests <= 0 {
+			b.MaxSubRequests = 64
+		}
+	}
 	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
 		c.ForwardProxy.MaxTunnelSeconds = 300
 	}

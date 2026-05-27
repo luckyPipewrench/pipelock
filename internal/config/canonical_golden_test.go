@@ -125,7 +125,9 @@ const (
 	// empty (disabled, no rules) in Defaults(), so it shifts the baseline hash.
 	// Re-bumped for request_policy fail-closed parse/opaque-operation actions:
 	// these control whether unreadable GraphQL operations block, warn, or pass.
-	goldenHashDefaults = "344efdd038f53fc8e52fa972cdd0ace2af88810a7c511fe85cffa3ac2a2d8744"
+	// Bumped for the request_policy.batch section (JSON batch endpoint
+	// recursion): adding the policy-affecting field changes the canonical hash.
+	goldenHashDefaults = "16511214187762791f210a42d3589eaeab09304ccdcda90c617f895618dadb0d"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -192,7 +194,8 @@ const (
 	// is empty but still part of the canonical view; the hash shifts in lockstep.
 	// Re-bumped for request_policy fail-closed parse/opaque-operation actions:
 	// see goldenHashDefaults note above.
-	goldenHashRichConfig = "5862750fda898003193bbcfeff4f7077da4a09ef33e038db72c88fedb3eacc2a"
+	// Bumped for the request_policy.batch section (see goldenHashDefaults).
+	goldenHashRichConfig = "00cb23817d50f1b273143c74946b479d27247d221a8b29cfa859d8ef34f2b097"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

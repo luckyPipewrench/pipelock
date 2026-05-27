@@ -821,41 +821,8 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 		default:
 			return fmt.Errorf("request_policy rule %q has invalid action %q: must be block or warn", r.Name, r.Action)
 		}
-		route := &r.Route
-		if len(route.Hosts) == 0 && len(route.Methods) == 0 &&
-			len(route.PathPrefixes) == 0 && len(route.PathPatterns) == 0 &&
-			len(route.ContentTypes) == 0 {
-			return fmt.Errorf("request_policy rule %q has no route constraints; set at least one of hosts/methods/path_prefixes/path_patterns/content_types", r.Name)
-		}
-		if err := ValidateTrustedDomains(route.Hosts, fmt.Sprintf("request_policy rule %q hosts", r.Name)); err != nil {
+		if err := validateRequestPolicyRoute(&r.Route, fmt.Sprintf("request_policy rule %q", r.Name)); err != nil {
 			return err
-		}
-		for j, m := range route.Methods {
-			up := strings.ToUpper(strings.TrimSpace(m))
-			if !validHTTPMethod(up) {
-				return fmt.Errorf("request_policy rule %q method %q is not a valid HTTP method", r.Name, m)
-			}
-			route.Methods[j] = up
-		}
-		for _, p := range route.PathPatterns {
-			if strings.TrimSpace(p) == "" {
-				return fmt.Errorf("request_policy rule %q has empty path_pattern", r.Name)
-			}
-			if _, err := regexp.Compile(p); err != nil {
-				return fmt.Errorf("request_policy rule %q has invalid path_pattern %q: %w", r.Name, p, err)
-			}
-		}
-		for _, p := range route.PathPrefixes {
-			if strings.TrimSpace(p) == "" {
-				return fmt.Errorf("request_policy rule %q has empty path_prefix", r.Name)
-			}
-		}
-		for j, ct := range route.ContentTypes {
-			normalized := normalizeRequestPolicyContentType(ct)
-			if normalized == "" {
-				return fmt.Errorf("request_policy rule %q has empty content_type", r.Name)
-			}
-			route.ContentTypes[j] = normalized
 		}
 		if r.GraphQL != nil {
 			if err := validateRequestPolicyGraphQL(r.Name, r.GraphQL); err != nil {
@@ -865,6 +832,56 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 		if rp.Enabled {
 			c.warnRequestPolicyVisibility(r, warnings)
 		}
+	}
+	for i := range rp.Batch {
+		if err := validateRequestPolicyRoute(&rp.Batch[i].Route, fmt.Sprintf("request_policy batch %d", i)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateRequestPolicyRoute validates and normalizes a request_policy route in
+// place: it requires at least one constraint, checks hosts against the trusted
+// domain validator, uppercases and validates methods, compiles path_patterns,
+// rejects empty prefixes, and normalizes content types. label prefixes every
+// error (e.g. `request_policy rule "x"` or `request_policy batch 0`) so rule
+// and batch routes share one validator without drifting.
+func validateRequestPolicyRoute(route *RequestPolicyRoute, label string) error {
+	if len(route.Hosts) == 0 && len(route.Methods) == 0 &&
+		len(route.PathPrefixes) == 0 && len(route.PathPatterns) == 0 &&
+		len(route.ContentTypes) == 0 {
+		return fmt.Errorf("%s has no route constraints; set at least one of hosts/methods/path_prefixes/path_patterns/content_types", label)
+	}
+	if err := ValidateTrustedDomains(route.Hosts, label+" hosts"); err != nil {
+		return err
+	}
+	for j, m := range route.Methods {
+		up := strings.ToUpper(strings.TrimSpace(m))
+		if !validHTTPMethod(up) {
+			return fmt.Errorf("%s method %q is not a valid HTTP method", label, m)
+		}
+		route.Methods[j] = up
+	}
+	for _, p := range route.PathPatterns {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("%s has empty path_pattern", label)
+		}
+		if _, err := regexp.Compile(p); err != nil {
+			return fmt.Errorf("%s has invalid path_pattern %q: %w", label, p, err)
+		}
+	}
+	for _, p := range route.PathPrefixes {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("%s has empty path_prefix", label)
+		}
+	}
+	for j, ct := range route.ContentTypes {
+		normalized := normalizeRequestPolicyContentType(ct)
+		if normalized == "" {
+			return fmt.Errorf("%s has empty content_type", label)
+		}
+		route.ContentTypes[j] = normalized
 	}
 	return nil
 }

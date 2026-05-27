@@ -136,6 +136,59 @@ func (p *Proxy) evaluateRequestPolicyUninspectable(in requestPolicyInput, action
 	return d
 }
 
+// requestPolicyMatchesBatch reports whether the request route-matches a
+// configured batch endpoint, under either the base or the overridden method.
+func (p *Proxy) requestPolicyMatchesBatch(in requestPolicyInput) bool {
+	m := p.requestPolicyMatcher()
+	if m == nil {
+		return false
+	}
+	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
+	if m.MatchesBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil)) {
+		return true
+	}
+	base := strings.ToUpper(strings.TrimSpace(in.Method))
+	return eff != base && m.MatchesBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil))
+}
+
+// evaluateRequestPolicyBatch parses the request body as a batch envelope and
+// evaluates each sub-request against the rule set, under both the base and
+// overridden method. parseOK is false when a matched batch envelope cannot be
+// parsed or is over-cap (the caller then applies on_parse_error).
+func (p *Proxy) evaluateRequestPolicyBatch(in requestPolicyInput) (reqpolicy.Decision, bool) {
+	m := p.requestPolicyMatcher()
+	if m == nil {
+		return reqpolicy.Decision{}, true
+	}
+	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
+	d, parseOK := m.EvaluateBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil), in.Body)
+	base := strings.ToUpper(strings.TrimSpace(in.Method))
+	if eff != base {
+		bd, ok := m.EvaluateBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil), in.Body)
+		d = reqpolicy.Stricter(d, bd)
+		parseOK = parseOK && ok
+	}
+	return d, parseOK
+}
+
+// evaluateRequestPolicyUninspectableBatch applies a fail-closed action to a
+// batch endpoint whose body could not be inspected, under both the base and
+// overridden method. Unlike evaluateRequestPolicyUninspectable (graphql rules
+// only), this covers a batch endpoint that has no graphql operation rule.
+func (p *Proxy) evaluateRequestPolicyUninspectableBatch(in requestPolicyInput, action string) reqpolicy.Decision {
+	m := p.requestPolicyMatcher()
+	if m == nil {
+		return reqpolicy.Decision{}
+	}
+	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
+	d := m.UninspectableBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil), action)
+	base := strings.ToUpper(strings.TrimSpace(in.Method))
+	if eff != base {
+		d = reqpolicy.Stricter(d, m.UninspectableBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil), action))
+	}
+	return d
+}
+
 func (p *Proxy) requestPolicyBodyLimit() int {
 	cfg := p.cfgPtr.Load()
 	if cfg != nil && cfg.RequestBodyScanning.MaxBodyBytes > 0 {
@@ -149,7 +202,7 @@ func (p *Proxy) requestPolicyBodyLimit() int {
 // buffered it. This keeps request_policy independent of
 // request_body_scanning.enabled without draining bodies for route-only rules.
 func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput) requestPolicyResult {
-	if in.BodyRead || !p.requestPolicyNeedsOperations(*in) {
+	if in.BodyRead || (!p.requestPolicyNeedsOperations(*in) && !p.requestPolicyMatchesBatch(*in)) {
 		return requestPolicyResult{}
 	}
 	if r.Body == nil || r.Body == http.NoBody {
@@ -190,6 +243,7 @@ func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) r
 	}
 	p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, reason, 0)
 	d := p.evaluateRequestPolicyUninspectable(in, config.ActionBlock)
+	d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, config.ActionBlock))
 	return p.finalizeRequestPolicyDecision(in, d)
 }
 
@@ -216,6 +270,21 @@ func (p *Proxy) applyRequestPolicy(in requestPolicyInput) requestPolicyResult {
 				if opaque {
 					d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation()))
 				}
+			}
+		}
+	}
+	if p.requestPolicyMatchesBatch(in) {
+		m := p.requestPolicyMatcher()
+		if !in.BodyRead {
+			// Body unavailable for a batch endpoint: cannot inspect the
+			// sub-requests, so fail closed via on_opaque_operation.
+			d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, m.OnOpaqueOperation()))
+		} else {
+			bd, parseOK := p.evaluateRequestPolicyBatch(in)
+			d = reqpolicy.Stricter(d, bd)
+			if !parseOK {
+				// Unparseable or over-cap envelope: fail closed via on_parse_error.
+				d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, m.OnParseError()))
 			}
 		}
 	}

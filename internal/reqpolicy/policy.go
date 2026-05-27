@@ -68,17 +68,23 @@ func (d Decision) Matched() bool { return d.Action != "" }
 // Shadow matches return false: they are logged but never enforced.
 func (d Decision) Enforced() bool { return d.Action != "" && !d.Shadow }
 
-type compiledRule struct {
-	name         string
-	action       string
-	reason       string
-	shadow       bool
+// compiledRoute is the precompiled route-matching portion shared by a rule and
+// a batch endpoint: host / effective method / normalized path / content type.
+type compiledRoute struct {
 	hosts        []string
 	methods      map[string]struct{}
 	pathPrefixes []string
 	pathPatterns []*regexp.Regexp
 	contentTypes map[string]struct{}
-	graphql      *gqlPredicate
+}
+
+type compiledRule struct {
+	name   string
+	action string
+	reason string
+	shadow bool
+	compiledRoute
+	graphql *gqlPredicate
 }
 
 // Matcher holds the precompiled request_policy ruleset. Build one with
@@ -89,6 +95,7 @@ type Matcher struct {
 	onParseError      string
 	onOpaqueOperation string
 	rules             []compiledRule
+	batches           []compiledBatch
 }
 
 // NewMatcher compiles cfg into a Matcher. It returns an error if any
@@ -111,51 +118,80 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 	}
 	for i := range cfg.Rules {
 		r := &cfg.Rules[i]
-		cr := compiledRule{
-			name:   r.Name,
-			action: r.Action,
-			reason: r.Reason,
-			shadow: r.Shadow,
-		}
-		if len(r.Route.Hosts) > 0 {
-			cr.hosts = make([]string, len(r.Route.Hosts))
-			for j, h := range r.Route.Hosts {
-				cr.hosts[j] = NormalizeHost(h)
-			}
-		}
-		if len(r.Route.Methods) > 0 {
-			cr.methods = make(map[string]struct{}, len(r.Route.Methods))
-			for _, mth := range r.Route.Methods {
-				cr.methods[strings.ToUpper(strings.TrimSpace(mth))] = struct{}{}
-			}
-		}
-		for _, p := range r.Route.PathPatterns {
-			re, err := regexp.Compile(p)
-			if err != nil {
-				return nil, fmt.Errorf("request_policy rule %q: invalid path_pattern %q: %w", r.Name, p, err)
-			}
-			cr.pathPatterns = append(cr.pathPatterns, re)
-		}
-		if len(r.Route.PathPrefixes) > 0 {
-			cr.pathPrefixes = make([]string, len(r.Route.PathPrefixes))
-			for j, p := range r.Route.PathPrefixes {
-				cr.pathPrefixes[j] = NormalizePath(strings.TrimSpace(p))
-			}
-		}
-		if len(r.Route.ContentTypes) > 0 {
-			cr.contentTypes = make(map[string]struct{}, len(r.Route.ContentTypes))
-			for _, ct := range r.Route.ContentTypes {
-				cr.contentTypes[NormalizeContentType(ct)] = struct{}{}
-			}
+		route, err := compileRoute(r.Route)
+		if err != nil {
+			return nil, fmt.Errorf("request_policy rule %q: %w", r.Name, err)
 		}
 		pred, err := compileGraphQLPredicate(r.GraphQL)
 		if err != nil {
 			return nil, fmt.Errorf("request_policy rule %q: invalid graphql predicate: %w", r.Name, err)
 		}
-		cr.graphql = pred
-		m.rules = append(m.rules, cr)
+		m.rules = append(m.rules, compiledRule{
+			name:          r.Name,
+			action:        r.Action,
+			reason:        r.Reason,
+			shadow:        r.Shadow,
+			compiledRoute: route,
+			graphql:       pred,
+		})
+	}
+	for i := range cfg.Batch {
+		b := &cfg.Batch[i]
+		route, err := compileRoute(b.Route)
+		if err != nil {
+			return nil, fmt.Errorf("request_policy batch %d: %w", i, err)
+		}
+		m.batches = append(m.batches, compiledBatch{
+			compiledRoute:  route,
+			requestsField:  b.RequestsField,
+			methodField:    b.MethodField,
+			urlField:       b.URLField,
+			bodyField:      b.BodyField,
+			maxSubRequests: b.MaxSubRequests,
+		})
 	}
 	return m, nil
+}
+
+// compileRoute precompiles a config route's host/method/path/content-type
+// constraints. Hosts are normalized, methods uppercased into a set, path
+// patterns compiled, prefixes normalized, content types normalized. Returns an
+// error only when a path_pattern fails to compile (config validation already
+// catches this; this is defense in depth).
+func compileRoute(route config.RequestPolicyRoute) (compiledRoute, error) {
+	var cr compiledRoute
+	if len(route.Hosts) > 0 {
+		cr.hosts = make([]string, len(route.Hosts))
+		for j, h := range route.Hosts {
+			cr.hosts[j] = NormalizeHost(h)
+		}
+	}
+	if len(route.Methods) > 0 {
+		cr.methods = make(map[string]struct{}, len(route.Methods))
+		for _, mth := range route.Methods {
+			cr.methods[strings.ToUpper(strings.TrimSpace(mth))] = struct{}{}
+		}
+	}
+	for _, p := range route.PathPatterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return compiledRoute{}, fmt.Errorf("invalid path_pattern %q: %w", p, err)
+		}
+		cr.pathPatterns = append(cr.pathPatterns, re)
+	}
+	if len(route.PathPrefixes) > 0 {
+		cr.pathPrefixes = make([]string, len(route.PathPrefixes))
+		for j, p := range route.PathPrefixes {
+			cr.pathPrefixes[j] = NormalizePath(strings.TrimSpace(p))
+		}
+	}
+	if len(route.ContentTypes) > 0 {
+		cr.contentTypes = make(map[string]struct{}, len(route.ContentTypes))
+		for _, ct := range route.ContentTypes {
+			cr.contentTypes[NormalizeContentType(ct)] = struct{}{}
+		}
+	}
+	return cr, nil
 }
 
 // OnParseError returns the configured action when an operation predicate's
@@ -282,7 +318,7 @@ func (cr *compiledRule) matches(meta RequestMeta) bool {
 	return true
 }
 
-func (cr *compiledRule) routeMatches(meta RequestMeta) bool {
+func (cr *compiledRoute) routeMatches(meta RequestMeta) bool {
 	if len(cr.hosts) > 0 && !hostMatches(NormalizeHost(meta.Host), cr.hosts) {
 		return false
 	}
@@ -302,7 +338,7 @@ func (cr *compiledRule) routeMatches(meta RequestMeta) bool {
 	return true
 }
 
-func (cr *compiledRule) pathMatches(p string) bool {
+func (cr *compiledRoute) pathMatches(p string) bool {
 	if len(cr.pathPrefixes) == 0 && len(cr.pathPatterns) == 0 {
 		return true
 	}

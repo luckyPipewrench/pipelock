@@ -235,10 +235,29 @@ type SandboxFilesystem struct {
 // composes with the learn-lock contract gate (a ratified allowlist) and with
 // DLP, and is neither. See the request-policy operation-rails design.
 type RequestPolicy struct {
-	Enabled           bool                `yaml:"enabled"`
-	OnParseError      string              `yaml:"on_parse_error"`      // block (default) | warn | allow
-	OnOpaqueOperation string              `yaml:"on_opaque_operation"` // block (default) | warn | allow
-	Rules             []RequestPolicyRule `yaml:"rules"`
+	Enabled           bool                 `yaml:"enabled"`
+	OnParseError      string               `yaml:"on_parse_error"`      // block (default) | warn | allow
+	OnOpaqueOperation string               `yaml:"on_opaque_operation"` // block (default) | warn | allow
+	Rules             []RequestPolicyRule  `yaml:"rules"`
+	Batch             []RequestPolicyBatch `yaml:"batch"` // JSON batch endpoints whose sub-requests are evaluated recursively
+}
+
+// RequestPolicyBatch declares a JSON batch endpoint whose request body wraps
+// multiple sub-requests, each carrying its own method, URL, and body. When a
+// request matches Route, request_policy parses the envelope and evaluates every
+// sub-request (effective method / normalized path / body operations) against
+// the full rule set, so a dangerous operation cannot evade a rule by being
+// wrapped in a batch. The envelope field names default to the common OData-style
+// JSON batch shape (requests[].{method,url,body}); override them for a
+// differently shaped envelope. No provider-specific values appear in code: the
+// operator names the host and path of the batch endpoint here.
+type RequestPolicyBatch struct {
+	Route          RequestPolicyRoute `yaml:"route"`
+	RequestsField  string             `yaml:"requests_field"`   // JSON field holding the sub-request array; default "requests"
+	MethodField    string             `yaml:"method_field"`     // sub-request method field; default "method"
+	URLField       string             `yaml:"url_field"`        // sub-request URL/path field; default "url"
+	BodyField      string             `yaml:"body_field"`       // sub-request body field; default "body"
+	MaxSubRequests int                `yaml:"max_sub_requests"` // cap on sub-requests evaluated per batch; default 64
 }
 
 // RequestPolicyRule is one operation safety rail. It matches on route (host /

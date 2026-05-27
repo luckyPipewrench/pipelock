@@ -216,6 +216,8 @@ func constNameForReason(r blockreason.Reason) string {
 		return "ContractInvalidPath"
 	case blockreason.ContractObservedOnly:
 		return "ContractObservedOnly"
+	case blockreason.RequestPolicyDeny:
+		return "RequestPolicyDeny"
 	}
 	return ""
 }

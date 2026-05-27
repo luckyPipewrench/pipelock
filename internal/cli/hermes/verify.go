@@ -18,14 +18,16 @@ import (
 
 // Coverage classifications reported by verify.
 const (
-	coverageFull    = "full"    // plugin present + proxy env injected
-	coveragePartial = "partial" // some coverage: plugin, env, or wrapped MCP servers — but not full
+	coverageFull    = "full"    // ready plugin + proxy env names present
+	coveragePartial = "partial" // some coverage: ready plugin, env, or wrapped MCP servers — but not full
 	coverageNone    = "none"    // none of plugin, env, or wrapped MCP servers
 )
 
 // verifyReport is the machine-readable result of `pipelock hermes verify`.
 type verifyReport struct {
 	PluginPresent     bool     `json:"plugin_present"`
+	ManifestPresent   bool     `json:"manifest_present"`
+	PluginEnabled     bool     `json:"plugin_enabled"`
 	PluginRoot        string   `json:"plugin_root"`
 	ConfigSidecar     string   `json:"config_sidecar,omitempty"`
 	PipelockConfig    string   `json:"pipelock_config,omitempty"`
@@ -67,12 +69,22 @@ func verifyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "verify",
 		Short: "Report pipelock's Hermes integration coverage",
-		Long: `Inspect ~/.hermes and report whether the pipelock plugin is installed,
-whether the hook binary is resolvable, which proxy env names are present in
-the terminal backend passthrough, and the resulting coverage classification.
+		Long: `Inspect ~/.hermes and report whether the pipelock plugin is installed
+AND will actually load and fire, whether the hook binary is resolvable, which
+proxy env names are present in the terminal backend passthrough, and the
+resulting coverage classification.
 
-Coverage is reported honestly: "full" means the plugin is installed and the
-proxy env names are present, NOT that terminal network egress is enforced.`,
+Coverage is reported honestly. The plugin counts as ready only when it can
+truly run under Hermes: the plugin files are present, the plugin.yaml manifest
+exists (Hermes skips manifest-less plugin dirs), the plugin is enabled in
+config.yaml plugins.enabled (standalone plugins are opt-in), the hook binary is
+resolvable, and the config sidecar is sane. File presence alone is NOT coverage.
+
+"full" describes the wiring (ready plugin + proxy env names present), NOT that
+terminal network egress is enforced. The plugin path is proven end-to-end
+against a live Hermes by 'make hermes-e2e'; terminal egress stays cooperative
+(it routes through pipelock only when the proxy env values are set in Hermes'
+environment).`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if err := opts.resolvePaths(); err != nil {
 				return err
@@ -100,6 +112,7 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 	r := verifyReport{
 		PluginRoot:      opts.PluginRoot,
 		PluginPresent:   pluginInstalled(opts.PluginRoot),
+		ManifestPresent: pluginManifestPresent(opts.PluginRoot),
 		TerminalBackend: "local",
 	}
 
@@ -120,6 +133,11 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 		envInjected = len(present) == len(proxyEnvNames)
 		r.MCPServerCount = mcpServerCount(cfg)
 		r.MCPServersWrapped = cfg.wrappedMCPServerCount()
+		// Hermes loads a standalone plugin only when its name is in
+		// plugins.enabled. A discovered-but-disabled plugin never fires, so
+		// enablement is a precondition for protective coverage on the plugin
+		// path — not an optional nicety.
+		r.PluginEnabled = cfg.pluginEnabled()
 	} else {
 		r.ProxyEnvMissing = append([]string(nil), proxyEnvNames...)
 	}
@@ -128,15 +146,23 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 		r.NoProxyWarning = fmt.Sprintf("NO_PROXY=%q is broad and may bypass pipelock for matching destinations", np)
 	}
 
-	pluginReady := r.PluginPresent && r.HookExecutable && sidecarOK
+	// pluginReady is true only when the plugin will actually load AND fire under
+	// Hermes: the Python files are present, the manifest exists (Hermes skips
+	// manifest-less dirs), the plugin is enabled in config (opt-in gating), the
+	// hook binary is resolvable, and the config sidecar is sane. Presence alone
+	// is NOT readiness — a manifest-less or disabled plugin is inert, and
+	// reporting "full" from file presence would be false protection.
+	pluginReady := r.PluginPresent && r.ManifestPresent && r.PluginEnabled &&
+		r.HookExecutable && sidecarOK
 	r.Coverage = classifyCoverage(pluginReady, envInjected, r.MCPServersWrapped > 0)
 	return r
 }
 
 // classifyCoverage maps plugin/env/mcp-wrap presence to a coverage label.
-// "full" requires the plugin (all surfaces) plus the proxy env names. Any one
-// of a ready plugin, injected env, or wrapped MCP servers (the mcp-only path)
-// is "partial" — real but not full-surface coverage.
+// "full" requires a ready plugin (present + manifest + enabled + hook
+// resolvable + sane sidecar) plus the proxy env names. Any one of a ready
+// plugin, injected env, or wrapped MCP servers (the mcp-only path) is
+// "partial" — real but not full-surface coverage.
 func classifyCoverage(pluginReady, envInjected, mcpWrapped bool) string {
 	switch {
 	case pluginReady && envInjected:
@@ -245,6 +271,8 @@ func emitVerifyJSON(cmd *cobra.Command, r verifyReport) error {
 func emitVerifyText(cmd *cobra.Command, r verifyReport) {
 	out := cmd.OutOrStdout()
 	_, _ = fmt.Fprintf(out, "Plugin installed: %v (%s)\n", r.PluginPresent, r.PluginRoot)
+	_, _ = fmt.Fprintf(out, "Manifest present: %v (%s)\n", r.ManifestPresent, manifestName)
+	_, _ = fmt.Fprintf(out, "Plugin enabled:   %v (%s.%s)\n", r.PluginEnabled, pluginsKey, enabledKey)
 	if r.ConfigSidecar != "" {
 		_, _ = fmt.Fprintf(out, "Config sidecar:   %s\n", r.ConfigSidecar)
 	}
@@ -274,5 +302,12 @@ func emitVerifyText(cmd *cobra.Command, r verifyReport) {
 	if r.ConfigWarning != "" {
 		_, _ = fmt.Fprintf(out, "WARNING: %s\n", r.ConfigWarning)
 	}
-	_, _ = fmt.Fprintf(out, "Coverage:         %s\n", r.Coverage)
+	if r.Coverage == coverageFull {
+		// "full" describes the wiring, not enforced terminal egress: the plugin
+		// hooks are proven, but terminal traffic only routes through pipelock
+		// when the proxy env VALUES are set in Hermes' environment.
+		_, _ = fmt.Fprintf(out, "Coverage:         %s (plugin hooks active; terminal egress is cooperative — see 'pipelock hermes install --help')\n", r.Coverage)
+	} else {
+		_, _ = fmt.Fprintf(out, "Coverage:         %s\n", r.Coverage)
+	}
 }

@@ -96,7 +96,11 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 	}
 	unwrapped, sidecarOps := unwrapHermesMCPServers(cmd, cfg)
 	removed := cfg.removeTerminalEnv()
-	if len(removed) > 0 || unwrapped > 0 {
+	disabled, err := cfg.disablePlugin()
+	if err != nil {
+		return err
+	}
+	if len(removed) > 0 || unwrapped > 0 || disabled {
 		if _, err := cfg.save(true); err != nil {
 			return err
 		}
@@ -116,6 +120,9 @@ func runRollback(cmd *cobra.Command, opts *rollbackOptions) error {
 		_, _ = fmt.Fprintf(out, "pipelock: removed %d proxy env name(s) from terminal passthrough\n", len(removed))
 	} else {
 		_, _ = fmt.Fprintln(out, "pipelock: no pipelock proxy env names found in config")
+	}
+	if disabled {
+		_, _ = fmt.Fprintf(out, "pipelock: removed plugin %q from %s.%s\n", pluginRegistryName, pluginsKey, enabledKey)
 	}
 	if unwrapped > 0 {
 		_, _ = fmt.Fprintf(out, "pipelock: unwrapped %d mcp server(s) in %s\n", unwrapped, opts.HermesConfig)

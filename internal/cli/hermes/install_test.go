@@ -62,6 +62,7 @@ func TestInstallCmd_FlagsAndUsage(t *testing.T) {
 			t.Fatalf("missing --%s flag", flag)
 		}
 	}
+	// Default is full (max coverage); mcp-only is the lighter opt-in.
 	if cmd.Flags().Lookup("mode").DefValue != ModeFull {
 		t.Fatalf("--mode default = %q, want %q", cmd.Flags().Lookup("mode").DefValue, ModeFull)
 	}
@@ -121,6 +122,140 @@ func TestRunInstall_FullModeWritesPluginAndEnv(t *testing.T) {
 	}
 	if got := len(cfg.terminalEnvPresent()); got != len(proxyEnvNames) {
 		t.Fatalf("env_passthrough has %d proxy names, want %d", got, len(proxyEnvNames))
+	}
+}
+
+func TestRunInstall_FullModeEnablesPluginAndWritesManifest(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+
+	cmd := installCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := runInstall(cmd, opts); err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+
+	// The plugin is opt-in: without this entry Hermes discovers it disabled and
+	// it never fires. Prove the install writes it.
+	cfg, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !cfg.pluginEnabled() {
+		t.Fatal("full install did not enable the plugin in plugins.enabled")
+	}
+	if !strings.Contains(out.String(), "enabled plugin") {
+		t.Fatalf("output missing enable line: %q", out.String())
+	}
+	// The manifest Hermes requires for discovery must be extracted too.
+	if !pluginManifestPresent(opts.PluginRoot) {
+		t.Fatal("plugin.yaml manifest missing after full install")
+	}
+	// Full coverage is honest about the one cooperative arm (terminal egress)
+	// without overclaiming enforced network isolation.
+	if !strings.Contains(out.String(), "coverage = full") || !strings.Contains(out.String(), "cooperative terminal") {
+		t.Fatalf("full install output missing honest coverage line: %q", out.String())
+	}
+}
+
+func TestRunInstall_FullModePreservesOtherEnabledPlugins(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	// Operator already enabled another plugin; full install must add pipelock
+	// without dropping it.
+	if err := os.WriteFile(opts.HermesConfig,
+		[]byte("plugins:\n  enabled:\n    - disk-cleanup\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	if err := runInstall(cmd, opts); err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+
+	cfg, err := loadHermesConfig(opts.HermesConfig)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !cfg.pluginEnabled() {
+		t.Fatal("pipelock not enabled after full install")
+	}
+	plugins := cfg.root[pluginsKey].(map[string]interface{})
+	if !toStringSet(plugins[enabledKey])["disk-cleanup"] {
+		t.Fatal("full install dropped the operator's pre-enabled plugin")
+	}
+}
+
+func TestRunInstall_FullModeMalformedPluginsSectionErrors(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	// A non-mapping plugins section must abort the install before touching the
+	// plugin tree or clobbering operator config we cannot parse.
+	if err := os.WriteFile(opts.HermesConfig,
+		[]byte("plugins:\n  - not-a-mapping\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	err := runInstall(cmd, opts)
+	if err == nil {
+		t.Fatal("full install did not error on a malformed plugins section")
+	}
+	if !strings.Contains(err.Error(), pluginsKey) {
+		t.Fatalf("error %q does not mention the plugins section", err.Error())
+	}
+	// The malformed config must be left exactly as the operator wrote it.
+	data, readErr := os.ReadFile(opts.HermesConfig) //nolint:gosec // under t.TempDir()
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if !strings.Contains(string(data), "not-a-mapping") {
+		t.Fatalf("install mutated a config it could not parse: %q", string(data))
+	}
+	if pluginInstalled(opts.PluginRoot) {
+		t.Fatal("install wrote plugin files after rejecting malformed plugin config")
+	}
+}
+
+func TestRunInstall_FullModeMalformedPluginsEnabledErrors(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	opts := fullOpts(tmp)
+	// A malformed plugins.enabled value must not be replaced, because doing so
+	// could disable operator-managed plugin config that we cannot preserve.
+	if err := os.WriteFile(opts.HermesConfig,
+		[]byte("plugins:\n  enabled: disk-cleanup\n"), 0o600); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	cmd := installCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	err := runInstall(cmd, opts)
+	if err == nil {
+		t.Fatal("full install did not error on malformed plugins.enabled")
+	}
+	if !strings.Contains(err.Error(), "plugins.enabled") {
+		t.Fatalf("error %q does not mention plugins.enabled", err.Error())
+	}
+	data, readErr := os.ReadFile(opts.HermesConfig) //nolint:gosec // under t.TempDir()
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if !strings.Contains(string(data), "enabled: disk-cleanup") {
+		t.Fatalf("install mutated malformed plugins.enabled: %q", string(data))
+	}
+	if pluginInstalled(opts.PluginRoot) {
+		t.Fatal("install wrote plugin files after rejecting malformed plugins.enabled")
 	}
 }
 

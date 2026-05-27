@@ -19,14 +19,22 @@ import (
 // Install mode constants.
 const (
 	// ModeFull installs the Python plugin (which self-registers all five
-	// hooks) and injects pipelock's proxy env names into the terminal
-	// backend. It does NOT also wire shell hooks: the plugin already covers
-	// every event, so adding shell hooks would double-scan each call.
+	// hooks), enables it in config.yaml plugins.enabled, and injects pipelock's
+	// proxy env names into the terminal backend. It does NOT also wire shell
+	// hooks: the plugin already covers every event, so adding shell hooks would
+	// double-scan each call.
+	//
+	// The full install-load-enable-block path is proven end-to-end against a
+	// live Hermes by `make hermes-e2e` (TestHermesLiveE2E). This is the default:
+	// an agent firewall should default to maximum coverage, and the plugin hooks
+	// (tool args, results, gateway) protect immediately on install. Terminal
+	// egress is the one cooperative arm (see the install help).
 	ModeFull = "full"
 	// ModeMCPOnly rewrites mcp_servers through `pipelock mcp proxy` (preserving
-	// auth headers via a 0o600 header sidecar) and skips the plugin. Labeled
-	// partial coverage: it sees MCP traffic only, not the terminal/file/
-	// browser/gateway surfaces the plugin covers.
+	// auth headers via a 0o600 header sidecar) and skips the plugin. This is the
+	// lighter opt-in: no Python plugin, no terminal env changes. Labeled partial
+	// coverage: it sees MCP traffic only, not the terminal/file/browser/gateway
+	// surfaces the plugin covers.
 	ModeMCPOnly = "mcp-only"
 )
 
@@ -102,24 +110,32 @@ func installCmd() *cobra.Command {
 		Short: "Install pipelock's Hermes integration",
 		Long: `Wire pipelock into the Hermes Agent at ~/.hermes.
 
-  --mode full (default)
+  --mode full (default, plugin-visible tool surfaces)
       Extract the Python plugin into ~/.hermes/plugins/pipelock/ (it
       self-registers pre_tool_call, transform_tool_result,
-      pre_gateway_dispatch, and session-lifecycle hooks) and inject
-      pipelock's proxy env names into the terminal backend's
-      env_passthrough so sandboxed tool execution can route through
-      pipelock. The plugin is the single integration path; shell hooks
-      are intentionally NOT wired to avoid double-scanning every event.
+      pre_gateway_dispatch, and session-lifecycle hooks), enable it in
+      config.yaml plugins.enabled, and inject pipelock's proxy env names into
+      the terminal backend's env_passthrough so sandboxed tool execution can
+      route through pipelock. The plugin is the single integration path; shell
+      hooks are intentionally NOT wired to avoid double-scanning every event.
 
-  --mode mcp-only
+      This is the default because the plugin sees what a network proxy cannot:
+      a terminal command's arguments before it runs, a file write's contents,
+      and a tool result before the model reads it. The plugin load-enable-block
+      path is proven end-to-end against a live Hermes by 'make hermes-e2e'. The
+      one cooperative caveat is terminal egress (below): pipelock only sees
+      terminal network traffic if the proxy env VALUES are also set in Hermes'
+      environment and the backend honors them.
+
+  --mode mcp-only (lighter opt-in)
       Rewrite ~/.hermes/config.yaml mcp_servers so each MCP server runs
       through 'pipelock mcp proxy'. Stdio servers (command/args) get their
       command wrapped; remote servers (url) are converted to a stdio proxy
       with --upstream. Auth headers on remote servers are preserved in a
       0600 header sidecar referenced via --header-file, so credential values
-      never appear in process argv. This does NOT install the plugin or wire
-      terminal env: it is partial coverage (MCP traffic only), not the
-      terminal/file/browser/gateway surfaces --mode full covers.
+      never appear in process argv. This is partial coverage (MCP traffic
+      only), not the terminal/file/browser/gateway surfaces the plugin covers.
+      No Python plugin, no terminal env changes.
 
 The install is idempotent: config.yaml is backed up to a .bak file and
 re-runs do not re-wrap already-wrapped servers or duplicate entries.
@@ -134,7 +150,7 @@ network isolation.`,
 	}
 
 	cmd.Flags().StringVar(&opts.Mode, "mode", ModeFull,
-		"install mode: full (plugin + terminal env) or mcp-only (wrap mcp_servers through pipelock; partial coverage)")
+		"install mode: full (default: plugin + terminal env, plugin-visible tool surfaces) or mcp-only (lighter: wrap mcp_servers through pipelock)")
 	cmd.Flags().StringVar(&opts.PluginRoot, "plugin-root", "",
 		"override the plugin install directory (default ~/.hermes/plugins/pipelock)")
 	cmd.Flags().StringVar(&opts.HermesConfig, "hermes-config", "",
@@ -325,15 +341,19 @@ func installFull(cmd *cobra.Command, opts *installOptions) error {
 	if err != nil {
 		return err
 	}
+
+	// Prepare config changes in memory first so malformed operator config is
+	// rejected before we touch the plugin directory. The config is saved only
+	// after the plugin files and sidecar have landed, so a filesystem failure
+	// cannot leave plugins.enabled pointing at an absent plugin.
 	addedEnv := cfg.injectTerminalEnv()
 	backend := cfg.backend()
-	var backupPath string
-	if len(addedEnv) > 0 {
-		var saveErr error
-		backupPath, saveErr = cfg.save(true)
-		if saveErr != nil {
-			return saveErr
-		}
+	// Enable the plugin in config.yaml. Standalone plugins are opt-in: Hermes
+	// loads ours only when "pipelock" is in plugins.enabled. Without this the
+	// installed plugin is discovered-but-disabled and never fires.
+	enabledNow, err := cfg.enablePlugin()
+	if err != nil {
+		return err
 	}
 
 	result, err := Install(PluginTarget{Root: opts.PluginRoot})
@@ -344,6 +364,15 @@ func installFull(cmd *cobra.Command, opts *installOptions) error {
 		return err
 	}
 
+	var backupPath string
+	if len(addedEnv) > 0 || enabledNow {
+		var saveErr error
+		backupPath, saveErr = cfg.save(true)
+		if saveErr != nil {
+			return saveErr
+		}
+	}
+
 	_, _ = fmt.Fprintf(out, "pipelock: hermes plugin installed at %s\n", result.Root)
 	_, _ = fmt.Fprintf(out, "pipelock: %d plugin files written\n", result.FilesWritten)
 	for _, backup := range result.BackupsCreated {
@@ -351,6 +380,11 @@ func installFull(cmd *cobra.Command, opts *installOptions) error {
 	}
 	if opts.PipelockConfig != "" {
 		_, _ = fmt.Fprintf(out, "pipelock: hook will use config %s\n", opts.PipelockConfig)
+	}
+	if enabledNow {
+		_, _ = fmt.Fprintf(out, "pipelock: enabled plugin %q in %s.%s\n", pluginRegistryName, pluginsKey, enabledKey)
+	} else {
+		_, _ = fmt.Fprintf(out, "pipelock: plugin %q already enabled in %s.%s\n", pluginRegistryName, pluginsKey, enabledKey)
 	}
 	_, _ = fmt.Fprintf(out, "pipelock: terminal backend %q\n", backend)
 	if len(addedEnv) > 0 {
@@ -361,7 +395,11 @@ func installFull(cmd *cobra.Command, opts *installOptions) error {
 	if backupPath != "" {
 		_, _ = fmt.Fprintf(out, "pipelock: backed up %s to %s\n", opts.HermesConfig, backupPath)
 	}
-	_, _ = fmt.Fprintln(out, "pipelock: coverage = full Hermes hooks + configured terminal proxy passthrough")
+	// The plugin path (tool args, tool results, gateway, sessions) is proven
+	// end-to-end against a live Hermes by `make hermes-e2e`. Terminal egress is
+	// the one cooperative arm: pipelock sees it only when the proxy env VALUES
+	// are set in Hermes' environment and the backend honors them.
+	_, _ = fmt.Fprintln(out, "pipelock: coverage = full Hermes plugin hooks + cooperative terminal proxy passthrough")
 	_, _ = fmt.Fprintln(out, "pipelock: set the proxy env VALUES (HTTPS_PROXY, NODE_EXTRA_CA_CERTS, ...) in Hermes' environment for terminal traffic to route through pipelock")
 	return nil
 }

@@ -1,0 +1,24 @@
+# Pipelock plugin manifest for Hermes Agent.
+#
+# Hermes' plugin loader (hermes_cli/plugins.py) skips any directory without a
+# plugin.yaml, so this file is mandatory for discovery. The plugin is a
+# standalone, opt-in plugin: Hermes loads it only when "pipelock" appears in
+# config.yaml plugins.enabled. `pipelock hermes install --mode full` writes that
+# entry; `pipelock hermes rollback` removes it.
+#
+# `name: pipelock` fixes the registry key Hermes matches against plugins.enabled
+# regardless of the install directory name. Do not hand-edit — re-run
+# `pipelock hermes install` to upgrade.
+name: pipelock
+kind: standalone
+version: "1.0"
+description: >-
+  Routes Hermes tool calls, tool results, and inbound gateway messages through
+  pipelock for DLP and prompt-injection scanning. Fail-closed.
+author: pipelock
+provides_hooks:
+  - pre_tool_call
+  - transform_tool_result
+  - pre_gateway_dispatch
+  - on_session_start
+  - on_session_end

@@ -829,6 +829,11 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 				return err
 			}
 		}
+		if r.Discriminator != nil {
+			if err := validateRequestPolicyDiscriminator(r.Name, r.Discriminator); err != nil {
+				return err
+			}
+		}
 		if rp.Enabled {
 			c.warnRequestPolicyVisibility(r, warnings)
 		}
@@ -917,6 +922,33 @@ func validateRequestPolicyGraphQL(rule string, g *RequestPolicyGraphQL) error {
 	return nil
 }
 
+// validateRequestPolicyDiscriminator validates and normalizes a rule's JSON
+// discriminator predicate. The field name and value patterns are trimmed in
+// place so the runtime predicate (which also trims) and validation agree;
+// surrounding whitespace would otherwise compile into a value regex and
+// silently under-match, weakening the rail. At least one value pattern is
+// required: a discriminator with no patterns can never match a string value.
+func validateRequestPolicyDiscriminator(rule string, d *RequestPolicyDiscriminator) error {
+	d.Field = strings.TrimSpace(d.Field)
+	if d.Field == "" {
+		return fmt.Errorf("request_policy rule %q discriminator field must be set", rule)
+	}
+	if len(d.ValuePatterns) == 0 {
+		return fmt.Errorf("request_policy rule %q discriminator must set value_patterns", rule)
+	}
+	for i, p := range d.ValuePatterns {
+		pat := strings.TrimSpace(p)
+		if pat == "" {
+			return fmt.Errorf("request_policy rule %q has empty discriminator value_pattern", rule)
+		}
+		if _, err := regexp.Compile(pat); err != nil {
+			return fmt.Errorf("request_policy rule %q has invalid discriminator value_pattern %q: %w", rule, p, err)
+		}
+		d.ValuePatterns[i] = pat
+	}
+	return nil
+}
+
 func validHTTPMethod(m string) bool {
 	switch m {
 	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
@@ -980,7 +1012,7 @@ func validateRequestPolicyFailureAction(field, action string) error {
 }
 
 func requestPolicyRuleNeedsInnerHTTP(r *RequestPolicyRule) bool {
-	if r.GraphQL != nil {
+	if r.GraphQL != nil || r.Discriminator != nil {
 		return true
 	}
 	return requestPolicyRouteNeedsInnerHTTP(r.Route)

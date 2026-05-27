@@ -262,6 +262,24 @@ func TestCanonicalPolicyHash_PolicyFieldsDoAffect(t *testing.T) {
 				c.ForwardProxy.SNIVerification = &f
 			},
 		},
+		{
+			// A request_policy discriminator predicate is policy: two
+			// configs differing only by it must produce different ph, or
+			// emitted receipts would not reflect the rail.
+			name: "request_policy discriminator rule added",
+			mut: func(c *Config) {
+				c.RequestPolicy.Enabled = true
+				c.RequestPolicy.Rules = []RequestPolicyRule{{
+					Name:   "json-destructive",
+					Action: ActionBlock,
+					Route:  RequestPolicyRoute{Hosts: []string{"api.example.com"}},
+					Discriminator: &RequestPolicyDiscriminator{
+						Field:         "action",
+						ValuePatterns: []string{"^delete"},
+					},
+				}}
+			},
+		},
 	}
 
 	for _, tc := range cases {

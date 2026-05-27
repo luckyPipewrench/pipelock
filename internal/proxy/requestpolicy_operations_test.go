@@ -258,3 +258,33 @@ func TestRequestPolicy_FetchGraphQLOverGET_Blocks(t *testing.T) {
 
 	assertRequestPolicyBlock(t, w)
 }
+
+func TestTopLevelDuplicateJSONKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"no duplicate", `{"a":1,"b":2}`, nil},
+		{"single duplicate", `{"a":1,"a":2}`, []string{"a"}},
+		{"triple counts once", `{"a":1,"a":2,"a":3}`, []string{"a"}},
+		{"two distinct duplicates", `{"a":1,"a":2,"b":3,"b":4}`, []string{"a", "b"}},
+		{"nested duplicate not counted", `{"a":{"x":1,"x":2},"b":2}`, nil},
+		{"duplicate alongside nested", `{"a":{"x":1},"a":{"x":2}}`, []string{"a"}},
+		{"non-object array", `[1,2,3]`, nil},
+		{"non-object scalar", `"hello"`, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := topLevelDuplicateJSONKeys([]byte(tt.body))
+			if len(got) != len(tt.want) {
+				t.Fatalf("dup keys = %v, want %v", got, tt.want)
+			}
+			for _, k := range tt.want {
+				if _, ok := got[k]; !ok {
+					t.Fatalf("expected duplicate key %q in %v", k, got)
+				}
+			}
+		})
+	}
+}

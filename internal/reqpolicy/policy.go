@@ -50,6 +50,18 @@ type RequestMeta struct {
 	// not match (fail-closed handling of parse errors / opaque requests is the
 	// caller's responsibility, driven by on_parse_error / on_opaque_operation).
 	Operations []RequestOperation
+	// JSONBody is the request body parsed as a generic JSON value, for
+	// discriminator-field predicates. JSONBodyParsed reports whether a body was
+	// read and parsed as valid JSON; a discriminator predicate is evaluated only
+	// when it is true (the caller drives the not-read / parse-error fail-closed
+	// cases via on_opaque_operation / on_parse_error, exactly as for GraphQL).
+	JSONBody       any
+	JSONBodyParsed bool
+	// JSONDupKeys is the set of top-level object keys that appeared more than
+	// once in the raw body. Go's JSON decoder keeps only the last value, but
+	// parsers disagree (first-wins vs last-wins), so a discriminator whose field
+	// is duplicated is unclassifiable and fails closed as opaque.
+	JSONDupKeys map[string]struct{}
 }
 
 // Decision is the outcome of evaluating request policy against a request.
@@ -85,6 +97,7 @@ type compiledRule struct {
 	shadow bool
 	compiledRoute
 	graphql *gqlPredicate
+	disc    *discPredicate
 }
 
 // Matcher holds the precompiled request_policy ruleset. Build one with
@@ -126,6 +139,10 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 		if err != nil {
 			return nil, fmt.Errorf("request_policy rule %q: invalid graphql predicate: %w", r.Name, err)
 		}
+		disc, err := compileDiscriminatorPredicate(r.Discriminator)
+		if err != nil {
+			return nil, fmt.Errorf("request_policy rule %q: invalid discriminator predicate: %w", r.Name, err)
+		}
 		m.rules = append(m.rules, compiledRule{
 			name:          r.Name,
 			action:        r.Action,
@@ -133,6 +150,7 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 			shadow:        r.Shadow,
 			compiledRoute: route,
 			graphql:       pred,
+			disc:          disc,
 		})
 	}
 	for i := range cfg.Batch {
@@ -223,10 +241,11 @@ func (m *Matcher) Evaluate(meta RequestMeta) Decision {
 	var best Decision
 	for i := range m.rules {
 		cr := &m.rules[i]
-		if !cr.matches(meta) {
+		action, matched := m.ruleDecision(cr, meta)
+		if !matched {
 			continue
 		}
-		cand := Decision{Action: cr.action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
+		cand := Decision{Action: action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
 		if betterDecision(cand, best) {
 			best = cand
 		}
@@ -234,33 +253,90 @@ func (m *Matcher) Evaluate(meta RequestMeta) Decision {
 	return best
 }
 
-// NeedsOperations reports whether any operation predicate route matches this
-// request. Transports use this to decide whether they must read/parse a body
-// independently of request_body_scanning.
-func (m *Matcher) NeedsOperations(meta RequestMeta) bool {
+// ruleDecision evaluates one rule against meta and returns the action to apply
+// and whether the rule fired. Route, GraphQL, and discriminator predicates
+// compose with AND: a rule with several predicates fires only when all match.
+// A discriminator that is present-but-unclassifiable (opaque) fires the
+// matcher's on_opaque_operation action instead of the rule's own action so an
+// ambiguous value type cannot slip past a deny rail; opaque=allow yields no
+// match. GraphQL parse-error / opaque handling stays the caller's job (it is
+// body-global, not per-rule), so this only matches inspectable GraphQL here.
+func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (string, bool) {
+	if !cr.routeMatches(meta) {
+		return "", false
+	}
+	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
+		return "", false
+	}
+	if cr.disc != nil {
+		switch cr.disc.eval(meta) {
+		case discNoMatch:
+			return "", false
+		case discOpaque:
+			if m.onOpaqueOperation == "" || m.onOpaqueOperation == config.ActionAllow {
+				return "", false
+			}
+			return m.onOpaqueOperation, true
+		case discMatch:
+			// fall through to the rule's own action
+		}
+	}
+	return cr.action, true
+}
+
+// BodyPredicateKind selects which body predicates an uninspectable evaluation
+// applies to. A request body that cannot be read at all blocks every body
+// predicate (PredAnyBody); a surface-specific parse failure or opaque request
+// blocks only that surface's predicates so a GraphQL parse error does not also
+// fail-close a discriminator rule on the same (validly JSON) body, and vice
+// versa.
+type BodyPredicateKind uint8
+
+const (
+	PredAnyBody BodyPredicateKind = iota
+	PredGraphQL
+	PredDiscriminator
+)
+
+func (cr *compiledRule) hasBodyPredicate(kind BodyPredicateKind) bool {
+	switch kind {
+	case PredGraphQL:
+		return cr.graphql != nil
+	case PredDiscriminator:
+		return cr.disc != nil
+	default:
+		return cr.graphql != nil || cr.disc != nil
+	}
+}
+
+// NeedsBodyPredicate reports whether any body-predicate rule (GraphQL or
+// discriminator) route-matches this request. Transports use this to decide
+// whether they must read/parse a body independently of request_body_scanning.
+func (m *Matcher) NeedsBodyPredicate(meta RequestMeta) bool {
 	if m == nil || !m.enabled {
 		return false
 	}
 	for i := range m.rules {
 		cr := &m.rules[i]
-		if cr.graphql != nil && cr.routeMatches(meta) {
+		if cr.hasBodyPredicate(PredAnyBody) && cr.routeMatches(meta) {
 			return true
 		}
 	}
 	return false
 }
 
-// EvaluateUninspectable returns the strictest route-matching operation rule
-// decision using action for parse-error or opaque-operation fail-closed cases.
-// A configured action=allow yields no decision.
-func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string) Decision {
+// EvaluateUninspectable returns the strictest route-matching body-predicate
+// decision using action for parse-error / opaque / unreadable fail-closed
+// cases, restricted to rules carrying a predicate of kind. A configured
+// action=allow yields no decision.
+func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string, kind BodyPredicateKind) Decision {
 	if m == nil || !m.enabled || action == "" || action == config.ActionAllow {
 		return Decision{}
 	}
 	var best Decision
 	for i := range m.rules {
 		cr := &m.rules[i]
-		if cr.graphql == nil || !cr.routeMatches(meta) {
+		if !cr.hasBodyPredicate(kind) || !cr.routeMatches(meta) {
 			continue
 		}
 		cand := Decision{Action: action, RuleName: cr.name, Reason: cr.reason, Shadow: cr.shadow}
@@ -306,16 +382,6 @@ func actionRank(a string) int {
 	default:
 		return 0
 	}
-}
-
-func (cr *compiledRule) matches(meta RequestMeta) bool {
-	if !cr.routeMatches(meta) {
-		return false
-	}
-	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
-		return false
-	}
-	return true
 }
 
 func (cr *compiledRoute) routeMatches(meta RequestMeta) bool {

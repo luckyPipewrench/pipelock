@@ -20,6 +20,7 @@ const (
 	TransportForward = "forward"
 	TransportConnect = "connect"
 	TransportWS      = "websocket"
+	TransportWSFrame = "websocket_frame" // per-message-frame request_policy operation evaluation
 	TransportMCP     = "mcp"
 	TransportScanAPI = "scan_api"
 	TransportReverse = "reverse"

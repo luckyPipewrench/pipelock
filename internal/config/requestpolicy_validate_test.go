@@ -323,3 +323,52 @@ func TestValidateRequestPolicy_GraphQL(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRequestPolicy_Discriminator(t *testing.T) {
+	t.Run("valid predicate trims field and patterns", func(t *testing.T) {
+		c := enabledPolicy(RequestPolicyRule{
+			Name:   "disc",
+			Action: ActionBlock,
+			Route:  RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
+			Discriminator: &RequestPolicyDiscriminator{
+				Field:         "  action  ",
+				ValuePatterns: []string{"  ^delete  "},
+			},
+		})
+		if _, err := c.ValidateWithWarnings(); err != nil {
+			t.Fatalf("valid discriminator predicate rejected: %v", err)
+		}
+		d := c.RequestPolicy.Rules[0].Discriminator
+		if d.Field != "action" {
+			t.Errorf("field not trimmed/persisted: %q", d.Field)
+		}
+		if d.ValuePatterns[0] != "^delete" {
+			t.Errorf("value_pattern not trimmed/persisted: %q", d.ValuePatterns[0])
+		}
+	})
+
+	tests := []struct {
+		name string
+		disc *RequestPolicyDiscriminator
+		want string
+	}{
+		{"empty field", &RequestPolicyDiscriminator{Field: "  ", ValuePatterns: []string{"x"}}, "discriminator field must be set"},
+		{"no value patterns", &RequestPolicyDiscriminator{Field: "action"}, "discriminator must set value_patterns"},
+		{"empty value pattern", &RequestPolicyDiscriminator{Field: "action", ValuePatterns: []string{"  "}}, "empty discriminator value_pattern"},
+		{"invalid value pattern", &RequestPolicyDiscriminator{Field: "action", ValuePatterns: []string{"("}}, "invalid discriminator value_pattern"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := enabledPolicy(RequestPolicyRule{
+				Name:          "disc",
+				Action:        ActionBlock,
+				Route:         RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
+				Discriminator: tc.disc,
+			})
+			_, err := c.ValidateWithWarnings()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}

@@ -53,6 +53,7 @@ type requestPolicyInput struct {
 	Host        string
 	Method      string // base HTTP method as seen on the wire
 	Path        string
+	Query       string // URL raw query, for GraphQL-over-GET operation extraction
 	ContentType string
 	Headers     http.Header // resolved for method-override detection
 	Body        []byte
@@ -207,7 +208,7 @@ func (p *Proxy) applyRequestPolicy(in requestPolicyInput) requestPolicyResult {
 		if !in.BodyRead {
 			d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation()))
 		} else {
-			ops, parseOK, opaque := reqpolicy.ExtractGraphQL(in.Body)
+			ops, parseOK, opaque := extractRequestPolicyOperations(in)
 			if !parseOK {
 				d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnParseError()))
 			} else {

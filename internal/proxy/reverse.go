@@ -654,14 +654,17 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// actual egress destination. targetURL is the canonical egress URL.
 		rpHost := rp.upstream.Hostname()
 		rpPath := r.URL.EscapedPath()
+		rpQuery := r.URL.RawQuery
 		if u, err := url.Parse(targetURL); err == nil {
 			rpHost = u.Hostname()
 			rpPath = u.EscapedPath()
+			rpQuery = u.RawQuery
 		}
 		rpInput := requestPolicyInput{
 			Host:        rpHost,
 			Method:      r.Method,
 			Path:        rpPath,
+			Query:       rpQuery,
 			ContentType: r.Header.Get(headerContentType),
 			Headers:     r.Header,
 			Body:        reverseBodyBytes,

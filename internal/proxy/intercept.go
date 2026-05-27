@@ -1147,6 +1147,7 @@ func newInterceptHandler(
 				Host:        r.URL.Hostname(),
 				Method:      r.Method,
 				Path:        r.URL.EscapedPath(),
+				Query:       r.URL.RawQuery,
 				ContentType: r.Header.Get(headerContentType),
 				Headers:     r.Header,
 				Body:        interceptBodyBytes,

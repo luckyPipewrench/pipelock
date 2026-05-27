@@ -1449,6 +1449,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		Host:        r.URL.Hostname(),
 		Method:      r.Method,
 		Path:        r.URL.EscapedPath(),
+		Query:       r.URL.RawQuery,
 		ContentType: r.Header.Get(headerContentType),
 		Headers:     r.Header,
 		Body:        forwardBodyBytes,

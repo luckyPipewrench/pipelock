@@ -3624,6 +3624,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Host:      parsed.Hostname(),
 		Method:    http.MethodGet,
 		Path:      parsed.EscapedPath(),
+		Query:     parsed.RawQuery,
 		BodyRead:  true,
 		Transport: TransportFetch,
 		Target:    displayURL,

@@ -583,6 +583,13 @@ func (s *Server) Start(ctx context.Context) error {
 		rpHandler.SetContractLoader(s.proxy.ContractLoaderPtr())
 		rpHandler.SetReloadLock(s.proxy.ReloadLock())
 		rpHandler.SetRedactionRuntimePtr(s.proxy.RedactionRuntimePtr())
+		// Submit profile dials through the SSRF-safe dial path (resolve +
+		// validate every IP against internal CIDRs before connecting),
+		// matching the fetch/forward transports. Generic reverse-proxy mode
+		// keeps the default dialer: the operator chose that upstream.
+		if cfg.ReverseProxy.Profile == config.ReverseProxyProfileSubmit {
+			rpHandler.SetSafeDialer(s.proxy.SafeDialer())
+		}
 
 		rpLn, lnErr := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ReverseProxy.Listen)
 		if lnErr != nil {

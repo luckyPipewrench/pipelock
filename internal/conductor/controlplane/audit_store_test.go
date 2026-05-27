@@ -175,6 +175,43 @@ func TestSQLiteAuditStoreGetMissingBatch(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditStorePrunesBatchesBeforeCutoff(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	oldBatch := signedAcceptedAuditBatch(t, identity, "audit-old", 10, 10, []byte(testAuditPayload), testNow.Add(-48*time.Hour))
+	recentBatch := signedAcceptedAuditBatch(t, identity, "audit-recent", 11, 11, []byte(testAuditPayload2), testNow.Add(-time.Hour))
+	if err := store.IngestAuditBatch(context.Background(), oldBatch); err != nil {
+		t.Fatalf("IngestAuditBatch(old) error = %v", err)
+	}
+	if err := store.IngestAuditBatch(context.Background(), recentBatch); err != nil {
+		t.Fatalf("IngestAuditBatch(recent) error = %v", err)
+	}
+
+	result, err := store.PruneAuditBatchesBefore(context.Background(), testNow.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("PruneAuditBatchesBefore() error = %v", err)
+	}
+	if result.Deleted != 1 || !result.Before.Equal(testNow.Add(-24*time.Hour)) {
+		t.Fatalf("prune result = %+v, want one deleted before cutoff", result)
+	}
+	if _, ok, err := store.GetAuditBatch(context.Background(), identity.OrgID, identity.FleetID, identity.InstanceID, oldBatch.Envelope.BatchID); err != nil || ok {
+		t.Fatalf("GetAuditBatch(old) ok=%v err=%v, want pruned", ok, err)
+	}
+	if _, ok, err := store.GetAuditBatch(context.Background(), identity.OrgID, identity.FleetID, identity.InstanceID, recentBatch.Envelope.BatchID); err != nil || !ok {
+		t.Fatalf("GetAuditBatch(recent) ok=%v err=%v, want retained", ok, err)
+	}
+
+	result, err = store.PruneAuditBatchesBefore(context.Background(), testNow.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("PruneAuditBatchesBefore(second) error = %v", err)
+	}
+	if result.Deleted != 0 {
+		t.Fatalf("second prune deleted = %d, want 0", result.Deleted)
+	}
+}
+
 func TestSQLiteAuditStoreRejectsNilContext(t *testing.T) {
 	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
 	defer func() { _ = store.Close() }()
@@ -192,6 +229,27 @@ func TestSQLiteAuditStoreRejectsNilContext(t *testing.T) {
 	}
 	if _, _, err := store.GetAuditBatch(nilCtx, batch.Identity.OrgID, batch.Identity.FleetID, batch.Identity.InstanceID, batch.Envelope.BatchID); !errors.Is(err, ErrAuditSinkRequired) {
 		t.Fatalf("GetAuditBatch(nil) error = %v, want ErrAuditSinkRequired", err)
+	}
+	if _, err := store.PruneAuditBatchesBefore(nilCtx, testNow); !errors.Is(err, ErrAuditSinkRequired) {
+		t.Fatalf("PruneAuditBatchesBefore(nil) error = %v, want ErrAuditSinkRequired", err)
+	}
+	var nilStore *SQLiteAuditStore
+	if _, err := nilStore.PruneAuditBatchesBefore(context.Background(), testNow); !errors.Is(err, ErrAuditSinkRequired) {
+		t.Fatalf("PruneAuditBatchesBefore(nil store) error = %v, want ErrAuditSinkRequired", err)
+	}
+	if _, err := store.PruneAuditBatchesBefore(context.Background(), time.Time{}); !errors.Is(err, ErrInvalidStoreRecord) {
+		t.Fatalf("PruneAuditBatchesBefore(zero cutoff) error = %v, want ErrInvalidStoreRecord", err)
+	}
+}
+
+func TestSQLiteAuditStorePruneReturnsExecError(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	_, err := store.PruneAuditBatchesBefore(context.Background(), testNow)
+	if err == nil || !strings.Contains(err.Error(), "prune conductor audit batches") {
+		t.Fatalf("PruneAuditBatchesBefore(closed) error = %v, want prune error", err)
 	}
 }
 

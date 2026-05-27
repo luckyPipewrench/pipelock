@@ -285,6 +285,7 @@ pipelock conductor serve \
   --trusted-control-key id=rollback-key-1,purpose=policy-bundle-rollback,file=/etc/pipelock/conductor/rollback.pub \
   --remote-kill-max-validity 72h \
   --rollback-max-validity 24h \
+  --audit-retention 2160h \
   --probe-listen 127.0.0.1:9092
 # Optional bootstrap fallback; every trusted audit key must include org=.
 # --trusted-audit-key id=audit-key-1,file=/etc/pipelock/conductor/audit-key.pub,org=org-main,fleet=prod
@@ -312,18 +313,20 @@ key. Optional `fleet=`/`instance=` narrow the scope further. Trusted control
 keys are required for emergency-control publication and are purpose-scoped to
 `remote-kill-signing` or `policy-bundle-rollback`; wrong-purpose signatures are
 rejected before storage. Conductor also rejects emergency-control messages whose
-validity windows exceed the configured maximums before storing them. Enrolled follower
-keys are resolved first by exact org/fleet/instance and key ID. Accepted audit
-batches are written to a
-local SQLite raw-evidence store with idempotency on `(org, fleet, instance,
+validity windows exceed the configured maximums before storing them. Enrolled
+follower keys are resolved first by exact org/fleet/instance and key ID.
+Accepted audit batches are written to a local SQLite raw-evidence store with
+idempotency on `(org, fleet, instance,
 batch_id)` and fork rejection on overlapping sequence ranges with divergent
 payload or segment-tail hashes. The storage directory is sensitive
 operator-controlled state. The MVP exposes
 `GET /api/v1/conductor/audit/batches` as an operator/admin metadata query
 endpoint; it requires audit-query authorization and at least `org_id`, returns
 metadata-only batch summaries, and does not export raw payload bytes. Raw
-export endpoints, retention policy, redacted indexing, and analytics remain
-later slices.
+payload export endpoints, redacted indexing/search, and analytics remain later
+slices. `--audit-retention` controls startup pruning for the local SQLite
+raw-evidence store; `0` keeps accepted rows until an operator removes or
+archives them.
 
 ### Bundle Envelope
 
@@ -597,8 +600,9 @@ audit-batch signature against the enrolled audit key for that identity, and
 only then hands the accepted batch to the configured audit sink. Static trusted
 audit keys remain available as a bootstrap fallback when no enrolled key matches
 the exact identity and key ID. The current runtime sink is a local SQLite
-raw-evidence store; redacted storage/search indexing, DLP-before-indexing, fork
-response workflow, and dashboard views are later slices.
+raw-evidence store. It supports startup retention pruning by `received_at` via
+`--audit-retention`; redacted storage/search indexing, fork response workflow,
+and dashboard views are later slices.
 
 `GET /api/v1/conductor/audit/batches` is an operator/admin API endpoint. It
 requires audit-query authorization, requires at least `org_id`, and returns
@@ -701,14 +705,27 @@ Controls:
 - No cross-fleet query expansion from untrusted event fields.
 - Reputation scoring for malformed, oversized, forked, or DLP-positive batches.
 
-Audit batches are also potential exfiltration channels. Conductor must scan for
-secrets before storing or indexing.
+Audit batches are also potential exfiltration channels. The current SQLite
+runtime sink stores accepted raw payloads as operator-controlled escrow and does
+not expose raw export or searchable indexes. Future export, indexing, or
+cross-fleet search paths must scan/redact before making payload-derived fields
+queryable or retrievable outside the raw-escrow boundary.
 
 ## Privacy and Storage
 
 Default indexed/queryable storage is redacted. The current local SQLite runtime
 store is the active raw-escrow path and must be treated as sensitive
-operator-controlled state until redacted storage/indexing lands.
+operator-controlled state until redacted storage/indexing lands. Operators can
+set `--audit-retention=<duration>` to prune SQLite rows whose `received_at`
+timestamp is older than the retention cutoff at process startup. The default
+`0` keeps raw escrow indefinitely. This is app-level deletion from the local
+store, not a WORM archive lifecycle.
+
+Retention pruning is destructive and truncates verifiable evidence continuity
+across the prune boundary. Retained batches remain signature-verifiable and
+internally chain-linked, but once earlier segments are pruned the local store
+can no longer prove continuity back to the chain origin. Operators who need
+full-history provenance must archive or retain the raw evidence before pruning.
 
 Storage classes:
 

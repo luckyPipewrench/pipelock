@@ -126,28 +126,49 @@ func NewReverseProxy(
 	// ErrorHandler returns a JSON error on upstream failures.
 	proxy.ErrorHandler = rp.errorHandler
 
-	// Signing transport: sits between httputil.ReverseProxy and a
-	// disable-compression base. Runs envelope injection + RFC 9421
-	// signing on the post-Director request so @target-uri matches the
-	// upstream URL the transport is actually about to dial. A nil
-	// envelope emitter short-circuits to the base transport.
-	//
-	// The base is a clone of http.DefaultTransport with
-	// DisableCompression: true so upstream Content-Encoding survives
-	// transparent-decompression stripping. Without this, the
-	// compressed-response guard in modifyResponse cannot fail-closed
-	// on gzip — Go auto-decompresses and removes the header before
-	// pipelock sees it. (external review C-2; same root cause as the forward
-	// transport fix in an earlier prerelease build.)
-	baseTransport := http.DefaultTransport.(*http.Transport).Clone()
-	baseTransport.DisableCompression = true
-	proxy.Transport = &reverseSigningRoundTripper{
-		base: baseTransport,
-		rp:   rp,
-	}
+	proxy.Transport = newReverseProxyTransport(rp, nil)
 
 	rp.proxy = proxy
 	return rp
+}
+
+// SetSafeDialer swaps the reverse-proxy transport's dial path for the
+// supplied SSRF-safe DialContext (typically Proxy.SafeDialer()). It must be
+// called before serving requests; it is not safe to call concurrently with
+// ServeHTTP because it replaces proxy.Transport.
+//
+// The submit profile uses this so outbound dials resolve DNS and validate
+// every resolved IP against internal CIDR blocks before connecting, closing
+// the DNS-rebinding / TOCTOU gap the cloned default dialer leaves open. The
+// rebuilt base preserves DisableCompression (so the compressed-response
+// fail-closed guard in modifyResponse keeps working) and re-wraps in the
+// signing round tripper so RFC 9421 @target-uri signing is unaffected.
+//
+// A nil dialer is a no-op: the handler keeps its default transport. This
+// keeps generic reverse-proxy mode (Profile == "") on the default dialer,
+// where the operator is presumed to have chosen the upstream already.
+func (rp *ReverseProxyHandler) SetSafeDialer(dial func(ctx context.Context, network, addr string) (net.Conn, error)) {
+	if dial == nil {
+		return
+	}
+	rp.proxy.Transport = newReverseProxyTransport(rp, dial)
+}
+
+// newReverseProxyTransport builds the signing transport that sits between
+// httputil.ReverseProxy and the base HTTP transport. The base always disables
+// transparent decompression so modifyResponse can fail closed on compressed
+// upstream responses instead of seeing Go's auto-decompressed body with the
+// Content-Encoding header stripped.
+func newReverseProxyTransport(rp *ReverseProxyHandler, dial func(ctx context.Context, network, addr string) (net.Conn, error)) http.RoundTripper {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.DisableCompression = true
+	if dial != nil {
+		base.DialContext = dial
+	}
+	return &reverseSigningRoundTripper{
+		base: base,
+		rp:   rp,
+	}
 }
 
 // SetEnvelopeEmitter sets the atomic pointer to the envelope emitter.

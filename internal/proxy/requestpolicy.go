@@ -174,19 +174,21 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	return requestPolicyResult{}
 }
 
-// requestPolicyReadBlocked maps a body-inspection failure (read error or
-// oversize) to the operator-configured on_parse_error action through the
-// standard decision flow, so a configured warn/allow is honored and the
-// decision is metered, audited, and receipted like any other match. The body
-// genuinely cannot be parsed, so it is treated as a parse error (default:
-// block). reason is logged as bounded audit context for the failure cause.
+// requestPolicyReadBlocked handles a request body that cannot be read or
+// exceeds the size limit. The bounded read has already consumed — and thus
+// destroyed — the body stream, so the request can no longer be forwarded
+// intact. It is therefore always blocked, never downgraded by a configured
+// on_parse_error: warn/allow (those apply only to a fully-read body that
+// fails to parse, which is still forwardable). The block is routed through the
+// shared finalizer so it is metered, audited, and receipted like any other
+// match. reason is logged as bounded audit context for the failure cause.
 func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) requestPolicyResult {
 	m := p.requestPolicyMatcher()
 	if m == nil {
 		return requestPolicyResult{}
 	}
 	p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, reason, 0)
-	d := p.evaluateRequestPolicyUninspectable(in, m.OnParseError())
+	d := p.evaluateRequestPolicyUninspectable(in, config.ActionBlock)
 	return p.finalizeRequestPolicyDecision(in, d)
 }
 

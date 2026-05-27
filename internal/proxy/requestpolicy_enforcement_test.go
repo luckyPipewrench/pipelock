@@ -260,11 +260,12 @@ func TestPrepareRequestPolicyBody_OversizeBlocks(t *testing.T) {
 	}
 }
 
-func TestPrepareRequestPolicyBody_OversizeHonorsOnParseErrorWarn(t *testing.T) {
+func TestPrepareRequestPolicyBody_OversizeAlwaysBlocks(t *testing.T) {
 	t.Parallel()
-	// With on_parse_error=warn, an oversize (uninspectable) operation body must
-	// forward, not block — the configured action is honored rather than an
-	// unconditional fail-closed block.
+	// An oversize body is destroyed by the bounded read and cannot be forwarded
+	// intact, so it must block even when on_parse_error is warn/allow. The
+	// configured on_parse_error downgrade applies only to a fully-read body
+	// that fails to parse, not to an unreadable/oversize one.
 	cfg := reqPolicyConfig(graphqlBlockRule())
 	cfg.RequestPolicy.OnParseError = config.ActionWarn
 	cfg.RequestBodyScanning.MaxBodyBytes = 8
@@ -281,8 +282,8 @@ func TestPrepareRequestPolicyBody_OversizeHonorsOnParseErrorWarn(t *testing.T) {
 		Transport:   TransportForward,
 		AuditCtx:    audit.LogContext{},
 	}
-	if res := p.prepareRequestPolicyBody(req, &in); res.Block {
-		t.Fatal("on_parse_error=warn must forward an oversize operation body, not block")
+	if res := p.prepareRequestPolicyBody(req, &in); !res.Block {
+		t.Fatal("an oversize operation body must block even with on_parse_error=warn (it cannot be forwarded intact)")
 	}
 }
 

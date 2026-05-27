@@ -123,7 +123,9 @@ const (
 	// operation-rails config (allow-by-default deny/warn rules over outbound
 	// API operations) is a policy-semantics change. The field is present but
 	// empty (disabled, no rules) in Defaults(), so it shifts the baseline hash.
-	goldenHashDefaults = "c591ad369bde2755f41825b90f2486503c0d314d76295402f7771b173ea80d60"
+	// Re-bumped for request_policy fail-closed parse/opaque-operation actions:
+	// these control whether unreadable GraphQL operations block, warn, or pass.
+	goldenHashDefaults = "344efdd038f53fc8e52fa972cdd0ace2af88810a7c511fe85cffa3ac2a2d8744"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -188,7 +190,9 @@ const (
 	// Re-bumped for the request_policy section: same rationale as
 	// goldenHashDefaults. The rich fixture omits request_policy, so the field
 	// is empty but still part of the canonical view; the hash shifts in lockstep.
-	goldenHashRichConfig = "36f684e7200b427c16c38e2dfeef3d7404760207b58bdfb9c2f191b1f4769a53"
+	// Re-bumped for request_policy fail-closed parse/opaque-operation actions:
+	// see goldenHashDefaults note above.
+	goldenHashRichConfig = "5862750fda898003193bbcfeff4f7077da4a09ef33e038db72c88fedb3eacc2a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

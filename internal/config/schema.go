@@ -235,21 +235,24 @@ type SandboxFilesystem struct {
 // composes with the learn-lock contract gate (a ratified allowlist) and with
 // DLP, and is neither. See the request-policy operation-rails design.
 type RequestPolicy struct {
-	Enabled bool                `yaml:"enabled"`
-	Rules   []RequestPolicyRule `yaml:"rules"`
+	Enabled           bool                `yaml:"enabled"`
+	OnParseError      string              `yaml:"on_parse_error"`      // block (default) | warn | allow
+	OnOpaqueOperation string              `yaml:"on_opaque_operation"` // block (default) | warn | allow
+	Rules             []RequestPolicyRule `yaml:"rules"`
 }
 
-// RequestPolicyRule is one operation safety rail. v1 matches on route only
-// (host / method / path / content type); GraphQL and JSON operation predicates
-// are reserved for later phases. Action is per-rule (block or warn) — there is
-// deliberately no section-level default_action knob, so the section can never
-// be configured into default-deny.
+// RequestPolicyRule is one operation safety rail. It matches on route (host /
+// method / path / content type) and, optionally, on a GraphQL operation
+// predicate. Action is per-rule (block or warn) — there is deliberately no
+// section-level default_action knob, so the section can never be configured
+// into default-deny.
 type RequestPolicyRule struct {
-	Name   string             `yaml:"name"`   // bounded, metric-label-safe identifier
-	Action string             `yaml:"action"` // block | warn
-	Shadow bool               `yaml:"shadow"` // log the would-be action, forward anyway
-	Route  RequestPolicyRoute `yaml:"route"`
-	Reason string             `yaml:"reason"` // operator-facing explanation (never logged with content)
+	Name    string                `yaml:"name"`   // bounded, metric-label-safe identifier
+	Action  string                `yaml:"action"` // block | warn
+	Shadow  bool                  `yaml:"shadow"` // log the would-be action, forward anyway
+	Route   RequestPolicyRoute    `yaml:"route"`
+	GraphQL *RequestPolicyGraphQL `yaml:"graphql,omitempty"` // optional GraphQL operation predicate
+	Reason  string                `yaml:"reason"`            // operator-facing explanation (never logged with content)
 }
 
 // RequestPolicyRoute selects which requests a rule applies to. An empty
@@ -262,6 +265,17 @@ type RequestPolicyRoute struct {
 	PathPrefixes []string `yaml:"path_prefixes"` // literal prefixes of the normalized path
 	PathPatterns []string `yaml:"path_patterns"` // RE2 patterns against the normalized path
 	ContentTypes []string `yaml:"content_types"` // media types (parameters stripped)
+}
+
+// RequestPolicyGraphQL is an optional operation predicate applied after the
+// route matches. A request matches the predicate when any extracted operation
+// satisfies it: the operation kind is in OperationTypes (when set) and one of
+// its resolved root field names matches a RootFieldPatterns regex (when set).
+// At least one of the two must be set. Matching evaluates every operation in a
+// document or batch, never just the first.
+type RequestPolicyGraphQL struct {
+	OperationTypes    []string `yaml:"operation_types"`     // query | mutation | subscription
+	RootFieldPatterns []string `yaml:"root_field_patterns"` // RE2 patterns against resolved root field names
 }
 
 // Config is the top-level Pipelock configuration.

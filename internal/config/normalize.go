@@ -272,6 +272,12 @@ func (c *Config) ApplyDefaults() {
 	if c.MCPToolPolicy.Enabled && c.MCPToolPolicy.Action == "" {
 		c.MCPToolPolicy.Action = ActionWarn
 	}
+	if c.RequestPolicy.OnParseError == "" {
+		c.RequestPolicy.OnParseError = ActionBlock
+	}
+	if c.RequestPolicy.OnOpaqueOperation == "" {
+		c.RequestPolicy.OnOpaqueOperation = ActionBlock
+	}
 	if c.ForwardProxy.MaxTunnelSeconds <= 0 {
 		c.ForwardProxy.MaxTunnelSeconds = 300
 	}

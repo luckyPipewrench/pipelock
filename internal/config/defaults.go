@@ -69,6 +69,10 @@ func Defaults() *Config {
 			IdleTimeoutSeconds:       300,
 			OriginPolicy:             OriginPolicyRewrite,
 		},
+		RequestPolicy: RequestPolicy{
+			OnParseError:      ActionBlock,
+			OnOpaqueOperation: ActionBlock,
+		},
 		DLP: DLP{
 			ScanEnv: true,
 			Patterns: []DLPPattern{

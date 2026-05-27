@@ -10,7 +10,12 @@ import (
 
 func enabledPolicy(rules ...RequestPolicyRule) *Config {
 	c := Defaults()
-	c.RequestPolicy = RequestPolicy{Enabled: true, Rules: rules}
+	c.RequestPolicy = RequestPolicy{
+		Enabled:           true,
+		OnParseError:      ActionBlock,
+		OnOpaqueOperation: ActionBlock,
+		Rules:             rules,
+	}
 	return c
 }
 
@@ -64,6 +69,24 @@ func TestValidateRequestPolicy_Errors(t *testing.T) {
 			want: "must be block or warn",
 		},
 		{
+			name: "invalid parse error action",
+			cfg: func() *Config {
+				c := enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"POST"}}})
+				c.RequestPolicy.OnParseError = "retry"
+				return c
+			}(),
+			want: "on_parse_error",
+		},
+		{
+			name: "invalid opaque operation action",
+			cfg: func() *Config {
+				c := enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Methods: []string{"POST"}}})
+				c.RequestPolicy.OnOpaqueOperation = "retry"
+				return c
+			}(),
+			want: "on_opaque_operation",
+		},
+		{
 			name: "no route constraint",
 			cfg:  enabledPolicy(RequestPolicyRule{Name: "r", Action: ActionBlock}),
 			want: "no route constraints",
@@ -112,19 +135,36 @@ func TestValidateRequestPolicy_Errors(t *testing.T) {
 func TestValidateRequestPolicy_DormantValidation(t *testing.T) {
 	c := Defaults()
 	c.RequestPolicy = RequestPolicy{
-		Enabled: false,
-		Rules:   []RequestPolicyRule{{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{PathPatterns: []string{"("}}}},
+		Enabled:           false,
+		OnParseError:      ActionBlock,
+		OnOpaqueOperation: ActionBlock,
+		Rules:             []RequestPolicyRule{{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{PathPatterns: []string{"("}}}},
 	}
 	if _, err := c.ValidateWithWarnings(); err == nil {
 		t.Fatal("disabled section with invalid regex should still error")
 	}
 }
 
+func TestApplyDefaults_RequestPolicyFailureActions(t *testing.T) {
+	c := Defaults()
+	c.RequestPolicy.OnParseError = ""
+	c.RequestPolicy.OnOpaqueOperation = ""
+	c.ApplyDefaults()
+	if c.RequestPolicy.OnParseError != ActionBlock {
+		t.Fatalf("OnParseError = %q, want %q", c.RequestPolicy.OnParseError, ActionBlock)
+	}
+	if c.RequestPolicy.OnOpaqueOperation != ActionBlock {
+		t.Fatalf("OnOpaqueOperation = %q, want %q", c.RequestPolicy.OnOpaqueOperation, ActionBlock)
+	}
+}
+
 func TestValidateRequestPolicy_DisabledEmitsNoVisibilityWarning(t *testing.T) {
 	c := Defaults() // tls_interception disabled by default
 	c.RequestPolicy = RequestPolicy{
-		Enabled: false,
-		Rules:   []RequestPolicyRule{{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Hosts: []string{"api.service.example.com"}, Methods: []string{"POST"}}}},
+		Enabled:           false,
+		OnParseError:      ActionBlock,
+		OnOpaqueOperation: ActionBlock,
+		Rules:             []RequestPolicyRule{{Name: "r", Action: ActionBlock, Route: RequestPolicyRoute{Hosts: []string{"api.service.example.com"}, Methods: []string{"POST"}}}},
 	}
 	warnings, err := c.ValidateWithWarnings()
 	if err != nil {
@@ -159,6 +199,21 @@ func TestWarnRequestPolicyVisibility(t *testing.T) {
 		}
 	})
 
+	t.Run("host-only graphql rule warns when tls interception off", func(t *testing.T) {
+		c := &Config{}
+		hostOnlyGraphQL := &RequestPolicyRule{
+			Name:    "r",
+			Action:  ActionBlock,
+			Route:   RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
+			GraphQL: &RequestPolicyGraphQL{OperationTypes: []string{"mutation"}},
+		}
+		var warnings []Warning
+		c.warnRequestPolicyVisibility(hostOnlyGraphQL, &warnings)
+		if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "tls_interception is disabled") {
+			t.Fatalf("want graphql tls-disabled warning, got %+v", warnings)
+		}
+	})
+
 	t.Run("passthrough host", func(t *testing.T) {
 		c := &Config{}
 		c.TLSInterception.Enabled = true
@@ -178,6 +233,23 @@ func TestWarnRequestPolicyVisibility(t *testing.T) {
 		c.warnRequestPolicyVisibility(rule, &warnings)
 		if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "passthrough_domains") {
 			t.Fatalf("want passthrough warning for wildcard match, got %+v", warnings)
+		}
+	})
+
+	t.Run("host-only graphql rule warns on passthrough host", func(t *testing.T) {
+		c := &Config{}
+		c.TLSInterception.Enabled = true
+		c.TLSInterception.PassthroughDomains = []string{"api.service.example.com"}
+		hostOnlyGraphQL := &RequestPolicyRule{
+			Name:    "r",
+			Action:  ActionBlock,
+			Route:   RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
+			GraphQL: &RequestPolicyGraphQL{RootFieldPatterns: []string{`(?i)delete`}},
+		}
+		var warnings []Warning
+		c.warnRequestPolicyVisibility(hostOnlyGraphQL, &warnings)
+		if len(warnings) != 1 || !strings.Contains(warnings[0].Message, "passthrough_domains") {
+			t.Fatalf("want graphql passthrough warning, got %+v", warnings)
 		}
 	})
 
@@ -201,4 +273,49 @@ func TestWarnRequestPolicyVisibility(t *testing.T) {
 			t.Fatalf("host-only rule is visible at CONNECT boundary and should not warn, got %+v", warnings)
 		}
 	})
+}
+
+func TestValidateRequestPolicy_GraphQL(t *testing.T) {
+	t.Run("valid predicate normalizes operation types", func(t *testing.T) {
+		c := enabledPolicy(RequestPolicyRule{
+			Name:   "gql",
+			Action: ActionBlock,
+			Route:  RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
+			GraphQL: &RequestPolicyGraphQL{
+				OperationTypes:    []string{"Mutation"},
+				RootFieldPatterns: []string{`(?i)delete`},
+			},
+		})
+		if _, err := c.ValidateWithWarnings(); err != nil {
+			t.Fatalf("valid graphql predicate rejected: %v", err)
+		}
+		if got := c.RequestPolicy.Rules[0].GraphQL.OperationTypes[0]; got != "mutation" {
+			t.Errorf("operation type not lowercased: %q", got)
+		}
+	})
+
+	tests := []struct {
+		name string
+		gql  *RequestPolicyGraphQL
+		want string
+	}{
+		{"empty predicate", &RequestPolicyGraphQL{}, "must set operation_types or root_field_patterns"},
+		{"bad operation type", &RequestPolicyGraphQL{OperationTypes: []string{"delete"}}, "must be query, mutation, or subscription"},
+		{"empty root field pattern", &RequestPolicyGraphQL{RootFieldPatterns: []string{"  "}}, "empty graphql root_field_pattern"},
+		{"invalid root field pattern", &RequestPolicyGraphQL{RootFieldPatterns: []string{"("}}, "invalid graphql root_field_pattern"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := enabledPolicy(RequestPolicyRule{
+				Name:    "gql",
+				Action:  ActionBlock,
+				Route:   RequestPolicyRoute{Hosts: []string{"api.service.example.com"}},
+				GraphQL: tc.gql,
+			})
+			_, err := c.ValidateWithWarnings()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
 }

@@ -44,6 +44,12 @@ type RequestMeta struct {
 	Method      string // effective HTTP method, uppercased
 	Path        string // normalized request path
 	ContentType string // media type only, lowercased, parameters stripped
+	// Operations are the request's extracted API operations (e.g. via
+	// ExtractGraphQL). A GraphQL rule predicate evaluates against these; an
+	// empty slice means no inspectable operations, so a GraphQL predicate does
+	// not match (fail-closed handling of parse errors / opaque requests is the
+	// caller's responsibility, driven by on_parse_error / on_opaque_operation).
+	Operations []RequestOperation
 }
 
 // Decision is the outcome of evaluating request policy against a request.
@@ -72,6 +78,7 @@ type compiledRule struct {
 	pathPrefixes []string
 	pathPatterns []*regexp.Regexp
 	contentTypes map[string]struct{}
+	graphql      *gqlPredicate
 }
 
 // Matcher holds the precompiled request_policy ruleset. Build one with
@@ -131,6 +138,11 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 				cr.contentTypes[NormalizeContentType(ct)] = struct{}{}
 			}
 		}
+		pred, err := compileGraphQLPredicate(r.GraphQL)
+		if err != nil {
+			return nil, fmt.Errorf("request_policy rule %q: invalid graphql predicate: %w", r.Name, err)
+		}
+		cr.graphql = pred
 		m.rules = append(m.rules, cr)
 	}
 	return m, nil
@@ -198,6 +210,9 @@ func (cr *compiledRule) matches(meta RequestMeta) bool {
 		if _, ok := cr.contentTypes[NormalizeContentType(meta.ContentType)]; !ok {
 			return false
 		}
+	}
+	if cr.graphql != nil && !cr.graphql.matches(meta.Operations) {
+		return false
 	}
 	return true
 }

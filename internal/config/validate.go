@@ -798,6 +798,12 @@ var validReqPolicyName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // will and will not actually get.
 func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 	rp := &c.RequestPolicy
+	if err := validateRequestPolicyFailureAction("on_parse_error", rp.OnParseError); err != nil {
+		return err
+	}
+	if err := validateRequestPolicyFailureAction("on_opaque_operation", rp.OnOpaqueOperation); err != nil {
+		return err
+	}
 	if rp.Enabled && len(rp.Rules) == 0 {
 		return fmt.Errorf("request_policy is enabled but has no rules; add rules or set enabled: false")
 	}
@@ -851,8 +857,39 @@ func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
 			}
 			route.ContentTypes[j] = normalized
 		}
+		if r.GraphQL != nil {
+			if err := validateRequestPolicyGraphQL(r.Name, r.GraphQL); err != nil {
+				return err
+			}
+		}
 		if rp.Enabled {
 			c.warnRequestPolicyVisibility(r, warnings)
+		}
+	}
+	return nil
+}
+
+// validateRequestPolicyGraphQL validates and normalizes a rule's GraphQL
+// operation predicate. Operation types are lowercased in place so the runtime
+// predicate (which also lowercases) and validation agree.
+func validateRequestPolicyGraphQL(rule string, g *RequestPolicyGraphQL) error {
+	if len(g.OperationTypes) == 0 && len(g.RootFieldPatterns) == 0 {
+		return fmt.Errorf("request_policy rule %q graphql predicate must set operation_types or root_field_patterns", rule)
+	}
+	for i, t := range g.OperationTypes {
+		switch norm := strings.ToLower(strings.TrimSpace(t)); norm {
+		case "query", "mutation", "subscription":
+			g.OperationTypes[i] = norm
+		default:
+			return fmt.Errorf("request_policy rule %q graphql operation_type %q must be query, mutation, or subscription", rule, t)
+		}
+	}
+	for _, p := range g.RootFieldPatterns {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("request_policy rule %q has empty graphql root_field_pattern", rule)
+		}
+		if _, err := regexp.Compile(p); err != nil {
+			return fmt.Errorf("request_policy rule %q has invalid graphql root_field_pattern %q: %w", rule, p, err)
 		}
 	}
 	return nil
@@ -882,14 +919,14 @@ func normalizeRequestPolicyContentType(ct string) string {
 // CONNECT boundary, so warnings are emitted only when a rule needs inner HTTP
 // metadata.
 func (c *Config) warnRequestPolicyVisibility(r *RequestPolicyRule, warnings *[]Warning) {
-	if !requestPolicyRouteNeedsInnerHTTP(r.Route) {
+	if !requestPolicyRuleNeedsInnerHTTP(r) {
 		return
 	}
 	if len(r.Route.Hosts) == 0 {
 		if !c.TLSInterception.Enabled {
 			*warnings = append(*warnings, Warning{
 				Field:   fmt.Sprintf("request_policy rule %q", r.Name),
-				Message: "has method/path/content-type constraints but no host constraint and tls_interception is disabled; pipelock cannot see inner HTTPS method/path/body on CONNECT - only the tunnel host/port are visible",
+				Message: "has method/path/content-type or operation constraints but no host constraint and tls_interception is disabled; pipelock cannot see inner HTTPS method/path/body on CONNECT - only the tunnel host/port are visible",
 			})
 		}
 		return
@@ -909,6 +946,22 @@ func (c *Config) warnRequestPolicyVisibility(r *RequestPolicyRule, warnings *[]W
 			})
 		}
 	}
+}
+
+func validateRequestPolicyFailureAction(field, action string) error {
+	switch action {
+	case ActionAllow, ActionWarn, ActionBlock:
+		return nil
+	default:
+		return fmt.Errorf("request_policy %s has invalid action %q: must be allow, warn, or block", field, action)
+	}
+}
+
+func requestPolicyRuleNeedsInnerHTTP(r *RequestPolicyRule) bool {
+	if r.GraphQL != nil {
+		return true
+	}
+	return requestPolicyRouteNeedsInnerHTTP(r.Route)
 }
 
 func requestPolicyRouteNeedsInnerHTTP(route RequestPolicyRoute) bool {

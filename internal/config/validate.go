@@ -127,6 +127,9 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateRequestBodyScanning(); err != nil {
 		return warnings, err
 	}
+	if err := c.validateRequestPolicy(&warnings); err != nil {
+		return warnings, err
+	}
 	if err := c.validateSeedPhraseDetection(); err != nil {
 		return warnings, err
 	}
@@ -780,6 +783,153 @@ func (c *Config) validateMCPToolPolicy() error {
 		}
 	}
 	return nil
+}
+
+// validReqPolicyName bounds request_policy rule names to a metric-label-safe
+// charset and length so they can be used as Prometheus label values without
+// unbounded-cardinality risk.
+var validReqPolicyName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// validateRequestPolicy validates the request_policy section. Rules are
+// validated even when the section is disabled (regexes compiled, enums
+// checked) so dormant bad config cannot activate silently on reload. Hosts and
+// methods are normalized in place. Visibility advisories are emitted only when
+// the section is enabled, because they describe what enforcement an operator
+// will and will not actually get.
+func (c *Config) validateRequestPolicy(warnings *[]Warning) error {
+	rp := &c.RequestPolicy
+	if rp.Enabled && len(rp.Rules) == 0 {
+		return fmt.Errorf("request_policy is enabled but has no rules; add rules or set enabled: false")
+	}
+	for i := range rp.Rules {
+		r := &rp.Rules[i]
+		if r.Name == "" {
+			return fmt.Errorf("request_policy rule %d missing name", i)
+		}
+		if !validReqPolicyName.MatchString(r.Name) {
+			return fmt.Errorf("request_policy rule %q: name must be 1-64 chars of [A-Za-z0-9_-] (it is used as a metric label)", r.Name)
+		}
+		switch r.Action {
+		case ActionBlock, ActionWarn:
+			// valid
+		default:
+			return fmt.Errorf("request_policy rule %q has invalid action %q: must be block or warn", r.Name, r.Action)
+		}
+		route := &r.Route
+		if len(route.Hosts) == 0 && len(route.Methods) == 0 &&
+			len(route.PathPrefixes) == 0 && len(route.PathPatterns) == 0 &&
+			len(route.ContentTypes) == 0 {
+			return fmt.Errorf("request_policy rule %q has no route constraints; set at least one of hosts/methods/path_prefixes/path_patterns/content_types", r.Name)
+		}
+		if err := ValidateTrustedDomains(route.Hosts, fmt.Sprintf("request_policy rule %q hosts", r.Name)); err != nil {
+			return err
+		}
+		for j, m := range route.Methods {
+			up := strings.ToUpper(strings.TrimSpace(m))
+			if !validHTTPMethod(up) {
+				return fmt.Errorf("request_policy rule %q method %q is not a valid HTTP method", r.Name, m)
+			}
+			route.Methods[j] = up
+		}
+		for _, p := range route.PathPatterns {
+			if strings.TrimSpace(p) == "" {
+				return fmt.Errorf("request_policy rule %q has empty path_pattern", r.Name)
+			}
+			if _, err := regexp.Compile(p); err != nil {
+				return fmt.Errorf("request_policy rule %q has invalid path_pattern %q: %w", r.Name, p, err)
+			}
+		}
+		for _, p := range route.PathPrefixes {
+			if strings.TrimSpace(p) == "" {
+				return fmt.Errorf("request_policy rule %q has empty path_prefix", r.Name)
+			}
+		}
+		for j, ct := range route.ContentTypes {
+			normalized := normalizeRequestPolicyContentType(ct)
+			if normalized == "" {
+				return fmt.Errorf("request_policy rule %q has empty content_type", r.Name)
+			}
+			route.ContentTypes[j] = normalized
+		}
+		if rp.Enabled {
+			c.warnRequestPolicyVisibility(r, warnings)
+		}
+	}
+	return nil
+}
+
+func validHTTPMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodConnect,
+		http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeRequestPolicyContentType(ct string) string {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(ct))
+}
+
+// warnRequestPolicyVisibility advises when a rule targets a host whose inner
+// HTTP method/path/body pipelock cannot see - TLS interception off, or the host
+// in passthrough_domains. Host-only tunnel rules are still enforceable at the
+// CONNECT boundary, so warnings are emitted only when a rule needs inner HTTP
+// metadata.
+func (c *Config) warnRequestPolicyVisibility(r *RequestPolicyRule, warnings *[]Warning) {
+	if !requestPolicyRouteNeedsInnerHTTP(r.Route) {
+		return
+	}
+	if len(r.Route.Hosts) == 0 {
+		if !c.TLSInterception.Enabled {
+			*warnings = append(*warnings, Warning{
+				Field:   fmt.Sprintf("request_policy rule %q", r.Name),
+				Message: "has method/path/content-type constraints but no host constraint and tls_interception is disabled; pipelock cannot see inner HTTPS method/path/body on CONNECT - only the tunnel host/port are visible",
+			})
+		}
+		return
+	}
+	for _, h := range r.Route.Hosts {
+		if !c.TLSInterception.Enabled {
+			*warnings = append(*warnings, Warning{
+				Field:   fmt.Sprintf("request_policy rule %q", r.Name),
+				Message: fmt.Sprintf("targets host %q but tls_interception is disabled; pipelock cannot see inner HTTPS method/path/body on CONNECT - only the tunnel host/port are visible", h),
+			})
+			continue
+		}
+		if hostMatchesPassthrough(h, c.TLSInterception.PassthroughDomains) {
+			*warnings = append(*warnings, Warning{
+				Field:   fmt.Sprintf("request_policy rule %q", r.Name),
+				Message: fmt.Sprintf("targets host %q which is in tls_interception.passthrough_domains; pipelock cannot see inner method/path/body for passthrough hosts - only host/port", h),
+			})
+		}
+	}
+}
+
+func requestPolicyRouteNeedsInnerHTTP(route RequestPolicyRoute) bool {
+	return len(route.Methods) > 0 ||
+		len(route.PathPrefixes) > 0 ||
+		len(route.PathPatterns) > 0 ||
+		len(route.ContentTypes) > 0
+}
+
+func hostMatchesPassthrough(host string, patterns []string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	for _, p := range patterns {
+		p = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(p), "."))
+		if p == host {
+			return true
+		}
+		if strings.HasPrefix(p, "*.") && (host == p[2:] || strings.HasSuffix(host, p[1:])) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Config) validateGitProtection() error {

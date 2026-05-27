@@ -53,6 +53,7 @@ func TestSeverityFor_FullVocabulary(t *testing.T) {
 		blockreason.EscalationLevel:        blockreason.SeverityCritical,
 		blockreason.SessionAnomaly:         blockreason.SeverityCritical,
 		blockreason.CrossRequestDeny:       blockreason.SeverityCritical,
+		blockreason.RequestPolicyDeny:      blockreason.SeverityCritical,
 	}
 	for r, want := range cases {
 		t.Run(string(r), func(t *testing.T) {
@@ -93,6 +94,7 @@ func TestRetryFor_FullVocabulary(t *testing.T) {
 		blockreason.NotEnabled:            blockreason.RetryPolicy,
 		blockreason.CompressedResponse:    blockreason.RetryPolicy,
 		blockreason.BrowserShieldOversize: blockreason.RetryPolicy,
+		blockreason.RequestPolicyDeny:     blockreason.RetryPolicy,
 		// none (default)
 		blockreason.DLPMatch:             blockreason.RetryNone,
 		blockreason.SSRFPrivateIP:        blockreason.RetryNone,

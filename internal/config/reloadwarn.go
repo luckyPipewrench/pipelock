@@ -513,6 +513,20 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// reverse_proxy.profile is startup-only: the listener binds once and the
+	// submit-profile SSRF-safe dialer is installed on the transport at init.
+	// A reload that flips the profile would leave the dial path stale (or
+	// leave safe dialing on after switching away), and reapplying it would
+	// race in-flight requests since it replaces the transport. Warn so the
+	// operator restarts rather than trusting a no-op reload. The listen/
+	// upstream addresses are already restart-only for the same reason.
+	if old.ReverseProxy.Profile != updated.ReverseProxy.Profile {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "reverse_proxy",
+			Message: "reverse_proxy.profile change requires restart — dial path and listener are fixed at startup, reload ignored",
+		})
+	}
+
 	// Media policy downgrades. Each toggle that weakens protection gets a
 	// dedicated warning so operators see the field-level cause of the
 	// downgrade rather than a generic "media_policy changed" message.

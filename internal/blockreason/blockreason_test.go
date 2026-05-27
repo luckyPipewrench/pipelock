@@ -14,6 +14,11 @@ import (
 // validULID is a 26-char Crockford-base32 string (no I, L, O, U).
 const validULID = "01J0GNYZ7XSQRTQ8FPYM5BHX2K"
 
+// validUUIDv7 is a canonical hyphenated UUIDv7 in the form receipt.NewActionID
+// emits. The receipt header accepts it so a block path can stamp the real
+// receipt action_id for agent-side correlation.
+const validUUIDv7 = "0190a3c4-1234-7abc-89ab-0123456789ab"
+
 func TestNew_AcceptsValidTriple(t *testing.T) {
 	t.Parallel()
 	info, err := New(DLPMatch, SeverityCritical, RetryNone)
@@ -134,6 +139,52 @@ func TestWithReceipt_AcceptsValidULID(t *testing.T) {
 	}
 	if got.Receipt != validULID {
 		t.Errorf("Receipt = %q, want %q", got.Receipt, validULID)
+	}
+}
+
+func TestWithReceipt_AcceptsValidUUIDv7(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	// Both the lowercase form receipt.NewActionID emits and an uppercase
+	// rendering are accepted (hex is case-insensitive).
+	for _, id := range []string{validUUIDv7, strings.ToUpper(validUUIDv7)} {
+		got, err := base.WithReceipt(id)
+		if err != nil {
+			t.Fatalf("WithReceipt(%q) error: %v", id, err)
+		}
+		if got.Receipt != id {
+			t.Errorf("Receipt = %q, want %q", got.Receipt, id)
+		}
+	}
+}
+
+func TestWithReceipt_RejectsMalformedUUIDv7(t *testing.T) {
+	t.Parallel()
+	base := MustNew(DLPMatch, SeverityCritical, RetryNone)
+	cases := []struct {
+		name    string
+		receipt string
+	}{
+		// 36 chars but hyphen displaced out of the 8-4-4-4-12 grouping.
+		{"hyphen wrong position", "0190a3c41-234-7abc-89ab-0123456789ab"},
+		// 36 chars but a body position carries a non-hex byte.
+		{"non-hex digit", "0190a3c4-1234-7abc-89ab-0123456789ag"},
+		// 36 chars of hex with no hyphens at all.
+		{"no hyphens", "0123456789abcdef0123456789abcdef0123"},
+		// Canonical UUID shape, but not the UUIDv7 version receipt.NewActionID emits.
+		{"wrong version", "0190a3c4-1234-4abc-89ab-0123456789ab"},
+		// Canonical UUIDv7 shape, but invalid RFC 4122 variant nibble.
+		{"wrong variant", "0190a3c4-1234-7abc-19ab-0123456789ab"},
+		// One char short of the canonical UUID length.
+		{"too short for uuid", validUUIDv7[:35]},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := base.WithReceipt(tc.receipt)
+			if !errors.Is(err, ErrInvalidReceipt) {
+				t.Errorf("WithReceipt(%q) error = %v, want wrap of ErrInvalidReceipt", tc.receipt, err)
+			}
+		})
 	}
 }
 
@@ -503,6 +554,9 @@ var specCanonicalPairs = map[Reason]struct {
 	ContractNonDefaultPort: {SeverityWarn, RetryNone},
 	ContractInvalidPath:    {SeverityWarn, RetryCanonicalize},
 	ContractObservedOnly:   {SeverityInfo, RetryNone},
+
+	// Request policy layer.
+	RequestPolicyDeny: {SeverityCritical, RetryPolicy},
 }
 
 // TestSpecCanonicalPairs_VocabularyCoverage asserts the test ground-truth

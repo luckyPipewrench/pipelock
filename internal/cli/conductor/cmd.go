@@ -48,6 +48,7 @@ type serveOptions struct {
 	trustedControlKeys  []string
 	remoteKillMaxTTL    time.Duration
 	rollbackMaxTTL      time.Duration
+	auditRetention      time.Duration
 	tlsCert             string
 	tlsKey              string
 	clientCA            string
@@ -104,6 +105,7 @@ func serveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&opts.publisherTokenFile, "publisher-token-file", "", "file containing bearer token required for policy publish requests")
 	cmd.Flags().StringVar(&opts.auditorTokenFile, "auditor-token-file", "", "file containing bearer token required for audit metadata query requests")
 	cmd.Flags().StringVar(&opts.adminTokenFile, "admin-token-file", "", "file containing bearer token required for Conductor admin requests")
+	cmd.Flags().DurationVar(&opts.auditRetention, "audit-retention", 0, "duration to keep SQLite audit evidence; older batches are pruned at startup (0 = keep forever)")
 	cmd.Flags().StringArrayVar(&opts.trustedAuditKeys, "trusted-audit-key", nil,
 		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path),org=ORG[,fleet=FLEET][,instance=INSTANCE]'; "+
 			"org= is required so a key cannot authenticate batches across orgs; repeatable")
@@ -215,6 +217,9 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err := validateServeTLSFlags(opts); err != nil {
 		return nil, nil, nil, err
 	}
+	if opts.auditRetention < 0 {
+		return nil, nil, nil, errors.New("--audit-retention must be non-negative")
+	}
 	publisherToken, err := loadTokenFile("--publisher-token-file", opts.publisherTokenFile)
 	if err != nil {
 		return nil, nil, nil, err
@@ -271,6 +276,14 @@ func buildServeHandler(ctx context.Context, opts serveOptions) (http.Handler, ht
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if opts.auditRetention > 0 {
+		result, err := auditStore.PruneAuditBatchesBefore(ctx, time.Now().UTC().Add(-opts.auditRetention))
+		if err != nil {
+			_ = auditStore.Close()
+			return nil, nil, nil, err
+		}
+		logAuditPruneResult(opts.logWriter, result)
+	}
 	enrollments, err := controlplane.OpenFileEnrollmentStore(filepath.Join(opts.storageDir, "enrollments.json"))
 	if err != nil {
 		return nil, nil, nil, err
@@ -320,6 +333,14 @@ func conductorRequestLogger(w io.Writer) *slog.Logger {
 		return nil
 	}
 	return slog.New(slog.NewJSONHandler(w, nil))
+}
+
+func logAuditPruneResult(w io.Writer, result controlplane.AuditPruneResult) {
+	if w == nil || result.Deleted == 0 {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "pipelock: conductor pruned %d audit batches received before %s\n",
+		result.Deleted, result.Before.Format(time.RFC3339))
 }
 
 func validateServeTLSFlags(opts serveOptions) error {

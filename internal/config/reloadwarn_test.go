@@ -129,3 +129,32 @@ func TestValidateReload_AgentTrustedDomainsAdded(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateReload_ReverseProxyProfileChanged(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+	updated.ReverseProxy.Profile = ReverseProxyProfileSubmit
+
+	warnings := ValidateReload(old, updated)
+	found := false
+	for _, w := range warnings {
+		if w.Field == "reverse_proxy" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected reload warning for reverse_proxy.profile change (restart-only)")
+	}
+}
+
+func TestValidateReload_ReverseProxyProfileUnchanged_NoWarning(t *testing.T) {
+	old := Defaults()
+	updated := Defaults()
+
+	for _, w := range ValidateReload(old, updated) {
+		if w.Field == "reverse_proxy" {
+			t.Fatalf("unexpected reverse_proxy warning when profile unchanged: %+v", w)
+		}
+	}
+}

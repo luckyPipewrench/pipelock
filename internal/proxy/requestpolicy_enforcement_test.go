@@ -252,8 +252,75 @@ func TestPrepareRequestPolicyBody_OversizeBlocks(t *testing.T) {
 	if !res.Block {
 		t.Fatal("oversize request_policy operation body should block fail-closed")
 	}
-	if !strings.Contains(res.Reason, "max_body_bytes") {
-		t.Fatalf("block reason = %q, want max_body_bytes", res.Reason)
+	// The client-facing reason is the matched rule's reason (the max_body_bytes
+	// detail is recorded in the audit log); the block honors on_parse_error,
+	// which defaults to block.
+	if res.Reason == "" {
+		t.Fatal("oversize block should carry the rule's operator-facing reason")
+	}
+}
+
+func TestPrepareRequestPolicyBody_OversizeHonorsOnParseErrorWarn(t *testing.T) {
+	t.Parallel()
+	// With on_parse_error=warn, an oversize (uninspectable) operation body must
+	// forward, not block — the configured action is honored rather than an
+	// unconditional fail-closed block.
+	cfg := reqPolicyConfig(graphqlBlockRule())
+	cfg.RequestPolicy.OnParseError = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 8
+	p := newTestProxyWithConfig(t, cfg)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+rpTestHost+"/graphql",
+		strings.NewReader(deleteRecordGraphQLBody()))
+	req.Header.Set("Content-Type", "application/json")
+	in := requestPolicyInput{
+		Host:        rpTestHost,
+		Method:      http.MethodPost,
+		Path:        "/graphql",
+		ContentType: "application/json",
+		Headers:     req.Header,
+		Transport:   TransportForward,
+		AuditCtx:    audit.LogContext{},
+	}
+	if res := p.prepareRequestPolicyBody(req, &in); res.Block {
+		t.Fatal("on_parse_error=warn must forward an oversize operation body, not block")
+	}
+}
+
+func TestRequestPolicy_FetchIgnoresInboundControlPlaneHeaders(t *testing.T) {
+	t.Parallel()
+	// A rule that would match a POST/application/json request must NOT fire on
+	// a /fetch call merely because the agent set those headers on the inbound
+	// control-plane request — the outbound fetch is always a plain GET.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream: %v", err)
+	}
+	rule := config.RequestPolicyRule{
+		Name:   rpRuleName,
+		Action: config.ActionBlock,
+		Route: config.RequestPolicyRoute{
+			Hosts:        []string{upstreamURL.Hostname()},
+			Methods:      []string{http.MethodPost},
+			ContentTypes: []string{"application/json"},
+		},
+		Reason: "dangerous operation requires operator approval",
+	}
+	p := newTestProxyWithConfig(t, reqPolicyConfig(rule))
+	handler := p.buildHandler(p.buildMux())
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(upstream.URL), nil)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-HTTP-Method-Override", http.MethodPost)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if got := w.Header().Get("X-Pipelock-Block-Reason"); got == "request_policy_deny" {
+		t.Fatal("inbound /fetch control-plane headers must not drive request_policy matching")
 	}
 }
 
@@ -525,9 +592,6 @@ func TestRequestPolicy_WebSocketHandshake_Blocks(t *testing.T) {
 
 func TestRequestPolicy_Reverse_Blocks(t *testing.T) {
 	t.Parallel()
-	cfg := reqPolicyConfig(blockRule(http.MethodDelete))
-	p := newTestProxyWithConfig(t, cfg)
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -537,6 +601,15 @@ func TestRequestPolicy_Reverse_Blocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse upstream: %v", err)
 	}
+	// The reverse proxy forwards to a fixed upstream, so request_policy matches
+	// the upstream (egress) host, not the inbound Host header.
+	rule := config.RequestPolicyRule{
+		Name:   rpRuleName,
+		Action: config.ActionBlock,
+		Route:  config.RequestPolicyRoute{Hosts: []string{upstreamURL.Hostname()}, Methods: []string{http.MethodDelete}},
+		Reason: "dangerous operation requires operator approval",
+	}
+	p := newTestProxyWithConfig(t, reqPolicyConfig(rule))
 	rpHandler := NewReverseProxy(upstreamURL, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
 	// Production wires this in server_lifecycle; a reverse handler without it
 	// would silently skip request_policy, so the test mirrors production.
@@ -553,10 +626,6 @@ func TestRequestPolicy_Reverse_Blocks(t *testing.T) {
 
 func TestRequestPolicy_ReverseGraphQL_BlocksWithBodyScanningDisabled(t *testing.T) {
 	t.Parallel()
-	cfg := reqPolicyConfig(graphqlBlockRule())
-	cfg.RequestBodyScanning.Enabled = false
-	p := newTestProxyWithConfig(t, cfg)
-
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -566,6 +635,25 @@ func TestRequestPolicy_ReverseGraphQL_BlocksWithBodyScanningDisabled(t *testing.
 	if err != nil {
 		t.Fatalf("parse upstream: %v", err)
 	}
+	// Rule scoped to the upstream (egress) host, mirroring real reverse traffic
+	// where the inbound URL carries no host.
+	rule := config.RequestPolicyRule{
+		Name:   rpRuleName,
+		Action: config.ActionBlock,
+		Route: config.RequestPolicyRoute{
+			Hosts:        []string{upstreamURL.Hostname()},
+			Methods:      []string{http.MethodPost},
+			ContentTypes: []string{"application/json"},
+		},
+		GraphQL: &config.RequestPolicyGraphQL{
+			OperationTypes:    []string{"mutation"},
+			RootFieldPatterns: []string{`^deleteRecord$`},
+		},
+		Reason: "dangerous operation requires operator approval",
+	}
+	cfg := reqPolicyConfig(rule)
+	cfg.RequestBodyScanning.Enabled = false
+	p := newTestProxyWithConfig(t, cfg)
 	rpHandler := NewReverseProxy(upstreamURL, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
 	rpHandler.SetRequestPolicyFn(p.ApplyRequestPolicy)
 	rpHandler.SetRequestPolicyPrepareFn(p.PrepareRequestPolicyBody)

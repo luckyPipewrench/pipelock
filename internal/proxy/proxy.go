@@ -3616,19 +3616,21 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block.
+	// The outbound fetch is always a fixed plain GET with pipelock's own
+	// headers; the agent's inbound /fetch control-plane headers (Content-Type,
+	// X-HTTP-Method-Override) never reach the upstream, so they must not drive
+	// request_policy matching. Leave Headers/ContentType unset.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
-		Host:        parsed.Hostname(),
-		Method:      http.MethodGet,
-		Path:        parsed.EscapedPath(),
-		ContentType: r.Header.Get(headerContentType),
-		Headers:     r.Header,
-		BodyRead:    true,
-		Transport:   TransportFetch,
-		Target:      displayURL,
-		RequestID:   requestID,
-		Agent:       agent,
-		AuditCtx:    actx,
-		Emit:        p.emitReceipt,
+		Host:      parsed.Hostname(),
+		Method:    http.MethodGet,
+		Path:      parsed.EscapedPath(),
+		BodyRead:  true,
+		Transport: TransportFetch,
+		Target:    displayURL,
+		RequestID: requestID,
+		Agent:     agent,
+		AuditCtx:  actx,
+		Emit:      p.emitReceipt,
 	}); rpRes.Block {
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
 		writeBlockedJSON(w, rpRes.Info, http.StatusForbidden, FetchResponse{

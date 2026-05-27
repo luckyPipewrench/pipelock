@@ -25,7 +25,9 @@ func (m *Metrics) registerRequestPolicyMetrics(reg *prometheus.Registry) {
 // the same as enforced ones — the shadow vs enforced distinction lives in the
 // audit log, not in metric cardinality.
 func (m *Metrics) RecordRequestPolicyDecision(rule, action string) {
-	if m == nil {
+	// Guard the counter vec too: a zero-value &Metrics{} (no registry) leaves
+	// it nil, and this helper is documented nil-safe.
+	if m == nil || m.requestPolicyDecisions == nil {
 		return
 	}
 	m.requestPolicyDecisions.WithLabelValues(rule, action).Inc()

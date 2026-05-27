@@ -648,10 +648,20 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// request_policy runs before the contract gate so a contract allow can
 	// never suppress an operation-policy block.
 	if rp.reqPolicyFn != nil {
+		// Evaluate against the rewritten upstream route, not the inbound URL:
+		// on the reverse path r.URL carries no host and omits the upstream
+		// base-path prefix, so host- and path-scoped rules would miss the
+		// actual egress destination. targetURL is the canonical egress URL.
+		rpHost := rp.upstream.Hostname()
+		rpPath := r.URL.EscapedPath()
+		if u, err := url.Parse(targetURL); err == nil {
+			rpHost = u.Hostname()
+			rpPath = u.EscapedPath()
+		}
 		rpInput := requestPolicyInput{
-			Host:        r.URL.Hostname(),
+			Host:        rpHost,
 			Method:      r.Method,
-			Path:        r.URL.EscapedPath(),
+			Path:        rpPath,
 			ContentType: r.Header.Get(headerContentType),
 			Headers:     r.Header,
 			Body:        reverseBodyBytes,

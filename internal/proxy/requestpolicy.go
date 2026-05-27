@@ -174,9 +174,20 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 	return requestPolicyResult{}
 }
 
+// requestPolicyReadBlocked maps a body-inspection failure (read error or
+// oversize) to the operator-configured on_parse_error action through the
+// standard decision flow, so a configured warn/allow is honored and the
+// decision is metered, audited, and receipted like any other match. The body
+// genuinely cannot be parsed, so it is treated as a parse error (default:
+// block). reason is logged as bounded audit context for the failure cause.
 func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) requestPolicyResult {
-	p.logger.LogBlocked(in.AuditCtx, blockLayerRequestPolicy, reason)
-	return requestPolicyResult{Block: true, Info: p.requestPolicyBlockInfo(""), Reason: reason}
+	m := p.requestPolicyMatcher()
+	if m == nil {
+		return requestPolicyResult{}
+	}
+	p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, reason, 0)
+	d := p.evaluateRequestPolicyUninspectable(in, m.OnParseError())
+	return p.finalizeRequestPolicyDecision(in, d)
 }
 
 // applyRequestPolicy evaluates request_policy for a request and acts on the
@@ -205,6 +216,16 @@ func (p *Proxy) applyRequestPolicy(in requestPolicyInput) requestPolicyResult {
 			}
 		}
 	}
+	return p.finalizeRequestPolicyDecision(in, d)
+}
+
+// finalizeRequestPolicyDecision records the decision metric and audit event for
+// a matched rule and, for an enforced block, emits a correlated receipt and
+// returns the block Info. A no-match, warn, or shadow decision returns
+// Block=false so the request forwards. Both the route/operation path and the
+// body-inspection-failure path funnel through here so every matched decision is
+// metered, audited, and receipted identically.
+func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy.Decision) requestPolicyResult {
 	if !d.Matched() {
 		return requestPolicyResult{}
 	}

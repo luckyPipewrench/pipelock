@@ -2562,6 +2562,21 @@ func (p *Proxy) ShieldEngine() *shield.Engine {
 	return p.shieldEngine
 }
 
+// SafeDialer exposes the SSRF-safe DialContext function used by the fetch
+// and forward proxies (resolves DNS, validates every resolved IP against
+// internal CIDR blocks before dialing). Returned function has the standard
+// http.Transport.DialContext signature so callers can plug it into a
+// *http.Transport.DialContext field.
+//
+// Used by the reverse proxy's submit profile to swap its cloned default
+// dialer for the same hardened dial path the agent-facing transports use.
+// Generic reverse-proxy mode (Profile == "") continues to dial via the
+// default transport because the operator is presumed to have already
+// chosen the upstream — the trust model differs.
+func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return p.ssrfSafeDialContext
+}
+
 // isShieldExempt checks whether a hostname is in the browser shield exempt list.
 // Uses scanner.MatchDomain so wildcard patterns ("*.example.com") work the same
 // way they do for the SSRF trusted-domain list, the response-scan exempt list,

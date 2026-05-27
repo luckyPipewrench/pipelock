@@ -60,6 +60,11 @@ type AuditBatchQuery struct {
 	Limit      int
 }
 
+type AuditPruneResult struct {
+	Deleted int64
+	Before  time.Time
+}
+
 func OpenSQLiteAuditStore(ctx context.Context, path string) (*SQLiteAuditStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("conductor audit store path is required")
@@ -420,6 +425,28 @@ func (s *SQLiteAuditStore) GetAuditBatch(ctx context.Context, orgID, fleetID, in
 		return AuditBatchSummary{}, false, err
 	}
 	return summary, true, nil
+}
+
+func (s *SQLiteAuditStore) PruneAuditBatchesBefore(ctx context.Context, before time.Time) (AuditPruneResult, error) {
+	if s == nil || s.db == nil {
+		return AuditPruneResult{}, ErrAuditSinkRequired
+	}
+	if ctx == nil {
+		return AuditPruneResult{}, fmt.Errorf("%w: context", ErrAuditSinkRequired)
+	}
+	if before.IsZero() {
+		return AuditPruneResult{}, fmt.Errorf("%w: audit retention cutoff", ErrInvalidStoreRecord)
+	}
+	cutoff := before.UTC()
+	result, err := s.db.ExecContext(ctx, `DELETE FROM audit_batches WHERE received_at < ?`, cutoff)
+	if err != nil {
+		return AuditPruneResult{}, fmt.Errorf("prune conductor audit batches: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return AuditPruneResult{}, fmt.Errorf("count pruned conductor audit batches: %w", err)
+	}
+	return AuditPruneResult{Deleted: deleted, Before: cutoff}, nil
 }
 
 type auditSummaryScanner interface {

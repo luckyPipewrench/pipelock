@@ -270,6 +270,81 @@ func TestRemoteKillApplierRestoresPersistedState(t *testing.T) {
 	}
 }
 
+func TestRemoteKillApplierRestorePersistedStateValidation(t *testing.T) {
+	var nilApplier *RemoteKillApplier
+	if err := nilApplier.RestorePersistedState(); err == nil || !strings.Contains(err.Error(), "applier required") {
+		t.Fatalf("RestorePersistedState(nil) error = %v, want applier required", err)
+	}
+	if err := (&RemoteKillApplier{StatePath: filepath.Join(t.TempDir(), "state.json")}).RestorePersistedState(); err == nil ||
+		!strings.Contains(err.Error(), "kill switch required") {
+		t.Fatalf("RestorePersistedState(no kill switch) error = %v, want kill switch required", err)
+	}
+	if err := (&RemoteKillApplier{KillSwitch: &captureKillSwitch{}}).RestorePersistedState(); !errors.Is(err, ErrRemoteKillStateRequired) {
+		t.Fatalf("RestorePersistedState(no state path) error = %v, want ErrRemoteKillStateRequired", err)
+	}
+	if err := (&RemoteKillApplier{
+		KillSwitch:        &captureKillSwitch{},
+		StatePath:         filepath.Join(t.TempDir(), "missing.json"),
+		DisableRemoteKill: true,
+	}).RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState(disabled) error = %v, want nil", err)
+	}
+	if err := (&RemoteKillApplier{
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  filepath.Join(t.TempDir(), "missing.json"),
+	}).RestorePersistedState(); err != nil {
+		t.Fatalf("RestorePersistedState(empty missing state) error = %v, want nil", err)
+	}
+
+	blockedPath := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blockedPath, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile(blocked path): %v", err)
+	}
+	if err := (&RemoteKillApplier{
+		KillSwitch: &captureKillSwitch{},
+		StatePath:  filepath.Join(blockedPath, "state.json"),
+	}).RestorePersistedState(); err == nil {
+		t.Fatal("RestorePersistedState(blocked path) error = nil, want read error")
+	}
+
+	for _, tc := range []struct {
+		name  string
+		state remoteKillState
+		want  string
+	}{
+		{
+			name: "invalid_state",
+			state: remoteKillState{
+				LastCounter:     1,
+				LastMessageHash: strings.Repeat("a", 64),
+				State:           conductor.KillSwitchState("paused"),
+			},
+			want: "invalid conductor remote kill persisted state",
+		},
+		{
+			name: "reason_too_long",
+			state: remoteKillState{
+				LastCounter:     1,
+				LastMessageHash: strings.Repeat("a", 64),
+				State:           conductor.KillSwitchActive,
+				Reason:          strings.Repeat("x", conductor.MaxReasonBytes+1),
+			},
+			want: "invalid conductor remote kill persisted reason",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statePath := filepath.Join(t.TempDir(), "state.json")
+			if err := writeRemoteKillState(statePath, tc.state); err != nil {
+				t.Fatalf("writeRemoteKillState: %v", err)
+			}
+			err := (&RemoteKillApplier{KillSwitch: &captureKillSwitch{}, StatePath: statePath}).RestorePersistedState()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("RestorePersistedState() error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRemoteKillApplierRejectsStaleCounter(t *testing.T) {
 	msg, resolver := signedRemoteKill(t, 9, conductor.KillSwitchActive)
 	statePath := filepath.Join(t.TempDir(), "state.json")

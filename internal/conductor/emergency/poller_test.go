@@ -4,10 +4,12 @@
 package emergency
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -111,6 +113,45 @@ func TestRemoteKillPollerRejectsBadResponses(t *testing.T) {
 	}
 }
 
+func TestNewRemoteKillPollerValidationAndDefaults(t *testing.T) {
+	applier := &RemoteKillApplier{}
+	client := &fakeRemoteKillClient{status: http.StatusNoContent}
+	poller, err := NewRemoteKillPoller(RemoteKillPollerConfig{
+		BaseURL: "https://conductor.example",
+		Client:  client,
+		Applier: applier,
+	})
+	if err != nil {
+		t.Fatalf("NewRemoteKillPoller(defaults) error = %v", err)
+	}
+	if poller.pollInterval != defaultRemoteKillPollInterval {
+		t.Fatalf("pollInterval = %s, want %s", poller.pollInterval, defaultRemoteKillPollInterval)
+	}
+	if poller.maxResponseBytes != defaultRemoteKillResponseBytes {
+		t.Fatalf("maxResponseBytes = %d, want %d", poller.maxResponseBytes, defaultRemoteKillResponseBytes)
+	}
+
+	tests := []struct {
+		name string
+		cfg  RemoteKillPollerConfig
+		want string
+	}{
+		{name: "nil_client", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Applier: applier}, want: "HTTP client"},
+		{name: "nil_applier", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client}, want: "applier"},
+		{name: "short_interval", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client, Applier: applier, PollInterval: time.Millisecond}, want: "poll interval"},
+		{name: "negative_max_response", cfg: RemoteKillPollerConfig{BaseURL: "https://conductor.example", Client: client, Applier: applier, MaxResponseBytes: -1}, want: "max response bytes"},
+		{name: "bad_url_parse", cfg: RemoteKillPollerConfig{BaseURL: "://bad", Client: client, Applier: applier}, want: "parse conductor remote kill base URL"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewRemoteKillPoller(tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewRemoteKillPoller() error = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRemoteKillPollerEndpointValidation(t *testing.T) {
 	msg, resolver := signedRemoteKill(t, 11, conductor.KillSwitchActive)
 	applier := &RemoteKillApplier{
@@ -155,6 +196,37 @@ func TestRemoteKillPollerEndpointValidation(t *testing.T) {
 				t.Fatal("NewRemoteKillPoller() error = nil, want error")
 			}
 		})
+	}
+}
+
+func TestRemoteKillPollerNilAndRequestErrors(t *testing.T) {
+	var nilPoller *RemoteKillPoller
+	if err := nilPoller.Run(t.Context()); !errors.Is(err, ErrRemoteKillPollerRequired) {
+		t.Fatalf("Run(nil) error = %v, want ErrRemoteKillPollerRequired", err)
+	}
+	if err := nilPoller.PollOnce(t.Context()); !errors.Is(err, ErrRemoteKillPollerRequired) {
+		t.Fatalf("PollOnce(nil) error = %v, want ErrRemoteKillPollerRequired", err)
+	}
+	poller := &RemoteKillPoller{
+		client:           &fakeRemoteKillClient{status: http.StatusNoContent},
+		applier:          &RemoteKillApplier{},
+		endpoint:         "http://[::1",
+		pollInterval:     time.Second,
+		maxResponseBytes: defaultRemoteKillResponseBytes,
+	}
+	if err := poller.PollOnce(t.Context()); err == nil || !strings.Contains(err.Error(), "create conductor remote kill poll request") {
+		t.Fatalf("PollOnce(bad endpoint) error = %v, want request creation error", err)
+	}
+}
+
+func TestRemoteKillPollerLogsErrors(t *testing.T) {
+	var logs bytes.Buffer
+	poller := &RemoteKillPoller{
+		logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	}
+	poller.logPollError(errors.New("boom"))
+	if !strings.Contains(logs.String(), "conductor_remote_kill_poll_error") || !strings.Contains(logs.String(), "boom") {
+		t.Fatalf("logs = %s, want poll error event", logs.String())
 	}
 }
 

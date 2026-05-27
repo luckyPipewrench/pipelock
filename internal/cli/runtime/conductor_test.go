@@ -284,12 +284,69 @@ func TestBuildConductorRemoteKillPollerHonorsDisableWithoutRoster(t *testing.T) 
 			PollInterval:          "30s",
 			HonorRemoteKillSwitch: false,
 		},
-	}, &testRuntimeKillSwitch{}, io.Discard)
+	}, &testRuntimeKillSwitch{}, nil)
 	if err != nil {
 		t.Fatalf("buildConductorRemoteKillPoller() error = %v", err)
 	}
 	if poller == nil {
 		t.Fatal("poller = nil, want disabled-mode poller for visible rejected messages")
+	}
+}
+
+func TestBuildConductorRemoteKillPollerRejectsInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	clientPEM, clientKeyPEM := testTLSClientCert(t)
+	caPath := filepath.Join(dir, "boss-ca.pem")
+	clientCertPath := filepath.Join(dir, "client.crt")
+	clientKeyPath := filepath.Join(dir, "client.key")
+	writePrivateTestFile(t, caPath, clientPEM)
+	writePrivateTestFile(t, clientCertPath, clientPEM)
+	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+	base := config.Conductor{
+		Enabled:                    true,
+		ConductorURL:               "https://conductor.example",
+		OrgID:                      "org-main",
+		FleetID:                    "prod",
+		InstanceID:                 "pl-prod-1",
+		TrustRosterPath:            filepath.Join(dir, "missing-roster.json"),
+		TrustRosterRootFingerprint: strings.Repeat("a", 64),
+		ServerCAFile:               caPath,
+		ClientCertPath:             clientCertPath,
+		ClientKeyPath:              clientKeyPath,
+		BundleCacheDir:             filepath.Join(dir, "bundles"),
+		PollInterval:               "30s",
+		HonorRemoteKillSwitch:      false,
+	}
+	tests := []struct {
+		name string
+		edit func(*config.Conductor)
+		want string
+	}{
+		{
+			name: "mtls_client_error",
+			edit: func(c *config.Conductor) { c.ClientCertPath = filepath.Join(dir, "missing-client.crt") },
+			want: "loading conductor mTLS client certificate",
+		},
+		{
+			name: "trust_resolver_error",
+			edit: func(c *config.Conductor) { c.HonorRemoteKillSwitch = true },
+			want: "loading conductor trust roster",
+		},
+		{
+			name: "poll_interval_error",
+			edit: func(c *config.Conductor) { c.PollInterval = "not-a-duration" },
+			want: "parsing conductor remote kill poll interval",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg)
+			_, err := buildConductorRemoteKillPoller(&config.Config{Conductor: cfg}, &testRuntimeKillSwitch{}, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("buildConductorRemoteKillPoller() error = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 

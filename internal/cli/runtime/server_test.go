@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -455,6 +457,17 @@ func TestNewServer_ResolveRuntimeRuns(t *testing.T) {
 	}
 }
 
+type serverRemoteKillNoopClient struct{}
+
+func (serverRemoteKillNoopClient) Do(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusNoContent,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
 // TestServer_StartShutdown verifies that Start blocks, Shutdown releases
 // it, and Start returns nil on clean shutdown. Uses an ephemeral listen
 // address so nothing conflicts with a developer's already-running
@@ -486,6 +499,46 @@ func TestServer_StartShutdown(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}
+
+func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = newServerTestFreePort(t)
+		o.ListenChanged = true
+	})
+	poller, err := emergency.NewRemoteKillPoller(emergency.RemoteKillPollerConfig{
+		BaseURL:      "https://conductor.example",
+		Client:       serverRemoteKillNoopClient{},
+		Applier:      &emergency.RemoteKillApplier{},
+		PollInterval: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewRemoteKillPoller: %v", err)
+	}
+	s.conductorRemoteKill = poller
+	s.cfg.Conductor.ConductorURL = "https://conductor.example"
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	waitForServerCancel(t, s)
+	waitForServerOutput(t, buf, "Conductor: remote kill polling enabled -> https://conductor.example")
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return within 5s of Shutdown")
 	}
 }
 

@@ -130,7 +130,10 @@ const (
 	// Bumped for fetch_proxy.monitoring.query_entropy_exclusions: per-host
 	// bypass for the query parameter entropy gate is a policy-semantic
 	// change. Empty by default but the field is part of the canonical view.
-	goldenHashDefaults = "0e2ec936eacfb25ff0a5051c3d0ff9cad76348a603ce5bb824a7f47d3dcc7b8b"
+	// (Corrected: the prior commit pinned a value that did not match the
+	// computed hash of Defaults(); CanonicalPolicyHash(Defaults()) is
+	// deterministic at the value below.)
+	goldenHashDefaults = "d4332b079f5d744571482d9cd566e5e957b33fb21f58fa0e41d34f5029d59cb5"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

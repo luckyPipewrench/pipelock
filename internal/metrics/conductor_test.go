@@ -1,5 +1,6 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package metrics
 
@@ -8,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 

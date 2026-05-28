@@ -1,9 +1,11 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package runtime
 
 import (
+	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -16,15 +18,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
-	"github.com/luckyPipewrench/pipelock/internal/conductor"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -64,7 +66,8 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	if s == nil {
 		return applycache.AppliedBundle{}, errors.New("nil runtime server")
 	}
-	if s.conductorApply == nil {
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	if cache == nil {
 		return applycache.AppliedBundle{}, applycache.ErrCacheRequired
 	}
 	// Serialize the whole stage -> reload -> activate sequence: the durable
@@ -79,7 +82,7 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 		return applycache.AppliedBundle{}, errors.New("runtime config unavailable")
 	}
 	boundary := applycache.Boundary{
-		Cache: s.conductorApply,
+		Cache: cache,
 		Identity: applycache.Identity{
 			OrgID:      cfg.Conductor.OrgID,
 			FleetID:    cfg.Conductor.FleetID,
@@ -288,9 +291,95 @@ func conductorServerName(rawBaseURL string) (string, error) {
 	return host, nil
 }
 
-func conductorRuntimeChanged(oldCfg, newCfg *config.Config) bool {
-	if oldCfg == nil || newCfg == nil {
-		return false
+// initConductorApplyAndAudit builds the apply cache and audit queue/transport
+// for the follower-side Conductor runtime. Stores opaque handles on the
+// Server so the producer setup that runs after the flight recorder is
+// constructed can pick them up without re-importing enterprise packages
+// into server.go.
+func (s *Server) initConductorApplyAndAudit(cfg *config.Config, m *metrics.Metrics) error {
+	cache, err := buildConductorApplyCache(cfg)
+	if err != nil {
+		return err
 	}
-	return !reflect.DeepEqual(oldCfg.Conductor, newCfg.Conductor)
+	if cache != nil {
+		s.conductorApply = cache
+	}
+	queue, transport, err := buildConductorAuditTransport(cfg, m)
+	if err != nil {
+		return err
+	}
+	if queue != nil {
+		s.conductorAuditQueue = queue
+	}
+	if transport != nil {
+		s.conductorAudit = transport
+	}
+	return nil
+}
+
+// initConductorRemoteKill wires the remote kill poller into the kill switch
+// controller. Separated from initConductorApplyAndAudit because the kill
+// switch is constructed between the two conductor setup phases.
+func (s *Server) initConductorRemoteKill(cfg *config.Config, ks *killswitch.Controller, stderr io.Writer) error {
+	poller, err := buildConductorRemoteKillPoller(cfg, ks, stderr)
+	if err != nil {
+		return err
+	}
+	if poller != nil {
+		s.conductorRemoteKill = poller
+	}
+	return nil
+}
+
+// initConductorProducer connects the durable audit queue to the flight
+// recorder via the audit producer. Runs only when initConductorApplyAndAudit
+// previously opened a queue (i.e. conductor.enabled is true).
+func (s *Server) initConductorProducer(cfg *config.Config, m *metrics.Metrics, recPrivKey ed25519.PrivateKey, stderr io.Writer) error {
+	queue, _ := s.conductorAuditQueue.(*auditbatcher.Queue)
+	if queue == nil {
+		return nil
+	}
+	if s.recorder == nil {
+		return errors.New("conductor audit producer requires flight recorder")
+	}
+	recPubKey, err := conductorRecorderPublicKey(recPrivKey)
+	if err != nil {
+		return err
+	}
+	// The flight-recorder signing key doubles as the audit-batch signer.
+	// Reuse is safe because the two signing schemes operate on disjoint
+	// byte sets: the recorder signs a bare 64-char hex chain hash, while
+	// the audit batch signs canonical JSON (`{...}`). No recorder signature
+	// can be replayed as a valid audit-batch signature or vice versa. Key
+	// ids stay separate (audit_signing_key_id vs recorder_key_id) so the
+	// sink-side roster can distinguish purpose.
+	producer, err := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
+		Queue:             queue,
+		Metrics:           m,
+		OrgID:             cfg.Conductor.OrgID,
+		FleetID:           cfg.Conductor.FleetID,
+		InstanceID:        cfg.Conductor.InstanceID,
+		AuditSignerKeyID:  cfg.Conductor.AuditSigningKeyID,
+		RecorderKeyID:     cfg.Conductor.RecorderKeyID,
+		AuditSigner:       recPrivKey,
+		RecorderPublicKey: recPubKey,
+	})
+	if err != nil {
+		return fmt.Errorf("creating conductor audit producer: %w", err)
+	}
+	s.conductorProducer = producer
+	s.recorder.SetObserver(producer)
+	_, _ = fmt.Fprintf(stderr, "  Conductor: audit producer enabled\n")
+	return nil
+}
+
+func conductorRecorderPublicKey(priv ed25519.PrivateKey) (ed25519.PublicKey, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return nil, errors.New("conductor audit producer requires flight recorder signing key")
+	}
+	pub, ok := priv.Public().(ed25519.PublicKey)
+	if !ok || len(pub) != ed25519.PublicKeySize {
+		return nil, errors.New("conductor audit producer requires recorder public key")
+	}
+	return pub, nil
 }

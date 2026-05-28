@@ -1,5 +1,6 @@
-// Copyright 2026 Josh Waldrep
-// SPDX-License-Identifier: Apache-2.0
+//go:build enterprise
+
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package runtime
 
@@ -17,7 +18,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -29,8 +29,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/conductor"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -460,7 +460,11 @@ func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
 	if applied.Bundle.BundleID != "bundle-1" || applied.ReloadedConfigHash == "" {
 		t.Fatalf("applied bundle = %q hash=%q, want bundle-1 with config hash", applied.Bundle.BundleID, applied.ReloadedConfigHash)
 	}
-	active, err := s.conductorApply.Active()
+	cache, _ := s.conductorApply.(*applycache.Cache)
+	if cache == nil {
+		t.Fatalf("conductorApply: want *applycache.Cache, got %T", s.conductorApply)
+	}
+	active, err := cache.Active()
 	if err != nil {
 		t.Fatalf("Active() error = %v", err)
 	}
@@ -766,49 +770,4 @@ func newTestTLSServer(t *testing.T) ([]byte, *httptest.Server) {
 	}
 	srv.StartTLS()
 	return caPEM, srv
-}
-
-// testTLSClientCert returns a self-signed client cert + key PEM pair. The cert
-// uses ECDSA P-256 to keep test setup cheap and reproducible.
-func testTLSClientCert(t *testing.T) ([]byte, []byte) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("ecdsa.GenerateKey() error = %v", err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: mustSerial(t),
-		Subject:      pkix.Name{CommonName: "pipelock-test-client"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatalf("CreateCertificate() error = %v", err)
-	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyBytes, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatalf("MarshalECPrivateKey() error = %v", err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
-	return certPEM, keyPEM
-}
-
-func mustSerial(t *testing.T) *big.Int {
-	t.Helper()
-	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
-	if err != nil {
-		t.Fatalf("rand.Int() error = %v", err)
-	}
-	return serial
-}
-
-func writePrivateTestFile(t *testing.T, path string, data []byte) {
-	t.Helper()
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatalf("WriteFile(%s) error = %v", path, err)
-	}
 }

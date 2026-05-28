@@ -17,9 +17,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/applycache"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/auditbatcher"
-	"github.com/luckyPipewrench/pipelock/internal/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -91,22 +88,31 @@ type Server struct {
 	cfg          *config.Config
 	bundleResult *rules.LoadResult
 
-	sentry              *plsentry.Client
-	logger              *audit.Logger
-	emitter             *emit.Emitter
-	scanner             *scanner.Scanner
-	metrics             *metrics.Metrics
-	killswitch          *killswitch.Controller
-	ksAPI               *killswitch.APIHandler
-	proxy               *proxy.Proxy
-	receiptEmitter      *receipt.Emitter
-	envelopeEmitter     *envelope.Emitter
-	captureWriter       *capture.Writer
-	recorder            *recorder.Recorder
-	conductorApply      *applycache.Cache
-	conductorAudit      *auditbatcher.Transport
-	conductorRemoteKill *emergency.RemoteKillPoller
-	conductorProducer   *auditbatcher.Producer
+	sentry          *plsentry.Client
+	logger          *audit.Logger
+	emitter         *emit.Emitter
+	scanner         *scanner.Scanner
+	metrics         *metrics.Metrics
+	killswitch      *killswitch.Controller
+	ksAPI           *killswitch.APIHandler
+	proxy           *proxy.Proxy
+	receiptEmitter  *receipt.Emitter
+	envelopeEmitter *envelope.Emitter
+	captureWriter   *capture.Writer
+	recorder        *recorder.Recorder
+	// conductorApply holds *applycache.Cache in the enterprise build (nil
+	// in the core build). Stored as any so server.go has no compile-time
+	// dependency on the enterprise conductor packages; the build-tagged
+	// ApplyConductorPolicyBundle type-asserts back to the concrete type.
+	conductorApply any
+	// conductorAuditQueue holds *auditbatcher.Queue in the enterprise
+	// build. The producer setup that runs after the flight recorder is
+	// constructed needs this handle; stash it on the server so the two
+	// build-tagged init methods can share state without touching server.go.
+	conductorAuditQueue any
+	conductorAudit      conductorRunner
+	conductorRemoteKill conductorRunner
+	conductorProducer   conductorCloser
 	approver            *hitl.Approver
 
 	// lastReloadHash / lastReloadAt dedup fsnotify + SIGHUP stacking
@@ -310,18 +316,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		cfg.LicenseID = lic.ID
 		cfg.LicenseExpiresAt = lic.ExpiresAt
 	}
-	conductorApply, conductorApplyErr := buildConductorApplyCache(cfg)
-	if conductorApplyErr != nil {
+	if err := s.initConductorApplyAndAudit(cfg, m); err != nil {
 		s.cleanup()
-		return nil, conductorApplyErr
+		return nil, err
 	}
-	s.conductorApply = conductorApply
-	conductorQueue, conductorAudit, conductorErr := buildConductorAuditTransport(cfg, m)
-	if conductorErr != nil {
-		s.cleanup()
-		return nil, conductorErr
-	}
-	s.conductorAudit = conductorAudit
 	sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})
@@ -333,12 +331,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	ksAPI := killswitch.NewAPIHandler(ks)
 	s.ksAPI = ksAPI
-	conductorRemoteKill, conductorRemoteKillErr := buildConductorRemoteKillPoller(cfg, ks, opts.Stderr)
-	if conductorRemoteKillErr != nil {
+	if err := s.initConductorRemoteKill(cfg, ks, opts.Stderr); err != nil {
 		s.cleanup()
-		return nil, conductorRemoteKillErr
+		return nil, err
 	}
-	s.conductorRemoteKill = conductorRemoteKill
 
 	var proxyOpts []proxy.Option
 	s.hasApprover = cfg.ResponseScanning.Action == config.ActionAsk
@@ -457,41 +453,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 		_, _ = fmt.Fprintf(opts.Stderr, "  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
 	}
-	if conductorQueue != nil {
-		if s.recorder == nil {
-			s.cleanup()
-			return nil, errors.New("conductor audit producer requires flight recorder")
-		}
-		recPubKey, keyErr := conductorRecorderPublicKey(recPrivKey)
-		if keyErr != nil {
-			s.cleanup()
-			return nil, keyErr
-		}
-		// The flight-recorder signing key doubles as the audit-batch
-		// signer. Reuse is safe because the two signing schemes operate on
-		// disjoint byte sets: the recorder signs a bare 64-char hex chain
-		// hash, while the audit batch signs canonical JSON (`{...}`). No
-		// recorder signature can be replayed as a valid audit-batch
-		// signature or vice versa. Key ids stay separate (audit_signing_key_id
-		// vs recorder_key_id) so the sink-side roster can distinguish purpose.
-		producer, producerErr := auditbatcher.NewProducer(auditbatcher.ProducerConfig{
-			Queue:             conductorQueue,
-			Metrics:           m,
-			OrgID:             cfg.Conductor.OrgID,
-			FleetID:           cfg.Conductor.FleetID,
-			InstanceID:        cfg.Conductor.InstanceID,
-			AuditSignerKeyID:  cfg.Conductor.AuditSigningKeyID,
-			RecorderKeyID:     cfg.Conductor.RecorderKeyID,
-			AuditSigner:       recPrivKey,
-			RecorderPublicKey: recPubKey,
-		})
-		if producerErr != nil {
-			s.cleanup()
-			return nil, fmt.Errorf("creating conductor audit producer: %w", producerErr)
-		}
-		s.conductorProducer = producer
-		s.recorder.SetObserver(producer)
-		_, _ = fmt.Fprintf(opts.Stderr, "  Conductor: audit producer enabled\n")
+	if err := s.initConductorProducer(cfg, m, recPrivKey, opts.Stderr); err != nil {
+		s.cleanup()
+		return nil, err
 	}
 
 	if cfg.MediationEnvelope.Enabled {
@@ -522,17 +486,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.refreshRuntimeState(nil, cfg, bundleResult, sc)
 
 	return s, nil
-}
-
-func conductorRecorderPublicKey(priv ed25519.PrivateKey) (ed25519.PublicKey, error) {
-	if len(priv) != ed25519.PrivateKeySize {
-		return nil, errors.New("conductor audit producer requires flight recorder signing key")
-	}
-	pub, ok := priv.Public().(ed25519.PublicKey)
-	if !ok || len(pub) != ed25519.PublicKeySize {
-		return nil, errors.New("conductor audit producer requires recorder public key")
-	}
-	return pub, nil
 }
 
 // Shutdown cancels Start's internal context so the serve loop unblocks.

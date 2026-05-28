@@ -9,6 +9,11 @@ enterprise control plane for Pipelock fleets. It covers the conductor plane
 that distributes signed policy bundles to follower instances and the audit sink
 plane that ingests signed evidence from those instances.
 
+Conductor server commands and follower wiring are present only in enterprise
+builds. Core builds still parse `conductor` config so reload guards can preserve
+restart-only state, but `conductor.enabled: true` fails closed without the
+enterprise build tag.
+
 The architecture shape is:
 
 ```text
@@ -92,7 +97,7 @@ wrong purpose.
 | `enrollment-token-signing` | one-shot enrollment token minting | no |
 
 Wire form is lowercase-hyphenated. See `internal/signing/key_purpose.go` for the
-canonical KeyPurpose constants and `internal/conductor/messages.go` for use.
+canonical KeyPurpose constants and `enterprise/conductor/messages.go` for use.
 
 Threshold means m-of-n approval with m >= 2. The MVP may implement this as two
 independent Ed25519 signatures over the same canonical preimage, but the schema
@@ -410,7 +415,7 @@ Remote kill is separate from policy bundles.
 ```
 
 `state` is `"active"` or `"inactive"` (see `KillSwitchState` in
-`internal/conductor/messages.go`). `reason` is capped at `MaxReasonBytes` and
+`enterprise/conductor/messages.go`). `reason` is capped at `MaxReasonBytes` and
 must not contain control characters.
 
 Follower behavior:
@@ -575,7 +580,7 @@ explicit drop accounting.
 Implement a peer package:
 
 ```text
-internal/conductor/auditbatcher
+enterprise/conductor/auditbatcher
 ```
 
 Responsibilities:

@@ -476,9 +476,18 @@ func sortedBodyTexts(texts []string) []string {
 }
 
 // applyRedaction is the pre-DLP content-transformation step. JSON bodies are
-// detected by declared media type or a valid JSON sniff. Operator-allowlisted
-// non-JSON bodies fall back to raw-text rewriting instead of passing through
-// unchanged. A fail-closed gate returns *redact.BlockError.
+// detected by declared media type or a valid JSON sniff and rewritten field-
+// by-field. Non-JSON bodies fail closed unless the request host (or a
+// configured route) appears on redaction.allowlist_unparseable, in which case
+// the body is forwarded UNMODIFIED. The passthrough is what makes OAuth token
+// exchanges work for hosts where the operator has declared the body trusted:
+// a form-urlencoded client_secret like Jobber's 64-hex value would otherwise
+// trip the broad hash-sha256 class matcher and be rewritten to a placeholder,
+// which the upstream then rejects as "client_id and secret do not match."
+// (Historical note: the legacy raw-text fallback used to apply class matchers
+// to allowlisted non-JSON bodies; that contract violated the operator-visible
+// promise of the allowlist and silently mangled OAuth credentials in transit.
+// The fail-closed gate for non-JSON on non-allowlisted hosts is unchanged.)
 func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
 	if bodyIsJSONForRedaction(buf, req.ContentType) {
 		rewritten, report, err := redact.RewriteRequestJSON(buf, req.RedactMatcher, redact.NewRedactor(), req.RedactLimits, redact.RequestMetadata{
@@ -497,7 +506,16 @@ func applyRedaction(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, er
 			Detail: fmt.Sprintf("redaction enabled but body Content-Type %q is not JSON and request host %q/path %q is not allowed by redaction.allowlist_unparseable or redaction.allowlist_unparseable_routes", req.ContentType, req.Host, req.Path),
 		}
 	}
-	return rewriteRawTextBody(buf, req)
+	// Host is on allowlist_unparseable (or a matching route): pass the body
+	// to the upstream byte-for-byte. Body DLP scanning still runs on the
+	// downstream extraction path so operator-defined block/warn rules can
+	// still fire on outbound leaks; what we drop here is only the silent
+	// class-matcher rewrite that produced credential-mangling behavior.
+	return buf, &redact.Report{
+		Applied:  false,
+		Provider: redact.ProviderUnparseableAllowed,
+		Parser:   redact.ParserUnparseableAllowed,
+	}, nil
 }
 
 func bodyIsJSONForRedaction(buf []byte, contentType string) bool {
@@ -505,61 +523,6 @@ func bodyIsJSONForRedaction(buf []byte, contentType string) bool {
 		return true
 	}
 	return json.Valid(bytes.TrimSpace(buf))
-}
-
-func rewriteRawTextBody(buf []byte, req BodyScanRequest) ([]byte, *redact.Report, error) {
-	if req.RedactMatcher == nil {
-		return nil, nil, &redact.BlockError{
-			Reason: redact.ReasonInternalError,
-			Detail: "redaction matcher unavailable for raw-text fallback",
-		}
-	}
-	lim := req.RedactLimits
-	if lim.MaxBodyBytes <= 0 {
-		lim.MaxBodyBytes = redact.DefaultMaxBodyBytes
-	}
-	if lim.MaxRedactionsPerRequest <= 0 {
-		lim.MaxRedactionsPerRequest = redact.DefaultMaxRedactions
-	}
-	if lim.MaxBodyBytes > 0 && len(buf) > lim.MaxBodyBytes {
-		return nil, nil, &redact.BlockError{Reason: redact.ReasonBodyTooLarge}
-	}
-
-	body := string(buf)
-	matches := req.RedactMatcher.Scan(body)
-	if lim.MaxRedactionsPerRequest > 0 && countUniqueRawTextMatches(matches) > lim.MaxRedactionsPerRequest {
-		return nil, nil, &redact.BlockError{Reason: redact.ReasonOverflow}
-	}
-	redactor := redact.NewRedactor()
-	rewritten := redact.RewriteString(body, matches, redactor)
-	return []byte(rewritten), &redact.Report{
-		Applied:         true,
-		Provider:        redact.ProviderGenericRawText,
-		Parser:          redact.ParserRawText,
-		TotalRedactions: redactor.Total(),
-		ByClass:         redactor.ByClass(),
-	}, nil
-}
-
-func countUniqueRawTextMatches(matches []redact.Match) int {
-	if len(matches) == 0 {
-		return 0
-	}
-	seen := make(map[redact.Class]map[string]struct{})
-	total := 0
-	for _, match := range matches {
-		byOriginal, ok := seen[match.Class]
-		if !ok {
-			byOriginal = make(map[string]struct{})
-			seen[match.Class] = byOriginal
-		}
-		if _, ok := byOriginal[match.Original]; ok {
-			continue
-		}
-		byOriginal[match.Original] = struct{}{}
-		total++
-	}
-	return total
 }
 
 func unparseableBodyAllowlisted(req BodyScanRequest) bool {

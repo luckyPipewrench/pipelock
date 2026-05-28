@@ -26,11 +26,11 @@ type redactionRuntime struct {
 	allowlistUnparseableRoutes []redact.UnparseableRouteSpec
 	providers                  *redact.ProviderRegistry
 	configKey                  string
-	required                   bool
-}
-
-func (p *Proxy) buildRedactionRuntime(cfg *config.Config) (*redactionRuntime, error) {
-	return p.buildRedactionRuntimeWithScanner(cfg, p.scannerPtr.Load())
+	// previous keeps the last matching snapshot available during reload
+	// publication, so old cfg/scanner request snapshots do not spuriously
+	// fail closed after the new runtime is staged.
+	previous *redactionRuntime
+	required bool
 }
 
 func (p *Proxy) buildRedactionRuntimeWithScanner(cfg *config.Config, sc *scanner.Scanner) (*redactionRuntime, error) {
@@ -47,7 +47,7 @@ func (p *Proxy) buildRedactionRuntimeWithScanner(cfg *config.Config, sc *scanner
 	}
 	allowlist := append([]string(nil), cfg.Redaction.AllowlistUnparseable...)
 	routes := append([]redact.UnparseableRouteSpec(nil), cfg.Redaction.AllowlistUnparseableRoutes...)
-	return &redactionRuntime{
+	rt := &redactionRuntime{
 		matcher:                    matcher,
 		limits:                     cfg.Redaction.Limits.ToLimits(),
 		allowlistUnparseable:       allowlist,
@@ -55,7 +55,20 @@ func (p *Proxy) buildRedactionRuntimeWithScanner(cfg *config.Config, sc *scanner
 		providers:                  providers,
 		configKey:                  redactionConfigKeyForScanner(cfg, sc),
 		required:                   cfg.Redaction.Enabled,
-	}, nil
+	}
+	if previous := p.redactionRuntimePtr.Load(); previous != nil && previous.matcher != nil && previous.configKey != rt.configKey {
+		// Carry only the IMMEDIATE prior runtime as a one-hop fallback for the
+		// transient publish window between redactionRuntimePtr.Store and the
+		// scannerPtr swap in Reload. Shallow-copy and zero the predecessor's
+		// own .previous so chain depth stays bounded at 1 across many
+		// different-key reloads; otherwise long-running pods that rotate
+		// file/env secrets would accumulate every prior matcher in memory.
+		// The matcher and provider pointers are shared, so the copy is cheap.
+		snap := *previous
+		snap.previous = nil
+		rt.previous = &snap
+	}
+	return rt, nil
 }
 
 // RedactionRuntimePtr returns the atomic pointer to the redaction runtime
@@ -91,8 +104,13 @@ func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[re
 	}
 	if ptr != nil {
 		if rt := ptr.Load(); rt != nil && rt.matcher != nil {
-			if cfg != nil && rt.configKey == expectedKey {
-				return rt
+			for candidate := rt; candidate != nil; candidate = candidate.previous {
+				if candidate.matcher == nil {
+					continue
+				}
+				if cfg != nil && candidate.configKey == expectedKey {
+					return candidate
+				}
 			}
 		}
 	}

@@ -50,7 +50,7 @@ func TestWSProxyRequestPolicy_BenignFrameForwards(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":"list"}`)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -73,7 +73,7 @@ func TestWSProxyRequestPolicy_MatchingFrameBlocks(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":"deleteAll"}`)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -93,7 +93,7 @@ func TestWSProxyRequestPolicy_JSONContentTypeScopedFrameBlocks(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":"deleteAll"}`)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -112,7 +112,7 @@ func TestWSProxyRequestPolicy_OpaqueFrameBlocks(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(`{"action":["delete"]}`)); err != nil {
 		t.Fatalf("write: %v", err)
@@ -133,7 +133,7 @@ func TestWSProxyRequestPolicy_NonJSONFrameFailsClosed(t *testing.T) {
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("not json")); err != nil {
 		t.Fatalf("write: %v", err)
@@ -156,7 +156,7 @@ func TestWSProxyRequestPolicy_NonJSONFrameForwardsWhenParseErrorWarn(t *testing.
 	defer proxyCleanup()
 
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("not json")); err != nil {
 		t.Fatalf("write: %v", err)

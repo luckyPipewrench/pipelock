@@ -52,16 +52,27 @@ type StripResult struct {
 	// stream. Zero means no changes were made.
 	SegmentsRemoved int
 
-	// BytesRemoved is the total number of payload bytes removed. Useful for
-	// metrics and the exposure event payload.
+	// BytesRemoved is the total number of payload bytes removed, including any
+	// TrailingBytesDropped. Useful for metrics and the exposure event payload.
 	BytesRemoved int
+
+	// TrailingBytesDropped counts bytes after the canonical end marker (JPEG
+	// EOI / PNG IEND) that we truncated. They aren't image data and decoders
+	// ignore them, but forwarding them is risky: pipelock and the agent's
+	// decoder can read the extra bytes differently, and anything hidden there
+	// rides through unscanned (image bodies skip text scanning). Mobile JPEGs
+	// routinely tack on this padding. Counted in BytesRemoved.
+	TrailingBytesDropped int
 
 	// Format is the canonical format string ("jpeg", "png", or "unknown").
 	Format string
 }
 
-// Changed reports whether any metadata was actually removed.
-func (r *StripResult) Changed() bool { return r.SegmentsRemoved > 0 }
+// Changed reports whether the output differs from the input: a metadata
+// segment was removed or trailing bytes were truncated. Consumers forward the
+// rewritten Data only when Changed() is true, so truncation has to count here
+// or the original untruncated body goes out instead.
+func (r *StripResult) Changed() bool { return r.SegmentsRemoved > 0 || r.TrailingBytesDropped > 0 }
 
 // StripMetadata routes a response body to the format-specific surgeon based
 // on the Content-Type header. An unknown or unsupported type returns the
@@ -172,11 +183,15 @@ func stripJPEG(data []byte) (*StripResult, error) {
 			i = segHeaderEnd
 			if marker == jpegEOI {
 				sawEOI = true
-				// Reject trailing bytes after EOI. A canonical
-				// JPEG ends at EOI. Accepting trailing junk
-				// creates a parser-differential surface.
+				// Trailing bytes after EOI: truncate instead of block.
+				// out already holds everything up to and including EOI,
+				// so not copying the rest leaves a clean JPEG and drops
+				// any hidden trailing payload. Unblocks real-world JPEGs
+				// that pad after EOI. Recorded so Changed() forwards the
+				// truncated body.
 				if i != len(data) {
-					return nil, fmt.Errorf("%w: %d trailing bytes after EOI", ErrInvalidJPEG, len(data)-i)
+					result.TrailingBytesDropped = len(data) - i
+					result.BytesRemoved += result.TrailingBytesDropped
 				}
 				break
 			}
@@ -341,11 +356,13 @@ func stripPNG(data []byte) (*StripResult, error) {
 		return nil, fmt.Errorf("%w: no IEND chunk before end of stream", ErrInvalidPNG)
 	}
 	if i != len(data) {
-		// Trailing bytes after IEND. A canonical PNG ends at IEND.
-		// Accepting trailing junk creates a parser-differential surface:
-		// pipelock sees a "valid" image, the agent's decoder may reject
-		// or misinterpret the extra bytes. Fail closed.
-		return nil, fmt.Errorf("%w: %d trailing bytes after IEND", ErrInvalidPNG, len(data)-i)
+		// Trailing bytes after IEND: truncate instead of block, same as the
+		// JPEG EOI path. out already holds everything up to and including
+		// IEND, so not copying the rest leaves a clean PNG and drops any
+		// hidden trailing payload. Recorded so Changed() forwards the
+		// truncated body.
+		result.TrailingBytesDropped = len(data) - i
+		result.BytesRemoved += result.TrailingBytesDropped
 	}
 
 	result.Data = out.Bytes()

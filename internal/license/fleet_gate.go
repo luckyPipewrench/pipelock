@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 )
 
 // EnvLicenseKey is the env variable carrying the signed license token. The
@@ -21,6 +22,11 @@ const EnvLicenseKey = "PIPELOCK_LICENSE_KEY"
 // in hex. Official builds embed the production key at build time; this env
 // variable is for development and self-hosted issuance.
 const EnvLicensePublicKey = "PIPELOCK_LICENSE_PUBLIC_KEY"
+
+// EnvLicenseCRLFile is the optional env variable pointing to a signed license
+// revocation list. Server commands that do not take a full config file can use
+// this to fail closed on revoked licenses.
+const EnvLicenseCRLFile = "PIPELOCK_LICENSE_CRL_FILE"
 
 // ErrFleetLicenseRequired is returned by RequireFleet when the supplied
 // license does not carry the fleet feature (or no license is present).
@@ -46,11 +52,20 @@ var ErrFleetLicenseRequired = errors.New(
 // `pipelock run` follower runtime when `conductor.enabled: true`) invoke this
 // before doing any fleet work and abort fail-closed on a non-nil error.
 func RequireFleet(licenseKey, publicKeyHex string) error {
+	_, err := VerifyFleet(licenseKey, publicKeyHex, "")
+	return err
+}
+
+// VerifyFleet verifies the supplied license token and returns the decoded
+// license only when it carries the FeatureFleet entitlement. The optional
+// crlFile argument, or PIPELOCK_LICENSE_CRL_FILE when empty, enables fail-closed
+// revocation checks with a signed CRL.
+func VerifyFleet(licenseKey, publicKeyHex, crlFile string) (License, error) {
 	if licenseKey == "" {
 		licenseKey = os.Getenv(EnvLicenseKey)
 	}
 	if licenseKey == "" {
-		return ErrFleetLicenseRequired
+		return License{}, ErrFleetLicenseRequired
 	}
 	pubKey := EmbeddedPublicKey()
 	if pubKey == nil {
@@ -65,18 +80,33 @@ func RequireFleet(licenseKey, publicKeyHex string) error {
 		}
 	}
 	if pubKey == nil {
-		return fmt.Errorf("%w: no verifier public key available "+
+		return License{}, fmt.Errorf("%w: no verifier public key available "+
 			"(build-embedded key missing and PIPELOCK_LICENSE_PUBLIC_KEY unset)",
 			ErrFleetLicenseRequired)
 	}
-	lic, err := Verify(licenseKey, pubKey)
+	if crlFile == "" {
+		crlFile = os.Getenv(EnvLicenseCRLFile)
+	}
+	var (
+		lic License
+		err error
+	)
+	if crlFile != "" {
+		crl, crlErr := LoadAndVerifyCRL(crlFile, pubKey, time.Now())
+		if crlErr != nil {
+			return License{}, fmt.Errorf("%w: loading license CRL: %w", ErrFleetLicenseRequired, crlErr)
+		}
+		lic, err = VerifyWithCRL(licenseKey, pubKey, &crl)
+	} else {
+		lic, err = Verify(licenseKey, pubKey)
+	}
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrFleetLicenseRequired, err)
+		return License{}, fmt.Errorf("%w: %w", ErrFleetLicenseRequired, err)
 	}
 	if !lic.HasFeature(FeatureFleet) {
-		return fmt.Errorf("%w: license %s does not include the fleet feature "+
+		return License{}, fmt.Errorf("%w: license %s does not include the fleet feature "+
 			"(present features: %v)",
 			ErrFleetLicenseRequired, lic.ID, lic.Features)
 	}
-	return nil
+	return lic, nil
 }

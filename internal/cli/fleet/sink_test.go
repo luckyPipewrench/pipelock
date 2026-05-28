@@ -271,6 +271,7 @@ func TestSinkCmdValidatesArgsBeforeServing(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			setTestFleetLicense(t)
 			cmd := SinkCmd()
 			cmd.SetArgs(tc.args)
 			cmd.SetOut(&bytes.Buffer{})
@@ -351,6 +352,7 @@ func TestSinkCmd_RunOnLoopback(t *testing.T) {
 // they configure half the TLS pair. The check fires after the OS-level
 // startup chatter (resolver + store) so we exercise the deferred branches.
 func TestSinkCmd_TLSCertWithoutKey(t *testing.T) {
+	setTestFleetLicense(t)
 	pub, _, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)

@@ -50,6 +50,7 @@ type serveOptions struct {
 	remoteKillMaxTTL    time.Duration
 	rollbackMaxTTL      time.Duration
 	auditRetention      time.Duration
+	licenseCRLFile      string
 	tlsCert             string
 	tlsKey              string
 	clientCA            string
@@ -99,7 +100,7 @@ func serveCmd() *cobra.Command {
 			// Fail-closed before any listener bind or file IO so an unlicensed
 			// invocation produces a clear entitlement error instead of a
 			// half-started server with leaked sockets.
-			if err := license.RequireFleet("", ""); err != nil {
+			if _, err := license.VerifyFleet("", "", opts.licenseCRLFile); err != nil {
 				return err
 			}
 			return runServe(cmd, opts)
@@ -121,6 +122,7 @@ func serveCmd() *cobra.Command {
 		"trusted emergency control key as comma-separated kv pairs: 'id=ID,purpose=(remote-kill-signing|policy-bundle-rollback),(inline=BASE64|file=/path)'; repeatable")
 	cmd.Flags().DurationVar(&opts.remoteKillMaxTTL, "remote-kill-max-validity", opts.remoteKillMaxTTL, "maximum validity window for published Conductor remote-kill messages")
 	cmd.Flags().DurationVar(&opts.rollbackMaxTTL, "rollback-max-validity", opts.rollbackMaxTTL, "maximum validity window for published Conductor rollback authorizations")
+	cmd.Flags().StringVar(&opts.licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
 	cmd.Flags().StringVar(&opts.tlsCert, "tls-cert", "", "TLS server certificate file")
 	cmd.Flags().StringVar(&opts.tlsKey, "tls-key", "", "TLS server private key file")
 	cmd.Flags().StringVar(&opts.clientCA, "client-ca", "", "client CA PEM bundle for follower mTLS")

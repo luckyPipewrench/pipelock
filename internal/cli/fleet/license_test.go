@@ -39,6 +39,7 @@ func setTestFleetLicense(t *testing.T) {
 	}
 	t.Setenv(license.EnvLicenseKey, tok)
 	t.Setenv(license.EnvLicensePublicKey, hex.EncodeToString(pub))
+	t.Setenv(license.EnvLicenseCRLFile, "")
 }
 
 // TestSinkCmd_NoFleetLicenseFailsClosed locks in that `pipelock fleet-sink`
@@ -47,6 +48,7 @@ func setTestFleetLicense(t *testing.T) {
 func TestSinkCmd_NoFleetLicenseFailsClosed(t *testing.T) {
 	t.Setenv(license.EnvLicenseKey, "")
 	t.Setenv(license.EnvLicensePublicKey, "")
+	t.Setenv(license.EnvLicenseCRLFile, "")
 	cmd := SinkCmd()
 	cmd.SetArgs([]string{"--storage-dir", t.TempDir()})
 	err := cmd.Execute()

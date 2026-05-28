@@ -5,7 +5,7 @@ image:
   # Default tag tracks the chart appVersion. To pin by digest, set image.digest
   # to a sha256 string and the chart will render repository@digest. The tag
   # value falls through to .Chart.AppVersion when empty.
-  tag: ""  # defaults to .Chart.AppVersion
+  tag: "@sha256:ea07c3b476829e0a9c13b8484aa9c71e60e811c5fdf07d35e17bcb889bb72446"  # defaults to .Chart.AppVersion
   digest: "sha256:ea07c3b476829e0a9c13b8484aa9c71e60e811c5fdf07d35e17bcb889bb72446"  # v2.5.0 multi-arch manifest digest
   pullPolicy: IfNotPresent
 

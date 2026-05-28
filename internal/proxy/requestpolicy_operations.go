@@ -5,6 +5,8 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -44,6 +46,76 @@ func extractRequestPolicyOperations(in requestPolicyInput) (ops []reqpolicy.Requ
 		}
 	}
 	return reqpolicy.ExtractGraphQL(in.Body)
+}
+
+// parseRequestPolicyJSONBody parses the request body as a single generic JSON
+// value for discriminator-field predicates, returning ok=false when there is no
+// body or it is not exactly one well-formed JSON value. UseNumber preserves
+// numeric fidelity (and keeps numbers out of the string type assertion the
+// discriminator predicate makes, so a numeric field reads as opaque). Trailing
+// non-whitespace after the value is rejected so a "{...}<garbage>" body a lax
+// upstream might still dispatch on cannot pass as parseable here.
+func parseRequestPolicyJSONBody(in requestPolicyInput) (doc any, dupKeys map[string]struct{}, ok bool) {
+	body := bytes.TrimSpace(in.Body)
+	if len(body) == 0 {
+		return nil, nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, nil, false
+	}
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, nil, false
+	}
+	if _, isObj := v.(map[string]any); isObj {
+		dupKeys = topLevelDuplicateJSONKeys(body)
+	}
+	return v, dupKeys, true
+}
+
+// topLevelDuplicateJSONKeys returns the set of keys that appear more than once
+// at the top level of a JSON object body. Go's decoder silently keeps the last
+// value for a duplicated key, but JSON parsers disagree on which value wins, so
+// a discriminator rule whose field is duplicated cannot be trusted and must
+// fail closed. Nested object keys are skipped (Decode consumes each value whole)
+// so only the top level is considered. body must already be validated as a
+// single JSON value by parseRequestPolicyJSONBody.
+func topLevelDuplicateJSONKeys(body []byte) map[string]struct{} {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil
+	}
+	if delim, isDelim := tok.(json.Delim); !isDelim || delim != '{' {
+		return nil
+	}
+	seen := make(map[string]int)
+	var dups map[string]struct{}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return dups
+		}
+		key, isStr := keyTok.(string)
+		if !isStr {
+			return dups
+		}
+		seen[key]++
+		if seen[key] == 2 {
+			if dups == nil {
+				dups = make(map[string]struct{})
+			}
+			dups[key] = struct{}{}
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return dups
+		}
+	}
+	return dups
 }
 
 // isMultipartFormData reports whether ct is a multipart/form-data media type,

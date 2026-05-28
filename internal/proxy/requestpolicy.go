@@ -65,6 +65,13 @@ type requestPolicyInput struct {
 	Agent     string
 	AuditCtx  audit.LogContext
 	Emit      func(receipt.EmitOpts) // transport's receipt emitter (e.g. p.emitReceipt)
+
+	// DeferBodyPredicate evaluates route-only rules and skips body-predicate
+	// (GraphQL / discriminator) evaluation for this call. The WebSocket
+	// handshake sets it: the upgrade carries no operation body, so a body
+	// predicate must not fail-close the handshake on the empty body — the
+	// operations arrive in frames and are evaluated per frame instead.
+	DeferBodyPredicate bool
 }
 
 // requestPolicyResult tells the calling transport what to do. Block is true
@@ -89,48 +96,64 @@ func (p *Proxy) requestPolicyMatcher() *reqpolicy.Matcher {
 	return m
 }
 
-func requestPolicyMeta(host, method, path, contentType string, ops []reqpolicy.RequestOperation) reqpolicy.RequestMeta {
-	return reqpolicy.RequestMeta{Host: host, Method: method, Path: path, ContentType: contentType, Operations: ops}
+// requestPolicyBody carries the per-request body-predicate inputs the matcher
+// needs: extracted GraphQL operations and the body parsed as a generic JSON
+// value for discriminator-field predicates. A zero value (route-only pass)
+// matches no body predicate, so route-only rules fire while body predicates
+// wait for the body to be read and inspected.
+type requestPolicyBody struct {
+	ops         []reqpolicy.RequestOperation
+	jsonDoc     any
+	jsonDupKeys map[string]struct{}
+	jsonParsed  bool
 }
 
-func (p *Proxy) evaluateRequestPolicy(host, baseMethod string, headers http.Header, path, contentType string, ops []reqpolicy.RequestOperation) reqpolicy.Decision {
+func requestPolicyMeta(host, method, path, contentType string, body requestPolicyBody) reqpolicy.RequestMeta {
+	return reqpolicy.RequestMeta{
+		Host: host, Method: method, Path: path, ContentType: contentType,
+		Operations: body.ops, JSONBody: body.jsonDoc, JSONBodyParsed: body.jsonParsed,
+		JSONDupKeys: body.jsonDupKeys,
+	}
+}
+
+func (p *Proxy) evaluateRequestPolicy(host, baseMethod string, headers http.Header, path, contentType string, body requestPolicyBody) reqpolicy.Decision {
 	m := p.requestPolicyMatcher()
 	if m == nil {
 		return reqpolicy.Decision{}
 	}
 	eff := reqpolicy.EffectiveMethod(baseMethod, headers)
-	d := m.Evaluate(requestPolicyMeta(host, eff, path, contentType, ops))
+	d := m.Evaluate(requestPolicyMeta(host, eff, path, contentType, body))
 	base := strings.ToUpper(strings.TrimSpace(baseMethod))
 	if eff != base {
-		alt := m.Evaluate(requestPolicyMeta(host, base, path, contentType, ops))
+		alt := m.Evaluate(requestPolicyMeta(host, base, path, contentType, body))
 		d = reqpolicy.Stricter(d, alt)
 	}
 	return d
 }
 
-func (p *Proxy) requestPolicyNeedsOperations(in requestPolicyInput) bool {
+func (p *Proxy) requestPolicyNeedsBodyPredicate(in requestPolicyInput) bool {
 	m := p.requestPolicyMatcher()
 	if m == nil {
 		return false
 	}
 	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
-	if m.NeedsOperations(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil)) {
+	if m.NeedsBodyPredicate(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, requestPolicyBody{})) {
 		return true
 	}
 	base := strings.ToUpper(strings.TrimSpace(in.Method))
-	return eff != base && m.NeedsOperations(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil))
+	return eff != base && m.NeedsBodyPredicate(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, requestPolicyBody{}))
 }
 
-func (p *Proxy) evaluateRequestPolicyUninspectable(in requestPolicyInput, action string) reqpolicy.Decision {
+func (p *Proxy) evaluateRequestPolicyUninspectable(in requestPolicyInput, action string, kind reqpolicy.BodyPredicateKind) reqpolicy.Decision {
 	m := p.requestPolicyMatcher()
 	if m == nil {
 		return reqpolicy.Decision{}
 	}
 	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
-	d := m.EvaluateUninspectable(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil), action)
+	d := m.EvaluateUninspectable(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, requestPolicyBody{}), action, kind)
 	base := strings.ToUpper(strings.TrimSpace(in.Method))
 	if eff != base {
-		alt := m.EvaluateUninspectable(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil), action)
+		alt := m.EvaluateUninspectable(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, requestPolicyBody{}), action, kind)
 		d = reqpolicy.Stricter(d, alt)
 	}
 	return d
@@ -144,11 +167,11 @@ func (p *Proxy) requestPolicyMatchesBatch(in requestPolicyInput) bool {
 		return false
 	}
 	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
-	if m.MatchesBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil)) {
+	if m.MatchesBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, requestPolicyBody{})) {
 		return true
 	}
 	base := strings.ToUpper(strings.TrimSpace(in.Method))
-	return eff != base && m.MatchesBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil))
+	return eff != base && m.MatchesBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, requestPolicyBody{}))
 }
 
 // evaluateRequestPolicyBatch parses the request body as a batch envelope and
@@ -161,10 +184,10 @@ func (p *Proxy) evaluateRequestPolicyBatch(in requestPolicyInput) (reqpolicy.Dec
 		return reqpolicy.Decision{}, true
 	}
 	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
-	d, parseOK := m.EvaluateBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil), in.Body)
+	d, parseOK := m.EvaluateBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, requestPolicyBody{}), in.Body)
 	base := strings.ToUpper(strings.TrimSpace(in.Method))
 	if eff != base {
-		bd, ok := m.EvaluateBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil), in.Body)
+		bd, ok := m.EvaluateBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, requestPolicyBody{}), in.Body)
 		d = reqpolicy.Stricter(d, bd)
 		parseOK = parseOK && ok
 	}
@@ -181,10 +204,10 @@ func (p *Proxy) evaluateRequestPolicyUninspectableBatch(in requestPolicyInput, a
 		return reqpolicy.Decision{}
 	}
 	eff := reqpolicy.EffectiveMethod(in.Method, in.Headers)
-	d := m.UninspectableBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, nil), action)
+	d := m.UninspectableBatch(requestPolicyMeta(in.Host, eff, in.Path, in.ContentType, requestPolicyBody{}), action)
 	base := strings.ToUpper(strings.TrimSpace(in.Method))
 	if eff != base {
-		d = reqpolicy.Stricter(d, m.UninspectableBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, nil), action))
+		d = reqpolicy.Stricter(d, m.UninspectableBatch(requestPolicyMeta(in.Host, base, in.Path, in.ContentType, requestPolicyBody{}), action))
 	}
 	return d
 }
@@ -202,7 +225,7 @@ func (p *Proxy) requestPolicyBodyLimit() int {
 // buffered it. This keeps request_policy independent of
 // request_body_scanning.enabled without draining bodies for route-only rules.
 func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput) requestPolicyResult {
-	if in.BodyRead || (!p.requestPolicyNeedsOperations(*in) && !p.requestPolicyMatchesBatch(*in)) {
+	if in.BodyRead || (!p.requestPolicyNeedsBodyPredicate(*in) && !p.requestPolicyMatchesBatch(*in)) {
 		return requestPolicyResult{}
 	}
 	if r.Body == nil || r.Body == http.NoBody {
@@ -242,7 +265,7 @@ func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) r
 		return requestPolicyResult{}
 	}
 	p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy, reason, 0)
-	d := p.evaluateRequestPolicyUninspectable(in, config.ActionBlock)
+	d := p.evaluateRequestPolicyUninspectable(in, config.ActionBlock, reqpolicy.PredAnyBody)
 	d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectableBatch(in, config.ActionBlock))
 	return p.finalizeRequestPolicyDecision(in, d)
 }
@@ -256,22 +279,9 @@ func (p *Proxy) requestPolicyReadBlocked(in requestPolicyInput, reason string) r
 // Transports MUST call this BEFORE EvaluateGate so a contract allow can never
 // suppress a request_policy block.
 func (p *Proxy) applyRequestPolicy(in requestPolicyInput) requestPolicyResult {
-	d := p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType, nil)
-	if p.requestPolicyNeedsOperations(in) {
-		m := p.requestPolicyMatcher()
-		if !in.BodyRead {
-			d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation()))
-		} else {
-			ops, parseOK, opaque := extractRequestPolicyOperations(in)
-			if !parseOK {
-				d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnParseError()))
-			} else {
-				d = reqpolicy.Stricter(d, p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType, ops))
-				if opaque {
-					d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation()))
-				}
-			}
-		}
+	d := p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType, requestPolicyBody{})
+	if !in.DeferBodyPredicate {
+		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyBodyPredicates(in))
 	}
 	if p.requestPolicyMatchesBatch(in) {
 		m := p.requestPolicyMatcher()
@@ -289,6 +299,40 @@ func (p *Proxy) applyRequestPolicy(in requestPolicyInput) requestPolicyResult {
 		}
 	}
 	return p.finalizeRequestPolicyDecision(in, d)
+}
+
+// evaluateRequestPolicyBodyPredicates runs the GraphQL + discriminator
+// body-predicate evaluation for in and returns the strictest decision, or a
+// zero Decision when no body predicate route-matches. GraphQL and discriminator
+// extraction are independent surfaces over the same body: a body can be valid
+// JSON for a discriminator yet fail GraphQL parsing (e.g. a malformed inline
+// query), and vice versa. Each surface's parse/opaque fail-closed therefore
+// applies only to that surface's predicates, while a successful extraction for
+// either feeds the matcher in one pass.
+func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpolicy.Decision {
+	if !p.requestPolicyNeedsBodyPredicate(in) {
+		return reqpolicy.Decision{}
+	}
+	m := p.requestPolicyMatcher()
+	if !in.BodyRead {
+		// The body cannot be inspected at all: every body predicate (GraphQL
+		// and discriminator) is uninspectable.
+		return p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation(), reqpolicy.PredAnyBody)
+	}
+	ops, gqlParseOK, gqlOpaque := extractRequestPolicyOperations(in)
+	jsonDoc, jsonDupKeys, jsonParsed := parseRequestPolicyJSONBody(in)
+	d := p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType,
+		requestPolicyBody{ops: ops, jsonDoc: jsonDoc, jsonDupKeys: jsonDupKeys, jsonParsed: jsonParsed})
+	switch {
+	case !gqlParseOK:
+		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnParseError(), reqpolicy.PredGraphQL))
+	case gqlOpaque:
+		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnOpaqueOperation(), reqpolicy.PredGraphQL))
+	}
+	if !jsonParsed {
+		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnParseError(), reqpolicy.PredDiscriminator))
+	}
+	return d
 }
 
 // finalizeRequestPolicyDecision records the decision metric and audit event for

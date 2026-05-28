@@ -156,7 +156,7 @@ func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int
 // matches the sub are affected — a plain REST sub matched by a method/path rule
 // is unaffected (it was already decided by Evaluate above).
 func (m *Matcher) uninspectableSub(meta RequestMeta, action string) Decision {
-	return m.EvaluateUninspectable(meta, action)
+	return m.EvaluateUninspectable(meta, action, PredGraphQL)
 }
 
 func extractSubRequestGraphQL(sub batchSubRequest) (ops []RequestOperation, parseOK, opaque bool) {

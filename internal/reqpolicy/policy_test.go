@@ -224,10 +224,10 @@ func TestMatcher_OperationHelpers(t *testing.T) {
 		t.Fatalf("NewMatcher: %v", err)
 	}
 	meta := RequestMeta{Host: "api.service.example.com", Method: "POST", Path: "/api/write", ContentType: "application/json"}
-	if !m.NeedsOperations(meta) {
+	if !m.NeedsBodyPredicate(meta) {
 		t.Fatal("route-matched GraphQL rule should need operation extraction")
 	}
-	if m.NeedsOperations(RequestMeta{Host: "api.service.example.com", Method: "GET", Path: "/api/write", ContentType: "application/json"}) {
+	if m.NeedsBodyPredicate(RequestMeta{Host: "api.service.example.com", Method: "GET", Path: "/api/write", ContentType: "application/json"}) {
 		t.Fatal("non-route-matching request should not need operation extraction")
 	}
 	if got := m.OnParseError(); got != config.ActionWarn {
@@ -236,11 +236,11 @@ func TestMatcher_OperationHelpers(t *testing.T) {
 	if got := m.OnOpaqueOperation(); got != config.ActionBlock {
 		t.Fatalf("OnOpaqueOperation = %q, want block", got)
 	}
-	parseDecision := m.EvaluateUninspectable(meta, m.OnParseError())
+	parseDecision := m.EvaluateUninspectable(meta, m.OnParseError(), PredGraphQL)
 	if parseDecision.Action != config.ActionWarn || parseDecision.RuleName != "api-write" {
 		t.Fatalf("parse decision = %+v, want warn from api-write", parseDecision)
 	}
-	if got := m.EvaluateUninspectable(meta, config.ActionAllow); got.Matched() {
+	if got := m.EvaluateUninspectable(meta, config.ActionAllow, PredGraphQL); got.Matched() {
 		t.Fatalf("allow uninspectable action should produce no decision, got %+v", got)
 	}
 	var nilM *Matcher

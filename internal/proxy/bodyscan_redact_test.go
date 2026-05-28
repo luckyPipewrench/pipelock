@@ -160,13 +160,23 @@ func TestScanRequestBody_Redaction_JSONSniffWrongContentType(t *testing.T) {
 	}
 }
 
-func TestScanRequestBody_Redaction_AllowlistedRawTextRewrites(t *testing.T) {
+// TestScanRequestBody_Redaction_AllowlistedNonJSONPassthrough is the
+// regression test for the allowlist_unparseable contract. Operators expect
+// a host on the list to have its non-JSON body forwarded UNMODIFIED so OAuth
+// token exchanges and other credential-bearing form-urlencoded requests
+// reach the upstream verbatim. The legacy raw-text-fallback path used to
+// run the class matcher on these bodies and silently rewrite individual
+// values, which broke OAuth flows whenever a credential happened to match
+// a broad class (hash-sha256 vs. a 64-hex client_secret, etc).
+func TestScanRequestBody_Redaction_AllowlistedNonJSONPassthrough(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	secret := redactionE2ESecret()
-	body := `refresh_token=` + secret
+	// Opaque token value that does not match any DLP class, so we can
+	// observe the redaction passthrough without DLP-level interference.
+	const opaque = "opaque_refresh_token_value_not_dlp_shaped"
+	body := `grant_type=refresh_token&refresh_token=` + opaque
 	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:                       strings.NewReader(body),
 		Method:                     "POST",
@@ -178,20 +188,82 @@ func TestScanRequestBody_Redaction_AllowlistedRawTextRewrites(t *testing.T) {
 		Path:                       "/tenant-id/oauth2/v2.0/token",
 		RedactAllowlistUnparseable: []string{"login.microsoftonline.com"},
 	})
-	if strings.Contains(string(buf), secret) {
-		t.Fatalf("allowlisted raw-text body leaked unredacted secret: %s", buf)
+	if string(buf) != body {
+		t.Fatalf("body should pass through unmodified, got %q want %q", buf, body)
 	}
-	if !strings.Contains(string(buf), "<pl:") {
-		t.Fatalf("expected placeholder in rewritten raw-text body: %s", buf)
+	if strings.Contains(string(buf), "<pl:") {
+		t.Fatalf("body contains redaction placeholder despite allowlist passthrough: %s", buf)
 	}
 	if result.RedactionReport == nil {
-		t.Fatal("expected raw-text redaction report")
+		t.Fatal("expected passthrough redaction report")
 	}
-	if result.RedactionReport.Provider != redact.ProviderGenericRawText {
-		t.Fatalf("provider = %q, want %q", result.RedactionReport.Provider, redact.ProviderGenericRawText)
+	if result.RedactionReport.Applied {
+		t.Fatal("RedactionReport.Applied = true; allowlist_unparseable passthrough must not apply rewrites")
 	}
-	if result.RedactionReport.Parser != redact.ParserRawText {
-		t.Fatalf("parser = %q, want %q", result.RedactionReport.Parser, redact.ParserRawText)
+	if result.RedactionReport.Provider != redact.ProviderUnparseableAllowed {
+		t.Fatalf("provider = %q, want %q", result.RedactionReport.Provider, redact.ProviderUnparseableAllowed)
+	}
+	if result.RedactionReport.Parser != redact.ParserUnparseableAllowed {
+		t.Fatalf("parser = %q, want %q", result.RedactionReport.Parser, redact.ParserUnparseableAllowed)
+	}
+}
+
+// TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShapedSecret
+// is the direct regression test for the Jobber bug: a 64-hex client_secret
+// in a form-urlencoded body to an allowlist_unparseable host must reach
+// the upstream unmodified, even though the value matches the hash-sha256
+// redaction class. Pre-fix, the legacy raw-text fallback rewrote the value
+// to a placeholder and Jobber returned "client id and secret do not match
+// an existing application" because the upstream saw the placeholder, not
+// the real credential. The fix is the allowlist contract change in
+// applyRedaction.
+func TestScanRequestBody_Redaction_AllowlistedPassthroughDoesNotMangleHashShapedSecret(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	// 64 hex chars: shape matches the hash-sha256 redaction class. Not a
+	// real credential; this is a fixture pattern.
+	const hexSecret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	body := `grant_type=authorization_code&client_id=test-client-id&client_secret=` + hexSecret + `&code=test-code&redirect_uri=https%3A%2F%2Fexample.com%2Fcb`
+
+	// Compose a redaction matcher that explicitly includes hash-sha256 so
+	// the legacy path would have rewritten the secret if it still ran.
+	rcfg := redact.Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles: map[string]redact.ProfileSpec{
+			"code": {Classes: []string{string(redact.ClassHashSHA256)}},
+		},
+		Limits: redact.DefaultLimits(),
+	}
+	matcher, err := rcfg.BuildMatcher(rcfg.DefaultProfile)
+	if err != nil {
+		t.Fatalf("BuildMatcher: %v", err)
+	}
+
+	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
+		Body:                       strings.NewReader(body),
+		Method:                     "POST",
+		ContentType:                "application/x-www-form-urlencoded",
+		MaxBytes:                   2048,
+		Scanner:                    sc,
+		RedactMatcher:              matcher,
+		Host:                       "api.getjobber.com",
+		Path:                       "/api/oauth/token",
+		RedactAllowlistUnparseable: []string{"api.getjobber.com"},
+	})
+	if !strings.Contains(string(buf), hexSecret) {
+		t.Fatalf("hash-shaped client_secret was modified in transit despite allowlist passthrough: %s", buf)
+	}
+	if strings.Contains(string(buf), "<pl:hash-sha256") {
+		t.Fatalf("body contains hash-sha256 placeholder despite passthrough contract: %s", buf)
+	}
+	if result.RedactionReport == nil || result.RedactionReport.Applied {
+		t.Fatalf("RedactionReport must be present with Applied=false on passthrough, got %+v", result.RedactionReport)
+	}
+	if result.RedactionReport.Parser != redact.ParserUnparseableAllowed {
+		t.Fatalf("parser = %q, want %q", result.RedactionReport.Parser, redact.ParserUnparseableAllowed)
 	}
 }
 
@@ -264,14 +336,23 @@ func TestScanRequestBody_Redaction_RouteAllowlistRequiresFullMatch(t *testing.T)
 	}
 }
 
-func TestScanRequestBody_Redaction_RouteAllowlistRewritesBeforeDLP(t *testing.T) {
+// TestScanRequestBody_Redaction_RouteAllowlistPassthrough is the
+// route-scoped version of the allowlist passthrough contract. A matching
+// allowlist_unparseable_routes entry must produce the same byte-for-byte
+// forwarding behavior as the host-level allowlist (see
+// TestScanRequestBody_Redaction_AllowlistedNonJSONPassthrough). The legacy
+// raw-text fallback wrote the body via the redaction matcher; the fix
+// drops that rewrite so OAuth credential exchanges that match the route
+// reach the upstream verbatim.
+func TestScanRequestBody_Redaction_RouteAllowlistPassthrough(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	secret := redactionE2ESecret()
+	const opaque = "opaque_refresh_token_value_not_dlp_shaped"
+	body := `grant_type=refresh_token&refresh_token=` + opaque
 	buf, result := scanRequestBody(context.Background(), BodyScanRequest{
-		Body:          strings.NewReader(`refresh_token=` + secret),
+		Body:          strings.NewReader(body),
 		Method:        "POST",
 		ContentType:   "application/x-www-form-urlencoded",
 		MaxBytes:      1024,
@@ -286,14 +367,20 @@ func TestScanRequestBody_Redaction_RouteAllowlistRewritesBeforeDLP(t *testing.T)
 			ContentTypes: []string{"application/x-www-form-urlencoded"},
 		}},
 	})
-	if strings.Contains(string(buf), secret) {
-		t.Fatalf("route-scoped raw-text fallback leaked unredacted secret: %s", buf)
+	if string(buf) != body {
+		t.Fatalf("route-scoped allowlist body should pass through unmodified, got %q want %q", buf, body)
 	}
-	if !result.RedactedDLPOnly {
-		t.Fatalf("expected RedactedDLPOnly=true after raw-text rewrite, got %+v", result)
+	if strings.Contains(string(buf), "<pl:") {
+		t.Fatalf("body contains redaction placeholder despite route-scoped passthrough: %s", buf)
 	}
-	if result.RedactionReport == nil || result.RedactionReport.Parser != redact.ParserRawText {
-		t.Fatalf("expected raw-text redaction report, got %+v", result.RedactionReport)
+	if result.RedactedDLPOnly {
+		t.Fatalf("RedactedDLPOnly = true; passthrough must not apply redaction rewrites, got %+v", result)
+	}
+	if result.RedactionReport == nil || result.RedactionReport.Applied {
+		t.Fatalf("expected passthrough redaction report with Applied=false, got %+v", result.RedactionReport)
+	}
+	if result.RedactionReport.Parser != redact.ParserUnparseableAllowed {
+		t.Fatalf("parser = %q, want %q", result.RedactionReport.Parser, redact.ParserUnparseableAllowed)
 	}
 }
 

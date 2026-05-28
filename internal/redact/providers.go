@@ -22,13 +22,21 @@ const (
 	// known-provider allowlist.
 	ProviderGenericJSON = "generic-json"
 
-	// ParserRawText is used for operator-allowlisted non-JSON request bodies.
-	// It rewrites matcher spans in the raw text instead of forwarding the body
-	// unchanged.
-	ParserRawText = "raw-text"
+	// ParserUnparseableAllowed is used when a non-JSON request body targets
+	// a host on redaction.allowlist_unparseable (or matches a configured
+	// allowlist_unparseable_routes entry). The body is forwarded to the
+	// upstream UNMODIFIED. This is the contract operators expect from the
+	// allowlist: "trust this host's non-JSON body, do not rewrite it."
+	// Required for OAuth token exchanges whose form-urlencoded bodies carry
+	// client_secret values that may match broad redaction classes such as
+	// hash-sha256; rewriting the value would mangle the credential in
+	// transit and cause the upstream to reject the request.
+	ParserUnparseableAllowed = "unparseable-allowed"
 
-	// ProviderGenericRawText labels raw-text fallback redaction receipts.
-	ProviderGenericRawText = "generic-raw-text"
+	// ProviderUnparseableAllowed labels redaction reports emitted when the
+	// allowlist routed a non-JSON body straight through without applying
+	// any class matchers. Applied is always false for these reports.
+	ProviderUnparseableAllowed = "operator-allowlisted-unparseable"
 )
 
 // RequestMetadata identifies the upstream request enough to select a provider

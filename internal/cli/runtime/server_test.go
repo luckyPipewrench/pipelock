@@ -334,6 +334,7 @@ func TestNewServer_FlightRecorderAndEnvelopeFromConfig(t *testing.T) {
 }
 
 func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
+	setTestFleetLicense(t)
 	tmp, err := os.MkdirTemp(".", ".runtime-conductor-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

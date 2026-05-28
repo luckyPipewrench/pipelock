@@ -115,7 +115,7 @@ The chart automatically templates these into the config and they should not be s
 
 See [`examples/`](examples/) for ready-to-use values configurations:
 
-- `values-pro.yaml` — Pro license mounted from a Secret, with admin API and Sentry
+- `values-pro.yaml` — Licensed per-agent profile example with optional admin API and Sentry Secret wiring
 - `values-mcp-sidecar.yaml` — MCP HTTP listener bridging to an upstream MCP server
 - `values-ha.yaml` — 3 replicas, PodDisruptionBudget, topology spread, NetworkPolicy
 

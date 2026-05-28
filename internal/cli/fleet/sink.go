@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/fleet/sink"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -44,12 +45,19 @@ func SinkCmd() *cobra.Command {
 	var tlsKey string
 	var clientCA string
 	var readerTokenFile string
+	var licenseCRLFile string
 
 	cmd := &cobra.Command{
 		Use:   "fleet-sink",
 		Short: "Run a Conductor audit batch sink",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// License gate: fleet-sink is the Enterprise audit-sink server.
+			// Fail-closed before any listener bind / disk IO so an unlicensed
+			// invocation produces a clear entitlement error.
+			if _, err := license.VerifyFleet("", "", licenseCRLFile); err != nil {
+				return err
+			}
 			if strings.TrimSpace(storageDir) == "" {
 				return errors.New("--storage-dir is required")
 			}
@@ -143,6 +151,7 @@ func SinkCmd() *cobra.Command {
 	cmd.Flags().StringVar(&clientCA, "client-ca", "", "client CA PEM bundle for mTLS")
 	cmd.Flags().StringVar(&readerTokenFile, "reader-token-file", "",
 		"path to a file containing the bearer token required for GET requests; required for non-loopback bind without --client-ca")
+	cmd.Flags().StringVar(&licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
 	return cmd
 }
 

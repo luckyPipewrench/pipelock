@@ -1,6 +1,6 @@
-# Pro / Enterprise install: license token mounted from a Secret, admin API
-# enabled with bearer-token auth, Sentry DSN wired in, and per-agent profiles
-# configured under .pipelock.agents.
+# Licensed install example: mounts a Pro or Enterprise token from a Secret.
+# It also enables the free authenticated admin API and Sentry DSN wiring as
+# optional operational controls, plus per-agent profiles under .pipelock.agents.
 #
 # Prerequisites:
 #   kubectl create secret generic pipelock-license \

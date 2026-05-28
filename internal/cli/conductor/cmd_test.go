@@ -24,8 +24,26 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestServeCmd_NoFleetLicenseFailsClosed(t *testing.T) {
+	t.Setenv(license.EnvLicenseKey, "")
+	t.Setenv(license.EnvLicensePublicKey, "")
+	t.Setenv(license.EnvLicenseCRLFile, "")
+	cmd := Cmd()
+	cmd.SetArgs([]string{"serve"})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("conductor serve without fleet license: want error, got nil")
+	}
+	if !errors.Is(err, license.ErrFleetLicenseRequired) {
+		t.Fatalf("want ErrFleetLicenseRequired, got %v", err)
+	}
+}
 
 func TestBuildServeHandlerWiresControlPlane(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(rand.Reader)

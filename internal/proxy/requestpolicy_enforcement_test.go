@@ -78,14 +78,14 @@ func TestEvaluateRequestPolicy_MethodOverrideCannotDowngrade(t *testing.T) {
 
 	h := http.Header{}
 	h.Set("X-HTTP-Method-Override", http.MethodDelete)
-	d := p.evaluateRequestPolicy(rpTestHost, http.MethodPost, h, "/v1/jobs/1", "", nil)
+	d := p.evaluateRequestPolicy(rpTestHost, http.MethodPost, h, "/v1/jobs/1", "", requestPolicyBody{})
 	if d.Action != config.ActionBlock {
 		t.Fatalf("override DELETE via POST should block, got action=%q", d.Action)
 	}
 
 	// And the inverse: a bare POST with no override is not caught by a
 	// DELETE-only rule.
-	if d2 := p.evaluateRequestPolicy(rpTestHost, http.MethodPost, http.Header{}, "/v1/jobs/1", "", nil); d2.Matched() {
+	if d2 := p.evaluateRequestPolicy(rpTestHost, http.MethodPost, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); d2.Matched() {
 		t.Fatalf("bare POST should not match a DELETE-only rule, got %+v", d2)
 	}
 }
@@ -772,7 +772,7 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	p := newTestProxyWithConfig(t, cfg)
 
-	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", nil); got.Matched() {
+	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Matched() {
 		t.Fatal("no rule configured: DELETE should not match")
 	}
 
@@ -781,7 +781,7 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 	if !p.Reload(newCfg, scanner.New(newCfg)) {
 		t.Fatal("Reload returned false")
 	}
-	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", nil); got.Action != config.ActionBlock {
+	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Action != config.ActionBlock {
 		t.Fatalf("after reload, DELETE should block, got action=%q", got.Action)
 	}
 
@@ -790,7 +790,7 @@ func TestRequestPolicy_HotReloadAppliesRuleChange(t *testing.T) {
 	if !p.Reload(cfgOff, scanner.New(cfgOff)) {
 		t.Fatal("second Reload returned false")
 	}
-	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", nil); got.Matched() {
+	if got := p.evaluateRequestPolicy(rpTestHost, http.MethodDelete, http.Header{}, "/v1/jobs/1", "", requestPolicyBody{}); got.Matched() {
 		t.Fatal("after rule removal, DELETE should not match")
 	}
 }

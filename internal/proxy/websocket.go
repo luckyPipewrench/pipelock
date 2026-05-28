@@ -67,9 +67,14 @@ type wsRelay struct {
 	maxMsg       int
 	scanText     bool
 	allowBinary  bool
-	redactionLog *redact.Report
-	rec          session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
-	terminalOnce sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
+	// reqPolicyHeaders and reqPolicyPath are the handshake route inputs reused
+	// for per-frame request_policy evaluation, so a frame is judged against the
+	// same escaped path and method-override headers as the handshake gate.
+	reqPolicyHeaders http.Header
+	reqPolicyPath    string
+	redactionLog     *redact.Report
+	rec              session.Recorder // live escalation level for UpgradeAction; nil when profiling disabled
+	terminalOnce     sync.Once        // ensures only one terminal receipt (kill_switch/session_deny) is emitted across concurrent relay goroutines
 }
 
 // escalationLevel returns the live escalation level from the session recorder.
@@ -487,20 +492,24 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// request_policy runs before the contract gate so a contract allow can
-	// never suppress an operation-policy block.
+	// never suppress an operation-policy block. The upgrade carries no
+	// operation body, so body-predicate (GraphQL / discriminator) rules defer
+	// to per-frame evaluation in the relay; only route-only rules gate the
+	// handshake here.
 	if rpRes := p.applyRequestPolicy(requestPolicyInput{
-		Host:        parsed.Hostname(),
-		Method:      http.MethodGet,
-		Path:        parsed.EscapedPath(),
-		ContentType: r.Header.Get(headerContentType),
-		Headers:     r.Header,
-		BodyRead:    true,
-		Transport:   TransportWS,
-		Target:      targetURL,
-		RequestID:   requestID,
-		Agent:       agent,
-		AuditCtx:    actx,
-		Emit:        p.emitReceipt,
+		Host:               parsed.Hostname(),
+		Method:             http.MethodGet,
+		Path:               parsed.EscapedPath(),
+		ContentType:        r.Header.Get(headerContentType),
+		Headers:            r.Header,
+		BodyRead:           true,
+		Transport:          TransportWS,
+		Target:             targetURL,
+		RequestID:          requestID,
+		Agent:              agent,
+		AuditCtx:           actx,
+		Emit:               p.emitReceipt,
+		DeferBodyPredicate: true,
 	}); rpRes.Block {
 		p.metrics.RecordWSBlocked()
 		writeBlockedError(w, rpRes.Info, "WebSocket blocked by request policy: "+rpRes.Reason, http.StatusForbidden)
@@ -726,6 +735,12 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		allowBinary:  cfg.WebSocketProxy.AllowBinaryFrames,
 		rec:          wsRec,
 	}
+	// Per-frame request_policy reuses the handshake route inputs: the escaped
+	// path the handshake gate matched on and a clone of the upgrade headers (for
+	// method-override parity). The frame gate is re-checked against the live
+	// matcher each frame, so a hot-reloaded rule applies to open sockets.
+	relay.reqPolicyHeaders = r.Header.Clone()
+	relay.reqPolicyPath = parsed.EscapedPath()
 
 	if scanTextFrames && sc.ResponseScanningEnabled() && isResponseScanExempt(relay.hostname, cfg.ResponseScanning.ExemptDomains) {
 		log.LogResponseScanExempt(actx, relay.hostname)
@@ -937,6 +952,47 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 		binaryFrames:   c2sBinary + s2cBinary,
 		blocked:        c2sBlocked || s2cBlocked,
 	}
+}
+
+// applyFrameRequestPolicy evaluates request_policy body predicates against a
+// complete client text frame, treating the frame payload as a JSON operation
+// body over the handshake route (the upgrade is a GET, so the effective method
+// is GET). The body-predicate gate is checked against the live matcher each
+// frame — not cached at upgrade — so a hot-reloaded rule applies to open
+// sockets; benign routes still pay no JSON-parse cost. The route inputs
+// (escaped path, handshake headers) match the handshake gate. On an enforced
+// block it closes both ends with a policy-violation close frame and reports
+// blocked=true; the receipt, metric, and audit event are emitted by
+// applyRequestPolicy's shared finalizer. Only complete, UTF-8-validated text
+// frames reach here — the fragment-reassembly boundary (and binary frames,
+// which are not operation text) is a documented limit.
+func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
+	in := requestPolicyInput{
+		Host:        r.hostname,
+		Method:      http.MethodGet,
+		Path:        r.reqPolicyPath,
+		ContentType: contentTypeJSON,
+		Headers:     r.reqPolicyHeaders,
+	}
+	if !r.proxy.requestPolicyNeedsBodyPredicate(in) {
+		return false
+	}
+	in.Body = msg
+	in.BodyRead = true
+	in.Transport = TransportWSFrame
+	in.Target = r.targetURL
+	in.RequestID = r.requestID
+	in.Agent = r.agent
+	in.AuditCtx = newHTTPAuditContext(log, "WS", r.targetURL, r.clientIP, r.requestID, r.agent)
+	in.Emit = r.proxy.emitReceipt
+	res := r.proxy.applyRequestPolicy(in)
+	if !res.Block {
+		return false
+	}
+	payload := res.Info.CloseFramePayload()
+	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
+	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+	return true
 }
 
 func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte, BodyScanResult) {
@@ -1770,6 +1826,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if !utf8.Valid(msg) {
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				blocked = true
+				return
+			}
+
+			// request_policy per-frame operation evaluation: the frame payload
+			// is the operation body. Runs before content scanning, mirroring the
+			// HTTP order where request_policy precedes the contract gate.
+			if r.applyFrameRequestPolicy(log, msg) {
 				blocked = true
 				return
 			}

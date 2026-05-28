@@ -119,7 +119,8 @@ sentry:
 
 # Authenticated admin API for `pipelock adaptive` and `pipelock session`
 # commands. When enabled, the chart renders kill_switch.api_listen into the
-# config and exposes the admin port on the Service.
+# config and exposes the admin port on the Service. This is an operational
+# control, not a paid entitlement.
 adminApi:
   enabled: false
   # Token Secret. Required when adminApi.enabled is true. The Secret must

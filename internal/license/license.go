@@ -31,6 +31,12 @@ var ErrLicenseExpired = errors.New("license expired")
 const (
 	FeatureAgents = "agents"
 	FeatureAssess = "assess"
+	// FeatureFleet gates Pipelock's fleet control plane (the conductor
+	// subsystem and the standalone audit sink). Conductor coordinates policy
+	// distribution and signed audit ingest across multiple Pipelock instances —
+	// central governance — which is the Enterprise tier per the
+	// "sell coordination, not detection" doctrine.
+	FeatureFleet = "fleet"
 )
 
 // License represents the claims in a signed license token.

@@ -266,12 +266,13 @@ type RequestPolicyBatch struct {
 // section-level default_action knob, so the section can never be configured
 // into default-deny.
 type RequestPolicyRule struct {
-	Name    string                `yaml:"name"`   // bounded, metric-label-safe identifier
-	Action  string                `yaml:"action"` // block | warn
-	Shadow  bool                  `yaml:"shadow"` // log the would-be action, forward anyway
-	Route   RequestPolicyRoute    `yaml:"route"`
-	GraphQL *RequestPolicyGraphQL `yaml:"graphql,omitempty"` // optional GraphQL operation predicate
-	Reason  string                `yaml:"reason"`            // operator-facing explanation (never logged with content)
+	Name          string                      `yaml:"name"`   // bounded, metric-label-safe identifier
+	Action        string                      `yaml:"action"` // block | warn
+	Shadow        bool                        `yaml:"shadow"` // log the would-be action, forward anyway
+	Route         RequestPolicyRoute          `yaml:"route"`
+	GraphQL       *RequestPolicyGraphQL       `yaml:"graphql,omitempty"`       // optional GraphQL operation predicate
+	Discriminator *RequestPolicyDiscriminator `yaml:"discriminator,omitempty"` // optional JSON discriminator-field predicate
+	Reason        string                      `yaml:"reason"`                  // operator-facing explanation (never logged with content)
 }
 
 // RequestPolicyRoute selects which requests a rule applies to. An empty
@@ -295,6 +296,21 @@ type RequestPolicyRoute struct {
 type RequestPolicyGraphQL struct {
 	OperationTypes    []string `yaml:"operation_types"`     // query | mutation | subscription
 	RootFieldPatterns []string `yaml:"root_field_patterns"` // RE2 patterns against resolved root field names
+}
+
+// RequestPolicyDiscriminator is an optional JSON discriminator-field predicate
+// applied after the route matches. The request body is parsed as JSON and the
+// top-level Field is looked up: a string value is matched against ValuePatterns
+// (the predicate matches when any pattern matches); a present but non-string
+// value, or a non-object top-level body, is opaque and fails closed per
+// request_policy.on_opaque_operation; an absent field does not match (the
+// allow-by-default rail forwards unless another rule matches). Invalid JSON is
+// handled as a parse error per request_policy.on_parse_error. This first cut
+// addresses only top-level fields; nested paths are a deliberate future
+// extension and a dotted Field is treated as a single literal key today.
+type RequestPolicyDiscriminator struct {
+	Field         string   `yaml:"field"`          // top-level JSON object key carrying the operation discriminator
+	ValuePatterns []string `yaml:"value_patterns"` // RE2 patterns matched against the string value at Field
 }
 
 // Config is the top-level Pipelock configuration.

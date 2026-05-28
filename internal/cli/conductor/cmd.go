@@ -24,6 +24,7 @@ import (
 
 	conductorcore "github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/conductor/controlplane"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -94,6 +95,13 @@ func serveCmd() *cobra.Command {
 		Short: "Serve Conductor policy and audit ingest endpoints",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// License gate: Conductor is the Enterprise fleet control plane.
+			// Fail-closed before any listener bind or file IO so an unlicensed
+			// invocation produces a clear entitlement error instead of a
+			// half-started server with leaked sockets.
+			if err := license.RequireFleet("", ""); err != nil {
+				return err
+			}
 			return runServe(cmd, opts)
 		},
 	}

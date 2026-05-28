@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/fleet/sink"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -50,6 +51,12 @@ func SinkCmd() *cobra.Command {
 		Short: "Run a Conductor audit batch sink",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// License gate: fleet-sink is the Enterprise audit-sink server.
+			// Fail-closed before any flag parsing / listener bind / disk IO
+			// so an unlicensed invocation produces a clear entitlement error.
+			if err := license.RequireFleet("", ""); err != nil {
+				return err
+			}
 			if strings.TrimSpace(storageDir) == "" {
 				return errors.New("--storage-dir is required")
 			}

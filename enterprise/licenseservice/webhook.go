@@ -608,8 +608,11 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	case tierFoundingPro, tierPro, tierTrial:
 		return []string{license.FeatureAgents}
 	case tierEnterprise:
-		// TODO: Define enterprise-specific features as they're built.
-		return []string{license.FeatureAgents}
+		// Enterprise tier carries the fleet control plane (Conductor + audit
+		// sink) on top of the Pro multi-agent profile feature. Add additional
+		// Enterprise-only features (hosted services, transparency log, …) to
+		// this slice as they ship.
+		return []string{license.FeatureAgents, license.FeatureFleet}
 	case tierAssess:
 		return []string{license.FeatureAssess}
 	default:

@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -294,6 +295,18 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.scanner = sc
 	m := metrics.New()
 	s.metrics = m
+	// License gate for the follower-side Conductor runtime. When
+	// conductor.enabled is true the operator has explicitly opted into
+	// central governance (remote kill, audit ingest, policy distribution);
+	// fail-closed if the license does not grant the fleet feature, so the
+	// process does not silently start a half-wired follower the operator
+	// expects to be participating.
+	if cfg.Conductor.Enabled {
+		if err := license.RequireFleet(cfg.LicenseKey, cfg.LicensePublicKey); err != nil {
+			s.cleanup()
+			return nil, err
+		}
+	}
 	conductorApply, conductorApplyErr := buildConductorApplyCache(cfg)
 	if conductorApplyErr != nil {
 		s.cleanup()

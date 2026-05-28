@@ -320,6 +320,7 @@ func TestSignalContextCancel(t *testing.T) {
 // This wires together the resolver, store, scanner, and handler so all of
 // SinkCmd's setup branches are exercised.
 func TestSinkCmd_RunOnLoopback(t *testing.T) {
+	setTestFleetLicense(t)
 	pub, _, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)

@@ -519,6 +519,9 @@ func (s runtimePolicySigner) resolver() conductor.SignatureKeyResolver {
 
 func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, string, string) {
 	t.Helper()
+	// conductor.enabled triggers the fleet-license gate; install a real
+	// Enterprise token for the test so the production gate path is exercised.
+	setTestFleetLicense(t)
 	tmp, err := os.MkdirTemp(".", ".runtime-conductor-apply-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)

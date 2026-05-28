@@ -66,10 +66,17 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"credit-card-visa", "card " + "4111 1111 " + "1111 1111", ClassCreditCard},
 		{"credit-card-amex-15digit", "card " + "3782 822463 " + "10005", ClassCreditCard},
 		{"credit-card-amex-dashed", "card " + "3714-496353-" + "98431", ClassCreditCard},
-		{"hash-md5", "etag " + strings.Repeat("a", 32), ClassHashMD5},
+		// Hash classes now require a contextual keyword prefix (sha256/
+		// md5/etc.) so bare 64-hex strings like Jobber-style OAuth
+		// client_secret values do not trigger the matcher. See
+		// hashClasses() in classes.go for the rationale.
+		{"hash-md5", "md5 " + strings.Repeat("a", 32), ClassHashMD5},
 		{"hash-sha1", "sha1 " + strings.Repeat("b", 40), ClassHashSHA1},
 		{"hash-sha256", "sha256 " + strings.Repeat("c", 64), ClassHashSHA256},
 		{"hash-sha512", "sha512 " + strings.Repeat("d", 128), ClassHashSHA512},
+		{"hash-sha256-colon", "sha256:" + strings.Repeat("c", 64), ClassHashSHA256},
+		{"hash-sha256-dashed-keyword", "SHA-256=" + strings.Repeat("c", 64), ClassHashSHA256},
+		{"hash-sha256-labelled", "hash-sha256 " + strings.Repeat("c", 64), ClassHashSHA256},
 	}
 
 	for _, tc := range cases {
@@ -220,6 +227,17 @@ func TestDefaultMatcher_Negative(t *testing.T) {
 		"just a normal sentence about http and https",   // no identifiers
 		"version 1.2.3 shipped yesterday",               // not a FQDN
 		"this is a plain english sentence with no dots", // nothing to match
+		// Bare hex strings of hash-shape lengths must NOT match a hash
+		// class without a contextual prefix. These are the Jobber-OAuth-
+		// client-secret class of values: opaque hex blobs that look like
+		// SHA-256 digests but are credentials, not hashes. Regression
+		// test for the PR #635 redaction passthrough work.
+		"client_secret=" + strings.Repeat("a", 64),  // 64 hex, no sha256 prefix
+		"refresh_token=" + strings.Repeat("b", 128), // 128 hex, no sha512 prefix
+		strings.Repeat("c", 64),                     // bare 64-hex (would have matched pre-fix)
+		strings.Repeat("d", 128),                    // bare 128-hex
+		strings.Repeat("e", 40),                     // bare 40-hex
+		strings.Repeat("f", 32),                     // bare 32-hex
 	}
 	for _, s := range cases {
 		t.Run(s, func(t *testing.T) {

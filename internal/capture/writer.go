@@ -523,6 +523,21 @@ func (w *Writer) ObserveResponseVerdict(_ context.Context, rec *ResponseVerdictR
 
 // ObserveDLPVerdict implements CaptureObserver for DLP body-scan verdicts.
 func (w *Writer) ObserveDLPVerdict(_ context.Context, rec *DLPVerdictRecord) {
+	summary := w.buildSummary(
+		SurfaceDLP, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
+		rec.ActionClass,
+		rec.SessionIDOriginal,
+		rec.ScannerInput, false, rec.TransformKind, "", nil,
+		rec.Request, rec.RawFindings, rec.EffectiveFindings,
+		normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
+	)
+	// Propagate the pre-DLP redaction rewrite count separately so the audit
+	// summary tells operators when bytes were modified on the wire. Set
+	// outside buildSummary because that function's signature is already
+	// long (per CLAUDE.md "do not add parameters to existing long-signature
+	// functions"; a follow-up should migrate buildSummary to an options
+	// struct).
+	summary.RedactionRewritesApplied = rec.RedactionRewritesApplied
 	w.send(captureEntry{
 		entry: recorder.Entry{
 			SessionID: rec.SessionID,
@@ -532,14 +547,7 @@ func (w *Writer) ObserveDLPVerdict(_ context.Context, rec *DLPVerdictRecord) {
 			Transport: rec.Transport,
 			Summary:   rec.Subsurface + ":" + normalizeEffectiveAction(rec.EffectiveAction),
 		},
-		summary: w.buildSummary(
-			SurfaceDLP, rec.Subsurface, rec.ConfigHash, rec.Agent, rec.Profile,
-			rec.ActionClass,
-			rec.SessionIDOriginal,
-			rec.ScannerInput, false, rec.TransformKind, "", nil,
-			rec.Request, rec.RawFindings, rec.EffectiveFindings,
-			normalizeEffectiveAction(rec.EffectiveAction), rec.Outcome, rec.SkipReason,
-		),
+		summary:      summary,
 		scannerInput: rec.ScannerInput,
 		actionClass:  rec.ActionClass,
 	})

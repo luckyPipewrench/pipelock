@@ -1103,20 +1103,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-				Subsurface:        "dlp_body_forward",
-				Transport:         "forward",
-				SessionID:         captureSessionKey(agent, clientIP),
-				SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
-				RequestID:         requestID,
-				ConfigHash:        cfg.CanonicalPolicyHash(),
-				Agent:             agent,
-				Profile:           id.Profile,
-				ActionClass:       captureHTTPActionClass(r.Method),
-				Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
-				TransformKind:     capture.TransformJoinedFields,
-				RawFindings:       bodyScanToFindings(bodyResult),
-				EffectiveAction:   bodyAction,
-				Outcome:           captureOutcome(bodyAction, bodyResult.Clean),
+				Subsurface:               "dlp_body_forward",
+				Transport:                "forward",
+				SessionID:                captureSessionKey(agent, clientIP),
+				SessionIDOriginal:        captureSessionKeyOriginal(agent, clientIP),
+				RequestID:                requestID,
+				ConfigHash:               cfg.CanonicalPolicyHash(),
+				Agent:                    agent,
+				Profile:                  id.Profile,
+				ActionClass:              captureHTTPActionClass(r.Method),
+				Request:                  capture.CaptureRequest{Method: r.Method, URL: targetURL},
+				TransformKind:            capture.TransformJoinedFields,
+				RedactionRewritesApplied: redactionRewriteCount(bodyResult.RedactionReport),
+				RawFindings:              bodyScanToFindings(bodyResult),
+				EffectiveAction:          bodyAction,
+				Outcome:                  captureOutcome(bodyAction, bodyResult.Clean),
 			})
 		}
 		forwardRedactionReport = bodyResult.RedactionReport

@@ -752,20 +752,21 @@ func newInterceptHandler(
 					}
 				}
 				ic.Proxy.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
-					Subsurface:        "dlp_body_intercept",
-					Transport:         "connect",
-					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
-					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
-					RequestID:         ic.RequestID,
-					ConfigHash:        ic.Config.CanonicalPolicyHash(),
-					Agent:             ic.Agent,
-					Profile:           ic.Profile,
-					ActionClass:       captureHTTPActionClass(r.Method),
-					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
-					TransformKind:     capture.TransformJoinedFields,
-					RawFindings:       bodyScanToFindings(result),
-					EffectiveAction:   bodyAction,
-					Outcome:           captureOutcome(bodyAction, result.Clean),
+					Subsurface:               "dlp_body_intercept",
+					Transport:                "connect",
+					SessionID:                captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal:        captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+					RequestID:                ic.RequestID,
+					ConfigHash:               ic.Config.CanonicalPolicyHash(),
+					Agent:                    ic.Agent,
+					Profile:                  ic.Profile,
+					ActionClass:              captureHTTPActionClass(r.Method),
+					Request:                  capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:            capture.TransformJoinedFields,
+					RedactionRewritesApplied: redactionRewriteCount(result.RedactionReport),
+					RawFindings:              bodyScanToFindings(result),
+					EffectiveAction:          bodyAction,
+					Outcome:                  captureOutcome(bodyAction, result.Clean),
 				})
 			}
 			interceptRedactionReport = result.RedactionReport

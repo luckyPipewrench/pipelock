@@ -84,6 +84,23 @@ const (
 	bodyDLPJoinSeparator = "."
 )
 
+// redactionRewriteCount returns the number of class matches the pre-DLP
+// redaction step rewrote in the body, or zero when redaction did not
+// apply (passthrough on allowlist_unparseable, disabled, or no class
+// match). Used to populate audit-capture summaries so operators can
+// distinguish "body forwarded unchanged" from "body forwarded after N
+// rewrites" without having to diff scanner_sample against
+// wire_payload_sample or correlate metrics out-of-band. Pre-fix, the
+// audit row reported outcome=clean even when redaction rewrote bytes,
+// which is what kept the allowlist_unparseable contract bug invisible
+// in production logs until a direct curl probe caught it.
+func redactionRewriteCount(report *redact.Report) int {
+	if report == nil || !report.Applied {
+		return 0
+	}
+	return report.TotalRedactions
+}
+
 // isDomainExempt checks if a hostname matches any pattern in a domain
 // exemption list. Uses scanner.MatchDomain for consistent wildcard
 // semantics: *.discord.com matches both sub.discord.com AND discord.com

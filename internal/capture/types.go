@@ -161,6 +161,17 @@ type CaptureSummary struct {
 	// TransformKind identifies which text extraction was applied before scanning.
 	TransformKind string `json:"transform_kind"`
 
+	// RedactionRewritesApplied is the number of distinct class matches the
+	// request-body redaction step rewrote before the DLP scanner ran on the
+	// (possibly already-modified) body. Zero / omitted when redaction was
+	// disabled, did not match anything, or only ran in passthrough mode for
+	// an allowlist_unparseable host. A non-zero value tells an operator
+	// "pipelock modified bytes on the wire here" so that downstream
+	// upstream-rejected-request investigations have a fast signal instead
+	// of relying on outcome=clean (which was the pre-fix bug class: audit
+	// said clean even when bytes were mutated).
+	RedactionRewritesApplied int `json:"redaction_rewrites_applied,omitempty"`
+
 	// WirePayloadBytes is the byte count of the raw wire payload passed to the
 	// transform.
 	WirePayloadBytes int `json:"wire_payload_bytes,omitempty"`
@@ -371,6 +382,13 @@ type DLPVerdictRecord struct {
 	EffectiveAction   string
 	Outcome           string
 	SkipReason        string
+	// RedactionRewritesApplied is the count of class matches the pre-DLP
+	// redaction step rewrote in the body, propagated into the audit
+	// summary so operators can distinguish "we forwarded this body
+	// unchanged" from "we forwarded after rewriting N values". See
+	// CaptureSummary.RedactionRewritesApplied for the audit-surface
+	// rationale.
+	RedactionRewritesApplied int
 }
 
 // CEERecord holds the context for a cross-entry entropy (CEE) scan result.

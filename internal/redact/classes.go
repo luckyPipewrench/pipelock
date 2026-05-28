@@ -91,12 +91,28 @@ func tokenClasses() []classPattern {
 // win over shorter-hash prefixes, hence the descending priorities. NTLM
 // and MD5 share hex32; disambiguation needs context we don't have at
 // regex time, so we expose MD5 and leave NTLM as a reserved label.
+//
+// Each pattern REQUIRES a contextual keyword prefix (sha256, sha-256,
+// hash-sha256, md5, etc.) followed by a separator (whitespace, colon, or
+// equals) before the hex digest. The earlier unprefixed form was an
+// excessive false-positive source: any 64-char hex string matched the
+// SHA-256 class, including legitimate OAuth client_secret values that
+// happened to be 64 hex chars (Jobber, GitLab, others) and opaque session
+// tokens of the same shape. The PR #635 allowlist_unparseable contract
+// fix surfaced this: redaction kept mangling a Jobber client_secret in
+// form-urlencoded OAuth bodies even after the host was on the trust
+// list, because the bare-hex matcher was rewriting the secret value to
+// a placeholder before the upstream saw it. Tightening the matcher to
+// require a self-labeled prefix preserves the DLP signal on values that
+// present as hashes (integrity attestations, debug logs that name the
+// digest scheme, manifest entries) while letting opaque hex blobs
+// through.
 func hashClasses() []classPattern {
 	return []classPattern{
-		{class: ClassHashSHA512, pattern: regexp.MustCompile(`\b` + hex128 + `\b`), priority: 90},
-		{class: ClassHashSHA256, pattern: regexp.MustCompile(`\b` + hex64 + `\b`), priority: 85},
-		{class: ClassHashSHA1, pattern: regexp.MustCompile(`\b` + hex40 + `\b`), priority: 80},
-		{class: ClassHashMD5, pattern: regexp.MustCompile(`\b` + hex32 + `\b`), priority: 75},
+		{class: ClassHashSHA512, pattern: regexp.MustCompile(`(?i)\b(?:sha[-_]?512|hash[-_]?sha[-_]?512)[\s:=]+` + hex128 + `\b`), priority: 90},
+		{class: ClassHashSHA256, pattern: regexp.MustCompile(`(?i)\b(?:sha[-_]?256|hash[-_]?sha[-_]?256)[\s:=]+` + hex64 + `\b`), priority: 85},
+		{class: ClassHashSHA1, pattern: regexp.MustCompile(`(?i)\b(?:sha[-_]?1|hash[-_]?sha[-_]?1)[\s:=]+` + hex40 + `\b`), priority: 80},
+		{class: ClassHashMD5, pattern: regexp.MustCompile(`(?i)\b(?:md5|hash[-_]?md5)[\s:=]+` + hex32 + `\b`), priority: 75},
 	}
 }
 

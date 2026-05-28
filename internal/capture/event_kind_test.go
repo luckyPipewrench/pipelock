@@ -156,6 +156,74 @@ func TestObserveDLPVerdict_StampsEventKind(t *testing.T) {
 	}
 }
 
+// TestObserveDLPVerdict_PropagatesRedactionRewritesApplied asserts that the
+// pre-DLP redaction-rewrite count set on the record reaches the audit
+// summary. Pre-fix, captures reported outcome=clean / transform_kind=raw
+// even when redaction had rewritten bytes, which masked the
+// allowlist_unparseable contract bug in production logs. The new field
+// surfaces "we forwarded after rewriting N values" directly on the audit
+// row.
+func TestObserveDLPVerdict_PropagatesRedactionRewritesApplied(t *testing.T) {
+	w, dir := newEventKindTestWriter(t)
+
+	w.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+		Subsurface:               testSubsurface,
+		Transport:                testTransport,
+		SessionID:                testSessionID,
+		RequestID:                ekTestRequestID,
+		ConfigHash:               testConfigHash,
+		ActionClass:              ekActionClassWrite,
+		Request:                  capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict},
+		TransformKind:            capture.TransformJoinedFields,
+		ScannerInput:             "field=value",
+		EffectiveAction:          testEffAction,
+		Outcome:                  capture.OutcomeBlocked,
+		RedactionRewritesApplied: 3,
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, summary := readCaptureSummary(t, dir)
+	if summary.RedactionRewritesApplied != 3 {
+		t.Fatalf("summary.RedactionRewritesApplied: got %d, want 3", summary.RedactionRewritesApplied)
+	}
+}
+
+// TestObserveDLPVerdict_OmitsRewriteCountWhenZero is the negative-side
+// regression: when redaction did not modify bytes (passthrough on an
+// allowlist_unparseable host, or scanner found nothing to rewrite), the
+// audit row's RedactionRewritesApplied must stay zero. Combined with the
+// json:"redaction_rewrites_applied,omitempty" tag, the field falls off the
+// wire JSON entirely so existing audit consumers see no shape change for
+// the common case.
+func TestObserveDLPVerdict_OmitsRewriteCountWhenZero(t *testing.T) {
+	w, dir := newEventKindTestWriter(t)
+
+	w.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
+		Subsurface:      testSubsurface,
+		Transport:       testTransport,
+		SessionID:       testSessionID,
+		RequestID:       ekTestRequestID,
+		ConfigHash:      testConfigHash,
+		ActionClass:     ekActionClassWrite,
+		Request:         capture.CaptureRequest{Method: http.MethodPost, URL: testURLVerdict},
+		TransformKind:   capture.TransformJoinedFields,
+		ScannerInput:    "field=value",
+		EffectiveAction: testEffAction,
+		Outcome:         capture.OutcomeClean,
+		// RedactionRewritesApplied intentionally zero.
+	})
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, summary := readCaptureSummary(t, dir)
+	if summary.RedactionRewritesApplied != 0 {
+		t.Fatalf("summary.RedactionRewritesApplied: got %d, want 0", summary.RedactionRewritesApplied)
+	}
+}
+
 // TestObserveCEEVerdict_StampsEventKind asserts CEE observations stamp
 // event_kind="cee".
 func TestObserveCEEVerdict_StampsEventKind(t *testing.T) {

@@ -1,8 +1,41 @@
 # Comparison: Pipelock vs Other Agent Security Tools
 
-An honest feature matrix and guidance on when to use what.
+An honest matrix anchored on enforcement and evidence provenance, with a feature-level appendix below.
 
-## Feature Matrix
+## Enforcement and Evidence Provenance (May 2026)
+
+The 2026 agent-security field splits along three independent axes: where the decision is computed, where it is enforced, and what evidence the receipt cryptographically carries. The matrix below locates current peers on those axes. The narrative after the table covers the nuance, and the per-feature appendix further down preserves the earlier comparison against AIP / agentsh / srt for continuity.
+
+| Tool / category | `decision_location` | `enforcement_location` | `evidence_profile` | HTTP+WS egress content scanning | MCP coverage | A2A coverage | Direct-egress boundary | Best fit |
+|---|---|---|---|---|---|---|---|---|
+| **Pipelock** | `network_mediator` + `kernel_boundary` | `http_proxy` + `mcp_proxy` + `kernel_boundary` | `mediator_signed_receipt` — Ed25519, hash-chained, offline-verifiable, Go/TS/Rust/Python verifiers | DLP, injection, SSRF, encoding evasion, shell obfuscation, WebSocket DLP | Bidirectional: input + tool + chain + drift | Yes (message + Agent Card) | Yes via `pipelock contain install` (kernel-enforced nftables) | Agent-agnostic boundary enforcement with offline-verifiable mediation evidence |
+| **Microsoft Agent Governance Toolkit** | `in_runtime` | `tool_adapter` + `agent_framework` | `runtime_log` (tamper-evident) | No — in-process SDK; network egress delegated to VNet / private endpoints | MCPGateway: input + response + poisoning + SHA-256 drift | Partial (framework-dependent) | In-process declared-host allowlist (not wire-level) | In-process governance for AGT-instrumented agents on supported frameworks |
+| **CAPSEM** (google/capsem) | `network_mediator` (host MITM) | `http_proxy` + `mcp_proxy` (VM-host) | `runtime_log` (SQLite, full-body capture) | Yes — TLS terminated, full body captured (native DLP undocumented) | MCP gateway with allow/block/ask/rewrite | Unknown | Yes (VM + host MITM, Apple Silicon / Linux KVM) | VM-isolated coding agents on a developer laptop |
+| **Signet** (Prismer-AI) | `external_service` (sidecar) | `mcp_proxy` | `runtime_signed_receipt` (Ed25519; uses "logs vs evidence" framing) | No | MCP-stdio only (single channel) | No | Partial (single transport) | MCP-stdio signed enforcement, single channel |
+| **AgentMint** | `in_runtime` (Python SDK) | `tool_adapter` | `runtime_signed_receipt` (Ed25519, AERF spec, hash-chained, 230-line Go verifier) | No | Partial (tool calls) | No | In-process | Compliance-evidence for in-process agent actions in regulated industries |
+| **Cupcake** (eqtylab/cupcake) | `in_runtime` | `agent_framework` + `tool_adapter` | `runtime_log` + evaluation traces (no cryptographic signing in docs) | No | Partial via integrations | No | In-process | OPA-Rego policy enforcement for Claude Code / Cursor / Factory AI / OpenCode |
+| **Cordum** (cordum-io) | `in_runtime` | `agent_framework` | `runtime_log` + audit trails (CAP v2 wire format frozen to Feb 2027) | No — control plane, not wire-level | Via framework adapter | Via framework adapter | In-process | Pre-execution policy + approval gates across LangChain / CrewAI / MCP |
+| **Invariant / Snyk `mcp-scan`** | `external_service` (proxy mode) | `mcp_proxy` | `runtime_log` (`--json` output) | No | Bidirectional: input + tool + chain (via custom policy) + drift | No | Partial (MCP only) | Live MCP proxy with PII/secrets guardrails and policy |
+| **Lasso `mcp-gateway`** | `external_service` (proxy) | `mcp_proxy` | `runtime_log` | No | Partial (input + tool-description scanning) | No | Partial | MCP intercepting proxy with PII/secrets sanitization |
+| **Trail of Bits `mcp-context-protector`** | `external_service` (wrapper) | `mcp_proxy` | `runtime_log` (`quarantine.json`) | No | Drift (TOFU pinning) + tool-description scanning | No | Partial | Drift + tool-description pinning for MCP servers |
+| **Docker `mcp-gateway`** | `external_service` | `mcp_proxy` | `runtime_log` | No (secrets-only on MCP payloads) | Secret-blocking on tool-call payloads | No | Partial | Docker-native MCP server management with secret-blocking interceptor |
+| **Sandbox / allowlist cluster** (srt, agentsh, iron-proxy, coder/boundary, gh-aw-firewall) | `external_service` (proxy / sandbox / kernel) | `http_proxy` / `container_boundary` / `kernel_boundary` (per tool) | `runtime_log` | No — allowlist only, no content inspection | No | No | Yes (per architecture) | Domain / CIDR allowlisting for agent network access |
+
+**Why three location fields, not one.** A Guardian's *decision* (where the allow/deny/modify is computed) is logically independent from its *enforcement* (where the decision is applied) and from its *evidence profile* (what the receipt cryptographically proves). Conflating them lets a tool claim provenance properties it cannot deliver. The matrix lists each axis separately so the receipt's strength is auditable in the same units the field is moving toward — see the open Agent Control Standard issue on minimum enforcement semantics for verdicts.
+
+**The cooperative-vs-non-cooperative distinction.** As Pipelock's maintainer told *Help Net Security* in May 2026:
+
+> "Most agent-security tools still need the agent to cooperate. They are SDKs, decorators, middleware, or wrapper APIs the agent has to call. Those controls only work while the agent keeps calling them."
+>
+> — Joshua Waldrep, [Help Net Security, May 4 2026](https://www.helpnetsecurity.com/2026/05/04/pipelock-open-source-ai-agent-firewall/)
+
+The provenance matrix makes that distinction precise. In-process SDKs (Cupcake, AgentMint, AGT, Cordum) sign and enforce *while the agent cooperates*; sidecar / network-mediator / kernel-boundary tools (Pipelock, CAPSEM, Signet) emit receipts about traffic the agent cannot bypass — but only for traffic they actually mediated. Both have their place. The receipt's `decision_location` and `enforcement_location` fields tell you which you're looking at.
+
+**Boundary honesty.** Pipelock receipts prove what Pipelock mediated. Traffic outside Pipelock's control point — direct egress in deployments without containment, processes Pipelock did not intercept — does not appear in receipts and is not bound by them. See the [Audit Packet threat model](security/audit-packet-threat-model.md) for the explicit limits.
+
+## Feature Appendix (legacy matrix)
+
+The matrix below compares Pipelock to earlier-generation tools (AIP, agentsh, srt) on a feature-level basis. The provenance matrix above is the load-bearing comparison for current peers; this appendix is retained for historical reference and continuity.
 
 | Feature | Pipelock | AIP | agentsh | srt |
 |---------|----------|-----|---------|-----|

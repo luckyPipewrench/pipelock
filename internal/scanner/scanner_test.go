@@ -4575,6 +4575,88 @@ func TestScan_SubdomainEntropyExclusion_QueryEntropyStillChecked(t *testing.T) {
 	}
 }
 
+// TestScan_QueryEntropyExclusion_SkipsQueryEntropy is the positive companion
+// to the regression above: when query_entropy_exclusions IS set for a host,
+// high-entropy query parameter keys and values stop blocking on that host.
+// Modeled on S3 pre-signed URLs (X-Amz-Signature, X-Amz-Credential,
+// response-content-disposition) which embed high-entropy material by AWS
+// protocol contract on Jobber's attachment-storage buckets.
+func TestScan_QueryEntropyExclusion_SkipsQueryEntropy(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"jobber.s3.amazonaws.com"}
+	s := New(cfg)
+	defer s.Close()
+
+	// Shape mirrors what S3 pre-signed URLs carry: high-entropy signature
+	// query value plus a high-entropy response-content-disposition value.
+	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t"
+	url := "https://jobber.s3.amazonaws.com/files/abc.pdf" +
+		"?X-Amz-Signature=" + highEntropy +
+		"&response-content-disposition=" + highEntropy
+	result := s.Scan(context.Background(), url)
+	if !result.Allowed {
+		t.Errorf("expected query entropy to be skipped on excluded host, got blocked: scanner=%s reason=%s",
+			result.Scanner, result.Reason)
+	}
+}
+
+// TestScan_QueryEntropyExclusion_NonListedHostStillBlocks confirms the
+// exclusion is per-host, not global. A non-listed host with the same
+// high-entropy query value still blocks under the normal entropy gate.
+func TestScan_QueryEntropyExclusion_NonListedHostStillBlocks(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"jobber.s3.amazonaws.com"}
+	s := New(cfg)
+	defer s.Close()
+
+	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t"
+	url := "https://other.example.com/path?signature=" + highEntropy
+	result := s.Scan(context.Background(), url)
+	if result.Allowed {
+		t.Error("expected query entropy to still block on a host not in exclusions, got allowed")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
+	}
+}
+
+// TestScan_QueryEntropyExclusion_DoesNotSkipPathEntropy asserts the new
+// list is query-only: high-entropy PATH segments on a query-excluded host
+// still block unless the host is ALSO in subdomain_entropy_exclusions. The
+// two lists are independent gates.
+func TestScan_QueryEntropyExclusion_DoesNotSkipPathEntropy(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.Patterns = nil
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.FetchProxy.Monitoring.Blocklist = nil
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"jobber.s3.amazonaws.com"}
+	// Deliberately NOT setting SubdomainEntropyExclusions for jobber.s3.
+	s := New(cfg)
+	defer s.Close()
+
+	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t" // 32 chars, high entropy
+	url := "https://jobber.s3.amazonaws.com/" + highEntropy + "/file.pdf"
+	result := s.Scan(context.Background(), url)
+	if result.Allowed {
+		t.Error("expected high-entropy path segment to still block when only query is excluded, got allowed")
+	}
+	if result.Scanner != ScannerEntropy {
+		t.Errorf("expected scanner=entropy, got %s", result.Scanner)
+	}
+}
+
 func TestScan_AllowsCleanURLsNoCRLF(t *testing.T) {
 	s := New(testConfig())
 

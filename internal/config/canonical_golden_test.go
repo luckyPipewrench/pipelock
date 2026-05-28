@@ -127,7 +127,10 @@ const (
 	// these control whether unreadable GraphQL operations block, warn, or pass.
 	// Bumped for the request_policy.batch section (JSON batch endpoint
 	// recursion): adding the policy-affecting field changes the canonical hash.
-	goldenHashDefaults = "16511214187762791f210a42d3589eaeab09304ccdcda90c617f895618dadb0d"
+	// Bumped for fetch_proxy.monitoring.query_entropy_exclusions: per-host
+	// bypass for the query parameter entropy gate is a policy-semantic
+	// change. Empty by default but the field is part of the canonical view.
+	goldenHashDefaults = "0e2ec936eacfb25ff0a5051c3d0ff9cad76348a603ce5bb824a7f47d3dcc7b8b"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -195,7 +198,9 @@ const (
 	// Re-bumped for request_policy fail-closed parse/opaque-operation actions:
 	// see goldenHashDefaults note above.
 	// Bumped for the request_policy.batch section (see goldenHashDefaults).
-	goldenHashRichConfig = "00cb23817d50f1b273143c74946b479d27247d221a8b29cfa859d8ef34f2b097"
+	// Bumped for fetch_proxy.monitoring.query_entropy_exclusions: see the
+	// goldenHashDefaults note above.
+	goldenHashRichConfig = "4d4699a7f64c4fbff9436a8cabf51b5a8bbd47b6d878bd58af8a98c9c5830382"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

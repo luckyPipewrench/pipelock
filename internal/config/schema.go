@@ -678,6 +678,16 @@ type Monitoring struct {
 	MaxDataPerMinute           int      `yaml:"max_data_per_minute"` // bytes per domain per minute (0 = disabled)
 	Blocklist                  []string `yaml:"blocklist"`
 	SubdomainEntropyExclusions []string `yaml:"subdomain_entropy_exclusions"` // domains excluded from subdomain entropy checks (exact or *.example.com wildcard)
+	// QueryEntropyExclusions lists hosts whose URL query parameter keys and
+	// values should bypass the entropy block, while subdomain and path
+	// entropy gates and DLP body scanning remain enforced. Intended for
+	// well-known APIs whose contract embeds high-entropy material in query
+	// strings by design (e.g. S3 pre-signed download/upload URLs with
+	// X-Amz-Signature / X-Amz-Credential / response-content-disposition).
+	// Same wildcard rules as SubdomainEntropyExclusions: exact host or
+	// "*.example.com". An empty list (default) preserves the prior
+	// always-on query entropy behavior.
+	QueryEntropyExclusions []string `yaml:"query_entropy_exclusions"`
 }
 
 // DLP configures data loss prevention scanning.

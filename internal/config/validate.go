@@ -620,6 +620,28 @@ func (c *Config) validateFetchProxy() error {
 		c.FetchProxy.Monitoring.SubdomainEntropyExclusions[i] = strings.TrimSuffix(d, ".")
 	}
 
+	// Validate query entropy exclusions with the same hostname-pattern rules
+	// as subdomain entropy exclusions. Kept as a separate list so operators
+	// can grant per-host bypass for the query stage (S3 pre-signed URLs)
+	// without weakening the subdomain or path entropy gates on that host.
+	for i, raw := range c.FetchProxy.Monitoring.QueryEntropyExclusions {
+		d := strings.TrimSpace(strings.ToLower(raw))
+		if d == "" {
+			return fmt.Errorf("query_entropy_exclusions[%d] is empty", i)
+		}
+		if strings.Contains(d, "://") || strings.Contains(d, "/") || strings.Contains(d, ":") {
+			return fmt.Errorf("query_entropy_exclusions[%d] %q: use a hostname pattern, not a URL or host:port", i, raw)
+		}
+		if strings.HasPrefix(d, "*.") {
+			if strings.Count(d[2:], ".") < 1 {
+				return fmt.Errorf("query_entropy_exclusions[%d] %q: wildcard must target a concrete domain like *.example.com", i, raw)
+			}
+		} else if strings.ContainsAny(d, "*?[]") {
+			return fmt.Errorf("query_entropy_exclusions[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
+		}
+		c.FetchProxy.Monitoring.QueryEntropyExclusions[i] = strings.TrimSuffix(d, ".")
+	}
+
 	// Validate global rate limits are non-negative
 	if c.FetchProxy.Monitoring.MaxReqPerMinute < 0 {
 		return fmt.Errorf("fetch_proxy.monitoring.max_requests_per_minute must be >= 0")

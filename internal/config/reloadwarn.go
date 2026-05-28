@@ -290,6 +290,18 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Query entropy exclusions expanded (reduces detection coverage on the
+	// query-string entropy gate; body DLP and other gates remain enforced).
+	if added := passthroughDomainsAdded(
+		old.FetchProxy.Monitoring.QueryEntropyExclusions,
+		updated.FetchProxy.Monitoring.QueryEntropyExclusions,
+	); len(added) > 0 {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "fetch_proxy.monitoring.query_entropy_exclusions",
+			Message: fmt.Sprintf("query entropy exclusions added: %s — entropy detection coverage reduced on query parameters", strings.Join(added, ", ")),
+		})
+	}
+
 	// Trusted domains expanded (SSRF protection scope reduced)
 	if added := passthroughDomainsAdded(old.TrustedDomains, updated.TrustedDomains); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{

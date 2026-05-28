@@ -204,6 +204,7 @@ type Scanner struct {
 	responseAction             string
 	responseEnabled            bool
 	subdomainExclusions        []string // domains excluded from subdomain entropy checks
+	queryExclusions            []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
 	addressChecker             *addressprotect.Checker
 	seedEnabled                bool
 	seedMinWords               int
@@ -339,6 +340,7 @@ func New(cfg *config.Config) *Scanner {
 		entropyMinLen:             20,
 		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
 		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
+		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
 	}
 
 	// Initialize rate limiter if enabled
@@ -2208,16 +2210,23 @@ func LoadSecretsFile(path string, minLen int) ([]string, error) {
 // checkEntropy calculates Shannon entropy on URL path segments and query values.
 // Domains listed in subdomain_entropy_exclusions skip path entropy checks only
 // (APIs that use high-entropy subdomains often embed tokens in URL paths too).
-// Query entropy is always checked regardless of exclusions.
+// Domains listed in query_entropy_exclusions skip query parameter entropy
+// checks only (well-known APIs whose contract embeds high-entropy material
+// in query strings by design, e.g. S3 pre-signed URLs with X-Amz-Signature
+// and response-content-disposition). The two lists are independent: a host
+// listed only in subdomain_entropy_exclusions still has its query parameters
+// scanned, and vice versa.
 func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
 
-	excluded := s.isExcludedFromSubdomainEntropy(parsed.Hostname())
+	hostname := parsed.Hostname()
+	excludedPath := s.isExcludedFromSubdomainEntropy(hostname)
+	excludedQuery := s.isExcludedFromQueryEntropy(hostname)
 
 	// Check path segments (skipped for excluded domains).
-	if !excluded {
+	if !excludedPath {
 		for _, segment := range strings.Split(parsed.Path, "/") {
 			if len(segment) >= s.entropyMinLen {
 				entropy := ShannonEntropy(segment)
@@ -2233,29 +2242,31 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 		}
 	}
 
-	// Check query parameter keys and values.
+	// Check query parameter keys and values (skipped for query-excluded domains).
 	// Keys are checked too — secrets can be stuffed into parameter names.
-	for key, values := range parsed.Query() {
-		if len(key) >= s.entropyMinLen {
-			entropy := ShannonEntropy(key)
-			if entropy > s.entropyThreshold {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
-					Scanner: ScannerEntropy,
-					Score:   math.Min(entropy/8.0, 1.0),
-				}
-			}
-		}
-		for _, v := range values {
-			if len(v) >= s.entropyMinLen {
-				entropy := ShannonEntropy(v)
+	if !excludedQuery {
+		for key, values := range parsed.Query() {
+			if len(key) >= s.entropyMinLen {
+				entropy := ShannonEntropy(key)
 				if entropy > s.entropyThreshold {
 					return Result{
 						Allowed: false,
-						Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+						Reason:  fmt.Sprintf("high entropy query key %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
 						Scanner: ScannerEntropy,
 						Score:   math.Min(entropy/8.0, 1.0),
+					}
+				}
+			}
+			for _, v := range values {
+				if len(v) >= s.entropyMinLen {
+					entropy := ShannonEntropy(v)
+					if entropy > s.entropyThreshold {
+						return Result{
+							Allowed: false,
+							Reason:  fmt.Sprintf("high entropy query param %q (%.2f > %.2f threshold)", key, entropy, s.entropyThreshold),
+							Scanner: ScannerEntropy,
+							Score:   math.Min(entropy/8.0, 1.0),
+						}
 					}
 				}
 			}
@@ -2394,6 +2405,13 @@ func matchesDomainList(hostname string, domains []string) bool {
 // entropy exclusion rule.
 func (s *Scanner) isExcludedFromSubdomainEntropy(hostname string) bool {
 	return matchesDomainList(hostname, s.subdomainExclusions)
+}
+
+// isExcludedFromQueryEntropy checks if the hostname matches any query entropy
+// exclusion rule. Independent from subdomain entropy exclusion; both lists can
+// be set or unset per host without affecting the other gate.
+func (s *Scanner) isExcludedFromQueryEntropy(hostname string) bool {
+	return matchesDomainList(hostname, s.queryExclusions)
 }
 
 // baseDomain returns the registrable domain (eTLD+1) for budget tracking,

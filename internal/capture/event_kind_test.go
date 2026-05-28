@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -221,6 +222,25 @@ func TestObserveDLPVerdict_OmitsRewriteCountWhenZero(t *testing.T) {
 	_, summary := readCaptureSummary(t, dir)
 	if summary.RedactionRewritesApplied != 0 {
 		t.Fatalf("summary.RedactionRewritesApplied: got %d, want 0", summary.RedactionRewritesApplied)
+	}
+
+	entries := readSessionEntries(t, dir, testSessionID)
+	var foundCapture bool
+	for _, e := range entries {
+		if e.Type != capture.EntryTypeCapture {
+			continue
+		}
+		foundCapture = true
+		detailJSON, err := json.Marshal(e.Detail)
+		if err != nil {
+			t.Fatalf("Marshal Detail: %v", err)
+		}
+		if strings.Contains(string(detailJSON), "redaction_rewrites_applied") {
+			t.Fatalf("zero redaction_rewrites_applied should be omitted from JSON detail: %s", detailJSON)
+		}
+	}
+	if !foundCapture {
+		t.Fatal("no capture entry found")
 	}
 }
 

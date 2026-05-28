@@ -84,15 +84,14 @@ const (
 	bodyDLPJoinSeparator = "."
 )
 
-// redactionRewriteCount returns the number of class matches the pre-DLP
-// redaction step rewrote in the body, or zero when redaction did not
-// apply (passthrough on allowlist_unparseable, disabled, or no class
-// match). Used to populate audit-capture summaries so operators can
-// distinguish "body forwarded unchanged" from "body forwarded after N
-// rewrites" without having to diff scanner_sample against
-// wire_payload_sample or correlate metrics out-of-band. Pre-fix, the
-// audit row reported outcome=clean even when redaction rewrote bytes,
-// which is what kept the allowlist_unparseable contract bug invisible
+// redactionRewriteCount returns the number of unique values the pre-DLP
+// redaction step rewrote in the body, or zero when redaction did not apply
+// (passthrough on allowlist_unparseable, disabled, or no class match). Used to
+// populate audit-capture summaries so operators can distinguish "body forwarded
+// unchanged" from "body forwarded after N rewrites" without having to diff
+// scanner_sample against wire_payload_sample or correlate metrics out-of-band.
+// Pre-fix, the audit row reported outcome=clean even when redaction rewrote
+// values, which is what kept the allowlist_unparseable contract bug invisible
 // in production logs until a direct curl probe caught it.
 func redactionRewriteCount(report *redact.Report) int {
 	if report == nil || !report.Applied {

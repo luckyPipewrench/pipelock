@@ -527,7 +527,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 
 	p.setupCEE(&cfg.CrossRequestDetection)
 
-	if err := p.setupRedaction(cfg); err != nil {
+	if err := p.setupRedaction(cfg, sc); err != nil {
 		return nil, err
 	}
 
@@ -1654,8 +1654,8 @@ func addRedactionDictionaryChunks(matcher *redact.Matcher, class redact.Class, e
 // setupRedaction stores the compiled redaction runtime at startup. When
 // redaction is disabled, the pointers are cleared so request handlers fall
 // through without running the redaction step.
-func (p *Proxy) setupRedaction(cfg *config.Config) error {
-	rt, err := p.buildRedactionRuntime(cfg)
+func (p *Proxy) setupRedaction(cfg *config.Config, sc *scanner.Scanner) error {
+	rt, err := p.buildRedactionRuntimeWithScanner(cfg, sc)
 	if err != nil {
 		return fmt.Errorf("redaction runtime build: %w", err)
 	}

@@ -2218,9 +2218,9 @@ func TestWSProxyRedaction_CrossMessageDLPFailClosedWhenEnforceDisabled(t *testin
 	enforceOff := false
 	cfg.Enforce = &enforceOff
 
-	rt, err := p.buildRedactionRuntime(cfg)
+	rt, err := p.buildRedactionRuntimeWithScanner(cfg, nil)
 	if err != nil {
-		t.Fatalf("buildRedactionRuntime: %v", err)
+		t.Fatalf("buildRedactionRuntimeWithScanner: %v", err)
 	}
 	if rt == nil {
 		t.Fatal("expected redaction runtime")

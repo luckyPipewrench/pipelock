@@ -24,6 +24,12 @@ type classPattern struct {
 	// value that is a protocol artifact rather than a leaked secret (e.g. an
 	// AWS access key ID inside a SigV4 pre-signed URL).
 	skipTrailing *regexp.Regexp
+	// skipLeading, when non-nil, additionally requires the text immediately
+	// BEFORE the match to match this regex (anchored at its end) for the skip
+	// to apply. Combined with skipTrailing it scopes the carve-out to a real
+	// X-Amz-Credential= context, so a SigV4-shaped substring sitting in
+	// arbitrary text is still redacted.
+	skipLeading *regexp.Regexp
 }
 
 // sigV4CredentialScope matches the credential-scope tail that follows an AWS
@@ -35,6 +41,15 @@ type classPattern struct {
 // A bare access key ID, or one not in this scope shape, is still redacted.
 var sigV4CredentialScope = regexp.MustCompile(
 	`^(?:/|%2[Ff])[0-9]{8}(?:/|%2[Ff])[A-Za-z0-9-]{1,30}(?:/|%2[Ff])[A-Za-z0-9]{1,20}(?:/|%2[Ff])aws4_request\b`)
+
+// sigV4CredentialPrefix matches the X-Amz-Credential query-parameter key that
+// immediately precedes the access key ID in a SigV4 pre-signed URL. Anchored
+// at the end so it matches against the text just before the candidate. Both
+// the literal '=' and URL-encoded '%3D' separator are accepted. Requiring this
+// prefix (in addition to the credential-scope suffix) keeps the carve-out
+// scoped to a real X-Amz-Credential value, so a SigV4-shaped substring that
+// merely appears in arbitrary text is still redacted.
+var sigV4CredentialPrefix = regexp.MustCompile(`(?i)x-amz-credential(?:=|%3d)$`)
 
 // Shared regex fragments reused across category-specific registries.
 const (
@@ -69,7 +84,7 @@ func tokenClasses() []classPattern {
 		// KEY=<placeholder> does not remain shaped like an env-secret leak
 		// after redaction.
 		{class: ClassEnvSecret, pattern: regexp.MustCompile(`\b` + envSecretName + `\b\s*=\s*\S{8,}`), priority: 120},
-		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA|AGPA|AROA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope},
+		{class: ClassAWSAccessKey, pattern: regexp.MustCompile(`\b(?:AKIA|ASIA|AIDA|AGPA|AROA)[A-Z0-9]{16}\b`), priority: 100, skipTrailing: sigV4CredentialScope, skipLeading: sigV4CredentialPrefix},
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`), priority: 100},
 		{class: ClassGitHubToken, pattern: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},

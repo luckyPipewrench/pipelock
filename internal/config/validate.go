@@ -625,7 +625,11 @@ func (c *Config) validateFetchProxy() error {
 	// can grant per-host bypass for the query stage (S3 pre-signed URLs)
 	// without weakening the subdomain or path entropy gates on that host.
 	for i, raw := range c.FetchProxy.Monitoring.QueryEntropyExclusions {
-		d := strings.TrimSpace(strings.ToLower(raw))
+		// Normalize the trailing dot BEFORE the breadth check so a
+		// trailing-dot input like "*.com." cannot pass the breadth check as
+		// "*.com." (one dot after "*.") and then normalize down to the
+		// over-broad "*.com".
+		d := strings.TrimSuffix(strings.TrimSpace(strings.ToLower(raw)), ".")
 		if d == "" {
 			return fmt.Errorf("query_entropy_exclusions[%d] is empty", i)
 		}
@@ -639,7 +643,7 @@ func (c *Config) validateFetchProxy() error {
 		} else if strings.ContainsAny(d, "*?[]") {
 			return fmt.Errorf("query_entropy_exclusions[%d] %q: only exact hosts and *.example.com wildcards are supported", i, raw)
 		}
-		c.FetchProxy.Monitoring.QueryEntropyExclusions[i] = strings.TrimSuffix(d, ".")
+		c.FetchProxy.Monitoring.QueryEntropyExclusions[i] = d
 	}
 
 	// Validate global rate limits are non-negative

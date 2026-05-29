@@ -169,10 +169,14 @@ func (m *Matcher) Scan(s string) []Match {
 	var raw []Match
 	for _, cp := range m.patterns {
 		for _, loc := range cp.pattern.FindAllStringIndex(s, -1) {
-			// Reject matches whose following context marks them as a protocol
+			// Reject matches whose surrounding context marks them as a protocol
 			// artifact rather than a leaked secret (e.g. an AWS access key ID
-			// that is the X-Amz-Credential of a SigV4 pre-signed URL).
-			if cp.skipTrailing != nil && cp.skipTrailing.MatchString(s[loc[1]:]) {
+			// that is the X-Amz-Credential of a SigV4 pre-signed URL). Both the
+			// trailing credential-scope and, when set, the leading
+			// X-Amz-Credential= prefix must match, so a SigV4-shaped substring
+			// in arbitrary text is still redacted.
+			if cp.skipTrailing != nil && cp.skipTrailing.MatchString(s[loc[1]:]) &&
+				(cp.skipLeading == nil || cp.skipLeading.MatchString(s[:loc[0]])) {
 				continue
 			}
 			raw = append(raw, Match{

@@ -1839,14 +1839,40 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = resolved.Budget.RecordBytes(written)
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
+		// Record the allow verdict on the capture surface so exempt downloads
+		// stay visible to policy replay. No scan ran, so findings are empty.
+		p.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+			Subsurface:        "response_forward",
+			Transport:         "forward",
+			SessionID:         captureSessionKey(agent, clientIP),
+			SessionIDOriginal: captureSessionKeyOriginal(agent, clientIP),
+			RequestID:         requestID,
+			ConfigHash:        cfg.CanonicalPolicyHash(),
+			Agent:             agent,
+			Profile:           id.Profile,
+			ActionClass:       captureHTTPActionClass(r.Method),
+			Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+			TransformKind:     capture.TransformRaw,
+			EffectiveAction:   config.ActionAllow,
+			Outcome:           captureOutcome(config.ActionAllow, true),
+		})
 		p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
-			ActionID:  actionID,
-			Verdict:   config.ActionAllow,
-			Transport: "forward",
-			Method:    r.Method,
-			Target:    targetURL,
-			RequestID: requestID,
-			Agent:     agent,
+			ActionID:            actionID,
+			Verdict:             config.ActionAllow,
+			Transport:           "forward",
+			Method:              r.Method,
+			Target:              targetURL,
+			RequestID:           requestID,
+			Agent:               agent,
+			SessionTaintLevel:   forwardTaint.Risk.Level.String(),
+			SessionContaminated: forwardTaint.Risk.Contaminated,
+			RecentTaintSources:  forwardTaint.Risk.Sources,
+			SessionTaskID:       forwardTaint.Task.CurrentTaskID,
+			SessionTaskLabel:    forwardTaint.Task.CurrentTaskLabel,
+			AuthorityKind:       forwardTaint.Authority.String(),
+			TaintDecision:       forwardTaint.Result.Decision.String(),
+			TaintDecisionReason: forwardTaint.Result.Reason,
+			TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 		}))
 		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {

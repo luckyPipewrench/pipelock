@@ -300,6 +300,14 @@ func TestScan_AWSAccessKey_SigV4CredentialScopeSkipped(t *testing.T) {
 			false,
 		},
 		{"akia then non-date slash still redacted", key + "/notadate/foo", true},
+		{
+			// Credential-scope SUFFIX shape but NOT in an X-Amz-Credential
+			// context: must still be redacted (the carve-out requires the
+			// X-Amz-Credential= prefix, not just a SigV4-looking tail).
+			"sigv4 scope shape without credential prefix still redacted",
+			"note: " + key + "/20260528/us-east-1/s3/aws4_request appears here",
+			true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1440,6 +1440,30 @@ func newInterceptHandler(
 			// trusted download still decrements it (no scan-size cap: the host
 			// is trusted to carry large files).
 			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
+			// Funnel through the same success bookkeeping as the scanned allow
+			// path: capture verdict (no scan ran, findings empty), clean-decay,
+			// and the allowed metric.
+			if ic.Proxy != nil {
+				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
+					Subsurface:        "response_intercept",
+					Transport:         "connect",
+					SessionID:         captureSessionKey(ic.Agent, ic.ClientIP),
+					SessionIDOriginal: captureSessionKeyOriginal(ic.Agent, ic.ClientIP),
+					RequestID:         ic.RequestID,
+					ConfigHash:        ic.Config.CanonicalPolicyHash(),
+					Agent:             ic.Agent,
+					Profile:           ic.Profile,
+					ActionClass:       captureHTTPActionClass(r.Method),
+					Request:           capture.CaptureRequest{Method: r.Method, URL: targetURL},
+					TransformKind:     capture.TransformRaw,
+					EffectiveAction:   config.ActionAllow,
+					Outcome:           captureOutcome(config.ActionAllow, true),
+				})
+			}
+			if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding {
+				ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
+			}
+			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
 			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionAllow,

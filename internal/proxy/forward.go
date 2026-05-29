@@ -1810,6 +1810,32 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Response-scan-exempt destinations stream through untouched (parity with
+	// the TLS-interception path): the operator trusts this host, so no
+	// media-policy metadata strip, no browser shield, no response-size block,
+	// and no injection scan. This keeps large or binary file-transfer
+	// downloads byte-intact and avoids buffering an arbitrarily large trusted
+	// response in memory. Request-side scanning already ran. Reaching here
+	// means the response is not SSE (the streaming branch above returned).
+	if fwdRespExempt {
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		duration := time.Since(start)
+		p.metrics.RecordAllowed(duration, agentLabel)
+		p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
+			ActionID:  actionID,
+			Verdict:   config.ActionAllow,
+			Transport: "forward",
+			Method:    r.Method,
+			Target:    targetURL,
+			RequestID: requestID,
+			Agent:     agent,
+		}))
+		p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
+		return
+	}
+
 	// Response injection scanning: buffer-then-scan-then-send when enabled.
 	// Headers are copied AFTER the scan decision so blocked responses don't
 	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.

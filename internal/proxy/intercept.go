@@ -1408,6 +1408,38 @@ func newInterceptHandler(
 			return
 		}
 
+		// Response-scan-exempt destinations stream through untouched. The
+		// operator has explicitly trusted this host, so its response body is
+		// forwarded without buffering: no media-policy metadata strip, no
+		// browser shield, no response-size block, and no injection scan
+		// (already skipped for exempt hosts). This keeps large or binary
+		// payloads such as signed file-transfer downloads byte-intact, and
+		// streaming avoids buffering an arbitrarily large trusted response in
+		// memory. Request-side DLP, redaction, SSRF, and authority checks
+		// already ran above. SSE is handled by the streaming branch above.
+		if interceptRespExempt {
+			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
+			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
+			for k, vv := range resp.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			removeHopByHopHeaders(w.Header())
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+				ActionID:  actionID,
+				Verdict:   config.ActionAllow,
+				Transport: "intercept",
+				Method:    r.Method,
+				Target:    targetURL,
+				RequestID: ic.RequestID,
+				Agent:     ic.Agent,
+			}))
+			return
+		}
+
 		// Buffer response for scanning (scan-then-send, fail-closed).
 		maxResp := ic.Config.TLSInterception.MaxResponseBytes
 		if maxResp <= 0 {

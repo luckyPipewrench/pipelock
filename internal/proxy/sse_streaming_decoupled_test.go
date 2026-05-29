@@ -470,3 +470,94 @@ func TestInterceptTunnel_SSE_StreamsWithMediaPolicyDefault(t *testing.T) {
 
 	assertTwoEventSSEStreams(t, resp, releaseSecond)
 }
+
+// buildExifJPEGFixture builds a minimal valid JPEG (SOI, a strippable APP1/EXIF
+// segment of payloadLen bytes, SOS + scan, EOI). Media policy would strip the
+// APP1; the total size lets a test set MaxResponseBytes below it.
+func buildExifJPEGFixture(payloadLen int) []byte {
+	b := []byte{0xFF, 0xD8} // SOI
+	payload := append([]byte("Exif\x00\x00"), make([]byte, payloadLen)...)
+	segLen := len(payload) + 2 // length field includes its own 2 bytes
+	// Panic (not t.Fatal) so gosec's SSA value-range analysis narrows segLen
+	// to a uint16-safe interval before the byte casts below (G115).
+	if segLen < 0 || segLen > 0xFFFF {
+		panic("buildExifJPEGFixture: segment length exceeds JPEG 16-bit limit")
+	}
+	b = append(b, 0xFF, 0xE1, byte(segLen>>8), byte(segLen&0xFF))
+	b = append(b, payload...)
+	b = append(b, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x3F, 0x00) // SOS
+	b = append(b, 0x11, 0x22, 0xFF, 0x00, 0x33)                               // scan
+	b = append(b, 0xFF, 0xD9)                                                 // EOI
+	return b
+}
+
+// TestInterceptTunnel_ExemptDomain_StreamsBodyIntact asserts that a response
+// from a host in response_scanning.exempt_domains streams through byte-intact:
+// no media-policy metadata strip and no response-size block, even though the
+// body exceeds MaxResponseBytes and carries strippable EXIF. This is the
+// trusted-destination file-transfer path (e.g. signed download URLs).
+func TestInterceptTunnel_ExemptDomain_StreamsBodyIntact(t *testing.T) {
+	jpeg := buildExifJPEGFixture(256)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpeg)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.ExemptDomains = []string{host}
+	enabledTrue := true
+	cfg.MediaPolicy.Enabled = &enabledTrue
+	cfg.MediaPolicy.StripImageMetadata = &enabledTrue
+	cfg.TLSInterception.MaxResponseBytes = 64 // below the image size: non-exempt would size-block
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host, TargetPort: port, Config: cfg, Scanner: sc,
+			CertCache: cache, Logger: logger, Metrics: m,
+			ClientIP: "10.0.0.1", RequestID: "test-exempt-passthrough",
+			UpstreamRT: upstream.Client().Transport,
+		})
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+":"+port+"/photo.jpg", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (exempt host must not be size-blocked)", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != string(jpeg) {
+		t.Errorf("body altered: got %d bytes, want %d (exempt host must stream intact)", len(body), len(jpeg))
+	}
+	if !strings.Contains(string(body), "Exif") {
+		t.Error("EXIF APP1 stripped; media policy ran on an exempt host")
+	}
+}

@@ -401,7 +401,7 @@ func asBlockError(err error) (*BlockError, bool) {
 }
 
 // TestRewriteJSON_SigV4PresignedURLSurvives asserts that a SigV4 pre-signed
-// URL carried in a JSON response (e.g. a Jobber attachment upload URL) passes
+// URL carried in a JSON response (e.g. an object-storage pre-signed URL) passes
 // through redaction with its X-Amz-Credential access key ID intact, so the
 // URL still works. A redacted credential would break the upload.
 func TestRewriteJSON_SigV4PresignedURLSurvives(t *testing.T) {
@@ -420,7 +420,7 @@ func TestRewriteJSON_SigV4PresignedURLSurvives(t *testing.T) {
 		t.Fatalf("BuildMatcher: %v", err)
 	}
 	key := "AKIA" + "IOSFODNN7EXAMPLE"
-	url := "https://jobber.s3.amazonaws.com/file?X-Amz-Credential=" + key +
+	url := "https://examplebucket.s3.amazonaws.com/file?X-Amz-Credential=" + key +
 		"%2F20260528%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=deadbeefcafe"
 	body := []byte(`{"data":{"jobNoteAddAttachment":{"attachmentsToBeAdded":[{"url":"` + url + `"}]}}}`)
 	out, _, err := RewriteJSON(body, m, NewRedactor(), Limits{})

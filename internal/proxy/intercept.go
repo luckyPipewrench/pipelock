@@ -1417,7 +1417,15 @@ func newInterceptHandler(
 		// streaming avoids buffering an arbitrarily large trusted response in
 		// memory. Request-side DLP, redaction, SSRF, and authority checks
 		// already ran above. SSE is handled by the streaming branch above.
-		if interceptRespExempt {
+		//
+		// Gated on the ic.Config.ResponseScanning.Enabled flag (not the
+		// scanner's ResponseScanningEnabled(), which is also true when only
+		// core response patterns are present) so exempt_domains stays dormant
+		// when the operator has turned response scanning off: with it off this
+		// falls through to the buffered path below, which still runs media
+		// policy. Preserves the "media policy runs even when response scanning
+		// is disabled" invariant and matches the exempt_domains validator warning.
+		if interceptRespExempt && ic.Config.ResponseScanning.Enabled {
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 			for k, vv := range resp.Header {
@@ -1427,7 +1435,11 @@ func newInterceptHandler(
 			}
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
-			_, _ = io.Copy(w, resp.Body)
+			written, _ := io.Copy(w, resp.Body)
+			// Account streamed bytes against the per-domain data budget so a
+			// trusted download still decrements it (no scan-size cap: the host
+			// is trusted to carry large files).
+			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
 				Verdict:   config.ActionAllow,

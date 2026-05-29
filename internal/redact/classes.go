@@ -112,9 +112,9 @@ func tokenClasses() []classPattern {
 // equals) before the hex digest. The earlier unprefixed form was an
 // excessive false-positive source: any 64-char hex string matched the
 // SHA-256 class, including legitimate OAuth client_secret values that
-// happened to be 64 hex chars (Jobber, GitLab, others) and opaque session
+// happened to be 64 hex chars (various SaaS providers, GitLab) and opaque session
 // tokens of the same shape. The PR #635 allowlist_unparseable contract
-// fix surfaced this: redaction kept mangling a Jobber client_secret in
+// fix surfaced this: redaction kept mangling a SaaS OAuth client_secret in
 // form-urlencoded OAuth bodies even after the host was on the trust
 // list, because the bare-hex matcher was rewriting the secret value to
 // a placeholder before the upstream saw it. Tightening the matcher to

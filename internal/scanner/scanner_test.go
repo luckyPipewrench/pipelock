@@ -4580,7 +4580,7 @@ func TestScan_SubdomainEntropyExclusion_QueryEntropyStillChecked(t *testing.T) {
 // high-entropy query parameter keys and values stop blocking on that host.
 // Modeled on S3 pre-signed URLs (X-Amz-Signature, X-Amz-Credential,
 // response-content-disposition) which embed high-entropy material by AWS
-// protocol contract on Jobber's attachment-storage buckets.
+// protocol contract on object-storage buckets.
 func TestScan_QueryEntropyExclusion_SkipsQueryEntropy(t *testing.T) {
 	cfg := testConfig()
 	cfg.DLP.Patterns = nil
@@ -4588,14 +4588,14 @@ func TestScan_QueryEntropyExclusion_SkipsQueryEntropy(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
-	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"jobber.s3.amazonaws.com"}
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
 	s := New(cfg)
 	defer s.Close()
 
 	// Shape mirrors what S3 pre-signed URLs carry: high-entropy signature
 	// query value plus a high-entropy response-content-disposition value.
 	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t"
-	url := "https://jobber.s3.amazonaws.com/files/abc.pdf" +
+	url := "https://examplebucket.s3.amazonaws.com/files/abc.pdf" +
 		"?X-Amz-Signature=" + highEntropy +
 		"&response-content-disposition=" + highEntropy
 	result := s.Scan(context.Background(), url)
@@ -4615,7 +4615,7 @@ func TestScan_QueryEntropyExclusion_NonListedHostStillBlocks(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
-	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"jobber.s3.amazonaws.com"}
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
 	s := New(cfg)
 	defer s.Close()
 
@@ -4641,13 +4641,13 @@ func TestScan_QueryEntropyExclusion_DoesNotSkipPathEntropy(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.FetchProxy.Monitoring.Blocklist = nil
-	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"jobber.s3.amazonaws.com"}
-	// Deliberately NOT setting SubdomainEntropyExclusions for jobber.s3.
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"examplebucket.s3.amazonaws.com"}
+	// Deliberately NOT setting SubdomainEntropyExclusions for examplebucket.s3.
 	s := New(cfg)
 	defer s.Close()
 
 	highEntropy := "aB3xK9mZ2wQ7rL5yN8vC4jF6hD1eG0t" // 32 chars, high entropy
-	url := "https://jobber.s3.amazonaws.com/" + highEntropy + "/file.pdf"
+	url := "https://examplebucket.s3.amazonaws.com/" + highEntropy + "/file.pdf"
 	result := s.Scan(context.Background(), url)
 	if result.Allowed {
 		t.Error("expected high-entropy path segment to still block when only query is excluded, got allowed")

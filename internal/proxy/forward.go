@@ -1817,10 +1817,26 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// downloads byte-intact and avoids buffering an arbitrarily large trusted
 	// response in memory. Request-side scanning already ran. Reaching here
 	// means the response is not SSE (the streaming branch above returned).
-	if fwdRespExempt {
+	//
+	// Gated on the cfg.ResponseScanning.Enabled flag (not the scanner's
+	// ResponseScanningEnabled(), which is also true when only core response
+	// patterns are present) so exempt_domains stays dormant when the operator
+	// has turned response scanning off: with it off the request falls through
+	// to the buffered path below, which still runs media policy and browser
+	// shield. This preserves the "media policy runs even when response scanning
+	// is disabled" invariant and matches the validator warning that
+	// exempt_domains only takes effect when response scanning is enabled.
+	if fwdRespExempt && cfg.ResponseScanning.Enabled {
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		written, _ := io.Copy(w, resp.Body)
+		// Account streamed bytes against both budgets so a trusted download
+		// still decrements the per-domain data budget and the per-agent byte
+		// budget. No scan-size cap is applied (the host is trusted to carry
+		// large files), but cumulative budget enforcement still blocks future
+		// requests once the budget is exhausted.
+		sc.RecordRequest(strings.ToLower(r.URL.Hostname()), int(written))
+		_ = resolved.Budget.RecordBytes(written)
 		duration := time.Since(start)
 		p.metrics.RecordAllowed(duration, agentLabel)
 		p.emitReceipt(withForwardRedaction(receipt.EmitOpts{
@@ -1832,7 +1848,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID: requestID,
 			Agent:     agent,
 		}))
-		p.logger.LogForwardHTTP(actx, resp.StatusCode, 0, duration)
+		p.logger.LogForwardHTTP(actx, resp.StatusCode, int(written), duration)
+		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+			forwardRec.RecordClean(cfg.AdaptiveEnforcement.DecayPerCleanRequest)
+		}
 		return
 	}
 

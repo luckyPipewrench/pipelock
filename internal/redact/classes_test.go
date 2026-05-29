@@ -67,7 +67,7 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"credit-card-amex-15digit", "card " + "3782 822463 " + "10005", ClassCreditCard},
 		{"credit-card-amex-dashed", "card " + "3714-496353-" + "98431", ClassCreditCard},
 		// Hash classes now require a contextual keyword prefix (sha256/
-		// md5/etc.) so bare 64-hex strings like Jobber-style OAuth
+		// md5/etc.) so bare 64-hex strings like SaaS-style OAuth
 		// client_secret values do not trigger the matcher. See
 		// hashClasses() in classes.go for the rationale.
 		{"hash-md5", "md5 " + strings.Repeat("a", 32), ClassHashMD5},
@@ -228,7 +228,7 @@ func TestDefaultMatcher_Negative(t *testing.T) {
 		"version 1.2.3 shipped yesterday",               // not a FQDN
 		"this is a plain english sentence with no dots", // nothing to match
 		// Bare hex strings of hash-shape lengths must NOT match a hash
-		// class without a contextual prefix. These are the Jobber-OAuth-
+		// class without a contextual prefix. These are the SaaS-OAuth-
 		// client-secret class of values: opaque hex blobs that look like
 		// SHA-256 digests but are credentials, not hashes. Regression
 		// test for the PR #635 redaction passthrough work.

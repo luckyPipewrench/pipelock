@@ -561,3 +561,75 @@ func TestInterceptTunnel_ExemptDomain_StreamsBodyIntact(t *testing.T) {
 		t.Error("EXIF APP1 stripped; media policy ran on an exempt host")
 	}
 }
+
+// TestInterceptTunnel_ExemptDomain_MediaPolicyRunsWhenResponseScanDisabled
+// asserts the exempt passthrough is gated on response scanning being enabled.
+// With response_scanning disabled, an exempt host's image must still go through
+// media policy (EXIF stripped), preserving the "media policy runs even when
+// response scanning is disabled" invariant and matching the validator warning
+// that exempt_domains only takes effect when response scanning is enabled.
+func TestInterceptTunnel_ExemptDomain_MediaPolicyRunsWhenResponseScanDisabled(t *testing.T) {
+	jpeg := buildExifJPEGFixture(256)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpeg)
+	}))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+	port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+	cfg.ResponseScanning.Enabled = false                // disabled
+	cfg.ResponseScanning.ExemptDomains = []string{host} // but host listed exempt
+	enabledTrue := true
+	cfg.MediaPolicy.Enabled = &enabledTrue
+	cfg.MediaPolicy.StripImageMetadata = &enabledTrue
+	cfg.TLSInterception.MaxResponseBytes = 10 << 20 // large: media strip is what we assert, not size
+	sc := scanner.New(cfg)
+	t.Cleanup(func() { sc.Close() })
+
+	clientConn, proxyConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	go func() {
+		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
+			TargetHost: host, TargetPort: port, Config: cfg, Scanner: sc,
+			CertCache: cache, Logger: logger, Metrics: m,
+			ClientIP: "10.0.0.1", RequestID: "test-exempt-scan-disabled",
+			UpstreamRT: upstream.Client().Transport,
+		})
+	}()
+
+	tlsConn := tls.Client(clientConn, &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12})
+	t.Cleanup(func() { _ = tlsConn.Close() })
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+host+":"+port+"/photo.jpg", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if err := req.Write(tlsConn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "Exif") {
+		t.Error("EXIF survived: media policy did not run on exempt host with response scanning disabled (passthrough not gated)")
+	}
+	if string(body) == string(jpeg) {
+		t.Error("body unchanged: media policy did not strip (passthrough incorrectly triggered while response scanning disabled)")
+	}
+}

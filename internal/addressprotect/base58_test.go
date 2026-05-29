@@ -44,6 +44,9 @@ func TestBase58DecodeInvalidChars(t *testing.T) {
 		"Ighi",     // 'I' not in base58 alphabet
 		"test+abc", // '+' not in base58 alphabet
 		"abc def",  // space not in base58 alphabet
+		"abcé",     // 'é' — multi-byte UTF-8; byte-iteration rejects the high bytes
+		"ab€cd",    // '€' — 3-byte UTF-8; each high byte is outside the charset
+		"ab\xffcd", // raw high byte (invalid UTF-8) is also outside the charset
 	}
 	for _, s := range invalid {
 		t.Run(s, func(t *testing.T) {

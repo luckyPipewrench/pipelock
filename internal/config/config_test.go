@@ -1706,6 +1706,112 @@ func TestValidate_SubdomainEntropyExclusions_TrailingDot(t *testing.T) {
 	}
 }
 
+func TestValidate_QueryEntropyExclusions_Valid(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{
+		"*.amazonaws.com",
+		"trusted.example.com",
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("expected validation to pass, got: %v", err)
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_Empty(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"*.example.com", ""}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for empty query_entropy_exclusions entry")
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_URL(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"https://example.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for URL in query_entropy_exclusions")
+	}
+	if !strings.Contains(err.Error(), "not a URL") {
+		t.Errorf("error should mention URL, got: %v", err)
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_HostPort(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"example.com:8080"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for host:port in query_entropy_exclusions")
+	}
+	if !strings.Contains(err.Error(), "not a URL or host:port") {
+		t.Errorf("error should mention host:port, got: %v", err)
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_OverBroad(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"*.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for over-broad wildcard *.com")
+	}
+	if !strings.Contains(err.Error(), "concrete domain") {
+		t.Errorf("error should mention concrete domain, got: %v", err)
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_BadWildcard(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"example.*.com"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for non-prefix wildcard")
+	}
+	if !strings.Contains(err.Error(), "only exact hosts") {
+		t.Errorf("error should mention supported formats, got: %v", err)
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_Normalized(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"  *.AmazonAWS.COM  "}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass, got: %v", err)
+	}
+	if cfg.FetchProxy.Monitoring.QueryEntropyExclusions[0] != "*.amazonaws.com" {
+		t.Errorf("expected normalized entry, got %q", cfg.FetchProxy.Monitoring.QueryEntropyExclusions[0])
+	}
+}
+
+func TestValidate_QueryEntropyExclusions_TrailingDot(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"*.amazonaws.com."}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected validation to pass, got: %v", err)
+	}
+	if cfg.FetchProxy.Monitoring.QueryEntropyExclusions[0] != "*.amazonaws.com" {
+		t.Errorf("expected trailing dot stripped, got %q", cfg.FetchProxy.Monitoring.QueryEntropyExclusions[0])
+	}
+}
+
+// TestValidate_QueryEntropyExclusions_TrailingDotOverBroad guards the specific
+// trailing-dot-before-breadth bypass the validator comment calls out: "*.com."
+// must NOT slip through the breadth check as "one dot after *." and then
+// normalize down to the over-broad "*.com". Normalization happens before the
+// breadth check, so this is rejected.
+func TestValidate_QueryEntropyExclusions_TrailingDotOverBroad(t *testing.T) {
+	cfg := Defaults()
+	cfg.FetchProxy.Monitoring.QueryEntropyExclusions = []string{"*.com."}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for trailing-dot over-broad wildcard *.com.")
+	}
+	if !strings.Contains(err.Error(), "concrete domain") {
+		t.Errorf("error should mention concrete domain, got: %v", err)
+	}
+}
+
 func TestValidateReload_SubdomainExclusionsExpanded(t *testing.T) {
 	old := Defaults()
 	old.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.runpod.net"}

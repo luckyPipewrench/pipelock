@@ -399,3 +399,38 @@ func asBlockError(err error) (*BlockError, bool) {
 	}
 	return nil, false
 }
+
+// TestRewriteJSON_SigV4PresignedURLSurvives asserts that a SigV4 pre-signed
+// URL carried in a JSON response (e.g. a Jobber attachment upload URL) passes
+// through redaction with its X-Amz-Credential access key ID intact, so the
+// URL still works. A redacted credential would break the upload.
+func TestRewriteJSON_SigV4PresignedURLSurvives(t *testing.T) {
+	t.Parallel()
+	// Use a code-style profile (aws-access-key only, no fqdn) to mirror the
+	// deployed redaction profile, so the assertion is the full URL surviving
+	// intact rather than incidental host redaction from the all-classes
+	// default matcher.
+	cfg := &Config{
+		Enabled:        true,
+		DefaultProfile: "code",
+		Profiles:       map[string]ProfileSpec{"code": {Classes: []string{"aws-access-key"}}},
+	}
+	m, err := cfg.BuildMatcher("code")
+	if err != nil {
+		t.Fatalf("BuildMatcher: %v", err)
+	}
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	url := "https://jobber.s3.amazonaws.com/file?X-Amz-Credential=" + key +
+		"%2F20260528%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=deadbeefcafe"
+	body := []byte(`{"data":{"jobNoteAddAttachment":{"attachmentsToBeAdded":[{"url":"` + url + `"}]}}}`)
+	out, _, err := RewriteJSON(body, m, NewRedactor(), Limits{})
+	if err != nil {
+		t.Fatalf("RewriteJSON: %v", err)
+	}
+	if !strings.Contains(string(out), url) {
+		t.Errorf("pre-signed URL did not survive redaction intact; upload would break:\n%s", out)
+	}
+	if strings.Contains(string(out), "<pl:aws-access-key") {
+		t.Errorf("unexpected aws-access-key placeholder in output:\n%s", out)
+	}
+}

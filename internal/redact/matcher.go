@@ -169,6 +169,12 @@ func (m *Matcher) Scan(s string) []Match {
 	var raw []Match
 	for _, cp := range m.patterns {
 		for _, loc := range cp.pattern.FindAllStringIndex(s, -1) {
+			// Reject matches whose following context marks them as a protocol
+			// artifact rather than a leaked secret (e.g. an AWS access key ID
+			// that is the X-Amz-Credential of a SigV4 pre-signed URL).
+			if cp.skipTrailing != nil && cp.skipTrailing.MatchString(s[loc[1]:]) {
+				continue
+			}
 			raw = append(raw, Match{
 				Class:    cp.class,
 				Start:    loc[0],

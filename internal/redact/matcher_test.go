@@ -272,3 +272,46 @@ func TestMatcher_DictionaryPrefixShadowDoesNotLeakTail(t *testing.T) {
 		t.Fatalf("hostname placeholder missing: %s", outStr)
 	}
 }
+
+// TestScan_AWSAccessKey_SigV4CredentialScopeSkipped asserts that an AWS access
+// key ID appearing as the X-Amz-Credential of a SigV4 pre-signed URL is NOT
+// flagged for redaction. The access key ID in a pre-signed URL is the public
+// half of the credential pair (the secret signing key is never in the URL),
+// so redacting it leaks nothing and corrupts the URL. A bare access key ID,
+// or one not in credential-scope shape, must still be redacted.
+func TestScan_AWSAccessKey_SigV4CredentialScopeSkipped(t *testing.T) {
+	t.Parallel()
+	m := NewDefaultMatcher()
+	key := "AKIA" + "IOSFODNN7EXAMPLE"
+	tests := []struct {
+		name      string
+		input     string
+		wantMatch bool
+	}{
+		{"bare key still redacted", "leaked " + key + " in logs", true},
+		{
+			"sigv4 plain-slash scope skipped",
+			"https://b.s3.amazonaws.com/o?X-Amz-Credential=" + key + "/20260528/us-east-1/s3/aws4_request&X-Amz-Signature=abc123",
+			false,
+		},
+		{
+			"sigv4 url-encoded scope skipped",
+			"X-Amz-Credential=" + key + "%2F20260528%2Fus-east-1%2Fs3%2Faws4_request",
+			false,
+		},
+		{"akia then non-date slash still redacted", key + "/notadate/foo", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := false
+			for _, mm := range m.Scan(tt.input) {
+				if mm.Class == ClassAWSAccessKey {
+					got = true
+				}
+			}
+			if got != tt.wantMatch {
+				t.Errorf("ClassAWSAccessKey match = %v, want %v (input %q)", got, tt.wantMatch, tt.input)
+			}
+		})
+	}
+}

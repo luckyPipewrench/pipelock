@@ -350,6 +350,75 @@ func TestBuildConductorBundlePollerDisabled(t *testing.T) {
 	}
 }
 
+// TestBuildConductorBundlePollerErrorPaths covers the remaining fail-closed
+// branches: an unreadable mTLS client certificate, and (with valid mTLS + a real
+// signed roster) an unparseable poll interval. The trust-resolver branch is
+// covered by TestBuildConductorBundlePollerRejectsBadRosterEvenWithHonorFalse.
+func TestBuildConductorBundlePollerErrorPaths(t *testing.T) {
+	dir := t.TempDir()
+	clientPEM, clientKeyPEM := testTLSClientCert(t)
+	caPath := filepath.Join(dir, "boss-ca.pem")
+	clientCertPath := filepath.Join(dir, "client.crt")
+	clientKeyPath := filepath.Join(dir, "client.key")
+	rosterPath := filepath.Join(dir, "trust-roster.json")
+	bundlePub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	rootFingerprint := writeRuntimeTrustRoster(t, rosterPath, bundlePub, "policy-signer-1", signing.PurposePolicyBundleSigning)
+	writePrivateTestFile(t, caPath, clientPEM)
+	writePrivateTestFile(t, clientCertPath, clientPEM)
+	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+
+	base := config.Conductor{
+		Enabled:                    true,
+		ConductorURL:               "https://conductor.example",
+		OrgID:                      "org-main",
+		FleetID:                    "prod",
+		InstanceID:                 "pl-prod-1",
+		TrustRosterPath:            rosterPath,
+		TrustRosterRootFingerprint: rootFingerprint,
+		ServerCAFile:               caPath,
+		ClientCertPath:             clientCertPath,
+		ClientKeyPath:              clientKeyPath,
+		BundleCacheDir:             filepath.Join(dir, "bundles"),
+		DurableAuditQueueDir:       filepath.Join(dir, "audit-queue"),
+		PollInterval:               "30s",
+		HonorRemoteKillSwitch:      false,
+	}
+
+	t.Run("mtls_client_error", func(t *testing.T) {
+		cfg := base
+		cfg.ClientCertPath = filepath.Join(dir, "missing-client.crt")
+		s := &Server{}
+		if _, err := s.buildConductorBundlePoller(&config.Config{Conductor: cfg}, io.Discard); err == nil ||
+			!strings.Contains(err.Error(), "mTLS client") {
+			t.Fatalf("error = %v, want mTLS client failure", err)
+		}
+	})
+
+	t.Run("poll_interval_error", func(t *testing.T) {
+		cfg := base
+		cfg.PollInterval = "not-a-duration"
+		s := &Server{}
+		if _, err := s.buildConductorBundlePoller(&config.Config{Conductor: cfg}, io.Discard); err == nil ||
+			!strings.Contains(err.Error(), "parsing conductor policy bundle poll interval") {
+			t.Fatalf("error = %v, want poll interval parse failure", err)
+		}
+	})
+
+	t.Run("valid_builds_poller", func(t *testing.T) {
+		s := &Server{}
+		poller, err := s.buildConductorBundlePoller(&config.Config{Conductor: base}, nil)
+		if err != nil {
+			t.Fatalf("valid config: %v", err)
+		}
+		if poller == nil {
+			t.Fatal("poller = nil, want a poller for enabled conductor")
+		}
+	})
+}
+
 func TestBuildConductorRemoteKillPollerRejectsInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	clientPEM, clientKeyPEM := testTLSClientCert(t)

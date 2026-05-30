@@ -18,7 +18,11 @@ import (
 
 func TestSignParseAndVerifyCRL(t *testing.T) {
 	pub, priv := testKeyPair(t)
-	now := time.Date(2026, 5, 23, 12, 0, 0, 0, time.UTC)
+	// Use real time, not a fixed date: testCRL signs via SignCRL, which validates
+	// the payload's expiry against time.Now(). A hard-coded date makes the 7-day
+	// CRL expire in wall-clock time and time-bombs the test (the sibling CRL tests
+	// all use time.Now() for this reason).
+	now := time.Now().UTC()
 	crl := testCRL(t, priv, now, "lic_revoked")
 
 	data, err := json.Marshal(crl)

@@ -206,6 +206,9 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.conductorRemoteKill != nil {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: remote kill polling enabled -> %s\n", RedactEndpoint(cfg.Conductor.ConductorURL))
 	}
+	if s.conductorBundle != nil {
+		_, _ = fmt.Fprintf(s.opts.Stderr, "  Conductor: policy bundle polling enabled -> %s\n", RedactEndpoint(cfg.Conductor.ConductorURL))
+	}
 	if s.opts.CaptureOutput != "" {
 		if s.opts.CaptureDuration > 0 {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "  Capture: %s (duration: %s)\n", s.opts.CaptureOutput, s.opts.CaptureDuration)
@@ -225,7 +228,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	var conductorWG sync.WaitGroup
-	if s.conductorAudit != nil || s.conductorRemoteKill != nil {
+	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
 		if s.conductorRemoteKill != nil {
 			conductorWG.Add(1)
 			go func() {
@@ -259,7 +262,24 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		}()
 	}
-	if s.conductorAudit != nil || s.conductorRemoteKill != nil {
+	if s.conductorBundle != nil {
+		conductorWG.Add(1)
+		go func() {
+			defer conductorWG.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor policy bundle poller panic: %v\n", r)
+					cancel()
+				}
+			}()
+			if err := s.conductorBundle.Run(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				s.logger.LogError(audit.NewResourceLogContext("conductor_policy_bundle_poller", cfg.Conductor.ConductorURL), err)
+				_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: conductor policy bundle poller stopped: %v\n", err)
+				cancel()
+			}
+		}()
+	}
+	if s.conductorAudit != nil || s.conductorRemoteKill != nil || s.conductorBundle != nil {
 		defer func() {
 			cancel()
 			conductorWG.Wait()

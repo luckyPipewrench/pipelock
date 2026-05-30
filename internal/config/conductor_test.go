@@ -61,6 +61,56 @@ func TestValidateConductor_Enabled(t *testing.T) {
 	}
 }
 
+// TestValidateConductor_RequiresFingerprintRegardlessOfHonor locks in the
+// contract that a pinned trust-roster root fingerprint is mandatory whenever
+// conductor.enabled, INDEPENDENT of honor_remote_kill_switch. The honor flag
+// only governs whether remote-kill STATE is applied; it does not relax the
+// trust-material requirement, because the policy-bundle poller verifies signed
+// bundles against the pinned root even when remote kill is not honored.
+func TestValidateConductor_RequiresFingerprintRegardlessOfHonor(t *testing.T) {
+	tests := []struct {
+		name        string
+		honor       bool
+		fingerprint string
+		want        string
+	}{
+		{name: "honor_false_missing_fingerprint", honor: false, fingerprint: "", want: "conductor.trust_roster_root_fingerprint required"},
+		{name: "honor_true_missing_fingerprint", honor: true, fingerprint: "", want: "conductor.trust_roster_root_fingerprint required"},
+		{name: "honor_false_bad_fingerprint", honor: false, fingerprint: "bad", want: "conductor.trust_roster_root_fingerprint"},
+		{name: "honor_true_bad_fingerprint", honor: true, fingerprint: "bad", want: "conductor.trust_roster_root_fingerprint"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			conductor := validConductorConfig(t)
+			conductor.HonorRemoteKillSwitch = tc.honor
+			conductor.TrustRosterRootFingerprint = tc.fingerprint
+			cfg.Conductor = conductor
+			configureConductorRecorder(t, cfg)
+
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateConductor_AcceptsHonorFalseWithFingerprint is the positive
+// counterpart: honor_remote_kill_switch=false is a valid configuration as long
+// as the pinned fingerprint is present (audit + policy-sync still participate).
+func TestValidateConductor_AcceptsHonorFalseWithFingerprint(t *testing.T) {
+	cfg := Defaults()
+	conductor := validConductorConfig(t)
+	conductor.HonorRemoteKillSwitch = false
+	cfg.Conductor = conductor
+	configureConductorRecorder(t, cfg)
+
+	if _, err := cfg.ValidateWithWarnings(); err != nil {
+		t.Fatalf("ValidateWithWarnings() with honor=false + fingerprint should pass, got %v", err)
+	}
+}
+
 func TestValidateConductor_RequiresSignedFlightRecorder(t *testing.T) {
 	tests := []struct {
 		name   string

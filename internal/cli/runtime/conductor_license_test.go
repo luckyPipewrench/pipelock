@@ -144,6 +144,11 @@ func conductorLicenseGateConfigYAML(t *testing.T) string {
 		"  org_id: o\n" +
 		"  fleet_id: f\n" +
 		"  instance_id: i\n" +
+		// A format-valid pinned fingerprint is required whenever conductor.enabled
+		// (independent of honor_remote_kill_switch). These gate tests fail at the
+		// license / enterprise-build gate before any roster file is loaded, so a
+		// well-formed placeholder fingerprint is sufficient to pass config validation.
+		"  trust_roster_root_fingerprint: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
 		"  server_ca_file: " + strconv.Quote(caPath) + "\n" +
 		"  client_cert_path: " + strconv.Quote(clientCertPath) + "\n" +
 		"  client_key_path: " + strconv.Quote(clientKeyPath) + "\n" +

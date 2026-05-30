@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -102,6 +103,10 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 // CaptureError sends an error event to Sentry (scrubbed by BeforeSend).
 // context.Canceled is dropped because it signals normal shutdown propagation
 // (SIGINT, parent exit, session end), not a failure worth paging on.
+// Expected operational errors (e.g. a listener bind hitting EADDRINUSE on a
+// restart race or double-start) are also dropped: they are misconfiguration or
+// environment conditions surfaced to stderr and a non-zero exit, not code
+// defects worth a Sentry alert.
 func (c *Client) CaptureError(err error) {
 	if c == nil || !c.enabled {
 		return
@@ -109,7 +114,20 @@ func (c *Client) CaptureError(err error) {
 	if errors.Is(err, context.Canceled) {
 		return
 	}
+	if isExpectedOperationalError(err) {
+		return
+	}
 	sentry.CaptureException(err)
+}
+
+// isExpectedOperationalError reports whether err is an environment/operator
+// condition that should not page Sentry. Listener bind conflicts (EADDRINUSE)
+// are the canonical case: a port already in use is an operational state, not a
+// pipelock bug. Kept narrow on purpose — only clearly-operational syscall
+// conditions belong here, so genuine listen failures (and everything else)
+// still report.
+func isExpectedOperationalError(err error) bool {
+	return errors.Is(err, syscall.EADDRINUSE)
 }
 
 // CaptureMessage sends a message event to Sentry (scrubbed by BeforeSend).

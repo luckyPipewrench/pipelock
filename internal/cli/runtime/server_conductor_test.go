@@ -44,7 +44,11 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 	caPath := filepath.Join(tmp, "boss-ca.pem")
 	clientCertPath := filepath.Join(tmp, "client.crt")
 	clientKeyPath := filepath.Join(tmp, "client.key")
-	writePrivateTestFile(t, trustPath, []byte(`{"keys":[]}`))
+	// conductor.enabled requires a real signed roster + pinned fingerprint even
+	// with honor_remote_kill_switch:false — the policy-bundle poller verifies
+	// signed bundles against the pinned trust root.
+	bundleSigner := newRuntimePolicySigner(t)
+	rootFingerprint := writeRuntimeTrustRoster(t, trustPath, bundleSigner.pub, bundleSigner.id, signing.PurposePolicyBundleSigning)
 	writePrivateTestFile(t, caPath, clientPEM)
 	writePrivateTestFile(t, clientCertPath, clientPEM)
 	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
@@ -64,6 +68,7 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 		"  fleet_id: prod",
 		"  instance_id: pl-prod-1",
 		"  trust_roster_path: " + strconv.Quote(trustPath),
+		"  trust_roster_root_fingerprint: " + strconv.Quote(rootFingerprint),
 		"  server_ca_file: " + strconv.Quote(caPath),
 		"  client_cert_path: " + strconv.Quote(clientCertPath),
 		"  client_key_path: " + strconv.Quote(clientKeyPath),
@@ -126,6 +131,13 @@ func (serverRemoteKillNoopClient) Do(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
+type serverConductorBlockingRunner struct{}
+
+func (serverConductorBlockingRunner) Run(ctx context.Context) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.Listen = newServerTestFreePort(t)
@@ -152,6 +164,37 @@ func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
 
 	waitForServerCancel(t, s)
 	waitForServerOutput(t, buf, "Conductor: remote kill polling enabled -> https://conductor.example")
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not return within 5s of Shutdown")
+	}
+}
+
+func TestServer_StartRunsConductorBundlePoller(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = newServerTestFreePort(t)
+		o.ListenChanged = true
+	})
+	s.conductorBundle = serverConductorBlockingRunner{}
+	s.cfg.Conductor.ConductorURL = "https://conductor.example"
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	waitForServerCancel(t, s)
+	waitForServerOutput(t, buf, "Conductor: policy bundle polling enabled -> https://conductor.example")
 
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)

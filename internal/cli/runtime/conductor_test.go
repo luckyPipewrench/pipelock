@@ -293,6 +293,63 @@ func TestBuildConductorRemoteKillPollerHonorsDisableWithoutRoster(t *testing.T) 
 	}
 }
 
+// TestBuildConductorBundlePollerRejectsBadRosterEvenWithHonorFalse proves the
+// policy-bundle poller fails closed when the trust roster cannot be loaded,
+// REGARDLESS of honor_remote_kill_switch. Unlike the remote-kill poller (which
+// installs a reject-all resolver and keeps running when honor=false so it can
+// log visible rejections), the bundle poller must have a real verified trust
+// root before it can apply any signed bundle — so a missing/unreadable roster
+// is a hard startup error.
+func TestBuildConductorBundlePollerRejectsBadRosterEvenWithHonorFalse(t *testing.T) {
+	dir := t.TempDir()
+	clientPEM, clientKeyPEM := testTLSClientCert(t)
+	caPath := filepath.Join(dir, "boss-ca.pem")
+	clientCertPath := filepath.Join(dir, "client.crt")
+	clientKeyPath := filepath.Join(dir, "client.key")
+	writePrivateTestFile(t, caPath, clientPEM)
+	writePrivateTestFile(t, clientCertPath, clientPEM)
+	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
+
+	s := &Server{}
+	_, err := s.buildConductorBundlePoller(&config.Config{
+		Conductor: config.Conductor{
+			Enabled:                    true,
+			ConductorURL:               "https://conductor.example",
+			OrgID:                      "org-main",
+			FleetID:                    "prod",
+			InstanceID:                 "pl-prod-1",
+			TrustRosterPath:            filepath.Join(dir, "missing-roster.json"),
+			TrustRosterRootFingerprint: strings.Repeat("a", 64),
+			ServerCAFile:               caPath,
+			ClientCertPath:             clientCertPath,
+			ClientKeyPath:              clientKeyPath,
+			BundleCacheDir:             filepath.Join(dir, "bundles"),
+			DurableAuditQueueDir:       filepath.Join(dir, "audit-queue"),
+			PollInterval:               "30s",
+			HonorRemoteKillSwitch:      false, // the crux: honor=false must NOT skip roster verification
+		},
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("buildConductorBundlePoller() with honor=false + missing roster: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "trust resolver") && !strings.Contains(err.Error(), "trust roster") {
+		t.Fatalf("error = %v, want trust roster/resolver failure", err)
+	}
+}
+
+// TestBuildConductorBundlePollerDisabled confirms the poller is a no-op (nil,
+// nil) when conductor is not enabled.
+func TestBuildConductorBundlePollerDisabled(t *testing.T) {
+	s := &Server{}
+	poller, err := s.buildConductorBundlePoller(&config.Config{Conductor: config.Conductor{Enabled: false}}, io.Discard)
+	if err != nil {
+		t.Fatalf("disabled buildConductorBundlePoller() error = %v", err)
+	}
+	if poller != nil {
+		t.Fatal("disabled buildConductorBundlePoller() poller = non-nil, want nil")
+	}
+}
+
 func TestBuildConductorRemoteKillPollerRejectsInvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	clientPEM, clientKeyPEM := testTLSClientCert(t)
@@ -438,18 +495,27 @@ func TestBuildConductorApplyCacheRejectsInvalidDir(t *testing.T) {
 	}
 }
 
+// TestNewServer_WiresConductorBundlePoller proves the policy-bundle poller is
+// constructed and stored on the Server when conductor.enabled with a valid
+// signed roster, so server_lifecycle launches its poll loop alongside the audit
+// transport and remote-kill poller.
+func TestNewServer_WiresConductorBundlePoller(t *testing.T) {
+	s, _ := newConductorApplyTestServer(t)
+	if s.conductorBundle == nil {
+		t.Fatal("conductor policy-bundle poller should be wired when conductor.enabled")
+	}
+}
+
 func TestApplyConductorPolicyBundleReloadsAndActivates(t *testing.T) {
-	s, signer, recorderKeyPath, recorderDir := newConductorApplyTestServer(t)
+	s, signer := newConductorApplyTestServer(t)
+	// Enforcement-only bundle: policy bundles may carry only enforcement-policy
+	// sections (default-deny allowlist), so flight_recorder/conductor/etc. are
+	// NOT included here. The follower's existing flight_recorder + conductor
+	// config must survive the reload for the apply to succeed.
 	bundle := signedRuntimePolicyBundle(t, signer, "bundle-1", 1, "", strings.Join([]string{
 		"mode: strict",
 		"api_allowlist:",
 		"  - api.example.com",
-		"flight_recorder:",
-		"  enabled: true",
-		"  dir: " + strconv.Quote(recorderDir),
-		"  checkpoint_interval: 1",
-		"  sign_checkpoints: true",
-		"  signing_key_path: " + strconv.Quote(recorderKeyPath),
 		"",
 	}, "\n"))
 
@@ -521,7 +587,7 @@ func (s runtimePolicySigner) resolver() conductor.SignatureKeyResolver {
 	}
 }
 
-func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, string, string) {
+func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 	t.Helper()
 	// conductor.enabled triggers the fleet-license gate; install a real
 	// Enterprise token for the test so the production gate path is exercised.
@@ -548,7 +614,11 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, st
 	caPath := filepath.Join(tmp, "boss-ca.pem")
 	clientCertPath := filepath.Join(tmp, "client.crt")
 	clientKeyPath := filepath.Join(tmp, "client.key")
-	writePrivateTestFile(t, trustPath, []byte(`{"keys":[]}`))
+	// A real signed roster is mandatory whenever conductor.enabled, independent
+	// of honor_remote_kill_switch: the policy-bundle poller must verify signed
+	// bundles against a pinned trust root before applying them.
+	bundleSigner := newRuntimePolicySigner(t)
+	rootFingerprint := writeRuntimeTrustRoster(t, trustPath, bundleSigner.pub, bundleSigner.id, signing.PurposePolicyBundleSigning)
 	writePrivateTestFile(t, caPath, clientPEM)
 	writePrivateTestFile(t, clientCertPath, clientPEM)
 	writePrivateTestFile(t, clientKeyPath, clientKeyPEM)
@@ -569,6 +639,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, st
 		"  fleet_id: prod",
 		"  instance_id: pl-prod-1",
 		"  trust_roster_path: " + strconv.Quote(trustPath),
+		"  trust_roster_root_fingerprint: " + strconv.Quote(rootFingerprint),
 		"  server_ca_file: " + strconv.Quote(caPath),
 		"  client_cert_path: " + strconv.Quote(clientCertPath),
 		"  client_key_path: " + strconv.Quote(clientKeyPath),
@@ -589,7 +660,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner, st
 	if server.conductorApply == nil {
 		t.Fatal("conductor apply cache should be initialized")
 	}
-	return server, newRuntimePolicySigner(t), keyPath, recorderDir
+	return server, bundleSigner
 }
 
 func signedRuntimePolicyBundle(t *testing.T, signer runtimePolicySigner, id string, version uint64, previousHash, configYAML string) conductor.PolicyBundle {

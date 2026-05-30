@@ -112,6 +112,7 @@ type Server struct {
 	conductorAuditQueue any
 	conductorAudit      conductorRunner
 	conductorRemoteKill conductorRunner
+	conductorBundle     conductorRunner
 	conductorProducer   conductorCloser
 	approver            *hitl.Approver
 
@@ -332,6 +333,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	ksAPI := killswitch.NewAPIHandler(ks)
 	s.ksAPI = ksAPI
 	if err := s.initConductorRemoteKill(cfg, ks, opts.Stderr); err != nil {
+		s.cleanup()
+		return nil, err
+	}
+	if err := s.initConductorBundlePoller(cfg, opts.Stderr); err != nil {
 		s.cleanup()
 		return nil, err
 	}

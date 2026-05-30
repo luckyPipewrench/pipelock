@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/policysync"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -186,6 +187,60 @@ func buildConductorRemoteKillPoller(cfg *config.Config, ks emergency.KillSwitchS
 		PollInterval: interval,
 		Logger:       logger,
 	})
+}
+
+// buildConductorBundlePoller wires the follower-side policy-bundle poller. It is
+// a method so the applier closure can call s.ApplyConductorPolicyBundle, which
+// owns the verify -> reload -> activate boundary. Unlike the remote-kill poller,
+// the bundle poller ALWAYS builds the real trust resolver: applying a policy
+// bundle mutates the running config, so it must be signature-verified regardless
+// of honor_remote_kill_switch. A missing/unloadable roster fails closed here.
+func (s *Server) buildConductorBundlePoller(cfg *config.Config, logWriter io.Writer) (*policysync.Poller, error) {
+	if cfg == nil || !cfg.Conductor.Enabled {
+		return nil, nil
+	}
+	client, err := newConductorMTLSClient(cfg.Conductor)
+	if err != nil {
+		return nil, err
+	}
+	resolver, err := buildConductorTrustResolver(cfg.Conductor, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("building conductor policy bundle trust resolver: %w", err)
+	}
+	interval, err := time.ParseDuration(cfg.Conductor.PollInterval)
+	if err != nil {
+		return nil, fmt.Errorf("parsing conductor policy bundle poll interval: %w", err)
+	}
+	if logWriter == nil {
+		logWriter = io.Discard
+	}
+	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo})).
+		With("service", "pipelock", "component", "conductor_policy_bundle")
+	applier := policysync.ApplierFunc(func(bundle conductor.PolicyBundle) error {
+		_, applyErr := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: resolver})
+		return applyErr
+	})
+	return policysync.NewPoller(policysync.PollerConfig{
+		BaseURL:      cfg.Conductor.ConductorURL,
+		Client:       client,
+		Applier:      applier,
+		PollInterval: interval,
+		Logger:       logger,
+	})
+}
+
+// initConductorBundlePoller stores the policy-bundle poller on the Server so the
+// lifecycle can launch its Run loop alongside the remote-kill poller and audit
+// transport. Mirrors initConductorRemoteKill.
+func (s *Server) initConductorBundlePoller(cfg *config.Config, stderr io.Writer) error {
+	poller, err := s.buildConductorBundlePoller(cfg, stderr)
+	if err != nil {
+		return err
+	}
+	if poller != nil {
+		s.conductorBundle = poller
+	}
+	return nil
 }
 
 func buildConductorTrustResolver(cfg config.Conductor, now func() time.Time) (conductor.SignatureKeyResolver, error) {

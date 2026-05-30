@@ -63,6 +63,7 @@ var (
 	ErrWrongKeyPurpose          = errors.New("conductor signature key_purpose mismatch")
 	ErrThresholdRequired        = errors.New("conductor signature threshold not met")
 	ErrForbiddenLicenseField    = errors.New("policy bundle contains forbidden license field")
+	ErrForbiddenBundleSection   = errors.New("policy bundle contains a config section not permitted in a signed bundle")
 	ErrInvalidValidityWindow    = errors.New("invalid conductor validity window")
 	ErrInvalidSequenceRange     = errors.New("invalid conductor sequence range")
 	ErrInvalidState             = errors.New("invalid conductor state")
@@ -80,6 +81,60 @@ var (
 	ErrSignatureVerification    = errors.New("conductor signature verification failed")
 	ErrInvalidDroppedAccounting = errors.New("invalid conductor dropped accounting")
 )
+
+// allowedPolicyBundleSections is the default-deny allowlist of top-level config
+// sections a signed policy bundle may carry in its config_yaml. It contains ONLY
+// enforcement-policy surfaces — what pipelock decides about a scanned request.
+//
+// Everything not listed is rejected so a signed bundle cannot reconfigure
+// operational/infrastructure surfaces remotely: listeners, telemetry/emit,
+// logging, sentry, kill switch, flight recorder, the conductor control plane
+// itself, license, or mediation-envelope signing. It also rejects sections that
+// mix enforcement with a local trust boundary, identity, certificate, routing,
+// or OS-isolation concern — `internal`/`ssrf`/`dns`/`trusted_domains` (SSRF and
+// DNS trust), `agents` (per-agent identity/credentials), `tls_interception`
+// (MITM certs/passthrough), and `sandbox` (OS isolation) — until those are split
+// into narrower policy-only surfaces. Keeping them operator-local means a bundle
+// cannot loosen SSRF, add a trusted domain, retarget DNS, push agent identity,
+// change TLS interception, or weaken sandboxing.
+//
+// Default-deny is deliberate: a config section added in a future release is
+// automatically rejected from bundles until it is consciously added here.
+var allowedPolicyBundleSections = map[string]struct{}{
+	"version":                 {}, // schema/version metadata; harmless
+	"mode":                    {},
+	"enforce":                 {},
+	"explain_blocks":          {},
+	"api_allowlist":           {},
+	"suppress":                {},
+	"dlp":                     {},
+	"canary_tokens":           {},
+	"response_scanning":       {},
+	"mcp_input_scanning":      {},
+	"mcp_tool_scanning":       {},
+	"mcp_tool_policy":         {},
+	"git_protection":          {},
+	"session_profiling":       {},
+	"adaptive_enforcement":    {},
+	"mcp_session_binding":     {},
+	"request_body_scanning":   {},
+	"request_policy":          {},
+	"tool_chain_detection":    {},
+	"cross_request_detection": {},
+	"address_protection":      {},
+	"seed_phrase_detection":   {},
+	"rules":                   {},
+	"mcp_binary_integrity":    {},
+	"mcp_tool_provenance":     {},
+	"behavioral_baseline":     {},
+	"airlock":                 {},
+	"browser_shield":          {},
+	"media_policy":            {},
+	"taint":                   {},
+	"redaction":               {},
+	"learn":                   {},
+	"learn_lock":              {},
+}
 
 var forbiddenLicenseFields = map[string]struct{}{
 	"license_key":               {},
@@ -480,6 +535,9 @@ func (b PolicyBundle) Validate() error {
 		return err
 	}
 	if err := rejectLicenseFields(b.Payload.ConfigYAML); err != nil {
+		return err
+	}
+	if err := rejectDisallowedBundleSections(b.Payload.ConfigYAML); err != nil {
 		return err
 	}
 	for _, rb := range b.Payload.RuleBundles {
@@ -1289,6 +1347,42 @@ func walkRejectLicenseFieldsAt(n *yaml.Node, path string) error {
 			if err := walkRejectLicenseFieldsAt(c, childPath); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// rejectDisallowedBundleSections enforces the default-deny
+// allowedPolicyBundleSections allowlist over the top-level keys of a policy
+// bundle's config_yaml. Any top-level section not in the allowlist is rejected.
+// Only the top level is checked: the allowlist governs which config SURFACES a
+// bundle may touch, not values within an allowed surface. An empty/blank
+// config_yaml is left to the caller's existing non-empty check.
+func rejectDisallowedBundleSections(configYAML string) error {
+	dec := yaml.NewDecoder(bytes.NewReader([]byte(configYAML)))
+	var doc yaml.Node
+	if err := dec.Decode(&doc); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return fmt.Errorf("%w: parse config payload: %w", ErrForbiddenBundleSection, err)
+	}
+	if err := rejectExtraYAMLDocuments(dec); err != nil {
+		return err
+	}
+	if len(doc.Content) == 0 {
+		return nil
+	}
+	root := doc.Content[0]
+	if root.Kind != yaml.MappingNode {
+		// A non-mapping top-level document carries no config sections; nothing
+		// to allow or reject here (other validators handle shape).
+		return nil
+	}
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key := root.Content[i].Value
+		if _, ok := allowedPolicyBundleSections[key]; !ok {
+			return fmt.Errorf("%w: %q", ErrForbiddenBundleSection, key)
 		}
 	}
 	return nil

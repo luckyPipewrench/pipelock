@@ -89,18 +89,28 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			s.logger.LogConfigReload("ignored", "conductor settings restart-only", attemptedHash)
 			newCfg.Conductor = oldCfg.Conductor
 		}
-		// Block signing key rotation via reload. The receipt chain
-		// state is anchored to the current signing key; rotation
-		// mid-chain causes tail-signature verification to fail on
-		// resume, which in turn drops receipt persistence for every
-		// subsequent action. Proper chain rollover with a key-rotation
-		// marker is tracked for v2.2.1. Until then, preserve the old
-		// key and warn — operators must restart pipelock to rotate the
-		// receipt signing key.
-		if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
-				oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
-			newCfg.FlightRecorder.SigningKeyPath = oldCfg.FlightRecorder.SigningKeyPath
+		// Block flight_recorder changes via reload. The recorder (and its
+		// receipt/audit chain) is built once at Start; reload swaps config and
+		// scanner but never rebuilds the recorder, so any flight_recorder change
+		// would leave the live config disagreeing with the running recorder.
+		// Signing-key rotation is the sharpest case — the receipt chain is
+		// anchored to the current key, and rotating mid-chain breaks tail-
+		// signature verification on resume — but every field is restart-only for
+		// the same build-once reason. Preserve the whole block and warn.
+		//
+		// This also keeps Conductor policy-bundle apply working: a signed bundle
+		// carries enforcement-only config (flight_recorder is not an allowlisted
+		// bundle section), so the bundle's loaded config omits flight_recorder.
+		// Preserving the follower's existing block means conductor.enabled — which
+		// requires a signed flight recorder — still validates after the apply.
+		if !reflect.DeepEqual(oldCfg.FlightRecorder, newCfg.FlightRecorder) {
+			if oldCfg.FlightRecorder.SigningKeyPath != newCfg.FlightRecorder.SigningKeyPath {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder.signing_key_path changed from %q to %q — receipt chain cannot rotate at runtime, ignoring (restart required)\n",
+					oldCfg.FlightRecorder.SigningKeyPath, newCfg.FlightRecorder.SigningKeyPath)
+			} else {
+				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: flight_recorder settings changed — recorder is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
+			}
+			newCfg.FlightRecorder = oldCfg.FlightRecorder
 		}
 		// Block file_sentry changes via reload. The watcher is built
 		// once at Start from the startup snapshot; reloading would

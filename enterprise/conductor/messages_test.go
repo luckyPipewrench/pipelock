@@ -313,7 +313,7 @@ func TestRemoteKillMessage_VerifySignaturesThreshold(t *testing.T) {
 
 func testPolicyBundle() PolicyBundle {
 	payload := PolicyBundlePayload{
-		ConfigYAML: "mode: strict\nagents:\n  claude-code:\n    mode: strict\n",
+		ConfigYAML: "mode: strict\nmcp_tool_policy:\n  enabled: true\n",
 		RuleBundles: []RuleBundleRef{{
 			Name:    "official",
 			Version: "2026.05.23",

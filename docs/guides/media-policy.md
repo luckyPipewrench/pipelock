@@ -94,6 +94,9 @@ Preserves APP0 (JFIF header) because some viewers require it. All other
 markers (SOF, DHT, DQT, SOS, RST, EOI) pass through unchanged. Entropy-coded
 scan data is copied byte-for-byte.
 
+If bytes appear after the canonical JPEG EOI marker, metadata stripping truncates
+the response at EOI and forwards the cleaned image instead of failing closed.
+
 ### PNG
 
 Strips these chunk types:
@@ -105,6 +108,9 @@ Strips these chunk types:
 
 All other chunks (IHDR, PLTE, tRNS, IDAT, IEND) pass through with their
 original CRCs intact.
+
+If bytes appear after the canonical PNG IEND chunk, metadata stripping truncates
+the response at IEND and forwards the cleaned image instead of failing closed.
 
 ### Other formats
 

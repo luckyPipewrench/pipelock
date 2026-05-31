@@ -1,6 +1,6 @@
 # Pipelock Conductor and Audit Sink Design
 
-**Status:** Draft, pre-implementation gate
+**Status:** Design preview, not GA in v2.6
 **Version:** 0.1.0
 **Date:** 2026-05-23
 
@@ -12,7 +12,8 @@ plane that ingests signed evidence from those instances.
 Conductor server commands and follower wiring are present only in enterprise
 builds. Core builds still parse `conductor` config so reload guards can preserve
 restart-only state, but `conductor.enabled: true` fails closed without the
-enterprise build tag.
+enterprise build tag. User-facing GA documentation is intentionally deferred
+until v2.7.
 
 The architecture shape is:
 

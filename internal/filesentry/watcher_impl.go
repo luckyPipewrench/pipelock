@@ -355,6 +355,7 @@ func (w *fsWatcher) flushScan(path string, isAgent bool) {
 
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
+		w.logError(fmt.Errorf("filesentry: open failed, file left unscanned: %s: %w", path, err))
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -379,6 +380,10 @@ func (w *fsWatcher) flushScan(path string, isAgent bool) {
 		return
 	}
 	if len(data) == 0 {
+		return
+	}
+	if int64(len(data)) > sizeCap {
+		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (grew beyond cap %d while reading): %s", sizeCap, path))
 		return
 	}
 
@@ -426,6 +431,7 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, check
 	// swap could change what we read.
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
+		w.logError(fmt.Errorf("filesentry: open failed, file left unscanned: %s: %w", path, err))
 		return
 	}
 	defer func() { _ = f.Close() }()
@@ -450,6 +456,10 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, check
 		return
 	}
 	if len(data) == 0 {
+		return
+	}
+	if int64(len(data)) > sizeCap {
+		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (grew beyond cap %d while reading): %s", sizeCap, path))
 		return
 	}
 

@@ -23,6 +23,7 @@ The highest-protection mode. Designed for AI agents that need web content.
 
 **Scanning:**
 - 11-layer URL scan (scheme, CRLF injection, path traversal, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget)
+- `request_policy` route and operation checks, including followed redirect hops
 - Raw HTML scan for injection in hidden elements (script, style, comments, hidden divs)
 - Readability text extraction (strips HTML, returns clean text)
 - Response injection detection on extracted content
@@ -50,6 +51,7 @@ Standard HTTP CONNECT proxy. Without TLS interception, pipelock cannot see the e
 - Full request body DLP (JSON, form, multipart extraction)
 - Request header DLP scanning
 - Authority enforcement (Host must match CONNECT target)
+- `request_policy` route and operation checks on the inner HTTP request
 - Response injection detection (buffered scan-then-send)
 - Compressed response blocking (fail-closed)
 
@@ -73,8 +75,9 @@ Handles plaintext HTTP requests where the client sends the full URL as the reque
 
 **Scanning:**
 - 11-layer URL scan on the full URL
+- `request_policy` route and operation checks
 - Response injection scanning (buffer-then-scan-then-send, fail-closed on compressed responses)
-- Response body buffered (up to MaxResponseMB), scanned for injection, then forwarded
+- Response body buffered (up to MaxResponseMB), scanned for injection, then forwarded; oversized buffered responses are blocked fail-closed
 - Data budget tracking on response size
 
 **What the agent receives:** Raw HTTP response from the origin server.
@@ -91,6 +94,7 @@ Bidirectional WebSocket proxy with frame-level scanning.
 
 **Scanning:**
 - 11-layer URL scan on the target URL
+- `request_policy` route-only checks on the upgrade and per-frame operation checks on reassembled text frames
 - DLP scanning on WebSocket upgrade request headers
 - Bidirectional frame scanning (both client-to-server and server-to-client)
 - Fragment reassembly for multi-frame messages

@@ -26,6 +26,7 @@ file_sentry:
     - path: "/tmp/agent-output"
       required: true         # startup fails if this watch cannot be installed
   scan_content: true
+  max_file_bytes: 0           # 0 = built-in 10 MiB default
   ignore_patterns:
     - "node_modules/**"
     - ".git/**"
@@ -66,7 +67,9 @@ Glob patterns match against the file or directory base name. Common patterns to 
 
 When `scan_content` is true (the default), file sentry reads each modified file and runs pipelock's DLP scanner on the content. The same 48 credential patterns used for network traffic apply to file content.
 
-Files larger than 10MB are skipped to avoid unbounded memory use.
+`max_file_bytes` caps how much file content the scanner will read. `0` uses the built-in 10 MiB default; set a positive byte value to override it. Negative values are rejected during config validation.
+
+Files larger than the cap are skipped to avoid unbounded memory use, and the skip is surfaced through the watcher's error path instead of being silently dropped. Stat and read failures are surfaced the same way, so operators can distinguish "clean file" from "file was not inspected."
 
 ## How It Works
 

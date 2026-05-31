@@ -155,6 +155,9 @@ func TestBuildScenarios_Count(t *testing.T) {
 		if s.severity == "" {
 			t.Errorf("scenario %d (%s) has empty severity", i, s.name)
 		}
+		if s.severity != config.SeverityHigh && s.severity != config.SeverityCritical {
+			t.Errorf("scenario %d (%s) severity = %q, want shared config severity constant", i, s.name, s.severity)
+		}
 	}
 }
 
@@ -306,6 +309,26 @@ func TestDemoCmd_NoColorFlag(t *testing.T) {
 	}
 }
 
+func TestDemoCmd_InteractiveReadsCommandInput(t *testing.T) {
+	cmd := demoRoot()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetIn(strings.NewReader(strings.Repeat("\n", 6)))
+	cmd.SetArgs([]string{"demo", "--no-color", "--interactive"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if got := strings.Count(output, "Press Enter for next scenario"); got != 6 {
+		t.Errorf("expected 6 interactive prompts, got %d\n%s", got, output)
+	}
+	if !strings.Contains(output, "7/7 attacks blocked") {
+		t.Errorf("expected completed interactive demo, got:\n%s", output)
+	}
+}
+
 func TestDemoCmd_EmitsReceipts(t *testing.T) {
 	cmd := demoRoot()
 	buf := &strings.Builder{}
@@ -406,6 +429,27 @@ func TestDemoCmd_ReceiptsDir(t *testing.T) {
 	}
 }
 
+func TestDemoCmd_ReceiptsDirIsCleaned(t *testing.T) {
+	base := t.TempDir()
+	rawDir := filepath.Join(base, "nested", "..", "receipts")
+	cleanDir := filepath.Clean(rawDir)
+	cmd := demoRoot()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"demo", "--no-color", "--receipts-dir", rawDir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(cleanDir, "signer.pub")); err != nil {
+		t.Fatalf("expected signer.pub under cleaned receipts dir %q: %v", cleanDir, err)
+	}
+	if !strings.Contains(buf.String(), cleanDir) {
+		t.Errorf("expected output to use cleaned receipts dir %q, got:\n%s", cleanDir, buf.String())
+	}
+}
+
 func TestDemoReceipts_emitErrorPaths(t *testing.T) {
 	mkCmd := func() (*cobra.Command, *strings.Builder) {
 		c := &cobra.Command{}
@@ -413,7 +457,7 @@ func TestDemoReceipts_emitErrorPaths(t *testing.T) {
 		c.SetOut(b)
 		return c, b
 	}
-	s := scenario{name: "x", actionType: receipt.ActionWrite, transport: "demo", target: "https://t.example", layer: "dlp", severity: "high"}
+	s := scenario{name: "x", actionType: receipt.ActionWrite, transport: "demo", target: "https://t.example", layer: "dlp", severity: config.SeverityHigh}
 
 	t.Run("sign error on bad key", func(t *testing.T) {
 		c, b := mkCmd()

@@ -51,17 +51,17 @@ Returns `401` if missing or invalid.
 | `url` | Full 11-layer URL scanner pipeline | `input.url` (valid http/https URL) |
 | `dlp` | DLP pattern matching on arbitrary text | `input.text` |
 | `prompt_injection` | Prompt injection detection on content | `input.content` |
-| `tool_call` | Tool policy + optional DLP/injection on a tool invocation | `input.tool_name` (required), `input.arguments` (optional raw JSON) |
+| `tool_call` | Tool policy + DLP/injection on a tool invocation | `input.tool_name` (required), `input.arguments` (optional raw JSON) |
 
-`tool_call` runs up to three independent sub-scans depending on config:
+`tool_call` runs up to three independent sub-scans:
 
 | Sub-scan | Runs when | What it checks |
 |----------|-----------|---------------|
-| DLP on argument text | `mcp_input_scanning.enabled: true` | Extracts all strings (keys and values) from `arguments` JSON, scans concatenated text for credential patterns. |
-| Injection on argument text | `mcp_input_scanning.enabled: true` | Same extracted text, scanned for prompt injection patterns. |
+| DLP on argument text | Always for `tool_call` | Extracts all strings (keys and values) from `arguments` JSON, scans concatenated text for credential patterns. |
+| Injection on argument text | Always for `tool_call` | Same extracted text, scanned for prompt injection patterns. |
 | Tool policy | `mcp_tool_policy` is configured with rules | Matches `tool_name` and argument strings against allow/deny rules. |
 
-If `mcp_input_scanning` is disabled, `tool_call` only checks tool policy. If tool policy is also unconfigured, `tool_call` returns `allow` with no findings. Operators who rely on `tool_call` for DLP and injection scanning must verify these config sections are enabled.
+`tool_call` is an explicit on-demand scan request. It does not inherit the inline MCP proxy's `mcp_input_scanning.enabled` gate; that gate controls live MCP proxy traffic, not the Scan API. Disable API access to this kind with `scan_api.kinds.tool_call: false`.
 
 **Wire detail:** argument extraction pulls all JSON string values, object keys, and stringified numbers and booleans. An agent can exfiltrate secrets as JSON keys or numeric values, so all leaf types are scanned.
 
@@ -73,7 +73,7 @@ If `mcp_input_scanning` is disabled, `tool_call` only checks tool policy. If too
 | `text` | string | `dlp` kind. Max 512KB. |
 | `content` | string | `prompt_injection` kind. Max 512KB. |
 | `tool_name` | string | `tool_call` kind. Required. |
-| `arguments` | raw JSON | `tool_call` kind. Optional. Arbitrary JSON (object, array, string, null). Max 512KB. Keys and values are both extracted for scanning when `mcp_input_scanning` is enabled. |
+| `arguments` | raw JSON | `tool_call` kind. Optional. Arbitrary JSON (object, array, string, null). Max 512KB. Keys and values are both extracted for scanning. |
 
 ### Context (optional)
 

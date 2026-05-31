@@ -131,6 +131,15 @@ fetch_proxy:
       - "api.telegram.org"
 ```
 
+**Query entropy exclusions** skip only the query-string entropy gate for specific domains. Subdomain entropy, path entropy, DLP, SSRF, rate limits, and data budgets still apply. This is intended for endpoints whose query parameters legitimately carry high-entropy opaque values, such as S3 pre-signed URLs. Supports the same exact-host and `*.example.com` wildcard matching rules.
+
+```yaml
+fetch_proxy:
+  monitoring:
+    query_entropy_exclusions:
+      - "examplebucket.s3.amazonaws.com"
+```
+
 ## Forward Proxy
 
 Standard HTTP CONNECT tunneling. Agents set `HTTPS_PROXY=http://127.0.0.1:8888`, and HTTP clients that honor proxy settings flow through pipelock. Pair this with containment, sandboxing, or deployment policy when non-cooperative tools are in scope.
@@ -209,7 +218,7 @@ pipelock tls show-ca
 
 **Passthrough domains:** Domains in `passthrough_domains` are spliced (bidirectional byte copy) without interception, preserving end-to-end TLS. Use this for domains where certificate pinning prevents interception or where you trust the destination. Supports exact match and wildcard prefix (`*.example.com` matches `sub.example.com` and the apex `example.com`).
 
-**Best practice -- package registries and LLM providers:** Always add package registries (npm, pypi, Go proxy) and LLM API endpoints to `passthrough_domains`, not just `exempt_domains`. Using `exempt_domains` alone still MITM-s the connection, which breaks large downloads (response size limit), causes TLS handshake errors with clients that reject the generated certificate, and wastes CPU on cert generation for traffic you don't intend to scan. Passthrough skips interception entirely.
+**Best practice -- package registries and LLM providers:** Always add package registries (npm, pypi, Go proxy) and LLM API endpoints to `passthrough_domains`, not just `exempt_domains`. Using `exempt_domains` alone is a response-scanning decision, not a TLS-routing decision: the connection is still MITM-ed, clients that reject the generated certificate can still fail the TLS handshake, and pipelock still spends CPU generating certificates for traffic you do not intend to inspect. Passthrough skips interception entirely.
 
 ```yaml
 passthrough_domains:
@@ -345,6 +354,8 @@ redaction:
 - Rewrites only operate on complete JSON payloads. Non-JSON HTTP bodies and non-JSON complete WebSocket messages are blocked unless the destination host is on `allowlist_unparseable` or the request matches `allowlist_unparseable_routes`.
 - Outbound WebSocket fragments are blocked while redaction is enabled. The proxy cannot safely rewrite partial JSON messages.
 - Successful rewrites add a `redaction` summary to the signed action receipt only when one or more values were replaced; untouched requests keep the legacy receipt bytes unchanged.
+
+Hash redaction classes require a self-labeled prefix such as `sha256:<64 hex chars>` or `sha-256=<64 hex chars>`. Bare fixed-width hex strings are left alone so opaque OAuth client secrets and session tokens are not corrupted. AWS SigV4 pre-signed URLs also keep the access-key ID inside a structurally valid `X-Amz-Credential` parameter unchanged; the same access-key shape is still redacted everywhere else.
 
 ## Request Policy
 
@@ -761,6 +772,10 @@ response_scanning:
 - **ask:** pause and prompt the operator for approval (requires TTY)
 
 **Exempt domains:** LLM provider APIs (OpenAI, Anthropic, etc.) return instruction-like text as part of normal operation, which can trigger false positives. Use `exempt_domains` to skip injection scanning for trusted providers. DLP scanning on the outbound request still runs — only the response injection scan is skipped. Applies to fetch proxy, forward proxy, CONNECT (TLS intercept), WebSocket, and reverse proxy. Does not affect MCP response scanning (tool results use a separate trust model).
+
+For forward-proxy and TLS-intercepted traffic, an exempt host's response streams through untouched when `response_scanning.enabled` is true: no buffering, response scan-cap block, media metadata strip, Browser Shield rewrite, or injection scan is applied to that trusted response. Request-side DLP, redaction, SSRF, authority checks, and budget accounting still run. If a host needs full byte-preserving passthrough without MITM, prefer `tls_interception.passthrough_domains`.
+
+Non-exempt responses that must be buffered for response scanning, Browser Shield, or media policy block fail-closed if they exceed the configured scan cap (`fetch_proxy.max_response_mb` or `tls_interception.max_response_bytes`). Data-budget truncation is separate and remains an explicit budget policy.
 
 ### Generic SSE streaming (`response_scanning.sse_streaming`)
 
@@ -1771,7 +1786,7 @@ scan_api:
 | `kinds.prompt_injection` | `true` | Enable `prompt_injection` scan kind. |
 | `kinds.tool_call` | `true` | Enable `tool_call` scan kind. |
 
-All kinds are enabled by default. Set any to `false` to disable. Full API reference: [docs/scan-api.md](scan-api.md).
+All kinds are enabled by default. Set any to `false` to disable. `tool_call` DLP and prompt-injection scanning run on demand through this API regardless of the inline MCP proxy's `mcp_input_scanning.enabled` setting; that toggle controls live MCP proxy traffic, not explicit Scan API requests. Full API reference: [docs/scan-api.md](scan-api.md).
 
 ## Address Protection
 
@@ -1826,6 +1841,7 @@ file_sentry:
     - path: "/var/agent-secrets"  # required:true; startup fails if unavailable
       required: true
   scan_content: true
+  max_file_bytes: 0             # 0 = built-in 10 MiB default
   ignore_patterns:
     - "node_modules/**"
     - ".git/**"
@@ -1838,6 +1854,7 @@ file_sentry:
 | `enabled` | `false` | Enable filesystem monitoring. Opt-in. |
 | `watch_paths` | `[]` | Directories to monitor recursively. Relative paths are resolved against the config file directory (not CWD). Required when enabled. Entries may be bare strings or `{path, required}` mappings. Bare strings default to `required: false`. |
 | `scan_content` | `true` | Run DLP scanner on modified file content. |
+| `max_file_bytes` | `0` | Max watched-file bytes to read for content scanning. `0` uses the built-in 10 MiB default; negative values are rejected. |
 | `ignore_patterns` | `[]` | Glob patterns for files and directories to skip. |
 | `action` | `warn` | Enforcement response when an agent-attributed write matches a DLP pattern. `warn` logs the finding + records a metric (current default). `block` additionally cancels the proxy context so the MCP child terminates, preventing the agent from continuing after a detected leak. Non-agent writes (editor saves, build output) never trigger the block path. |
 
@@ -1847,7 +1864,7 @@ Findings are reported as stderr warnings and Prometheus metrics (`pipelock_file_
 
 `action: block` is the fail-closed enforcement boundary. The cancel fires from the consumer goroutine after the log line and metric emission, which means there is unavoidable latency between the kernel write and the proxy teardown: the file has already been written to disk by the time the scan completes. Block prevents the agent from continuing to act on the leak, it does not prevent the write itself. For write-time interception the operator must layer Landlock or a sandbox at the deployment level.
 
-Files larger than 10MB are skipped. Write events are debounced (50ms quiet window) to avoid scanning partial writes.
+Files larger than `max_file_bytes` are skipped to bound memory use, but the skip is surfaced through the watcher's error path instead of being silently dropped. Stat/read failures are surfaced the same way. Write events are debounced (50ms quiet window) to avoid scanning partial writes.
 
 ## Community Rules
 
@@ -2483,9 +2500,9 @@ All boolean fields use nil-means-security-default semantics: omitting a field fr
 
 ### Metadata stripping
 
-For JPEG images: strips APP1 (EXIF, XMP), APP2 (ICC profile, FlashPix), and APP13 (IPTC, Photoshop) marker segments. APP0 (JFIF header) is preserved. Pixel data is never decoded or re-encoded.
+For JPEG images: strips APP1 (EXIF, XMP), APP2 (ICC profile, FlashPix), and APP13 (IPTC, Photoshop) marker segments. APP0 (JFIF header) is preserved. Pixel data is never decoded or re-encoded. Bytes after the canonical EOI marker are truncated and the cleaned image is forwarded instead of failing closed.
 
-For PNG images: strips tEXt, iTXt, zTXt (text metadata), and eXIf (EXIF) chunks. All other chunks (IHDR, IDAT, PLTE, tRNS, IEND) pass through with their original CRCs.
+For PNG images: strips tEXt, iTXt, zTXt (text metadata), and eXIf (EXIF) chunks. All other chunks (IHDR, IDAT, PLTE, tRNS, IEND) pass through with their original CRCs. Bytes after the canonical IEND chunk are truncated and the cleaned image is forwarded instead of failing closed.
 
 ### SVG active content hardening
 

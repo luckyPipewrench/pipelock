@@ -38,6 +38,7 @@ Scanning and local enforcement checks:
 | `scanning_dlp` | MCP input scanning catches secret-shaped tool input. |
 | `scanning_injection` | Prompt-injection scanning fires on a hostile input. |
 | `scanning_policy` | MCP tool policy denies a blocked command. |
+| `scanning_websocket` | WebSocket frame scanning catches a hostile text frame. |
 | `browser_shield` | Browser Shield rewrites shieldable browser content. |
 | `file_sentry` | file_sentry detects a secret written to a watched workspace. |
 | `mcp_binary_integrity_smoke` | MCP binary-integrity manifest loading and hash verification work. |

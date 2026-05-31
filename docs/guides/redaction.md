@@ -102,3 +102,9 @@ Successful rewrites add a `redaction` block to the signed action receipt:
 ```
 
 The receipt never stores the original plaintext. If nothing was rewritten, the `redaction` field is omitted so non-redacted receipts stay byte-identical to prior releases.
+
+## False-positive hardening
+
+Hash classes require a self-labeled prefix before redaction. A value such as `sha256:<64 hex chars>` or `sha-256=<64 hex chars>` is treated as a hash, but a bare 64-character hex string is left alone so opaque OAuth client secrets and session tokens are not corrupted in transit.
+
+AWS SigV4 pre-signed URLs keep the access-key ID inside a structurally valid `X-Amz-Credential` parameter unchanged. That key ID is the public half of the signed URL; redacting it breaks the upstream request while adding no secrecy. The same access-key shape is still redacted everywhere else, including bare text and non-SigV4 query parameters.

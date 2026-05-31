@@ -409,6 +409,43 @@ func TestWatcher_OversizedSkipIsVisibleAndCapConfigurable(t *testing.T) {
 	}
 }
 
+func TestWatcher_OpenFailureIsVisible(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:      true,
+		WatchPaths:   []config.WatchPath{{Path: dir}},
+		ScanContent:  ptrBool(true),
+		MaxFileBytes: 64,
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	var openErr atomic.Pointer[string]
+	w, err := NewWatcher(cfg, sc, nil, func(e error) {
+		s := e.Error()
+		openErr.Store(&s)
+	})
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	missingPath := filepath.Join(dir, "missing.txt")
+	w.(*fsWatcher).scanFile(context.Background(), missingPath, false)
+
+	got := openErr.Load()
+	if got == nil {
+		t.Fatal("expected onError notification for open failure, got none")
+	}
+	if !strings.Contains(*got, "open failed") || !strings.Contains(*got, "left unscanned") {
+		t.Errorf("open error should mention open failure and unscanned file, got: %s", *got)
+	}
+}
+
 func TestWatcher_EmptyFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{

@@ -42,6 +42,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 |---|---|
 | `dlp_match` | DLP pattern matched in body, header, or URL. |
 | `prompt_injection` | Response body matched an injection pattern. |
+| `request_policy_deny` | A `request_policy` rule denied a named-dangerous outbound API operation. |
 | `redaction_failure` | Body could not be redacted safely; fail-closed. |
 | `media_policy` | Media policy rejected the response (binary type, EXIF, SVG active content, etc.). |
 

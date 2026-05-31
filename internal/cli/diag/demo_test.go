@@ -4,10 +4,16 @@
 package diag
 
 import (
+	"crypto/ed25519"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/spf13/cobra"
 )
@@ -57,8 +63,8 @@ func TestDemoCmd(t *testing.T) {
 		names := []string{
 			"Credential Exfiltration",
 			"Prompt Injection",
+			"Cloud Metadata SSRF",
 			"Data Exfiltration via Paste Service",
-			"High-Entropy Data Smuggling",
 			"MCP Response Injection",
 			"MCP Input Secret Leak",
 			"MCP Tool Description Attack",
@@ -77,9 +83,6 @@ func TestDemoCmd(t *testing.T) {
 	})
 
 	t.Run("injection_detail", func(t *testing.T) {
-		// The demo content matches both "Prompt Injection" and the
-		// "System Prompt Disclosure" core patterns; the joined pattern list
-		// inserts ", System Prompt Disclosure" between the name and "detected".
 		var detailLine string
 		for _, line := range strings.Split(output, "\n") {
 			if strings.Contains(line, "[BLOCKED]") && strings.Contains(line, "Prompt Injection") {
@@ -146,6 +149,12 @@ func TestBuildScenarios_Count(t *testing.T) {
 		if s.run == nil {
 			t.Errorf("scenario %d has nil run function", i)
 		}
+		if s.layer == "" {
+			t.Errorf("scenario %d (%s) has empty layer", i, s.name)
+		}
+		if s.severity == "" {
+			t.Errorf("scenario %d (%s) has empty severity", i, s.name)
+		}
 	}
 }
 
@@ -160,11 +169,9 @@ func TestDemoCmd_OutputContainsSeparator(t *testing.T) {
 	}
 
 	output := buf.String()
-	// Non-color mode uses '=' separators
 	if !strings.Contains(output, "=======") {
 		t.Error("expected '=' separator in non-color output")
 	}
-	// Should mention additional protections
 	if !strings.Contains(output, "SSRF") {
 		t.Error("expected SSRF mention in footer")
 	}
@@ -174,7 +181,6 @@ func TestDemoCmd_OutputContainsSeparator(t *testing.T) {
 }
 
 func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
-	// Directly run each scenario to cover all run functions
 	scenarios := buildScenarios(nil)
 
 	for _, s := range scenarios {
@@ -188,7 +194,7 @@ func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 			sc := scanner.New(cfg)
 			defer sc.Close()
 
-			blocked, detail := s.run(sc)
+			blocked, detail, _ := s.run(sc)
 			if !blocked {
 				t.Errorf("expected scenario %q to be blocked, got: %s", s.name, detail)
 			}
@@ -200,54 +206,46 @@ func TestDemoCmd_AllScenariosRunAndBlock(t *testing.T) {
 }
 
 func TestDemoCmd_ColorOutput(t *testing.T) {
-	// Call runDemo directly with color=true to exercise ANSI color branches.
 	cmd := demoRoot()
 	buf := &strings.Builder{}
 	cmd.SetOut(buf)
 
-	// Find the demo subcommand so we can call runDemo on it.
 	demoSub, _, _ := cmd.Find([]string{"demo"})
 	if demoSub == nil {
 		t.Fatal("demo subcommand not found")
 	}
 
-	if err := runDemo(demoSub, false, true); err != nil {
+	if err := runDemo(demoSub, false, true, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	output := buf.String()
 
-	// Color output uses ANSI bold for header, not '=' separators.
 	if !strings.Contains(output, "\033[1m") {
 		t.Error("expected ANSI bold escape in color output")
 	}
 	if !strings.Contains(output, "\033[0m") {
 		t.Error("expected ANSI reset escape in color output")
 	}
-	// Color output uses '─' separator, not '='.
-	if !strings.Contains(output, "\u2500") {
-		t.Error("expected '\u2500' separator in color output")
+	if !strings.Contains(output, "─") {
+		t.Error("expected '─' separator in color output")
 	}
-	// Color output uses "✓ BLOCKED" not "[BLOCKED]".
-	if !strings.Contains(output, "\u2713 BLOCKED") {
-		t.Error("expected '\u2713 BLOCKED' in color output")
+	if !strings.Contains(output, "✓ BLOCKED") {
+		t.Error("expected '✓ BLOCKED' in color output")
 	}
-	// Should still show all scenarios and final count.
 	if !strings.Contains(output, "7/7 attacks blocked") {
 		t.Errorf("expected 7/7 blocked in color output, got:\n%s", output)
 	}
 }
 
 func TestBuildScenarios_PermissiveScanner(t *testing.T) {
-	// Run each scenario with a scanner that has no detection patterns.
-	// This exercises the "not blocked" / fallback paths in each closure.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.DLP.Patterns = nil
 	cfg.DLP.ScanEnv = false
 	cfg.FetchProxy.Monitoring.Blocklist = nil
-	cfg.FetchProxy.Monitoring.EntropyThreshold = 99 // effectively disable entropy
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 99
 	cfg.ResponseScanning.Enabled = false
 	cfg.ResponseScanning.Patterns = nil
 
@@ -256,25 +254,21 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 
 	scenarios := buildScenarios(nil)
 
-	// Scenarios that should NOT block with a permissive scanner.
-	// Note: Prompt Injection and MCP Response Injection are detected by
-	// core patterns even with response scanning disabled — this is by design.
 	expectAllow := map[string]string{
 		"Credential Exfiltration":             demoScanAllowed,
 		"Data Exfiltration via Paste Service": demoScanAllowed,
-		"High-Entropy Data Smuggling":         demoScanAllowed,
 		"MCP Input Secret Leak":               "no leak detected",
 	}
 
-	// Scenarios that MUST block via core patterns even with permissive config.
 	expectBlock := map[string]bool{
 		"Prompt Injection":       true,
+		"Cloud Metadata SSRF":    true,
 		"MCP Response Injection": true,
 	}
 
 	for _, s := range scenarios {
 		t.Run(s.name, func(t *testing.T) {
-			blocked, detail := s.run(sc)
+			blocked, detail, _ := s.run(sc)
 			if expected, ok := expectAllow[s.name]; ok {
 				if blocked {
 					t.Errorf("expected %q to pass with permissive scanner, got blocked: %s", s.name, detail)
@@ -286,7 +280,6 @@ func TestBuildScenarios_PermissiveScanner(t *testing.T) {
 			if expectBlock[s.name] && !blocked {
 				t.Errorf("expected %q to be blocked by core patterns, got allowed: %s", s.name, detail)
 			}
-			// MCP Tool Description Attack still blocks (built-in poison heuristics)
 			if s.name == "MCP Tool Description Attack" && !blocked {
 				t.Error("expected tool description attack to still be detected by built-in heuristics")
 			}
@@ -305,11 +298,191 @@ func TestDemoCmd_NoColorFlag(t *testing.T) {
 	}
 
 	output := buf.String()
-	// --no-color should produce plain text with [BLOCKED], not ANSI codes.
 	if strings.Contains(output, "\033[") {
 		t.Error("expected no ANSI escape codes with --no-color flag")
 	}
 	if !strings.Contains(output, "[BLOCKED]") {
 		t.Error("expected [BLOCKED] markers in no-color output")
+	}
+}
+
+func TestDemoCmd_EmitsReceipts(t *testing.T) {
+	cmd := demoRoot()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"demo", "--no-color"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "demo public key:") {
+		t.Errorf("expected full demo public key in output, got:\n%s", output)
+	}
+	if got := strings.Count(output, "signed, verified offline"); got != 7 {
+		t.Errorf("expected 7 verified receipts, got %d\n%s", got, output)
+	}
+	if got := strings.Count(output, "Receipt:"); got != 7 {
+		t.Errorf("expected 7 Receipt lines, got %d", got)
+	}
+}
+
+func TestDemoCmd_ReceiptsDir(t *testing.T) {
+	dir := t.TempDir()
+	cmd := demoRoot()
+	buf := &strings.Builder{}
+	cmd.SetOut(buf)
+	cmd.SetArgs([]string{"demo", "--no-color", "--receipts-dir", dir})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Wrote 7 signed receipts") {
+		t.Errorf("expected written-count line, got:\n%s", output)
+	}
+	if !strings.Contains(output, "verify-receipt") || !strings.Contains(output, "--key") {
+		t.Error("expected verify-receipt --key instruction")
+	}
+
+	pubData, err := os.ReadFile(filepath.Clean(filepath.Join(dir, "signer.pub")))
+	if err != nil {
+		t.Fatalf("signer.pub not written: %v", err)
+	}
+	pubHex := strings.TrimSpace(string(pubData))
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jsonCount := 0
+	sideEffects := map[string]bool{}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		jsonCount++
+		data, rErr := os.ReadFile(filepath.Clean(filepath.Join(dir, e.Name())))
+		if rErr != nil {
+			t.Fatal(rErr)
+		}
+		var r receipt.Receipt
+		if uErr := json.Unmarshal(data, &r); uErr != nil {
+			t.Fatalf("receipt %s: unmarshal: %v", e.Name(), uErr)
+		}
+		// Must verify against the pinned demo key, not just its embedded key.
+		if vErr := receipt.VerifyWithKey(r, pubHex); vErr != nil {
+			t.Errorf("receipt %s: verify with pinned key failed: %v", e.Name(), vErr)
+		}
+		ar := r.ActionRecord
+		if ar.Verdict != "block" {
+			t.Errorf("receipt %s: verdict = %q, want block", e.Name(), ar.Verdict)
+		}
+		if ar.Layer == "" {
+			t.Errorf("receipt %s: missing layer evidence", e.Name())
+		}
+		if ar.Severity == "" {
+			t.Errorf("receipt %s: missing severity evidence", e.Name())
+		}
+		if ar.Pattern == "" {
+			t.Errorf("receipt %s: missing detection pattern", e.Name())
+		}
+		if len(ar.PolicyHash) != 64 {
+			t.Errorf("receipt %s: policy hash length = %d, want 64", e.Name(), len(ar.PolicyHash))
+		}
+		sideEffects[string(ar.SideEffectClass)] = true
+	}
+
+	if jsonCount != 7 {
+		t.Fatalf("expected 7 receipt files, got %d", jsonCount)
+	}
+	// Side-effect class must reflect the action, not be hardcoded: read-side
+	// scenarios are external_read, write-side are external_write.
+	if !sideEffects["external_read"] || !sideEffects["external_write"] {
+		t.Errorf("expected both external_read and external_write receipts, got %v", sideEffects)
+	}
+}
+
+func TestDemoReceipts_emitErrorPaths(t *testing.T) {
+	mkCmd := func() (*cobra.Command, *strings.Builder) {
+		c := &cobra.Command{}
+		b := &strings.Builder{}
+		c.SetOut(b)
+		return c, b
+	}
+	s := scenario{name: "x", actionType: receipt.ActionWrite, transport: "demo", target: "https://t.example", layer: "dlp", severity: "high"}
+
+	t.Run("sign error on bad key", func(t *testing.T) {
+		c, b := mkCmd()
+		d := &demoReceipts{cmd: c, privKey: ed25519.PrivateKey([]byte("too-short")), color: false}
+		if err := d.emit(s, true, []string{"pat"}); err == nil {
+			t.Error("expected error from sign with bad key")
+		}
+		if !strings.Contains(b.String(), "receipt error") {
+			t.Errorf("expected sign error line, got %q", b.String())
+		}
+		if d.written != 0 {
+			t.Errorf("written = %d, want 0 on sign error", d.written)
+		}
+	})
+
+	t.Run("missing detection pattern on blocked receipt", func(t *testing.T) {
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, b := mkCmd()
+		d := &demoReceipts{cmd: c, privKey: priv, pubHex: fmt.Sprintf("%x", pub), color: false}
+		if err := d.emit(s, true, nil); err == nil {
+			t.Error("expected error from missing detection pattern")
+		}
+		if !strings.Contains(b.String(), "missing detection pattern") {
+			t.Errorf("expected missing-pattern error line, got %q", b.String())
+		}
+		if d.written != 0 {
+			t.Errorf("written = %d, want 0 on missing pattern", d.written)
+		}
+	})
+
+	t.Run("write error on bad dir", func(t *testing.T) {
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, b := mkCmd()
+		badDir := filepath.Join(t.TempDir(), "does", "not", "exist")
+		d := &demoReceipts{cmd: c, privKey: priv, pubHex: fmt.Sprintf("%x", pub), dir: badDir, color: false}
+		if err := d.emit(s, true, []string{"pat"}); err == nil {
+			t.Error("expected error from write to nonexistent dir")
+		}
+		if !strings.Contains(b.String(), "receipt write failed") {
+			t.Errorf("expected write error line, got %q", b.String())
+		}
+		if d.written != 0 {
+			t.Errorf("written = %d, want 0 on write error", d.written)
+		}
+	})
+}
+
+func TestSideEffectFor(t *testing.T) {
+	se, rev := sideEffectFor(receipt.ActionRead)
+	if se != receipt.SideEffectExternalRead || rev != receipt.ReversibilityFull {
+		t.Errorf("read mapped to %s/%s, want external_read/full", se, rev)
+	}
+	se, rev = sideEffectFor(receipt.ActionWrite)
+	if se != receipt.SideEffectExternalWrite || rev != receipt.ReversibilityIrreversible {
+		t.Errorf("write mapped to %s/%s, want external_write/irreversible", se, rev)
+	}
+}
+
+func TestShortID(t *testing.T) {
+	if got := shortID("abc"); got != "abc" {
+		t.Errorf("shortID short = %q, want abc", got)
+	}
+	if got := shortID("0123456789"); got != "01234567…" {
+		t.Errorf("shortID long = %q, want 01234567…", got)
 	}
 }

@@ -346,6 +346,150 @@ redaction:
 - Outbound WebSocket fragments are blocked while redaction is enabled. The proxy cannot safely rewrite partial JSON messages.
 - Successful rewrites add a `redaction` summary to the signed action receipt only when one or more values were replaced; untouched requests keep the legacy receipt bytes unchanged.
 
+## Request Policy
+
+Allow-by-default deny/warn safety rails on outbound HTTP API operations. A request forwards unless a rule matches; there is deliberately no section-level `default_action` knob, so the section can never be configured into default-deny. Request policy is not a DLP scanner and not a behavioral allowlist. It composes with both. It runs **before** the learn-lock contract gate so a contract allow can never suppress an operation-policy block, and it is independent of `request_body_scanning` (it reads a body itself only when a route-matched operation predicate or batch endpoint needs one).
+
+Rules match on route (host, effective HTTP method, normalized path, content type) and, optionally, on an extracted GraphQL operation predicate.
+
+```yaml
+request_policy:
+  enabled: true
+  on_parse_error: block         # block (default) | warn | allow
+  on_opaque_operation: block    # block (default) | warn | allow
+  rules:
+    - name: "block-graphql-account-mutations"
+      action: block
+      reason: "account-state mutations require human review"
+      route:
+        hosts: ["api.example.com", "*.example.net"]
+        methods: ["POST"]
+        path_prefixes: ["/graphql"]
+        content_types: ["application/json"]
+      graphql:
+        operation_types: ["mutation"]
+        root_field_patterns: ["^delete", "^transfer"]
+    - name: "warn-on-admin-deletes"
+      action: warn
+      shadow: true
+      reason: "shadow rollout of admin DELETE guard"
+      route:
+        hosts: ["api.example.com"]
+        methods: ["DELETE"]
+        path_patterns: ['^/admin/']
+  batch:
+    - route:
+        hosts: ["api.example.com"]
+        methods: ["POST"]
+        path_prefixes: ["/$batch"]
+      requests_field: "requests"
+      method_field: "method"
+      url_field: "url"
+      body_field: "body"
+      max_sub_requests: 64
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `false` | Enable request policy. When disabled the matcher allows everything. |
+| `on_parse_error` | `"block"` | Action when an operation predicate's route matches but the body fails to parse: `block`, `warn`, or `allow`. Fail-closed default. |
+| `on_opaque_operation` | `"block"` | Action when an operation predicate's route matches but the operation is opaque (for example a GraphQL Automatic Persisted Query that ships only a hash): `block`, `warn`, or `allow`. Fail-closed default. |
+| `rules` | `[]` | Operation safety-rail list. |
+| `batch` | `[]` | JSON batch endpoints whose sub-requests are evaluated recursively. |
+
+**Rule fields:**
+- `name:` bounded, metric-label-safe rule identifier.
+- `action:` `block` or `warn`. Per-rule only. There is no section-level default.
+- `shadow:` when `true`, log the would-be action and forward anyway. A shadow match never enforces, and an enforced match always wins over a shadow match of equal strictness.
+- `reason:` operator-facing explanation surfaced on the block. Never logged with request content.
+- `route:` which requests the rule applies to (see below).
+- `graphql:` optional GraphQL operation predicate (see below).
+
+When a rule sets both `route` and `graphql`, **both must match**: the route selects the request, then the predicate is evaluated against the operations extracted from its body.
+
+**Route fields** (`route`): an empty constraint matches any value for that dimension; a request matches the route only when every non-empty constraint is satisfied. Within a single dimension (multiple hosts, or `path_prefixes` plus `path_patterns`) matching is OR.
+
+| Field | Description |
+|-------|-------------|
+| `hosts` | Exact host or `*.suffix` wildcard. A `*.example.com` pattern matches the apex `example.com` and any subdomain. Normalized (lowercased, port and trailing dot stripped). |
+| `methods` | HTTP verbs, normalized to uppercase. Matched against the **effective** method (see method-override note below). |
+| `path_prefixes` | Literal prefixes of the normalized path. |
+| `path_patterns` | RE2 patterns against the normalized path. Path case is preserved during normalization (IDs are case-sensitive); use a `path_pattern` for case-insensitive matching. |
+| `content_types` | Media types with parameters (charset, boundary) stripped, lowercased. |
+
+Paths are normalized before matching: bounded repeated percent-decoding (so a multi-encoded `..%252e` segment cannot hide from dot-segment removal), per-segment `;parameter` stripping, and dot-segment / double-slash collapsing.
+
+**Method-override handling:** a request that tunnels a different method through `X-HTTP-Method-Override`, `X-Method-Override`, or `X-HTTP-Method` is evaluated against **both** the base method and the overridden method, and the stricter result wins. This stops a `POST` with `X-HTTP-Method-Override: DELETE` from dodging a `DELETE`-scoped rule, and equally stops a real `POST` from being downgraded by an override the upstream ignores.
+
+**GraphQL predicate fields** (`graphql`): applied after the route matches. A request matches when **any** extracted operation satisfies the predicate. Every operation in a document or batch is evaluated, never just the first. At least one of the two fields must be set.
+
+| Field | Description |
+|-------|-------------|
+| `operation_types` | `query`, `mutation`, and/or `subscription`. When set, the operation kind must be in this list. |
+| `root_field_patterns` | RE2 patterns against the operation's resolved root field names. Aliases are resolved to the real field and top-level fragment spreads / inline fragments are expanded, so a deny rule matches the field that actually executes, not a cosmetic alias or a field hidden inside a fragment. |
+
+GraphQL operations are extracted from `application/json` bodies (single object or batched array) and from GraphQL-over-GET query strings (`?query=...&operationName=...`). A body that is not valid GraphQL-over-HTTP JSON, or that contains a query that fails to parse, fails closed via `on_parse_error`. A request element carrying no inline query (an APQ hash, an empty/missing `query`) is opaque and fails closed via `on_opaque_operation`. Duplicate fragment names, fragment cycles, unresolved spreads, and expansion-budget exhaustion all make the document unclassifiable and fail closed.
+
+> **Scope GraphQL rules by path, not content type.** A GraphQL-over-GET request carries no body and therefore no `Content-Type`, so a rule whose route sets `content_types: ["application/json"]` silently never matches the GET form, even though the engine still extracts the operation from the `?query=` string. Constrain GraphQL rules with `path_prefixes` / `path_patterns` for the GraphQL endpoint, or leave `content_types` empty, so one rule covers both the POST-body and GET-query transports.
+
+### Discriminator predicate
+
+As an alternative to the GraphQL predicate, a rule can carry a `discriminator` predicate that matches a single top-level JSON body field against RE2 value patterns. This handles non-GraphQL JSON APIs that signal the operation through a discriminator key (an action, type, or command field).
+
+```yaml
+  rules:
+    - name: "block-account-close-commands"
+      action: block
+      reason: "account-close commands require human review"
+      route:
+        hosts: ["api.example.com"]
+        methods: ["POST"]
+        path_prefixes: ["/rpc"]
+        content_types: ["application/json"]
+      discriminator:
+        field: "action"
+        value_patterns: ["^account\\.close$", "^account\\.delete$"]
+```
+
+| Field | Description |
+|-------|-------------|
+| `field` | The top-level JSON object key carrying the operation discriminator. A dotted name is treated as a single literal key today; nested paths are a future extension. |
+| `value_patterns` | RE2 patterns matched against the string value at `field`. The predicate matches when any pattern matches. At least one pattern is required (a discriminator with no patterns can never match). |
+
+Semantics, all fail-closed:
+
+- A string value at `field` is matched against `value_patterns`; the predicate matches when any pattern matches.
+- An absent `field` does not match. The allow-by-default rail forwards unless another rule matches.
+- A present but non-string value, a top-level body that is not a JSON object, or a duplicated target key is opaque and fails closed via `on_opaque_operation`.
+- A body that is not valid JSON fails closed via `on_parse_error`.
+
+A rule may set both `graphql` and `discriminator`; when it does, both predicates must match (in addition to the route). The discriminator predicate is evaluated on every HTTP transport and per WebSocket text frame, the same surfaces as the GraphQL predicate, and it folds into the canonical policy hash.
+
+### Batch endpoints
+
+A JSON batch endpoint wraps multiple sub-requests in one outer request, each carrying its own method, URL, and body. When an outer request route-matches a `batch` entry, request policy parses the envelope and evaluates **every** sub-request against the full rule set: host inherited from the outer request, plus the sub-request's effective method, normalized path, and any GraphQL operation in its body or URL query. The strictest decision across all sub-requests wins, so a dangerous operation cannot evade a rule by being wrapped in a batch.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `route` | n/a | Which requests are treated as a batch envelope (same route fields as a rule). |
+| `requests_field` | `"requests"` | JSON field holding the sub-request array. |
+| `method_field` | `"method"` | Sub-request method field. |
+| `url_field` | `"url"` | Sub-request URL/path field. |
+| `body_field` | `"body"` | Sub-request body field. |
+| `max_sub_requests` | `64` | Cap on sub-requests evaluated per batch. Over the cap, the envelope fails closed via `on_parse_error`. |
+
+The envelope field names default to the common OData-style JSON batch shape (`requests[].{method,url,body}`); override them for a differently shaped envelope. A sub-request whose method or URL field is missing or not a string fails closed (it must not silently evaluate as `method="" path="/"`). Nested batches are expanded up to a fixed depth; beyond that depth a sub-request that itself targets a batch endpoint fails closed regardless of configuration. An unread, oversize, or unparseable envelope fails closed via `on_parse_error`.
+
+### Transport coverage
+
+Request policy is enforced on the fetch proxy, forward proxy, CONNECT, TLS interception, reverse proxy, and redirect hops. On every HTTP transport it runs before the contract gate. WebSocket is covered on two surfaces: the upgrade handshake is matched route-only (host, `GET` method, path, content type), and once the socket is open each complete, UTF-8-validated client text frame is evaluated per frame as an operation body over the handshake route (the upgrade is a `GET`, so the effective method is `GET`). The per-frame body-predicate gate is checked against the live matcher on each frame rather than cached at upgrade, so a hot-reloaded rule applies to already-open sockets, and benign routes still pay no JSON-parse cost. Fragmented frames and binary frames are not evaluated as operation bodies (documented limit).
+
+When a route-matched operation predicate or batch endpoint needs a body that cannot be inspected, the request is blocked outright, independent of the `on_parse_error` / `on_opaque_operation` settings (those apply only to a fully-read body that fails to parse). A body counts as uninspectable when it is unread, exceeds `request_body_scanning.max_body_bytes` (default 5 MiB), or hits a read error. The bounded read has already consumed the body stream, so the request can no longer be forwarded intact.
+
+### Enforcement, audit, and receipts
+
+A matched rule records a decision metric and an audit event with bounded, operator-defined labels only, never body or matched content. An enforced (non-shadow) `block` returns HTTP 403 with the `request_policy_deny` block reason and, when a receipt emitter is configured, a correlated receipt. `warn` and `shadow` matches are logged and counted, then forwarded.
+
 ## WebSocket Proxy
 
 Bidirectional WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly handles split messages in scan-only mode; when `redaction.enabled` is on, outbound fragmented client messages fail closed because the proxy only rewrites complete JSON messages.

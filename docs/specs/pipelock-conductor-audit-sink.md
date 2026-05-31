@@ -113,6 +113,10 @@ Requirements:
 - Every key has `key_id`, `purpose`, `created_at`, `not_before`, `not_after`,
   and `revoked_at`.
 - Follower trust rosters pin public keys and accepted purposes.
+- The trust roster and pinned root fingerprint are read once at follower
+  startup and are NOT re-read on config hot-reload; rotating the roster or
+  changing the pinned root requires a follower restart (deliberate: the
+  pinned root is the trust anchor and must not be swappable at runtime).
 - Key rotation is published as a signed trust-root or intermediate update.
 - Followers reject unknown key IDs, wrong-purpose signatures, expired keys, and
   revoked keys.

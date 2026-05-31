@@ -373,7 +373,11 @@ func TestHandler_FieldSizeLimit(t *testing.T) {
 	}
 }
 
-func TestHandler_ToolCallInputScanningDisabled(t *testing.T) {
+// TestHandler_ToolCallBenignArgsAllowed confirms a tool_call with clean
+// arguments allows. The scan API's tool_call DLP+injection scan runs on
+// demand regardless of the inline-proxy MCPInputScanning toggle, so the
+// allow here comes from the benign payload, not from scanning being off.
+func TestHandler_ToolCallBenignArgsAllowed(t *testing.T) {
 	h := newTestHandler(t)
 	h.cfg.MCPInputScanning.Enabled = false
 	// policyCfg is nil in newTestHandler, so policy check is skipped too.
@@ -386,7 +390,41 @@ func TestHandler_ToolCallInputScanningDisabled(t *testing.T) {
 	var resp Response
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
 	if resp.Decision != DecisionAllow {
-		t.Errorf("expected allow when both input scanning and policy disabled, got %q", resp.Decision)
+		t.Errorf("expected allow for benign tool_call args, got %q", resp.Decision)
+	}
+}
+
+// TestHandler_ToolCallDLPRunsWhenInputScanningDisabled is the regression test
+// for the scan-API fail-open: a tool_call carrying a secret in its arguments
+// must be DENIED even when the inline-proxy mcp_input_scanning toggle is off.
+// Before the fix, scanToolCall gated its DLP+injection sub-scans on
+// cfg.MCPInputScanning.Enabled (default false), so the API returned allow with
+// zero findings — silently declining to scan what the caller explicitly asked
+// it to scan. The scan API is an on-demand surface; tool_call now scans
+// unconditionally like the url / dlp / prompt_injection kinds.
+func TestHandler_ToolCallDLPRunsWhenInputScanningDisabled(t *testing.T) {
+	h := newTestHandler(t)
+	h.cfg.MCPInputScanning.Enabled = false // the toggle that used to fail open
+	// Build the secret at runtime so the test source does not trip self-scan.
+	secret := "sk-ant-" + "IOSFODNN7EXAMPLE"
+	body := `{"kind":"tool_call","input":{"tool_name":"http_post","arguments":{"token":"` + secret + `"}}}`
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Decision != DecisionDeny {
+		t.Errorf("expected deny for tool_call with secret in args (scan must run on demand), got %q", resp.Decision)
+	}
+	if len(resp.Findings) == 0 {
+		t.Error("expected DLP findings for tool_call carrying a secret")
 	}
 }
 

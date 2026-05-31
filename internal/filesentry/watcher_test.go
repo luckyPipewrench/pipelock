@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -339,6 +340,72 @@ func TestWatcher_OversizedFileSkipped(t *testing.T) {
 		t.Errorf("expected no finding for oversized file, got %+v", finding)
 	case <-time.After(300 * time.Millisecond):
 		// Good — oversized file was skipped.
+	}
+}
+
+// TestWatcher_OversizedSkipIsVisibleAndCapConfigurable proves two things the
+// silent `return` behavior lacked: (1) an oversized file left unscanned surfaces
+// through the onError callback instead of vanishing, and (2) file_sentry
+// max_file_bytes overrides the default cap so an operator can tune it. A file
+// over the configured 64-byte cap must skip-with-notice; a file under it scans.
+func TestWatcher_OversizedSkipIsVisibleAndCapConfigurable(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:      true,
+		WatchPaths:   []config.WatchPath{{Path: dir}},
+		ScanContent:  ptrBool(true),
+		MaxFileBytes: 64,
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	var skipErr atomic.Pointer[string]
+	w, err := NewWatcher(cfg, sc, nil, func(e error) {
+		s := e.Error()
+		skipErr.Store(&s)
+	})
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	// Direct scanFile call keeps the assertion deterministic (no debounce race).
+	fsw := w.(*fsWatcher)
+
+	// Over the 64-byte cap: skipped, but the skip is reported via onError.
+	bigPath := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(bigPath, []byte(strings.Repeat("a", 200)), 0o600); err != nil {
+		t.Fatalf("WriteFile big: %v", err)
+	}
+	fsw.scanFile(context.Background(), bigPath, false)
+	got := skipErr.Load()
+	if got == nil {
+		t.Fatal("expected onError skip notification for oversized file, got none")
+	}
+	if !strings.Contains(*got, "oversized") {
+		t.Errorf("skip error should mention oversize, got: %s", *got)
+	}
+
+	// Under the cap: a secret is still detected, proving the configured cap
+	// (not the 10 MiB default) is what gates scanning.
+	skipErr.Store(nil)
+	smallPath := filepath.Join(dir, "small.txt")
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(smallPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile small: %v", err)
+	}
+	fsw.scanFile(context.Background(), smallPath, false)
+	select {
+	case f := <-w.Findings():
+		if f.Path != smallPath {
+			t.Errorf("expected finding for %q, got %q", smallPath, f.Path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected finding for under-cap file with secret, got none")
 	}
 }
 

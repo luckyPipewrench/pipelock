@@ -31,8 +31,10 @@ const findingsChanSize = 64
 // stopped reading, long enough to deliver findings under normal shutdown.
 const flushSendTimeout = 2 * time.Second
 
-// maxFileSize is the maximum file size to scan. Files larger than this are
-// skipped to avoid unbounded memory use from scanning large binaries.
+// maxFileSize is the default maximum file size to scan when file_sentry
+// max_file_bytes is unset. Files larger than the effective cap are skipped to
+// avoid unbounded memory use from scanning large binaries; the skip is
+// surfaced via the watcher's error callback so it is visible, not silent.
 const maxFileSize = 10 * 1024 * 1024 // 10MB
 
 // fsWatcher implements Watcher using fsnotify for cross-platform file watching.
@@ -90,6 +92,16 @@ func (w *fsWatcher) logError(err error) {
 	if w.onError != nil {
 		w.onError(err)
 	}
+}
+
+// effectiveMaxFileSize returns the configured file_sentry max_file_bytes when
+// set to a positive value, otherwise the built-in default. Validation rejects
+// negative values, so a non-positive cfg value here means "unset".
+func (w *fsWatcher) effectiveMaxFileSize() int64 {
+	if w.cfg != nil && w.cfg.MaxFileBytes > 0 {
+		return w.cfg.MaxFileBytes
+	}
+	return maxFileSize
 }
 
 // Arm installs watches on all configured directories synchronously.
@@ -348,12 +360,25 @@ func (w *fsWatcher) flushScan(path string, isAgent bool) {
 	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
-	if err != nil || info.IsDir() || info.Size() == 0 || info.Size() > maxFileSize {
+	if err != nil {
+		w.logError(fmt.Errorf("filesentry: stat failed, file left unscanned: %s: %w", path, err))
+		return
+	}
+	if info.IsDir() || info.Size() == 0 {
+		return
+	}
+	sizeCap := w.effectiveMaxFileSize()
+	if info.Size() > sizeCap {
+		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (%d bytes > cap %d): %s", info.Size(), sizeCap, path))
 		return
 	}
 
-	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
-	if err != nil || len(data) == 0 {
+	data, err := io.ReadAll(io.LimitReader(f, sizeCap+1))
+	if err != nil {
+		w.logError(fmt.Errorf("filesentry: read failed, file left unscanned: %s: %w", path, err))
+		return
+	}
+	if len(data) == 0 {
 		return
 	}
 
@@ -406,15 +431,25 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, check
 	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
-	if err != nil || info.IsDir() || info.Size() == 0 {
+	if err != nil {
+		w.logError(fmt.Errorf("filesentry: stat failed, file left unscanned: %s: %w", path, err))
 		return
 	}
-	if info.Size() > maxFileSize {
+	if info.IsDir() || info.Size() == 0 {
+		return
+	}
+	sizeCap := w.effectiveMaxFileSize()
+	if info.Size() > sizeCap {
+		w.logError(fmt.Errorf("filesentry: skipped oversized file, left unscanned (%d bytes > cap %d): %s", info.Size(), sizeCap, path))
 		return
 	}
 
-	data, err := io.ReadAll(io.LimitReader(f, maxFileSize+1))
-	if err != nil || len(data) == 0 {
+	data, err := io.ReadAll(io.LimitReader(f, sizeCap+1))
+	if err != nil {
+		w.logError(fmt.Errorf("filesentry: read failed, file left unscanned: %s: %w", path, err))
+		return
+	}
+	if len(data) == 0 {
 		return
 	}
 

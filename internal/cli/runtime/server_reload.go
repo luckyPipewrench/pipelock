@@ -132,12 +132,16 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			return nil
 		}
 
-		// Block reverse proxy listener/upstream changes via reload.
-		// The listener binds at startup and the upstream is pinned in
-		// the handler. Requires restart.
-		if oldCfg.ReverseProxy.Listen != newCfg.ReverseProxy.Listen ||
-			oldCfg.ReverseProxy.Enabled != newCfg.ReverseProxy.Enabled ||
-			oldCfg.ReverseProxy.Upstream != newCfg.ReverseProxy.Upstream {
+		// Block ALL reverse proxy changes via reload. The listener binds at
+		// startup, the upstream is pinned in the handler, and the submit-profile
+		// SSRF-safe dialer is installed on the transport at init — none of these
+		// rebind at runtime. A field-by-field check missed profile, allowed
+		// methods/paths, trusted_upstream, body cap, and timeout; flipping
+		// profile on reload would activate the submit gate while the dial path
+		// stayed startup-frozen (a real security weakening). Compare the whole
+		// struct so any change is preserved until restart, matching the
+		// restart-required warning in reloadwarn.go.
+		if !reflect.DeepEqual(oldCfg.ReverseProxy, newCfg.ReverseProxy) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: reverse_proxy settings changed — requires restart, ignoring\n")
 			newCfg.ReverseProxy = oldCfg.ReverseProxy
 		}

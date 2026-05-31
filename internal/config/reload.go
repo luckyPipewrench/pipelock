@@ -110,11 +110,30 @@ func (r *Reloader) tryReload() {
 		return
 	}
 
-	// Non-blocking send: if the consumer hasn't drained the last reload,
-	// drop this one (it will be superseded by the next change anyway).
-	select {
-	case r.onChange <- cfg:
-	default:
+	// Coalesce-to-latest: the buffer holds one pending config. If the consumer
+	// has not drained the previous reload, replace it with this fresher one
+	// rather than dropping the new config. Dropping the NEW config would strand
+	// the proxy on a STALE pending config — e.g. write a weak config, then
+	// quickly write a stronger one before the slow reload (scanner rebuild)
+	// drains: the strong config would be lost and the weak one applied. Always
+	// keeping the latest Load() result avoids that security-relevant inversion.
+	//
+	// Safe because Start() is the sole sender (debounce + SIGHUP share one
+	// select loop), so there is no competing producer between the drain and the
+	// re-send. The drain itself is non-blocking: if the consumer drained in the
+	// meantime, the buffer is empty and we just enqueue.
+	for {
+		select {
+		case r.onChange <- cfg:
+			return
+		default:
+			// Buffer full: discard the stale pending config and retry. The
+			// discarded value is older than cfg by construction.
+			select {
+			case <-r.onChange:
+			default:
+			}
+		}
 	}
 }
 

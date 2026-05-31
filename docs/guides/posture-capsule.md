@@ -84,7 +84,7 @@ Flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--proof` | `.pipelock/posture/proof.json` | Path to the signed capsule |
+| `--proof` | (required) | Path to the signed capsule (`proof.json`). |
 | `--key` | (required) | Path to the Ed25519 public key file (pipelock-ed25519-public-v1 format) |
 | `--policy` | `enterprise` | Policy name: `enterprise`, `strict`, or `none` |
 | `--config` | (optional) | Path to local `pipelock.yaml` for config-hash comparison |
@@ -197,6 +197,6 @@ Minimal example:
 
 ## Notes
 
-- `pipelock posture emit` writes only `proof.json`. Companion artifacts (`proof.md`, `badge.svg`) are planned follow-ups.
+- `pipelock posture emit` writes `proof.json` and `proof.md` (human-readable). A `badge.svg` companion is a planned follow-up.
 - The verify CLI is the supported gate surface. Earlier documentation called CI gates and scores "follow-up work" — both are shipping.
-- SARIF and human-readable summary output are planned for later releases.
+- SARIF output is planned for later releases.

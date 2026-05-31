@@ -799,6 +799,44 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	}
 }
 
+// TestServer_Reload_ReverseProxyProfileOnlyIgnored isolates the profile-only
+// reload case. The previous field-by-field guard only preserved ReverseProxy
+// when listen/enabled/upstream changed, so a reload that flipped ONLY the
+// profile slipped through: the submit gate would read the new profile from the
+// live config while the SSRF-safe dialer — installed on the transport at
+// startup — stayed frozen. With the whole struct compared, a profile-only
+// change is preserved until restart like every other reverse_proxy field.
+func TestServer_Reload_ReverseProxyProfileOnlyIgnored(t *testing.T) {
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ReverseProxy = true
+		o.ReverseUpstream = serverTestUpstreamURL
+		o.ReverseListen = "127.0.0.1:18084"
+	})
+
+	oldCfg := s.proxy.CurrentConfig()
+
+	// Change ONLY the profile (and a submit-listener field). Listen, enabled,
+	// and upstream are untouched — the old guard would not have fired.
+	newCfg := oldCfg.Clone()
+	newCfg.ReverseProxy.Profile = "submit"
+	newCfg.ReverseProxy.RequestTimeoutSeconds = 30
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	live := s.proxy.CurrentConfig()
+	if live.ReverseProxy.Profile != oldCfg.ReverseProxy.Profile {
+		t.Fatalf("reverse_proxy.profile changed via reload to %q (dial path is startup-frozen)", live.ReverseProxy.Profile)
+	}
+	if !reflect.DeepEqual(live.ReverseProxy, oldCfg.ReverseProxy) {
+		t.Fatalf("reverse proxy settings not preserved on profile-only reload: %+v", live.ReverseProxy)
+	}
+	if !buf.contains("reverse_proxy settings changed") {
+		t.Fatalf("stderr missing reverse_proxy reload warning:\n%s", buf.String())
+	}
+}
+
 // TestServer_Reload_ProxyFailureStaysFailSafe verifies that when proxy.Reload
 // aborts its internal swap, Server.Reload does not continue applying partial
 // side effects such as kill switch state changes or success dedup markers.

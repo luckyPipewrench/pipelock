@@ -1652,10 +1652,19 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
-	maxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	// configMaxBytes and budgetLimited are kept distinct so the buffered scan
+	// path can tell the two reasons apart. Exceeding the SCAN cap means we
+	// could not fully inspect the response — fail closed (block) like the TLS
+	// intercept and reverse proxy paths. Exceeding the data BUDGET is a
+	// deliberate, separately-logged truncation policy and must not turn into a
+	// 403. See the buffered-scan over-limit handling below.
+	configMaxBytes := int64(cfg.FetchProxy.MaxResponseMB) * 1024 * 1024
+	maxBytes := configMaxBytes
 	budgetRemaining := resolved.Budget.RemainingBytes()
+	budgetLimited := false
 	if budgetRemaining >= 0 && budgetRemaining < maxBytes {
 		maxBytes = budgetRemaining
+		budgetLimited = true
 	}
 
 	fwdRespHost := resp.Request.URL.Hostname()
@@ -1911,13 +1920,36 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+		// Read one byte past the cap so an overrun is detectable with a single
+		// length comparison (same +1 sentinel the TLS intercept and reverse
+		// proxy paths use). A body that exceeds the cap is NOT silently
+		// truncated-then-forwarded: that would emit an apparently-successful,
+		// scanned response that is not the upstream response (corrupted JSON /
+		// HTML / model output), which violates fail-closed in spirit.
+		respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 		if readErr != nil {
 			p.logger.LogError(actx, readErr)
 			writeBlockedError(w,
 				blockInfoFor(blockreason.ParseError, "response_scan"),
 				"blocked: response read error", http.StatusForbidden)
 			return
+		}
+		if int64(len(respBody)) > maxBytes {
+			if budgetLimited {
+				// Data-budget exhaustion, not a scan-cap overrun: preserve the
+				// existing truncation policy. Trim back to the budget and let
+				// the post-write budget_truncated anomaly log fire as before.
+				respBody = respBody[:maxBytes]
+			} else {
+				// Could not fully inspect the response within the configured
+				// scan cap — block fail-closed, matching intercept/reverse.
+				p.logger.LogBlocked(actx, "response_scan", "response too large for scanning")
+				p.metrics.RecordBlocked(fwdRespHost, "response_scan", time.Since(start), agentLabel)
+				writeBlockedError(w,
+					blockInfoFor(blockreason.DataBudget, "response_scan"),
+					"blocked: response too large for scanning", http.StatusForbidden)
+				return
+			}
 		}
 
 		// Browser Shield on forward proxy responses. Use post-redirect host
@@ -2206,6 +2238,12 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// No response scanning: copy headers and stream directly for lower latency.
+	// This branch runs only when response scanning, Browser Shield, and media
+	// policy are ALL disabled, so there is no scan to fail closed on — maxBytes
+	// here acts purely as a streaming data-budget cap, and an over-cap body is
+	// truncated and reported via the budget_truncated anomaly below. (Whether
+	// max_response_mb should remain a silent streaming cap on this no-scan path
+	// is a separate backward-compat decision, intentionally left unchanged.)
 	copyResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	written, _ := io.Copy(w, io.LimitReader(resp.Body, maxBytes))

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -38,7 +37,7 @@ func (h *Handler) executeScan(ctx context.Context, req *Request) (Response, int)
 	case KindPromptInjection:
 		return h.scanPromptInjection(ctx, sc, req)
 	case KindToolCall:
-		return h.scanToolCall(ctx, cfg, sc, policyCfg, req)
+		return h.scanToolCall(ctx, sc, policyCfg, req)
 	default:
 		// Should not reach here (validated in handler), but fail-closed.
 		return errorResponse(req.Kind, "invalid_kind", "Unknown kind", false), http.StatusBadRequest
@@ -122,7 +121,6 @@ func (h *Handler) scanPromptInjection(ctx context.Context, sc *scanner.Scanner, 
 
 func (h *Handler) scanToolCall(
 	ctx context.Context,
-	cfg *config.Config,
 	sc *scanner.Scanner,
 	policyCfg *policy.Config,
 	req *Request,
@@ -148,7 +146,17 @@ func (h *Handler) scanToolCall(
 	scanText := strings.Join(argStrings, " ")
 
 	// Stage 2: DLP + injection sub-scans (independent of tool policy).
-	if scanText != "" && cfg.MCPInputScanning.Enabled {
+	//
+	// These run whenever a tool_call scan is requested, NOT gated on
+	// cfg.MCPInputScanning.Enabled. The scan API is an explicit on-demand
+	// request surface: whether tool_call is offered at all is governed by
+	// scan_api.kinds.tool_call (default true). Gating Stage 2 on the
+	// inline-proxy MCPInputScanning toggle (default false) made a caller's
+	// tool_call request return allow with zero findings — a fail-open where
+	// the API silently declined to scan what it was asked to. The sibling
+	// kinds (url / dlp / prompt_injection) all scan unconditionally; tool_call
+	// now matches that contract.
+	if scanText != "" {
 		dlpResult := sc.ScanTextForDLP(ctx, scanText)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)

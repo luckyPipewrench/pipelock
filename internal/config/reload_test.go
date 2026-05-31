@@ -52,6 +52,47 @@ func TestReloader_FileChange(t *testing.T) {
 	}
 }
 
+// TestReloader_CoalesceKeepsLatest proves the reload buffer coalesces to the
+// LATEST config when the consumer is slow, instead of dropping the new config
+// and stranding the proxy on a stale pending one. Two reloads fire before the
+// single-slot buffer is drained; the drained value must be the second
+// (stronger) config, not the first. Before the fix, the second send was dropped
+// non-blocking and the consumer would have applied the first config.
+func TestReloader_CoalesceKeepsLatest(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+
+	r := NewReloader(cfgPath)
+	defer r.Close()
+
+	// First reload: balanced. Lands in the single-slot buffer, undrained.
+	// (Both modes here are valid without extra config — strict would fail
+	// validation for lack of api_allowlist and never reach the buffer.)
+	writeTestConfig(t, cfgPath, ModeBalanced)
+	r.tryReload()
+
+	// Second reload: audit. Buffer is full, so the fix must discard the stale
+	// balanced config and enqueue audit rather than dropping audit.
+	writeTestConfig(t, cfgPath, ModeAudit)
+	r.tryReload()
+
+	select {
+	case cfg := <-r.Changes():
+		if cfg.Mode != ModeAudit {
+			t.Fatalf("coalesce kept stale config: got mode %q, want %q (the latest reload)", cfg.Mode, ModeAudit)
+		}
+	default:
+		t.Fatal("expected a coalesced config in the buffer, got none")
+	}
+
+	// Only one slot: after draining the latest there must be nothing stale left.
+	select {
+	case cfg := <-r.Changes():
+		t.Fatalf("expected empty buffer after draining latest, got stale mode %q", cfg.Mode)
+	default:
+	}
+}
+
 func TestReloader_InvalidConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")

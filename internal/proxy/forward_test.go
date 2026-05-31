@@ -541,6 +541,56 @@ func proxyClient(proxyAddr string) *http.Client {
 	}
 }
 
+// TestForwardProxy_ResponseScanCapOverrunBlocks proves the forward proxy blocks
+// a response that exceeds the configured scan cap instead of forwarding a
+// silently-truncated prefix as an apparently-successful, scanned response. This
+// mirrors the TLS-interception and reverse-proxy fail-closed behavior: "could
+// not fully inspect the response" must not become "allow a corrupted prefix".
+//
+// The scan cap is max_response_mb (whole MiB; minimum 1 MiB), so the over-cap
+// case must push >1 MiB. The over-cap body is blocked BEFORE the injection scan
+// runs, so that case stays fast. The allowed case uses a small body on purpose:
+// exercising the exact-1-MiB boundary would force the 6-pass scanner over a full
+// MiB of buffered content, which is slow and tests the scanner, not this gate.
+func TestForwardProxy_ResponseScanCapOverrunBlocks(t *testing.T) {
+	const capMiB = 1
+	capBytes := capMiB * 1024 * 1024
+
+	tests := []struct {
+		name     string
+		bodyLen  int
+		wantCode int
+	}{
+		{name: "within cap allowed", bodyLen: 128, wantCode: http.StatusOK},
+		{name: "over cap blocked", bodyLen: capBytes + 1, wantCode: http.StatusForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Repeat("a", tc.bodyLen)
+			upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, body)
+			}))
+			defer upstream.Close()
+
+			proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+				// Response scanning ON forces the buffered scan path. The body
+				// is benign, so only the size gate can change the verdict.
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Action = config.ActionBlock
+				cfg.FetchProxy.MaxResponseMB = capMiB
+			})
+			defer cleanup()
+
+			client := proxyClient(proxyAddr)
+			resp := doGet(t, client, upstream.URL)
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.wantCode {
+				t.Fatalf("body len %d: got status %d, want %d", tc.bodyLen, resp.StatusCode, tc.wantCode)
+			}
+		})
+	}
+}
+
 func TestConnectAllowed(t *testing.T) {
 	echoLn := listenEcho(t)
 	defer func() { _ = echoLn.Close() }()

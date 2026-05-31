@@ -101,7 +101,7 @@ args = [
 | Direction | What | Scanning |
 |-----------|------|----------|
 | Codex → MCP server | Tool call arguments | DLP (secrets, credentials, env vars), injection patterns |
-| MCP server → Codex | Tool results, descriptions | Prompt injection (19 patterns, 6-pass normalization) |
+| MCP server → Codex | Tool results, descriptions | Prompt injection (6-pass normalization) |
 | Tool definitions | `tools/list` responses | Poisoned descriptions, schema injection, rug-pull detection |
 | Tool sequences | Multi-call patterns | Chain detection (read-then-exfil, persist-then-callback) |
 

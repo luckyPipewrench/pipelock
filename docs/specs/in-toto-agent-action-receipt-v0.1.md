@@ -233,7 +233,7 @@ API key:
     "actor": "spiffe://example.org/agent/claude-code-cli",
     "mediator": {
       "id": "pipelock-7f3c2b1e",
-      "version": "2.5.0",
+      "version": "2.6.0",
       "buildCommit": "dcd25d8",
       "signingKey": {
         "algorithm": "ed25519",

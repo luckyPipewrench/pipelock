@@ -193,6 +193,14 @@ type FileSentry struct {
 	// detected leak. Non-agent writes (editor saves, build output) never
 	// trigger the block path. Empty normalizes to "warn".
 	Action string `yaml:"action"`
+
+	// MaxFileBytes caps the size of a watched file the content scanner will
+	// read. Files larger than this are skipped to bound memory use, but the
+	// skip is surfaced via the watcher's error callback rather than silently
+	// dropped, so an operator can see that an oversized file went uninspected.
+	// Zero (the default) means the built-in default (10 MiB). Negative is
+	// rejected at validation time.
+	MaxFileBytes int64 `yaml:"max_file_bytes"`
 }
 
 // Sandbox configures process containment for child processes.

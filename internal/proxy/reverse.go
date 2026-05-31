@@ -164,6 +164,15 @@ func (rp *ReverseProxyHandler) SetSafeDialer(dial func(ctx context.Context, netw
 func newReverseProxyTransport(rp *ReverseProxyHandler, dial func(ctx context.Context, network, addr string) (net.Conn, error)) http.RoundTripper {
 	base := http.DefaultTransport.(*http.Transport).Clone()
 	base.DisableCompression = true
+	// Clone() inherits Proxy: http.ProxyFromEnvironment from
+	// http.DefaultTransport, which would let an ambient HTTP_PROXY /
+	// HTTPS_PROXY silently redirect pipelock's own upstream egress. Every
+	// other egress transport (fetch proxy.go, intercept.go,
+	// newTLSInterceptTransport) builds a fresh http.Transport with a nil
+	// Proxy and dials the configured upstream directly. Match that parity
+	// here so reverse-proxy egress is not env-steerable and always traverses
+	// the SSRF-safe dialer below.
+	base.Proxy = nil
 	if dial != nil {
 		base.DialContext = dial
 	}

@@ -279,6 +279,25 @@ func TestHTTPClient_HeaderImmutability(t *testing.T) {
 	}
 }
 
+// TestNewHTTPClient_IgnoresAmbientProxyEnv locks the transport invariant that
+// the MCP HTTP client dials its configured upstream directly: a nil Proxy so an
+// ambient HTTP_PROXY/HTTPS_PROXY cannot silently redirect egress around the
+// CLI-validated upstream and the redirect-disabled SSRF posture. Also asserts
+// DisableCompression stays set so the compressed-stream guard cannot regress.
+func TestNewHTTPClient_IgnoresAmbientProxyEnv(t *testing.T) {
+	c := NewHTTPClient("https://upstream.example/mcp", nil)
+	tr, ok := c.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", c.client.Transport)
+	}
+	if tr.Proxy != nil {
+		t.Error("HTTP client transport Proxy must be nil (no ambient HTTP_PROXY chaining)")
+	}
+	if !tr.DisableCompression {
+		t.Error("DisableCompression must stay set (compressed-stream guard)")
+	}
+}
+
 func TestHTTPClient_ExtraHeadersCannotOverrideTransport(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extra headers should NOT override Content-Type or Accept.

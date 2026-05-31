@@ -180,6 +180,35 @@ func TestProxy_SafeDialerBlocksInternalIP(t *testing.T) {
 	}
 }
 
+// TestReverseProxyTransport_IgnoresAmbientProxyEnv locks the transport-parity
+// invariant: the reverse-proxy base transport must not honor an ambient
+// HTTP_PROXY/HTTPS_PROXY. The base is cloned from http.DefaultTransport for
+// sane pool/timeout defaults, which would otherwise inherit
+// Proxy: http.ProxyFromEnvironment and let an env var silently redirect
+// pipelock's own upstream egress (and make submit-profile tests fail in a
+// pipelock-proxied shell). Fetch, intercept, and TLS transports all build a
+// fresh transport with a nil Proxy; this asserts the reverse proxy matches.
+func TestReverseProxyTransport_IgnoresAmbientProxyEnv(t *testing.T) {
+	dialers := []func(context.Context, string, string) (net.Conn, error){
+		nil,
+		func(context.Context, string, string) (net.Conn, error) { return nil, nil },
+	}
+	for _, dial := range dialers {
+		rt := newReverseProxyTransport(nil, dial)
+		srt, ok := rt.(*reverseSigningRoundTripper)
+		if !ok {
+			t.Fatalf("transport type = %T, want *reverseSigningRoundTripper", rt)
+		}
+		base, ok := srt.base.(*http.Transport)
+		if !ok {
+			t.Fatalf("base type = %T, want *http.Transport", srt.base)
+		}
+		if base.Proxy != nil {
+			t.Error("reverse-proxy base transport Proxy must be nil (no ambient HTTP_PROXY chaining)")
+		}
+	}
+}
+
 func submitProfileHostOverrideURL(t *testing.T, upstreamURL, host string) string {
 	t.Helper()
 

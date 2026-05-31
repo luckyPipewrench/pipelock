@@ -68,6 +68,14 @@ func NewHTTPClient(url string, headers http.Header) *HTTPClient {
 	// same root cause as the forward and reverse transport fixes.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
+	// Clone() inherits Proxy: http.ProxyFromEnvironment, which would let an
+	// ambient HTTP_PROXY/HTTPS_PROXY silently redirect this client's egress to
+	// the configured MCP upstream. The upstream URL is validated at the CLI
+	// layer and redirects are disabled below for the same SSRF reason; honoring
+	// an env proxy would route around both. Match the parity of the forward,
+	// reverse, and TLS-intercept transports, which all dial the configured
+	// upstream directly with a nil Proxy.
+	transport.Proxy = nil
 	return &HTTPClient{
 		url:     url,
 		headers: headers.Clone(),

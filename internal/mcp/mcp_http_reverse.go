@@ -25,6 +25,27 @@ import (
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// newReverseUpstreamTransport builds the HTTP transport the MCP HTTP listener
+// uses to reach its configured upstream. It clones http.DefaultTransport for
+// sane pool/timeout defaults, then sets two invariants:
+//
+//   - DisableCompression: true so the upstream's Content-Encoding survives
+//     transparent-decompression stripping. The listener forwards bodies to the
+//     scanner, and a gzip'd upstream response would otherwise reach the
+//     scanner's compressed-content guard with the encoding header already
+//     removed (same root cause as the forward and reverse transport fixes).
+//   - Proxy: nil so an ambient HTTP_PROXY/HTTPS_PROXY cannot silently redirect
+//     egress to the configured upstream and route around the redirect-disabled
+//     SSRF posture at the call site. Matches the parity of the forward,
+//     reverse, and TLS-intercept transports, which all dial the configured
+//     upstream directly with a nil Proxy.
+func newReverseUpstreamTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.DisableCompression = true
+	t.Proxy = nil
+	return t
+}
+
 // RunHTTPListenerProxy starts an HTTP server that reverse-proxies MCP requests
 // to an upstream server with bidirectional scanning. Each inbound POST is
 // independently scanned and forwarded. Mcp-Session-Id and Authorization headers
@@ -161,18 +182,9 @@ func RunHTTPListenerProxy(
 	// CheckRedirect closure so signed envelopes do not flow with
 	// stale @target-uri / ph / hop values. The same applies to
 	// internal/mcp/transport/httpclient.go:45.
-	// Clone http.DefaultTransport with DisableCompression: true so the
-	// upstream's Content-Encoding survives transparent-decompression
-	// stripping. The MCP HTTP listener forwards bodies to the scanner,
-	// and a gzip'd upstream response would otherwise reach the
-	// scanner's compressed-content guard with the encoding header
-	// already removed. This has the same root cause as the forward
-	// and reverse transport fixes.
-	upstreamTransport := http.DefaultTransport.(*http.Transport).Clone()
-	upstreamTransport.DisableCompression = true
 	upstreamClient := &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: upstreamTransport,
+		Transport: newReverseUpstreamTransport(),
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

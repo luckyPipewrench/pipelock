@@ -5714,6 +5714,23 @@ func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
 	}
 }
 
+// TestNewReverseUpstreamTransport_IgnoresAmbientProxyEnv locks the two
+// invariants of the MCP HTTP listener's upstream transport: Proxy must be nil
+// so an ambient HTTP_PROXY/HTTPS_PROXY cannot silently redirect egress to the
+// configured upstream and route around the redirect-disabled SSRF posture, and
+// DisableCompression must stay set so the compressed-stream guard cannot
+// regress. Matches the parity of the forward, reverse, and TLS-intercept
+// transports.
+func TestNewReverseUpstreamTransport_IgnoresAmbientProxyEnv(t *testing.T) {
+	tr := newReverseUpstreamTransport()
+	if tr.Proxy != nil {
+		t.Error("reverse upstream transport Proxy must be nil (no ambient HTTP_PROXY chaining)")
+	}
+	if !tr.DisableCompression {
+		t.Error("DisableCompression must stay set (compressed-stream guard)")
+	}
+}
+
 // TestHTTPListener_CompressedUpstreamResponseBlocked locks down the MCP HTTP
 // listener path. The listener's upstreamClient sets
 // DisableCompression: true (proxy_http.go:1057) so the upstream

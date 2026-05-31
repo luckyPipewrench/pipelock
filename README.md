@@ -204,7 +204,7 @@ Synthetic secrets injected into the agent's environment. If pipelock detects a c
 | **Diagnose** | `pipelock diagnose` runs 7 local checks to verify your config works end-to-end (no network required) |
 | **Enforcement Doctor** (v2.5) | `pipelock doctor` reports configured-vs-enforceable status for proxying, TLS interception, request-body scanning, Browser Shield, MCP wrapping, MCP binary integrity, tool provenance, file_sentry, Sentry, and deployment-boundary signals. |
 | **Request Body Injection Blocking** (v2.5) | Request-body prompt-injection and critical-DLP findings hard-block non-provider destinations in enforce mode across forward, reverse, TLS-intercept, and WebSocket transports, with block-reason headers for operator-visible diagnosis. |
-| **Request Policy** (v2.6) | Allow-by-default deny/warn rails on outbound API *operations*: match a request on route plus a GraphQL operation predicate and block the dangerous ones. Enforces across every HTTP egress transport, recurses into JSON `$batch` envelopes, fails closed on unparseable or opaque bodies, and runs before the contract gate. See [`docs/configuration.md`](docs/configuration.md#request-policy). |
+| **Request Policy** (v2.6) | Allow-by-default deny/warn rails on outbound API *operations*: match a request on route plus a GraphQL operation predicate and block the dangerous ones. Enforces across every HTTP egress transport, recurses into JSON `$batch` envelopes, fails closed on unparseable or opaque bodies, and runs before the contract gate. See the [request policy guide](docs/guides/request-policy.md). |
 | **TLS Interception** | Optional CONNECT tunnel MITM: decrypt, scan bodies/headers/responses, re-encrypt. `pipelock tls init` generates a CA, then `pipelock tls install-ca` trusts it system-wide. |
 | **Block Hints** | Opt-in `explain_blocks: true` adds fix suggestions to blocked responses |
 | **Project Audit** | `pipelock audit ./project` scans for security risks and generates a tailored config |
@@ -467,6 +467,7 @@ Details, config examples, and gap analysis: [docs/owasp-mapping.md](docs/owasp-m
 | Document | What's In It |
 |----------|-------------|
 | [Configuration Reference](docs/configuration.md) | All config fields, defaults, hot-reload behavior, presets |
+| [Request Policy](docs/guides/request-policy.md) | Allow-by-default deny/warn rails on outbound API operations (GraphQL / discriminator / batch), fail-closed (v2.6) |
 | [Request Redaction](docs/guides/redaction.md) | JSON request rewriting across HTTP, WebSocket, and MCP transports |
 | [False Positive Tuning](docs/false-positive-tuning.md) | Identifying, suppressing, and tuning scanner findings |
 | [Scan API](docs/scan-api.md) | Evaluation endpoint for programmatic scanning |

@@ -497,6 +497,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	for _, m := range verdict.Inject {
 		reasons = append(reasons, m.PatternName)
 	}
+	for _, f := range verdict.AddressFindings {
+		reasons = append(reasons, "address:"+f.Explanation)
+	}
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}
@@ -566,6 +569,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		var rawFindings []capture.Finding
 		rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
 		rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+		rawFindings = append(rawFindings, addressFindingsToCapture(verdict.AddressFindings)...)
 		obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
 			Subsurface:        "dlp_mcp_input",
 			Transport:         opts.Transport,

@@ -88,10 +88,24 @@ func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) 
 	if verdict.Action != "" {
 		return verdict.Action
 	}
+	contentAction := ""
 	if len(verdict.Matches) > 0 || len(verdict.Inject) > 0 {
-		return configuredAction
+		contentAction = configuredAction
 	}
-	return ""
+	if len(verdict.AddressFindings) == 0 {
+		return contentAction
+	}
+	addrAction := addressprotect.StrictestAction(verdict.AddressFindings)
+	if addrAction == config.ActionBlock {
+		return config.ActionBlock
+	}
+	if contentAction != "" {
+		return contentAction
+	}
+	if addrAction != "" {
+		return addrAction
+	}
+	return configuredAction
 }
 
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for

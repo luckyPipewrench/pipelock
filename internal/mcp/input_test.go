@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -57,6 +58,48 @@ func intPtrInput(v int) *int       { return &v }
 
 func mcpRedactionSecret() string {
 	return "AKIA" + "IOSFODNN7EXAMPLE"
+}
+
+func TestInputVerdictEffectiveAction_AddressFindings(t *testing.T) {
+	tests := []struct {
+		name             string
+		configuredAction string
+		findingAction    string
+		want             string
+	}{
+		{
+			name:             "address block overrides configured warn",
+			configuredAction: config.ActionWarn,
+			findingAction:    config.ActionBlock,
+			want:             config.ActionBlock,
+		},
+		{
+			name:             "address warn is preserved",
+			configuredAction: config.ActionBlock,
+			findingAction:    config.ActionWarn,
+			want:             config.ActionWarn,
+		},
+		{
+			name:             "address finding without stamped action falls back to configured action",
+			configuredAction: config.ActionBlock,
+			findingAction:    "",
+			want:             config.ActionBlock,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict := InputVerdict{
+				Clean: false,
+				AddressFindings: []addressprotect.Finding{{
+					Action:      tt.findingAction,
+					Explanation: "swapped_address",
+				}},
+			}
+			if got := inputVerdictEffectiveAction(verdict, tt.configuredAction); got != tt.want {
+				t.Fatalf("inputVerdictEffectiveAction() = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func mcpSyntheticAWSAccessKey() string {

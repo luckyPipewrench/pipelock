@@ -446,6 +446,122 @@ func TestWatcher_OpenFailureIsVisible(t *testing.T) {
 	}
 }
 
+func TestWatcher_FlushScanReportsSkippedFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:      true,
+		WatchPaths:   []config.WatchPath{{Path: dir}},
+		ScanContent:  ptrBool(true),
+		MaxFileBytes: 64,
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	var errs []string
+	w, err := NewWatcher(cfg, sc, nil, func(e error) {
+		errs = append(errs, e.Error())
+	})
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	fsw := w.(*fsWatcher)
+
+	fsw.flushScan(filepath.Join(dir, "missing.txt"), false)
+	if len(errs) != 1 || !strings.Contains(errs[0], "open failed") {
+		t.Fatalf("expected open failure from flush scan, got %v", errs)
+	}
+
+	errs = nil
+	emptyPath := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile empty: %v", err)
+	}
+	fsw.flushScan(emptyPath, false)
+	if len(errs) != 0 {
+		t.Fatalf("expected empty file to skip without error, got %v", errs)
+	}
+
+	bigPath := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(bigPath, []byte(strings.Repeat("a", 128)), 0o600); err != nil {
+		t.Fatalf("WriteFile big: %v", err)
+	}
+	fsw.flushScan(bigPath, false)
+	if len(errs) != 1 || !strings.Contains(errs[0], "oversized") {
+		t.Fatalf("expected oversized error from flush scan, got %v", errs)
+	}
+
+	errs = nil
+	cleanPath := filepath.Join(dir, "clean.txt")
+	if err := os.WriteFile(cleanPath, []byte("plain project notes"), 0o600); err != nil {
+		t.Fatalf("WriteFile clean: %v", err)
+	}
+	fsw.flushScan(cleanPath, false)
+	if len(errs) != 0 {
+		t.Fatalf("expected clean file to scan without error, got %v", errs)
+	}
+	select {
+	case f := <-w.Findings():
+		t.Fatalf("expected no finding for clean flush scan, got %+v", f)
+	default:
+	}
+
+	secretPath := filepath.Join(dir, "secret.txt")
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	fsw.flushScan(secretPath, true)
+	select {
+	case f := <-w.Findings():
+		if f.Path != secretPath || !f.IsAgent {
+			t.Fatalf("flush finding = %+v, want path %q with IsAgent", f, secretPath)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected finding from flush scan")
+	}
+}
+
+func TestWatcher_ScanFileDropsWhenFindingChannelFull(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.FileSentry{
+		Enabled:     true,
+		WatchPaths:  []config.WatchPath{{Path: dir}},
+		ScanContent: ptrBool(true),
+	}
+
+	defaults := config.Defaults()
+	defaults.Internal = nil
+	defaults.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	sc := scanner.New(defaults)
+	defer sc.Close()
+
+	w, err := NewWatcher(cfg, sc, nil, nil)
+	if err != nil {
+		t.Fatalf("NewWatcher: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+	fsw := w.(*fsWatcher)
+
+	for i := 0; i < cap(fsw.findings); i++ {
+		fsw.findings <- Finding{Path: fmt.Sprintf("preload-%d", i)}
+	}
+
+	secretPath := filepath.Join(dir, "secret.txt")
+	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+	if err := os.WriteFile(secretPath, []byte(secret), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	fsw.scanFile(context.Background(), secretPath, false)
+	if got := len(fsw.findings); got != cap(fsw.findings) {
+		t.Fatalf("findings len = %d, want channel to remain full at %d", got, cap(fsw.findings))
+	}
+}
+
 func TestWatcher_EmptyFileSkipped(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &config.FileSentry{

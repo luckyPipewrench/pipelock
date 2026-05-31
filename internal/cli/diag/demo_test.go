@@ -450,6 +450,36 @@ func TestDemoCmd_ReceiptsDirIsCleaned(t *testing.T) {
 	}
 }
 
+func TestRunDemo_ReceiptsDirSetupErrors(t *testing.T) {
+	t.Run("receipts dir is file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "receipts")
+		if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		cmd := &cobra.Command{}
+		cmd.SetOut(&strings.Builder{})
+
+		err := runDemo(cmd, false, false, path)
+		if err == nil || !strings.Contains(err.Error(), "create receipts dir") {
+			t.Fatalf("runDemo error = %v, want create receipts dir error", err)
+		}
+	})
+
+	t.Run("signer pub path is directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "signer.pub"), 0o750); err != nil {
+			t.Fatalf("Mkdir signer.pub: %v", err)
+		}
+		cmd := &cobra.Command{}
+		cmd.SetOut(&strings.Builder{})
+
+		err := runDemo(cmd, false, false, dir)
+		if err == nil || !strings.Contains(err.Error(), "write signer public key") {
+			t.Fatalf("runDemo error = %v, want write signer public key error", err)
+		}
+	})
+}
+
 func TestDemoReceipts_emitErrorPaths(t *testing.T) {
 	mkCmd := func() (*cobra.Command, *strings.Builder) {
 		c := &cobra.Command{}
@@ -488,6 +518,32 @@ func TestDemoReceipts_emitErrorPaths(t *testing.T) {
 		}
 		if d.written != 0 {
 			t.Errorf("written = %d, want 0 on missing pattern", d.written)
+		}
+	})
+
+	t.Run("verify error on mismatched key", func(t *testing.T) {
+		_, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrongPub, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c, b := mkCmd()
+		d := &demoReceipts{cmd: c, privKey: priv, pubHex: fmt.Sprintf("%x", wrongPub), color: true}
+		if err := d.emit(s, true, []string{"pat"}); err == nil {
+			t.Error("expected error from mismatched verify key")
+		}
+		out := b.String()
+		if !strings.Contains(out, "receipt verify failed") {
+			t.Errorf("expected verify error line, got %q", out)
+		}
+		if !strings.Contains(out, ansiBoldRed+"✗"+ansiReset) {
+			t.Errorf("expected color error marker, got %q", out)
+		}
+		if d.written != 0 {
+			t.Errorf("written = %d, want 0 on verify error", d.written)
 		}
 	})
 

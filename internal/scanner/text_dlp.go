@@ -8,12 +8,76 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"net/url"
+	"regexp"
 	"strings"
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
+
+// textURLTokenRe matches URL tokens (http/https/ws/wss/ftp) so their hostnames
+// can be run through the pre-DNS structural exfil check. Conservative on
+// purpose: only scheme-prefixed URLs are extracted, so arbitrary dotted text
+// is not treated as a hostname.
+var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|ftp)://[^\s"'<>\\]+`)
+
+// extractHostsFromTextViews pulls de-duplicated hostnames out of URL tokens in
+// multiple text views. Callers pass both raw and DLP-normalized text so URL
+// extraction gets the same invisible/control/confusable hardening as pattern DLP.
+func extractHostsFromTextViews(texts ...string) []string {
+	seen := make(map[string]struct{})
+	var hosts []string
+	for _, text := range texts {
+		extractHostsFromOneText(text, seen, &hosts)
+	}
+	return hosts
+}
+
+func extractHostsFromOneText(text string, seen map[string]struct{}, hosts *[]string) {
+	tokens := textURLTokenRe.FindAllString(text, -1)
+	if len(tokens) == 0 {
+		return
+	}
+	for _, tok := range tokens {
+		u, err := url.Parse(tok)
+		if err != nil {
+			continue
+		}
+		host := u.Hostname()
+		if host == "" {
+			continue
+		}
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		*hosts = append(*hosts, host)
+	}
+}
+
+// textDLPHostnameExfil is the pattern name reported when a URL embedded in
+// scanned text carries an encoded-subdomain exfiltration hostname.
+const textDLPHostnameExfil = "Hostname Exfiltration"
+
+// IsHostnameExfilMatch reports whether a text-DLP match came from the
+// structural hostname-exfil detector. Transports use this to keep hostname
+// exfiltration fail-closed even when generic DLP is configured in warn mode.
+func IsHostnameExfilMatch(m TextDLPMatch) bool {
+	return m.PatternName == textDLPHostnameExfil && m.Encoded == "subdomain"
+}
+
+// ContainsHostnameExfilMatch reports whether matches include a structural
+// hostname-exfil finding.
+func ContainsHostnameExfilMatch(matches []TextDLPMatch) bool {
+	for _, m := range matches {
+		if IsHostnameExfilMatch(m) {
+			return true
+		}
+	}
+	return false
+}
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
 type TextDLPMatch struct {
@@ -188,6 +252,22 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	// tabs, or newlines in headers and tool args (e.g. "AKIAIOSF ODNN7EXAMPLE").
 	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
 		matches = append(matches, s.matchDLPPatterns(compacted, "whitespace")...)
+	}
+
+	// Hostname exfiltration: extract URL hostnames from the text and run the
+	// pre-DNS structural subdomain check (encoded hex/base32 labels, chunked
+	// DNS-tunneling payloads). This gives MCP tool arguments and A2A content the
+	// same hostname-exfil coverage as the URL scanner without resolving DNS —
+	// the decoded labels need not be a known DLP secret to be flagged.
+	for _, host := range extractHostsFromTextViews(text, cleaned) {
+		if res := s.checkSubdomainEntropy(host); !res.Allowed {
+			matches = append(matches, TextDLPMatch{
+				PatternName: textDLPHostnameExfil,
+				Severity:    "high",
+				Encoded:     "subdomain",
+			})
+			break // one hostname-exfil finding is sufficient
+		}
 	}
 
 	// Recursive encoding decode: try base64, hex, base32 decoding and re-check

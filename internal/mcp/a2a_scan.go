@@ -103,6 +103,9 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
+				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
+					result.Action = config.ActionBlock
+				}
 			}
 
 		case FieldSecret:
@@ -110,6 +113,9 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
+				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
+					result.Action = config.ActionBlock
+				}
 			}
 		}
 	})
@@ -139,12 +145,17 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
+				if scanner.ContainsHostnameExfilMatch(dlpResult.Matches) {
+					result.Action = config.ActionBlock
+				}
 			}
 		}
 	}
 
-	if !result.Clean && result.Action == "" {
-		result.Action = cfg.Action
+	if !result.Clean {
+		if result.Action == "" {
+			result.Action = cfg.Action
+		}
 		result.Reason = buildA2AReason(result)
 	}
 

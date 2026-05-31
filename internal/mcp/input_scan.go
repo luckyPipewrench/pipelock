@@ -74,6 +74,40 @@ func mcpWarnResource(method string, line []byte) string {
 	return method
 }
 
+func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch) string {
+	if scanner.ContainsHostnameExfilMatch(dlpMatches) {
+		return config.ActionBlock
+	}
+	if len(dlpMatches) > 0 || len(injMatches) > 0 {
+		return action
+	}
+	return ""
+}
+
+func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) string {
+	if verdict.Action != "" {
+		return verdict.Action
+	}
+	contentAction := ""
+	if len(verdict.Matches) > 0 || len(verdict.Inject) > 0 {
+		contentAction = configuredAction
+	}
+	if len(verdict.AddressFindings) == 0 {
+		return contentAction
+	}
+	addrAction := addressprotect.StrictestAction(verdict.AddressFindings)
+	if addrAction == config.ActionBlock {
+		return config.ActionBlock
+	}
+	if contentAction != "" {
+		return contentAction
+	}
+	if addrAction != "" {
+		return addrAction
+	}
+	return configuredAction
+}
+
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
 // DLP patterns, injection patterns, and env secret leaks. Fail-closed
 // on parse errors (configurable via onParseError).
@@ -202,10 +236,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 
 		// Resolve strictest action: DLP/injection use MCP input action,
 		// address findings carry their own per-verdict action.
-		verdictAction := ""
-		if len(dlpMatches) > 0 || len(injMatches) > 0 {
-			verdictAction = action
-		}
+		verdictAction := mcpInputVerdictAction(action, dlpMatches, injMatches)
 		if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
 			if verdictAction == "" || addrAction == config.ActionBlock {
 				verdictAction = addrAction
@@ -301,10 +332,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 	// Resolve the strictest action: DLP/injection use the MCP input action,
 	// address findings carry their own per-verdict action (block or warn).
 	// The strictest across all finding types wins.
-	verdictAction := ""
-	if len(dlpMatches) > 0 || len(injMatches) > 0 {
-		verdictAction = action
-	}
+	verdictAction := mcpInputVerdictAction(action, dlpMatches, injMatches)
 	if addrAction := addressprotect.StrictestAction(addrFindings); addrAction != "" {
 		if verdictAction == "" || addrAction == config.ActionBlock {
 			verdictAction = addrAction
@@ -396,7 +424,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 
 	return InputVerdict{
 		Clean:   false,
-		Action:  action,
+		Action:  mcpInputVerdictAction(action, dlpMatches, injMatches),
 		Matches: dlpMatches,
 		Inject:  injMatches,
 	}

@@ -172,6 +172,15 @@ func (r Result) IsAdaptiveNeutral() bool {
 	return r.IsProtective() || r.IsInfrastructureError() || r.IsStructuralExemption()
 }
 
+// IsHostnameExfilResult reports whether a URL scan result came from a
+// structural hostname-exfiltration signal rather than generic subdomain
+// entropy. Transports use this to preserve hard-block semantics in warn mode.
+func IsHostnameExfilResult(r Result) bool {
+	return r.Scanner == ScannerSubdomainEntropy &&
+		(strings.HasPrefix(r.Reason, subdomainEncodedLabelReasonPrefix) ||
+			strings.HasPrefix(r.Reason, subdomainEncodedChunksReasonPrefix))
+}
+
 // dlpWarnCtxKey and DLPWarnContext are defined in warnctx.go.
 
 // Scanner checks URLs for suspicious content before fetching.
@@ -2031,6 +2040,9 @@ var nonSecretEnvNames = map[string]struct{}{
 	"LS_COLORS": {}, "LSCOLORS": {},
 	// D-Bus / SSH agent (socket paths, not credentials)
 	"DBUS_SESSION_BUS_ADDRESS": {}, "SSH_AUTH_SOCK": {},
+	// Public GitHub Actions metadata URLs. These values are fixed service
+	// endpoints, not credentials, and frequently appear in legitimate traffic.
+	"GITHUB_API_URL": {}, "GITHUB_GRAPHQL_URL": {}, "GITHUB_SERVER_URL": {},
 	// Language runtimes (paths, not secrets)
 	"GOPATH": {}, "GOROOT": {}, "GOBIN": {},
 	"PYTHONPATH": {}, "PYTHONHOME": {}, "NODE_PATH": {},
@@ -2324,6 +2336,93 @@ func (s *Scanner) checkDataBudget(hostname string) Result {
 // Short labels (www, api, cdn) are normal and should not be flagged.
 const subdomainMinLabelLen = 8
 
+// Hostname-exfiltration heuristics. These catch DNS tunneling / exfiltration
+// that the Shannon-entropy gate misses: hex labels top out at 4.0 bits/char
+// (16 symbols), so a secret hex-encoded into a subdomain measures ~3.1 and
+// never exceeds a 4.0 threshold. Two structural signals close that gap.
+const (
+	subdomainEncodedLabelReasonPrefix  = "encoded data in subdomain label"
+	subdomainEncodedChunksReasonPrefix = "subdomain payload chunked across"
+
+	// subdomainEncodedMinLen is the minimum length for a single subdomain
+	// label to be flagged as encoded data when it is entirely hex or base32.
+	// Set above typical short commit-SHA prefixes (7-12 chars) to limit false
+	// positives on preview-deploy hostnames; operators with longer encoded
+	// subdomains use subdomain_entropy_exclusions.
+	subdomainEncodedMinLen = 14
+
+	// Signal B flags DNS tunneling that chunks encoded data across several
+	// labels (each individually low-entropy). It fires on either many encoded
+	// chunks alone, or fewer chunks stacked in a deep hostname. Two short hash
+	// labels in a shallow host (deadbeef.cafebabe.preview.example.com) stay
+	// below both thresholds, and dictionary/hyphenated labels are never counted
+	// as chunks. A chunk is a hex/base32 label >= subdomainChunkMinLen chars.
+	subdomainExfilMinLabels  = 3 // outer gate: at least this many subdomain labels
+	subdomainExfilManyChunks = 3 // clause 1: this many encoded chunks, any depth
+	subdomainExfilDeepLabels = 4 // clause 2: this many subdomain labels …
+	subdomainExfilDeepChunks = 2 // … carrying at least this many encoded chunks
+	subdomainChunkMinLen     = 8
+)
+
+// isHexLabel reports whether s consists entirely of hexadecimal characters.
+func isHexLabel(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// base32MinDigits is the minimum number of base32 digit characters (2-7) a
+// label must contain to be treated as encoded data. Real base32 data is ~19%
+// digits, so a 16+ char token almost always carries several; requiring two
+// avoids flagging ordinary words that happen to contain a single digit.
+const base32MinDigits = 2
+
+// isBase32Label reports whether s is an RFC 4648 base32 token. Matching is
+// case-insensitive because hostnames are lowercased in transit (DNS is
+// case-insensitive). At least base32MinDigits digit chars (2-7) must be present
+// so ordinary words are not treated as encoded data.
+func isBase32Label(s string) bool {
+	digits := 0
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '2' && r <= '7':
+			digits++
+		default:
+			return false
+		}
+	}
+	return digits >= base32MinDigits
+}
+
+// isEncodedExfilLabel reports whether a subdomain label looks like a chunk of
+// hex- or base32-encoded data long enough to carry an exfiltrated secret.
+func isEncodedExfilLabel(label string) bool {
+	if len(label) < subdomainEncodedMinLen {
+		return false
+	}
+	return isHexLabel(label) || isBase32Label(label)
+}
+
+// looksEncodedChunk reports whether a subdomain label looks like one chunk of
+// encoded data split across several labels (the DNS-tunneling shape). Shorter
+// than isEncodedExfilLabel's single-label threshold because tunneling spreads
+// the payload over many small labels.
+func looksEncodedChunk(label string) bool {
+	if len(label) < subdomainChunkMinLen {
+		return false
+	}
+	return isHexLabel(label) || isBase32Label(label)
+}
+
 // checkSubdomainEntropy flags hostnames where subdomain labels contain
 // high-entropy data, indicating base64/hex exfiltration via DNS queries.
 // Only checks hostnames with 3+ labels (at least one subdomain beyond base domain).
@@ -2336,6 +2435,7 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	if s.subdomainEntropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
+	hostname = strings.TrimSuffix(hostname, ".")
 
 	// Skip IP addresses
 	if net.ParseIP(hostname) != nil {
@@ -2347,13 +2447,20 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 		return Result{Allowed: true}
 	}
 
-	labels := strings.Split(hostname, ".")
-	if len(labels) < 3 {
+	regDomain, err := publicsuffix.EffectiveTLDPlusOne(hostname)
+	if err != nil || regDomain == hostname {
 		return Result{Allowed: true}
 	}
+	subdomainPart := strings.TrimSuffix(hostname, "."+regDomain)
+	subdomainPart = strings.TrimSuffix(subdomainPart, ".")
+	if subdomainPart == "" {
+		return Result{Allowed: true}
+	}
+	// Subdomain labels carry the exfiltration payload; the registrable domain does not.
+	subLabels := strings.Split(subdomainPart, ".")
 
-	// Check all labels except the last two (base domain + TLD)
-	for _, label := range labels[:len(labels)-2] {
+	// Check all subdomain labels for high Shannon entropy.
+	for _, label := range subLabels {
 		if len(label) < subdomainMinLabelLen {
 			continue
 		}
@@ -2364,6 +2471,46 @@ func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 				Reason:  fmt.Sprintf("high entropy subdomain label %q (%.2f > %.2f threshold)", label, entropy, s.subdomainEntropyThreshold),
 				Scanner: ScannerSubdomainEntropy,
 				Score:   math.Min(entropy/8.0, 1.0),
+			}
+		}
+	}
+
+	// Signal A: a single long hex/base32 label. Encoded secrets in subdomains
+	// sit at or below the entropy threshold (hex maxes at 4.0 bits/char), so
+	// the entropy loop above misses them.
+	for _, label := range subLabels {
+		if isEncodedExfilLabel(label) {
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("%s %q (possible DNS exfiltration)", subdomainEncodedLabelReasonPrefix, label),
+				Scanner: ScannerSubdomainEntropy,
+				Score:   0.85,
+			}
+		}
+	}
+
+	// Signal B: data chunked across several subdomain labels. Each chunk may be
+	// individually low-entropy, so the entropy loop above misses them; the
+	// signal is the structure — multiple encoded-looking labels stacked in one
+	// hostname. Requiring several encoded chunks (not just length) avoids
+	// flagging benign deep hostnames with dictionary or hyphenated labels.
+	if len(subLabels) >= subdomainExfilMinLabels {
+		encoded := 0
+		for _, label := range subLabels {
+			if looksEncodedChunk(label) {
+				encoded++
+			}
+		}
+		// Either many encoded chunks at any depth, or fewer chunks stacked in a
+		// deep hostname. A shallow host with two short hash labels stays clean.
+		manyChunks := encoded >= subdomainExfilManyChunks
+		deepChunks := encoded >= subdomainExfilDeepChunks && len(subLabels) >= subdomainExfilDeepLabels
+		if manyChunks || deepChunks {
+			return Result{
+				Allowed: false,
+				Reason:  fmt.Sprintf("%s %d encoded labels of %d (possible DNS exfiltration)", subdomainEncodedChunksReasonPrefix, encoded, len(subLabels)),
+				Scanner: ScannerSubdomainEntropy,
+				Score:   0.8,
 			}
 		}
 	}

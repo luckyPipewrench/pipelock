@@ -140,6 +140,19 @@ fetch_proxy:
 
 **Guideline:** If the domain is trusted and uses high-entropy URLs by design (CDNs, object storage, API gateways), exempt it. If the domain is untrusted, keep the threshold and investigate the findings.
 
+### Structural hostname-exfiltration signals
+
+Subdomain scanning also flags two structural patterns that the entropy threshold cannot catch, because encoded data sits *at or below* the entropy ceiling (hex tops out at 4.0 bits/char):
+
+- A single subdomain label that is a long (14+ char) pure-hex or base32 token.
+- A DNS-tunneling shape with either three or more encoded chunks, or two or more encoded chunks in a four-plus-label subdomain. An encoded chunk is a hex/base32-looking label of 8+ chars.
+
+Both report `subdomain_entropy` and are independent of `subdomain_entropy_threshold`: **raising the threshold no longer allows hex/base32 subdomain labels.** Dictionary and hyphenated labels (`customer-production.us-east-1.api.example.com`) are not affected.
+
+To allow a legitimate service that uses hex/base32 subdomains by design, add it to `subdomain_entropy_exclusions` (the targeted escape hatch). Setting `subdomain_entropy_threshold: 0` disables subdomain scanning entirely, including these structural signals.
+
+**Residual gaps (by design, to bound false positives):** base32 labels with fewer than two digits, mixed-charset labels under 16 chars, and two-label chunks are not flagged. These are accepted false-negative tradeoffs; tighten with a custom domain blocklist if your threat model requires it.
+
 ## Tuning Response Scanning
 
 Response injection patterns can flag legitimate content: documentation about AI safety, security research pages, or sites that discuss prompt engineering.
@@ -209,6 +222,7 @@ cross_request_detection:
 | URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
 | Base64-encoded JWT in Authorization header | dlp | JWT Token | Add per-pattern `exempt_domains` for the auth provider |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
+| Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
 | Internal API keys matching AWS format | dlp | AWS Access ID | Add to `suppress` with path and reason |
 | GET to an AWS S3 presigned URL (issuer's bucket) | dlp | AWS Access ID | None required — handled automatically. The scanner detects a structurally valid SigV4 query set (all five parameters required exactly once: `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential=<KeyID>/<YYYYMMDD>/<region>/<service>/aws4_request`, `X-Amz-Date`, `X-Amz-Signature`, `X-Amz-Expires` as a positive integer) hosted on an `amazonaws.com` (or `amazonaws.com.cn`) endpoint, and exempts only the access-key component inside the credential value. The same access-key elsewhere in the URL — path, hostname, other query params, ordered subsequence concatenation — still blocks. Duplicate fields, mismatched scope dates, overlong key prefixes, non-AWS hosts, and bogus algorithms all fall back to normal DLP. SigV4 carve-outs are adaptive-neutral: they neither poison the threat score nor earn clean-decay. An `X-Amz-Expires` above 24h attaches an info-tier `SigV4 Long Expiry` warn finding for audit visibility but does not block. |
 | WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Exempt the WebSocket upstream domain |

@@ -131,7 +131,12 @@ const (
 	// bypass for the query parameter entropy gate is a policy-semantic
 	// change. Empty by default but the field is part of the canonical view.
 	// Re-bumped for the file_sentry max_file_bytes field: see note above.
-	goldenHashDefaults = "7b648142b275680696e0d660440a4b456ba3f69e8bbd64d5c34d8050b5913711"
+	// Bumped when mcp_tool_policy.quarantine_dir was removed from the
+	// canonical view: its default is derived from os.TempDir(), which made
+	// this hash depend on the ambient TMPDIR. Excluding the operational path
+	// makes the hash environment-independent (identical policy -> identical
+	// hash), which is the admission-grade contract.
+	goldenHashDefaults = "5e449278f4437345fa3a3fea9dafa3f2b1c73e55bc028c0c35f19af999ad0d4b"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,

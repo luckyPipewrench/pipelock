@@ -604,10 +604,11 @@ func newInterceptHandler(
 			effectiveAction := decide.UpgradeAction(baseAction, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
 				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
-				ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), baseAction, effectiveAction, urlResult.Scanner, ic.ClientIP, ic.RequestID)
+				var m *metrics.Metrics
 				if ic.Proxy != nil {
-					ic.Proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
+					m = ic.Proxy.metrics
 				}
+				recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: baseAction, ToAction: effectiveAction, Scanner: urlResult.Scanner, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				switch {
 				case urlResult.IsInfrastructureError():
 					// Score-neutral: see scan path above for rationale.
@@ -821,10 +822,11 @@ func newInterceptHandler(
 				}
 				if action != originalBodyAction {
 					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
-					ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), originalBodyAction, action, scannerLabel, ic.ClientIP, ic.RequestID)
+					var m *metrics.Metrics
 					if ic.Proxy != nil {
-						ic.Proxy.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
+						m = ic.Proxy.metrics
 					}
+					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: originalBodyAction, ToAction: action, Scanner: scannerLabel, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				}
 
 				// Fail-closed transport errors (consumed-but-unreplayable body)
@@ -1103,10 +1105,11 @@ func newInterceptHandler(
 		// session is at an escalation level with block_all=true.
 		if ic.Recorder != nil && decide.UpgradeAction("", recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement) == config.ActionBlock {
 			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
-			ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), "", config.ActionBlock, "session_deny", ic.ClientIP, ic.RequestID)
+			var m *metrics.Metrics
 			if ic.Proxy != nil {
-				ic.Proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
+				m = ic.Proxy.metrics
 			}
+			recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 			ic.Metrics.RecordTLSRequestBlocked("session_deny")
 			interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 				ActionID:  actionID,
@@ -1709,10 +1712,11 @@ func newInterceptHandler(
 				}
 				if action != originalAction {
 					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
-					ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), originalAction, action, "response_scan", ic.ClientIP, ic.RequestID)
+					var m *metrics.Metrics
 					if ic.Proxy != nil {
-						ic.Proxy.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
+						m = ic.Proxy.metrics
 					}
+					recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(recEscalationLevel(ic.Recorder)), FromAction: originalAction, ToAction: action, Scanner: "response_scan", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
 				}
 				patternNames := make([]string, len(scanResult.Matches))
 				for i, match := range scanResult.Matches {

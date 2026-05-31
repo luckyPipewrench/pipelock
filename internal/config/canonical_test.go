@@ -126,6 +126,12 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 			},
 		},
 		{
+			name: "mcp_tool_policy.quarantine_dir",
+			mut: func(c *Config) {
+				c.MCPToolPolicy.QuarantineDir = "/var/lib/pipelock/quarantine"
+			},
+		},
+		{
 			name: "flight_recorder.dir",
 			mut:  func(c *Config) { c.FlightRecorder.Dir = "/var/lib/pipelock/fr" },
 		},
@@ -146,6 +152,35 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 					tc.name, base, got)
 			}
 		})
+	}
+}
+
+// TestCanonicalPolicyHash_DefaultQuarantineDirTMPDIRInvariant proves the
+// canonical hash does not move when the default mcp_tool_policy.quarantine_dir
+// changes solely because TMPDIR differs. The default is filepath.Join(
+// os.TempDir(), "pipelock-quarantine"), so without excluding it from the
+// policy view the hash would depend on the ambient environment and the same
+// policy would hash differently across machines. Not parallel: it mutates the
+// process environment via t.Setenv.
+func TestCanonicalPolicyHash_DefaultQuarantineDirTMPDIRInvariant(t *testing.T) {
+	tmpA := t.TempDir()
+	tmpB := t.TempDir()
+
+	t.Setenv("TMPDIR", tmpA)
+	cfgA := Defaults()
+	hashA := cfgA.computeCanonicalPolicyHash()
+	qDirA := cfgA.MCPToolPolicy.QuarantineDir
+
+	t.Setenv("TMPDIR", tmpB)
+	cfgB := Defaults()
+	hashB := cfgB.computeCanonicalPolicyHash()
+	qDirB := cfgB.MCPToolPolicy.QuarantineDir
+
+	if qDirA == qDirB {
+		t.Fatalf("test setup failed: quarantine dirs should differ across TMPDIR, both were %q", qDirA)
+	}
+	if hashA != hashB {
+		t.Fatalf("CanonicalPolicyHash() changed with TMPDIR-derived quarantine_dir: %s != %s", hashA, hashB)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -138,7 +139,7 @@ func TestSignRequest_NilSignerReturnsErrSignerDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("nil signer should return an error")
 	}
-	if err != ErrSignerDisabled { //nolint:errorlint // sentinel comparison is intentional
+	if !errors.Is(err, ErrSignerDisabled) {
 		t.Errorf("nil signer error = %v, want ErrSignerDisabled", err)
 	}
 }

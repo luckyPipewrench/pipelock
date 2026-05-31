@@ -170,6 +170,16 @@ func (c *Config) policySemanticView() Config {
 	// max_body_bytes DO affect the envelope contract and stay in view.
 	view.MediationEnvelope.SigningKeyPath = ""
 
+	// MCPToolPolicy.QuarantineDir is an operational filesystem path, not policy.
+	// Its default is derived from os.TempDir(), so leaving it in the view makes
+	// the hash depend on the ambient TMPDIR (the same policy resolves to a
+	// different path across environments), which breaks the admission-grade
+	// contract that identical policy yields an identical hash. Where redirected
+	// tool-call payloads land does not change what pipelock decides about a
+	// scanned request; the tool-policy enabled flag, action, and rules stay in
+	// view because those do affect detection.
+	view.MCPToolPolicy.QuarantineDir = ""
+
 	// HealthWatchdog is excluded from the canonical hash via the `json:"-"`
 	// tag on the Config field - operational liveness, not policy. Whether
 	// the watchdog is enabled or what tick interval it uses does not change

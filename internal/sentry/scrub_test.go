@@ -9,6 +9,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+const (
+	testEnvSecret = "my-super-secret-value-12345"
+	testAWSKeyID  = "AKIA" + "IOSFODNN7EXAMPLE" // split to dodge gosec G101
+)
+
 func testDLPPatterns() []config.DLPPattern {
 	return []config.DLPPattern{
 		{Name: "AWS Access Key", Regex: `AKIA[0-9A-Z]{16}`, Severity: "critical"},
@@ -24,7 +29,7 @@ func TestScrubString_DLPPatterns(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"AWS key", "error at url with " + "AKIA" + "IOSFODNN7EXAMPLE"},
+		{"AWS key", "error at url with " + testAWSKeyID},
 		{"GitHub token", "failed for " + "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"},
 		{"Anthropic key", "request to " + "sk-ant-" + "api03-abcdef1234"},
 		{"Bearer token", "Authorization header Bearer " + "eyJhbGciOiJIUzI1NiJ9.test"},
@@ -103,7 +108,7 @@ func TestScrubString_EmptyString(t *testing.T) {
 }
 
 func TestScrubString_EnvSecrets(t *testing.T) {
-	secret := "my-super-secret-value-12345" //nolint:goconst // test value
+	secret := testEnvSecret
 	s := NewScrubber(nil, []string{secret})
 	input := "error: env value was " + secret + " in context"
 	result := s.ScrubString(input)
@@ -125,7 +130,7 @@ func TestScrubString_URLQueryParams(t *testing.T) {
 }
 
 func TestScrubEvent_Message(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE" //nolint:goconst // test value
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Message: "error with key " + awsKey,
@@ -141,7 +146,7 @@ func TestScrubEvent_Message(t *testing.T) {
 }
 
 func TestScrubEvent_Exception(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Exception: []sentry.Exception{
@@ -165,7 +170,7 @@ func TestScrubEvent_Exception(t *testing.T) {
 }
 
 func TestScrubEvent_Breadcrumbs(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Breadcrumbs: []*sentry.Breadcrumb{
@@ -182,7 +187,7 @@ func TestScrubEvent_Breadcrumbs(t *testing.T) {
 }
 
 func TestScrubEvent_Tags(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Tags: map[string]string{"url": "https://api.example.com/" + awsKey},
@@ -263,7 +268,7 @@ func TestScrubEvent_ServerNameWiped(t *testing.T) {
 }
 
 func TestScrubEvent_ExceptionType(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Exception: []sentry.Exception{
@@ -280,7 +285,7 @@ func TestScrubEvent_ExceptionType(t *testing.T) {
 }
 
 func TestScrubEvent_Transaction(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Transaction: "/api/fetch?key=" + awsKey,
@@ -292,7 +297,7 @@ func TestScrubEvent_Transaction(t *testing.T) {
 }
 
 func TestScrubEvent_Fingerprint(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Fingerprint: []string{"error-group", "key=" + awsKey},
@@ -326,7 +331,7 @@ func TestScrubEvent_BreadcrumbDataNonStringDeleted(t *testing.T) {
 }
 
 func TestScrubEvent_ContextsStringScrubbed(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Contexts: map[string]sentry.Context{
@@ -394,7 +399,7 @@ func TestScrubEvent_VarsNonStringDeleted(t *testing.T) {
 }
 
 func TestScrubEvent_ThreadsVarsScrubbed(t *testing.T) {
-	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	awsKey := testAWSKeyID
 	s := NewScrubber(testDLPPatterns(), nil)
 	event := &sentry.Event{
 		Threads: []sentry.Thread{

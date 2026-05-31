@@ -439,7 +439,7 @@ func TestRenderedCCLaunch_ParsesUnderBash(t *testing.T) {
 	scriptPath := filepath.Join(tmp, "plk-launch")
 	writeScriptFixture(t, scriptPath, renderLaunchWrapper(env))
 	// bash -n parses without executing. Any syntax error fails the test.
-	cmd := exec_realCommand(t, "/bin/bash", "-n", scriptPath)
+	cmd := execRealCommand(t, "/bin/bash", "-n", scriptPath)
 	if cmd.exit != 0 {
 		t.Fatalf("bash -n rejected plk-launch:\n%s\n--- script ---\n%s", cmd.output, renderLaunchWrapper(env))
 	}
@@ -499,7 +499,7 @@ func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 				tc.mutate()
 			}
 			args := append([]string{scriptPath}, tc.argv...)
-			out := exec_realCommand(t, "/bin/bash", args...)
+			out := execRealCommand(t, "/bin/bash", args...)
 			if out.exit != tc.wantExit {
 				t.Fatalf("exit: got %d, want %d (output: %s)", out.exit, tc.wantExit, out.output)
 			}
@@ -507,7 +507,7 @@ func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 	}
 }
 
-// exec_realCommand runs cmd outside the runner abstraction. Used only for
+// execRealCommand runs cmd outside the runner abstraction. Used only for
 // the rendered-script smoke test above; this is the one place we need a
 // real subprocess and not a fake. Kept tiny on purpose.
 type cmdResult struct {
@@ -515,7 +515,7 @@ type cmdResult struct {
 	exit   int
 }
 
-func exec_realCommand(t *testing.T, name string, args ...string) cmdResult { //nolint:revive // test helper
+func execRealCommand(t *testing.T, name string, args ...string) cmdResult {
 	t.Helper()
 	out, code, err := realRunCommand(context.Background(), name, args...)
 	if err != nil {

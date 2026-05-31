@@ -40,6 +40,7 @@ Conductor remains an enterprise preview in v2.6, not a GA feature. User-facing C
 - **`server.go` / `proxy_http.go` per-concern split.** `server.go` 1592 → 462 lines plus five sibling files; `proxy_http.go` 1901 → 208 lines plus four sibling files; five in-scope review findings folded in. (#598)
 - **Compliance framework ID + feature-name constants extracted.** (#591)
 - **`sessionKeyFor` session-key helper.** The per-session adaptive-enforcement key (agent-namespaced client IP, falling back to client IP for anonymous agents) was rebuilt inline across the fetch, forward, CONNECT, WebSocket, TLS-interception, CEE, and admin/session paths; all sites now route through one helper so escalation, de-escalation, and audit correlation share a single source of truth.
+- **Adaptive-upgrade audit/metric helper.** The adaptive-enforcement audit log line and its matching Prometheus counter were emitted as a duplicated pair at 28 proxy call sites; they now route through one `recordAdaptiveUpgrade` helper fed by a single value, so the audit trail and the metric cannot drift apart on a future edit. No change to deny-path behavior.
 
 ### Changed
 

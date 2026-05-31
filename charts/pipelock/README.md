@@ -23,6 +23,8 @@ The chart is configured by passing values to `helm install -f values.yaml`. The 
 | `image.digest` | `""` | Optional multi-arch manifest digest. When set, the chart renders `repository@digest` for pinning |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 
+> **Upgrading from chart 0.2.0:** the default `image.digest` was cleared, so the chart now follows `.Chart.AppVersion` (v2.6.0) by default instead of a pinned digest. Set `image.digest` explicitly in your values if you need an immutable image reference.
+
 ### Ports
 
 | Key | Default | Description |

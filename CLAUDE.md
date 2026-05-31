@@ -93,9 +93,9 @@ Agent (secrets, no network) → Pipelock (no agent secrets, full network) → In
 
 ### Scanner Pipeline
 
-1. Scheme (http/https only) → 2. Domain blocklist → 3. DLP (patterns, env leak detection, entropy) → 4. Path entropy → 5. Subdomain entropy → 6. SSRF (private IPs, metadata, DNS rebinding) → 7. Rate limiting → 8. URL length → 9. Data budget
+1. Scheme (http/https only) → 2. CRLF injection → 3. Path traversal → 4. Domain blocklist → 5. DLP (patterns, env leak detection, entropy) → 6. Path entropy → 7. Subdomain entropy → 8. SSRF (private IPs, metadata, DNS rebinding) → 9. Rate limiting → 10. URL length → 11. Data budget
 
-Layers 2-3 run **before** DNS resolution. Layer 6 runs **after**. This ordering prevents DNS-based exfiltration.
+Layers 4-5 run **before** DNS resolution. Layer 8 runs **after**. This ordering prevents DNS-based exfiltration.
 
 ### MCP Proxy
 

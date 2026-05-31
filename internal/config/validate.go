@@ -1803,6 +1803,9 @@ func (c *Config) validateFileSentry() error {
 	default:
 		return fmt.Errorf("invalid file_sentry.action %q: must be warn or block", c.FileSentry.Action)
 	}
+	if c.FileSentry.MaxFileBytes < 0 {
+		return fmt.Errorf("file_sentry: max_file_bytes must be non-negative, got %d", c.FileSentry.MaxFileBytes)
+	}
 	return nil
 }
 

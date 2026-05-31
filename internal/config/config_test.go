@@ -772,6 +772,26 @@ func TestValidate_FileSentryActionInvalid(t *testing.T) {
 	}
 }
 
+func TestValidate_FileSentryNegativeMaxFileBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []WatchPath{{Path: "."}}
+	cfg.FileSentry.MaxFileBytes = -1
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected error for negative file_sentry.max_file_bytes")
+	}
+}
+
+func TestValidate_FileSentryZeroMaxFileBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.FileSentry.Enabled = true
+	cfg.FileSentry.WatchPaths = []WatchPath{{Path: "."}}
+	cfg.FileSentry.MaxFileBytes = 0 // zero means the built-in default; must validate
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("zero file_sentry.max_file_bytes should be valid: %v", err)
+	}
+}
+
 func TestValidate_FileSentryActionWarnOrBlockOrEmpty(t *testing.T) {
 	for _, action := range []string{"", ActionWarn, ActionBlock} {
 		cfg := Defaults()

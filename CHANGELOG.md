@@ -50,6 +50,7 @@ Conductor remains an enterprise preview in v2.6, not a GA feature. User-facing C
 
 ### Fixed
 
+- **Configured-upstream egress no longer honors an ambient `HTTP_PROXY`/`HTTPS_PROXY`.** The reverse-proxy, MCP HTTP client (`--upstream`), and MCP HTTP listener (`--mcp-listen`) transports were cloned from `http.DefaultTransport`, inheriting `Proxy: http.ProxyFromEnvironment`, so an environment proxy variable could silently redirect Pipelock's own egress to its configured upstream and route around the SSRF-safe dialer (reverse proxy) and the redirect-disabled SSRF posture (MCP HTTP). All three now dial the configured upstream directly with a nil `Proxy`, matching the forward, fetch, and TLS-interception transports. (#645)
 - **`pipelock hermes --mode full`** now loads, enables, and blocks under a real Hermes runtime. (#629)
 - **MCP HTTP listener strips inbound `com.pipelock/mediation`** metadata, closing the stdio-vs-HTTP parity gap so a forged mediation envelope cannot be laundered in on the HTTP listener path. (#601)
 - **`file_sentry` surfaces oversized / unreadable file skips instead of dropping them silently, and the size cap is now configurable.** A watched file larger than the scan cap (or one that fails to stat/read) was silently left uninspected, so an operator had no signal that content went unscanned. Skips now report through the watcher's error callback, and a new `file_sentry.max_file_bytes` knob overrides the built-in 10 MiB default (0 = default; negative rejected at validation).

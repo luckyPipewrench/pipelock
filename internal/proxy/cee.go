@@ -26,10 +26,7 @@ import (
 // CeeSessionKey builds a consistent session identity for cross-request
 // exfiltration detection. Exported for use by the session reset admin API.
 func CeeSessionKey(agent, clientIP string) string {
-	if agent != "" && agent != agentAnonymous {
-		return agent + "|" + clientIP
-	}
-	return clientIP
+	return sessionKeyFor(agent, clientIP)
 }
 
 // maxCaptureSessionKeyLen aliases the writer-side ceiling so the

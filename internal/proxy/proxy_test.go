@@ -5104,10 +5104,7 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 // recording enough block signals to cross the threshold repeatedly.
 // Returns the session key used.
 func escalateSession(sm *SessionManager, clientIP, agent string, threshold float64, targetLevel int) string {
-	key := clientIP
-	if agent != "" && agent != agentAnonymous {
-		key = agent + "|" + clientIP
-	}
+	key := sessionKeyFor(agent, clientIP)
 	sess := sm.GetOrCreate(key)
 	// Each escalation doubles the threshold. We need to accumulate enough
 	// points to cross the threshold 'targetLevel' times.

@@ -1303,10 +1303,7 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 }
 
 func (sm *SessionManager) AdaptiveWhoami(clientIP, agent string) AdaptiveWhoami {
-	key := clientIP
-	if agent != "" && agent != agentAnonymous {
-		key = agent + "|" + clientIP
-	}
+	key := sessionKeyFor(agent, clientIP)
 	out := AdaptiveWhoami{
 		ClientIP:        clientIP,
 		Agent:           agent,

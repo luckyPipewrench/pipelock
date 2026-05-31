@@ -3032,6 +3032,94 @@ func TestCheckSubdomainEntropy_DisabledWhenThresholdZero(t *testing.T) {
 	}
 }
 
+// TestCheckSubdomainEntropy_BlocksEncodedExfilLabels covers DNS / hostname
+// exfiltration patterns that slip under the Shannon-entropy gate. Hex labels
+// top out at 4.0 bits/char (16 symbols), so encoded secrets in subdomains
+// measure ~3.1 and never exceed a 4.0 threshold. These are caught by the
+// encoded-label and excessive-payload signals instead. Hostnames mirror the
+// agent-egress-bench hostname_exfiltration corpus so a pass here proves the
+// bench cases are detected, not merely network-failed.
+func TestCheckSubdomainEntropy_BlocksEncodedExfilLabels(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil     // disable SSRF/DNS — subdomain check (layer 5) runs first anyway
+	cfg.DLP.Patterns = nil // isolate the subdomain signal from DLP matches
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		// Signal A: single long pure-hex / base32 label.
+		{"hex subdomain label", "https://7365637265745f6170695f6b65795f3132333435.exfil.evil.com/ping"},
+		{"base32 subdomain label", "https://JBSWY3DPEHPK3PXP.exfil.evil.com/health"},
+		{"long hex env-var label", "https://706f7374677265733a2f2f757365723a70617373406462.exfil.evil.com/leak"},
+		// Signal B: encoded data chunked across several subdomain labels.
+		// Hostnames below are the EXACT agent-egress-bench hostname_exfiltration
+		// corpus values — a pass here proves those bench cases are detected. Do
+		// not substitute synthetic hostnames: that divergence let a Signal B
+		// threshold change silently regress the corpus while unit tests passed.
+		{"chunked labels", "https://ghp-xxxx.yyyyzzzz.aaaabbbb.ccccdddd.exfil.evil.com/data"},
+		{"long subdomain chain", "https://a1b2c3d4.e5f6a7b8.c9d0e1f2.a3b4c5d6.e7f8a9b0.c1d2e3f4.a5b6c7d8.e9f0a1b2.c3d4e5f6.a7b8c9d0.exfil.evil.com/"},
+		{"mixed encoding labels", "https://4150494b4559.313233343536.JBSWY3DP.EHPK3PXP.exfil.evil.com/mixed"},
+		{"two hex labels", "https://4a6f686e446f65.53656372657431.exfil.evil.example.com/ping"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if result.Allowed {
+				t.Errorf("expected encoded-exfil subdomain to be blocked: %s", tt.url)
+			}
+			if result.Scanner != ScannerSubdomainEntropy {
+				t.Errorf("expected scanner=subdomain_entropy, got %s (reason: %s)", result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+// TestCheckSubdomainEntropy_AllowsEncodedLookalikes guards the encoded-exfil
+// signals against false positives on legitimate hostnames: short hex-ish
+// labels, a few dictionary subdomain labels, and base32-charset words without
+// digits. These mirror the benign baseline (api.github.com, cdnjs.cloudflare.com,
+// security.googleblog.com) plus deeper-but-benign shapes.
+func TestCheckSubdomainEntropy_AllowsEncodedLookalikes(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
+	s := New(cfg)
+	defer s.Close()
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"benign cdn host", "https://cdnjs.cloudflare.com/ajax/libs/x.js"},
+		{"benign api host", "https://api.github.com/v2/status"},
+		{"benign blog host", "https://security.googleblog.com/post"},
+		{"short hex label below min", "https://a1b2c3d4.cdn.example.com/"},
+		{"base32 word without digit", "https://ABCDEFGHIJKLMNOP.example.com/"},
+		{"long word with single digit", "https://myservice2instance.example.com/"},
+		{"three short dictionary labels", "https://prod.api.cdn.example.com/"},
+		{"regional endpoint", "https://s3.dualstack.us-east-1.example.com/"},
+		{"trailing-dot fqdn", "https://api.production.longservice.example.com./"},
+		{"deep dictionary host over 30 chars", "https://customer-production.us-east-1.api.example.com/"},
+		{"four dictionary labels", "https://web.production.team-alpha.region.example.com/"},
+		{"two short hash labels", "https://deadbeef.cafebabe.preview.example.com/"},
+		{"two short hash labels under multi-label public suffix", "https://deadbeef.cafebabe.preview.example.co.uk/"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), tt.url)
+			if !result.Allowed {
+				t.Errorf("expected benign hostname to be allowed: %s (blocked by %s: %s)", tt.url, result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
 func TestCheckSubdomainEntropy_SeparateFromQueryThreshold(t *testing.T) {
 	cfg := testConfig()
 	// High query threshold (won't flag query params), low subdomain threshold (will flag subdomains).
@@ -3052,19 +3140,48 @@ func TestCheckSubdomainEntropy_SeparateFromQueryThreshold(t *testing.T) {
 	}
 }
 
-func TestCheckSubdomainEntropy_HighThresholdAllowsHexSubdomain(t *testing.T) {
+// TestCheckSubdomainEntropy_HighThresholdStillCatchesEncodedHex documents that
+// raising the entropy threshold no longer opens a hole for hex/base32 exfil:
+// the structural encoded-label signal is independent of the entropy threshold.
+// The threshold still governs genuinely random (non-encoding-alphabet) labels;
+// hex/base32 labels are an encoding alphabet and are caught regardless.
+func TestCheckSubdomainEntropy_HighThresholdStillCatchesEncodedHex(t *testing.T) {
 	cfg := testConfig()
-	// Raise subdomain threshold high enough that hex labels pass.
 	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 5.0
+	cfg.Internal = nil
 	cfg.DLP.Patterns = nil
 	s := New(cfg)
 	defer s.Close()
 
-	// Hex subdomain (~3.78 entropy): should pass with threshold at 5.0.
+	// A long hex label is still flagged structurally even at threshold 5.0.
 	hexSubdomain := "https://deadbeef1234567890ab.exfil.evil.example.com/"
-	result := s.Scan(context.Background(), hexSubdomain)
+	if result := s.Scan(context.Background(), hexSubdomain); result.Allowed {
+		t.Errorf("expected hex-encoded subdomain to be blocked structurally at threshold=5.0")
+	}
+
+	// A genuinely random, non-encoding-alphabet label (mixed base62, includes
+	// digits outside the base32 set) still rides the threshold: entropy 4.32 < 5.0.
+	randomSubdomain := "https://r7km2np9qw4xb5vy8za3.evil.com/"
+	if result := s.Scan(context.Background(), randomSubdomain); !result.Allowed {
+		t.Errorf("expected high-entropy non-encoded subdomain to ride threshold=5.0, got blocked: %s", result.Reason)
+	}
+}
+
+// TestCheckSubdomainEntropy_ExclusionAllowsEncodedHost proves the targeted
+// escape hatch: an operator with a legitimate hex/base32-subdomain service
+// allowlists it via subdomain_entropy_exclusions rather than weakening the
+// global threshold.
+func TestCheckSubdomainEntropy_ExclusionAllowsEncodedHost(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.DLP.Patterns = nil
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"*.trusted-cdn.example"}
+	s := New(cfg)
+	defer s.Close()
+
+	result := s.Scan(context.Background(), "https://deadbeef1234567890ab.trusted-cdn.example/")
 	if !result.Allowed {
-		t.Errorf("expected hex subdomain to be allowed with threshold=5.0, got blocked: %s", result.Reason)
+		t.Errorf("expected excluded host to be allowed, got blocked by %s: %s", result.Scanner, result.Reason)
 	}
 }
 

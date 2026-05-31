@@ -120,10 +120,7 @@ func interceptRecordSignal(ic *InterceptContext, sig session.SignalType) {
 	if !ic.Config.AdaptiveEnforcement.Enabled {
 		return
 	}
-	sessionKey := ic.ClientIP
-	if ic.Agent != "" && ic.Agent != agentAnonymous {
-		sessionKey = ic.Agent + "|" + ic.ClientIP
-	}
+	sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 	var m *metrics.Metrics
 	if ic.Proxy != nil {
 		m = ic.Proxy.metrics
@@ -606,10 +603,7 @@ func newInterceptHandler(
 			baseAction := config.ActionWarn
 			effectiveAction := decide.UpgradeAction(baseAction, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
-				sessionKey := ic.ClientIP
-				if ic.Agent != "" && ic.Agent != agentAnonymous {
-					sessionKey = ic.Agent + "|" + ic.ClientIP
-				}
+				sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 				ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), baseAction, effectiveAction, urlResult.Scanner, ic.ClientIP, ic.RequestID)
 				if ic.Proxy != nil {
 					ic.Proxy.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
@@ -826,10 +820,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
-					sessionKey := ic.ClientIP
-					if ic.Agent != "" && ic.Agent != agentAnonymous {
-						sessionKey = ic.Agent + "|" + ic.ClientIP
-					}
+					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 					ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), originalBodyAction, action, scannerLabel, ic.ClientIP, ic.RequestID)
 					if ic.Proxy != nil {
 						ic.Proxy.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
@@ -1102,10 +1093,7 @@ func newInterceptHandler(
 			interceptMetrics = ic.Proxy.metrics
 		}
 		if changed, fromLabel, toLabel := trySessionRecovery(ic.Recorder, &ic.Config.AdaptiveEnforcement, interceptMetrics); changed {
-			sessionKey := ic.ClientIP
-			if ic.Agent != "" && ic.Agent != agentAnonymous {
-				sessionKey = ic.Agent + "|" + ic.ClientIP
-			}
+			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 			if ic.Logger != nil {
 				ic.Logger.LogAdaptiveEscalation(sessionKey, fromLabel, toLabel, ic.ClientIP, ic.RequestID, ic.Recorder.ThreatScore())
 			}
@@ -1114,10 +1102,7 @@ func newInterceptHandler(
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
 		if ic.Recorder != nil && decide.UpgradeAction("", recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement) == config.ActionBlock {
-			sessionKey := ic.ClientIP
-			if ic.Agent != "" && ic.Agent != agentAnonymous {
-				sessionKey = ic.Agent + "|" + ic.ClientIP
-			}
+			sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 			ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), "", config.ActionBlock, "session_deny", ic.ClientIP, ic.RequestID)
 			if ic.Proxy != nil {
 				ic.Proxy.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
@@ -1723,10 +1708,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalAction {
-					sessionKey := ic.ClientIP
-					if ic.Agent != "" && ic.Agent != agentAnonymous {
-						sessionKey = ic.Agent + "|" + ic.ClientIP
-					}
+					sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 					ic.Logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(recEscalationLevel(ic.Recorder)), originalAction, action, "response_scan", ic.ClientIP, ic.RequestID)
 					if ic.Proxy != nil {
 						ic.Proxy.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(recEscalationLevel(ic.Recorder)))
@@ -1772,10 +1754,7 @@ func newInterceptHandler(
 							ceeSM = ic.Proxy.sessionMgrPtr.Load()
 						}
 						if ceeSM != nil {
-							sessionKey := ic.ClientIP
-							if ic.Agent != "" && ic.Agent != agentAnonymous {
-								sessionKey = ic.Agent + "|" + ic.ClientIP
-							}
+							sessionKey := sessionKeyFor(ic.Agent, ic.ClientIP)
 							sess := ceeSM.GetOrCreate(sessionKey)
 							var stripMetrics *metrics.Metrics
 							if ic.Proxy != nil {

@@ -2096,12 +2096,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		return SessionResult{}
 	}
 
-	// Build session key: agent|clientIP when agent is known, else just clientIP.
-	key := clientIP
-	if agent != "" && agent != agentAnonymous {
-		key = agent + "|" + clientIP
-	}
-
+	key := sessionKeyFor(agent, clientIP)
 	sess := sm.GetOrCreate(key)
 
 	// On-entry de-escalation: recover sessions stuck at block_all.
@@ -2487,10 +2482,7 @@ func (p *Proxy) recordShieldIntervention(summary *receipt.ShieldSummary, cfg *co
 	if sm == nil {
 		return
 	}
-	sessionKey := clientIP
-	if agent := actx.Agent(); agent != "" && agent != agentAnonymous {
-		sessionKey = agent + "|" + clientIP
-	}
+	sessionKey := sessionKeyFor(actx.Agent(), clientIP)
 	sess := sm.GetOrCreate(sessionKey)
 	for i := 0; i < signals; i++ {
 		if decide.RecordSignal(sess, session.SignalShieldRewrite, decide.EscalationParams{
@@ -3134,11 +3126,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// RecordClean at the end when no finding was detected.
 	var fetchRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
-		fetchSessionKey := clientIP
-		if agent != "" && agent != agentAnonymous {
-			fetchSessionKey = agent + "|" + clientIP
-		}
-		fetchRec = sm.GetOrCreate(fetchSessionKey)
+		fetchRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
 	}
 	fetchTaint := evaluateHTTPTaint(cfg, fetchRec, http.MethodGet, parsed)
 
@@ -3224,10 +3212,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		baseAction := config.ActionWarn
 		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		if effectiveAction == config.ActionBlock {
-			sessionKey := clientIP
-			if agent != "" && agent != agentAnonymous {
-				sessionKey = agent + "|" + clientIP
-			}
+			sessionKey := sessionKeyFor(agent, clientIP)
 			log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
@@ -3309,10 +3294,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// session is at an escalation level with block_all=true. UpgradeAction
 	// with an empty base action returns "block" only when block_all is set.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := clientIP
-		if agent != "" && agent != agentAnonymous {
-			sessionKey = agent + "|" + clientIP
-		}
+		sessionKey := sessionKeyFor(agent, clientIP)
 		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.emitReceipt(receipt.EmitOpts{
@@ -4252,10 +4234,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 		action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
 	}
 	if action != originalAction {
-		sessionKey := clientIP
-		if agent != "" && agent != agentAnonymous {
-			sessionKey = agent + "|" + clientIP
-		}
+		sessionKey := sessionKeyFor(agent, clientIP)
 		log.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sessionLevel), originalAction, action, "response_scan", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(sessionLevel))
 	}
@@ -4268,10 +4247,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 			return
 		}
 		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-			sessionKey := clientIP
-			if agent != "" && agent != agentAnonymous {
-				sessionKey = agent + "|" + clientIP
-			}
+			sessionKey := sessionKeyFor(agent, clientIP)
 			sess := sm.GetOrCreate(sessionKey)
 			decide.RecordSignal(sess, sig, decide.EscalationParams{
 				Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,

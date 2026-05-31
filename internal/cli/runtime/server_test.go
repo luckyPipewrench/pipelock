@@ -749,6 +749,8 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	oldCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "1s", Write: "1s"}
 	oldCfg.FlightRecorder.SigningKeyPath = "/tmp/old-signing-key"
 	oldCfg.Conductor.ConductorURL = "https://boss-old.example"
+	oldCfg.FileSentry.Enabled = true
+	oldCfg.FileSentry.Action = config.ActionWarn
 
 	newCfg := oldCfg.Clone()
 	newCfg.KillSwitch.APIListen = "127.0.0.1:28081"
@@ -758,6 +760,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	newCfg.ScanAPI.Timeouts = config.ScanAPITimeouts{Read: "2s", Write: "2s"}
 	newCfg.FlightRecorder.SigningKeyPath = "/tmp/new-signing-key"
 	newCfg.Conductor.ConductorURL = "https://boss-new.example"
+	newCfg.FileSentry.Action = config.ActionBlock // file_sentry is restart-only; this change must be ignored
 	newCfg.ReverseProxy.Listen = "127.0.0.1:28084"
 	newCfg.ReverseProxy.Upstream = "http://127.0.0.1:2"
 
@@ -782,6 +785,9 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	if live.Conductor != oldCfg.Conductor {
 		t.Fatalf("conductor settings not preserved: %+v", live.Conductor)
 	}
+	if !reflect.DeepEqual(live.FileSentry, oldCfg.FileSentry) {
+		t.Fatalf("file_sentry settings not preserved (watcher cannot rebind at runtime): %+v", live.FileSentry)
+	}
 	if !reflect.DeepEqual(live.ReverseProxy, oldCfg.ReverseProxy) {
 		t.Fatalf("reverse proxy settings not preserved: %+v", live.ReverseProxy)
 	}
@@ -792,6 +798,7 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 		"conductor settings changed",
 		"flight_recorder.signing_key_path changed",
 		"reverse_proxy settings changed",
+		"file_sentry settings changed",
 	} {
 		if !buf.contains(want) {
 			t.Fatalf("stderr missing %q:\n%s", want, buf.String())

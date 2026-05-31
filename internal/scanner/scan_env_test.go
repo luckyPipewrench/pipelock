@@ -176,6 +176,9 @@ func TestExtractEnvSecrets_SkipsNonSecretNames(t *testing.T) {
 	t.Setenv("LS_COLORS", testLSColors)
 	t.Setenv("XDG_DATA_HOME", testXDGData)
 	t.Setenv("LC_ALL", testLCAll)
+	t.Setenv("GITHUB_API_URL", "https://api.github.com")
+	t.Setenv("GITHUB_GRAPHQL_URL", "https://api.github.com/graphql")
+	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
 
 	// Also set a real secret to confirm those still get collected.
 	// Split at regex boundary to avoid self-scan false positive.
@@ -193,6 +196,9 @@ func TestExtractEnvSecrets_SkipsNonSecretNames(t *testing.T) {
 		testLSColors:                     "LS_COLORS",
 		testXDGData:                      "XDG_DATA_HOME",
 		testLCAll:                        "LC_ALL",
+		"https://api.github.com":         "GITHUB_API_URL",
+		"https://api.github.com/graphql": "GITHUB_GRAPHQL_URL",
+		"https://github.com":             "GITHUB_SERVER_URL",
 	}
 	for _, s := range secrets {
 		if name, ok := skipped[s]; ok {
@@ -231,6 +237,9 @@ func TestIsNonSecretEnvName(t *testing.T) {
 		{"DISPLAY", true},
 		{"GOPATH", true},
 		{"EDITOR", true},
+		{"GITHUB_API_URL", true},
+		{"GITHUB_GRAPHQL_URL", true},
+		{"GITHUB_SERVER_URL", true},
 		// Prefix matches
 		{"LC_ALL", true},
 		{"LC_CTYPE", true},

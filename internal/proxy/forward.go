@@ -317,10 +317,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		baseAction := config.ActionWarn
 		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		if effectiveAction == config.ActionBlock {
-			sessionKey := clientIP
-			if agent != "" && agent != agentAnonymous {
-				sessionKey = agent + "|" + clientIP
-			}
+			sessionKey := sessionKeyFor(agent, clientIP)
 			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
@@ -343,10 +340,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// block_all enforcement: deny ALL traffic (including clean) when the
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := clientIP
-		if agent != "" && agent != agentAnonymous {
-			sessionKey = agent + "|" + clientIP
-		}
+		sessionKey := sessionKeyFor(agent, clientIP)
 		p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.metrics.RecordTunnelBlocked(agentLabel)
@@ -619,11 +613,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// escalation level lookups instead of a stale snapshot from sr.Level.
 		var interceptRec session.Recorder
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			interceptSessionKey := clientIP
-			if agent != "" && agent != agentAnonymous {
-				interceptSessionKey = agent + "|" + clientIP
-			}
-			interceptRec = sm.GetOrCreate(interceptSessionKey)
+			interceptRec = sm.GetOrCreate(sessionKeyFor(agent, clientIP))
 		}
 		if err := interceptTunnel(interceptCtx, interceptConn, &InterceptContext{
 			TargetHost:         host,
@@ -931,10 +921,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		baseAction := config.ActionWarn
 		effectiveAction := decide.UpgradeAction(baseAction, sr.Level, &cfg.AdaptiveEnforcement)
 		if effectiveAction == config.ActionBlock {
-			sessionKey := clientIP
-			if agent != "" && agent != agentAnonymous {
-				sessionKey = agent + "|" + clientIP
-			}
+			sessionKey := sessionKeyFor(agent, clientIP)
 			p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), baseAction, effectiveAction, result.Scanner, clientIP, requestID)
 			p.metrics.RecordAdaptiveUpgrade(baseAction, effectiveAction, session.EscalationLabel(sr.Level))
 			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason+" (escalated)", auditDetailFromResult(result))
@@ -958,10 +945,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// block_all enforcement: deny ALL traffic (including clean) when the
 	// session is at an escalation level with block_all=true.
 	if sr.Level > 0 && decide.UpgradeAction("", sr.Level, &cfg.AdaptiveEnforcement) == config.ActionBlock {
-		sessionKey := clientIP
-		if agent != "" && agent != agentAnonymous {
-			sessionKey = agent + "|" + clientIP
-		}
+		sessionKey := sessionKeyFor(agent, clientIP)
 		p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), "", config.ActionBlock, "session_deny", clientIP, requestID)
 		p.metrics.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(sr.Level))
 		p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
@@ -1228,10 +1212,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
 			}
 			if action != originalBodyAction {
-				sessionKey := clientIP
-				if agent != "" && agent != agentAnonymous {
-					sessionKey = agent + "|" + clientIP
-				}
+				sessionKey := sessionKeyFor(agent, clientIP)
 				p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(sr.Level), originalBodyAction, action, scannerLabel, clientIP, requestID)
 				p.metrics.RecordAdaptiveUpgrade(originalBodyAction, action, session.EscalationLabel(sr.Level))
 			}
@@ -2105,10 +2086,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				if forwardRec != nil && !fwdRespExempt {
 					action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
 					if action != originalAction {
-						sessionKey := clientIP
-						if agent != "" && agent != agentAnonymous {
-							sessionKey = agent + "|" + clientIP
-						}
+						sessionKey := sessionKeyFor(agent, clientIP)
 						p.logger.LogAdaptiveUpgrade(sessionKey, session.EscalationLabel(forwardRec.EscalationLevel()), originalAction, action, "response_scan", clientIP, requestID)
 						p.metrics.RecordAdaptiveUpgrade(originalAction, action, session.EscalationLabel(forwardRec.EscalationLevel()))
 					}
@@ -2127,10 +2105,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					// Exempt domains skip scoring — findings are logged but don't escalate.
 					if !fwdRespExempt {
 						if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-							sessionKey := clientIP
-							if agent != "" && agent != agentAnonymous {
-								sessionKey = agent + "|" + clientIP
-							}
+							sessionKey := sessionKeyFor(agent, clientIP)
 							sess := sm.GetOrCreate(sessionKey)
 							decide.RecordSignal(sess, session.SignalStrip, decide.EscalationParams{
 								Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,

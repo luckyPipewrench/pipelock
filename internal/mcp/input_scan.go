@@ -84,6 +84,16 @@ func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, inj
 	return ""
 }
 
+func inputVerdictEffectiveAction(verdict InputVerdict, configuredAction string) string {
+	if verdict.Action != "" {
+		return verdict.Action
+	}
+	if len(verdict.Matches) > 0 || len(verdict.Inject) > 0 {
+		return configuredAction
+	}
+	return ""
+}
+
 // ScanRequest parses a JSON-RPC 2.0 request and scans its params for
 // DLP patterns, injection patterns, and env secret leaks. Fail-closed
 // on parse errors (configurable via onParseError).

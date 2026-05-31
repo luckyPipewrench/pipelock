@@ -2360,6 +2360,7 @@ func TestScanTextForDLP_BundleProvenance_Encoded(t *testing.T) {
 func TestScanTextForDLP_BlocksEncodedExfilHostname(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
 	s := New(cfg)
 	defer s.Close()
 

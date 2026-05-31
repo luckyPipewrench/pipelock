@@ -277,7 +277,7 @@ func ForwardScannedInput(
 		stdioInputCtx := scanner.WithDLPWarnContext(opts.warnContext(), warnCtx)
 		if redactionCfg.Matcher != nil {
 			originalVerdict := ScanRequest(stdioInputCtx, line, sc, action, onParseError)
-			if !originalVerdict.Clean && action == config.ActionBlock {
+			if !originalVerdict.Clean && inputVerdictEffectiveAction(originalVerdict, action) == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
 				recordAdaptiveSignal(session.SignalBlock)
 				if pendingActionID != "" && receiptEmitter != nil {
@@ -742,13 +742,7 @@ func ForwardScannedInput(
 			return policy.StricterAction(cur, next)
 		}
 		if !verdict.Clean {
-			if len(verdict.Matches) > 0 || len(verdict.Inject) > 0 {
-				effectiveAction = action
-			}
-			// Address findings use the address protection action, not DLP action.
-			if len(verdict.AddressFindings) > 0 {
-				effectiveAction = mergeAction(effectiveAction, verdict.Action)
-			}
+			effectiveAction = inputVerdictEffectiveAction(verdict, action)
 		}
 		if policyVerdict.Matched {
 			effectiveAction = mergeAction(effectiveAction, policyVerdict.Action)

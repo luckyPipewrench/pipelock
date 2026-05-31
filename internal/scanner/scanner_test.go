@@ -3087,6 +3087,7 @@ func TestCheckSubdomainEntropy_AllowsEncodedLookalikes(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
 	cfg.DLP.Patterns = nil
+	cfg.DLP.ScanEnv = false
 	s := New(cfg)
 	defer s.Close()
 
@@ -3106,6 +3107,7 @@ func TestCheckSubdomainEntropy_AllowsEncodedLookalikes(t *testing.T) {
 		{"deep dictionary host over 30 chars", "https://customer-production.us-east-1.api.example.com/"},
 		{"four dictionary labels", "https://web.production.team-alpha.region.example.com/"},
 		{"two short hash labels", "https://deadbeef.cafebabe.preview.example.com/"},
+		{"two short hash labels under multi-label public suffix", "https://deadbeef.cafebabe.preview.example.co.uk/"},
 	}
 
 	for _, tt := range tests {

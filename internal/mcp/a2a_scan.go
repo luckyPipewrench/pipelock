@@ -89,6 +89,9 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if !urlResult.Allowed {
 				result.Clean = false
 				result.URLFindings = append(result.URLFindings, urlResult)
+				if scanner.IsHostnameExfilResult(urlResult) {
+					result.Action = config.ActionBlock
+				}
 			}
 
 		case FieldText, FieldOpaque:

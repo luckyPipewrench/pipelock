@@ -144,8 +144,8 @@ fetch_proxy:
 
 Subdomain scanning also flags two structural patterns that the entropy threshold cannot catch, because encoded data sits *at or below* the entropy ceiling (hex tops out at 4.0 bits/char):
 
-- A single subdomain label that is a long (16+ char) pure-hex or base32 token.
-- Three or more subdomain labels where at least two look like encoded chunks (hex/base32, 8+ chars) — the DNS-tunneling shape.
+- A single subdomain label that is a long (14+ char) pure-hex or base32 token.
+- A DNS-tunneling shape with either three or more encoded chunks, or two or more encoded chunks in a four-plus-label subdomain. An encoded chunk is a hex/base32-looking label of 8+ chars.
 
 Both report `subdomain_entropy` and are independent of `subdomain_entropy_threshold`: **raising the threshold no longer allows hex/base32 subdomain labels.** Dictionary and hyphenated labels (`customer-production.us-east-1.api.example.com`) are not affected.
 

@@ -1188,6 +1188,7 @@ tool_chain_detection:
   max_gap: 3
   tool_categories: {}           # map tool names to categories
   pattern_overrides: {}         # per-pattern action overrides
+  sensitivity_labels: {}        # override lethal-trifecta source/sink labels
   custom_patterns: []
 ```
 
@@ -1200,9 +1201,10 @@ tool_chain_detection:
 | `max_gap` | `3` | Max innocent calls between pattern steps |
 | `tool_categories` | `{}` | Map tool names to built-in categories |
 | `pattern_overrides` | `{}` | Per-pattern action override |
+| `sensitivity_labels` | `{}` | Override keyword-based lethal-trifecta classification. Valid labels are `untrusted_source`, `sensitive_source`, and `external_sink`; values are exact tool names or glob patterns. |
 | `custom_patterns` | `[]` | Custom attack sequences |
 
-Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains.
+Ships with 10 built-in patterns covering reconnaissance, credential theft, data staging, persistence, and exfiltration chains. The built-in lethal-trifecta detector watches for `untrusted_source -> sensitive_source -> external_sink` sequences. Use `sensitivity_labels` when your tool names do not carry enough semantic signal for the keyword fallback, and use `pattern_overrides.lethal-trifecta` to change that detector's action.
 
 ## Cross-Request Exfiltration Detection
 
@@ -1673,6 +1675,7 @@ license_key: "pipelock_lic_v1_eyJ..."
 ```yaml
 license_key: "pipelock_lic_v1_eyJ..."        # inline token (lowest priority)
 license_file: "/etc/pipelock/license.token"  # file path (medium priority)
+license_crl_file: "/etc/pipelock/license.crl" # signed revocation list
 license_public_key: "a1b2c3d4..."            # hex-encoded Ed25519 public key (dev builds only)
 ```
 
@@ -1698,6 +1701,8 @@ license_file: /etc/pipelock/license/token
 ### Key Verification
 
 Official release builds embed the signing public key at compile time via ldflags. The embedded key takes priority over `license_public_key` and cannot be overridden by config, preventing self-signing bypasses. The `license_public_key` config field is only used in development builds where no key is embedded.
+
+`license_crl_file` points at a signed license revocation list. It is read and verified at startup and on config reload; a revoked active license is disabled immediately. The CRL file should be mounted from trusted operator-controlled storage, not written by the agent.
 
 ### CLI Commands
 

@@ -81,6 +81,7 @@ Conductor remains an enterprise preview in v2.6, not a GA feature. User-facing C
 - Bump `modernc.org/sqlite` to v1.50.1. (#569)
 - Bump golangci-lint to v2.12.2 and clean up findings. (#573, #577)
 - Polish the Pipelock Helm chart. (#571)
+- Bump Helm chart `appVersion` to `2.6.0` and clear the stale default image digest so chart installs follow the v2.6.0 image tag unless operators explicitly pin a digest. (this PR)
 - Hold TypeScript and jsonschema majors at known-good versions; bump the TS and Rust verifiers; bump `@types/node`; refresh the oss-fuzz base-builder digest and ci-actions. (#572, #574, #552, #566, #578, #551)
 
 ## [2.5.0] - 2026-05-20

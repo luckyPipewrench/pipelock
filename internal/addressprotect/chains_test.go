@@ -125,7 +125,7 @@ func TestBTCNormalize(t *testing.T) {
 	if norm != "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4" {
 		t.Errorf("bech32 normalize: got %q", norm)
 	}
-	// Legacy is case-sensitive — returned as-is.
+	// Legacy is case-sensitive - returned as-is.
 	norm = v.Normalize("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
 	if norm != "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" {
 		t.Errorf("legacy normalize: got %q", norm)

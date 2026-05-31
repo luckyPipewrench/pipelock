@@ -399,7 +399,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		})
 	}
 
-	// All clean — proceed (with block_all and CEE checks).
+	// All clean - proceed (with block_all and CEE checks).
 	if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 		// block_all enforcement: deny ALL traffic (including clean) when the
 		// session is at an escalation level with block_all=true.
@@ -613,7 +613,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if policyCfg == nil {
-			// No policy config — fail closed.
+			// No policy config - fail closed.
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect without policy config]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
@@ -646,7 +646,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		finalResult := "blocked"
 		if redirectResult.Success {
 			// Scan redirect handler output for prompt injection AND DLP before
-			// sending to client. Handler output is untrusted — it could contain
+			// sending to client. Handler output is untrusted - it could contain
 			// secrets or injection payloads.
 			scanVerdict := ScanResponse(redirectResult.Response, sc)
 			wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
@@ -686,7 +686,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				}
 			}
 		} else {
-			// Redirect handler failed — fall through to block (fail-closed).
+			// Redirect handler failed - fall through to block (fail-closed).
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect failed: %s]\n", joinStrings(reasons), redirectResult.Error)
 			recordAdaptiveSignal(session.SignalBlock)
 			br = &BlockedRequest{
@@ -714,7 +714,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		result.Blocked = br
 		return result
 	case config.ActionAsk:
-		// HITL for input scanning is impractical — fall back to block (same as stdio proxy).
+		// HITL for input scanning is impractical - fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock

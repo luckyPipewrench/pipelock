@@ -315,7 +315,7 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) {
 // gates that produce signal on eval fields without setting BlockingGate
 // (currently policy, binding, taint-allow-with-reason, dow-fallback,
 // a2a-fallback, content-scan). When you add a new gate, extend the
-// switch in the same change — otherwise the new gate's block receipts
+// switch in the same change - otherwise the new gate's block receipts
 // will emit empty Layer / Pattern / Severity from the final fallback.
 func pickAttribution(eval MCPInputEvaluation) (layer, pattern, severity string) {
 	switch eval.BlockingGate {

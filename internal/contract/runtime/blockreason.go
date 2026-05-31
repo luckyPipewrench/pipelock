@@ -39,7 +39,7 @@ const (
 // blockreason.NotEnabled depending on the call site).
 //
 // The block-reason vocabulary is locked at v1; new typed reasons require
-// updates in three places — internal/blockreason/blockreason.go (the
+// updates in three places - internal/blockreason/blockreason.go (the
 // vocabulary itself), this mapping, and the production-path matrix gate.
 func BlockReasonForDecision(decisionReason string) (blockreason.Reason, bool) {
 	switch decisionReason {
@@ -56,7 +56,7 @@ func BlockReasonForDecision(decisionReason string) (blockreason.Reason, bool) {
 	case decisionReasonKillSwitchActive:
 		return blockreason.KillSwitchActive, true
 	case decisionReasonScannerDecisionMissing:
-		// Scanner is missing a verdict — fail-closed input, surface as
+		// Scanner is missing a verdict - fail-closed input, surface as
 		// parse_error so the agent reads "your input could not be
 		// classified" rather than the more specific kill-switch or
 		// contract codes that imply jurisdictional enforcement.

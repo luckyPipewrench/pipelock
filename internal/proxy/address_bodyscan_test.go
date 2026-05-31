@@ -66,7 +66,7 @@ func TestScanRequestBody_AddressPoisoningBlocked(t *testing.T) {
 func TestScanRequestBody_AddressExactMatchClean(t *testing.T) {
 	sc := newAddressProtectionScanner(t)
 
-	// Exact allowlisted address — should pass clean.
+	// Exact allowlisted address - should pass clean.
 	body := `{"to": "0x742d35cc6634c0532925a3b844bc9e7595f2bd3e", "amount": "1.0"}`
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
@@ -82,7 +82,7 @@ func TestScanRequestBody_AddressExactMatchClean(t *testing.T) {
 func TestScanRequestBody_AddressUnknownAllowed(t *testing.T) {
 	sc := newAddressProtectionScanner(t)
 
-	// Unknown address with unknown_action=allow — should pass clean.
+	// Unknown address with unknown_action=allow - should pass clean.
 	body := `{"to": "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}`
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
@@ -104,7 +104,7 @@ func TestScanRequestBody_NoAddressProtection(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	// No address protection enabled — should not crash.
+	// No address protection enabled - should not crash.
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),
@@ -145,7 +145,7 @@ func TestScanRequestBody_AddressWithAgentID(t *testing.T) {
 	sc := scanner.New(cfg)
 	defer sc.Close()
 
-	// Poisoned address with agent ID "trader" — agent's allowlist should be consulted.
+	// Poisoned address with agent ID "trader" - agent's allowlist should be consulted.
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`
 	_, result := scanRequestBody(context.Background(), BodyScanRequest{
 		Body:        strings.NewReader(body),

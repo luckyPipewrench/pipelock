@@ -184,7 +184,7 @@ func TestHijackResponseForSSE_ScansAndClosesUpstream(t *testing.T) {
 // blockingReadCloser blocks Read until either the test releases it or
 // Close is called. Used to prove the ctx-cancel watcher in
 // HijackResponseForSSE actually unblocks an upstream that has gone
-// quiet — DispatchSSEScan's per-message ctx check otherwise sits inside
+// quiet - DispatchSSEScan's per-message ctx check otherwise sits inside
 // the blocked body.Read indefinitely.
 type blockingReadCloser struct {
 	release chan struct{}

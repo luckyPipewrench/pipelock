@@ -67,7 +67,7 @@ func (m *Matcher) MatchesBatch(meta RequestMeta) bool {
 }
 
 // UninspectableBatch returns action (attributed to the batch endpoint) when
-// meta matches a batch route but the envelope body could not be inspected —
+// meta matches a batch route but the envelope body could not be inspected -
 // unread, oversize, or unparseable. It returns a zero Decision when no batch
 // route matches or action is allow/empty. Callers use it so an uninspectable
 // batch fails closed even when no graphql operation rule covers the endpoint
@@ -153,7 +153,7 @@ func (m *Matcher) evaluateSubRequest(host string, sub batchSubRequest, depth int
 // uninspectableSub applies a fail-closed action to a sub-request whose body
 // matched a graphql operation rule's route but could not be classified. It
 // reuses EvaluateUninspectable, so only graphql-predicate rules whose route
-// matches the sub are affected — a plain REST sub matched by a method/path rule
+// matches the sub are affected - a plain REST sub matched by a method/path rule
 // is unaffected (it was already decided by Evaluate above).
 func (m *Matcher) uninspectableSub(meta RequestMeta, action string) Decision {
 	return m.EvaluateUninspectable(meta, action, PredGraphQL)

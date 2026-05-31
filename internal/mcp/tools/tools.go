@@ -77,8 +77,8 @@ type ToolScanConfig struct {
 
 	// Session binding (optional). When BindingUnknownAction is non-empty,
 	// RunProxy wires tools/call validation into the input scanner.
-	BindingUnknownAction    string // warn, block — action for unknown tool calls
-	BindingNoBaselineAction string // warn, block — action before baseline established
+	BindingUnknownAction    string // warn, block - action for unknown tool calls
+	BindingNoBaselineAction string // warn, block - action before baseline established
 
 	// ExtraPoison holds tool-poison patterns from community rule bundles.
 	ExtraPoison []*ExtraPoisonPattern
@@ -254,7 +254,7 @@ func diffStringSlices(a, b []string) (added, removed []string) {
 // reload: drift was not maintained while the flag was disabled, so the
 // retained hashes are stale relative to the current upstream tool
 // inventory. Re-seeding from the next tools/list avoids evaluating
-// post-flip traffic against pre-disable ground truth — the attacker
+// post-flip traffic against pre-disable ground truth - the attacker
 // reload-cycle bypass this method closes. Session binding is intentionally
 // preserved: knownTools tracks "tools the session has ever seen" and
 // continues to flag wholly-new names through BindingUnknownAction.
@@ -474,12 +474,12 @@ var exfilParamPattern = regexp.MustCompile(
 )
 
 // contextLeakParamPattern detects parameter names that direct the agent to
-// populate them with internal model context — system prompt, conversation
+// populate them with internal model context - system prompt, conversation
 // history, tool-call history, chain of thought, model identity, available
 // tools. The HiddenLayer "Exploiting MCP Tool Parameters" attack
 // (https://hiddenlayer.com/innovation-hub/exploiting-mcp-tool-parameters/)
 // demonstrated that agents will fill such parameters even when the tool
-// code never reads them — the name alone is enough of a cue.
+// code never reads them - the name alone is enough of a cue.
 //
 // Operates on the same expanded form as exfilParamPattern: underscores and
 // camelCase boundaries are spaces, case is normalized lowercase. Patterns
@@ -649,7 +649,7 @@ func ExtractSchemaDescriptions(schema json.RawMessage) []string {
 	var result []string
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(schema, &parsed); err != nil {
-		// Non-object schema — could be a bare string with injected content.
+		// Non-object schema - could be a bare string with injected content.
 		var s string
 		if json.Unmarshal(schema, &s) == nil && s != "" {
 			return []string{s}
@@ -666,7 +666,7 @@ const maxSchemaDepth = 20
 
 // schemaTextFields are JSON Schema fields whose string values should be
 // extracted for poisoning detection. CyberArk research showed attackers
-// embed malicious instructions in default, const, pattern, and $comment —
+// embed malicious instructions in default, const, pattern, and $comment -
 // not just description/title.
 var schemaTextFields = [...]string{
 	"description", "title", "default", "const", "pattern", "$comment",
@@ -764,7 +764,7 @@ func collectStringLeaves(v interface{}, result *[]string, depth int) {
 // Returns nil if the shape doesn't match.
 // isToolsListResult returns true if the result JSON contains a "tools" key,
 // indicating this is a tools/list response. An empty tools array still counts
-// as a tools/list response — the response scanner must skip general injection
+// as a tools/list response - the response scanner must skip general injection
 // scanning regardless of whether there are tools to scan for poisoning.
 func isToolsListResult(result json.RawMessage) bool {
 	if len(result) == 0 || string(result) == jsonrpc.Null {
@@ -776,10 +776,10 @@ func isToolsListResult(result json.RawMessage) bool {
 	if err := json.Unmarshal(result, &probe); err != nil {
 		return false
 	}
-	// json.RawMessage("null") is non-nil in Go — must check string value.
+	// json.RawMessage("null") is non-nil in Go - must check string value.
 	// Only treat as tools/list if tools is a JSON array (including empty []).
 	// A string or object in the tools field is malformed and must NOT suppress
-	// general response scanning — otherwise an attacker hides injection there.
+	// general response scanning - otherwise an attacker hides injection there.
 	trimmed := bytes.TrimSpace(probe.Tools)
 	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return false
@@ -872,7 +872,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig) Tool
 
 	tools := tryParseToolsList(rpc.Result)
 	if tools == nil {
-		// tools/list response with empty or all-unnamed tools — still a tools/list,
+		// tools/list response with empty or all-unnamed tools - still a tools/list,
 		// just nothing to scan for poisoning.
 		return ToolScanResult{IsToolsList: true, Clean: true, RPCID: rpc.ID}
 	}

@@ -3,7 +3,7 @@
 
 // Package inference implements the contract-compile inference engine:
 // Wilson lower-bound confidence, conditional opportunity denominators,
-// exposure-floor gates, and numeric-budget statistics. Pure functions —
+// exposure-floor gates, and numeric-budget statistics. Pure functions -
 // no I/O, no transports, no logging. Inputs are recorder.Entry events that
 // have already been classified by internal/contract/privacy.
 package inference
@@ -21,7 +21,7 @@ const DefaultWilsonAlpha = 0.05
 
 // wilsonZ95 is the inverse-normal-CDF value for 1 - alpha/2 = 0.975 (i.e.
 // alpha = 0.05). Hardcoded so the production Wilson path stays
-// deterministic for a given input on supported Go builds — math.Erfinv
+// deterministic for a given input on supported Go builds - math.Erfinv
 // is not invoked at runtime, so its precision cannot drift this value.
 const wilsonZ95 = 1.959963984540054
 

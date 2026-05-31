@@ -24,7 +24,7 @@ const (
 	ScannerCoreResponse = "core_response"
 )
 
-// Built-in pattern names — referenced in pattern definitions, tests, and
+// Built-in pattern names - referenced in pattern definitions, tests, and
 // red-team assertions so the canonical spelling lives in one place.
 const (
 	patternNameAWSAccessID     = "AWS Access ID"
@@ -38,7 +38,7 @@ func CoreDLPCount() int { return len(coreDLPPatternDefs()) }
 func CoreResponseCount() int { return len(coreResponsePatternDefs()) }
 
 // coreDLPPattern defines a single immutable DLP pattern compiled into the binary.
-// These patterns represent the safety floor — they CANNOT be disabled by any
+// These patterns represent the safety floor - they CANNOT be disabled by any
 // config field (include_defaults, response_scanning.enabled, etc.).
 type coreDLPPattern struct {
 	name     string
@@ -56,11 +56,11 @@ type coreResponsePattern struct {
 // Decision rule: "Would you be ashamed if this got through?"
 //
 // These patterns are the absolute minimum safety floor. They detect
-// credential types where a false negative is catastrophic — leaked
+// credential types where a false negative is catastrophic - leaked
 // cloud keys, source control tokens, and cryptographic material.
 func coreDLPPatternDefs() []coreDLPPattern {
 	return []coreDLPPattern{
-		// Cloud provider credentials — names match config.Defaults() exactly.
+		// Cloud provider credentials - names match config.Defaults() exactly.
 		{
 			name:     patternNameAWSAccessID,
 			regex:    `(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}`,
@@ -287,7 +287,7 @@ func initCoreScanner() *compiledCoreScanner {
 }
 
 // ScanCoreResponse runs core response patterns against content. This runs
-// regardless of ResponseScanning.Enabled — the safety floor is non-negotiable.
+// regardless of ResponseScanning.Enabled - the safety floor is non-negotiable.
 // Returns matches found by core patterns only; the caller should run the main
 // response scanner separately if enabled.
 func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []ResponseMatch {
@@ -591,7 +591,7 @@ func (s *Scanner) isCoreCIDRBlocked(ip net.IP) bool {
 
 // mergedSSRFCIDRs returns core CIDRs combined with user-configured CIDRs.
 // Core CIDRs come first so they're checked before config CIDRs. Duplicate
-// ranges are acceptable — net.IPNet.Contains is cheap and the total count is small.
+// ranges are acceptable - net.IPNet.Contains is cheap and the total count is small.
 func (s *Scanner) mergedSSRFCIDRs() []*net.IPNet {
 	if s.core == nil {
 		return s.internalCIDRs

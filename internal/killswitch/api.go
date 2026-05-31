@@ -49,7 +49,7 @@ func (h *APIHandler) HandleToggle(w http.ResponseWriter, r *http.Request) {
 	// Auth check
 	rt := h.ctrl.cfg.Load()
 	if rt.apiToken == "" {
-		// No token configured — API disabled
+		// No token configured - API disabled
 		http.Error(w, "kill switch API not configured (no api_token)", http.StatusServiceUnavailable)
 		return
 	}

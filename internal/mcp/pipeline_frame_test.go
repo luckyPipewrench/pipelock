@@ -94,7 +94,7 @@ func TestParseMCPFrame_ToolsCallExtraction(t *testing.T) {
 }
 
 func TestParseMCPFrame_ToolsCallMissingArgs(t *testing.T) {
-	// tools/call without "arguments" — Args must be nil (not a valid
+	// tools/call without "arguments" - Args must be nil (not a valid
 	// empty RawMessage) so the downstream "no arguments" check passes.
 	msg := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"echo"}}`
 	frame := ParseMCPFrame([]byte(msg))
@@ -110,7 +110,7 @@ func TestParseMCPFrame_ToolsCallMissingArgs(t *testing.T) {
 }
 
 func TestParseMCPFrame_ToolsCallNullArgs(t *testing.T) {
-	// tools/call with explicit "arguments": null — Args must be
+	// tools/call with explicit "arguments": null - Args must be
 	// normalised to nil rather than json.RawMessage("null"). This
 	// mirrors extractToolCallArgs's historical behaviour so downstream
 	// scanners don't treat the literal string "null" as user input.
@@ -286,7 +286,7 @@ func TestParseMCPFrame_EmptyAndNilInput(t *testing.T) {
 	for _, msg := range [][]byte{nil, {}, []byte("   \t\n")} {
 		frame := ParseMCPFrame(msg)
 		if frame.ParseErr == nil && len(msg) > 0 {
-			// Whitespace-only is not batch, is not parseable — should
+			// Whitespace-only is not batch, is not parseable - should
 			// surface the json.Unmarshal error.
 			t.Errorf("whitespace-only input should surface ParseErr, got nil")
 		}

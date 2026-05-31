@@ -55,7 +55,7 @@ func TestFinalize_RejectsModifiedEvidence(t *testing.T) {
 	runDir := completeRun(t)
 
 	// An attacker (or clumsy hand) mutates simulate.jsonl after run.
-	// The recorded hash will no longer match — finalize must refuse.
+	// The recorded hash will no longer match - finalize must refuse.
 	evPath := filepath.Join(runDir, "evidence", "simulate.jsonl")
 	tampered := []byte(`{"name":"injected","detected":true,"category":"DLP"}` + "\n")
 	if err := os.WriteFile(evPath, tampered, 0o600); err != nil {
@@ -81,7 +81,7 @@ func TestFinalize_RejectsTruncatedEvidence(t *testing.T) {
 	runDir := completeRun(t)
 
 	// Empty evidence file is structurally indistinguishable from a missing
-	// primitive — finalize must catch both.
+	// primitive - finalize must catch both.
 	evPath := filepath.Join(runDir, "evidence", "discover.jsonl")
 	if err := os.WriteFile(evPath, []byte{}, 0o600); err != nil {
 		t.Fatalf("truncating evidence: %v", err)
@@ -192,7 +192,7 @@ func TestFinalize_RejectsUnknownEvidenceFile(t *testing.T) {
 
 	// A future schema might add a new primitive. Today's binary refuses
 	// to finalize a manifest that references an evidence file name it
-	// does not know — prevents accidental "I trust whatever the manifest
+	// does not know - prevents accidental "I trust whatever the manifest
 	// says" behavior.
 	manifestPath := filepath.Join(runDir, "manifest.json")
 	data, _ := os.ReadFile(filepath.Clean(manifestPath))
@@ -211,7 +211,7 @@ func TestFinalize_RejectsUnknownEvidenceFile(t *testing.T) {
 }
 
 func TestFinalize_AcceptsValidV2Run(t *testing.T) {
-	// Sanity check — the integrity gate must not break the happy path.
+	// Sanity check - the integrity gate must not break the happy path.
 	runDir := completeRun(t)
 	if err := runAssessFinalize(runDir, assessFinalizeOpts{Unsigned: true}); err != nil {
 		t.Fatalf("happy-path finalize failed: %v", err)
@@ -305,7 +305,7 @@ func TestShortHash(t *testing.T) {
 	}{
 		{"", ""},
 		{"abc", "abc"},
-		{"abcdef012345", "abcdef012345"}, // exactly 12 — boundary
+		{"abcdef012345", "abcdef012345"}, // exactly 12 - boundary
 		{"abcdef0123456789", "abcdef012345"},
 		{"deadbeef" + strings.Repeat("0", 56), "deadbeef0000"},
 	}

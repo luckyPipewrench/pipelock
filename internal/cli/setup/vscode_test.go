@@ -1520,7 +1520,7 @@ func TestWrapVscodeServer_PreservesExtraFields(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// vscodeAtomicWrite — overwrite existing file test
+// vscodeAtomicWrite - overwrite existing file test
 // ---------------------------------------------------------------------------
 
 func TestVscodeAtomicWrite_OverwriteExisting(t *testing.T) {

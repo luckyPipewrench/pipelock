@@ -272,7 +272,7 @@ func TestProxy_NilEmitter_NoReceipt(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 
-	// No WithReceiptEmitter — emitter is nil
+	// No WithReceiptEmitter - emitter is nil
 	p, pErr := New(cfg, logger, sc, metrics.New(), WithRecorder(rec))
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
@@ -454,7 +454,7 @@ func TestProxy_ReloadRemovesReceiptEmitter(t *testing.T) {
 		t.Fatal("expected non-nil emitter before reload")
 	}
 
-	// Reload with config that has NO signing key — should nil the emitter.
+	// Reload with config that has NO signing key - should nil the emitter.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -708,13 +708,13 @@ func TestProxy_ReloadReceiptEmitter_NoRecorder(t *testing.T) {
 	sc := scanner.New(cfg)
 	m := metrics.New()
 
-	// No WithRecorder — recorder is nil.
+	// No WithRecorder - recorder is nil.
 	p, pErr := New(cfg, logger, sc, m)
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)
 	}
 
-	// Reload with a signing key but no recorder — emitter stays nil.
+	// Reload with a signing key but no recorder - emitter stays nil.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -783,7 +783,7 @@ func TestProxy_ReloadReceiptEmitter_UpdatesHash(t *testing.T) {
 	}
 	defer func() { _ = rec.Close() }()
 
-	// Reload with a different config (same key path) — emitter is recreated
+	// Reload with a different config (same key path) - emitter is recreated
 	// (always re-reads key file to detect in-place rotation) but uses updated hash.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
@@ -900,7 +900,7 @@ func TestProxy_ReloadRotatesSigningKey(t *testing.T) {
 		t.Fatal("expected non-nil emitter before reload")
 	}
 
-	// Reload with key B — should replace the emitter.
+	// Reload with key B - should replace the emitter.
 	reloadCfg := config.Defaults()
 	reloadCfg.Internal = nil
 	reloadCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -1105,7 +1105,7 @@ func TestProxy_ReceiptEmission_PostFetchResponseSize(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	// 1 byte max — any real response will exceed this.
+	// 1 byte max - any real response will exceed this.
 	cfg.FetchProxy.MaxResponseMB = 0
 
 	logger := audit.NewNop()

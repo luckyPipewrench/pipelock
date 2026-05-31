@@ -3,7 +3,7 @@
 
 // log-collector receives webhook events from pipelock's emit pipeline and
 // stores them for querying. This proves pipelock not only blocked but LOGGED
-// every detection — critical for SecureIQLab scoring.
+// every detection - critical for SecureIQLab scoring.
 //
 // Endpoints:
 //

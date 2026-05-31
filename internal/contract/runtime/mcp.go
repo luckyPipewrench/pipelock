@@ -289,12 +289,12 @@ func argMatcherMatches(matcher map[string]any, requestArgs map[string]any) bool 
 		// default-deny rather than a spurious allow.
 		// fmt.Sprint(nil) renders as "<nil>", which would otherwise
 		// match a request arg whose string value happens to be
-		// "<nil>" — display-vs-reality bypass blocked here.
+		// "<nil>" - display-vs-reality bypass blocked here.
 		return false
 	}
 	got, present := requestArgs[key]
 	if !present || got == nil {
-		// Missing or null request value — never satisfies an equality
+		// Missing or null request value - never satisfies an equality
 		// matcher. Without the nil guard, a request arg of nil would
 		// stringify to "<nil>" and match a matcher value of the
 		// literal string "<nil>".

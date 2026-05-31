@@ -221,7 +221,7 @@ func TestDefaultMatcher_Negative(t *testing.T) {
 
 	// Note: FQDN detection is class-level best-effort. Common file
 	// extensions (foo.txt, config.yaml) will sometimes match. v1 accepts
-	// this trade-off — operators who need finer control use dictionaries.
+	// this trade-off - operators who need finer control use dictionaries.
 	cases := []string{
 		"", // empty
 		"just a normal sentence about http and https",   // no identifiers

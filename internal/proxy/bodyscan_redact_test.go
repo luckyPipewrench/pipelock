@@ -16,8 +16,8 @@ import (
 // test for the v1b round-1 review finding (2026-04-19): in warn-mode
 // DLP, the old code returned on the DLP match BEFORE redaction ran, so
 // the caller forwarded the original unredacted buf. After the ordering
-// fix, redaction always runs first; the buf returned to the caller —
-// even when DLPMatches is non-empty — is the redacted version. Any
+// fix, redaction always runs first; the buf returned to the caller -
+// even when DLPMatches is non-empty - is the redacted version. Any
 // warn-mode residual that DLP still flags is one redaction did not
 // cover, not a raw secret the caller was about to forward.
 func TestScanRequestBody_Redaction_BeforeDLPEarlyReturn(t *testing.T) {

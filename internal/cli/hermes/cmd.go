@@ -7,11 +7,11 @@
 // commands, and any future Hermes-specific glue.
 //
 // Subcommands:
-//   - `pipelock hermes install` — extracts the embedded Python plugin tree
+//   - `pipelock hermes install` - extracts the embedded Python plugin tree
 //     into ~/.hermes/plugins/pipelock/ and wires the integration.
-//   - `pipelock hermes verify` — reports the installed coverage state.
-//   - `pipelock hermes rollback` — surgically removes the integration.
-//   - `pipelock hermes hook` — the subprocess entrypoint Hermes invokes per
+//   - `pipelock hermes verify` - reports the installed coverage state.
+//   - `pipelock hermes rollback` - surgically removes the integration.
+//   - `pipelock hermes hook` - the subprocess entrypoint Hermes invokes per
 //     hook event (stdin JSON in, decision JSON out).
 //
 // The hook lives as a subcommand of the main pipelock binary (not a separate

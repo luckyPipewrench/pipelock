@@ -66,7 +66,7 @@ func TestReloader_CoalesceKeepsLatest(t *testing.T) {
 	defer r.Close()
 
 	// First reload: balanced. Lands in the single-slot buffer, undrained.
-	// (Both modes here are valid without extra config — strict would fail
+	// (Both modes here are valid without extra config - strict would fail
 	// validation for lack of api_allowlist and never reach the buffer.)
 	writeTestConfig(t, cfgPath, ModeBalanced)
 	r.tryReload()
@@ -207,7 +207,7 @@ func TestReloader_NonMatchingFileIgnored(t *testing.T) {
 	// Give watcher time to start
 	time.Sleep(200 * time.Millisecond)
 
-	// Write a different file in the same directory — should be ignored
+	// Write a different file in the same directory - should be ignored
 	otherPath := filepath.Join(dir, "other.yaml")
 	if err := os.WriteFile(otherPath, []byte("version: 1\nmode: strict\n"), 0o600); err != nil {
 		t.Fatal(err)

@@ -130,14 +130,14 @@ func mustExtractSignatureBytes(t *testing.T, values []string) []byte {
 // must accept pipelock's signature at face value.
 //
 // The test uses a body-less GET so the signer's declared component
-// list is {@method, @target-uri, pipelock-mediation} — no
+// list is {@method, @target-uri, pipelock-mediation} - no
 // content-digest. (common-fate/httpsig's Ed25519 algorithm hard-codes
 // SHA-512 for content-digest computation, which does not match
 // pipelock's RFC 9530 SHA-256 default. A follow-up pass can migrate
 // both sides to the same digest family and re-enable the body-bearing
 // interop path.)
 //
-// common-fate/httpsig is a test-only dependency — imported inside a
+// common-fate/httpsig is a test-only dependency - imported inside a
 // _test.go file so it never lands in production binaries. go.mod
 // tracks it as a direct dep, and that is documented in the PR
 // description along with the rationale.
@@ -162,7 +162,7 @@ func TestRFC9421_ExternalVerifierInterop(t *testing.T) {
 
 	// Build an outbound *http.Request pointing at an httptest server
 	// URL so Authority / Scheme match what the verifier expects.
-	// The server itself is a stub — we never actually dispatch the
+	// The server itself is a stub - we never actually dispatch the
 	// request, we just need a valid URL shape.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
 	t.Cleanup(srv.Close)
@@ -182,7 +182,7 @@ func TestRFC9421_ExternalVerifierInterop(t *testing.T) {
 
 	// Build the common-fate/httpsig Verifier with our public key and
 	// matching tag. Authority / Scheme come from the httptest URL.
-	// verifier.Verifier is a plain struct — no constructor — so we
+	// verifier.Verifier is a plain struct - no constructor - so we
 	// assemble the literal directly.
 	parsedURL := req.URL
 	var libraryBase string
@@ -228,7 +228,7 @@ func TestRFC9421_ExternalVerifierInterop(t *testing.T) {
 }
 
 // interopNopNonceStorage satisfies verifier.NonceStorage without
-// actually tracking nonces — sufficient for the single-request
+// actually tracking nonces - sufficient for the single-request
 // interop test.
 type interopNopNonceStorage struct{}
 
@@ -245,7 +245,7 @@ func (interopNopNonceStorage) Seen(_ context.Context, _ string) (bool, error) { 
 //
 // The reference verifier supports the minimal component set pipelock
 // declares today: @method, @target-uri, @authority, content-digest,
-// pipelock-mediation. It exists purely as a test check — production
+// pipelock-mediation. It exists purely as a test check - production
 // does not consume this code path.
 func TestRFC9421_ReferenceVerifierInterop(t *testing.T) {
 	t.Parallel()
@@ -281,7 +281,7 @@ func TestRFC9421_ReferenceVerifierInterop(t *testing.T) {
 	// Parse the outbound Signature-Input dict with pipelock's own
 	// httpsfv dependency and reconstruct the signature base
 	// ourselves, independent of the production signer's internal
-	// helpers. This is the "second verifier" — a fresh top-to-bottom
+	// helpers. This is the "second verifier" - a fresh top-to-bottom
 	// implementation of the RFC 9421 §2.5 base-string algorithm.
 	sigInputDict := mustParseDict(t, req.Header.Values("Signature-Input"))
 	member, ok := sigInputDict.Get(pipelockSigLabel)
@@ -290,7 +290,7 @@ func TestRFC9421_ReferenceVerifierInterop(t *testing.T) {
 	}
 	inner, ok := member.(httpsfvInnerListShape)
 	if !ok {
-		// Fall back to real httpsfv type — the test helper below
+		// Fall back to real httpsfv type - the test helper below
 		// uses the same library and returns the same InnerList type.
 		t.Fatalf("unexpected inner list type: %T", member)
 	}

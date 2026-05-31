@@ -19,7 +19,7 @@ import (
 // TrustedKey is an accepted inbound mediation signer. TrustDomains, when
 // non-empty, restricts which actor trust domains this signer is allowed
 // to attest. An envelope whose actor's TrustDomain is not in the list
-// fails verification — preventing partner A's key from signing
+// fails verification - preventing partner A's key from signing
 // envelopes that claim partner B's trust domain. An empty TrustDomains
 // list means "any trust domain", which is the v2.4 migration default
 // for callers that have not yet declared per-key bindings.

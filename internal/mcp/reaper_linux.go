@@ -24,7 +24,7 @@ var (
 // MCP child is still alive. Without it, long-running wraps (codex
 // mcp-server, playwright MCP) accumulate zombies under pipelock because
 // the post-Wait killAdoptedDescendants sweep only fires when the direct
-// child exits — which can be hours later for those servers.
+// child exits - which can be hours later for those servers.
 //
 // The reaper only Wait4's processes whose PPID is pipelock's own and
 // whose PID is not the direct child. exec.Cmd.Wait()'s ownership of
@@ -36,11 +36,11 @@ var (
 // the specific cmd.Process.Pid, not via SIGCHLD-driven dispatch. The
 // kernel keeps a zombie until SOMEONE waitpids it, regardless of
 // which process catches SIGCHLD. As long as we never wait4(directPID),
-// we cannot consume the direct child's exit status — even with
+// we cannot consume the direct child's exit status - even with
 // signal.Notify subscribing to SIGCHLD process-wide.
 //
 // Stop the reaper by closing done. The goroutine exits on the next
-// SIGCHLD or when done closes — whichever comes first.
+// SIGCHLD or when done closes - whichever comes first.
 //
 // Linux-only because PR_SET_CHILD_SUBREAPER (the precondition that
 // causes pipelock to adopt orphans in the first place) is Linux-only.
@@ -57,9 +57,9 @@ func startAdoptedReaper(directPID int, done <-chan struct{}) {
 		//      and we got here with the direct PID.
 		//   2. A SIGCHLD that fired before signal.Notify took effect
 		//      above (kernel delivers to the default handler, which
-		//      ignores it — the zombie sits until someone wait4's it).
+		//      ignores it - the zombie sits until someone wait4's it).
 		// Without this initial sweep, those zombies would sit until the
-		// direct child exits and the post-Wait sweep runs — exactly
+		// direct child exits and the post-Wait sweep runs - exactly
 		// the bug we're fixing.
 		reapAdoptedZombies(directPID)
 		for {
@@ -83,7 +83,7 @@ func startAdoptedReaper(directPID int, done <-chan struct{}) {
 // so concurrent RunProxy calls in one process cannot steal each other's
 // child exits while still draining adopted descendants.
 //
-// Best-effort throughout — ESRCH on PID-recycle race, EINTR on signal,
+// Best-effort throughout - ESRCH on PID-recycle race, EINTR on signal,
 // EPERM on namespace boundary all fall through silently.
 func reapAdoptedZombies(directPID int) {
 	selfPID := os.Getpid()

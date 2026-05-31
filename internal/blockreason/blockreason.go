@@ -121,7 +121,7 @@ const (
 	// rail (request_policy): even within otherwise-allowed traffic, a named
 	// dangerous provider operation is denied. Default-allow; rules block or
 	// warn only. Not a Scanner* pipeline layer, so blocks leave the
-	// X-Pipelock-Block-Reason-Layer header unset — the reason code conveys
+	// X-Pipelock-Block-Reason-Layer header unset - the reason code conveys
 	// the layer (cf. the MCP and contract layers).
 	RequestPolicyDeny Reason = "request_policy_deny"
 
@@ -261,7 +261,7 @@ type Info struct {
 // ErrInvalidRetry on a vocabulary miss.
 //
 // Designed for the enforcement hot path: never panics. Call sites should
-// propagate the error to a fail-closed branch — typically by treating an
+// propagate the error to a fail-closed branch - typically by treating an
 // invalid Info as a programming bug while still emitting the underlying
 // 4xx without the reason headers.
 func New(reason Reason, severity Severity, retry Retry) (Info, error) {
@@ -305,8 +305,8 @@ func (i Info) WithLayer(layer string) (Info, error) {
 // (receipt.NewActionID) is a UUIDv7 in the latter form, so a block path can
 // stamp the actual receipt action_id here for agent-side correlation. Both
 // accepted forms are fixed-length and drawn from a bounded alphabet, so the
-// strict validation still prevents arbitrary strings — and therefore
-// arbitrary attacker-controlled metadata — from reaching agent-visible
+// strict validation still prevents arbitrary strings - and therefore
+// arbitrary attacker-controlled metadata - from reaching agent-visible
 // response headers via the Receipt slot.
 func (i Info) WithReceipt(receipt string) (Info, error) {
 	if !validReceipt(receipt) {

@@ -20,7 +20,7 @@ import (
 // level to an airlock tier on every request. After a drain session timer-
 // recovered to hard, the very next allowed request would observe the session
 // still sitting at "critical" adaptively and shove airlock back into drain
-// — 3 seconds after leaving it — even though no new threat had appeared.
+// - 3 seconds after leaving it - even though no new threat had appeared.
 //
 // After the fix, airlock activation is edge-triggered: it fires only on the
 // request that actually crossed an adaptive escalation threshold.
@@ -78,7 +78,7 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 	if got := sess.Airlock().Tier(); got != config.AirlockTierHard {
 		t.Fatalf("post-ForceSetTier state wrong: expected %q, got %q", config.AirlockTierHard, got)
 	}
-	// Adaptive level is still at critical — that's the plateau condition
+	// Adaptive level is still at critical - that's the plateau condition
 	// the bug exploited. Sanity-check it explicitly.
 	if got := sess.EscalationLevel(); got < 3 {
 		t.Fatalf("plateau precondition failed: expected level still >= 3 (critical), got %d", got)
@@ -118,7 +118,7 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 // path called AirlockState.ExtendTimer(), which reset enteredAt on every
 // blocked retry. The deny paths no longer reference ExtendTimer (the
 // function itself has been deleted), so a session's drain enteredAt is only
-// ever set once — at drain entry — and sweepDeescalation can observe a
+// ever set once - at drain entry - and sweepDeescalation can observe a
 // real elapsed interval. This test locks that invariant in place.
 //
 // Regression guard: if a future refactor reintroduces a timer-extension
@@ -126,7 +126,7 @@ func TestAirlockEdgeTrigger_NoPlateauReentry(t *testing.T) {
 // (it does not drive the HTTP handler). That surface is guarded by the
 // absence of any ExtendTimer-equivalent public method on AirlockState and
 // by the source-level fact that the four deny paths touch only the logger,
-// metrics, and response writer — see forward.go, intercept.go, websocket.go.
+// metrics, and response writer - see forward.go, intercept.go, websocket.go.
 func TestSessionManager_SweepDeescalation_DrainToHardAfterTimeout(t *testing.T) {
 	sessCfg := testSessionConfig()
 	adaptiveCfg := &config.AdaptiveEnforcement{
@@ -164,14 +164,14 @@ func TestSessionManager_SweepDeescalation_DrainToHardAfterTimeout(t *testing.T) 
 
 	// Age enteredAt past the 1s drain timeout so TryDeescalate fires. This
 	// is the same technique used by TestAirlockState_TryDeescalate elsewhere
-	// in the file — avoids wall-clock sleeps and keeps the test fast and
+	// in the file - avoids wall-clock sleeps and keeps the test fast and
 	// deterministic.
 	sess.Airlock().mu.Lock()
 	sess.Airlock().enteredAt = time.Now().Add(-2 * time.Second)
 	sess.Airlock().mu.Unlock()
 
 	// sweepDeescalation short-circuits when adaptive is nil/disabled, which
-	// is why airlockCfg alone is not enough — adaptiveCfg MUST be enabled
+	// is why airlockCfg alone is not enough - adaptiveCfg MUST be enabled
 	// for the sweep to reach the airlock-recovery block. This wiring is
 	// exercised explicitly so a future refactor cannot silently bypass it.
 	sm.sweepDeescalation()

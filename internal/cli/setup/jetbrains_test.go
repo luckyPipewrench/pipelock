@@ -87,7 +87,7 @@ func TestJetbrainsInstall_DryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read, wrap, marshal — test the core logic directly.
+	// Read, wrap, marshal - test the core logic directly.
 	mcpCfg, originalData, err := readMCPConfig(configPath, junieServersKey)
 	if err != nil {
 		t.Fatal(err)
@@ -409,7 +409,7 @@ func TestRunJetbrainsInstall_NewFile(t *testing.T) {
 
 	chdirTemp(t, dir)
 
-	// No existing .junie/mcp/mcp.json — should create it with empty servers.
+	// No existing .junie/mcp/mcp.json - should create it with empty servers.
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("install on empty dir failed: %v\noutput: %s", err, buf.String())
 	}
@@ -812,7 +812,7 @@ func TestWrapMCPServer_SandboxSkippedForHTTP(t *testing.T) {
 		mcpFieldURL:  "http://localhost:3000/mcp",
 	}
 
-	// sandbox=true but HTTP server — should still work (warning printed to stderr)
+	// sandbox=true but HTTP server - should still work (warning printed to stderr)
 	result, _, err := wrapMCPServer(server, testPipelockExe, "", true, "/workspace")
 	if err != nil {
 		t.Fatal(err)

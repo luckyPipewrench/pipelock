@@ -118,7 +118,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 	}
 
 	// Need at least 2 non-expired fragments for a cross-request match.
-	// A single fragment means the secret is in one request — body DLP handles it.
+	// A single fragment means the secret is in one request - body DLP handles it.
 	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
 	activeCount := 0
 	for _, f := range sb.fragments {
@@ -167,7 +167,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).
-	// Warn-mode matches are NOT included here — they are already emitted
+	// Warn-mode matches are NOT included here - they are already emitted
 	// via DLPWarnHook inside ScanTextForDLP. Including them would cause
 	// CEE callers to treat informational warn matches as enforcement signals.
 	var matches []DLPMatch

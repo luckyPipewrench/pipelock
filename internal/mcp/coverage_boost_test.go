@@ -20,7 +20,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// RunProxy — test additional code paths (85.9% -> higher)
+// RunProxy - test additional code paths (85.9% -> higher)
 // ---------------------------------------------------------------------------
 
 func TestRunProxy_WithToolAndBinding(t *testing.T) {
@@ -78,7 +78,7 @@ func TestRunProxy_ExtraEnvDangerousBlocked(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// LD_PRELOAD is a dangerous env key — should be filtered.
+	// LD_PRELOAD is a dangerous env key - should be filtered.
 	err := RunProxy(ctx, stdin, &stdout, &stderr,
 		[]string{"sh", "-c", "echo ${LD_PRELOAD:-notset}"},
 		MCPProxyOpts{Scanner: sc},
@@ -129,7 +129,7 @@ func TestEnvKeyClassification(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// scanHTTPInput — various code paths
+// scanHTTPInput - various code paths
 // ---------------------------------------------------------------------------
 
 func TestScanHTTPInput_CleanRequest(t *testing.T) {
@@ -201,7 +201,7 @@ func TestScanHTTPInput_NotificationPassthrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ScanResponse — additional edge cases
+// ScanResponse - additional edge cases
 // ---------------------------------------------------------------------------
 
 func TestScanResponse_BatchCleanPair(t *testing.T) {
@@ -241,7 +241,7 @@ func TestScanResponse_NonStandardErrorFallback(t *testing.T) {
 	nonStdErr := `{"jsonrpc":"2.0","id":1,"error":"simple error string"}`
 	verdict := ScanResponse([]byte(nonStdErr), sc)
 	// Should handle gracefully via extractText fallback path.
-	_ = verdict // Just exercises the code path — verdict depends on scanner patterns.
+	_ = verdict // Just exercises the code path - verdict depends on scanner patterns.
 }
 
 func TestScanResponse_ErrorWithData(t *testing.T) {
@@ -266,7 +266,7 @@ func TestScanResponse_EmptyResult(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// scanToolsListNonToolFields — edge cases
+// scanToolsListNonToolFields - edge cases
 // ---------------------------------------------------------------------------
 
 func TestScanToolsListNonToolFields_WithCleanSibling(t *testing.T) {
@@ -300,7 +300,7 @@ func TestScanToolsListNonToolFields_ErrorFieldScanned(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ScanStream — additional edge cases (96% -> higher)
+// ScanStream - additional edge cases (96% -> higher)
 // ---------------------------------------------------------------------------
 
 func TestScanStream_BatchInput(t *testing.T) {
@@ -364,7 +364,7 @@ func TestScanStream_MultipleLines(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ForwardScanned — batch response and error handling
+// ForwardScanned - batch response and error handling
 // ---------------------------------------------------------------------------
 
 func TestForwardScanned_BatchResponseClean(t *testing.T) {
@@ -408,7 +408,7 @@ func TestForwardScanned_ErrorResponseClean(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RunProxy — with input scanning disabled, policy/chain still routes
+// RunProxy - with input scanning disabled, policy/chain still routes
 // through ForwardScannedInput for request ID tracking
 // ---------------------------------------------------------------------------
 
@@ -426,7 +426,7 @@ func TestRunProxy_NoInputScanStillTracksRequestIDs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// No input scanning, no policy, no chain — but request tracking is still active.
+	// No input scanning, no policy, no chain - but request tracking is still active.
 	err := RunProxy(ctx, stdin, &stdout, &stderr,
 		[]string{"sh", "-c", fmt.Sprintf("echo '%s'", cleanResp)},
 		MCPProxyOpts{Scanner: sc},
@@ -440,7 +440,7 @@ func TestRunProxy_NoInputScanStillTracksRequestIDs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// writeTextVerdict helper — exercises text output path
+// writeTextVerdict helper - exercises text output path
 // ---------------------------------------------------------------------------
 
 func TestWriteTextVerdict_CleanSilent(t *testing.T) {

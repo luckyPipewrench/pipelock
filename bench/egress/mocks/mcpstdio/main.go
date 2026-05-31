@@ -55,7 +55,7 @@ func run(in io.Reader, out io.Writer) error {
 		}
 		var req rpcRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			// Malformed input is benign for the bench — skip and keep reading.
+			// Malformed input is benign for the bench - skip and keep reading.
 			continue
 		}
 		resp := handle(&req)

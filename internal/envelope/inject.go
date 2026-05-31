@@ -36,7 +36,7 @@ func InjectHTTP(h http.Header, env Envelope) error {
 // When mediation_envelope.verify_inbound is enabled, the proxy calls
 // (*Verifier).VerifyRequest before invoking StripInbound so that
 // envelopes signed by trusted federation peers are accepted rather
-// than discarded. StripInbound itself is unconditional — verification
+// than discarded. StripInbound itself is unconditional - verification
 // runs in the request handler, not here.
 func StripInbound(h http.Header) {
 	h.Del(HeaderName)
@@ -53,7 +53,7 @@ func StripInbound(h http.Header) {
 // An earlier implementation used strings.Split(val, ",") which treats
 // commas inside quoted parameter values as top-level member separators.
 // That corrupted surviving non-pipelock members and left dictionary
-// residue that no longer parsed as a Structured Field — a sanitisation
+// residue that no longer parsed as a Structured Field - a sanitisation
 // bypass vector for attacker-crafted inbound signature headers.
 func stripPipelockSignatureMembers(h http.Header, headerName string) {
 	values := h.Values(headerName)
@@ -73,7 +73,7 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 		// Surgical fail-closed: only drop the header if the raw bytes
 		// contain the pipelock member prefix (indicating a plausible
 		// forged or broken pipelock member we must not let through).
-		// Otherwise, leave the header untouched — pipelock's scrubbing
+		// Otherwise, leave the header untouched - pipelock's scrubbing
 		// target is pipelock-tagged members, not malformed third-party
 		// signatures.
 		if containsPipelockMember(values) {
@@ -92,7 +92,7 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 		}
 	}
 	if len(doomed) == 0 {
-		// Nothing pipelock to strip. Leave the header values untouched —
+		// Nothing pipelock to strip. Leave the header values untouched -
 		// re-serializing would still produce valid output, but preserving
 		// the bytes avoids unnecessary churn on unrelated dictionaries.
 		return
@@ -108,7 +108,7 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 	out, err := httpsfv.Marshal(dict)
 	if err != nil {
 		// Re-serializing a dictionary we just parsed should never fail.
-		// If it does, fail closed — drop the header rather than emit a
+		// If it does, fail closed - drop the header rather than emit a
 		// partially-formed residue.
 		return
 	}
@@ -123,7 +123,7 @@ func stripPipelockSignatureMembers(h http.Header, headerName string) {
 // header. An earlier implementation required a start-of-value or
 // comma-preceded match, but RFC 8941 permits OWS (spaces, tabs) and
 // separator variants between members that the pattern-based checks
-// missed — letting Pipelock-tagged bytes survive a parse failure. A
+// missed - letting Pipelock-tagged bytes survive a parse failure. A
 // case-insensitive substring check is strictly fail-closed and matches
 // the same surface (any pipelock-prefixed member) the httpsfv path
 // catches on well-formed input.

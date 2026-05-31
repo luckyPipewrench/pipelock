@@ -53,7 +53,7 @@ var ErrUnenforceableRuleKind = errors.New("contract: rule_kind not enforceable i
 
 // ErrUnsupportedLifecycle rejects rules whose lifecycle_state is not in the
 // enumerated set. Without this gate a typo (e.g. "enforce ", "enabled")
-// silently falls through every state-keyed branch — the rule-kind validator
+// silently falls through every state-keyed branch - the rule-kind validator
 // only runs on the literal LifecycleEnforce string, so a poisoned lifecycle
 // can carry a rule that was meant to be enforced and turn it into runtime
 // dead code.

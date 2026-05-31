@@ -18,7 +18,7 @@ import (
 )
 
 // blockLayerRequestPolicy labels request_policy decisions on receipts and audit
-// events. It is the audit/receipt layer dimension only — distinct from the
+// events. It is the audit/receipt layer dimension only - distinct from the
 // X-Pipelock-Block-Reason-Layer HTTP header, which request_policy deliberately
 // leaves UNSET (request_policy is not a scanner.Scanner* pipeline layer, so the
 // reason code conveys the layer; see requestPolicyBlockInfo).
@@ -69,7 +69,7 @@ type requestPolicyInput struct {
 	// DeferBodyPredicate evaluates route-only rules and skips body-predicate
 	// (GraphQL / discriminator) evaluation for this call. The WebSocket
 	// handshake sets it: the upgrade carries no operation body, so a body
-	// predicate must not fail-close the handshake on the empty body — the
+	// predicate must not fail-close the handshake on the empty body - the
 	// operations arrive in frames and are evaluated per frame instead.
 	DeferBodyPredicate bool
 }
@@ -252,8 +252,8 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 }
 
 // requestPolicyReadBlocked handles a request body that cannot be read or
-// exceeds the size limit. The bounded read has already consumed — and thus
-// destroyed — the body stream, so the request can no longer be forwarded
+// exceeds the size limit. The bounded read has already consumed - and thus
+// destroyed - the body stream, so the request can no longer be forwarded
 // intact. It is therefore always blocked, never downgraded by a configured
 // on_parse_error: warn/allow (those apply only to a fully-read body that
 // fails to parse, which is still forwardable). The block is routed through the
@@ -349,7 +349,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 
 	if !d.Enforced() || d.Action != config.ActionBlock {
 		// Warn or shadow: log the would-be action and forward. Detail carries
-		// only bounded, operator-defined labels — never body or matched content.
+		// only bounded, operator-defined labels - never body or matched content.
 		p.logger.LogAnomaly(in.AuditCtx, blockLayerRequestPolicy,
 			fmt.Sprintf("rule=%s action=%s shadow=%t", d.RuleName, d.Action, d.Shadow), 0)
 		return requestPolicyResult{}
@@ -380,7 +380,7 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 }
 
 // requestPolicyBlockInfo builds the X-Pipelock-Block-Reason metadata for a
-// request_policy_deny block — the operation safety rail's enforced-block path.
+// request_policy_deny block - the operation safety rail's enforced-block path.
 //
 // The request_policy layer is not a scanner.Scanner* pipeline constant, so the
 // X-Pipelock-Block-Reason-Layer header is intentionally left unset: per
@@ -389,13 +389,13 @@ func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy
 // the MCP and contract layers follow).
 //
 // Receipt correlation is gated on a configured receipt emitter, mirroring
-// emitReceipt's nil check. When an emitter is configured, actionID — which MUST
+// emitReceipt's nil check. When an emitter is configured, actionID - which MUST
 // be the real receipt action_id (receipt.NewActionID) recorded for this same
-// block — is stamped into the receipt header so the agent can fetch the
+// block - is stamped into the receipt header so the agent can fetch the
 // matching receipt. A decorrelated identifier must never be passed here: an
 // action_id that points at no emitted receipt would make the header lie. When
 // no emitter is configured, or actionID is empty or malformed, the receipt slot
-// stays unset and the block still emits its required headers — the receipt is
+// stays unset and the block still emits its required headers - the receipt is
 // optional metadata, so dropping it never weakens the block itself.
 func (p *Proxy) requestPolicyBlockInfo(actionID string) blockreason.Info {
 	info := blockInfoFor(blockreason.RequestPolicyDeny, "")

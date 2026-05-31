@@ -255,7 +255,7 @@ func TestOTLPSink_NoRetryOn500(t *testing.T) {
 	}
 
 	// Close the sink and wait for drain. After Close() returns, the worker
-	// goroutine is done — any retry that would have happened has happened.
+	// goroutine is done - any retry that would have happened has happened.
 	_ = sink.Close()
 	if attempts.Load() != 1 {
 		t.Errorf("expected 1 attempt (500 not retryable), got %d", attempts.Load())

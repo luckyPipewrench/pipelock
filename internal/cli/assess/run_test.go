@@ -402,7 +402,7 @@ func TestWrapDiscoverReport_RedactsSecrets(t *testing.T) {
 		t.Errorf("Command not redacted: %q (leaks operator toolchain)", s.Command)
 	}
 
-	// Verify via JSON serialization too — no secrets in the wire format.
+	// Verify via JSON serialization too - no secrets in the wire format.
 	data, err := json.Marshal(wrapped)
 	if err != nil {
 		t.Fatal(err)

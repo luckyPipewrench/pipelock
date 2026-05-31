@@ -18,7 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
-// Test-local constants — repeated string literals belong in a const block
+// Test-local constants - repeated string literals belong in a const block
 // per the recorder package goconst convention.
 const (
 	v2EventKindWrite          = "write"
@@ -60,7 +60,7 @@ func TestComputeHash_V1FrozenProjection(t *testing.T) {
 	gotV1 := recorder.ComputeHash(v1)
 
 	// A logically identical v1 entry without EventKind must produce the
-	// same hash — proves EventKind is not in the v1 projection.
+	// same hash - proves EventKind is not in the v1 projection.
 	v1NoKind := v1
 	v1NoKind.EventKind = ""
 	if gotV1 != recorder.ComputeHash(v1NoKind) {
@@ -129,7 +129,7 @@ func TestComputeHash_UnknownVersionReturnsEmpty(t *testing.T) {
 	if got := recorder.ComputeHash(e); got != "" {
 		t.Errorf("ComputeHash(version=99) = %q, want empty", got)
 	}
-	// Also v0 (the zero value) — common error mode for callers who forgot
+	// Also v0 (the zero value) - common error mode for callers who forgot
 	// to set Version. Must NOT silently produce a v1 hash.
 	e.Version = 0
 	if got := recorder.ComputeHash(e); got != "" {
@@ -204,7 +204,7 @@ func TestVerifyChain_RejectsV0AndV3(t *testing.T) {
 				Transport: v2TestTransport,
 				PrevHash:  recorder.GenesisHash,
 			}
-			// Don't set Hash — VerifyChain rejects on version before hash
+			// Don't set Hash - VerifyChain rejects on version before hash
 			// check, but if a future change reorders the checks, the
 			// missing hash should still surface a failure.
 			err := recorder.VerifyChain([]recorder.Entry{e})
@@ -586,7 +586,7 @@ func TestComputeHash_MarshalErrorFallback(t *testing.T) {
 			if got == "" {
 				t.Fatalf("v%d ComputeHash returned empty for unmarshalable Detail", ver)
 			}
-			// The fallback is deterministic — two calls must produce the
+			// The fallback is deterministic - two calls must produce the
 			// same hash.
 			if recorder.ComputeHash(e) != got {
 				t.Errorf("v%d marshal-error fallback not deterministic", ver)
@@ -596,7 +596,7 @@ func TestComputeHash_MarshalErrorFallback(t *testing.T) {
 }
 
 // TestVerifyChain_SignedV2Checkpoint asserts the v2 checkpoint signature
-// flow — the recorder writes v2 checkpoints with EventKind="checkpoint",
+// flow - the recorder writes v2 checkpoints with EventKind="checkpoint",
 // and a chain that includes them verifies under both VerifyChain and
 // VerifyCheckpoints.
 func TestVerifyChain_SignedV2Checkpoint(t *testing.T) {

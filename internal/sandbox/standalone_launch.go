@@ -87,14 +87,14 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 		return err
 	}
 
-	// Strict and BestEffort are mutually exclusive — catch misuse by callers.
+	// Strict and BestEffort are mutually exclusive - catch misuse by callers.
 	if cfg.Strict && cfg.BestEffort {
 		return fmt.Errorf("sandbox: strict and best_effort are mutually exclusive")
 	}
 
 	// Probe namespace support before forking.
 	// Only CLONE_NEWUSER is probed because CLONE_NEWNET requires CLONE_NEWUSER
-	// on unprivileged processes — if user namespaces work, network namespaces
+	// on unprivileged processes - if user namespaces work, network namespaces
 	// will too (created inside the user namespace with CAP_SYS_ADMIN).
 	hasNamespaces := probeUserNamespace()
 	if !hasNamespaces && !cfg.BestEffort {
@@ -223,7 +223,7 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 	// Wait for child to exit.
 	waitErr := cmd.Wait()
 
-	// Kill process group — terminate descendants that may still hold bridge
+	// Kill process group - terminate descendants that may still hold bridge
 	// proxy connections open.
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
@@ -259,14 +259,14 @@ func LaunchStandalone(cfg StandaloneLaunchConfig) error {
 }
 
 // handleDirectForward bridges a Unix socket connection to a direct TCP
-// connection. DEBUG ONLY — no scanning, no SSRF protection. Production
+// connection. DEBUG ONLY - no scanning, no SSRF protection. Production
 // code paths always use cfg.ProxyHandler which routes through pipelock's
 // full scanner pipeline.
 func handleDirectForward(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
 	// Read the first line to get the CONNECT target.
-	// For now, just close — the real handler is provided by the CLI.
+	// For now, just close - the real handler is provided by the CLI.
 	buf := make([]byte, 4096)
 	n, err := conn.Read(buf)
 	if err != nil {

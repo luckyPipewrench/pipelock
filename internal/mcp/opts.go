@@ -48,7 +48,7 @@ type MCPRedactionConfig struct {
 // override fields (e.g. Rec, ToolCfg) without affecting the original.
 //
 // Required: Scanner (dereferenced unconditionally in all scan paths).
-// Optional (nil-safe): all other fields — functions check before use.
+// Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
 	// Scanning
 	Scanner        *scanner.Scanner

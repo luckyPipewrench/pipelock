@@ -37,7 +37,7 @@ type EmitterConfig struct {
 	ConfigHash string
 
 	// Signer is the optional RFC 9421 HTTP Message Signature signer.
-	// nil means "envelope signing disabled" — InjectAndSign still
+	// nil means "envelope signing disabled" - InjectAndSign still
 	// sets the Pipelock-Mediation header, it just does not attach a
 	// signature. When non-nil, the signer's Ed25519 key material is
 	// held for the lifetime of this Emitter; swapping the key
@@ -121,7 +121,7 @@ type BuildOpts struct {
 	// reload-time atomic. Callers produce this via PolicyHashFromHex
 	// on the output of (*config.Config).CanonicalPolicyHash() for the
 	// resolved per-request config. When empty, Build falls back to
-	// the emitter's last UpdateConfigHash value — intended for
+	// the emitter's last UpdateConfigHash value - intended for
 	// transports that do not yet thread per-agent config through.
 	PolicyHash []byte
 }
@@ -209,7 +209,7 @@ func (e *Emitter) InjectHTTPEnvelope(h http.Header, opts BuildOpts) error {
 // Signature, Signature-Input, Content-Digest) from req before returning
 // so a caller that ignores fail-closed convention cannot emit an
 // unsigned-but-authoritative-looking request downstream. Callers SHOULD
-// still fail closed — the contract here is defense in depth, not a
+// still fail closed - the contract here is defense in depth, not a
 // license to continue on error.
 //
 // No-op and returns nil when called on a nil Emitter.
@@ -237,7 +237,7 @@ func (e *Emitter) InjectAndSign(req *http.Request, body []byte, opts BuildOpts) 
 	// a non-empty body, buffer it here so the signer can compute
 	// Content-Digest. Use the signer's configured MaxBodyBytes as the
 	// ceiling. This is the "request body scanning disabled but signing
-	// enabled" path — without it, every body-bearing request would
+	// enabled" path - without it, every body-bearing request would
 	// drop content-digest from its declared component list because
 	// SignRequest would see body == nil.
 	if body == nil && requestHasBody(req) {
@@ -291,11 +291,11 @@ func requestHasBody(req *http.Request) bool {
 // GetBody is set to a closure that returns a fresh reader so the
 // stdlib redirect machinery can replay the body on 307/308.
 //
-// maxBytes == 0 means "no cap" — read until EOF. A positive maxBytes
+// maxBytes == 0 means "no cap" - read until EOF. A positive maxBytes
 // reads one extra byte past the cap to detect overflow; on overflow
 // the function returns nil and no error, signaling "signable without
 // content-digest" to the caller. Crucially, the original request body
-// is preserved for the upstream transport — oversize requests lose
+// is preserved for the upstream transport - oversize requests lose
 // only Content-Digest coverage, not their payload.
 func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 	if req.Body == nil || req.Body == http.NoBody {
@@ -359,7 +359,7 @@ func bufferRequestBody(req *http.Request, maxBytes int) ([]byte, error) {
 		return nil, nil
 	}
 
-	// Close the original body — we are about to replace it. Best
+	// Close the original body - we are about to replace it. Best
 	// effort: a failing close on the inbound body does not affect
 	// the signer's correctness because we already have the bytes.
 	_ = origBody.Close()

@@ -162,7 +162,7 @@ func TestHTTPClient_202Accepted(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	// 202 Accepted means no response body — should get EOF immediately.
+	// 202 Accepted means no response body - should get EOF immediately.
 	_, err = reader.ReadMessage()
 	if !errors.Is(err, io.EOF) {
 		t.Errorf("expected io.EOF for 202 Accepted, got %v", err)
@@ -309,7 +309,7 @@ func TestHTTPClient_ExtraHeadersCannotOverrideTransport(t *testing.T) {
 // TestHTTPClient_ExtraHeadersCannotOverrideTransport: that test only checked
 // Content-Type / Accept, both of which are unconditionally Set after the
 // extras Add loop. Mcp-Session-Id was only Set when the client already had
-// a session ID — so on the very first request (empty session ID) a caller-
+// a session ID - so on the very first request (empty session ID) a caller-
 // supplied "Mcp-Session-Id" in extras flowed through to the upstream and
 // let an attacker pin session correlation to a value of their choice.
 //

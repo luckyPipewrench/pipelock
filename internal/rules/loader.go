@@ -61,7 +61,7 @@ type LoadResult struct {
 	ToolPoison       []CompiledToolPoisonRule
 	Errors           []BundleError
 	Loaded           []LoadedBundle
-	Degraded         bool           // standard pack failed to load — core-only mode
+	Degraded         bool           // standard pack failed to load - core-only mode
 	Warnings         []string       // non-fatal warnings (expired bundles, etc.)
 	StandardDLP      StandardSource // where DLP standard tier came from
 	StandardResponse StandardSource // where response standard tier came from

@@ -32,7 +32,7 @@ const blockreasonImportPath = "github.com/luckyPipewrench/pipelock/internal/bloc
 //  2. A production emitter is removed but the constant lives on, leaving
 //     dead vocabulary in the public header schema.
 //
-// The matrix is intentionally static — exercising every block path through
+// The matrix is intentionally static - exercising every block path through
 // runtime traffic would require a transport-by-transport black-box rig that
 // belongs in the pen-test layer, not the unit suite. This test catches the
 // "constant exists but no live caller" class cheaply on every commit.
@@ -80,7 +80,7 @@ var nonProductionEmitReasons = map[blockreason.Reason]string{
 	// ToolPoisoning fires from internal/mcp/proxy.go via blockResponseReason
 	// on tools/list responses where a poisoned tool description was
 	// detected. The block surfaces as a JSON-RPC error in the MCP response
-	// stream, not as an HTTP response — there is no HTTP header surface to
+	// stream, not as an HTTP response - there is no HTTP header surface to
 	// carry X-Pipelock-Block-Reason on the MCP transport. The vocabulary
 	// stays in the canonical allowlist for cross-system labeling
 	// (audit logs, receipts, dashboards) even though the HTTP header path
@@ -123,7 +123,7 @@ var nonProductionEmitReasons = map[blockreason.Reason]string{
 
 	// ToolPolicyDeny and SessionBinding are MCP-layer reasons. The MCP
 	// proxy emits its block as a JSON-RPC error in the response stream,
-	// not as an HTTP response — same shape as ToolPoisoning and
+	// not as an HTTP response - same shape as ToolPoisoning and
 	// ToolChainBlocked. Reason vocabulary kept for receipt + audit
 	// consistency once the MCP receipt stream wires these specific
 	// labels.

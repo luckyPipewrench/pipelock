@@ -21,7 +21,7 @@ const (
 // referenced by ControlMapping.Features. They mirror the config-section
 // vocabulary (response_scanning, mcp_tool_policy, flight_recorder, ...)
 // the proxy uses elsewhere, but are private here because the compliance
-// package is the authoritative mapping surface — outside callers consume
+// package is the authoritative mapping surface - outside callers consume
 // the resulting Framework / ControlMapping values, not the raw strings.
 const (
 	featureAdaptiveEnforcement   = "adaptive_enforcement"

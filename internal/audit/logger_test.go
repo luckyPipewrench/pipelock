@@ -254,7 +254,7 @@ func TestLogger_DoubleClose(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Close twice — should not panic
+	// Close twice - should not panic
 	logger.Close()
 	logger.Close()
 }
@@ -416,7 +416,7 @@ func TestNew_BothOutput(t *testing.T) {
 }
 
 func TestNew_TextFormat(t *testing.T) {
-	// Text format with console writer — should not error
+	// Text format with console writer - should not error
 	logger, err := New("text", "stdout", "", true, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -467,7 +467,7 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 		}
 	}
 
-	// Numeric fields — JSON unmarshals numbers as float64
+	// Numeric fields - JSON unmarshals numbers as float64
 	if statusCode, ok := entry["status_code"].(float64); !ok || statusCode != 200 {
 		t.Errorf("expected status_code=200, got %v", entry["status_code"])
 	}
@@ -953,7 +953,7 @@ func TestLogger_With_InheritsConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.log")
 
-	// includeAllowed=false — sub-logger should inherit this
+	// includeAllowed=false - sub-logger should inherit this
 	logger, err := New("json", "file", path, false, true)
 	if err != nil {
 		t.Fatal(err)
@@ -3526,7 +3526,7 @@ func TestLogToolRedirect_Emitter(t *testing.T) {
 	if ev.Fields["result"] != "redirected" {
 		t.Errorf("result = %v, want redirected", ev.Fields["result"])
 	}
-	// session_id must NOT be in emitted fields — it's local-log only.
+	// session_id must NOT be in emitted fields - it's local-log only.
 	if _, exists := ev.Fields["session_id"]; exists {
 		t.Error("session_id must not be emitted to external sinks")
 	}

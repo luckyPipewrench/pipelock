@@ -97,7 +97,7 @@ func (sr *SSEReader) ReadMessage() ([]byte, error) {
 		}
 	}
 
-	// Stream ended — check for scanner errors before returning partial data.
+	// Stream ended - check for scanner errors before returning partial data.
 	// A partial event (data accumulated without a blank-line boundary) during
 	// a scanner error means the event was interrupted mid-stream.
 	if err := sr.scanner.Err(); err != nil {

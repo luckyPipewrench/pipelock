@@ -794,7 +794,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 // pre-computed envelope.BuildOpts and buffered request body from the
 // request context (populated by ServeHTTP) and hands them to
 // (*envelope.Emitter).InjectAndSign along with the final outbound
-// *http.Request. A nil emitter or missing build opts skips signing —
+// *http.Request. A nil emitter or missing build opts skips signing -
 // the transport is also used by reverse proxies configured without
 // mediation envelopes, and must not fail in that case. Any actual
 // signing failure returns a fail-closed block so sign:true never
@@ -819,7 +819,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	// not flip the signing decision for an in-flight request.
 	em, _ := req.Context().Value(ctxKeyReverseEnvelopeEmitter).(*envelope.Emitter)
 	if em == nil {
-		// No emitter was live at admission time — signing was off
+		// No emitter was live at admission time - signing was off
 		// for this request. Forward unsigned.
 		return t.base.RoundTrip(req)
 	}
@@ -845,7 +845,7 @@ func (t *reverseSigningRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 // envelope signer via ctxKeyReverseEnvelopeBody so the signing
 // RoundTripper can compute content-digest without a second drain.
 func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, sc *scanner.Scanner, redaction *redactionRuntime, receiptInput reverseBlockReceiptInput) (blocked bool, verdict string, body []byte, finding bool) {
-	// Skip binary content types — no secrets to scan in images/video.
+	// Skip binary content types - no secrets to scan in images/video.
 	if isBinaryMIME(r.Header.Get("Content-Type")) && redaction == nil {
 		return false, "", nil, false
 	}
@@ -905,7 +905,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		// Re-wrap the buffered body so the reverse proxy can forward
 		// it. GetBody lets stdlib replay on redirect hops even though
 		// the reverse proxy's upstream client does not follow redirects
-		// by default — setting it is cheap and future-proofs the path
+		// by default - setting it is cheap and future-proofs the path
 		// against a future Transport override that does.
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 		r.ContentLength = int64(len(bodyBytes))
@@ -1151,7 +1151,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				body = verdict.Body
 				resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 				// Clear body-derived validators. Content-MD5
-				// describes a hash of the upstream bytes — stale
+				// describes a hash of the upstream bytes - stale
 				// after metadata stripping, and a validating client
 				// or intermediary will reject the response.
 				resp.Header.Del("ETag")
@@ -1159,7 +1159,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				resp.Header.Del("Content-MD5")
 			}
 			// Media responses do not go through text injection
-			// scanning — rewrap the body and return.
+			// scanning - rewrap the body and return.
 			resp.Body = io.NopCloser(bytes.NewReader(body))
 			resp.ContentLength = int64(len(body))
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method,
@@ -1246,9 +1246,9 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			// Only an actual scan finding (DLP / injection / oversize /
 			// invalid-UTF-8) counts as an sse_stream block in audit. The
-			// fixes that landed earlier in this PR — writeSSEEvent now
+			// fixes that landed earlier in this PR - writeSSEEvent now
 			// returns errors and the ctx-cancel watcher closes the
-			// upstream body — surface client disconnects and broken-pipe
+			// upstream body - surface client disconnects and broken-pipe
 			// errors here too. Misclassifying those as sse_stream blocks
 			// would inflate the block metric and write misleading audit
 			// lines for what are normal stream-end conditions.
@@ -1258,7 +1258,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			}
 			// Signed receipt for SSE stream findings. Mirrors
 			// forward.go (L1366) and intercept.go (L1158) for parity
-			// across transports — one decision receipt per finding,
+			// across transports - one decision receipt per finding,
 			// reusing the actionID generated at modifyResponse entry so
 			// downstream chain analysis sees a coherent decision graph.
 			rp.logger.LogResponseScan(actx, config.ActionBlock, 0, []string{sseLayer + ": " + err.Error()}, nil)
@@ -1337,7 +1337,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	// Body fully read — close the original.
+	// Body fully read - close the original.
 	_ = resp.Body.Close()
 
 	// Empty body: nothing to scan.
@@ -1349,7 +1349,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	// Browser Shield on reverse proxy responses — uses shared pipeline.
+	// Browser Shield on reverse proxy responses - uses shared pipeline.
 	shieldChanged := false
 	if rp.shieldEngine != nil && cfg.BrowserShield.Enabled {
 		revHost := resp.Request.URL.Hostname()
@@ -1488,7 +1488,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		}
 		// Strip failed: detection came from a transformed pass (vowel-fold,
 		// leetspeak, etc.) where the scanner can't produce a redacted version.
-		// Unconditional block regardless of enforce — forwarding injected
+		// Unconditional block regardless of enforce - forwarding injected
 		// content is a security bypass. Matches forward.go:865-869.
 		rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionResponse, "injection")
@@ -1559,7 +1559,7 @@ func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.
 // replaceWithMediaBlockResponse replaces the upstream response with a 403
 // JSON body tagged as a media-policy block. Separate from
 // replaceWithBlockResponse because that builder hardcodes the
-// "injection: ..." block reason prefix — media-policy blocks are not
+// "injection: ..." block reason prefix - media-policy blocks are not
 // injection findings, and reporting them that way would mislead the
 // client about what the proxy rejected.
 func replaceWithMediaBlockResponse(resp *http.Response, reason string) {
@@ -1594,7 +1594,7 @@ func replaceWithBlockResponse(resp *http.Response, patternNames []string) {
 	resp.StatusCode = http.StatusForbidden
 	resp.Status = http.StatusText(http.StatusForbidden)
 	// Clear all upstream headers. The blocked response is entirely
-	// synthetic — no upstream header should survive.
+	// synthetic - no upstream header should survive.
 	for k := range resp.Header {
 		delete(resp.Header, k)
 	}

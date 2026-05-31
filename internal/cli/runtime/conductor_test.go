@@ -298,7 +298,7 @@ func TestBuildConductorRemoteKillPollerHonorsDisableWithoutRoster(t *testing.T) 
 // REGARDLESS of honor_remote_kill_switch. Unlike the remote-kill poller (which
 // installs a reject-all resolver and keeps running when honor=false so it can
 // log visible rejections), the bundle poller must have a real verified trust
-// root before it can apply any signed bundle — so a missing/unreadable roster
+// root before it can apply any signed bundle - so a missing/unreadable roster
 // is a hard startup error.
 func TestBuildConductorBundlePollerRejectsBadRosterEvenWithHonorFalse(t *testing.T) {
 	dir := t.TempDir()

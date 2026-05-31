@@ -73,7 +73,7 @@ func NewHTTPClient(url string, headers http.Header) *HTTPClient {
 		headers: headers.Clone(),
 		client: &http.Client{
 			Transport: transport,
-			// Disable redirects — the upstream URL is validated at the
+			// Disable redirects - the upstream URL is validated at the
 			// CLI layer, and following redirects could bypass that
 			// validation (SSRF vector). Envelope signing's redirect
 			// refresh helper at internal/proxy/proxy.go:348 is a no-op
@@ -144,7 +144,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// Track session ID only from success responses. Error responses (4xx/5xx)
-	// or redirects (3xx) should not overwrite a valid session ID — a crafted
+	// or redirects (3xx) should not overwrite a valid session ID - a crafted
 	// Mcp-Session-Id on an error response would corrupt subsequent requests.
 	if resp.StatusCode < 300 {
 		if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
@@ -160,7 +160,7 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return &emptyReader{}, nil
 	}
 
-	// Redirect or other 3xx — since we disabled redirect-following, treat these
+	// Redirect or other 3xx - since we disabled redirect-following, treat these
 	// as errors to avoid processing unexpected response bodies.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
@@ -293,7 +293,7 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
 		return nil, fmt.Errorf("%w (HTTP 405)", ErrStreamNotSupported)
 	}
-	// Redirect or other 3xx — since we disabled redirect-following, treat these
+	// Redirect or other 3xx - since we disabled redirect-following, treat these
 	// as errors (consistent with SendMessage).
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
@@ -360,7 +360,7 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 	}
 	resp.Body.Close() //nolint:errcheck,gosec // best-effort cleanup
 
-	// Clear session ID unconditionally — even if the server returned an error,
+	// Clear session ID unconditionally - even if the server returned an error,
 	// the session should not be reused (prevents stale Mcp-Session-Id headers
 	// on subsequent requests if reconnection occurs).
 	c.sessionMu.Lock()

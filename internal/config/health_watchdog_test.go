@@ -171,7 +171,7 @@ health_watchdog:
 		t.Fatalf("expected disabled after first load")
 	}
 
-	// State 6: reload identical YAML — must stay disabled.
+	// State 6: reload identical YAML - must stay disabled.
 	cfg2, err := Load(cfgPath)
 	if err != nil {
 		t.Fatalf("idempotent reload: %v", err)
@@ -180,7 +180,7 @@ health_watchdog:
 		t.Errorf("idempotent reload flipped Enabled to true")
 	}
 
-	// State 5: change YAML to re-enable, reload — must take effect.
+	// State 5: change YAML to re-enable, reload - must take effect.
 	if err := os.WriteFile(cfgPath, []byte(`version: 1
 mode: balanced
 health_watchdog:

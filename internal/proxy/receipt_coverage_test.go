@@ -1293,7 +1293,7 @@ func TestReceiptCoverage_WSBlockedDomain_EmitsReceipt(t *testing.T) {
 	})
 	defer cleanup()
 
-	// Attempt WS connection to blocklisted domain — should be rejected.
+	// Attempt WS connection to blocklisted domain - should be rejected.
 	wsURL := fmt.Sprintf("ws://%s/ws?url=ws://evil.example.com/ws", proxyAddr)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1348,7 +1348,7 @@ func TestReceiptCoverage_WSDLPBlock_EmitsReceipt(t *testing.T) {
 	}
 
 	// The proxy should close the connection after DLP detection.
-	// Try to read — expect an error or close frame.
+	// Try to read - expect an error or close frame.
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, _, _ = wsutil.ReadServerData(conn)
 
@@ -1400,7 +1400,7 @@ func TestReceiptCoverage_WSBinaryBlock_EmitsReceipt(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Send a binary frame — should trigger ws_protocol block.
+	// Send a binary frame - should trigger ws_protocol block.
 	if writeErr := wsutil.WriteClientBinary(conn, []byte{0xDE, 0xAD, 0xBE, 0xEF}); writeErr != nil {
 		t.Fatalf("WriteClientBinary: %v", writeErr)
 	}
@@ -1620,7 +1620,7 @@ func TestReceiptCoverage_WSInjectionBlock_EmitsReceipt(t *testing.T) {
 		t.Fatalf("WriteClientText: %v", writeErr)
 	}
 
-	// Read — expect close or error due to injection block.
+	// Read - expect close or error due to injection block.
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	_, _, _ = wsutil.ReadServerData(conn)
 

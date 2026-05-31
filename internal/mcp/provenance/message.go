@@ -3,7 +3,7 @@
 
 package provenance
 
-// Per-message MCP signing — Free-tier single-agent verifier.
+// Per-message MCP signing - Free-tier single-agent verifier.
 //
 // This extends the existing tool-definition signing in sign.go to cover the
 // per-call request/response messages crossing the MCP wire. Each signed
@@ -22,7 +22,7 @@ package provenance
 // mismatched key IDs all fail closed: the calling layer should treat any
 // non-"verified" status from a configured-as-signed upstream as a block.
 // Unsigned messages from an upstream the operator did not configure as
-// signing-required pass through with status "unsigned" — operators choose
+// signing-required pass through with status "unsigned" - operators choose
 // their policy.
 
 import (
@@ -192,7 +192,7 @@ func (c *MemoryReplayCache) SetMaxTTL(d time.Duration) {
 // with alphabetical field declarations, no whitespace, params normalized
 // via the existing sortAndMarshal pipeline.
 //
-// Including timestamp + nonce in the digest binds them to the message —
+// Including timestamp + nonce in the digest binds them to the message -
 // an attacker cannot replay a signed message with a freshly chosen
 // nonce or timestamp.
 func canonicalMessageDigest(method string, params, id json.RawMessage, alg, keyID string, ts int64, nonce string) (string, error) {

@@ -164,7 +164,7 @@ func TestBuildProxyDecisionReceipt_ShadowModeSurfacesLiveVerdict(t *testing.T) {
 	if payload.WinningSource != WinningSourceScanner {
 		t.Fatalf("payload.WinningSource = %q, want %q (shadow mode wins is scanner)", payload.WinningSource, WinningSourceScanner)
 	}
-	// Contract context still stamps even though Verdict came from scanner —
+	// Contract context still stamps even though Verdict came from scanner -
 	// the contract pin was active, the audit trail must record which contract
 	// would-have-been, otherwise drift telemetry cannot attribute the delta.
 	if got.ContractHash != rc.ContractHash {

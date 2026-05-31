@@ -244,7 +244,7 @@ func (e *Engine) rewriteJS(res *Result, cfg *config.BrowserShield) {
 // stripping: foreignObject elements, event handler attributes, external
 // xlink:href references, and hidden <text> elements.
 //
-// Active content stripping always runs when the SVG pipeline is used — the
+// Active content stripping always runs when the SVG pipeline is used - the
 // browser shield is a fail-closed defensive layer, and SVG active content
 // has no legitimate use in agent-visible responses. The strip passes are
 // not gated behind StripHiddenTraps (which is an HTML concept) because

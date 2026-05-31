@@ -84,7 +84,7 @@ Examples:
 }
 
 // validateReleaseTier rejects any tier that is not a valid release
-// target. Releasing to hard or drain does not make sense — use the
+// target. Releasing to hard or drain does not make sense - use the
 // airlock/task commands for upward transitions. "normal" is accepted
 // as a synonym for "none" mirroring HandleAirlock.
 func validateReleaseTier(tier string) error {

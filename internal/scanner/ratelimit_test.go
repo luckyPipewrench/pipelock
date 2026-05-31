@@ -63,7 +63,7 @@ func TestRateLimiter_SlidingWindowEviction(t *testing.T) {
 	}
 	rl.mu.Unlock()
 
-	// All timestamps are older than 1 minute — IsAllowed should evict them
+	// All timestamps are older than 1 minute - IsAllowed should evict them
 	if !rl.IsAllowed("example.com") {
 		t.Error("expected allowed after stale timestamps evicted")
 	}

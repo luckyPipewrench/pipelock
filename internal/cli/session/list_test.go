@@ -67,7 +67,7 @@ func TestListCmd_TierFilterForwarded(t *testing.T) {
 }
 
 func TestListCmd_InvalidTierFailsLocally(t *testing.T) {
-	// Don't stand up a server — local validation catches this first.
+	// Don't stand up a server - local validation catches this first.
 	overrideClientFactory(t, &rootFlags{apiURL: "http://ignored:1", apiToken: testToken})
 	_, err := runCommand(listCmd(&rootFlags{}), "--tier", "moist")
 	if err == nil {
@@ -134,7 +134,7 @@ func TestListCmd_429Maps_RateLimited(t *testing.T) {
 
 func TestListCmd_500Maps_ServerError(t *testing.T) {
 	// 500 is an operational failure on the server side. Scripts get
-	// exit code 1 so they can retry or escalate — same class as 404.
+	// exit code 1 so they can retry or escalate - same class as 404.
 	flags := stubServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "internal boom", http.StatusInternalServerError)
 	}))

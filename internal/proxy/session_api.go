@@ -52,7 +52,7 @@ func decodeJSONBody(r *http.Request, v any) error {
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		if errors.Is(err, io.EOF) {
-			// Empty body — acceptable for optional-body endpoints.
+			// Empty body - acceptable for optional-body endpoints.
 			return nil
 		}
 		return fmt.Errorf("decode body: %w", err)
@@ -132,10 +132,10 @@ type SessionAPIHandler struct {
 
 // SessionAPIOptions configures a SessionAPIHandler. Using an options struct
 // keeps the constructor signature stable as new endpoints land and new
-// collaborators wire in — CLAUDE.md caps positional parameters at six.
+// collaborators wire in - CLAUDE.md caps positional parameters at six.
 // The APIToken field holds the bearer token used to authenticate admin
 // API requests; it is never serialized because this struct is never
-// marshaled — it exists only to carry constructor inputs.
+// marshaled - it exists only to carry constructor inputs.
 type SessionAPIOptions struct {
 	SessionMgrPtr *atomic.Pointer[SessionManager]
 	EntropyPtr    *atomic.Pointer[scanner.EntropyTracker]
@@ -315,7 +315,7 @@ func tierMatches(snapshotTier, filter string) bool {
 // checkRateLimit enforces a sliding-window rate limit on a single
 // admin action (reset/task/trust). Returns true if the request is
 // within the limit. Each action has its own counter so a flood on one
-// endpoint cannot starve another during incident response — the
+// endpoint cannot starve another during incident response - the
 // operator can hit /reset even while /task or /trust is being abused.
 func (h *SessionAPIHandler) checkRateLimit(action string) bool {
 	h.limitMu.Lock()
@@ -497,7 +497,7 @@ type SessionDetail struct {
 
 // SessionExplanation is the response shape for GET
 // /api/v1/sessions/{key}/explain. The answer to "why is this session in
-// the state it is in" — which trigger fired, what the score was, what
+// the state it is in" - which trigger fired, what the score was, what
 // evidence (event excerpt) crossed the threshold, and when the next
 // automatic de-escalation will fire.
 type SessionExplanation struct {
@@ -659,7 +659,7 @@ func (h *SessionAPIHandler) HandleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Body is optional for HandleTask — callers may POST with no body to
+	// Body is optional for HandleTask - callers may POST with no body to
 	// rotate the task without a label/reason. decodeJSONBody treats an
 	// empty body as "no fields" and leaves req at its zero value, so a
 	// missing Content-Length or chunked transfer encoding is handled
@@ -808,7 +808,7 @@ func (h *SessionAPIHandler) HandleTrust(w http.ResponseWriter, r *http.Request) 
 		Key:   key,
 		Scope: applied.Scope,
 		// applied.TaskID was bound under the session mutex by
-		// SessionState.AddRuntimeTrustOverride — use it directly instead
+		// SessionState.AddRuntimeTrustOverride - use it directly instead
 		// of taking a second TaskSnapshot that could race a concurrent
 		// BeginNewTask rotation.
 		TaskID:      applied.TaskID,
@@ -884,7 +884,7 @@ func (h *SessionAPIHandler) HandleInspect(w http.ResponseWriter, r *http.Request
 // trigger that fired, the evidence that crossed the threshold, and an
 // estimate of when the next automatic de-escalation will drop the tier.
 //
-// Sessions at the none tier are NOT 404 — explain returns 200 with a
+// Sessions at the none tier are NOT 404 - explain returns 200 with a
 // "session not quarantined" reason so operators can sanity-check normal
 // sessions without special-casing the happy path in their tooling.
 func (h *SessionAPIHandler) HandleExplain(w http.ResponseWriter, r *http.Request) {
@@ -940,7 +940,7 @@ func (h *SessionAPIHandler) HandleExplain(w http.ResponseWriter, r *http.Request
 // operator trail captures what was torn down.
 //
 // Invocation sessions (ephemeral MCP transport contexts) are rejected
-// with the same 400 error shape as HandleReset — terminate is a
+// with the same 400 error shape as HandleReset - terminate is a
 // destructive admin action scoped to identity sessions only.
 func (h *SessionAPIHandler) HandleTerminate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1108,14 +1108,14 @@ func (h *SessionAPIHandler) HandleAdaptiveWhoami(w http.ResponseWriter, r *http.
 	agent := strings.TrimSpace(r.Header.Get("X-Pipelock-Agent"))
 	h.logSessionAdmin("adaptive_whoami", clientIP, "", "ok", http.StatusOK)
 	w.Header().Set("Content-Type", "application/json")
-	// SessionKey is a deterministic identity hash for adaptive scoring, not a secret —
+	// SessionKey is a deterministic identity hash for adaptive scoring, not a secret -
 	// it's the operator-facing identifier in the public adaptive API surface.
 	_ = json.NewEncoder(w).Encode(sm.AdaptiveWhoami(clientIP, agent)) //nolint:gosec // G117: session_key field is an identity hash, not a credential
 }
 
 // airlockCfgFromManager fetches the active airlock config from the manager
 // if one is configured, returning a pointer safe for read-only use.
-// Returns nil when airlock is not configured — the explain builder handles
+// Returns nil when airlock is not configured - the explain builder handles
 // that case by omitting the next-deescalation estimate.
 func (h *SessionAPIHandler) airlockCfgFromManager(sm *SessionManager) *config.Airlock {
 	if sm == nil {
@@ -1178,7 +1178,7 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 
 	// Only advertise auto-deescalation when the timer for the current
 	// tier is actually positive. A disabled timer (0) means manual
-	// recovery only — surfacing a next_deescalation_tier without an
+	// recovery only - surfacing a next_deescalation_tier without an
 	// at= would tell operators a timer exists when it doesn't.
 	if airlockCfg != nil {
 		if dur := deescalationDuration(tier, &airlockCfg.Timers); dur > 0 {

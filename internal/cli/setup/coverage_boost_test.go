@@ -198,7 +198,7 @@ func TestWriteClaudeResponse_Variations(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// writeResponse (cursor) tests — complements existing TestWriteResponse
+// writeResponse (cursor) tests - complements existing TestWriteResponse
 // ---------------------------------------------------------------------------
 
 func TestWriteResponse_DenyWithMessage(t *testing.T) {

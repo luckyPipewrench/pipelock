@@ -232,7 +232,7 @@ func TestTransportWireFormat_StableContract(t *testing.T) {
 	if string(decodedPayload) != string(batch.Payload) {
 		t.Fatalf("payload round-trip mismatch: got=%q want=%q", decodedPayload, batch.Payload)
 	}
-	// Envelope must include the signed BatchID — proves the producer envelope
+	// Envelope must include the signed BatchID - proves the producer envelope
 	// was forwarded, not a sanitized copy.
 	var envCheck struct {
 		BatchID string `json:"batch_id"`

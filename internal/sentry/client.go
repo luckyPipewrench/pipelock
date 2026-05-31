@@ -19,7 +19,7 @@ import (
 // Client wraps the Sentry SDK with secret scrubbing. When disabled (enabled=false),
 // all methods are safe no-ops. Nil-safe: (*Client)(nil).CaptureError(err) is a no-op.
 //
-// Uses the global Sentry hub — only one Client should be active per process.
+// Uses the global Sentry hub - only one Client should be active per process.
 // This is fine for pipelock (single binary, one of run or mcp active at a time).
 type Client struct {
 	scrubber *Scrubber
@@ -123,7 +123,7 @@ func (c *Client) CaptureError(err error) {
 // isExpectedOperationalError reports whether err is an environment/operator
 // condition that should not page Sentry. Listener bind conflicts (EADDRINUSE)
 // are the canonical case: a port already in use is an operational state, not a
-// pipelock bug. Kept narrow on purpose — only clearly-operational syscall
+// pipelock bug. Kept narrow on purpose - only clearly-operational syscall
 // conditions belong here, so genuine listen failures (and everything else)
 // still report.
 func isExpectedOperationalError(err error) bool {

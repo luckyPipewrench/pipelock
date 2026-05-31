@@ -111,7 +111,7 @@ func TestScan_BlocksDLPPatterns(t *testing.T) {
 		{"https://example.com/api?k=AIza" + "SyA1234567890abcdefghijklmnopqrstuv", "Google API Key"},
 		{"https://example.com/api?k=xapp-" + "1-A0B1C2D3E4-5678901234-abcdef0123456789", "Slack App Token"},
 		{"https://example.com/api?jwt=" + "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.eyJz" + "dWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "JWT Token"},
-		// Crypto private keys — valid Base58Check WIF test vectors (Bitcoin wiki).
+		// Crypto private keys - valid Base58Check WIF test vectors (Bitcoin wiki).
 		// Uncompressed (5-prefix, 51 chars) and compressed (K-prefix, 52 chars).
 		{"https://example.com/api?key=" + "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ", "Bitcoin WIF Private Key"},
 		{"https://example.com/api?key=" + "KwdMAjGmer" + "Yanjeui5SHS7Jkmp" + "ZvVipYvB2LJGU1ZxJwYvP98617", "Bitcoin WIF Private Key"},
@@ -183,7 +183,7 @@ func TestScan_DLPFalsePositiveRegression(t *testing.T) {
 		// Crypto pattern false positives
 		{"SHA-256 hash without 0x", "https://example.com/verify?hash=" + strings.Repeat("ab", 32)},
 		{"short base58 not WIF", "https://example.com/api?id=5" + strings.Repeat("H", 30)},
-		// Correct-length base58 string with invalid checksum — WIF validator rejects.
+		// Correct-length base58 string with invalid checksum - WIF validator rejects.
 		{"invalid checksum WIF-length base58", "https://example.com/api?key=5" + strings.Repeat("H", 50)},
 		{"xpub not xprv", "https://example.com/api?key=xpub" + strings.Repeat("A", 107)},
 		// Seed phrase FP: normal hostname labels and path segments must not trigger.
@@ -459,7 +459,7 @@ func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 	cfg.SSRF.IPAllowlist = []string{"8.8.8.0/24"}
 	s := New(cfg)
 
-	// 8.8.8.8 in hex = 0x08080808 — should be allowed (not internal, IP-allowlisted).
+	// 8.8.8.8 in hex = 0x08080808 - should be allowed (not internal, IP-allowlisted).
 	result := s.Scan(context.Background(), "http://0x08080808/")
 	if !result.Allowed {
 		t.Errorf("expected external hex IP to be allowed, got blocked: %s", result.Reason)
@@ -468,7 +468,7 @@ func TestScan_AllowsHexOctalIP_WhenExternal(t *testing.T) {
 
 func TestScan_BlocklistBlocksAltIPNotation(t *testing.T) {
 	cfg := testConfig()
-	cfg.Internal = nil // disable SSRF — we're testing blocklist, not SSRF
+	cfg.Internal = nil // disable SSRF - we're testing blocklist, not SSRF
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
 	s := New(cfg)
@@ -669,7 +669,7 @@ func TestMatchDomain_PartialNoMatch(t *testing.T) {
 }
 
 func TestMatchDomain_TrailingDots(t *testing.T) {
-	// DNS FQDNs can have trailing dots — these should still match
+	// DNS FQDNs can have trailing dots - these should still match
 	tests := []struct {
 		hostname, pattern string
 		expected          bool
@@ -711,7 +711,7 @@ func TestScan_EntropyScoreClamped(t *testing.T) {
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 1.0
 	s := New(cfg)
 
-	// This string has high entropy — score should never exceed 1.0
+	// This string has high entropy - score should never exceed 1.0
 	result := s.Scan(context.Background(), "https://example.com/data/aB3xK9mQ7pR2wE5tY8uI0oL4hG6fD1sZ")
 	if result.Allowed {
 		t.Fatal("expected to be blocked by entropy")
@@ -738,7 +738,7 @@ func TestScan_EntropyScoreClampedQueryParam(t *testing.T) {
 func TestScan_SSRFDisabledWhenNilCIDRs(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = nil // no exemptions — test core SSRF blocking
+	cfg.SSRF.IPAllowlist = nil // no exemptions - test core SSRF blocking
 	s := New(cfg)
 
 	// With nil CIDRs, DNS-based SSRF is disabled. However, core SSRF
@@ -783,7 +783,7 @@ func TestScan_TrustedDomains_BypassesSSRF(t *testing.T) {
 	cfg.TrustedDomains = []string{"localhost", "*.internal.corp"}
 	s := New(cfg)
 
-	// localhost resolves to 127.0.0.1 (internal) but is trusted — should pass SSRF.
+	// localhost resolves to 127.0.0.1 (internal) but is trusted - should pass SSRF.
 	result := s.Scan(context.Background(), "http://localhost/api/v1/inference")
 	if !result.Allowed {
 		t.Fatalf("expected trusted domain localhost to bypass SSRF, got blocked: %s", result.Reason)
@@ -797,7 +797,7 @@ func TestScan_TrustedDomains_NonTrustedStillBlocked(t *testing.T) {
 	cfg.TrustedDomains = []string{"trusted.example.com"}
 	s := New(cfg)
 
-	// localhost is NOT in trusted_domains — should still be blocked.
+	// localhost is NOT in trusted_domains - should still be blocked.
 	result := s.Scan(context.Background(), "http://localhost/admin")
 	if result.Allowed {
 		t.Errorf("expected non-trusted localhost to be blocked by SSRF")
@@ -847,7 +847,7 @@ func TestScan_SSRFIPAllowlist_BypassesBlock(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// localhost resolves to 127.0.0.1 (and ::1) — both IP-allowlisted.
+	// localhost resolves to 127.0.0.1 (and ::1) - both IP-allowlisted.
 	result := s.Scan(context.Background(), "http://localhost/api")
 	if !result.Allowed {
 		t.Fatalf("expected IP-allowlisted address to bypass SSRF, got blocked: %s", result.Reason)
@@ -864,13 +864,13 @@ func TestScan_SSRFIPAllowlist_PartialCIDR(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// localhost (127.0.0.1 + ::1) is allowlisted — passes
+	// localhost (127.0.0.1 + ::1) is allowlisted - passes
 	result := s.Scan(context.Background(), "http://localhost/api")
 	if !result.Allowed {
 		t.Errorf("expected 127.0.0.1 to pass with IP allowlist 127.0.0.1/32, got: %s", result.Reason)
 	}
 
-	// 10.x is internal but NOT in IP allowlist — still blocked.
+	// 10.x is internal but NOT in IP allowlist - still blocked.
 	// Can't test via Scan() (requires DNS), so verify via IsIPAllowlisted directly.
 	if s.IsIPAllowlisted(net.ParseIP("10.0.0.1")) {
 		t.Error("expected 10.0.0.1 to NOT be IP-allowlisted (only 127.0.0.1/32 is)")
@@ -900,7 +900,7 @@ func TestScan_SSRFHint_AllowlistedDomain(t *testing.T) {
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	cfg.APIAllowlist = []string{"localhost"}
-	// No trusted_domains, no IP allowlist — SSRF should block with hint.
+	// No trusted_domains, no IP allowlist - SSRF should block with hint.
 	s := New(cfg)
 	defer s.Close()
 
@@ -926,7 +926,7 @@ func TestScan_SSRFHint_NonAllowlisted_UsesStaticHint(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	// No APIAllowlist — domain is not allowlisted, so use static SSRF hint.
+	// No APIAllowlist - domain is not allowlisted, so use static SSRF hint.
 	s := New(cfg)
 	defer s.Close()
 
@@ -992,7 +992,7 @@ func TestScan_SSRFNonAllowlisted_ClassThreat(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = []string{"127.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
-	// No APIAllowlist — should be ClassThreat (zero value).
+	// No APIAllowlist - should be ClassThreat (zero value).
 	s := New(cfg)
 	defer s.Close()
 
@@ -1310,7 +1310,7 @@ func TestHexBytePrefix(t *testing.T) {
 // --- Fix 2: IP address wildcard matching ---
 
 func TestMatchDomain_WildcardIgnoredForIPv4(t *testing.T) {
-	// "192" is NOT a subdomain of "168.1.1" — IPs get exact match only
+	// "192" is NOT a subdomain of "168.1.1" - IPs get exact match only
 	if MatchDomain("192.168.1.1", "*.168.1.1") {
 		t.Error("expected wildcard not to match against IPv4 address")
 	}
@@ -1378,7 +1378,7 @@ func TestScan_URLWithPort(t *testing.T) {
 
 func TestScan_URLWithUserInfo(t *testing.T) {
 	s := New(testConfig())
-	// URL with userinfo (user:pass@host) — should still scan the hostname correctly
+	// URL with userinfo (user:pass@host) - should still scan the hostname correctly
 	result := s.Scan(context.Background(), "https://user:pass@example.com/page")
 	if !result.Allowed {
 		t.Errorf("expected URL with userinfo to be allowed, got: %s", result.Reason)
@@ -1407,7 +1407,7 @@ func TestScan_DLPInPath(t *testing.T) {
 
 func TestScan_DLPInSubdomain(t *testing.T) {
 	s := New(testConfig())
-	// Secret encoded as a subdomain label — bypassed DLP before full-URL scanning.
+	// Secret encoded as a subdomain label - bypassed DLP before full-URL scanning.
 	result := s.Scan(context.Background(), "https://sk-proj-abc123def456ghi789jkl012.evil.com/")
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI key in subdomain")
@@ -1419,7 +1419,7 @@ func TestScan_DLPInSubdomain(t *testing.T) {
 
 func TestScan_DLPKeySplitAcrossParams(t *testing.T) {
 	s := New(testConfig())
-	// Key prefix in one param — full URL scan catches the prefix in the raw string.
+	// Key prefix in one param - full URL scan catches the prefix in the raw string.
 	result := s.Scan(context.Background(), "https://example.com/callback?a=sk-proj-abc123def456ghi789jkl012mno345&b=extra")
 	if result.Allowed {
 		t.Error("expected DLP to catch OpenAI key split across params")
@@ -1646,7 +1646,7 @@ func TestScan_NumericOnlyPath(t *testing.T) {
 
 func TestScan_RepeatedCharsPath(t *testing.T) {
 	s := New(testConfig())
-	// All same character — entropy=0
+	// All same character - entropy=0
 	result := s.Scan(context.Background(), "https://example.com/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if !result.Allowed {
 		t.Errorf("expected repeated chars to be allowed (zero entropy), got: %s", result.Reason)
@@ -1658,7 +1658,7 @@ func TestScan_HexString(t *testing.T) {
 	cfg.FetchProxy.Monitoring.EntropyThreshold = 4.5
 	s := New(cfg)
 
-	// Hex string (entropy ~4.0 for random hex) — should be below 4.5 threshold
+	// Hex string (entropy ~4.0 for random hex) - should be below 4.5 threshold
 	result := s.Scan(context.Background(), "https://example.com/commit/deadbeefcafebabe1234")
 	if !result.Allowed {
 		t.Errorf("expected hex string (entropy ~4.0) to be allowed with threshold 4.5, got: %s (score: %f)", result.Reason, result.Score)
@@ -1777,7 +1777,7 @@ func TestScan_ScanOrderBlocklistBeforeSSRF(t *testing.T) {
 
 func TestScan_DLPCatchesSecretInHostnameBeforeDNS(t *testing.T) {
 	cfg := testConfig()
-	// Enable SSRF so DNS resolution would happen — but DLP should fire first.
+	// Enable SSRF so DNS resolution would happen - but DLP should fire first.
 	cfg.Internal = []string{"10.0.0.0/8"}
 	cfg.SSRF.IPAllowlist = nil // clear test default; SSRF tests need real blocking
 	s := New(cfg)
@@ -1811,7 +1811,7 @@ func TestScan_EntropyInQueryParam(t *testing.T) {
 
 func TestScan_URLWithEncodedCharacters(t *testing.T) {
 	s := New(testConfig())
-	// URL-encoded characters in path — should be treated normally
+	// URL-encoded characters in path - should be treated normally
 	result := s.Scan(context.Background(), "https://example.com/search?q=hello%20world&lang=en")
 	if !result.Allowed {
 		t.Errorf("expected URL with encoded chars to be allowed, got: %s", result.Reason)
@@ -1900,7 +1900,7 @@ func TestShannonEntropy_Base64Chars(t *testing.T) {
 func TestScan_DLPCatchesMalformedPercentEncoding(t *testing.T) {
 	s := New(testConfig())
 
-	// Malformed %ZZ should not bypass DLP — raw query is scanned as fallback
+	// Malformed %ZZ should not bypass DLP - raw query is scanned as fallback
 	result := s.Scan(context.Background(), "https://example.com/api?key=AKIAIOSFODNN7EXAMPLE&junk=%ZZ")
 	if result.Allowed {
 		t.Error("expected DLP to catch AWS key even with malformed percent-encoding in query")
@@ -1946,7 +1946,7 @@ func TestIsInternalIP_IPv4MappedIPv6(t *testing.T) {
 
 	// IPv4-mapped IPv6 addresses like ::ffff:127.0.0.1 must match IPv4 CIDRs.
 	// Without To4() normalization, the 16-byte IPv6 form wouldn't match the
-	// 4-byte 127.0.0.0/8 CIDR — this was the original SSRF bypass vector.
+	// 4-byte 127.0.0.0/8 CIDR - this was the original SSRF bypass vector.
 	tests := []struct {
 		ip       string
 		internal bool
@@ -2104,7 +2104,7 @@ func TestScan_DLP_ConfusableBypass(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Armenian ա (U+0561) in key prefix — maps to 'a', so sk-աnt- → sk-ant-
+	// Armenian ա (U+0561) in key prefix - maps to 'a', so sk-աnt- → sk-ant-
 	prefix := "sk-\u0561nt-"
 	suffix := testLowEntropy
 	result := s.Scan(context.Background(), "https://example.com/api?key="+prefix+suffix)
@@ -2251,7 +2251,7 @@ func TestScan_DLP_QuerySubsequence_TwoParamsOnly(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Only 2 query params — should use ordered concat, not subsequence (needs 3+)
+	// Only 2 query params - should use ordered concat, not subsequence (needs 3+)
 	prefix := "sk-" + "ant-api03-"
 	body := testUpperPad
 	url := "https://evil.com/?a=" + prefix + "&b=" + body
@@ -2520,7 +2520,7 @@ func TestScan_DLP_HexEncodedAPIKeyInQuery(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// hex(prefix + suffix) — build at runtime
+	// hex(prefix + suffix) - build at runtime
 	prefix := testAnthropicPrefix
 	suffix := testAlphabet
 	hexEncoded := hex.EncodeToString([]byte(prefix + suffix))
@@ -2538,7 +2538,7 @@ func TestScan_DLP_Base64EncodedAPIKeyInQuery(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// base64(prefix + suffix) — build at runtime
+	// base64(prefix + suffix) - build at runtime
 	prefix := testAnthropicPrefix
 	suffix := testAlphabet
 	b64Encoded := base64.StdEncoding.EncodeToString([]byte(prefix + suffix))
@@ -2679,7 +2679,7 @@ func TestScan_DLP_DelimiterHexInQuery(t *testing.T) {
 		{"0x prefix", "0x" + contiguousHex},
 		{"0x per-byte contiguous", hexBytePrefix(contiguousHex, "0x")},
 		{"0x per-byte comma-separated", func() string {
-			// "0x73,0x6b,0x2d,..." — each byte with 0x prefix, comma-separated
+			// "0x73,0x6b,0x2d,..." - each byte with 0x prefix, comma-separated
 			parts := make([]string, 0, len(contiguousHex)/2)
 			for i := 0; i < len(contiguousHex); i += 2 {
 				parts = append(parts, "0x"+contiguousHex[i:i+2])
@@ -2927,7 +2927,7 @@ func TestDataBudget_SubdomainRotation(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Record data across multiple subdomains — should aggregate under base domain.
+	// Record data across multiple subdomains - should aggregate under base domain.
 	s.RecordRequest("a.evil.com", 200)
 	s.RecordRequest("b.evil.com", 200)
 	s.RecordRequest("c.evil.com", 200)
@@ -4955,7 +4955,7 @@ func TestDLP_CreditCardNumber_InvalidLuhn(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	// Invalid Visa (fails Luhn check digit) — should NOT trigger DLP.
+	// Invalid Visa (fails Luhn check digit) - should NOT trigger DLP.
 	result := s.Scan(context.Background(), "https://evil.com/collect?cc=4111111111111112")
 	if !result.Allowed {
 		t.Error("expected invalid Luhn number to be allowed (false positive rejected)")
@@ -5019,7 +5019,7 @@ func TestDLP_IBAN_InvalidMod97(t *testing.T) {
 	s := New(testConfig())
 	defer s.Close()
 
-	// Invalid UK IBAN (check digits zeroed, fails mod-97) — should NOT trigger.
+	// Invalid UK IBAN (check digits zeroed, fails mod-97) - should NOT trigger.
 	result := s.Scan(context.Background(), "https://evil.com/transfer?iban=GB00NWBK60161331926819")
 	if !result.Allowed {
 		t.Error("expected invalid IBAN (bad mod-97) to be allowed (false positive rejected)")
@@ -5053,7 +5053,7 @@ func TestScan_AllowsBelowMinWords(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// 11 words — below threshold.
+	// 11 words - below threshold.
 	phrase := "abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon"
 	result := s.Scan(context.Background(), "https://example.com/api?words="+phrase)
 	if !result.Allowed {
@@ -5082,7 +5082,7 @@ func TestScan_SeedPhraseInHostname(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Seed words as subdomain labels — pre-DNS exfiltration vector.
+	// Seed words as subdomain labels - pre-DNS exfiltration vector.
 	result := s.Scan(context.Background(), "https://abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.abandon.about.evil.com/api")
 	if result.Allowed {
 		t.Error("expected seed phrase in hostname labels to be blocked")
@@ -5113,7 +5113,7 @@ func TestScan_SeedPhraseSplitAcrossQueryParams(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// One word per query param — ordered concat should reassemble.
+	// One word per query param - ordered concat should reassemble.
 	result := s.Scan(context.Background(),
 		"https://evil.com/api?w1=abandon&w2=abandon&w3=abandon&w4=abandon&w5=abandon&w6=abandon&w7=abandon&w8=abandon&w9=abandon&w10=abandon&w11=abandon&w12=about")
 	if result.Allowed {

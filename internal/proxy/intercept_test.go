@@ -1015,7 +1015,7 @@ func TestInterceptTunnel_NonExemptDomainStillBlocked(t *testing.T) {
 	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
-	// Exempt a different host — the upstream should NOT be exempt.
+	// Exempt a different host - the upstream should NOT be exempt.
 	cfg.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
 	sc := scanner.New(cfg)
 	t.Cleanup(func() { sc.Close() })
@@ -2552,7 +2552,7 @@ func TestInterceptRecordSignal_NoEscalation(t *testing.T) {
 }
 
 // TestInterceptRecordSignal_EscalationNilProxy verifies that when escalation
-// fires but p is nil (no Proxy metrics), only the audit logger is called — no
+// fires but p is nil (no Proxy metrics), only the audit logger is called - no
 // panic from nil pointer dereference.
 func TestInterceptRecordSignal_EscalationNilProxy(t *testing.T) {
 	cfg := interceptRecordSignalCfg()
@@ -2580,9 +2580,9 @@ func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
 		from string
 		to   string
 	}{
-		// from == EscalationLabel(0) ("normal") — skips the SetAdaptiveSessionLevel(from,-1) branch.
+		// from == EscalationLabel(0) ("normal") - skips the SetAdaptiveSessionLevel(from,-1) branch.
 		{name: "from_normal_skips_decrement", from: "normal", to: "elevated"},
-		// from != EscalationLabel(0) — exercises the SetAdaptiveSessionLevel(from,-1) branch.
+		// from != EscalationLabel(0) - exercises the SetAdaptiveSessionLevel(from,-1) branch.
 		{name: "from_elevated_decrements_gauge", from: "elevated", to: "high"},
 	}
 
@@ -2628,7 +2628,7 @@ func TestInterceptRecordSignal_EscalationWithProxy(t *testing.T) {
 // as a new adaptive enforcement line in this PR.
 func TestInterceptTunnel_BlockAllDeniesCleanRequest(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Should never be called — block_all fires before RoundTrip.
+		// Should never be called - block_all fires before RoundTrip.
 		_, _ = fmt.Fprint(w, "should not reach here")
 	}))
 	defer upstream.Close()

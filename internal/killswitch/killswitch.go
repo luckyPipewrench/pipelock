@@ -112,7 +112,7 @@ func (c *Controller) IsActive() bool {
 }
 
 // IsActiveForIP checks whether the kill switch should deny a request from
-// the given client IP. Only checks IP allowlist exemptions — no path/endpoint
+// the given client IP. Only checks IP allowlist exemptions - no path/endpoint
 // exemptions. Use this inside intercepted CONNECT tunnels where request paths
 // belong to the upstream origin, not to pipelock's own endpoints.
 func (c *Controller) IsActiveForIP(clientIP string) Decision {
@@ -160,7 +160,7 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	}
 
 	// Check API exemption. When the API runs on a separate port
-	// (separatePort=true), the main port gets no exemption — the agent
+	// (separatePort=true), the main port gets no exemption - the agent
 	// cannot reach the API to self-deactivate the kill switch.
 	if rt.apiExempt && !c.separatePort.Load() &&
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
@@ -249,7 +249,7 @@ func (c *Controller) SetConductorRemote(active bool, message string) {
 
 // SetSeparateAPIPort marks whether the kill switch API runs on a separate
 // listener. When true, IsActiveHTTP skips the /api/v1/* exemption on the
-// main port — the agent cannot reach the API to deactivate its own kill switch.
+// main port - the agent cannot reach the API to deactivate its own kill switch.
 func (c *Controller) SetSeparateAPIPort(sep bool) {
 	c.separatePort.Store(sep)
 }

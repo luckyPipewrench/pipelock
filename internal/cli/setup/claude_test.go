@@ -1323,7 +1323,7 @@ func TestClaudeRemoveCmd_ReadError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// writeClaudeResponse coverage — deny path with reason
+// writeClaudeResponse coverage - deny path with reason
 // ---------------------------------------------------------------------------
 
 func TestWriteClaudeResponse_DenyWithReason(t *testing.T) {

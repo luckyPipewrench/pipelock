@@ -11,10 +11,10 @@
 //
 // Ports:
 //
-//	:19091 — prod-copilot    (high-volume, clean traffic)
-//	:19092 — dev-assistant   (moderate, occasional DLP hits)
-//	:19093 — research-bot    (incident scenario with chain detection & kill switch)
-//	:19094 — data-pipeline   (WebSocket-heavy streaming agent)
+//	:19091 - prod-copilot    (high-volume, clean traffic)
+//	:19092 - dev-assistant   (moderate, occasional DLP hits)
+//	:19093 - research-bot    (incident scenario with chain detection & kill switch)
+//	:19094 - data-pipeline   (WebSocket-heavy streaming agent)
 package main
 
 import (
@@ -112,7 +112,7 @@ func runAgent(ctx context.Context, name string, port int, scenario func(context.
 }
 
 // ---------------------------------------------------------------------------
-// Metric registration — mirrors internal/metrics/metrics.go exactly
+// Metric registration - mirrors internal/metrics/metrics.go exactly
 // ---------------------------------------------------------------------------
 
 type pipelockMetrics struct {
@@ -318,7 +318,7 @@ func tick(ctx context.Context, fn func(elapsed float64)) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 1: prod-copilot — High-volume coding assistant
+// Scenario 1: prod-copilot - High-volume coding assistant
 //
 // Heavy CONNECT tunnels to GitHub API, npm, PyPI. Very low block rate.
 // No WebSocket. No security events. The "boring but healthy" agent.
@@ -329,14 +329,14 @@ func scenarioProdCopilot(ctx context.Context, m *pipelockMetrics) {
 	m.activeTunnels.Set(5)
 
 	tick(ctx, func(elapsed float64) {
-		// Coding assistant — GitHub API, npm, docs. ~1 conn/sec avg.
+		// Coding assistant - GitHub API, npm, docs. ~1 conn/sec avg.
 		if maybe(sinWave(elapsed, 0.8, 0.3, 120)) {
 			m.tunnelsTotal.WithLabelValues("completed").Inc()
 			m.tunnelBytes.Add(jitter(80000, 0.3))
 			m.tunnelDuration.Observe(math.Max(0.1, 2.5+1.2*rand.NormFloat64()))
 		}
 
-		// Very rare block — maybe 1 every few minutes
+		// Very rare block - maybe 1 every few minutes
 		if maybe(0.002) {
 			m.tunnelsTotal.WithLabelValues("blocked").Inc()
 			m.scannerHits.WithLabelValues("domain").Inc()
@@ -345,7 +345,7 @@ func scenarioProdCopilot(ctx context.Context, m *pipelockMetrics) {
 		noisyGauge(m.activeTunnels, sinWave(elapsed, 3, 1, 120), 0.15, 1)
 		noisyGauge(m.sessionsActive, 12, 0.06, 9)
 
-		// Extremely rare DLP — maybe once in the whole demo
+		// Extremely rare DLP - maybe once in the whole demo
 		if maybe(0.0003) {
 			m.scannerHits.WithLabelValues("dlp").Inc()
 		}
@@ -357,7 +357,7 @@ func scenarioProdCopilot(ctx context.Context, m *pipelockMetrics) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 2: dev-assistant — Developer helper with DLP catches
+// Scenario 2: dev-assistant - Developer helper with DLP catches
 //
 // Moderate tunnel traffic. Some plain HTTP too (internal APIs).
 // Regular DLP hits from test API keys in prompts. A few domain blocks.
@@ -369,7 +369,7 @@ func scenarioDevAssistant(ctx context.Context, m *pipelockMetrics) {
 	m.activeTunnels.Set(4)
 
 	tick(ctx, func(elapsed float64) {
-		// Dev assistant — IDE, docs, internal APIs. ~0.5 conn/sec avg.
+		// Dev assistant - IDE, docs, internal APIs. ~0.5 conn/sec avg.
 		if maybe(sinWave(elapsed, 0.45, 0.15, 75)) {
 			m.tunnelsTotal.WithLabelValues("completed").Inc()
 			m.tunnelBytes.Add(jitter(45000, 0.4))
@@ -392,7 +392,7 @@ func scenarioDevAssistant(ctx context.Context, m *pipelockMetrics) {
 			m.requestLatency.Observe(jitter(0.015, 0.3))
 		}
 
-		// DLP hits — dev testing with API keys, ~1 per minute
+		// DLP hits - dev testing with API keys, ~1 per minute
 		if maybe(0.015) {
 			m.scannerHits.WithLabelValues("dlp").Inc()
 		}
@@ -424,7 +424,7 @@ func scenarioDevAssistant(ctx context.Context, m *pipelockMetrics) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 3: research-bot — Repeating incident scenario
+// Scenario 3: research-bot - Repeating incident scenario
 //
 // Cycles every 5 minutes (300s):
 //   0:00–1:30  Normal baseline traffic
@@ -434,7 +434,7 @@ func scenarioDevAssistant(ctx context.Context, m *pipelockMetrics) {
 //   3:00–4:00  Kill switch active (deny all)
 //   4:00–5:00  Recovery, elevated blocks
 //
-// Repeats — so in a 15-min window you get 3 visible incident arcs.
+// Repeats - so in a 15-min window you get 3 visible incident arcs.
 // ---------------------------------------------------------------------------
 
 func scenarioResearchBot(ctx context.Context, m *pipelockMetrics) {
@@ -452,7 +452,7 @@ func scenarioResearchBot(ctx context.Context, m *pipelockMetrics) {
 
 		case phaseExfilAttempt:
 			researchBaseline(m, elapsed)
-			// DLP burst — exfiltration attempt
+			// DLP burst - exfiltration attempt
 			if maybe(0.6) {
 				m.scannerHits.WithLabelValues("dlp").Inc()
 			}
@@ -471,7 +471,7 @@ func scenarioResearchBot(ctx context.Context, m *pipelockMetrics) {
 
 		case phaseChainDetection:
 			researchBaseline(m, elapsed)
-			// Chain detections — tool call attack sequences
+			// Chain detections - tool call attack sequences
 			if maybe(0.25) {
 				m.chainDetections.WithLabelValues("read_encode_exfil", "critical", "block").Inc()
 			}
@@ -499,7 +499,7 @@ func scenarioResearchBot(ctx context.Context, m *pipelockMetrics) {
 			}
 
 		case phaseKillSwitch:
-			// Kill switch active — all traffic denied
+			// Kill switch active - all traffic denied
 			m.activeTunnels.Set(0)
 			// Heavy denial traffic
 			if maybe(0.9) {
@@ -584,7 +584,7 @@ func researchBaseline(m *pipelockMetrics, elapsed float64) {
 }
 
 // ---------------------------------------------------------------------------
-// Scenario 4: data-pipeline — WebSocket-heavy streaming agent
+// Scenario 4: data-pipeline - WebSocket-heavy streaming agent
 //
 // Low tunnel traffic. Heavy WebSocket connections with frame inspection.
 // WS scan hits from scanning streamed content. Some WS blocks.
@@ -597,7 +597,7 @@ func scenarioDataPipeline(ctx context.Context, m *pipelockMetrics) {
 	m.activeWS.Set(4)
 
 	tick(ctx, func(elapsed float64) {
-		// Data pipeline — fewer but larger connections. ~1 conn/sec (bigger payloads).
+		// Data pipeline - fewer but larger connections. ~1 conn/sec (bigger payloads).
 		if maybe(sinWave(elapsed, 1.0, 0.4, 100)) {
 			m.tunnelsTotal.WithLabelValues("completed").Inc()
 			m.tunnelBytes.Add(jitter(120000, 0.3)) // Big payloads per connection
@@ -610,12 +610,12 @@ func scenarioDataPipeline(ctx context.Context, m *pipelockMetrics) {
 			m.scannerHits.WithLabelValues("domain").Inc()
 		}
 
-		// WebSocket redirect hints — occasional
+		// WebSocket redirect hints - occasional
 		if maybe(0.02) {
 			m.wsRedirectHints.Inc()
 		}
 
-		// WebSocket connections — long-lived streaming, rare new ones
+		// WebSocket connections - long-lived streaming, rare new ones
 		if maybe(0.008) {
 			m.wsConnectionsTotal.WithLabelValues("completed").Inc()
 			m.wsDuration.Observe(jitter(300, 0.5)) // Long-lived
@@ -629,13 +629,13 @@ func scenarioDataPipeline(ctx context.Context, m *pipelockMetrics) {
 		// Active WS connections 3–5
 		noisyGauge(m.activeWS, sinWave(elapsed, 4, 1, 150), 0.15, 2)
 
-		// Frame flow — streaming data (this is where throughput shows)
+		// Frame flow - streaming data (this is where throughput shows)
 		textFrames := int(jitter(25, 0.2))
 		binFrames := int(jitter(8, 0.3))
 		m.wsFrames.WithLabelValues("text").Add(float64(textFrames))
 		m.wsFrames.WithLabelValues("binary").Add(float64(binFrames))
 
-		// WebSocket throughput — the pipeline's signature metric
+		// WebSocket throughput - the pipeline's signature metric
 		m.wsBytes.WithLabelValues("client_to_server").Add(jitter(30000, 0.25))
 		m.wsBytes.WithLabelValues("server_to_client").Add(jitter(120000, 0.25))
 

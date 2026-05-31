@@ -340,7 +340,7 @@ func TestResolveEndpoint_NoURLNoFlagsNoConfig(t *testing.T) {
 		loadConfig:  func(string) (*config.Config, error) { return nil, nil },
 		getenv:      func(string) string { return "" },
 	}
-	// Provide token but not URL — should fail with URL-specific message.
+	// Provide token but not URL - should fail with URL-specific message.
 	_, err := resolveEndpoint(&rootFlags{apiToken: "only-token"}, deps)
 	if err == nil {
 		t.Error("expected error for missing URL")

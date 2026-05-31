@@ -59,7 +59,7 @@ type LaunchConfig struct {
 
 // PrepareSandboxCmd builds an exec.Cmd configured to re-exec pipelock in
 // sandbox-init mode with user + network namespace isolation. The returned
-// cmd is NOT started — the caller can set up pipes (StdinPipe, StdoutPipe)
+// cmd is NOT started - the caller can set up pipes (StdinPipe, StdoutPipe)
 // before calling cmd.Start().
 //
 // When BestEffort is true and user namespaces are unavailable (e.g. inside
@@ -85,14 +85,14 @@ func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 		return nil, err
 	}
 
-	// Strict and BestEffort are mutually exclusive — catch misuse by callers.
+	// Strict and BestEffort are mutually exclusive - catch misuse by callers.
 	if cfg.Strict && cfg.BestEffort {
 		return nil, fmt.Errorf("sandbox: strict and best_effort are mutually exclusive")
 	}
 
 	// Probe namespace support before setting clone flags.
 	// Only CLONE_NEWUSER is probed because CLONE_NEWNET requires CLONE_NEWUSER
-	// on unprivileged processes — if user namespaces work, network namespaces
+	// on unprivileged processes - if user namespaces work, network namespaces
 	// will too (created inside the user namespace with CAP_SYS_ADMIN).
 	hasNamespaces := probeUserNamespace()
 	if !hasNamespaces && !cfg.BestEffort {

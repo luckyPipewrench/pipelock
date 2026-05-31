@@ -10,7 +10,7 @@ import (
 
 // zw builds a string containing the given codepoint. Test inputs are assembled
 // from codepoints rather than literal invisible characters so this source file
-// stays pure ASCII — reviewable, and not flagged by the very scanner it tests.
+// stays pure ASCII - reviewable, and not flagged by the very scanner it tests.
 func zw(r rune) string { return string(r) }
 
 func TestScanText(t *testing.T) {

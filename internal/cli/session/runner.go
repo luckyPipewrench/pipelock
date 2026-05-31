@@ -60,8 +60,8 @@ func runClientCmd(
 
 // mapClientError converts an admin API error into a CLI exit code:
 //
-//	exit 1 — operational failure (404, 429, 500, network)
-//	exit 2 — auth/config failure (401, missing token, malformed flags)
+//	exit 1 - operational failure (404, 429, 500, network)
+//	exit 2 - auth/config failure (401, missing token, malformed flags)
 //
 // The rule is: exit 2 means "fix your setup," exit 1 means "try again
 // or escalate." Keeping those distinct lets operators script retries.

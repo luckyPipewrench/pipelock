@@ -11,7 +11,7 @@ import (
 func TestApplyDefaults_AddressProtection(t *testing.T) {
 	cfg := Defaults()
 	cfg.AddressProtection.Enabled = true
-	// Leave Action/UnknownAction/Similarity empty — ApplyDefaults should fill them.
+	// Leave Action/UnknownAction/Similarity empty - ApplyDefaults should fill them.
 	cfg.ApplyDefaults()
 
 	if cfg.AddressProtection.Action != ActionBlock {

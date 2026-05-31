@@ -51,7 +51,7 @@ func newClient(ep endpoint) *Client {
 // httpClientInterface. Tests use this to inject an httptest-backed
 // round tripper or a stub that records the calls it receives. Trailing
 // slashes on the base URL are stripped so `http://host:9090/` and
-// `http://host:9090` produce identical admin API request paths — leaving
+// `http://host:9090` produce identical admin API request paths - leaving
 // them in would route `/api/v1/sessions` to `//api/v1/sessions` which
 // the admin router does not recognize.
 func newClientWithHTTP(ep endpoint, c httpClientInterface) *Client {
@@ -205,7 +205,7 @@ func (c *Client) do(ctx context.Context, method, target string, body io.Reader, 
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		if errors.Is(err, io.EOF) {
 			// Empty body on 200 is acceptable when the caller didn't
-			// request a typed value — do returns above when out is nil.
+			// request a typed value - do returns above when out is nil.
 			return fmt.Errorf("empty response body from %s %s", method, target)
 		}
 		return fmt.Errorf("decode response: %w", err)
@@ -227,7 +227,7 @@ type APIError struct {
 
 // errorPath returns just the request path (plus raw query) for display.
 // The scheme and host are stripped so error strings never leak where the
-// admin API is actually running — operators often paste error output into
+// admin API is actually running - operators often paste error output into
 // tickets, chat, or logs that are less trusted than the endpoint itself.
 // Falls back to the raw URL when url.Parse cannot recover a Path (which
 // should not happen in practice, since the client always constructs

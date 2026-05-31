@@ -63,7 +63,7 @@ func Generate(dir string, excludes []string) (*Manifest, error) {
 			return nil
 		}
 
-		// Skip symlinks entirely — don't follow them.
+		// Skip symlinks entirely - don't follow them.
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
@@ -197,7 +197,7 @@ func matchExclude(pattern, relPath string) bool {
 // validateExcludes checks that all exclude patterns are valid globs.
 func validateExcludes(excludes []string) error {
 	for _, pattern := range excludes {
-		// Strip ** segments — filepath.Match doesn't handle them,
+		// Strip ** segments - filepath.Match doesn't handle them,
 		// but the remaining glob portions must be valid.
 		clean := pattern
 		clean = strings.ReplaceAll(clean, "**/", "")

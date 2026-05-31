@@ -51,7 +51,7 @@ func TestFingerprint_HappyPath(t *testing.T) {
 		t.Fatalf("Fingerprint() = %q, want %q", fp, rfcTestPubFingerprint)
 	}
 
-	// Secondary assertion: deterministic — calling again yields same result.
+	// Secondary assertion: deterministic - calling again yields same result.
 	fp2, err := Fingerprint(pub)
 	if err != nil {
 		t.Fatalf("Fingerprint() second call error: %v", err)

@@ -97,7 +97,7 @@ func rosterFixture(t *testing.T, opts ...any) (path, fingerprint string) {
 		}
 	}
 
-	// Sign the body (even if mutations made it invalid — the test checks that).
+	// Sign the body (even if mutations made it invalid - the test checks that).
 	preimage, err := envelope.Body.SignablePreimage()
 	if err != nil {
 		// For tests that deliberately break the body, produce a dummy sig.
@@ -192,7 +192,7 @@ func envelopeBodyToMap(body contract.KeyRoster) map[string]any {
 func yamlMarshal(m map[string]any) ([]byte, error) {
 	// Use the gopkg.in/yaml.v3 encoder that's already a transitive dep.
 	// Import is via the contract package's own YAML support.
-	// Actually, we can just produce JSON and rename the file — DecodeStrictYAML
+	// Actually, we can just produce JSON and rename the file - DecodeStrictYAML
 	// handles JSON-like YAML. But for a proper YAML test, let's produce
 	// flow-style via json.Marshal which is valid YAML.
 	data, err := json.Marshal(m)

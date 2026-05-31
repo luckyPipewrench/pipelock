@@ -38,7 +38,7 @@ type Config struct {
 
 	// StrictReload, when true, fails requests closed if a dictionary file
 	// referenced by an active profile cannot be reloaded (disappeared or
-	// corrupted). Default false — retain previous snapshot instead.
+	// corrupted). Default false - retain previous snapshot instead.
 	StrictReload bool `yaml:"strict_reload"`
 
 	// AllowlistUnparseable lists hosts whose request bodies are permitted
@@ -55,7 +55,7 @@ type Config struct {
 	// Providers registers provider parser profiles. Built-ins for Anthropic,
 	// OpenAI, and Gemini are always present; entries here add or override
 	// profiles without code changes. Provider selection never exempts fields
-	// from scanning — v1 profiles map to the whole-body JSON parser.
+	// from scanning - v1 profiles map to the whole-body JSON parser.
 	Providers map[string]ProviderSpec `yaml:"providers" json:"providers,omitempty"`
 }
 
@@ -119,7 +119,7 @@ func (s LimitsSpec) ToLimits() Limits {
 // wire this into the overall config validation so startup fails closed.
 //
 // Structural checks on allowlist_unparseable host entries and dictionary
-// class names run UNCONDITIONALLY — they are cheap and must not depend on
+// class names run UNCONDITIONALLY - they are cheap and must not depend on
 // the Enabled gate, because a disabled config with malformed fields can
 // still be loaded, and the fields are security-sensitive once Enabled
 // flips on. Skipping structure checks when disabled would defeat the
@@ -356,7 +356,7 @@ func DefaultLimits() LimitsSpec {
 
 // DefaultConfig returns a disabled redaction config suitable as the
 // zero-value embedded in pipelock's main Config. When the operator does
-// not supply a `redaction:` block, this is what they get — inert and safe.
+// not supply a `redaction:` block, this is what they get - inert and safe.
 func DefaultConfig() Config {
 	return Config{
 		Enabled: false,

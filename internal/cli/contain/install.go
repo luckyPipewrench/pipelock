@@ -277,7 +277,7 @@ func stepWriteToolsList() step {
 // well-known across plk-launch + add-tool + readToolsList: one line per
 // entry, tab-separated NAME and absolute TARGET path (empty target means
 // "use pipelock-agent PATH at runtime"). Lines beginning with '#' and blank
-// lines are comments — preserved on rewrite so an operator can leave a
+// lines are comments - preserved on rewrite so an operator can leave a
 // note.
 func renderDefaultToolsList() string {
 	return renderToolsList(defaultToolEntriesWithoutTargets())
@@ -973,7 +973,7 @@ func stepExportPipelockCA() step {
 			}
 			// Run as pipelock-proxy so the CA lookup uses the running
 			// instance's data dir layout. The pipelock CLI writes the CA
-			// PEM to stdout via `tls show-ca` — there is no --output flag,
+			// PEM to stdout via `tls show-ca` - there is no --output flag,
 			// so we capture stdout here and write the file in Go after a
 			// PEM-shape sanity check.
 			if err := exportPipelockCA(ctx, env); err != nil {
@@ -1586,7 +1586,7 @@ func wrapperNamesForEntries(entries []toolsListEntry) []string {
 // renderToolWrapper emits a per-tool wrapper that does the outer sudo so
 // the operator just types `plk-claude foo` instead of `sudo plk-launch claude foo`.
 // `-n` (non-interactive) makes the wrapper fail fast if the sudoers rule
-// does not match instead of hanging on a password prompt — the rule we
+// does not match instead of hanging on a password prompt - the rule we
 // install is NOPASSWD-scoped so the legitimate case never prompts.
 func renderToolWrapper(env *installEnv, tool string) string {
 	return strings.Join([]string{

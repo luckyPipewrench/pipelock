@@ -118,12 +118,12 @@ func RunStandaloneInit() {
 	}
 
 	// Start bridge proxy. In best-effort mode without netns, the bridge
-	// still works — HTTP_PROXY routes cooperative agents through pipelock.
+	// still works - HTTP_PROXY routes cooperative agents through pipelock.
 	// Network isolation is not kernel-enforced in this mode.
 	//
 	// Without a network namespace, the default port (8888) may conflict
 	// with a pipelock sidecar already running in the same pod. Use port 0
-	// (OS-assigned) to avoid the conflict — the agent gets the actual
+	// (OS-assigned) to avoid the conflict - the agent gets the actual
 	// address via HTTP_PROXY env var.
 	var bridgeAddr string
 	if noNetNS {

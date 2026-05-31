@@ -183,7 +183,7 @@ func identityClasses() []classPattern {
 // personalClasses is the US-centric PII category. Operators in other
 // locales supplement via dictionaries in v1.1. AmEx is 15 digits
 // (4-6-5 split, 3[47] prefix); other supported brands are 16 digits
-// (4-4-4-4). Folding both under the same template misses AmEx —
+// (4-4-4-4). Folding both under the same template misses AmEx -
 // regression reported in review (2026-04-19).
 func personalClasses() []classPattern {
 	return []classPattern{

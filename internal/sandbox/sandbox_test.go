@@ -119,7 +119,7 @@ func TestDefaultPolicy_HasRequiredPaths(t *testing.T) {
 	assertContains(t, "AllowReadFiles", p.AllowReadFiles, "/etc/resolv.conf")
 	assertContains(t, "AllowReadFiles", p.AllowReadFiles, "/etc/passwd")
 	assertContains(t, "AllowRWDirs", p.AllowRWDirs, dir)
-	// /tmp/ is NOT in the default policy — child adds its sandbox dir dynamically.
+	// /tmp/ is NOT in the default policy - child adds its sandbox dir dynamically.
 	assertNotContains(t, "AllowRWDirs", p.AllowRWDirs, "/tmp/")
 	assertContains(t, "AllowRWFiles", p.AllowRWFiles, "/dev/null")
 }
@@ -185,7 +185,7 @@ func TestDefaultPolicy_EmptyHOME(t *testing.T) {
 }
 
 func TestValidateWorkspace_RejectsSymlinkResolveError(t *testing.T) {
-	// Create a symlink to a target that doesn't exist — EvalSymlinks will
+	// Create a symlink to a target that doesn't exist - EvalSymlinks will
 	// return an error that is os.IsNotExist.
 	dir := t.TempDir()
 	link := filepath.Join(dir, "broken")

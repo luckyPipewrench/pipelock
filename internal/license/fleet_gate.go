@@ -43,9 +43,9 @@ var ErrFleetLicenseRequired = errors.New(
 // carries the FeatureFleet entitlement. Pass licenseKey="" and publicKeyHex=""
 // to use the environment variables + the build-embedded public key.
 //
-// The function is intentionally narrow and fail-closed: any failure mode —
+// The function is intentionally narrow and fail-closed: any failure mode -
 // missing token, missing verifier key, expired/invalid signature, missing
-// feature — returns a wrapped ErrFleetLicenseRequired so call sites can keep
+// feature - returns a wrapped ErrFleetLicenseRequired so call sites can keep
 // the error path uniform without branching on individual failure reasons.
 //
 // Callers (`pipelock conductor serve`, `pipelock fleet-sink`, and the

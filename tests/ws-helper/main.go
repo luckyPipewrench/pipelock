@@ -304,7 +304,7 @@ func sendCompressed(wsURL, payload string) {
 	defer func() { _ = conn.Close() }()
 
 	// Build a frame with RSV1=true (permessage-deflate indicator).
-	// The payload is NOT actually compressed — this tests that the proxy
+	// The payload is NOT actually compressed - this tests that the proxy
 	// rejects frames with the compression bit regardless of content.
 	mask := ws.NewMask()
 	data := []byte(payload)
@@ -329,7 +329,7 @@ func sendCompressed(wsURL, payload string) {
 		return
 	}
 
-	// Try to read — proxy should close the connection.
+	// Try to read - proxy should close the connection.
 	reply, _, readErr := wsutil.ReadServerData(conn)
 	if readErr != nil {
 		fmt.Println("CLOSED")

@@ -85,7 +85,7 @@ func OpenSQLiteAuditStore(ctx context.Context, path string) (*SQLiteAuditStore, 
 	// PRAGMA order matters: WAL must be set before synchronous so the
 	// synchronous mode applies to the WAL writer. synchronous=FULL forces
 	// the WAL frames AND the rollback journal/wal index to be durably
-	// fsynced before the COMMIT returns success — appropriate for an audit
+	// fsynced before the COMMIT returns success - appropriate for an audit
 	// sink where a power-loss-induced silent loss of accepted evidence is
 	// worse than the throughput cost. busy_timeout protects against
 	// SQLITE_BUSY when -wal/-shm files are momentarily contended (the

@@ -52,7 +52,7 @@ type StandaloneLaunchConfig struct {
 }
 
 // PrepareSandboxCmd builds an exec.Cmd that wraps the child command with
-// sandbox-exec using a generated SBPL profile. No re-exec needed — the
+// sandbox-exec using a generated SBPL profile. No re-exec needed - the
 // child is launched directly under the sandbox profile.
 func PrepareSandboxCmd(cfg LaunchConfig) (*exec.Cmd, error) {
 	if _, err := os.Stat(seatbeltBinary); err != nil {

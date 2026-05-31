@@ -23,7 +23,7 @@ import (
 // `fleet` feature) and installs it via PIPELOCK_LICENSE_KEY +
 // PIPELOCK_LICENSE_PUBLIC_KEY env vars for the lifetime of t. Tests that
 // enable conductor.enabled use this so the production license gate fires
-// against real signed tokens — not a bypass — while still letting the test
+// against real signed tokens - not a bypass - while still letting the test
 // proceed without depending on a build-embedded key. t.Cleanup unsets the
 // env vars via t.Setenv's normal restoration.
 func setTestFleetLicense(t *testing.T) {

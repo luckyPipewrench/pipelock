@@ -77,7 +77,7 @@ func TestRenderLaunchWrapper_EmbedsAllowListLookup(t *testing.T) {
 			t.Errorf("plk-launch body missing %q in:\n%s", r, body)
 		}
 	}
-	// MUST NOT just exec $TOOL — must exec $TARGET resolved through the
+	// MUST NOT just exec $TOOL - must exec $TARGET resolved through the
 	// allow-list pipeline.
 	if !strings.Contains(body, `"$TARGET" "$@"`) {
 		t.Errorf("plk-launch must exec $TARGET, not $TOOL")
@@ -448,7 +448,7 @@ func TestRenderedCCLaunch_ParsesUnderBash(t *testing.T) {
 // TestRenderedCCLaunch_ExecutesUnderBash exercises the rendered plk-launch
 // against a real bash with controlled inputs and asserts each documented
 // exit code path is reachable. This is the test that would have caught a
-// silent allow-list bypass before live install — the Go-side unit tests
+// silent allow-list bypass before live install - the Go-side unit tests
 // can't, because they don't run the script as bash sees it.
 func TestRenderedCCLaunch_ExecutesUnderBash(t *testing.T) {
 	if _, err := os.Stat("/bin/bash"); err != nil {

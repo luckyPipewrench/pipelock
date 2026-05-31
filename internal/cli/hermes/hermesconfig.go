@@ -56,7 +56,7 @@ const pluginRegistryName = "pipelock"
 
 // proxyEnvNames are the environment variable names forwarded to Hermes
 // terminal backends so sandboxed tool execution inherits pipelock's proxy and
-// CA trust. These are NAMES only — the values must be set in Hermes' own
+// CA trust. These are NAMES only - the values must be set in Hermes' own
 // environment for traffic to actually route through pipelock. Terminal
 // proxying is therefore cooperative, not binary-enforced.
 //

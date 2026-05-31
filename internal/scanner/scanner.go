@@ -65,11 +65,11 @@ const (
 	// signal (DLP match, injection, blocklist hit, etc.).
 	ClassThreat ResultClass = iota
 	// ClassProtective means the block is protective enforcement (rate
-	// limiting, data budget) — not evidence of malicious intent.
+	// limiting, data budget) - not evidence of malicious intent.
 	ClassProtective
 	// ClassConfigMismatch means the block is due to a configuration gap
 	// (e.g., domain in api_allowlist but not trusted_domains). Not a
-	// real attack — should not feed adaptive escalation.
+	// real attack - should not feed adaptive escalation.
 	ClassConfigMismatch
 	// ClassInfrastructureError means the block is due to an infrastructure
 	// failure (e.g., DNS resolver timeout, resolver unreachable) rather
@@ -90,7 +90,7 @@ const (
 )
 
 // WarnMatch describes a DLP pattern match from a warn-mode pattern.
-// These are informational only — they do not block or alter the request.
+// These are informational only - they do not block or alter the request.
 type WarnMatch struct {
 	PatternName string `json:"pattern_name"`
 	Severity    string `json:"severity"`
@@ -165,7 +165,7 @@ func (r Result) IsStructuralExemption() bool {
 // adaptive enforcement: protective enforcement (rate limiting, data budget),
 // infrastructure failures (DNS resolver errors), and structural exemptions
 // (validated capability tokens) all skip both block-signal and clean-decay.
-// Config mismatch is NOT covered here — it produces a bounded SignalNearMiss
+// Config mismatch is NOT covered here - it produces a bounded SignalNearMiss
 // by design so repeated probing of misconfigured allowlists remains visible
 // to scoring.
 func (r Result) IsAdaptiveNeutral() bool {
@@ -176,7 +176,7 @@ func (r Result) IsAdaptiveNeutral() bool {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
-	core                       *compiledCoreScanner // immutable safety floor — always runs, no config knobs
+	core                       *compiledCoreScanner // immutable safety floor - always runs, no config knobs
 	allowlist                  []string
 	blocklist                  []string
 	dlpPatterns                []*compiledPattern
@@ -295,14 +295,14 @@ type compiledPattern struct {
 	exemptDomains []string          // domains where this pattern is skipped (wildcard supported)
 	bundle        string            // empty for built-in/config patterns
 	bundleVersion string
-	warn          bool // true when pattern action is "warn" — matches are informational only
+	warn          bool // true when pattern action is "warn" - matches are informational only
 }
 
 // matches returns true if text matches the regex AND passes the post-match
 // validator (if any). For patterns without a validator, this uses the faster
 // MatchString (no string extraction). For validated patterns (credit cards,
 // IBANs), FindAllString extracts ALL matches and returns true if any pass
-// checksum — prevents a checksum-failing decoy from suppressing a later
+// checksum - prevents a checksum-failing decoy from suppressing a later
 // valid match in the same text blob.
 func (p *compiledPattern) matches(text string) bool {
 	if p.validate == nil {
@@ -321,7 +321,7 @@ func (p *compiledPattern) matches(text string) bool {
 }
 
 // New creates a Scanner from config. Config must be validated first via
-// config.Validate() — this function panics on invalid DLP patterns or CIDRs
+// config.Validate() - this function panics on invalid DLP patterns or CIDRs
 // because those represent programming errors (validation should have caught them).
 func New(cfg *config.Config) *Scanner {
 	// Only enforce the allowlist in strict mode. In balanced/audit modes,
@@ -348,7 +348,7 @@ func New(cfg *config.Config) *Scanner {
 		s.rateLimiter = NewRateLimiter(cfg.FetchProxy.Monitoring.MaxReqPerMinute)
 	}
 
-	// Compile DLP patterns — must succeed since config.Validate checks these.
+	// Compile DLP patterns - must succeed since config.Validate checks these.
 	// Force case-insensitive matching: agents can trivially .toUpperCase() a
 	// secret before exfiltration, so DLP patterns must match regardless of case.
 	for _, p := range cfg.DLP.Patterns {
@@ -383,7 +383,7 @@ func New(cfg *config.Config) *Scanner {
 	s.dlpPreFilter = newDLPPreFilter(s.dlpPatterns)
 	s.canaryTokens = compileCanaryTokens(cfg.CanaryTokens)
 
-	// Seed phrase detection config — stateless, reads from config.
+	// Seed phrase detection config - stateless, reads from config.
 	s.seedEnabled = cfg.SeedPhraseDetection.Enabled == nil || *cfg.SeedPhraseDetection.Enabled
 	s.seedMinWords = cfg.SeedPhraseDetection.MinWords
 	if s.seedMinWords == 0 {
@@ -391,7 +391,7 @@ func New(cfg *config.Config) *Scanner {
 	}
 	s.seedVerifyChecksum = cfg.SeedPhraseDetection.VerifyChecksum == nil || *cfg.SeedPhraseDetection.VerifyChecksum
 
-	// Parse internal CIDRs — must succeed since config.Validate checks these
+	// Parse internal CIDRs - must succeed since config.Validate checks these
 	for _, cidr := range cfg.Internal {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -400,7 +400,7 @@ func New(cfg *config.Config) *Scanner {
 		s.internalCIDRs = append(s.internalCIDRs, ipNet)
 	}
 
-	// Parse SSRF IP allowlist CIDRs — must succeed since config.Validate checks these
+	// Parse SSRF IP allowlist CIDRs - must succeed since config.Validate checks these
 	for _, cidr := range cfg.SSRF.IPAllowlist {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -413,7 +413,7 @@ func New(cfg *config.Config) *Scanner {
 	s.rawAPIAllowlist = cfg.APIAllowlist
 
 	// Install the DNS resolver. When dns.host_overrides is empty the wrapper
-	// degrades to a plain delegation to net.DefaultResolver — this keeps a
+	// degrades to a plain delegation to net.DefaultResolver - this keeps a
 	// single code path through the rest of the scanner and proxy regardless
 	// of whether overrides are configured.
 	s.resolver = NewStaticOverrideResolver(cfg.DNS.HostOverrides, nil)
@@ -448,7 +448,7 @@ func New(cfg *config.Config) *Scanner {
 		}
 	}
 
-	// Compile response scanning patterns — must succeed since config.Validate checks these
+	// Compile response scanning patterns - must succeed since config.Validate checks these
 	if cfg.ResponseScanning.Enabled {
 		s.responseEnabled = true
 		s.responseAction = cfg.ResponseScanning.Action
@@ -572,7 +572,7 @@ func (s *Scanner) IsInternalIP(ip net.IP) bool {
 
 // IsTrustedDomain checks if a hostname matches any trusted domain pattern.
 // Trusted domains allow connections to internal IPs with advisory logging
-// instead of blocking. IP literals are always rejected — trusted domains
+// instead of blocking. IP literals are always rejected - trusted domains
 // only match hostnames to prevent SSRF bypass via raw IP addresses.
 func (s *Scanner) IsTrustedDomain(hostname string) bool {
 	hostname = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
@@ -610,7 +610,7 @@ func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
 
 // IsInAPIAllowlist checks if a hostname matches any entry in api_allowlist.
 // Unlike the scanner's allowlist field (which is mode-gated to strict), this
-// checks the raw config allowlist regardless of mode — used for SSRF hint
+// checks the raw config allowlist regardless of mode - used for SSRF hint
 // generation and config-mismatch classification.
 func (s *Scanner) IsInAPIAllowlist(hostname string) bool {
 	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
@@ -708,7 +708,7 @@ func (s *Scanner) Closed() bool {
 	return s.closed
 }
 
-// Drained reports whether Close has finished its teardown — drain wait
+// Drained reports whether Close has finished its teardown - drain wait
 // returned (or timed out), and the rateLimiter / dataBudget cleanup
 // goroutines have been signaled to stop. Distinct from Closed, which
 // flips at the start of Close before drain runs. Tests use Drained to
@@ -819,7 +819,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		}
 	}
 
-	// Scheme check —
+	// Scheme check -
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Result{
 			Allowed: false,
@@ -829,29 +829,29 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		}
 	}
 
-	// CRLF injection check — %0D%0A in URLs enables header injection.
+	// CRLF injection check - %0D%0A in URLs enables header injection.
 	// Runs early because CRLF is never legitimate in a URL.
 	if result := checkCRLF(rawURL); !result.Allowed {
 		return result
 	}
 
-	// Path traversal check — /../ sequences are defense-in-depth.
+	// Path traversal check - /../ sequences are defense-in-depth.
 	if result := checkPathTraversal(parsed); !result.Allowed {
 		return result
 	}
 
-	// Allowlist check — if configured, only allowlisted domains are permitted.
+	// Allowlist check - if configured, only allowlisted domains are permitted.
 	// Runs before DNS to reject disallowed domains without any network I/O.
 	if result := s.checkAllowlist(hostname); !result.Allowed {
 		return result
 	}
 
-	// Blocklist check — before DNS to avoid resolving known-bad domains.
+	// Blocklist check - before DNS to avoid resolving known-bad domains.
 	if result := s.checkBlocklist(hostname); !result.Allowed {
 		return result
 	}
 
-	// Core SSRF literal — immutable safety floor for IP literals. Runs ALWAYS,
+	// Core SSRF literal - immutable safety floor for IP literals. Runs ALWAYS,
 	// even when cfg.Internal is nil (SSRF disabled). Blocks direct requests
 	// to private IPs (127.0.0.1, 169.254.169.254, 10.x, etc.). Respects
 	// ssrf.ip_allowlist for operator overrides.
@@ -875,7 +875,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		scanURL = scrubSigV4Credential(parsed, sigV4.KeyID)
 	}
 
-	// Core DLP — immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
+	// Core DLP - immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
 	if result := s.checkCoreDLP(scanURL); !result.Allowed {
 		return result
@@ -912,13 +912,13 @@ func (s *Scanner) scan(ctx context.Context, rawURL string) (result Result) {
 		return result
 	}
 
-	// Subdomain entropy check — catches base64/hex encoded data in subdomains
+	// Subdomain entropy check - catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
 	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
 		return result
 	}
 
-	// SSRF protection — DNS resolution happens here, safe after DLP.
+	// SSRF protection - DNS resolution happens here, safe after DLP.
 	// When active, core CIDRs are always included via mergedSSRFCIDRs()
 	// so private ranges (10.x, 172.16.x, 192.168.x, loopback, link-local)
 	// cannot be removed from the check set via config alone.
@@ -1090,7 +1090,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 				}
 			}
 		}
-		// Non-standard IP that doesn't match internal CIDRs — allow.
+		// Non-standard IP that doesn't match internal CIDRs - allow.
 		return Result{Allowed: true}
 	}
 
@@ -1143,7 +1143,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, hostname string) Result {
 	}
 
 	// Trusted domains bypass the internal-IP CIDR check. All other scanners
-	// (DLP, blocklist, entropy) still apply — only the RFC1918 resolution
+	// (DLP, blocklist, entropy) still apply - only the RFC1918 resolution
 	// check is skipped. This lets operators allowlist internal services
 	// (e.g., local inference servers) without disabling SSRF protection globally.
 	if s.IsTrustedDomain(hostname) {
@@ -1249,7 +1249,7 @@ func (s *Scanner) checkBlocklist(hostname string) Result {
 // Fragments are excluded: they are never sent to the upstream server, so CRLF
 // in a fragment cannot inject headers.
 func checkCRLF(rawURL string) Result {
-	// Strip fragment — it never reaches the server.
+	// Strip fragment - it never reaches the server.
 	if idx := strings.IndexByte(rawURL, '#'); idx != -1 {
 		rawURL = rawURL[:idx]
 	}
@@ -1336,7 +1336,7 @@ func checkPathTraversal(parsed *url.URL) Result {
 					return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
 				}
 			}
-			// <left><dd> at end of path — no trailing separator
+			// <left><dd> at end of path - no trailing separator
 			if strings.HasSuffix(lowerPath, left+dd) {
 				return Result{Allowed: false, Reason: "path traversal sequence in URL", Scanner: ScannerPathTraversal, Score: 0.7}
 			}
@@ -1559,7 +1559,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
 	// "Canary Token"). Canary is the safety net for synthetic tokens that
-	// DLP patterns don't cover. Both are evaluated — DLP wins if it matches.
+	// DLP patterns don't cover. Both are evaluated - DLP wins if it matches.
 
 	var warnMatches []WarnMatch
 
@@ -1568,7 +1568,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 	decodedQuery := IterativeDecode(parsed.RawQuery)
 
 	targets := []string{
-		parsed.String(), // full URL — catches secrets in hostname/subdomains
+		parsed.String(), // full URL - catches secrets in hostname/subdomains
 		parsed.Path,
 		decodedQuery,
 	}
@@ -1648,7 +1648,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 		}
 		// Full normalization before DLP pattern matching: strip control chars,
 		// NFKC, cross-script confusable mapping, and combining mark removal.
-		// Must match response scanning depth — otherwise attackers use homoglyphs
+		// Must match response scanning depth - otherwise attackers use homoglyphs
 		// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 		cleaned := normalize.ForDLP(target)
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
@@ -1677,7 +1677,7 @@ func (s *Scanner) checkDLP(parsed *url.URL) (Result, []WarnMatch) {
 
 	// Subsequence scan: try ordered combinations of query values (size 2-4)
 	// to catch secrets split across params with junk values interleaved.
-	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." —
+	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." -
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
 	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname())
 	warnMatches = append(warnMatches, subWarns...)
@@ -2011,7 +2011,7 @@ var nonSecretEnvNames = map[string]struct{}{
 	// Working directory and paths
 	"PWD": {}, "OLDPWD": {}, "HOME": {}, "PATH": {},
 	"TMPDIR": {}, "TEMP": {}, "TMP": {},
-	// POSIX "last command" variable — bash sets $_ to the absolute path
+	// POSIX "last command" variable - bash sets $_ to the absolute path
 	// of the previously executed command. High-entropy binary path leaks
 	// into scans whenever the parent shell ran something like
 	// /usr/local/bin/go test. Not a secret, never has been.
@@ -2243,7 +2243,7 @@ func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	}
 
 	// Check query parameter keys and values (skipped for query-excluded domains).
-	// Keys are checked too — secrets can be stuffed into parameter names.
+	// Keys are checked too - secrets can be stuffed into parameter names.
 	if !excludedQuery {
 		for key, values := range parsed.Query() {
 			if len(key) >= s.entropyMinLen {
@@ -2330,7 +2330,7 @@ const subdomainMinLabelLen = 8
 // Excludes domains listed in subdomainExclusions (e.g., RunPod, cloud services
 // that use high-entropy subdomains for legitimate purposes).
 // Uses a separate threshold from query parameter entropy because subdomains
-// have different baseline entropy — hex labels at 3.5-4.0 are suspicious
+// have different baseline entropy - hex labels at 3.5-4.0 are suspicious
 // in subdomains but common in query parameters.
 func (s *Scanner) checkSubdomainEntropy(hostname string) Result {
 	if s.subdomainEntropyThreshold <= 0 {
@@ -2434,14 +2434,14 @@ func baseDomain(hostname string) string {
 // MatchDomain checks if a hostname matches a pattern.
 // Supports wildcard patterns like "*.example.com" which matches
 // "sub.example.com", "a.b.example.com", and "example.com" itself.
-// IP addresses only support exact match — wildcards are not applied to IPs
+// IP addresses only support exact match - wildcards are not applied to IPs
 // to prevent false matches like "*.168.1.1" matching "192.168.1.1".
 func MatchDomain(hostname, pattern string) bool {
 	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
 	pattern = strings.ToLower(strings.TrimSuffix(pattern, "."))
 
 	// IP addresses: exact match only, no wildcard expansion.
-	// Dots in IPs are not domain separators — "192" is not a subdomain of "168.1.1".
+	// Dots in IPs are not domain separators - "192" is not a subdomain of "168.1.1".
 	if net.ParseIP(hostname) != nil {
 		return hostname == pattern
 	}

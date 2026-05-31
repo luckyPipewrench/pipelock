@@ -1154,7 +1154,7 @@ func TestProbeOperatorEgress(t *testing.T) {
 		env := makeProbeEnv(t, func(e *probeEnv) {
 			e.operatorUser = testOperatorUser
 			e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
-				// Empty stdout but exit 0 — pathological but
+				// Empty stdout but exit 0 - pathological but
 				// catchable.
 				return "", 0, nil
 			}
@@ -1351,7 +1351,7 @@ func TestRunVerify_SkipExitCode(t *testing.T) {
 	// security canary must not return exit 0, or CI can mistake an
 	// incomplete verification for a clean containment boundary.
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-		// Match probe 8 (curl) only — probe 11 (plk-launch) needs the
+		// Match probe 8 (curl) only - probe 11 (plk-launch) needs the
 		// default canned response so it doesn't also skip.
 		if name == testSudoCmd && containsArg(args, testAgentUser) && containsArg(args, curlPath) {
 			return testSudoNeedsPwd, 1, nil

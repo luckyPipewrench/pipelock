@@ -58,7 +58,7 @@ func TestResolveRuntime_LoadedConfigNotMutated(t *testing.T) {
 
 // TestResolveRuntime_HashReflectsAutoEnable verifies that when a runtime
 // mode triggers auto-enable, the clone's CanonicalPolicyHash differs from
-// the loaded config's — receipts and envelopes stamped with the clone's
+// the loaded config's - receipts and envelopes stamped with the clone's
 // hash will therefore match the policy the proxy enforces, not the
 // pre-resolve state.
 func TestResolveRuntime_HashReflectsAutoEnable(t *testing.T) {
@@ -382,7 +382,7 @@ func TestClone_NilSafe(t *testing.T) {
 // TestResolveRuntime_HashSemanticsStable pins the intentional split
 // between Hash() (raw YAML audit fingerprint) and CanonicalPolicyHash()
 // (effective policy attestation). After resolve, the clone's raw Hash()
-// must equal the receiver's Hash() — both refer to the on-disk YAML that
+// must equal the receiver's Hash() - both refer to the on-disk YAML that
 // was loaded. The clone's CanonicalPolicyHash() may differ because bundle
 // merge and auto-enable shift effective policy. This split is the reason
 // receipts (point-in-time audit) use Hash() and envelopes (policy

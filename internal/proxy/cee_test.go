@@ -419,7 +419,7 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 	prefix := "AKI" + "A"
 	suffix := "IOSF" + "ODNN7EXAMPLE"
 
-	// First request — prefix only.
+	// First request - prefix only.
 	result := ceeAdmit(context.Background(),
 		testCEESessionKey, []byte(prefix), nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, testCEERequestID, ceeCfg, nil, fb, sc, logger, m,
@@ -428,7 +428,7 @@ func TestCeeAdmit_FragmentDLPWarn(t *testing.T) {
 		t.Error("prefix alone should not trigger FragmentHit")
 	}
 
-	// Second request — suffix completes the secret across fragments.
+	// Second request - suffix completes the secret across fragments.
 	result = ceeAdmit(context.Background(),
 		testCEESessionKey, []byte(suffix), nil, "http://example.com", testCEEAgent,
 		testCEEClientIP, "req-2", ceeCfg, nil, fb, sc, logger, m,
@@ -505,7 +505,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 		Action: config.ActionBlock, // fragment blocks
 	}
 
-	// First request — prefix only. Entropy will fire on this one (tiny budget).
+	// First request - prefix only. Entropy will fire on this one (tiny budget).
 	prefix := "AKI" + "A"
 	result := ceeAdmit(context.Background(),
 		testCEESessionKey, []byte(prefix), nil, "http://example.com", testCEEAgent,
@@ -515,7 +515,7 @@ func TestCeeAdmit_BothEntropyAndFragment(t *testing.T) {
 		t.Error("expected EntropyHit = true on first request (tiny budget)")
 	}
 
-	// Second request — suffix completes secret across fragments AND entropy.
+	// Second request - suffix completes secret across fragments AND entropy.
 	suffix := "IOSF" + "ODNN7EXAMPLE"
 	result = ceeAdmit(context.Background(),
 		testCEESessionKey, []byte(suffix), nil, "http://example.com", testCEEAgent,

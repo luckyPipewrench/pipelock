@@ -14,7 +14,7 @@ type Verdict int
 
 const (
 	// VerdictLookalike means the address resembles an allowlisted address but isn't
-	// an exact match — possible address poisoning. Action applies.
+	// an exact match - possible address poisoning. Action applies.
 	VerdictLookalike Verdict = iota
 	// VerdictUnknown means the address is valid but not in the allowlist.
 	// unknown_action applies.
@@ -90,7 +90,7 @@ func truncateAddr(normalized string, v chainValidator) string {
 func compareHit(hit Hit, allowedKeys []string, prefixLen, suffixLen int, action, unknownAction string, v chainValidator) *Finding {
 	hitKey := v.CompareKey(hit.Normalized)
 
-	// Check for exact match first — short-circuit, no Finding.
+	// Check for exact match first - short-circuit, no Finding.
 	for _, allowed := range allowedKeys {
 		if hitKey == v.CompareKey(allowed) {
 			return nil // exact match = allow

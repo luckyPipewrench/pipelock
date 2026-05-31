@@ -33,8 +33,8 @@ const (
 	FeatureAssess = "assess"
 	// FeatureFleet gates Pipelock's fleet control plane (the conductor
 	// subsystem and the standalone audit sink). Conductor coordinates policy
-	// distribution and signed audit ingest across multiple Pipelock instances —
-	// central governance — which is the Enterprise tier per the
+	// distribution and signed audit ingest across multiple Pipelock instances -
+	// central governance - which is the Enterprise tier per the
 	// "sell coordination, not detection" doctrine.
 	FeatureFleet = "fleet"
 )

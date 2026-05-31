@@ -189,7 +189,7 @@ func DefaultPolicy(workspace string) Policy {
 			// access to other users' temp files.
 			//
 			// /dev/shm/ is allowed for Python multiprocessing and Chromium.
-			// This is a known limitation — sandboxed processes can access
+			// This is a known limitation - sandboxed processes can access
 			// same-user shared memory segments. Future: private tmpfs mount.
 			"/dev/shm/",
 		},
@@ -200,13 +200,13 @@ func DefaultPolicy(workspace string) Policy {
 		},
 		// Note: execute access follows from RODirs (grants execute on /usr/*)
 		// and RWDirs (grants execute on workspace, /tmp/). No separate exec
-		// field needed — Landlock bundles execute with read.
+		// field needed - Landlock bundles execute with read.
 		DenyReadDirs: secretDirs(),
 	}
 }
 
 // secretDirs returns paths that should never be readable inside the sandbox.
-// Only includes directories that actually exist — in containers, most of
+// Only includes directories that actually exist - in containers, most of
 // these won't be present and shouldn't block policy validation.
 func secretDirs() []string {
 	home := os.Getenv("HOME")
@@ -244,7 +244,7 @@ func ValidatePolicy(p Policy) error {
 		return nil
 	}
 
-	// Resolve secret paths too — symlinks in HOME could affect comparison.
+	// Resolve secret paths too - symlinks in HOME could affect comparison.
 	resolvedSecrets := make([]string, 0, len(secrets))
 	for _, s := range secrets {
 		resolved, err := filepath.EvalSymlinks(s)

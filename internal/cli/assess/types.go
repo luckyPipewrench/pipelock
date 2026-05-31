@@ -17,7 +17,7 @@ import (
 // Schema and scoring version constants.
 //
 // Version 2 (2026-05) added:
-//   - AssessManifest.EvidenceHashes — run records, finalize verifies. Fail-closed
+//   - AssessManifest.EvidenceHashes - run records, finalize verifies. Fail-closed
 //     on missing or tampered evidence files between run and finalize.
 //   - scoreDeploymentVerification requires non-empty Checks before awarding 100.
 //   - Discover wrapper redacts server Command, client ConfigPath, and ScannedRoot.
@@ -125,7 +125,7 @@ type AssessManifest struct {
 	// ComplianceOmittedReason explains, in the finalized manifest, why the
 	// compliance framework catalog was not attached to this assessment.
 	// Empty means the catalog was attached. Non-empty when at least one
-	// primitive was skipped, missing, or had failed evidence — in which
+	// primitive was skipped, missing, or had failed evidence - in which
 	// case the assessment cannot honestly claim framework coverage.
 	ComplianceOmittedReason string `json:"compliance_omitted_reason,omitempty"`
 }
@@ -194,7 +194,7 @@ type AssessmentSection struct {
 
 // Finding is a single security or configuration finding from the assessment.
 //
-// Evidence must be nil (omitted) or a valid JSON value — never json.RawMessage("null").
+// Evidence must be nil (omitted) or a valid JSON value - never json.RawMessage("null").
 type Finding struct {
 	SchemaVersion string          `json:"schema_version"`
 	ID            string          `json:"id"`

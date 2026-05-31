@@ -31,7 +31,7 @@ import (
 // checkAssessLicense reads the manifest to find the config, loads it,
 // resolves the license public key, verifies the token, and returns true
 // if the license includes the "assess" feature. Returns false silently
-// on any failure — the free path is the safe default.
+// on any failure - the free path is the safe default.
 func checkAssessLicense(runDir string) bool {
 	manifestPath := filepath.Join(runDir, "manifest.json")
 	data, err := os.ReadFile(filepath.Clean(manifestPath))
@@ -202,7 +202,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	// Step 2a: verify every non-skipped primitive's evidence file exists,
 	// is non-empty, and matches the hash recorded by `assess run`. This
 	// closes the window where evidence is mutated, replaced, or deleted
-	// between `run` and `finalize` — a signed bundle must reflect what
+	// between `run` and `finalize` - a signed bundle must reflect what
 	// the primitives actually produced, not what was on disk at finalize.
 	if err := verifyEvidenceIntegrity(cleanDir, &manifest); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("evidence integrity: %w", err))
@@ -227,7 +227,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 
 	// Step 3: synthesize. synthesizeAssessment may set
 	// ComplianceOmittedReason on its embedded manifest copy when partial
-	// evidence prevents an honest framework-coverage claim — propagate
+	// evidence prevents an honest framework-coverage claim - propagate
 	// that back to the manifest written to disk.
 	assessment := synthesizeAssessment(manifest, sources)
 	manifest.ComplianceOmittedReason = assessment.Manifest.ComplianceOmittedReason
@@ -237,7 +237,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	shouldEmitAttestation := opts.HasAssess && !opts.Unsigned && (opts.Attestation || opts.Badge)
 
 	// Set signed flag before rendering so the template can display the correct badge.
-	// This reflects intent (will sign), not state (has been signed) — signing happens after render.
+	// This reflects intent (will sign), not state (has been signed) - signing happens after render.
 	assessment.Signed = opts.HasAssess && !opts.Unsigned
 
 	// Load signing identity once when ANY downstream step needs it.
@@ -362,7 +362,7 @@ func runAssessFinalize(runDir string, opts assessFinalizeOpts) error {
 	manifest.Artifacts = artifacts
 
 	// Step 7: sign (if licensed and not --unsigned). signID was loaded
-	// once near the top of the function and reused here — both this
+	// once near the top of the function and reused here - both this
 	// and the attestation path share the same key material.
 	if signID != nil {
 		// Write manifest first so we can sign it.
@@ -451,7 +451,7 @@ To export as PDF:
 // rewriteAssessmentArtifacts re-renders assessment JSON and HTML after a
 // signing failure so the on-disk artifacts do not claim to be signed.
 // If re-render fails, the stale artifacts AND their hashes in the
-// artifacts map are dropped — leaving a hash that points at a file
+// artifacts map are dropped - leaving a hash that points at a file
 // that no longer exists (or worse, at a file claiming Signed=true)
 // would let verify-attestation succeed against a torn bundle.
 func rewriteAssessmentArtifacts(cleanDir string, a *Assessment, artifacts map[string]string) {
@@ -632,7 +632,7 @@ func projectToSummary(a Assessment) Summary {
 		id := f.ID
 		// Redact server names from discover findings in free tier.
 		// The free summary should show "you have unprotected servers"
-		// without naming them — names are actionable detail for paid tier.
+		// without naming them - names are actionable detail for paid tier.
 		if f.Source == sourceDiscover {
 			title = redactDiscoverTitle(f.Severity)
 			id = fmt.Sprintf("find-discover-redacted-%d", i)
@@ -807,11 +807,11 @@ func loadSigningIdentity(opts assessFinalizeOpts) (*signingIdentity, error) {
 // an error and finalize refuses to produce a report.
 //
 // Rules, in order:
-//   - manifest.EvidenceHashes must be non-empty (v2 invariant — v1 manifests
+//   - manifest.EvidenceHashes must be non-empty (v2 invariant - v1 manifests
 //     are rejected upstream by SchemaVersion check).
 //   - Every primitive not in SkippedPrimitives must have an entry.
 //   - Every entry's file must exist, be non-empty, and hash to the recorded value.
-//   - No extra EvidenceHashes entries are tolerated — keeps finalize from
+//   - No extra EvidenceHashes entries are tolerated - keeps finalize from
 //     silently trusting a future or injected primitive that this binary
 //     cannot interpret.
 //
@@ -821,7 +821,7 @@ func loadSigningIdentity(opts assessFinalizeOpts) (*signingIdentity, error) {
 // directory can update manifest.EvidenceHashes in lockstep with a
 // swapped evidence file and bypass this check. Closing that gap requires
 // signing the manifest at run time with a separate trust anchor (out of
-// scope for v2 — tracked for the next schema bump). Until then,
+// scope for v2 - tracked for the next schema bump). Until then,
 // operators running `run` and `finalize` on different machines or under
 // different principals should sign the entire run directory out of
 // band (tar + ed25519) between the two steps.

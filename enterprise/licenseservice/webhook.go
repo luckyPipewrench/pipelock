@@ -77,7 +77,7 @@ type WebhookHandler struct {
 
 	// processMu serializes processSubscription calls to prevent concurrent
 	// webhook deliveries for the same subscription_id from double-minting.
-	// Single-pod SQLite deployment with <50 customers — global mutex is fine.
+	// Single-pod SQLite deployment with <50 customers - global mutex is fine.
 	processMu sync.Mutex
 
 	// Founding Pro cap tracking. Loaded from DB at startup, mutex-protected.
@@ -290,7 +290,7 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	ent.LastLicenseProductID = ent.ProductID
 
 	// Schedule next refresh for subscription tiers only. One-time purchases
-	// (trials) expire and are done — no refresh, no cron pickup.
+	// (trials) expire and are done - no refresh, no cron pickup.
 	if ent.BillingInterval != billingIntervalOneTime {
 		nextRefresh := expiresAt.Add(-time.Duration(refreshLeadDays) * 24 * time.Hour)
 		ent.NextRefreshAt = &nextRefresh

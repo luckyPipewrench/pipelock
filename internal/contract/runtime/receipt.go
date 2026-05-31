@@ -14,7 +14,7 @@ import (
 
 // ErrInvalidProxyDecisionInput is returned when BuildProxyDecisionReceipt is
 // called with input that would fail PayloadProxyDecisionStruct validation.
-// Callers MUST treat it as a programming bug — the input fields come from
+// Callers MUST treat it as a programming bug - the input fields come from
 // pipelock's own evaluator and proxy chain, not from agent-controlled data,
 // so a missing field means the call site forgot to populate the input.
 var ErrInvalidProxyDecisionInput = errors.New("contract runtime: invalid proxy_decision receipt input")
@@ -85,7 +85,7 @@ type ProxyDecisionInput struct {
 // proxy actually applied, LiveVerdict surfaces the divergence so audit
 // consumers can reason about what live mode would have done.
 //
-// Signing is the caller's responsibility — the builder leaves
+// Signing is the caller's responsibility - the builder leaves
 // receipt.Signature zero. The caller hands the unsigned envelope to the
 // receipt signer (which knows the active key, key purpose, and chain
 // position) and writes the signed result to the flight recorder.

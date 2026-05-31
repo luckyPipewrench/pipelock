@@ -127,7 +127,7 @@ func TestBridgeProxy_Addr(t *testing.T) {
 }
 
 func TestBridgeProxy_HandleConnFailsGracefully(t *testing.T) {
-	// Bridge proxy with a nonexistent socket path — connections should
+	// Bridge proxy with a nonexistent socket path - connections should
 	// fail gracefully (log error, close conn) not panic.
 	bp, err := NewBridgeProxy("/tmp/nonexistent-socket-path-xyz.sock", "127.0.0.1:0")
 	if err != nil {
@@ -151,13 +151,13 @@ func TestBridgeProxy_HandleConnFailsGracefully(t *testing.T) {
 		t.Fatalf("dial: %v", err)
 	}
 
-	// Write something — bridge will try to connect to nonexistent socket.
+	// Write something - bridge will try to connect to nonexistent socket.
 	_, _ = fmt.Fprint(conn, "test")
 
 	// Read should get EOF or error (parent connection failed).
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
 	_, err = io.ReadAll(conn)
-	// We just verify no panic — error or EOF is fine.
+	// We just verify no panic - error or EOF is fine.
 	_ = err
 	_ = conn.Close()
 }

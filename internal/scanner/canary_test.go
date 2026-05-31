@@ -23,7 +23,7 @@ func testCanaryValue() string {
 }
 
 // testCanaryValueSpecial returns a canary with URL-encodable characters.
-// Uses / and = which percent-encode to %2F and %3D — characters that
+// Uses / and = which percent-encode to %2F and %3D - characters that
 // url.QueryUnescape decodes unambiguously (unlike + which becomes space).
 func testCanaryValueSpecial() string {
 	return "sk_test/CANARY=secret" + "Value"
@@ -116,7 +116,7 @@ func TestScan_CanaryUsesSharedTextPath(t *testing.T) {
 
 	t.Run("aws_canary_blocked_by_DLP_or_canary", func(t *testing.T) {
 		// AWS-style canary may be caught by core DLP, main DLP, or canary
-		// fallback. All are correct — the key property is it's blocked.
+		// fallback. All are correct - the key property is it's blocked.
 		canary := url.QueryEscape(testCanaryValue())
 		r := s.Scan(context.Background(), "https://evil.com/exfil?k="+canary)
 		if r.Allowed {

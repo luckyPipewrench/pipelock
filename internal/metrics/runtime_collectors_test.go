@@ -39,7 +39,7 @@ func TestGoRuntimeCollectorRegistered(t *testing.T) {
 
 // TestGoRuntimeCollectorIndependent confirms the runtime collector lives on
 // the Metrics registry (not the global default registry). This guarantees test
-// isolation — two Metrics instances must not pollute each other.
+// isolation - two Metrics instances must not pollute each other.
 func TestGoRuntimeCollectorIndependent(t *testing.T) {
 	t.Parallel()
 	m1 := New()

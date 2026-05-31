@@ -43,7 +43,7 @@ type DLPScanner interface {
 }
 
 // KeyBinding constrains a trusted audit signing key to a specific
-// (OrgID, FleetID, InstanceID) namespace. Empty fields mean "any" —
+// (OrgID, FleetID, InstanceID) namespace. Empty fields mean "any" -
 // e.g. a key bound only to OrgID="acme" can sign for any fleet or
 // instance within that org. A zero KeyBinding means the key is
 // unrestricted. Bindings are enforced AFTER signature verification:
@@ -85,7 +85,7 @@ type Options struct {
 	MaxRequestBytes int64
 	// KeyBindings, when populated, restricts each trusted signer key
 	// id to a specific (org, fleet, instance) namespace. Map keys are
-	// SignerKeyID. Missing entries default to unrestricted — callers
+	// SignerKeyID. Missing entries default to unrestricted - callers
 	// that want every key bound must populate the map for every id.
 	KeyBindings map[string]KeyBinding
 	// ReaderToken, when non-empty, requires a matching

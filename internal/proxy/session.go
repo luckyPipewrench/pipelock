@@ -84,7 +84,7 @@ type SessionEvent struct {
 type SessionState struct {
 	mu           sync.Mutex
 	key          string
-	kind         string // "identity" or "invocation" — set at creation, not inferred from key
+	kind         string // "identity" or "invocation" - set at creation, not inferred from key
 	created      time.Time
 	lastActivity time.Time
 
@@ -99,7 +99,7 @@ type SessionState struct {
 	lastEscalation   time.Time // when the current level was reached
 	atBlockAll       bool      // true when current level has block_all=true
 
-	// Behavioral baseline accumulation — collected per-session for
+	// Behavioral baseline accumulation - collected per-session for
 	// baseline learning and deviation checking.
 	requestCount int
 	bytesTotal   int64
@@ -118,7 +118,7 @@ type SessionState struct {
 
 	// recentEvents is a bounded ring buffer of notable events (blocks,
 	// anomalies, airlock transitions). Read by the operator admin API to
-	// populate inspect/explain responses — written by recordSessionActivity
+	// populate inspect/explain responses - written by recordSessionActivity
 	// and the airlock trigger path.
 	recentEvents []SessionEvent
 }
@@ -153,7 +153,7 @@ func (s *SessionState) RecordRequest(domain string, cfg *config.SessionProfiling
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	// Don't refresh activity at block_all levels — let idle eviction work.
+	// Don't refresh activity at block_all levels - let idle eviction work.
 	// Without this, blocked retries keep the session alive forever.
 	if !s.atBlockAll {
 		s.lastActivity = now
@@ -394,7 +394,7 @@ func (s *SessionState) Reset() (prevScore float64, prevLevel int) {
 // resetWhileLocked performs the in-place reset under the assumption
 // that the caller already holds both s.mu and s.airlock.mu. Extracted
 // so SnapshotAndResetIfResettable can take the snapshot and clear the
-// session in a single critical section — without this helper,
+// session in a single critical section - without this helper,
 // releasing the session/airlock locks between the snapshot copy and
 // Reset would let concurrent mutation slip state into the audit row
 // that never actually existed at the moment of terminate.
@@ -684,7 +684,7 @@ type SessionManager struct {
 	// Behavioral baseline: profile-then-lock analysis.
 	// nil when behavioral_baseline.enabled is false.
 	baselineMgr    *baseline.Manager
-	baselineAction string // "warn", "ask", or "block" — cached from config
+	baselineAction string // "warn", "ask", or "block" - cached from config
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -990,7 +990,7 @@ func (sm *SessionManager) SessionExists(key string) bool {
 // ResetSession resets enforcement state for the given identity key.
 // Also clears IP-level burst state for the client IP and decrements
 // the adaptive gauge if the session was escalated.
-// Does NOT check session kind — caller is responsible for ensuring the key
+// Does NOT check session kind - caller is responsible for ensuring the key
 // belongs to a resettable session. Prefer ResetSessionIfResettable for the
 // admin API, which atomically checks kind + resets under a single lock.
 // Returns a snapshot of the previous state and whether the key was found.
@@ -1117,7 +1117,7 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 // reset across separate locks would leave a mutation window where a
 // concurrent request-path goroutine could touch sess.threatScore,
 // sess.escalationLevel, or sess.airlock.tier between the capture and
-// the reset — resetWhileLocked closes that window by running the
+// the reset - resetWhileLocked closes that window by running the
 // reset with both session-level locks still held.
 //
 // Returns:
@@ -1408,7 +1408,7 @@ func (sm *SessionManager) withMutableIdentitySession(key string, mutate func(*Se
 // taint-only state while preserving adaptive profiling state.
 //
 // Only identity sessions are valid targets. Invocation sessions (ephemeral
-// per-request MCP session keys) cannot be mutated via the admin API — they
+// per-request MCP session keys) cannot be mutated via the admin API - they
 // represent the exact execution context the caller should NOT be allowed to
 // alter, and mirror the guardrail established by ResetSessionIfResettable.
 //
@@ -1430,7 +1430,7 @@ func (sm *SessionManager) BeginNewTask(key, label string) (prev, current session
 //
 // The returned “applied“ override carries the task ID that was bound under
 // the session mutex. Callers must use “applied.TaskID“ for response bodies
-// or logs — a second TaskSnapshot call outside the mutex would race against
+// or logs - a second TaskSnapshot call outside the mutex would race against
 // concurrent BeginNewTask rotations.
 func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.TrustOverride) (applied session.TrustOverride, found bool, err error) {
 	if override.Scope != "task" {
@@ -1445,7 +1445,7 @@ func (sm *SessionManager) AddRuntimeTrustOverride(key string, override session.T
 
 // SessionByKey returns a pointer to the session for the given key, or nil
 // when no such session exists. Unlike GetOrCreate, this does NOT create a
-// missing session — admin API lookups must not materialize phantom sessions.
+// missing session - admin API lookups must not materialize phantom sessions.
 // The returned pointer is valid for the lifetime of the session; callers
 // must not hold it across operations that may trigger eviction.
 func (sm *SessionManager) SessionByKey(key string) *SessionState {
@@ -1475,7 +1475,7 @@ func (sm *SessionManager) SnapshotByKey(key string) (SessionSnapshot, []SessionE
 //
 // The manager read lock is held across the session copy so cleanup()
 // cannot evict and GetOrCreate() cannot recreate the same key mid-read
-// — that race would let inspect/explain serialize stale state from a
+// - that race would let inspect/explain serialize stale state from a
 // session the map no longer points at. Lock order is sm > sess.
 func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, bool) {
 	sm.mu.RLock()

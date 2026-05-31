@@ -5,7 +5,7 @@
 // loader_test.go in the contract/runtime package and by the forward-proxy
 // contract gate tests in the proxy package. The smoke tests below
 // exercise the public surface so the cover profile records the package
-// — without them, go test ./... skips instrumentation here because the
+// - without them, go test ./... skips instrumentation here because the
 // package has no callers in its own _test files. Cross-package callers
 // in proxy and contract/runtime do exercise these helpers, but the
 // default Go cover mode only counts hits on packages with their own

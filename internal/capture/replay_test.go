@@ -656,7 +656,7 @@ func TestLoadAndReplay(t *testing.T) {
 	}
 	writeFixtureSession(t, dir, summary)
 
-	// Candidate config blocks safe.example.com — should produce Changed=true.
+	// Candidate config blocks safe.example.com - should produce Changed=true.
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}

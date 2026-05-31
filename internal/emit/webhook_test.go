@@ -39,7 +39,7 @@ func TestWebhookSink_BelowMinSeverity(t *testing.T) {
 		t.Fatalf("expected nil error for dropped event, got %v", err)
 	}
 
-	// Give background goroutine a moment — no request should arrive.
+	// Give background goroutine a moment - no request should arrive.
 	time.Sleep(50 * time.Millisecond)
 }
 
@@ -425,7 +425,7 @@ func TestWebhookSink_SendMarshalError(t *testing.T) {
 	sink := NewWebhookSink(srv.URL)
 	defer func() { _ = sink.Close() }()
 
-	// Emit event with unmarshalable field — json.Marshal will fail.
+	// Emit event with unmarshalable field - json.Marshal will fail.
 	err := sink.Emit(context.Background(), Event{
 		Severity:   SeverityWarn,
 		Type:       testEventBlocked,
@@ -475,7 +475,7 @@ func TestWebhookSink_SendInvalidURL(t *testing.T) {
 }
 
 func TestWebhookSink_SendConnectionRefused(t *testing.T) {
-	// Start a server and immediately close it — the URL will refuse connections.
+	// Start a server and immediately close it - the URL will refuse connections.
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
 	url := srv.URL
 	srv.Close()
@@ -522,7 +522,7 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 		t.Fatalf("second Emit: %v", err)
 	}
 
-	// Close while queue is full — exercises the <-w.done path in the second select.
+	// Close while queue is full - exercises the <-w.done path in the second select.
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		close(blocker) // unblock the server so Close can finish

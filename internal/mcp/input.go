@@ -97,7 +97,7 @@ type InputVerdict struct {
 // generating an error response (used for redirect success results).
 type BlockedRequest struct {
 	ID                json.RawMessage
-	IsNotification    bool // Notifications have no ID — don't send error response.
+	IsNotification    bool // Notifications have no ID - don't send error response.
 	LogMessage        string
 	ErrorCode         int    // 0 = use default -32001; -32002 = policy block
 	ErrorMessage      string // empty = use default message
@@ -141,7 +141,7 @@ type SessionBindingConfig struct {
 // ForwardScannedInput reads JSON-RPC 2.0 requests from reader, scans each for
 // DLP and injection patterns, and forwards clean requests to writer.
 // When policyCfg is non-nil, tool call policy rules are also checked
-// independently of content scanning — the strictest action wins.
+// independently of content scanning - the strictest action wins.
 // When bindingCfg is non-nil, tools/call requests are validated against the
 // session tool baseline.
 // When tracker is non-nil, each forwarded request's ID is recorded so the
@@ -224,11 +224,11 @@ func ForwardScannedInput(
 		if ks != nil {
 			if d := ks.IsActiveMCP(line); d.Active {
 				if d.IsNotification {
-					// Notifications have no ID — silently drop.
+					// Notifications have no ID - silently drop.
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: kill switch dropped notification (source=%s)\n",
 						lineNum, d.Source)
 				} else {
-					// Request with ID — send JSON-RPC error response.
+					// Request with ID - send JSON-RPC error response.
 					rpcID := frame.ID
 					blockedCh <- BlockedRequest{
 						ID:             rpcID,
@@ -442,7 +442,7 @@ func ForwardScannedInput(
 			})
 		}
 
-		// Pre-generate actionID for tools/call only — metadata methods
+		// Pre-generate actionID for tools/call only - metadata methods
 		// (tools/list, initialize, notifications) don't produce receipts.
 		actionID := ""
 		if verdict.Method == methodToolsCall {
@@ -599,7 +599,7 @@ func ForwardScannedInput(
 			logTaintDecision()
 		}
 
-		// All clean — forward (with block_all and CEE checks).
+		// All clean - forward (with block_all and CEE checks).
 		if verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" {
 			// block_all enforcement: deny ALL traffic (including clean) when the
 			// session is at an escalation level with block_all=true.
@@ -814,7 +814,7 @@ func ForwardScannedInput(
 			}
 			profile, ok := policyCfg.RedirectProfiles[policyVerdict.RedirectProfile]
 			if !ok {
-				// Profile not found — fail closed to block.
+				// Profile not found - fail closed to block.
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect profile %q not found]\n",
 					lineNum, method, reasonStr, policyVerdict.RedirectProfile)
 				blockedCh <- BlockedRequest{
@@ -895,7 +895,7 @@ func ForwardScannedInput(
 					}
 				}
 			} else {
-				// Redirect handler failed — fall through to block (fail-closed).
+				// Redirect handler failed - fall through to block (fail-closed).
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect failed: %s]\n",
 					lineNum, method, reasonStr, result.Error)
 				blockedCh <- BlockedRequest{
@@ -918,7 +918,7 @@ func ForwardScannedInput(
 				})
 			}
 		case config.ActionAsk:
-			// HITL for input scanning is impractical — fall back to block.
+			// HITL for input scanning is impractical - fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
 			blockedCh <- BlockedRequest{

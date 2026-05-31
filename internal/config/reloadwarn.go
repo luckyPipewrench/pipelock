@@ -81,7 +81,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 
 	// Response scanning exempt_domains: warn when the exemption surface may have
 	// widened (new/changed entries) or was cleared entirely. Subset removal
-	// (tightening) does not warn — it makes scanning stricter.
+	// (tightening) does not warn - it makes scanning stricter.
 	if len(old.ResponseScanning.ExemptDomains) > 0 && len(updated.ResponseScanning.ExemptDomains) == 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "response_scanning.exempt_domains",
@@ -319,7 +319,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
-	// Per-agent trusted_domains expanded — mirrors the global trusted_domains
+	// Per-agent trusted_domains expanded - mirrors the global trusted_domains
 	// warning above. A profile added entirely with trusted_domains is treated
 	// as an expansion (whole list is "new"). Profiles removed entirely are
 	// not flagged here; that's a profile rollback, not a trust expansion.
@@ -481,7 +481,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		}
 	}
 
-	// Sentry DSN changed (requires restart — scrubber is built once at init)
+	// Sentry DSN changed (requires restart - scrubber is built once at init)
 	if old.Sentry.DSN != updated.Sentry.DSN {
 		warnings = append(warnings, ReloadWarning{Field: "sentry.dsn", Message: "Sentry DSN changes require restart"})
 	}
@@ -613,7 +613,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	// Downgrading from sign:true to sign:false means every mediated
 	// request loses its RFC 9421 signature. Downstream verifiers that
 	// were relying on the signature as part of an admission decision
-	// will start accepting unsigned envelopes — a silent weakening of
+	// will start accepting unsigned envelopes - a silent weakening of
 	// the trust chain. Warn the operator on every such transition so a
 	// revocation shows up in logs.
 	if old.MediationEnvelope.Sign && !updated.MediationEnvelope.Sign {
@@ -674,7 +674,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		}
 	}
 
-	// Redaction disabled or default profile changed under our feet — both
+	// Redaction disabled or default profile changed under our feet - both
 	// are policy downgrades an operator should see in the reload log.
 	if old.Redaction.Enabled && !updated.Redaction.Enabled {
 		warnings = append(warnings, ReloadWarning{
@@ -740,7 +740,7 @@ func sandboxChanged(old, updated *Config) bool {
 	for name, oldProfile := range old.Agents {
 		newProfile, ok := updated.Agents[name]
 		if !ok {
-			// Agent removed — if it had sandbox overrides, that's a change.
+			// Agent removed - if it had sandbox overrides, that's a change.
 			if oldProfile.Sandbox != nil {
 				return true
 			}
@@ -814,7 +814,7 @@ func boolPtrEqual(a, b *bool) bool {
 
 // dlpPatternsChanged returns true if the DLP pattern set differs in ways that
 // affect the Sentry scrubber (count, name, or regex content). exempt_domains
-// changes are intentionally excluded — the scrubber compiles regexes only and
+// changes are intentionally excluded - the scrubber compiles regexes only and
 // does not use destination-domain exemptions.
 func dlpPatternsChanged(old, updated []DLPPattern) bool {
 	if len(old) != len(updated) {
@@ -913,7 +913,7 @@ func ssrfIPAllowlistExpanded(old, updated []string) []string {
 	for _, cidr := range updated {
 		_, ipNet, err := net.ParseCIDR(cidr)
 		if err != nil {
-			expanded = append(expanded, cidr) // malformed — warn anyway
+			expanded = append(expanded, cidr) // malformed - warn anyway
 			continue
 		}
 		covered := false

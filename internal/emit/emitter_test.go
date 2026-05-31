@@ -141,7 +141,7 @@ func TestEmitter_NilEmitter(t *testing.T) {
 func TestEmitter_EmptyEmitter(t *testing.T) {
 	em := NewEmitter(testStr)
 
-	// No sinks — should not panic.
+	// No sinks - should not panic.
 	em.Emit(context.Background(), testEventBlocked, nil)
 
 	if err := em.Close(); err != nil {

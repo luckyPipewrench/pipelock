@@ -21,9 +21,9 @@ import (
 // cross-implementation verifier (the Python reference, any third-party
 // consumer) expects the same hash for the same effective policy.
 //
-// If you INTENTIONALLY change canonical-hash semantics — a new policy
+// If you INTENTIONALLY change canonical-hash semantics - a new policy
 // field added to policySemanticView, a set-like slice graduated to
-// behavioral ordering, the default pattern corpus expanded — update
+// behavioral ordering, the default pattern corpus expanded - update
 // the constant to match the new value and note the bump in the PR
 // body. Do not silently regenerate: the whole point of this test is to
 // make the drift visible in review.
@@ -716,7 +716,7 @@ agents:
 // cache before returning; these tests call computeCanonicalPolicyHash
 // explicitly so they exercise the uncached value on that loaded
 // snapshot. Failure here means the fixture itself is invalid, not a
-// hash drift — treat it as a test-infra bug, not a production
+// hash drift - treat it as a test-infra bug, not a production
 // regression.
 func loadGoldenConfig(t *testing.T, yamlSrc string) *Config {
 	t.Helper()
@@ -781,7 +781,7 @@ func TestCanonicalPolicyHash_GoldenInvariantUnderAllowlistOrder(t *testing.T) {
 // plumbing (listen addresses, logging, license, envelope key path,
 // flight recorder dir, agents map).
 //
-// If this test drifts, policySemanticView is under-zeroing — a noise
+// If this test drifts, policySemanticView is under-zeroing - a noise
 // field is leaking into ph, and every deployment that touches that
 // field would emit receipts with a different hash despite having
 // identical effective policy.

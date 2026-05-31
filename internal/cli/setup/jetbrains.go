@@ -188,12 +188,12 @@ func runJetbrainsInstall(cmd *cobra.Command, global, project, dryRun bool, confi
 	}
 
 	if originalData != nil {
-		// File exists — use atomic write with backup.
+		// File exists - use atomic write with backup.
 		if err := atomicWriteFile(targetPath, output, true); err != nil {
 			return err
 		}
 	} else {
-		// New file — write directly.
+		// New file - write directly.
 		if err := os.WriteFile(targetPath, output, 0o600); err != nil {
 			return fmt.Errorf("writing %s: %w", targetPath, err)
 		}

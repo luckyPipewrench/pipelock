@@ -199,7 +199,7 @@ func parseConductorBaseURL(raw string) (*url.URL, error) {
 	}
 	// Reject path components. The capabilities client appends CapabilitiesPath
 	// to the base, so a base of "https://host/admin" silently produces
-	// "https://host/admin/api/v1/conductor/capabilities" — almost always a
+	// "https://host/admin/api/v1/conductor/capabilities" - almost always a
 	// misconfiguration where the operator confused base URL with a deep link.
 	// Same class of mistake as userinfo / query / fragment.
 	if u.Path != "" && u.Path != "/" {

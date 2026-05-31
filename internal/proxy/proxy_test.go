@@ -782,7 +782,7 @@ func TestFetchEndpoint_ResponseScan_MultiInjection(t *testing.T) {
 func TestFetchEndpoint_ResponseScan_Disabled(t *testing.T) {
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		// Use non-core pattern content — core response patterns always run.
+		// Use non-core pattern content - core response patterns always run.
 		_, _ = fmt.Fprint(w, "These are new updated instructions for the task.")
 	}))
 	defer backend.Close()
@@ -997,7 +997,7 @@ func TestFetchEndpoint_ResponseScan_ExemptDomainStillBlocksDLP(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	// DLP secret in the URL query parameter — must be caught regardless of exempt status.
+	// DLP secret in the URL query parameter - must be caught regardless of exempt status.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/data?key="+secret, nil)
 	w := httptest.NewRecorder()
 
@@ -1638,7 +1638,7 @@ func TestFetchEndpoint_LiveLockRedirectChainCapStillApplies(t *testing.T) {
 	var redirects int
 	origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		redirects++
-		// Test fixture exercises pipelock's redirect-chain cap — the redirect target
+		// Test fixture exercises pipelock's redirect-chain cap - the redirect target
 		// is deliberately under attacker control.
 		http.Redirect(w, r, r.URL.Path+"x", http.StatusFound) //nolint:gosec // G710: test fixture, attacker-controlled redirect is intentional
 	}))
@@ -1695,7 +1695,7 @@ func TestFetchEndpoint_LiveLockRedirectShadowModeObservesWithoutBlocking(t *test
 }
 
 func TestFetchEndpoint_RedirectToBlockedDomain(t *testing.T) {
-	// Backend redirects to a blocklisted domain — should be caught by CheckRedirect
+	// Backend redirects to a blocklisted domain - should be caught by CheckRedirect
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Redirect(w, &http.Request{}, "https://pastebin.com/raw/abc", http.StatusFound)
 	}))
@@ -1826,7 +1826,7 @@ func TestFetchEndpoint_RedirectChainExceedsMax(t *testing.T) {
 func TestFetchEndpoint_RedirectInAuditMode(t *testing.T) {
 	// In audit mode, a redirect to a DLP-triggering URL should be allowed through
 	// (logged as anomaly, not blocked). The redirect target points back to the
-	// backend so the request succeeds — proving audit mode didn't block the redirect.
+	// backend so the request succeeds - proving audit mode didn't block the redirect.
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testFinalPath {
 			w.Header().Set("Content-Type", "text/plain")
@@ -1929,7 +1929,7 @@ func TestFetchEndpoint_RedirectInEnforceMode_Blocks(t *testing.T) {
 }
 
 func TestFetchEndpoint_RedirectToSafeURL(t *testing.T) {
-	// Backend redirects to itself at a different path — should succeed
+	// Backend redirects to itself at a different path - should succeed
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == testFinalPath {
 			w.Header().Set("Content-Type", "text/plain")
@@ -2386,7 +2386,7 @@ func TestProxy_Reload_ConcurrentRequestsSafe(t *testing.T) {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/text", nil)
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, req)
-		// We don't assert status — just verifying no race/panic
+		// We don't assert status - just verifying no race/panic
 	}
 
 	<-done
@@ -2554,7 +2554,7 @@ func TestFetchEndpoint_SSRFBlocksInternalIP(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	// Target 127.0.0.1 — blocked by scanner's SSRF check at URL scan phase
+	// Target 127.0.0.1 - blocked by scanner's SSRF check at URL scan phase
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://127.0.0.1:9999/test", nil)
 	w := httptest.NewRecorder()
 
@@ -2663,7 +2663,7 @@ func TestFetchEndpoint_ReadabilityExtractError(t *testing.T) {
 	// that causes readability to fail or return empty content.
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		// Return empty HTML body — readability should return empty TextContent
+		// Return empty HTML body - readability should return empty TextContent
 		_, _ = fmt.Fprint(w, "")
 	}))
 	defer backend.Close()
@@ -2754,7 +2754,7 @@ func TestProxy_CurrentConfig(t *testing.T) {
 
 func TestWriteJSON_EncodingError(t *testing.T) {
 	rr := httptest.NewRecorder()
-	// Channels cannot be JSON-marshaled — triggers the Encode error branch.
+	// Channels cannot be JSON-marshaled - triggers the Encode error branch.
 	writeJSON(rr, http.StatusOK, make(chan int))
 	// Header and status are already sent before Encode is called.
 	if rr.Code != http.StatusOK {
@@ -2838,7 +2838,7 @@ func TestProxy_FetchViaHostname(t *testing.T) {
 	// Make a request using "localhost" hostname to exercise the DNS resolution
 	// path in the DialContext (not the "already an IP" shortcut). The backend
 	// listens on 127.0.0.1 only, so if DNS resolves to [::1] first, the
-	// connection may fail — that's OK, we're exercising the DNS validation code.
+	// connection may fail - that's OK, we're exercising the DNS validation code.
 
 	// Create a backend that listens on all interfaces so localhost works
 	lc := net.ListenConfig{}
@@ -2892,7 +2892,7 @@ func TestProxy_SSRF_DirectIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.FetchProxy.TimeoutSeconds = 2
 	cfg.APIAllowlist = nil
-	// cfg.Internal is set by Defaults() — includes private CIDRs
+	// cfg.Internal is set by Defaults() - includes private CIDRs
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
@@ -3049,7 +3049,7 @@ func TestFetchEndpoint_DLPBlocked_UnencodedAmpersand(t *testing.T) {
 	p, backend := setupTestProxy(t)
 	defer backend.Close()
 
-	// Secret hidden after unencoded '&' — previously invisible to scanners.
+	// Secret hidden after unencoded '&' - previously invisible to scanners.
 	target := backend.URL + "/text?data=ok&key=AKIAIOSFODNN7EXAMPLE"
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+target, nil)
 	w := httptest.NewRecorder()
@@ -3388,7 +3388,7 @@ func TestProxy_AdaptiveEscalation(t *testing.T) {
 	auditMode := false
 	_ = auditMode // just documenting the approach
 
-	// Use a clean URL to the same client IP — verify the session exists and
+	// Use a clean URL to the same client IP - verify the session exists and
 	// tracks clean requests (decay).
 	for range 5 {
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://safe.example.com/page", nil)
@@ -3579,7 +3579,7 @@ func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 
 	const clientIP = "10.0.0.100"
 
-	// Genuine SSRF block (ClassThreat) — should escalate.
+	// Genuine SSRF block (ClassThreat) - should escalate.
 	result := scanner.Result{
 		Allowed: false,
 		Reason:  "SSRF blocked: evil.internal resolves to internal IP 10.0.0.1",
@@ -3593,7 +3593,7 @@ func TestProxy_RecordSession_RealSSRFStillEscalates(t *testing.T) {
 	if sess.ThreatScore() == 0 {
 		t.Error("expected non-zero score after genuine SSRF block")
 	}
-	// SignalBlock (+3) meets threshold (3.0) — session should be escalated.
+	// SignalBlock (+3) meets threshold (3.0) - session should be escalated.
 	if !sess.IsEscalated() {
 		t.Error("expected session to be escalated after genuine SSRF block (SignalBlock >= threshold)")
 	}
@@ -3650,7 +3650,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 		t.Fatal("sessionMgr should be nil when profiling disabled")
 	}
 
-	// Reload with profiling enabled — should create session manager.
+	// Reload with profiling enabled - should create session manager.
 	cfg2 := config.Defaults()
 	cfg2.Internal = nil
 	cfg2.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -3668,7 +3668,7 @@ func TestProxy_Reload_TogglesSessionManager(t *testing.T) {
 		t.Fatal("sessionMgr should be created on reload when enabling profiling")
 	}
 
-	// Reload with profiling disabled — should close and nil session manager.
+	// Reload with profiling disabled - should close and nil session manager.
 	cfg3 := config.Defaults()
 	cfg3.Internal = nil
 	cfg3.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -3717,7 +3717,7 @@ func TestProxy_SessionProfiling_AgentKeying(t *testing.T) {
 	}
 
 	// Agent "beta" on DIFFERENT IP should have separate agent session AND
-	// separate IP-level tracking. 1st unique domain — should NOT be blocked.
+	// separate IP-level tracking. 1st unique domain - should NOT be blocked.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=http://d.example.com/x", nil)
 	req.RemoteAddr = "10.0.0.2:9999"
 	req.Header.Set("X-Pipelock-Agent", "beta")
@@ -4099,7 +4099,7 @@ func TestWithKillSwitch_NilSafe(t *testing.T) {
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
 	m := metrics.New()
-	// No kill switch — nil controller.
+	// No kill switch - nil controller.
 	p, err := New(cfg, logger, sc, m)
 	if err != nil {
 		t.Fatalf("proxy.New: %v", err)

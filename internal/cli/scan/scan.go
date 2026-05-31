@@ -1,7 +1,7 @@
 // Package scan implements the `pipelock scan` command: it inspects files for
 // invisible-Unicode and bidi-control injection (the supply-chain vector that
 // hides instructions in agent-context files). It complements the network
-// scanner — pipelock the proxy never sees files at rest, so this surfaces the
+// scanner - pipelock the proxy never sees files at rest, so this surfaces the
 // local-file half of the attack and lets pre-commit hooks and CI gate on it.
 package scan
 

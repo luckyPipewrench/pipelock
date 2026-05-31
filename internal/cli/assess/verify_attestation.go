@@ -88,7 +88,7 @@ Examples:
 // runAssessVerifyAttestation verifies the attestation payload and signature.
 func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) {
 	// Reuse the existing bundle integrity check first.
-	// Both error AND non-zero exit code must abort — verifyExitUnsigned
+	// Both error AND non-zero exit code must abort - verifyExitUnsigned
 	// (no manifest.json.sig) means a forged manifest could hide tampered artifacts.
 	if exitCode, err := runAssessVerify(runDir, agent, keystoreDir); exitCode != 0 || err != nil {
 		if err == nil {
@@ -146,7 +146,7 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 		return verifyExitTamperedArtifact, fmt.Errorf("primary artifact hash mismatch")
 	}
 
-	// Verify attestation signature exists — distinguish stripped sig (tampered)
+	// Verify attestation signature exists - distinguish stripped sig (tampered)
 	// from absent attestation (verifyExitUnsigned already returned above).
 	sigPath := attPath + signing.SigExtension
 	if _, err := os.Stat(sigPath); err != nil {

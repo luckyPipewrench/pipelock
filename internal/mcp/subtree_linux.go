@@ -23,7 +23,7 @@ import (
 // cleanup path can run. On those paths the kernel still reaps the
 // direct child via the parent-death signal, and any grandchildren the
 // subreaper had adopted become reparented to PID 1 the moment pipelock
-// dies — at which point we've already lost the race, but shortening
+// dies - at which point we've already lost the race, but shortening
 // the direct-child's lifetime closes the common case. Linux-only.
 func setPdeathsig(cmd *exec.Cmd) {
 	if cmd == nil {
@@ -53,7 +53,7 @@ func enableSubreaper() error {
 // a child of the original process group and the earlier -pid SIGKILL
 // would not have reached it.
 //
-// We don't return errors — best-effort. A process we can't signal
+// We don't return errors - best-effort. A process we can't signal
 // (ESRCH because it already died, EPERM because of a namespace boundary)
 // is handled the same way: skip and move on.
 func killAdoptedDescendants() {
@@ -101,7 +101,7 @@ func killAdoptedDescendants() {
 		if ppid != pid {
 			continue
 		}
-		// Best-effort SIGKILL — ignore errors.
+		// Best-effort SIGKILL - ignore errors.
 		_ = syscall.Kill(childPID, syscall.SIGKILL)
 	}
 }

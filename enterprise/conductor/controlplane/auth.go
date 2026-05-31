@@ -235,7 +235,7 @@ func scopedCredentialAllows(cred ScopedBearerCredential, orgID, fleetID string) 
 // StaticAuditKeyResolver builds an [AuditKeyResolver] from a fixed roster of
 // trusted audit keys. Each key MUST be scoped to at least an OrgID. A key with
 // an empty OrgID would let any enrolled follower across any org sign audit
-// batches authenticated by that key — the per-batch
+// batches authenticated by that key - the per-batch
 // validateAuditBatchForIdentity check rejects envelopes that claim a different
 // identity than the authenticated transport, but it cannot detect a resolver
 // that hands out cross-org signing material. FleetID and InstanceID remain

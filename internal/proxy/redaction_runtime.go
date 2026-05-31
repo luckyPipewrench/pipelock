@@ -122,7 +122,7 @@ func currentRedactionRuntimeForConfig(cfg *config.Config, ptr *atomic.Pointer[re
 	if cfg == nil || !cfg.Redaction.Enabled {
 		return nil
 	}
-	// cfg says redaction is required but no matcher is available — this can
+	// cfg says redaction is required but no matcher is available - this can
 	// only happen before startup setup runs. Keep the fail-closed sentinel
 	// so request handlers block instead of silently skipping.
 	return &redactionRuntime{

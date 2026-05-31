@@ -15,7 +15,7 @@ import (
 // ~/.local/share/pipelock/rules/. Without this, tests that exercise
 // rules.MergeIntoConfig pick up the operator's installed bundles and fail
 // when a bundle's min_pipelock requirement exceeds the dev-build version
-// constant ("0.1.0-dev" from cliutil/version.go) — a coupling between the
+// constant ("0.1.0-dev" from cliutil/version.go) - a coupling between the
 // test binary and the developer's machine state.
 //
 // XDG_DATA_HOME must be an absolute path: rules.ResolveRulesDir only

@@ -23,7 +23,7 @@ import (
 //
 // The check is best-effort. Running without privileges to read another
 // user's /proc/<pid>/fd entries leaves those holders identified by inode
-// but unmapped (PID=0); callers surface that as "another process — re-run
+// but unmapped (PID=0); callers surface that as "another process - re-run
 // as root to identify".
 func enumerateListenerHolders() (map[uint16][]procListener, error) {
 	holders := make(map[uint16][]procListener)
@@ -38,7 +38,7 @@ func enumerateListenerHolders() (map[uint16][]procListener, error) {
 		}
 	}
 	if len(holders) == 0 {
-		// No listen sockets in /proc/net/tcp[6] — unusual but possible in
+		// No listen sockets in /proc/net/tcp[6] - unusual but possible in
 		// minimal containers. Return empty map (callers treat as "no
 		// holder," not as an error) so configured listeners are reported
 		// as free.
@@ -195,7 +195,7 @@ func matchInodeToPID(holders map[uint16][]procListener) {
 			return
 		}
 	}
-	// Any holder still keyed by inode is one whose PID we couldn't see —
+	// Any holder still keyed by inode is one whose PID we couldn't see -
 	// reset its Cmdline to empty so callers surface "unknown holder (PID 0)"
 	// rather than the internal inode marker.
 	for port, portHolders := range holders {

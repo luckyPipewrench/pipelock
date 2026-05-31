@@ -4,7 +4,7 @@
 // Package integrity provides file integrity monitoring for agent workspaces.
 //
 // It generates SHA256 manifests of directory contents and detects unauthorized
-// modifications, additions, and deletions — the foundation for securing
+// modifications, additions, and deletions - the foundation for securing
 // inter-agent communication channels.
 package integrity
 

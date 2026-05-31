@@ -997,7 +997,7 @@ func TestRecorder_RedactionCleanResult(t *testing.T) {
 func TestRecorder_RedactionMarshalError(t *testing.T) {
 	dir := t.TempDir()
 
-	// Redact function — won't be called since marshal of channel fails
+	// Redact function - won't be called since marshal of channel fails
 	redactFn := func(_ context.Context, text string) scanner.TextDLPResult {
 		return scanner.TextDLPResult{Clean: false, Matches: []scanner.TextDLPMatch{
 			{PatternName: "test"},

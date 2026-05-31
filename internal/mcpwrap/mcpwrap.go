@@ -8,7 +8,7 @@
 // The wrap is config-format agnostic: it operates on a single decoded server
 // entry (map[string]interface{}) using the conventional MCP fields
 // (command/args/env for stdio, url/headers for HTTP). The same engine backs
-// pipelock's VS Code, Cursor, Cline, OpenCode, Zed, and Hermes integrations —
+// pipelock's VS Code, Cursor, Cline, OpenCode, Zed, and Hermes integrations -
 // the only per-integration difference is how each config file is read,
 // serialized, and where its server map lives.
 //
@@ -26,9 +26,9 @@
 //
 // Migration status: the VS Code / Cline / OpenCode / Zed / JetBrains installers
 // under internal/cli/setup predate this package and still carry their own copy
-// of the wrap logic. Moving them onto this package — one installer family at a
+// of the wrap logic. Moving them onto this package - one installer family at a
 // time, gated by golden parity tests that compare wrapped JSON, metadata, and
-// sidecar output against the existing implementation — is tracked as a focused
+// sidecar output against the existing implementation - is tracked as a focused
 // follow-up so a feature did not have to depend on a broad installer refactor.
 // Two behaviors here are intentional, parity-affecting improvements over those
 // installers: type-less configs infer transport from url presence (rather than
@@ -123,8 +123,8 @@ func IsHTTPType(t string) bool { return t != TypeStdio && t != "" }
 //     host launches it correctly; unwrap restores the original type.
 //   - Omitted `type` (e.g. Hermes, Cline): the transport is inferred from the
 //     presence of `url` (HTTP) vs `command` (stdio). The wrapped entry omits
-//     `type` entirely — the wrapped form is always a stdio subprocess, which
-//     these hosts infer from the `command` key — so no field foreign to the
+//     `type` entirely - the wrapped form is always a stdio subprocess, which
+//     these hosts infer from the `command` key - so no field foreign to the
 //     host's schema is introduced.
 func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath, serverName string) (map[string]interface{}, *Meta, *SidecarOp, error) {
 	serverType, _ := server[FieldType].(string)
@@ -211,7 +211,7 @@ func WrapServer(server map[string]interface{}, exe, configFile, targetConfigPath
 		// OriginalHeaders is retained in metadata so unwrap restores the source
 		// headers block faithfully and self-containedly (no dependency on the
 		// sidecar still existing). This is the SAME file-level exposure as the
-		// operator's original `headers:` block — the sidecar's purpose is to
+		// operator's original `headers:` block - the sidecar's purpose is to
 		// prevent the NEW exposure that wrapping would otherwise add: credential
 		// values on the child argv, visible to all local users via
 		// /proc/<pid>/cmdline. Scrubbing the token from the config entirely

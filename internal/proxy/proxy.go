@@ -89,7 +89,7 @@ const (
 	// admission time so RoundTrip uses the same signing state that
 	// ServeHTTP used to decide "signing is on." Without this, a
 	// reload between ServeHTTP and RoundTrip could flip signing on/off
-	// mid-request — a TOCTOU race flagged by CodeRabbit on PR #403.
+	// mid-request - a TOCTOU race flagged by CodeRabbit on PR #403.
 	ctxKeyReverseEnvelopeEmitter
 
 	// ctxKeyEnvelopeEmitter snapshots the fetch/forward envelope emitter
@@ -218,7 +218,7 @@ func redirectBlockedInfo(blockedErr *blockedRequestError) blockreason.Info {
 		}
 	}
 	// A request_policy block on a redirect hop must surface its own reason
-	// code (and policy retry hint), not the generic redirect_scan_denied — the
+	// code (and policy retry hint), not the generic redirect_scan_denied - the
 	// layer header alone would otherwise misreport the enforcing layer.
 	if blockedErr != nil && blockedErr.layer == blockLayerRequestPolicy {
 		return blockInfoFor(blockreason.RequestPolicyDeny, "")
@@ -612,7 +612,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			// forward-proxy redirects log and audit as "forward" and
 			// fetch-proxy redirects log as "fetch". Hard-coding
 			// TransportFetch here mislabels every forward-proxy
-			// redirect — both paths share p.client and therefore
+			// redirect - both paths share p.client and therefore
 			// share this CheckRedirect closure.
 			redirectTransport := TransportFetch
 			if t, ok := req.Context().Value(ctxKeyRedirectTransport).(string); ok && t != "" {
@@ -712,7 +712,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 //
 // stdlib's redirect machinery copies headers from via[0] to the new
 // req before calling CheckRedirect. That copy includes the original
-// Pipelock-Mediation header verbatim — its @target-uri / action /
+// Pipelock-Mediation header verbatim - its @target-uri / action /
 // timestamp are now stale, and any pipelock1 signature on the
 // headers signs a base string for the pre-redirect URL. Without
 // this refresh a downstream verifier would reject the redirected
@@ -728,7 +728,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 //     redirects (303 POST→GET) the stdlib nil's out req.Body and
 //     GetBody, so body bytes are nil and content-digest drops.
 //  4. Strip any stale Content-Digest the copy propagated from via[0]
-//     — the signer will set a fresh one if body bytes are present.
+//     - the signer will set a fresh one if body bytes are present.
 //  5. Call emitter.InjectAndSign on req with the rebuilt BuildOpts.
 //
 // Any failure to refresh or re-sign the redirected request aborts the
@@ -785,7 +785,7 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 		if parseErr != nil {
 			p.logger.LogAnomaly(actx, "",
 				fmt.Sprintf("envelope refresh: parsing prior envelope failed: %v", parseErr), 0.1)
-			// Fall through with zero-value prev — the refresh will
+			// Fall through with zero-value prev - the refresh will
 			// still install a new envelope.
 		} else {
 			prev = parsed
@@ -855,7 +855,7 @@ func (p *Proxy) refreshEnvelopeForRedirect(req *http.Request, via []*http.Reques
 	//    downgraded a POST to a GET (303).
 	actionID := prev.ReceiptID
 	if actionID == "" {
-		// No prior envelope to preserve ReceiptID from — mint a
+		// No prior envelope to preserve ReceiptID from - mint a
 		// fresh one. This is unusual but survives a nil-prev hop.
 		actionID = receipt.NewActionID()
 	}
@@ -944,7 +944,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 
 // emitReceipt creates and records a signed action receipt for a proxy decision.
 // Safe to call when the emitter is nil (no-op). The call is synchronous
-// through the recorder mutex — same cost as recordDecision. Errors are logged
+// through the recorder mutex - same cost as recordDecision. Errors are logged
 // but not propagated.
 //
 // On emit failure the wrapped error carries every receipt field so an
@@ -970,7 +970,7 @@ func (p *Proxy) emitReceipt(opts receipt.EmitOpts) {
 // stored under p.envelopeEmitterPtr while the config is still the old one.
 type receiptEmitterStage struct {
 	// emitter is the new *receipt.Emitter to install. A nil value means
-	// "receipts are intentionally disabled for this cfg" — either no
+	// "receipts are intentionally disabled for this cfg" - either no
 	// signing key path is set or the recorder is nil. The caller should
 	// Store(nil) on publish in that case and also reset receiptKeyPath
 	// to "" via the keyPath field.
@@ -989,8 +989,8 @@ type receiptEmitterStage struct {
 //
 // Return value semantics:
 //
-//   - (stage, nil) — staging succeeded. Publish via Store/assignment.
-//   - (_, non-nil) — staging failed. Caller MUST abort the config swap.
+//   - (stage, nil) - staging succeeded. Publish via Store/assignment.
+//   - (_, non-nil) - staging failed. Caller MUST abort the config swap.
 //     Signed receipts are part of the evidence contract; swapping cfg
 //     while keeping an old receipt emitter would attest the wrong policy
 //     hash for future actions.
@@ -998,7 +998,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	keyPath := cfg.FlightRecorder.SigningKeyPath
 
 	if keyPath == "" {
-		// No signing key configured — receipts are disabled for this
+		// No signing key configured - receipts are disabled for this
 		// cfg. Stage a nil emitter; Reload will clear both pointers.
 		return receiptEmitterStage{}, nil
 	}
@@ -1006,7 +1006,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 	if p.recorder == nil {
 		// No recorder means receipts have nowhere to land regardless
 		// of config. Treat this as "receipts disabled" from a staging
-		// perspective — the caller won't touch receipt state.
+		// perspective - the caller won't touch receipt state.
 		return receiptEmitterStage{keyPath: p.receiptKeyPath}, nil
 	}
 
@@ -1036,7 +1036,7 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 type envelopeEmitterStage struct {
 	// enabled reports whether the cfg wants envelope emission at all.
 	// When false, the publish step should Store(nil) regardless of
-	// what emitter holds — the field mirrors the disable-path that
+	// what emitter holds - the field mirrors the disable-path that
 	// used to live in reloadEnvelopeEmitter.
 	enabled bool
 	// emitter is the freshly constructed *envelope.Emitter to install
@@ -1053,14 +1053,14 @@ type envelopeEmitterStage struct {
 //
 // Return value semantics:
 //
-//   - (stage, nil) — staging succeeded. Publish via Store on publish.
-//   - (_, non-nil) — staging failed. Caller MUST abort the config swap.
+//   - (stage, nil) - staging succeeded. Publish via Store on publish.
+//   - (_, non-nil) - staging failed. Caller MUST abort the config swap.
 //     The previous emitter is left in place so in-flight traffic keeps
 //     its signing invariant until operator intervention. This is the
 //     fail-closed resolution for the "reload with unreadable signing
 //     key" case: never silent-downgrade to unsigned.
 //
-// The fallback hash is the GLOBAL config's CanonicalPolicyHash — what
+// The fallback hash is the GLOBAL config's CanonicalPolicyHash - what
 // a request without a resolved per-agent config sees. Transports that
 // have a per-agent effective *Config MUST pass envelope.PolicyHashFromHex
 // of that resolved config's canonical hash via BuildOpts.PolicyHash so
@@ -1468,7 +1468,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			old.Close()
 		}
 	} else if wasEnabled && isEnabled {
-		// Config values changed while profiling stays enabled — update in place
+		// Config values changed while profiling stays enabled - update in place
 		// so TTL/capacity thresholds take effect without losing session state.
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
 			sm.UpdateConfig(&cfg.SessionProfiling, adaptiveCfg, airlockCfg)
@@ -1489,7 +1489,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	p.updateCEEStats()
 
 	// Receipt emitter hash is updated by the receipt emitter build above.
-	// No separate UpdateConfigHash needed — emitter is always (re)created
+	// No separate UpdateConfigHash needed - emitter is always (re)created
 	// with the current cfg.Hash() when a signing key is configured.
 	return true
 }
@@ -1524,7 +1524,7 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 
 // Close releases resources owned by the proxy (session manager goroutine,
 // agent registry scanners). Safe to call multiple times. Does not stop the
-// HTTP server — use context cancellation in Start() for that.
+// HTTP server - use context cancellation in Start() for that.
 // RegisterAgentServer adds an externally-managed agent server to the
 // proxy's shutdown list. Called by the CLI layer after binding agent
 // listeners, so Start()'s shutdown goroutine can gracefully stop them.
@@ -1908,7 +1908,7 @@ func inboundEnvelopeFailurePattern(err error) string {
 }
 
 func verifyInboundEnvelope(r *http.Request, cfg *config.Config, verifier *envelope.Verifier) error {
-	// nil cfg is a programming error in callers — there is no path
+	// nil cfg is a programming error in callers - there is no path
 	// where verify-inbound is honored against an absent config. Fail
 	// closed instead of silently skipping verification.
 	if cfg == nil {
@@ -1921,9 +1921,9 @@ func verifyInboundEnvelope(r *http.Request, cfg *config.Config, verifier *envelo
 		return fmt.Errorf("inbound envelope verifier is not available")
 	}
 	// Cheap header check before draining the body. Without this, every
-	// inbound body-bearing request — including ones with no envelope
+	// inbound body-bearing request - including ones with no envelope
 	// header that would be rejected on the first line of VerifyRequest
-	// — gets fully buffered up to max_body_bytes. That is a free
+	// - gets fully buffered up to max_body_bytes. That is a free
 	// amplification surface for unauthenticated callers.
 	if r != nil && r.Header.Get(envelope.HeaderName) == "" {
 		return &envelope.VerificationError{
@@ -2634,7 +2634,7 @@ func (p *Proxy) ShieldEngine() *shield.Engine {
 // dialer for the same hardened dial path the agent-facing transports use.
 // Generic reverse-proxy mode (Profile == "") continues to dial via the
 // default transport because the operator is presumed to have already
-// chosen the upstream — the trust model differs.
+// chosen the upstream - the trust model differs.
 func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return p.ssrfSafeDialContext
 }
@@ -2645,7 +2645,7 @@ func (p *Proxy) SafeDialer() func(ctx context.Context, network, addr string) (ne
 // the body-scan exempt list, and the adaptive-enforcement exempt list. Before
 // this, an operator who configured "*.cloudflare.com" silently got zero
 // matches because shield used exact-match while everything else used
-// MatchDomain — a parity gap, not a hardening gain.
+// MatchDomain - a parity gap, not a hardening gain.
 func isShieldExempt(hostname string, exempts []string) bool {
 	for _, pattern := range exempts {
 		if scanner.MatchDomain(hostname, pattern) {
@@ -2706,7 +2706,7 @@ func (p *Proxy) ssrfSafeDialContext(ctx context.Context, network, addr string) (
 		}
 		if currentSc.IsInternalIP(ip) {
 			if isTrusted || currentSc.IsIPAllowlisted(ip) {
-				// Trusted domain or IP-allowlisted address — allow.
+				// Trusted domain or IP-allowlisted address - allow.
 				// The scanner-level checkSSRF handles the authoritative
 				// allow/deny decision and logging.
 				continue
@@ -2933,7 +2933,7 @@ func (p *Proxy) Start(ctx context.Context) error {
 	}()
 
 	// Warn if listen address exposes metrics/stats to the network.
-	// Skip when metrics_listen is set — metrics are on a separate port.
+	// Skip when metrics_listen is set - metrics are on a separate port.
 	if cfg.MetricsListen == "" {
 		if host, _, splitErr := net.SplitHostPort(cfg.FetchProxy.Listen); splitErr == nil {
 			ip := net.ParseIP(host)
@@ -3163,7 +3163,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// end when no finding was detected. A near-miss (scored but allowed) counts
 	// as a finding to prevent inadvertent score decay. IsAdaptiveNeutral excludes
 	// both protective enforcement (rate limiting) AND infrastructure errors (DNS
-	// resolver timeouts) from the finding classification — neither is evidence
+	// resolver timeouts) from the finding classification - neither is evidence
 	// of threat.
 	hasFinding := (!result.Allowed && !result.IsAdaptiveNeutral()) || (result.Score > 0 && result.Allowed)
 	var fetchGate ContractGateOutput
@@ -3199,7 +3199,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			}
 			// Redact the echoed URL when the block came from a
 			// content-matching scanner (DLP, seed-phrase, address
-			// protection, etc.) — the URL itself likely carries the
+			// protection, etc.) - the URL itself likely carries the
 			// secret-shaped bytes that fired the match. Without this,
 			// the 403 response body leaks the credential back to the
 			// caller (round-5 of the pre-tag gate finding: structured log redaction
@@ -3697,7 +3697,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch the URL — attach clientIP/requestID/agent and resolved agent
+	// Fetch the URL - attach clientIP/requestID/agent and resolved agent
 	// config/scanner to context for redirect logging and per-agent redirect enforcement.
 	ctx := context.WithValue(r.Context(), ctxKeyClientIP, clientIP)
 	ctx = context.WithValue(ctx, ctxKeyRequestID, requestID)
@@ -3724,7 +3724,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Inject mediation envelope (and attach RFC 9421 signature when
 	// the envelope emitter has a signer) before forwarding on the
 	// allow path. The fetch handler only builds GET requests
-	// internally — there is no request body to sign over, so
+	// internally - there is no request body to sign over, so
 	// InjectAndSign is called with body=nil and the signer drops
 	// content-digest from the declared component list.
 	if envEmitter != nil {
@@ -4240,7 +4240,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	bundleRules := responseBundleRules(result.Matches)
 
 	// Adaptive enforcement: upgrade the response action before the switch.
-	// Exempt domains are pinned to warn — the operator's trust decision
+	// Exempt domains are pinned to warn - the operator's trust decision
 	// overrides adaptive escalation. This prevents death spirals where LLM
 	// responses naturally contain instruction-like text.
 	action := sc.ResponseAction()
@@ -4261,7 +4261,7 @@ func (p *Proxy) filterAndActOnResponseScan(
 	}
 
 	// recordResponseSignal records an adaptive enforcement signal for the
-	// response scan result. Exempt domains skip scoring — their findings
+	// response scan result. Exempt domains skip scoring - their findings
 	// are logged but don't contribute to session escalation.
 	recordResponseSignal := func(sig session.SignalType) {
 		if exempt {
@@ -4396,7 +4396,7 @@ func stripFetchControlChars(s string) string {
 // extractTargetURL extracts the full target URL from the request query string.
 // Standard url.Values parsing splits on '&', which silently truncates unencoded
 // target URLs: /fetch?url=https://example.com/?a=b&secret=key is parsed as two
-// separate params (url=…a=b, secret=key) — the secret escapes all scanners.
+// separate params (url=…a=b, secret=key) - the secret escapes all scanners.
 //
 // This function detects truncation by checking for unrecognized query params
 // (the /fetch endpoint only uses "url" and "agent") and falls back to raw
@@ -4411,7 +4411,7 @@ func extractTargetURL(r *http.Request) string {
 	// If only recognized params exist, standard parsing was correct.
 	for key := range query {
 		if key != "url" && key != "agent" {
-			// Unknown param — target URL contains unencoded '&' and was truncated.
+			// Unknown param - target URL contains unencoded '&' and was truncated.
 			return extractRawURLParam(r.URL.RawQuery)
 		}
 	}
@@ -4492,7 +4492,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp.TLSInterceptionEnabled = cfg.TLSInterception.Enabled
 	}
 	if p.ks != nil {
-		// Read-only kill switch status — no auth needed. Lets operators
+		// Read-only kill switch status - no auth needed. Lets operators
 		// see kill switch state from the main port even when the API
 		// is on a separate port.
 		for _, active := range p.ks.Sources() {

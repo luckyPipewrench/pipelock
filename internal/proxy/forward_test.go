@@ -2108,7 +2108,7 @@ func TestBidirectionalCopy(t *testing.T) {
 func TestConnectCEEEntropyBlocked(t *testing.T) {
 	// After removing CONNECT hostname from the CEE entropy budget, repeated
 	// CONNECT requests must NOT trigger entropy budget exceeded. The hostname
-	// is the destination, not exfiltration data — recording it caused
+	// is the destination, not exfiltration data - recording it caused
 	// legitimate polling (e.g. Telegram getUpdates) to exhaust the budget
 	// and trigger adaptive escalation to block_all.
 	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
@@ -2898,7 +2898,7 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	client := &http.Client{Transport: transport}
 
 	// DLP pattern fires on the query string. In audit mode with no escalation,
-	// the proxy must warn and allow — not block.
+	// the proxy must warn and allow - not block.
 	reqURL := backend.URL + "/?" + testSecret + "=1"
 	req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
 	if reqErr != nil {
@@ -3115,7 +3115,7 @@ func TestSSRFSafeDialContext_TrustedDomainBypassesSSRF(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// localhost is in internal range but is trusted — dial should succeed.
+	// localhost is in internal range but is trusted - dial should succeed.
 	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:"+port)
 	if err != nil {
 		t.Fatalf("expected trusted localhost to bypass SSRF and connect, got: %v", err)
@@ -3141,7 +3141,7 @@ func TestSSRFSafeDialContext_TrustedDomainStillBlockedWhenNotTrusted(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// localhost is NOT trusted — should be blocked
+	// localhost is NOT trusted - should be blocked
 	_, err = p.ssrfSafeDialContext(ctx, "tcp", "localhost:443")
 	if err == nil {
 		t.Fatal("expected SSRF block for non-trusted localhost")
@@ -3170,7 +3170,7 @@ func TestSSRFSafeDialContext_DirectIPWithTrustedDomain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Raw IP 127.0.0.1 should STILL be blocked — trusted domains only match hostnames.
+	// Raw IP 127.0.0.1 should STILL be blocked - trusted domains only match hostnames.
 	_, err = p.ssrfSafeDialContext(ctx, "tcp", "127.0.0.1:443")
 	if err == nil {
 		t.Fatal("expected SSRF block for raw IP even with trusted domains configured")
@@ -3206,7 +3206,7 @@ func TestSSRFSafeDialContext_IPAllowlistBypassesSSRF(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// localhost is internal but IP-allowlisted — dial should succeed.
+	// localhost is internal but IP-allowlisted - dial should succeed.
 	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "localhost:"+port)
 	if err != nil {
 		t.Fatalf("expected IP-allowlisted localhost to bypass SSRF, got: %v", err)
@@ -3240,7 +3240,7 @@ func TestSSRFSafeDialContext_IPAllowlistDirectIPBypass(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Direct IP that's in the IP allowlist — should succeed.
+	// Direct IP that's in the IP allowlist - should succeed.
 	conn, err := p.ssrfSafeDialContext(ctx, "tcp", "127.0.0.1:"+port)
 	if err != nil {
 		t.Fatalf("expected IP-allowlisted direct IP to bypass SSRF, got: %v", err)
@@ -3266,7 +3266,7 @@ func TestSSRFSafeDialContext_IPAllowlistPartialRange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// 10.0.0.1 is internal and NOT in the IP allowlist — should be blocked.
+	// 10.0.0.1 is internal and NOT in the IP allowlist - should be blocked.
 	_, err = p.ssrfSafeDialContext(ctx, "tcp", "10.0.0.1:443")
 	if err == nil {
 		t.Fatal("expected SSRF block for IP not in IP allowlist")
@@ -3472,7 +3472,7 @@ func TestForwardHTTP_CompressedSSE_GzipFailsClosed(t *testing.T) {
 				w.Header().Set("Content-Encoding", enc)
 				w.Header().Set("Cache-Control", "no-cache")
 				w.WriteHeader(http.StatusOK)
-				// Body content is irrelevant — pipelock must see the
+				// Body content is irrelevant - pipelock must see the
 				// Content-Encoding header and fail closed BEFORE reading.
 				_, _ = w.Write([]byte("data: payload\n\n"))
 			}))

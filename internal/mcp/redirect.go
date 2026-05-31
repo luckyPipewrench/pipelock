@@ -37,7 +37,7 @@ type RedirectRuntime struct {
 }
 
 // argsDigest returns a SHA-256 prefix + length summary of tool arguments
-// for audit logging. Never log raw args — they may contain secrets.
+// for audit logging. Never log raw args - they may contain secrets.
 func argsDigest(args string) string {
 	h := sha256.Sum256([]byte(args))
 	return fmt.Sprintf("sha256:%s len=%d", hex.EncodeToString(h[:8]), len(args))

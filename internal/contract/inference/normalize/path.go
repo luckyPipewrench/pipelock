@@ -25,7 +25,7 @@ const AlgorithmFrequencyWeightedEntropyV1 = "frequency_weighted_entropy_v1"
 // generous bound: real-world recorder paths above 2048 are almost
 // always pathological (encoded payload smuggling, fuzz noise, or
 // mis-decoded binary). We reject these at the boundary rather than try
-// to normalize them — a normalize step that succeeds on a 100 KB path
+// to normalize them - a normalize step that succeeds on a 100 KB path
 // is a DoS amplifier on the compile pipeline.
 const maxPathBytes = 2048
 
@@ -33,7 +33,7 @@ const maxPathBytes = 2048
 // DecideConfig.EntropyThresholdBits accepted by Validate. A single
 // segment can carry at most log2(N_distinct) bits of entropy, and
 // requiring more than 8 bits before we collapse means even 256
-// distinct values per segment wouldn't be enough — almost certainly a
+// distinct values per segment wouldn't be enough - almost certainly a
 // config typo (e.g. someone wrote "30" thinking percent).
 const EntropyThresholdMaxBits = 8.0
 
@@ -47,7 +47,7 @@ var (
 
 	// ErrPathTooLong signals the raw input exceeded maxPathBytes
 	// after no normalization. The byte length, not the rune count,
-	// is the gate — a multi-byte UTF-8 sequence still costs bytes
+	// is the gate - a multi-byte UTF-8 sequence still costs bytes
 	// downstream.
 	ErrPathTooLong = errors.New("normalize: path exceeds 2048 chars")
 
@@ -80,7 +80,7 @@ var ErrInvalidDecideConfig = errors.New("normalize: invalid decide config")
 //     slashes, segments containing literal '/' after decode.
 //
 // Only path topology is validated here. Host, query, and fragment are
-// the caller's responsibility — Bucket.Host comes from a separate
+// the caller's responsibility - Bucket.Host comes from a separate
 // host-normalization pass at the recorder boundary.
 //
 // Pure: no I/O, no allocations beyond the result strings, no panics.
@@ -119,7 +119,7 @@ func Canonicalize(rawPath string) (string, []string, error) {
 	}
 
 	// A leading '/' is required for a recorder path. Bare "foo"
-	// would split into [""] which is misleading — reject up front.
+	// would split into [""] which is misleading - reject up front.
 	if !strings.HasPrefix(canonical, "/") {
 		return "", nil, fmt.Errorf("%w (reason=missing_leading_slash)", ErrPathNonCanonical)
 	}
@@ -286,7 +286,7 @@ type DecideConfig struct {
 
 // Default knob values, matching the design baseline. The
 // constants are unexported so callers must go through
-// DefaultDecideConfig — that pattern makes the drift guard test
+// DefaultDecideConfig - that pattern makes the drift guard test
 // trivial (TestDefaultDecideConfig_Locked) and keeps the values out
 // of unrelated import sets.
 const (
@@ -401,7 +401,7 @@ type SegmentObservation struct {
 // regardless of how high entropy climbs. The implementation evaluates
 // gates 4 and 5 BEFORE gates 2 and 3 so that even a position with
 // only one distinct value still surfaces "reserved_segment" if that
-// value is reserved — that's the security floor.
+// value is reserved - that's the security floor.
 //
 // Determinism: positions are emitted in ascending Index order. The
 // caller hashes this evidence into the policy hash, so non-deterministic
@@ -494,7 +494,7 @@ func Decide(observations []SegmentObservation, cfg DecideConfig) NormalizationEv
 		// Gate 2: min_distinct_values. Single-distinct-value
 		// positions get a more specific reason because the most
 		// common case is a literal path component like "/repos"
-		// that should never collapse — calling that
+		// that should never collapse - calling that
 		// "insufficient_distinct" would be misleading in audit.
 		distinct := len(agg.counts)
 		if distinct < resolved.MinDistinctValues {
@@ -521,7 +521,7 @@ func Decide(observations []SegmentObservation, cfg DecideConfig) NormalizationEv
 			continue
 		}
 
-		// All 5 gates passed — collapse.
+		// All 5 gates passed - collapse.
 		evidence.CollapsedSegments = append(evidence.CollapsedSegments, CollapsedSegment{
 			Index:          idx,
 			DistinctValues: distinct,

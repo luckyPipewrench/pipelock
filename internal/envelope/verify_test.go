@@ -719,7 +719,7 @@ func TestVerifier_RejectsActorTrustDomainMismatch(t *testing.T) {
 	req := signedVerifierRequest(t, priv, now, "")
 
 	// Trust list pins this key to "other.example", but the request's
-	// actor is spiffe://example.test/agent/alpha — must reject.
+	// actor is spiffe://example.test/agent/alpha - must reject.
 	verifier, err := NewVerifier(VerifierConfig{
 		TrustedKeys: []TrustedKey{{
 			KeyID:        testKeyIDTrusted,
@@ -737,7 +737,7 @@ func TestVerifier_RejectsActorTrustDomainMismatch(t *testing.T) {
 		t.Fatal("actor trust domain mismatch should fail verification")
 	}
 
-	// Same key, but allowlist now includes the actor's trust domain — must accept.
+	// Same key, but allowlist now includes the actor's trust domain - must accept.
 	req2 := signedVerifierRequest(t, priv, now, "")
 	verifier2, err := NewVerifier(VerifierConfig{
 		TrustedKeys: []TrustedKey{{

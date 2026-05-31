@@ -391,10 +391,10 @@ func TestMCP_HTTP_Adaptive_ChainBlockRecordsSignalBlock(t *testing.T) {
 
 	inputCfg := newHTTPInputCfg(config.ActionBlock)
 
-	// First call: read — no chain match yet.
+	// First call: read - no chain match yet.
 	_ = scanHTTPInput(readMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher, Rec: rec, AdaptiveCfg: adaptiveCfg})
 
-	// Second call: exec — chain completes, block fires.
+	// Second call: exec - chain completes, block fires.
 	blocked := scanHTTPInput(execMsg, &logBuf, "test-session", "test-session", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher, Rec: rec, AdaptiveCfg: adaptiveCfg})
 	if blocked == nil {
 		t.Fatal("expected scanHTTPInput to block on chain detection, got nil")
@@ -516,7 +516,7 @@ func startListenerProxyWithStore(
 // runs first in the request handler and calls recordSignalWithEscalation
 // directly with the per-request recorder from the store.
 func TestMCP_HTTP_Adaptive_AuthHeaderDLPRecordsSignalBlock(t *testing.T) {
-	// Upstream should never be called — request is blocked at the auth header.
+	// Upstream should never be called - request is blocked at the auth header.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("upstream called unexpectedly: Authorization-header DLP block should prevent forwarding")
 		w.WriteHeader(http.StatusOK)
@@ -530,7 +530,7 @@ func TestMCP_HTTP_Adaptive_AuthHeaderDLPRecordsSignalBlock(t *testing.T) {
 	store := &mockStore{rec: rec}
 	adaptiveCfg := adaptiveCfgEnabled()
 
-	// Input scanning enabled but doesn't matter — auth header DLP fires first.
+	// Input scanning enabled but doesn't matter - auth header DLP fires first.
 	inputCfg := newHTTPInputCfg(config.ActionBlock)
 
 	baseURL, _, _ := startListenerProxyWithStore(t, upstream.URL, sc, inputCfg, store, adaptiveCfg)
@@ -791,7 +791,7 @@ func TestForwardScanned_Adaptive_BlockAllDeniesCleanResponse(t *testing.T) {
 	cleanResp := makeResponse(1, "clean safe content") + "\n"
 	output, logOut, _ := runForwardScanned(t, cleanResp, sc, rec, adaptiveCfg)
 
-	// Must not forward the clean response — must emit a JSON-RPC error.
+	// Must not forward the clean response - must emit a JSON-RPC error.
 	if strings.Contains(output, "clean safe content") {
 		t.Error("expected clean response to be blocked by block_all, but it was forwarded")
 	}
@@ -840,7 +840,7 @@ func TestForwardScanned_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if !found {
 		t.Error("expected foundInjection=true for injection response")
 	}
-	// The response must NOT be forwarded — should be a JSON-RPC error block.
+	// The response must NOT be forwarded - should be a JSON-RPC error block.
 	if strings.Contains(output, "Ignore all previous instructions") {
 		t.Error("injection response was forwarded instead of blocked")
 	}
@@ -948,7 +948,7 @@ func TestForwardScannedInput_Adaptive_BlockAllDeniesCleanInput(t *testing.T) {
 		nil, // tracker
 		buildTestOpts(sc, withRec(rec), withAdaptive(adaptiveCfg)),
 	)
-	// ForwardScannedInput closes blockedCh on return — drain it here.
+	// ForwardScannedInput closes blockedCh on return - drain it here.
 	var blocked []BlockedRequest
 	for b := range blockedCh {
 		blocked = append(blocked, b)

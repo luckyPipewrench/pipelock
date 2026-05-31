@@ -81,7 +81,7 @@ func bech32Decode(s string) (string, []byte, int, error) {
 		return "", nil, 0, errBech32InvalidLength
 	}
 
-	// Reject mixed case — bech32 is case-insensitive but must be uniform.
+	// Reject mixed case - bech32 is case-insensitive but must be uniform.
 	lower := strings.ToLower(s)
 	upper := strings.ToUpper(s)
 	if s != lower && s != upper {

@@ -1233,7 +1233,7 @@ func TestZedInstall_DefaultProjectOnly(t *testing.T) {
 // TestZedInstall_DefaultIgnoresDirectoryNamedSettings locks in that a
 // directory named settings.json at a default location is treated as absent.
 // This protects against a misconfiguration where ~/.config/zed/settings.json
-// is itself a directory (e.g. user mistakenly mkdir'd it) — the installer
+// is itself a directory (e.g. user mistakenly mkdir'd it) - the installer
 // should not error out, it should ignore that candidate.
 func TestZedInstall_DefaultIgnoresDirectoryNamedSettings(t *testing.T) {
 	home := isolateHome(t)

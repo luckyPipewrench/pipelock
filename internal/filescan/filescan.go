@@ -2,7 +2,7 @@
 // embedded in files. This is the product surface for the supply-chain injection
 // vector where an attacker plants hidden instructions in agent-context files
 // (CLAUDE.md, .cursorrules, AGENTS.md, skill definitions) using zero-width or
-// bidi-override characters that a human reviewer cannot see — the technique used
+// bidi-override characters that a human reviewer cannot see - the technique used
 // by campaigns such as TrapDoor.
 //
 // Detection is seeded from normalize.InvisibleRanges (the set pipelock strips in
@@ -36,7 +36,7 @@ const (
 	// CategoryZeroWidth covers zero-width and other non-rendering characters.
 	CategoryZeroWidth Category = "zero-width"
 	// CategoryControl covers C0/C1/DEL control characters (excluding the
-	// whitespace controls \t \n \r) — pipelock strips these in DLP paths too.
+	// whitespace controls \t \n \r) - pipelock strips these in DLP paths too.
 	CategoryControl Category = "control-char"
 )
 
@@ -118,7 +118,7 @@ func buildSuspects() map[rune]suspectRune {
 			m[r] = suspectRune{name: name, cat: cat, sev: sev}
 		}
 	}
-	// High: zero-width splitters and bidi controls — the core injection set.
+	// High: zero-width splitters and bidi controls - the core injection set.
 	put(0x200B, 0x200B, "ZERO WIDTH SPACE", CategoryZeroWidth, SeverityHigh)
 	put(0x200C, 0x200C, "ZERO WIDTH NON-JOINER", CategoryZeroWidth, SeverityLow) // legit in Persian/Arabic
 	put(0x200D, 0x200D, "ZERO WIDTH JOINER", CategoryZeroWidth, SeverityLow)     // legit in emoji
@@ -144,7 +144,7 @@ func buildSuspects() map[rune]suspectRune {
 
 // classifyRune returns the policy for r, plus whether r is flagged at all.
 // C0/C1/DEL controls (excluding \t \n \r) are flagged as medium even though they
-// are outside the suspect table — pipelock strips them in DLP paths and they have
+// are outside the suspect table - pipelock strips them in DLP paths and they have
 // no business in agent-context files.
 func classifyRune(r rune) (suspectRune, bool) {
 	if s, ok := suspects[r]; ok {
@@ -165,7 +165,7 @@ func isControl(r rune) bool {
 
 // ScanText finds suspect characters in content, attributing each to a line and
 // rune column. A newline (\n) advances the line and resets the column; every
-// other rune (including \t and \r) advances the column by one — column counts
+// other rune (including \t and \r) advances the column by one - column counts
 // are byte-accurate for locating the injection. A BOM (U+FEFF) at the very start
 // of a file is routine and downgraded to low severity.
 func ScanText(path, content string) []Finding {
@@ -245,7 +245,7 @@ func readRegularFile(path string, maxBytes int64) (content string, skipReason st
 
 // looksBinary reports whether b contains a NUL byte, the cheap heuristic for a
 // binary file we should not scan as text. Known limitations: (1) an attacker who
-// can write a NUL into an otherwise-text file suppresses scanning of that file —
+// can write a NUL into an otherwise-text file suppresses scanning of that file -
 // this matches git's binary heuristic and an attacker planting NULs in tracked
 // text files is already past this control; (2) UTF-16 text is NUL-rich and is
 // therefore skipped (reported as a skip), since pipelock's context files are

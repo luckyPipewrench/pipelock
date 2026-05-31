@@ -233,7 +233,7 @@ func TestVerifyMessage_TamperedParams(t *testing.T) {
 	sig, _ := SignMessage(method, params, nil, priv, testMessageKeyID, newTestNonce(t), ts)
 	signed := mustEmbed(t, envelopeWithoutMeta(t, params, nil), sig)
 
-	// Tamper with params after signing — replace x:1 with x:2.
+	// Tamper with params after signing - replace x:1 with x:2.
 	tampered := strings.Replace(string(signed), `"x":1`, `"x":2`, 1)
 
 	cfg := MessageVerifyConfig{

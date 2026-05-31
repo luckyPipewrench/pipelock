@@ -73,7 +73,7 @@ type OpportunityMissing struct {
 // opportunity telemetry. Opportunity suppression emits opportunity_missing and
 // deliberately does not auto-demote.
 //
-// Mode is required — empty mode is fail-closed input. Without this, an
+// Mode is required - empty mode is fail-closed input. Without this, an
 // observation that omits Mode silently becomes ModeLive in the emitted
 // DriftEvent, which causes SignalForDrift to fire session.SignalBlock and
 // push adaptive enforcement from a path the operator did not opt into.
@@ -196,7 +196,7 @@ func observationUint(m map[string]any, key string) uint64 {
 }
 
 // SignalForDrift returns the live adaptive signal implied by a drift event.
-// The signal fires only when DriftEvent.Mode is exactly ModeLive — empty mode,
+// The signal fires only when DriftEvent.Mode is exactly ModeLive - empty mode,
 // ModeShadow, and ModeCapture all return nil so observation paths cannot push
 // adaptive enforcement.
 func SignalForDrift(event DriftEvent) *session.SignalType {

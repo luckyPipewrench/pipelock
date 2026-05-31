@@ -434,7 +434,7 @@ func TestSessionAPI_RateLimiters_Independent(t *testing.T) {
 		w := httptest.NewRecorder()
 		handler.HandleTask(w, req)
 	}
-	// One more /task request should 429 — the limiter is exhausted.
+	// One more /task request should 429 - the limiter is exhausted.
 	{
 		req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
 		w := httptest.NewRecorder()
@@ -443,7 +443,7 @@ func TestSessionAPI_RateLimiters_Independent(t *testing.T) {
 			t.Fatalf("exhausted /task should 429, got %d", w.Code)
 		}
 	}
-	// /reset on the same handler must still succeed — its limiter
+	// /reset on the same handler must still succeed - its limiter
 	// has not been touched.
 	{
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/sessions/agent%7C10.0.0.1/reset", nil)
@@ -472,7 +472,7 @@ func TestSessionAPI_RateLimiters_Independent(t *testing.T) {
 // TestSessionAPI_CheckRateLimit_UnknownActionDenies covers the
 // defensive fail-closed path when a bug asks the limiter about an
 // action that was never registered. The code must NOT silently
-// bypass limiting — it must deny.
+// bypass limiting - it must deny.
 func TestSessionAPI_CheckRateLimit_UnknownActionDenies(t *testing.T) {
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()
@@ -816,7 +816,7 @@ func TestSessionAPI_ResetUnderConcurrentTraffic(t *testing.T) {
 
 	select {
 	case <-done:
-		// Success — completed without deadlock.
+		// Success - completed without deadlock.
 	case <-ctx.Done():
 		t.Fatal("deadlock detected: test did not complete within timeout")
 	}
@@ -992,7 +992,7 @@ func TestSessionAPI_HandleTask_EmptyBodyOK(t *testing.T) {
 	sm.GetOrCreate("agent|10.0.0.1")
 	handler := newTestSessionAPIHandler(t, sm)
 
-	// Empty body is allowed for HandleTask — rotates the task with no
+	// Empty body is allowed for HandleTask - rotates the task with no
 	// label/reason. This was the chunked-body case CodeRabbit flagged.
 	req := newTaskRequest(http.MethodPost, "agent|10.0.0.1", "")
 	w := httptest.NewRecorder()

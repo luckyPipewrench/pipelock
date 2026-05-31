@@ -66,7 +66,7 @@ func TestRequireFleet_NoLicenseFailsClosed(t *testing.T) {
 
 func TestRequireFleet_AgentsOnlyLicenseRejected(t *testing.T) {
 	pub, priv := newKeyPair(t)
-	tok := mustIssue(t, priv, "test-license", []string{FeatureAgents}) // Pro tier — no fleet
+	tok := mustIssue(t, priv, "test-license", []string{FeatureAgents}) // Pro tier - no fleet
 	err := RequireFleet(tok, hex.EncodeToString(pub))
 	if !errors.Is(err, ErrFleetLicenseRequired) {
 		t.Fatalf("RequireFleet with Pro license: want ErrFleetLicenseRequired, got %v", err)
@@ -86,7 +86,7 @@ func TestRequireFleet_FleetFeatureAccepted(t *testing.T) {
 
 func TestRequireFleet_AssessOnlyLicenseRejected(t *testing.T) {
 	pub, priv := newKeyPair(t)
-	tok := mustIssue(t, priv, "test-license", []string{FeatureAssess}) // Assess product — not fleet
+	tok := mustIssue(t, priv, "test-license", []string{FeatureAssess}) // Assess product - not fleet
 	err := RequireFleet(tok, hex.EncodeToString(pub))
 	if !errors.Is(err, ErrFleetLicenseRequired) {
 		t.Fatalf("RequireFleet with Assess license: want ErrFleetLicenseRequired, got %v", err)

@@ -144,7 +144,7 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	}
 	writeJSONPretty(t, filepath.Join(testdataDir, goldenTestKey), keyInfo)
 
-	// 2. valid-single.json — a single well-formed receipt at seq 0.
+	// 2. valid-single.json - a single well-formed receipt at seq 0.
 	singleAR := fixedActionRecord(0, receipt.GenesisHash)
 	single, err := receipt.Sign(singleAR, priv)
 	if err != nil {
@@ -152,7 +152,7 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	}
 	writeJSONPretty(t, filepath.Join(testdataDir, goldenValidSingle), single)
 
-	// 3. valid-chain.jsonl — five-receipt hash chain wrapped in production
+	// 3. valid-chain.jsonl - five-receipt hash chain wrapped in production
 	// flight-recorder entries. This is the format the Pipelock binary
 	// actually writes. The ``pipelock verify-receipt`` CLI parses it
 	// directly, and the Python verifier extracts receipts from the entry
@@ -161,14 +161,14 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	chainEntries := wrapInFlightRecorderEntries(t, chain)
 	writeEntryJSONL(t, filepath.Join(testdataDir, goldenValidChain), chainEntries)
 
-	// 4. invalid-signature.json — tamper a signature byte. Individual verify
+	// 4. invalid-signature.json - tamper a signature byte. Individual verify
 	// MUST fail. Chain verification also fails on this receipt.
 	tampered := single
 	sigHex := strings.TrimPrefix(tampered.Signature, "ed25519:")
 	tampered.Signature = "ed25519:" + flipFirstHexNibble(sigHex)
 	writeJSONPretty(t, filepath.Join(testdataDir, goldenInvalidSignature), tampered)
 
-	// 5. broken-chain.jsonl — valid individual signatures, but the
+	// 5. broken-chain.jsonl - valid individual signatures, but the
 	// prev_hash of receipt[brokenAtIndex] is wrong. Chain verification
 	// MUST report a break at seq brokenAtIndex.
 	broken := buildValidChain(t, priv)

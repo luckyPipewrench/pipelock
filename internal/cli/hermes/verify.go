@@ -19,7 +19,7 @@ import (
 // Coverage classifications reported by verify.
 const (
 	coverageFull    = "full"    // ready plugin + proxy env names present
-	coveragePartial = "partial" // some coverage: ready plugin, env, or wrapped MCP servers — but not full
+	coveragePartial = "partial" // some coverage: ready plugin, env, or wrapped MCP servers - but not full
 	coverageNone    = "none"    // none of plugin, env, or wrapped MCP servers
 )
 
@@ -136,7 +136,7 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 		// Hermes loads a standalone plugin only when its name is in
 		// plugins.enabled. A discovered-but-disabled plugin never fires, so
 		// enablement is a precondition for protective coverage on the plugin
-		// path — not an optional nicety.
+		// path - not an optional nicety.
 		r.PluginEnabled = cfg.pluginEnabled()
 	} else {
 		r.ProxyEnvMissing = append([]string(nil), proxyEnvNames...)
@@ -150,7 +150,7 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 	// Hermes: the Python files are present, the manifest exists (Hermes skips
 	// manifest-less dirs), the plugin is enabled in config (opt-in gating), the
 	// hook binary is resolvable, and the config sidecar is sane. Presence alone
-	// is NOT readiness — a manifest-less or disabled plugin is inert, and
+	// is NOT readiness - a manifest-less or disabled plugin is inert, and
 	// reporting "full" from file presence would be false protection.
 	pluginReady := r.PluginPresent && r.ManifestPresent && r.PluginEnabled &&
 		r.HookExecutable && sidecarOK
@@ -162,7 +162,7 @@ func buildVerifyReport(opts *installOptions) verifyReport {
 // "full" requires a ready plugin (present + manifest + enabled + hook
 // resolvable + sane sidecar) plus the proxy env names. Any one of a ready
 // plugin, injected env, or wrapped MCP servers (the mcp-only path) is
-// "partial" — real but not full-surface coverage.
+// "partial" - real but not full-surface coverage.
 func classifyCoverage(pluginReady, envInjected, mcpWrapped bool) string {
 	switch {
 	case pluginReady && envInjected:

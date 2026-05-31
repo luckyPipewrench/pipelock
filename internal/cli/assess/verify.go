@@ -152,7 +152,7 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 	sigPath := manifestPath + signing.SigExtension
 	if _, err := os.Stat(sigPath); err != nil {
 		if os.IsNotExist(err) {
-			// No signature — integrity only.
+			// No signature - integrity only.
 			return verifyExitUnsigned, nil
 		}
 		return verifyExitTamperedArtifact, fmt.Errorf("stat signature: %w", err)
@@ -284,7 +284,7 @@ func loadAssessStatusManifest(runDir string) (manifest AssessManifest, signed bo
 		if !os.IsNotExist(statErr) {
 			return manifest, false, fmt.Errorf("stat signature: %w", statErr)
 		}
-		// IsNotExist: no signature file — unsigned.
+		// IsNotExist: no signature file - unsigned.
 	} else {
 		signed = true
 	}

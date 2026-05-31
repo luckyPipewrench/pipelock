@@ -52,7 +52,7 @@ func TestPluginHookSignatures_AcceptHermesKwargs(t *testing.T) {
 	defer cancel()
 
 	//nolint:gosec // G204: args are the LookPath-resolved python3, a fixed
-	// in-repo testdata harness, and a t.TempDir() install root — no external input.
+	// in-repo testdata harness, and a t.TempDir() install root - no external input.
 	cmd := exec.CommandContext(ctx, python, harness, root)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

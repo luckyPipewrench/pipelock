@@ -758,7 +758,7 @@ func TestAirlockState_ForceSetTier_ClearsCancelOnNone(t *testing.T) {
 	called = false
 	a.ForceSetTier(config.AirlockTierNone)
 
-	// Register a new cancel, escalate again — old cancel should not fire.
+	// Register a new cancel, escalate again - old cancel should not fire.
 	var calledAgain bool
 	a.RegisterCancel(func() { calledAgain = true })
 	a.SetTier(config.AirlockTierSoft)

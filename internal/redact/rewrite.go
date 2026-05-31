@@ -8,7 +8,7 @@ import "strings"
 // RewriteString applies matches (pre-sorted by Start ascending, non-
 // overlapping) to s, replacing each match with a typed placeholder from r.
 // Returns the rewritten string. Matches are consumed in order; any match
-// whose Start < previous.End is silently skipped (defensive — Scan should
+// whose Start < previous.End is silently skipped (defensive - Scan should
 // not emit overlapping matches).
 func RewriteString(s string, matches []Match, r *Redactor) string {
 	if len(matches) == 0 || s == "" {

@@ -78,7 +78,7 @@ type CheckpointDetail struct {
 // Type and Transport so v2 entries bind the classification to the chain.
 //
 // Both versions use the same null-byte field separator and field ordering
-// for fields they share. Unknown versions return the empty string —
+// for fields they share. Unknown versions return the empty string -
 // VerifyChain checks the version fence separately and surfaces a clear
 // error.
 func ComputeHash(e Entry) string {
@@ -93,7 +93,7 @@ func ComputeHash(e Entry) string {
 }
 
 // computeHashV1 is the frozen v1 canonical projection. Do NOT modify this
-// function — pre-upgrade chains depend on byte-for-byte identical output.
+// function - pre-upgrade chains depend on byte-for-byte identical output.
 // Field order: v, seq, ts, session_id, trace_id, type, transport, summary,
 // detail_json, raw_ref, prev_hash. Null byte separators between fields.
 func computeHashV1(e Entry) string {
@@ -128,7 +128,7 @@ func computeHashV1(e Entry) string {
 // computeHashV2 is the v2 canonical projection. Identical to v1 but inserts
 // EventKind between Type and Transport. The version field itself ("1" vs
 // "2") differs by definition, so v1 and v2 produce different hashes for the
-// same logical entry even when EventKind is empty — this is the v1/v2
+// same logical entry even when EventKind is empty - this is the v1/v2
 // isolation guarantee.
 func computeHashV2(e Entry) string {
 	detailJSON, err := json.Marshal(e.Detail)

@@ -303,7 +303,7 @@ func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
 	fb.Append(testSessionA, []byte("AKI"+"A"))
 	fb.Append(testSessionA, []byte(testAWSKeySuffix))
 
-	// The secret spans two surviving fragments — should be detected.
+	// The secret spans two surviving fragments - should be detected.
 	matches := fb.ScanForSecrets(context.Background(), testSessionA, sc)
 	if len(matches) == 0 {
 		t.Error("cross-fragment secret should survive eviction and trigger DLP match")
@@ -312,7 +312,7 @@ func TestFragmentBuffer_EvictionPreservesNewestData(t *testing.T) {
 
 func TestFragmentBuffer_SingleFragmentNotReported(t *testing.T) {
 	// A complete secret in a single fragment should NOT fire fragment DLP.
-	// Body DLP already catches it — double-scoring causes adaptive death spiral.
+	// Body DLP already catches it - double-scoring causes adaptive death spiral.
 	fb := NewFragmentBuffer(65536, 1000, testWindowSecs)
 	defer fb.Close()
 
@@ -421,7 +421,7 @@ func TestFragmentBuffer_Delete(t *testing.T) {
 
 	fb.Delete("sess-a")
 
-	// sess-a should be gone — verify via TotalBufferBytes reflecting only sess-b.
+	// sess-a should be gone - verify via TotalBufferBytes reflecting only sess-b.
 	fb.mu.Lock()
 	_, sessAExists := fb.sessions["sess-a"]
 	_, sessBExists := fb.sessions["sess-b"]

@@ -265,7 +265,7 @@ func WriteProofMarkdown(outputDir string, capsule *Capsule) (string, error) {
 }
 
 // RenderProofMarkdown renders a human-readable posture summary from the
-// capsule. Output is deterministic given the same capsule input — scanner
+// capsule. Output is deterministic given the same capsule input - scanner
 // verdicts are sorted by scanner label and times are formatted as RFC 3339.
 //
 // A nil capsule produces an explicit "no evidence" stub rather than an empty

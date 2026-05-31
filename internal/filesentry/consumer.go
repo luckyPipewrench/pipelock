@@ -37,13 +37,13 @@ type ConsumerOpts struct {
 	// the config layer so values other than warn / block never reach here.
 	Action string
 	// Log is the human-readable sink (typically the proxy stderr). May be
-	// nil — log lines are then dropped.
+	// nil - log lines are then dropped.
 	Log io.Writer
 	// OnFinding is invoked once per finding for metric / audit emission.
 	// May be nil.
 	OnFinding FindingHook
 	// Cancel is the proxy context cancel function. Called once on the first
-	// block-action + IsAgent finding. May be nil — Cancel == nil means
+	// block-action + IsAgent finding. May be nil - Cancel == nil means
 	// "block degrades to warn" (used by tests + diag paths that do not own
 	// the proxy lifecycle).
 	Cancel func()

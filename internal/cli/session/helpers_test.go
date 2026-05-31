@@ -53,7 +53,7 @@ func overrideClientFactory(t *testing.T, flags *rootFlags) {
 	orig := newClientFn
 	t.Cleanup(func() { newClientFn = orig })
 	newClientFn = func(actual *rootFlags) (*Client, error) {
-		// Prefer the actual flag values from the caller — this lets a
+		// Prefer the actual flag values from the caller - this lets a
 		// subcommand test pass a doctored rootFlags through addCommonFlags
 		// while still using the httptest base URL when no override came in.
 		if actual.apiURL == "" {

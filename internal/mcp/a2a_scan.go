@@ -67,7 +67,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	result := A2AScanResult{Clean: true}
 	budgetExceeded := false
 
-	// Pass 1: field-aware walker — classifies and routes each leaf.
+	// Pass 1: field-aware walker - classifies and routes each leaf.
 	WalkA2AJSON(json.RawMessage(body), func(path, value string, class FieldClass) {
 		if class == FieldBudgetExceeded {
 			budgetExceeded = true
@@ -251,7 +251,7 @@ func (cb *CardBaseline) Check(key cardCacheKey, hash string, skillNames []string
 		return false, false
 	}
 
-	// Drift detected — do NOT auto-promote the baseline. The existing
+	// Drift detected - do NOT auto-promote the baseline. The existing
 	// baseline is preserved so repeated fetches of a drifted card
 	// continue to report drift until explicitly reset. Operators must
 	// call ResetBaseline to accept the new card.
@@ -415,7 +415,7 @@ func (ct *ContextTracker) TrackAndScan(ctx context.Context, contextID, taskID st
 	// Add texts to session.
 	sess.texts = append(sess.texts, texts...)
 
-	// Check message cap — taint on overflow.
+	// Check message cap - taint on overflow.
 	maxMsgs := ct.cfg.MaxContextMessages
 	if maxMsgs <= 0 {
 		maxMsgs = 100
@@ -431,7 +431,7 @@ func (ct *ContextTracker) TrackAndScan(ctx context.Context, contextID, taskID st
 	tainted := sess.tainted
 	ct.mu.Unlock()
 
-	// Scan individual texts first — if any single message has injection,
+	// Scan individual texts first - if any single message has injection,
 	// that's not smuggling, it's direct injection (handled by per-message scanning).
 	// Smuggling = injection visible ONLY in concatenation.
 	joined := strings.Join(accumulated, " ")
@@ -566,7 +566,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Scan the canonical full-event text (event:/id:/retry: plus the
 		// data: payload). scanA2ABody only inspects the JSON data payload,
 		// so metadata-field injection (prompt-injection in id:, DLP in
-		// event:) would otherwise slip through — same class of bypass as
+		// event:) would otherwise slip through - same class of bypass as
 		// external review finding #2 on the generic SSE path.
 		canonical := canonicalSSEEventText(event, reader)
 		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
@@ -614,7 +614,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 }
 
 // extractTextFromEvent extracts scannable text from an SSE event payload.
-// The payload is JSON — extract all string values for the rolling tail.
+// The payload is JSON - extract all string values for the rolling tail.
 func extractTextFromEvent(event []byte) string {
 	if len(event) == 0 {
 		return ""
@@ -684,7 +684,7 @@ func (r A2AScanResult) IsConfigMismatch() bool {
 // is an infrastructure error (e.g., DNS resolver timeout on an embedded URL).
 // Returns false when clean, when non-URL findings exist, or when any URL
 // finding is a real threat or config mismatch. When true, callers should treat
-// the block as score-neutral for adaptive enforcement — resolver wobble from
+// the block as score-neutral for adaptive enforcement - resolver wobble from
 // embedded URL fields is not evidence of agent misbehavior.
 func (r A2AScanResult) IsInfrastructureError() bool {
 	if r.Clean {

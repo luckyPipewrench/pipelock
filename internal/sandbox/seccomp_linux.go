@@ -16,7 +16,7 @@ import (
 const (
 	offsetNR    = 0  // offsetof(struct seccomp_data, nr)
 	offsetArch  = 4  // offsetof(struct seccomp_data, arch)
-	offsetArgs0 = 16 // offsetof(struct seccomp_data, args[0]) — low 32 bits on little-endian
+	offsetArgs0 = 16 // offsetof(struct seccomp_data, args[0]) - low 32 bits on little-endian
 )
 
 // cloneNewMask combines all CLONE_NEW* flags that could be used to create
@@ -74,7 +74,7 @@ func SetNoNewPrivs() error {
 }
 
 // buildSeccompFilter constructs a BPF filter program that:
-// - Validates architecture is x86_64 (KILL on mismatch — prevents 32-bit ABI bypass)
+// - Validates architecture is x86_64 (KILL on mismatch - prevents 32-bit ABI bypass)
 // - Kills the process on critical violations (kexec, kernel modules, io_uring)
 // - Applies argument-level filtering for clone, personality, and socket
 // - Allows a curated set of ~130 syscalls (Go + Python + Node.js compatible)
@@ -147,7 +147,7 @@ func buildSeccompFilter(strict bool) []unix.SockFilter {
 		prog = append(prog, bpfRet(unix.SECCOMP_RET_ALLOW))
 	}
 
-	// Step 6: Default deny — return EPERM.
+	// Step 6: Default deny - return EPERM.
 	prog = append(prog, bpfRet(unix.SECCOMP_RET_ERRNO|uint32(unix.EPERM)))
 
 	return prog
@@ -173,7 +173,7 @@ func cloneConditional() []unix.SockFilter {
 // clone3Conditional handles clone3 based on strict mode.
 // Best-effort: allow (BPF can't inspect the pointer argument for CLONE_NEW* flags).
 // Strict: block entirely (EPERM). Go's runtime uses clone3 for goroutines on
-// newer kernels, but the sandboxed child has already forked — no new goroutines
+// newer kernels, but the sandboxed child has already forked - no new goroutines
 // are created after exec. Python/Node.js use fork+exec which falls through to
 // the clone conditional above.
 func clone3Conditional(strict bool) []unix.SockFilter {
@@ -295,7 +295,7 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_SYMLINKAT, unix.SYS_LINKAT,
 		unix.SYS_UMASK, unix.SYS_GETCWD, unix.SYS_CHDIR, unix.SYS_FCHDIR,
 
-		// Network (SYS_SOCKET handled by socketConditional — AF_VSOCK blocked)
+		// Network (SYS_SOCKET handled by socketConditional - AF_VSOCK blocked)
 		unix.SYS_SOCKETPAIR,
 		unix.SYS_BIND, unix.SYS_LISTEN, unix.SYS_ACCEPT, unix.SYS_ACCEPT4,
 		unix.SYS_CONNECT,
@@ -315,7 +315,7 @@ func allowedSyscalls() []uint32 {
 		unix.SYS_INOTIFY_INIT1, unix.SYS_INOTIFY_ADD_WATCH, unix.SYS_INOTIFY_RM_WATCH,
 		unix.SYS_POLL, unix.SYS_PPOLL, unix.SYS_PSELECT6, unix.SYS_SELECT,
 
-		// Process management (SYS_CLONE handled by cloneConditional — CLONE_NEW* blocked).
+		// Process management (SYS_CLONE handled by cloneConditional - CLONE_NEW* blocked).
 		// SYS_CLONE3 handled by clone3Conditional (strict: blocked, best-effort: allowed).
 		unix.SYS_FORK, unix.SYS_VFORK,
 		unix.SYS_EXECVE, unix.SYS_EXECVEAT,
@@ -392,7 +392,7 @@ func killSyscalls() []uint32 {
 // Node.js 22 that probe io_uring at startup and expect ENOSYS/EPERM.
 func denySyscalls() []uint32 {
 	return []uint32{
-		// io_uring (bypasses seccomp — 60% of Google's 2022 kernel bugs)
+		// io_uring (bypasses seccomp - 60% of Google's 2022 kernel bugs)
 		// Returns EPERM instead of KILL so runtimes can fall back to epoll.
 		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	}

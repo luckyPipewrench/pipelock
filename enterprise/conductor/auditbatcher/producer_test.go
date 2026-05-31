@@ -243,7 +243,7 @@ func TestNewProducer_RejectsInvalidConfig(t *testing.T) {
 // TestProducer_AdvancesChainTailOnDroppedSegment proves the evidence chain
 // stays continuous across a dropped segment. When a segment cannot ship (here:
 // a full durable queue) the recorder has already committed its checkpoint
-// locally, so previousSegmentTail must still advance — otherwise the next
+// locally, so previousSegmentTail must still advance - otherwise the next
 // segment would claim continuity across a checkpoint that actually exists in
 // the local recorder file, and a verifier replaying that file would reject the
 // chain.
@@ -270,7 +270,7 @@ func TestProducer_AdvancesChainTailOnDroppedSegment(t *testing.T) {
 	}
 
 	// Segment B is dropped because the queue is full, but its checkpoint was
-	// recorded locally — the tail must advance to B's checkpoint hash.
+	// recorded locally - the tail must advance to B's checkpoint hash.
 	segB := checkpointSegment(2)
 	if err := p.enqueueSegment(segB); err == nil {
 		t.Fatal("segB enqueue: expected failure on full queue")

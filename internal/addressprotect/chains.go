@@ -70,7 +70,7 @@ func (ethValidator) Normalize(raw string) string {
 }
 
 func (ethValidator) CompareKey(normalized string) string {
-	// Strip "0x" prefix — compare hex payload only.
+	// Strip "0x" prefix - compare hex payload only.
 	if len(normalized) > 2 {
 		return normalized[2:]
 	}
@@ -145,7 +145,7 @@ func (btcValidator) Normalize(raw string) string {
 	if strings.HasPrefix(lower, "bc1") {
 		return lower
 	}
-	// Legacy base58 is case-sensitive — return as-is.
+	// Legacy base58 is case-sensitive - return as-is.
 	return raw
 }
 
@@ -164,7 +164,7 @@ func (btcValidator) CompareKey(normalized string) string {
 
 // SOL addresses are base58-encoded Ed25519 public keys (32 bytes).
 // The regex matches base58 strings of 32-44 chars. Validation requires
-// decoding to exactly 32 bytes — this is the primary false positive filter.
+// decoding to exactly 32 bytes - this is the primary false positive filter.
 var solRegex = regexp.MustCompile(`\b[1-9A-HJ-NP-Za-km-z]{32,44}\b`)
 
 type solValidator struct{}
@@ -188,12 +188,12 @@ func (solValidator) Validate(raw string) bool {
 }
 
 func (solValidator) Normalize(raw string) string {
-	// SOL base58 is case-sensitive — return as-is.
+	// SOL base58 is case-sensitive - return as-is.
 	return raw
 }
 
 func (solValidator) CompareKey(normalized string) string {
-	// Full string — no prefix to strip.
+	// Full string - no prefix to strip.
 	return normalized
 }
 

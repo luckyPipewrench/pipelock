@@ -12,7 +12,7 @@ import (
 
 // conductorRuntimeChanged reports whether two configs disagree on any
 // Conductor field. Used by the reload path to enforce "Conductor settings
-// are restart-only" — a hot reload that flips conductor.enabled or
+// are restart-only" - a hot reload that flips conductor.enabled or
 // re-points the control plane is ignored and the previous Conductor
 // block is preserved on newCfg. Lives in the untagged file because the
 // comparison is pure config-struct DeepEqual, no enterprise types needed,

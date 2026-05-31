@@ -92,7 +92,7 @@ const EventTextStego = "text_stego_detected"
 const EventLicenseExpiry = "license_expiry"
 
 // actionBlock is the action string that indicates a request was blocked.
-// Used internally for severity mapping — block actions map to SeverityCritical.
+// Used internally for severity mapping - block actions map to SeverityCritical.
 const actionBlock = "block"
 
 // EventAnomaly is the event-type key for session anomaly findings (suspicious
@@ -132,7 +132,7 @@ const instanceIDFallback = "pipelock"
 const networkUDP = "udp"
 
 // EventSeverity maps audit event type strings to their severity level.
-// Severity is hardcoded — users control emission threshold, not event severity.
+// Severity is hardcoded - users control emission threshold, not event severity.
 var EventSeverity = map[string]Severity{
 	// Critical: needs immediate attention
 	EventKillSwitchDeny: SeverityCritical,

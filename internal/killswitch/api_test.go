@@ -204,7 +204,7 @@ func TestAPIHandler_Toggle_ConcatenatedJSON(t *testing.T) {
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
-	// Two concatenated JSON objects — only first should be parsed, second should cause rejection.
+	// Two concatenated JSON objects - only first should be parsed, second should cause rejection.
 	body := bytes.NewBufferString(`{"active":true}{"active":false}`)
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", body)
 	r.Header.Set("Authorization", "Bearer test-token")
@@ -353,7 +353,7 @@ func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 	c := New(cfg)
 	h := NewAPIHandler(c)
 
-	// Exhaust the rate limit — verify the last request is actually throttled.
+	// Exhaust the rate limit - verify the last request is actually throttled.
 	for i := 0; i <= apiRateLimitMax; i++ {
 		body := bytes.NewBufferString(`{"active": true}`)
 		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", body)
@@ -370,7 +370,7 @@ func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 	h.windowStart = time.Now().Add(-apiRateLimitWindow - time.Second)
 	h.mu.Unlock()
 
-	// Next request should succeed — window has reset.
+	// Next request should succeed - window has reset.
 	body := bytes.NewBufferString(`{"active": false}`)
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", body)
 	r.Header.Set("Authorization", "Bearer test-token")
@@ -384,7 +384,7 @@ func TestAPIHandler_RateLimitWindowReset(t *testing.T) {
 
 func TestAPIHandler_TokenAddedViaReload(t *testing.T) {
 	cfg := testConfig()
-	// No token initially — API returns 503
+	// No token initially - API returns 503
 	c := New(cfg)
 	h := NewAPIHandler(c)
 

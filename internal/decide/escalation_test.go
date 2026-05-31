@@ -70,7 +70,7 @@ func TestUpgradeAction_FullTable(t *testing.T) {
 		level      int
 		want       string
 	}{
-		// Level 0 — never changed
+		// Level 0 - never changed
 		{"clean/level0", actionClean, levelNormal, actionClean},
 		{"strip/level0", config.ActionStrip, levelNormal, config.ActionStrip},
 		{"warn/level0", config.ActionWarn, levelNormal, config.ActionWarn},
@@ -399,7 +399,7 @@ func TestRecordEscalation_NoEscalation(t *testing.T) {
 	if len(rec.signals) != 1 || rec.signals[0] != session.SignalBlock {
 		t.Errorf("signal not recorded: got %v", rec.signals)
 	}
-	// Logger should not have been called — log file should be empty.
+	// Logger should not have been called - log file should be empty.
 	data, err := os.ReadFile(filepath.Clean(logPath))
 	if err != nil {
 		t.Fatalf("reading log: %v", err)
@@ -491,7 +491,7 @@ func TestRecordEscalation_NilMetrics(t *testing.T) {
 
 func TestRecordEscalation_FromLevel0_NoGaugeDecrement(t *testing.T) {
 	// When escalating FROM level 0 ("normal"), the old level gauge should
-	// NOT be decremented — there's nothing to decrement.
+	// NOT be decremented - there's nothing to decrement.
 	rec := &escalationRecorder{
 		escalate:  true,
 		fromLabel: session.EscalationLabel(0), // "normal"
@@ -508,7 +508,7 @@ func TestRecordEscalation_FromLevel0_NoGaugeDecrement(t *testing.T) {
 		RequestID: "req-5",
 	}
 
-	// Exercises the from != EscalationLabel(0) branch — should skip decrement.
+	// Exercises the from != EscalationLabel(0) branch - should skip decrement.
 	// No panic and correct return is sufficient (gauge internals verified by
 	// metrics package tests).
 	got := RecordEscalation(rec, session.SignalBlock, params)

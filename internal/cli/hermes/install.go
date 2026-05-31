@@ -178,8 +178,8 @@ func runInstall(cmd *cobra.Command, opts *installOptions) error {
 // installMCPOnly rewrites ~/.hermes/config.yaml's mcp_servers entries to route
 // each MCP server through `pipelock mcp proxy`, preserving auth headers via a
 // 0o600 header sidecar. It does NOT install the plugin or inject terminal env:
-// mcp-only is partial coverage by design (MCP traffic only). Idempotent —
-// already-wrapped servers are skipped — and config.yaml is backed up before
+// mcp-only is partial coverage by design (MCP traffic only). Idempotent -
+// already-wrapped servers are skipped - and config.yaml is backed up before
 // modification.
 func installMCPOnly(cmd *cobra.Command, opts *installOptions) error {
 	out := cmd.OutOrStdout()
@@ -203,7 +203,7 @@ func installMCPOnly(cmd *cobra.Command, opts *installOptions) error {
 	// If the full-mode plugin is already installed it scans MCP tool calls via
 	// pre_tool_call, so also wrapping mcp_servers double-scans MCP traffic
 	// (redundant receipts and latency, not a security hole). Warn rather than
-	// block — the operator explicitly chose mcp-only.
+	// block - the operator explicitly chose mcp-only.
 	if pluginInstalled(opts.PluginRoot) {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 			"warning: the pipelock Hermes plugin is already installed at %s and already scans MCP tool calls; "+

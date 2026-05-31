@@ -22,7 +22,7 @@ import (
 // pre-clobbering that header after the emitter has Build()-stamped it.
 //
 // The simpler path the test actually uses: make the signer fail by
-// pointing it at a request with a nil URL — buildComponentValue
+// pointing it at a request with a nil URL - buildComponentValue
 // errors on @target-uri, SignRequest bubbles the error out, and the
 // emitter's strip branch fires.
 func TestEmitter_InjectAndSign_StripsHeadersOnSignError(t *testing.T) {
@@ -100,7 +100,7 @@ func TestEmitter_InjectAndSign_NilRequestReturnsError(t *testing.T) {
 }
 
 // TestEmitter_InjectAndSign_NilEmitterIsNoOp proves the nil-receiver
-// convention holds for InjectAndSign — nil-safe like every other method
+// convention holds for InjectAndSign - nil-safe like every other method
 // on Emitter.
 func TestEmitter_InjectAndSign_NilEmitterIsNoOp(t *testing.T) {
 	t.Parallel()
@@ -157,7 +157,7 @@ func TestBufferRequestBody_NilBodyReturnsNil(t *testing.T) {
 }
 
 // TestBufferRequestBody_NoBodySentinelReturnsNil exercises the
-// http.NoBody branch — same semantics as nil but a different code
+// http.NoBody branch - same semantics as nil but a different code
 // path in requestHasBody/bufferRequestBody.
 func TestBufferRequestBody_NoBodySentinelReturnsNil(t *testing.T) {
 	t.Parallel()
@@ -278,7 +278,7 @@ func TestSigner_DerivedAuthority_ErrorsOnNoAuthority(t *testing.T) {
 	}
 }
 
-// TestSigner_KeyID proves the trivial accessor on Signer — hit by
+// TestSigner_KeyID proves the trivial accessor on Signer - hit by
 // test helpers and runtime inventory alike.
 func TestSigner_KeyID(t *testing.T) {
 	t.Parallel()

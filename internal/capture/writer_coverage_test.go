@@ -472,7 +472,7 @@ func TestRenderDiffHTML_ZeroTotal(t *testing.T) {
 		t.Fatalf("RenderDiffHTML: %v", err)
 	}
 
-	// Should not panic — the pct function should return "0" for total=0.
+	// Should not panic - the pct function should return "0" for total=0.
 	if buf.Len() == 0 {
 		t.Error("expected non-empty HTML output")
 	}

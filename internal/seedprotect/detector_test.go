@@ -10,9 +10,9 @@ import (
 
 // Known-valid BIP-39 test vectors (from the BIP-39 reference implementation).
 const (
-	// 12-word: "abandon" x11 + "about" — valid checksum.
+	// 12-word: "abandon" x11 + "about" - valid checksum.
 	valid12 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-	// 24-word: "abandon" x23 + "art" — valid checksum.
+	// 24-word: "abandon" x23 + "art" - valid checksum.
 	valid24 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
 )
 
@@ -60,7 +60,7 @@ func TestDetect_Valid24Word(t *testing.T) {
 }
 
 func TestDetect_BelowMinWords(t *testing.T) {
-	// 11 BIP-39 words — below the 12-word minimum.
+	// 11 BIP-39 words - below the 12-word minimum.
 	words := strings.Repeat("abandon ", 11)
 	matches := Detect(strings.TrimSpace(words), 12, false)
 	if len(matches) != 0 {
@@ -203,7 +203,7 @@ func TestDetect_15Word(t *testing.T) {
 }
 
 func TestDetect_NonBIP39WordsOnly(t *testing.T) {
-	// All non-BIP39 words — should not match.
+	// All non-BIP39 words - should not match.
 	words := make([]string, 20)
 	for i := range words {
 		words[i] = "xyznotaword"

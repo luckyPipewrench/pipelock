@@ -9,7 +9,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// Category name constants — shared with the assess remediation lookup so
+// Category name constants - shared with the assess remediation lookup so
 // the two files cannot drift. Keep these aligned with the cases in
 // internal/cli/assess/score.go auditRemediation().
 const (
@@ -41,7 +41,7 @@ const (
 	maxFileSentryScore     = 5
 )
 
-// Browser-shield strictness levels — repeated across the scorer and
+// Browser-shield strictness levels - repeated across the scorer and
 // would-be-extracted by goconst anyway.
 const (
 	browserShieldAggressive = "aggressive"

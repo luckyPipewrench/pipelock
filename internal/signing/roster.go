@@ -238,7 +238,7 @@ func findRootKey(body contract.KeyRoster) (contract.KeyInfo, error) {
 // Only keys with status="active" are resolvable; revoked, root, and any
 // unrecognised status reject. Root keys are intentionally not resolvable
 // here because they sign rosters and root transitions, never runtime
-// payloads — the loader uses findRootKey internally for that lookup.
+// payloads - the loader uses findRootKey internally for that lookup.
 //
 // Reject cases (typed sentinels):
 //   - key_id not in roster                        -> ErrRosterKeyUnknown
@@ -301,7 +301,7 @@ func (r *LoadedRoster) ResolveKey(keyID string, now time.Time) (contract.KeyInfo
 
 // AuthorizeSignerForPayload checks that signerKeyID is allowed to author the
 // given payload kind RIGHT NOW. It is the lifecycle-and-purpose gate, NOT a
-// cryptographic signature verifier — the actual Ed25519 verification happens
+// cryptographic signature verifier - the actual Ed25519 verification happens
 // at the call site using the resolved key's public key. The name reflects
 // that distinction: this function answers "is this signer permitted?", not
 // "is this signature valid?".

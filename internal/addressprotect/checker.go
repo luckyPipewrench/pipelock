@@ -4,7 +4,7 @@
 // Package addressprotect detects crypto address poisoning attacks.
 // It compares blockchain addresses found in text against a user-supplied
 // allowlist of known-good destinations. This is destination verification,
-// not secret detection — separate from DLP.
+// not secret detection - separate from DLP.
 package addressprotect
 
 import (
@@ -20,7 +20,7 @@ import (
 // Checker is the runtime orchestrator for address protection.
 // One shared instance per Scanner. Holds compiled validators and the
 // merged/normalized allowlist (global + per-agent).
-// Purely value-based (maps, slices, ints) — no closeable resources.
+// Purely value-based (maps, slices, ints) - no closeable resources.
 type Checker struct {
 	validators  map[string]chainValidator
 	globalAllow map[string][]string            // chain -> []normalized addresses
@@ -32,7 +32,7 @@ type Checker struct {
 }
 
 // NewChecker builds a Checker from config. Returns nil if disabled.
-// MUST only be called after config.Validate() passes — panics on
+// MUST only be called after config.Validate() passes - panics on
 // invalid config (programming error post-validation, consistent with
 // scanner.New() pattern).
 func NewChecker(cfg *config.AddressProtection, agentConfigs map[string][]string) *Checker {
@@ -226,7 +226,7 @@ const maxDecodeRounds = 10
 
 // iterativeURLDecode applies URL decoding until the string stops changing.
 // Duplicates scanner.IterativeDecode because scanner imports addressprotect
-// (circular import). normalize.StripZeroWidth is fine — no cycle there.
+// (circular import). normalize.StripZeroWidth is fine - no cycle there.
 func iterativeURLDecode(s string) string {
 	for range maxDecodeRounds {
 		decoded, err := url.QueryUnescape(s)

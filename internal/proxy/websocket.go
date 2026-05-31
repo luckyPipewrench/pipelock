@@ -622,7 +622,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Defense-in-depth note: targetURL was already parsed successfully
 	// at the top of this handler (the first url.Parse call), so the
 	// second Parse below cannot fail today. The check is intentional
-	// future-proofing — a later refactor that threads a different
+	// future-proofing - a later refactor that threads a different
 	// targetURL through this path must still fail closed on malformed
 	// input. A deliberately unreachable branch is cheaper than a
 	// silent unsigned envelope on a future regression.
@@ -958,13 +958,13 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 // complete client text frame, treating the frame payload as a JSON operation
 // body over the handshake route (the upgrade is a GET, so the effective method
 // is GET). The body-predicate gate is checked against the live matcher each
-// frame — not cached at upgrade — so a hot-reloaded rule applies to open
+// frame - not cached at upgrade - so a hot-reloaded rule applies to open
 // sockets; benign routes still pay no JSON-parse cost. The route inputs
 // (escaped path, handshake headers) match the handshake gate. On an enforced
 // block it closes both ends with a policy-violation close frame and reports
 // blocked=true; the receipt, metric, and audit event are emitted by
 // applyRequestPolicy's shared finalizer. Only complete, UTF-8-validated text
-// frames reach here — the fragment-reassembly boundary (and binary frames,
+// frames reach here - the fragment-reassembly boundary (and binary frames,
 // which are not operation text) is a documented limit.
 func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in := requestPolicyInput{
@@ -1607,8 +1607,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		select {
 		case <-ctx.Done():
 			// ctx is canceled for two reasons: the max-connection deadline
-			// expired (real timeout — block) or the sibling relay goroutine
-			// returned and its defer cancel() fired (clean close — exit).
+			// expired (real timeout - block) or the sibling relay goroutine
+			// returned and its defer cancel() fired (clean close - exit).
 			// Only the first should mark blocked and write a close frame;
 			// otherwise clean closes race into the blocked metric and turn
 			// session_close receipts into bogus "block" verdicts.
@@ -2231,7 +2231,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 						return
 					case config.ActionStrip:
 						// Record SignalStrip for adaptive enforcement scoring.
-						// Exempt domains skip scoring — findings are logged but don't escalate.
+						// Exempt domains skip scoring - findings are logged but don't escalate.
 						if !wsRespExempt {
 							if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
 								sessionKey := r.clientIP

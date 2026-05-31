@@ -252,7 +252,7 @@ func TestSyslogSink_Emit_BelowMinSeverity(t *testing.T) {
 	case msg := <-msgs:
 		t.Fatalf("expected no message, got: %s", msg)
 	case <-time.After(200 * time.Millisecond):
-		// Good — nothing received
+		// Good - nothing received
 	}
 }
 
@@ -264,7 +264,7 @@ func TestNewSyslogSink_InvalidAddress(t *testing.T) {
 }
 
 func TestNewSyslogSink_DialFailure(t *testing.T) {
-	// Bind a TCP port, then close it — guarantees nothing is listening.
+	// Bind a TCP port, then close it - guarantees nothing is listening.
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -318,7 +318,7 @@ func TestSyslogSink_Emit_MarshalError(t *testing.T) {
 	}
 	defer func() { _ = sink.Close() }()
 
-	// Channel field is unmarshalable — Emit should return an error.
+	// Channel field is unmarshalable - Emit should return an error.
 	event := Event{
 		Severity:  SeverityWarn,
 		Type:      testEventBlocked,

@@ -35,7 +35,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 
 	// Helper script: double-fork a grandchild that sleeps briefly and
 	// exits. The intermediate shell exits immediately so the grandchild
-	// reparents to whichever ancestor has PR_SET_CHILD_SUBREAPER set —
+	// reparents to whichever ancestor has PR_SET_CHILD_SUBREAPER set -
 	// that's this test process. The outer helper then sleeps so the
 	// direct child stays alive while the grandchild becomes a zombie.
 	helper := `( ( sleep 0.1; exit 0 ) & ) ; sleep 30`
@@ -50,7 +50,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 	// Step 1: WITHOUT the reaper, observe the bug. The double-forked
 	// grandchild sleeps 100 ms then exits and becomes a zombie under
 	// us (via subreaper adoption). Poll until we see it. This proves
-	// the test scenario actually reproduces the leak — without this
+	// the test scenario actually reproduces the leak - without this
 	// gate a no-op reaper would also pass.
 	if !waitForCondition(t, 2*time.Second, func() bool {
 		return countAdoptedZombies(directPID) >= 1
@@ -88,7 +88,7 @@ func TestReaper_AdoptedZombieDrained_DirectChildPreserved(t *testing.T) {
 		// failure mode is err == nil with a stolen-exit symptom or
 		// "no child processes".
 		if err == nil {
-			// Unlikely but acceptable — the helper happened to exit 0.
+			// Unlikely but acceptable - the helper happened to exit 0.
 			break
 		}
 		if isReaperStoleExitError(err) {
@@ -212,7 +212,7 @@ func isReaperStoleExitError(err error) bool {
 
 // TestReaper_DoneChannelStopsGoroutine covers the done-channel teardown
 // branch of startAdoptedReaper and verifies the goroutine actually
-// exits — not merely that the test completes without deadlock. We
+// exits - not merely that the test completes without deadlock. We
 // snapshot runtime.NumGoroutine before and after a batch of
 // start/close cycles; if the done branch failed to fire, leaked
 // goroutines would accumulate and the post-batch count would exceed
@@ -226,14 +226,14 @@ func TestReaper_DoneChannelStopsGoroutine(t *testing.T) {
 	startAdoptedReaper(0, warmDone)
 	close(warmDone)
 	// Drain any pre-existing goroutines (test infra, prior test leftovers,
-	// and the warm-up reaper) by sleeping and re-sampling — gives Go's
+	// and the warm-up reaper) by sleeping and re-sampling - gives Go's
 	// scheduler a chance to settle.
 	time.Sleep(50 * time.Millisecond)
 	before := runtime.NumGoroutine()
 
 	for range iterations {
 		done := make(chan struct{})
-		startAdoptedReaper(0, done) // directPID=0 is impossible — never matches
+		startAdoptedReaper(0, done) // directPID=0 is impossible - never matches
 		// Let the goroutine reach its select on done/sigCh.
 		time.Sleep(10 * time.Millisecond)
 		// Send a self-SIGCHLD to deterministically exercise the sigCh

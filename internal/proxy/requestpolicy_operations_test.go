@@ -127,7 +127,7 @@ func TestMultipartOperationsField_OverCapFailsClosed(t *testing.T) {
 		t.Fatalf("CreateFormField: %v", err)
 	}
 	// An operations field larger than the cap must be rejected, not truncated
-	// and classified — otherwise a dangerous op padded past the cap is hidden.
+	// and classified - otherwise a dangerous op padded past the cap is hidden.
 	huge := gqlJSONBody("mutation { deleteRecord(pad: \"" + strings.Repeat("a", multipartOperationsMaxBytes) + "\") { id } }")
 	if _, err := fw.Write([]byte(huge)); err != nil {
 		t.Fatalf("write operations: %v", err)

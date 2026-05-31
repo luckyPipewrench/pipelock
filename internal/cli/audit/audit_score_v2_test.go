@@ -237,7 +237,7 @@ func TestScoreGitProtection(t *testing.T) {
 func TestScoreFileSentry_NoWatchPathsWarns(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.FileSentry.Enabled = true
-	// Intentionally no WatchPaths — config is enabled but inert.
+	// Intentionally no WatchPaths - config is enabled but inert.
 	var findings []ScoreFinding
 	_ = scoreFileSentry(cfg, &findings)
 	if !hasCategoryFinding(findings, CategoryFileSentry) {

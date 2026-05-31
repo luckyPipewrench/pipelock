@@ -120,7 +120,7 @@ func TestWatcher_CleanFileNoFinding(t *testing.T) {
 	case f := <-w.Findings():
 		t.Errorf("expected no finding for clean file, got %+v", f)
 	case <-time.After(300 * time.Millisecond):
-		// Good — no finding emitted.
+		// Good - no finding emitted.
 	}
 }
 
@@ -167,7 +167,7 @@ func TestWatcher_IgnoredPatterns(t *testing.T) {
 	case f := <-w.Findings():
 		t.Errorf("expected no finding for ignored path, got %+v", f)
 	case <-time.After(300 * time.Millisecond):
-		// Good — ignored path was not scanned.
+		// Good - ignored path was not scanned.
 	}
 }
 
@@ -253,7 +253,7 @@ func TestWatcher_ScanContentDisabled(t *testing.T) {
 
 	armAndStart(t, w, ctx)
 
-	// Write a secret — should NOT be scanned because scan_content is false.
+	// Write a secret - should NOT be scanned because scan_content is false.
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	if err := os.WriteFile(filepath.Join(dir, "data.json"), []byte(secret), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -339,7 +339,7 @@ func TestWatcher_OversizedFileSkipped(t *testing.T) {
 	case finding := <-w.Findings():
 		t.Errorf("expected no finding for oversized file, got %+v", finding)
 	case <-time.After(300 * time.Millisecond):
-		// Good — oversized file was skipped.
+		// Good - oversized file was skipped.
 	}
 }
 
@@ -707,7 +707,7 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 	case f := <-w.Findings():
 		t.Errorf("unexpected extra finding (timer race?): %+v", f)
 	case <-time.After(200 * time.Millisecond):
-		// Good — only one finding.
+		// Good - only one finding.
 	}
 }
 
@@ -941,7 +941,7 @@ func TestWatcher_CloseFlushesLastWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = w.Start(ctx) }()
 
-	// Write a secret — this starts a debounce timer.
+	// Write a secret - this starts a debounce timer.
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 	if writeErr := os.WriteFile(filepath.Join(dir, "last-write.json"), []byte(secret), 0o600); writeErr != nil {
 		t.Fatalf("WriteFile: %v", writeErr)
@@ -1002,7 +1002,7 @@ func TestWatcher_CloseFlushScanDisabled(t *testing.T) {
 	cancel()
 	_ = w.Close()
 
-	// Channel is closed — reading returns zero values. Check that no
+	// Channel is closed - reading returns zero values. Check that no
 	// real finding (with a pattern name) was emitted.
 	select {
 	case f, ok := <-w.Findings():
@@ -1138,7 +1138,7 @@ func TestWatcher_FindingsChannelFull(t *testing.T) {
 
 	// Poll until at least one finding arrives, proving debounce completed
 	// without deadlock. The channel is bounded (findingsChanSize), so
-	// overflow writes are dropped — but at least some should arrive.
+	// overflow writes are dropped - but at least some should arrive.
 	deadline := time.After(5 * time.Second)
 	drained := 0
 	for drained == 0 {
@@ -1230,7 +1230,7 @@ func TestWatcher_StartReturnsOnClose(t *testing.T) {
 		t.Fatalf("Arm: %v", armErr)
 	}
 
-	// Close the watcher then Start — the channels are closed so Start exits.
+	// Close the watcher then Start - the channels are closed so Start exits.
 	_ = w.Close()
 
 	ctx := context.Background()
@@ -1312,7 +1312,7 @@ func TestWatcher_ArmNonexistentPathSoftFail(t *testing.T) {
 
 // TestWatcher_ArmMixedPathsArmsTheArmable verifies that an Arm() with a
 // healthy path AND a non-required missing path arms the healthy one and
-// records the missing one as degraded — neither failing the whole proxy
+// records the missing one as degraded - neither failing the whole proxy
 // nor silently swallowing the missing path.
 func TestWatcher_ArmMixedPathsArmsTheArmable(t *testing.T) {
 	healthy := t.TempDir()
@@ -1491,7 +1491,7 @@ func TestWatcher_FileRemovalNoFinding(t *testing.T) {
 		t.Fatal("timeout waiting for write finding")
 	}
 
-	// Now remove the file — should NOT produce a finding.
+	// Now remove the file - should NOT produce a finding.
 	_ = os.Remove(path)
 
 	select {

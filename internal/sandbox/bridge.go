@@ -85,7 +85,7 @@ func (bp *BridgeProxy) Close() {
 }
 
 // handleConn bridges a single TCP connection from the sandbox to the
-// parent's Unix domain socket proxy. Raw TCP forwarding — the parent's
+// parent's Unix domain socket proxy. Raw TCP forwarding - the parent's
 // proxy handles HTTP CONNECT, DLP scanning, etc.
 func (bp *BridgeProxy) handleConn(conn net.Conn) {
 	defer func() { _ = conn.Close() }()

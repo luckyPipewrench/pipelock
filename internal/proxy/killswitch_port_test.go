@@ -138,7 +138,7 @@ func TestKillSwitchPortIsolation_APIOnSeparatePort(t *testing.T) {
 		t.Fatalf("expected 200 on API port activation, got %d", resp.StatusCode)
 	}
 
-	// 2b. Main port: /fetch should be denied (503) — core security property.
+	// 2b. Main port: /fetch should be denied (503) - core security property.
 	resp = doReq(t, client, http.MethodGet,
 		fmt.Sprintf("http://%s/fetch?url=http://example.com", proxyAddr), "", nil)
 	_, _ = io.ReadAll(resp.Body)
@@ -270,7 +270,7 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 		fmt.Sprintf("http://%s/api/v1/killswitch/status", addr),
 		"", map[string]string{"Authorization": "Bearer test-token-default"})
 	resp.Body.Close() //nolint:errcheck,gosec // test
-	// Should NOT be 404 — route is registered.
+	// Should NOT be 404 - route is registered.
 	if resp.StatusCode == http.StatusNotFound {
 		t.Error("expected API route to be registered on main port when api_listen is empty")
 	}

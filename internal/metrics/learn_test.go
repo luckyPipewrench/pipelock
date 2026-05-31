@@ -217,7 +217,7 @@ func TestRecordInferenceClassification_IncrementsByOutcome(t *testing.T) {
 
 // TestRecordInferenceClassification_NilSafe matches the existing nil-safe
 // pattern across the learn metrics. A nil *Metrics receiver is the legal
-// "metrics disabled" sentinel — the helper must not panic.
+// "metrics disabled" sentinel - the helper must not panic.
 func TestRecordInferenceClassification_NilSafe(t *testing.T) {
 	t.Parallel()
 	var m *Metrics
@@ -334,7 +334,7 @@ func TestInferenceOutcome_AlignsWithConfidenceString(t *testing.T) {
 // value outside the v2.4 action-class taxonomy is dropped silently,
 // never increments any series, and cannot expand cardinality on
 // pipelock_learn_observation_events_total. The unclassified-actions
-// total must also stay 0 — the helper never reaches the unclassified
+// total must also stay 0 - the helper never reaches the unclassified
 // branch when the input is non-canonical.
 func TestRecordObservationEvent_DropsNonCanonical(t *testing.T) {
 	t.Parallel()
@@ -393,7 +393,7 @@ func TestRecordRegulatedDataBlocked_DropsNonCanonical(t *testing.T) {
 
 // TestActionClass_WireForms_Locked drift-guards the v2.4 action-class
 // taxonomy wire form. If anyone changes a constant, the test fails
-// loudly — these strings are part of the recorder/metrics contract and
+// loudly - these strings are part of the recorder/metrics contract and
 // flow into signed contracts; bumping them silently would break wire
 // compatibility with dashboards, alerts, and downstream verifiers.
 func TestActionClass_WireForms_Locked(t *testing.T) {

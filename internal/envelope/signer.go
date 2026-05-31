@@ -93,7 +93,7 @@ const DefaultSignerExpires = 5 * time.Minute
 type Signer struct {
 	privKey      ed25519.PrivateKey
 	keyID        string
-	components   []string // maximal declared set — subset used per request
+	components   []string // maximal declared set - subset used per request
 	maxBodyBytes int
 	expires      time.Duration
 	nowFn        func() time.Time
@@ -120,7 +120,7 @@ type SignerConfig struct {
 
 	// MaxBodyBytes caps the size of body the Signer is willing to
 	// buffer when it has to compute Content-Digest itself. Zero is
-	// treated by SignRequest as "do not cap" — SignRequest will
+	// treated by SignRequest as "do not cap" - SignRequest will
 	// accept any body the caller hands it. The proxy fills this from
 	// MediationEnvelope.MaxBodyBytes. Note: the config validator at
 	// internal/config/config.go:validateMediationEnvelope replaces a
@@ -178,7 +178,7 @@ func NormalizeSignedComponents(components []string) ([]string, error) {
 
 // NewSigner validates the config and returns a Signer. The only
 // runtime error paths today are missing key, missing key id, and empty
-// component list — all of which the config validator will also catch
+// component list - all of which the config validator will also catch
 // before this is reached. The redundant check here means a caller that
 // constructs a Signer outside the standard config path still gets a
 // deterministic error instead of a nil-deref at sign time.
@@ -234,8 +234,8 @@ func (s *Signer) KeyID() string {
 // requests. When non-nil, SignRequest writes a Content-Digest header
 // (replacing any existing one) with the SHA-256 digest of body, and
 // includes "content-digest" in the declared component list for this
-// request. When body is nil — or when body exceeds maxBodyBytes and
-// the signer declines to digest it — "content-digest" is dropped from
+// request. When body is nil - or when body exceeds maxBodyBytes and
+// the signer declines to digest it - "content-digest" is dropped from
 // the declared list rather than being signed with an unknown value.
 //
 // Any optional header component in the Signer's configured list that
@@ -258,8 +258,8 @@ func (s *Signer) SignRequest(req *http.Request, body []byte) error {
 
 	// Body buffering cap: if maxBodyBytes is set and the caller has
 	// handed us a body larger than the cap, drop it so we still sign
-	// but without content-digest. The alternative — failing the whole
-	// sign — would take down the transport for a single oversized
+	// but without content-digest. The alternative - failing the whole
+	// sign - would take down the transport for a single oversized
 	// request, which is the wrong trade-off. The signer's declared
 	// component list for THIS request will not contain content-digest,
 	// and the verifier sees that in Signature-Input.
@@ -368,8 +368,8 @@ func contentDigestHeaderValue(body []byte) string {
 // buildSigParams returns an httpsfv InnerList whose Items are the
 // effective component names (as string Items) and whose Params carry
 // the RFC 9421 metadata (;created, ;keyid, ;tag). The function cannot
-// fail today — Params.Add is infallible for the bare-item types we
-// hand it — but the shape is still a constructor so new parameters
+// fail today - Params.Add is infallible for the bare-item types we
+// hand it - but the shape is still a constructor so new parameters
 // without altering the calling convention.
 func buildSigParams(components []string, created, expires int64, nonce, keyID string) httpsfv.InnerList {
 	items := make([]httpsfv.Item, 0, len(components))
@@ -382,7 +382,7 @@ func buildSigParams(components []string, created, expires int64, nonce, keyID st
 	// signature-params parameters in this order when rebuilding the
 	// signature base for verification. Pipelock matches that order so
 	// signatures cross-verify without the signer and verifier having
-	// to agree on a wire-preserving serializer — which httpsfv does
+	// to agree on a wire-preserving serializer - which httpsfv does
 	// not guarantee across versions.
 	params := httpsfv.NewParams()
 	params.Add("keyid", keyID)
@@ -408,7 +408,7 @@ func (s *Signer) signatureNonce() (string, error) {
 //	"<component-name>": <component-value>
 //
 // followed by a final line for @signature-params whose value is the
-// serialized InnerList. The returned string has NO trailing newline —
+// serialized InnerList. The returned string has NO trailing newline -
 // RFC 9421 specifies LF between lines, not after the last one.
 func buildSignatureBase(req *http.Request, body []byte, components []string, sigParams httpsfv.InnerList) (string, error) {
 	var b strings.Builder
@@ -424,7 +424,7 @@ func buildSignatureBase(req *http.Request, body []byte, components []string, sig
 		b.WriteString(value)
 		b.WriteByte('\n')
 	}
-	// @signature-params line — no trailing LF.
+	// @signature-params line - no trailing LF.
 	b.WriteString(`"@signature-params": `)
 	serialized, err := httpsfv.Marshal(sigParams)
 	if err != nil {
@@ -464,7 +464,7 @@ func buildComponentValue(req *http.Request, body []byte, comp string) (string, e
 		// effectiveComponents, so read it back from there. That way a
 		// caller that pre-set Content-Digest with a different body
 		// (e.g. a malicious inbound carry-over) cannot win against
-		// the signer — effectiveComponents overwrote it.
+		// the signer - effectiveComponents overwrote it.
 		v := req.Header.Get("Content-Digest")
 		if v == "" {
 			// Defensive: if body existed and we were supposed to
@@ -562,7 +562,7 @@ func loadOrNewDict(h http.Header, headerName string) (*httpsfv.Dictionary, error
 	dict, err := httpsfv.UnmarshalDictionary(values)
 	if err != nil {
 		// The existing dictionary is malformed. Refuse to merge with
-		// it — we would either corrupt the upstream signature or
+		// it - we would either corrupt the upstream signature or
 		// propagate attacker-supplied garbage into our output.
 		return nil, fmt.Errorf("header %q is not a valid structured-field dictionary: %w", headerName, err)
 	}
@@ -580,7 +580,7 @@ func loadOrNewDict(h http.Header, headerName string) (*httpsfv.Dictionary, error
 
 // marshalDictToHeader serializes dict into headerName, replacing all
 // existing values of that header. httpsfv.Marshal returns a single
-// flat string — we never emit the dict as multi-line.
+// flat string - we never emit the dict as multi-line.
 func marshalDictToHeader(h http.Header, headerName string, dict *httpsfv.Dictionary) error {
 	out, err := httpsfv.Marshal(dict)
 	if err != nil {

@@ -16,7 +16,7 @@ func TestScoreConfig_Defaults(t *testing.T) {
 	cfg := config.Defaults()
 	result := ScoreConfig(cfg, "")
 
-	// Defaults score modestly — many features disabled by default.
+	// Defaults score modestly - many features disabled by default.
 	// DLP + response scanning + enforcement mode are the main defaults.
 	if result.Percentage < 20 {
 		t.Errorf("defaults should score at least 20%%, got %d%%", result.Percentage)
@@ -190,7 +190,7 @@ func TestScoreConfig_InheritedBlockAction(t *testing.T) {
 	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.Action = config.ActionBlock // section-level default
 	cfg.MCPToolPolicy.Rules = []config.ToolPolicyRule{
-		{Name: "block-shell", ToolPattern: "bash"}, // no per-rule action — inherits block
+		{Name: "block-shell", ToolPattern: "bash"}, // no per-rule action - inherits block
 	}
 
 	result := ScoreConfig(cfg, "")

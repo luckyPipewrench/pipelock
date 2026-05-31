@@ -49,7 +49,7 @@ func generateWSKey(t *testing.T) string {
 //     fixture's loopback IP without tripping SSRF).
 //   - A benign text frame round-trips through pipelock and the fixture.
 //   - A raw http://127.0.0.1/admin request through ssrfSafeDialContext still
-//     fails — trusted_domains explicitly rejects IP literals, and the
+//     fails - trusted_domains explicitly rejects IP literals, and the
 //     override map never gets consulted for IP-literal targets.
 func TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
@@ -133,7 +133,7 @@ func TestProxy_DNSHostOverrides_WSFixtureRoutesViaTrustedHostname(t *testing.T) 
 // that same IP. Trusted_domains rejects IP literals at the matcher, and
 // the override map is hostname-only.
 func TestProxy_DNSHostOverrides_RawIPLiteralStillBlocked(t *testing.T) {
-	// We don't even need a backend — pipelock should reject before any
+	// We don't even need a backend - pipelock should reject before any
 	// connection attempt. But we'll bring one up to ensure failure is
 	// caused by SSRF policy, not by "nothing listening".
 	backendAddr, backendCleanup := wsEchoServer(t)

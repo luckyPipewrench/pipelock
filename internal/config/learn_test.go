@@ -388,7 +388,7 @@ func TestValidate_LearnSaltSource(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 		// Loosen perms to a deliberately unsafe mode so the validator
-		// must reject it. Using a constant keeps gosec G302 quiet —
+		// must reject it. Using a constant keeps gosec G302 quiet -
 		// the loose mode is the test fixture, not production behavior.
 		const looseMode os.FileMode = 0o644
 		if err := os.Chmod(p, looseMode); err != nil {
@@ -432,7 +432,7 @@ func TestValidate_LearnSaltSource(t *testing.T) {
 
 	t.Run("file_directory_rejected", func(t *testing.T) {
 		dir := t.TempDir()
-		// Tighten the dir perms so the perms check would pass — we want
+		// Tighten the dir perms so the perms check would pass - we want
 		// to be sure the IsRegular() check is what rejects the path, not
 		// the mode bits. 0o700 is repo-standard for owner-only dirs.
 		const ownerOnlyDir os.FileMode = 0o700
@@ -507,7 +507,7 @@ func TestNormalizeLearn_TrimsWhitespace(t *testing.T) {
 }
 
 // TestNormalizeLearn_AppliedByApplyDefaults confirms ApplyDefaults runs
-// the normalizer (so Load picks it up automatically — the round-trip
+// the normalizer (so Load picks it up automatically - the round-trip
 // path through Load is exercised by TestLoad_LearnNormalizes below).
 func TestNormalizeLearn_AppliedByApplyDefaults(t *testing.T) {
 	cfg := &Config{}
@@ -705,7 +705,7 @@ func TestValidateLearnInferenceFloors_ZeroOrPositiveAccepted(t *testing.T) {
 // validation contract: when multiple fields are negative, the validator
 // returns the first error in declaration order (sessions, events, windows).
 // This matters because operators read the first error in their logs and
-// fix it before re-running — non-deterministic ordering would force
+// fix it before re-running - non-deterministic ordering would force
 // multiple round-trips.
 func TestValidateLearnInferenceFloors_FieldOrder(t *testing.T) {
 	t.Parallel()
@@ -774,7 +774,7 @@ func TestLoad_LearnInferenceFloors(t *testing.T) {
 }
 
 // TestLoad_LearnInferenceFloors_NegativeRejected confirms a YAML doc with
-// a negative floor fails Load() — the YAML decode must reach Validate()
+// a negative floor fails Load() - the YAML decode must reach Validate()
 // and the validator must reject it with the operator-facing path.
 func TestLoad_LearnInferenceFloors_NegativeRejected(t *testing.T) {
 	body := "" +
@@ -1038,7 +1038,7 @@ func TestValidateLearnInferenceNormalization_AllZeroAccepted(t *testing.T) {
 // TestValidateLearnInferenceNormalization_FieldOrder pins the sequential
 // validation contract: when multiple fields are bad, the validator
 // returns the first error in declaration order. Operators read the
-// first error in their logs and fix it before re-running — non-
+// first error in their logs and fix it before re-running - non-
 // deterministic ordering would force multiple round-trips. Algorithm
 // is checked first; numeric fields follow in struct declaration order.
 func TestValidateLearnInferenceNormalization_FieldOrder(t *testing.T) {
@@ -1159,7 +1159,7 @@ func TestLoad_LearnInferenceNormalization_RoundTrip(t *testing.T) {
 }
 
 // TestLoad_LearnInferenceNormalization_Negative_Rejected confirms a YAML
-// doc with a negative normalization knob fails Load() — the YAML
+// doc with a negative normalization knob fails Load() - the YAML
 // decode must reach Validate() and the validator must reject it with
 // the operator-facing YAML path so a misconfigured deployment cannot
 // silently widen the wildcard surface.

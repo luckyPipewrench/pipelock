@@ -122,7 +122,7 @@ func (noopMetrics) IncWatcherError()     {}
 // Initial load is fail-closed: if the roster cannot be loaded or the
 // store rejects the existing active.json, NewLoader returns an error so
 // the caller refuses to start. A store with no active.json is NOT an
-// error — that's the legitimate "lock enabled but nothing promoted yet"
+// error - that's the legitimate "lock enabled but nothing promoted yet"
 // state and Current() returns nil for it; the proxy path treats nil as
 // "no contract resolved" and falls through to scanner-only.
 //
@@ -268,7 +268,7 @@ func (l *Loader) Reload() error {
 				l.metrics.IncReload(outcomeRejected)
 				return fmt.Errorf("contract runtime: active manifest disappeared after generation %d: %w", prev.Generation(), err)
 			}
-			// Store has no active.json — legitimate "nothing promoted"
+			// Store has no active.json - legitimate "nothing promoted"
 			// state during initial/never-active startup. Current() stays nil.
 			l.current.Store(nil)
 			l.metrics.IncReload(outcomeNoActive)

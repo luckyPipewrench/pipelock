@@ -279,7 +279,7 @@ func TestNewCheckerSOLDefaultDisabled(t *testing.T) {
 		Enabled:       true,
 		Action:        config.ActionBlock,
 		UnknownAction: config.ActionAllow,
-		Chains:        config.AddressChains{}, // all nil — use defaults
+		Chains:        config.AddressChains{}, // all nil - use defaults
 		Similarity:    config.SimilarityConfig{PrefixLength: 4, SuffixLength: 4},
 	}
 	c := NewChecker(cfg, nil)

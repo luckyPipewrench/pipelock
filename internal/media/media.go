@@ -76,7 +76,7 @@ func (r *StripResult) Changed() bool { return r.SegmentsRemoved > 0 || r.Trailin
 
 // StripMetadata routes a response body to the format-specific surgeon based
 // on the Content-Type header. An unknown or unsupported type returns the
-// input unchanged with Format="unknown" and no error — callers enforce
+// input unchanged with Format="unknown" and no error - callers enforce
 // allowed-type policy upstream.
 //
 // The media type string may include parameters (charset, boundary); they
@@ -117,13 +117,13 @@ func canonicalMediaType(contentType string) string {
 const (
 	jpegSOI  = 0xD8 // Start of Image
 	jpegEOI  = 0xD9 // End of Image
-	jpegSOS  = 0xDA // Start of Scan — entropy-coded data follows
+	jpegSOS  = 0xDA // Start of Scan - entropy-coded data follows
 	jpegAPP0 = 0xE0 // JFIF header (must preserve for JFIF files)
 	jpegAPP1 = 0xE1 // EXIF, XMP
 	jpegAPP2 = 0xE2 // ICC profile, FlashPix
 	// jpegAPP13 carries IPTC (IIM/IPTC), Photoshop 3.0, and URL metadata
 	// blocks. Stripping it removes image description, keywords, copyright,
-	// author name, and location — all metadata an agent should not receive.
+	// author name, and location - all metadata an agent should not receive.
 	jpegAPP13 = 0xED
 )
 
@@ -240,7 +240,7 @@ func stripJPEG(data []byte) (*StripResult, error) {
 					k += 2 // restart marker
 					continue
 				}
-				// Real marker — end of scan data.
+				// Real marker - end of scan data.
 				break
 			}
 			out.Write(data[payloadEnd:k])

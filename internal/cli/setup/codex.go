@@ -206,7 +206,7 @@ func parseCodexMCPList(data []byte) ([]codexMCPServer, error) {
 // pipelock. Detection keys on the args prefix ["mcp", "proxy"] AND a binary
 // basename of "pipelock" (with optional suffix like "pipelock-dev"). This
 // matches both the current pipelock binary and any prior pipelock binary at
-// a different path — important so a rebuild at a new location does not
+// a different path - important so a rebuild at a new location does not
 // double-wrap servers on the next install.
 //
 // The basename check guards against the unlikely case of a non-pipelock tool

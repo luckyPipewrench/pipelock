@@ -299,7 +299,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) ([]byte, BodyScan
 	// Redaction runs BEFORE DLP so that every forwarding path (including
 	// non-block DLP actions like warn / strip) forwards the redacted buf.
 	// Running redaction after DLP would mean a DLP-matched warn-mode
-	// request forwards the ORIGINAL unredacted body — the bypass
+	// request forwards the ORIGINAL unredacted body - the bypass
 	// reported in v1b round 1 review (2026-04-19). DLP then scans the
 	// redacted buf and catches anything redaction did not cover.
 	var redactReport *redact.Report
@@ -790,7 +790,7 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 		// Scan ALL part headers for secret exfiltration.
 		// Custom headers (X-Secret, etc.) are scanned as raw values.
 		// Structural headers (Content-Type, Content-Disposition) are parsed
-		// for parameter values — an attacker can hide secrets in non-standard
+		// for parameter values - an attacker can hide secrets in non-standard
 		// params like Content-Disposition: form-data; x-data="<credential>".
 		for name, values := range part.Header {
 			canonical := textproto.CanonicalMIMEHeaderKey(name)
@@ -853,7 +853,7 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 				// (catches patterns visible in encoded form).
 				result = append(result, string(decoded))
 			}
-			// Always scan raw form too — fail-closed on decode failure,
+			// Always scan raw form too - fail-closed on decode failure,
 			// and catches patterns visible in encoded form.
 			result = append(result, rawBody)
 		case "quoted-printable":

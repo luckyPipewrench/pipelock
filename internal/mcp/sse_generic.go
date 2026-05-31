@@ -29,7 +29,7 @@ var ErrSSEStreamFinding = errors.New("sse stream finding")
 // measures the data-payload bytes returned by transport.SSEReader, NOT
 // the full wire size of the re-emitted event (event:/id:/retry: metadata
 // is added by writeSSEEvent on top). Operators sizing the ceiling
-// against expected payload — token deltas, JSON chunks — get the
+// against expected payload - token deltas, JSON chunks - get the
 // behavior they want; sizing it against total wire bytes will see
 // metadata overhead on top.
 var ErrSSEEventTooLarge = errors.New("sse event exceeds max_event_bytes")

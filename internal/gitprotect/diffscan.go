@@ -19,7 +19,7 @@ import (
 )
 
 // suppressRe matches inline suppression comments: // pipelock:ignore or # pipelock:ignore
-// Must stay in sync with cliutil.SuppressRe — duplicated here to avoid import cycle.
+// Must stay in sync with cliutil.SuppressRe - duplicated here to avoid import cycle.
 var (
 	suppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
 
@@ -231,7 +231,7 @@ type ScanDiffResult struct {
 }
 
 // ScanDiff scans diff text for DLP pattern matches in added lines.
-// It returns findings sorted by file then line number, with redacted content —
+// It returns findings sorted by file then line number, with redacted content -
 // the actual secret is replaced with [REDACTED] to prevent accidental exposure.
 // Inline pipelock:ignore comments are handled here (not deferred to the CLI layer)
 // because diff content is always available, unlike disk reads which can fail
@@ -241,9 +241,9 @@ type ScanDiffResult struct {
 func ScanDiff(diffText string, patterns []CompiledDLPPattern) (ScanDiffResult, error) {
 	addedLines := parseDiff(diffText)
 
-	// Check if input had content but no diff headers — likely not a diff.
+	// Check if input had content but no diff headers - likely not a diff.
 	if len(addedLines) == 0 && len(strings.TrimSpace(diffText)) > 0 && len(patterns) > 0 {
-		// Only error if the input has content — empty input is fine.
+		// Only error if the input has content - empty input is fine.
 		if !strings.Contains(diffText, "+++ ") {
 			return ScanDiffResult{}, ErrNoDiffHeaders
 		}

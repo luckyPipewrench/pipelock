@@ -158,7 +158,7 @@ func newReceiptTestHarness(t *testing.T) (*receipt.Emitter, *recorder.Recorder, 
 }
 
 // actionReceiptEntryType is the recorder entry type for action receipts.
-// Mirrors the unexported constant in internal/receipt/emitter.go — used
+// Mirrors the unexported constant in internal/receipt/emitter.go - used
 // across test helpers that read recorder files directly.
 const actionReceiptEntryType = "action_receipt"
 
@@ -484,7 +484,7 @@ func TestForwardScanned_Notification(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	var out, log bytes.Buffer
 
-	// Notification: has method, no result — should be forwarded unmodified.
+	// Notification: has method, no result - should be forwarded unmodified.
 	notification := `{"jsonrpc":"2.0","method":"notifications/resources_updated"}`
 	found, err := fwdScanned(strings.NewReader(notification+"\n"), &out, &log, sc, nil, nil)
 	if err != nil {
@@ -504,7 +504,7 @@ func TestForwardScanned_ErrorResponse(t *testing.T) {
 	sc := testScannerWithAction(t, "block")
 	var out, log bytes.Buffer
 
-	// JSON-RPC error response — error message is scanned but "Invalid Request" is benign.
+	// JSON-RPC error response - error message is scanned but "Invalid Request" is benign.
 	errResponse := jsonErrInvalidReq
 	found, err := fwdScanned(strings.NewReader(errResponse+"\n"), &out, &log, sc, nil, nil)
 	if err != nil {
@@ -992,7 +992,7 @@ func TestRunProxy_AskAction(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Operator allowed — original response forwarded.
+	// Operator allowed - original response forwarded.
 	got := strings.TrimSpace(out.String())
 	if got != injectionResponse {
 		t.Errorf("expected original forwarded after allow, got: %s", got)
@@ -1008,7 +1008,7 @@ func TestRunProxy_InputScanningBlocksDirtyRequest(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	// Dirty request on client stdin — secret in tool arguments.
+	// Dirty request on client stdin - secret in tool arguments.
 	secret := "sk-ant-" + strings.Repeat("z", 25)
 	dirtyReq := makeRequest(99, "tools/call", map[string]string{"key": secret}) + "\n"
 
@@ -1052,7 +1052,7 @@ func TestRunProxy_InputScanningForwardsCleanRequest(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	// Clean request — no secrets.
+	// Clean request - no secrets.
 	cleanReq := makeRequest(1, "tools/list", nil) + "\n"
 
 	inputCfg := &InputScanConfig{
@@ -1811,7 +1811,7 @@ func TestStripResponse_NilResult(t *testing.T) {
 func TestStripResponse_EmptyTextBlock(t *testing.T) {
 	sc := testScannerWithAction(t, "strip")
 
-	// Response with an empty text block — should be skipped (not scanned).
+	// Response with an empty text block - should be skipped (not scanned).
 	rpc := stripRPCResponse{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage("1"),
@@ -1845,7 +1845,7 @@ func TestStripResponse_EmptyTextBlock(t *testing.T) {
 }
 
 func TestForwardScanned_StripActionFail_FallsBackToBlock(t *testing.T) {
-	// Strip action with injection but stripResponse "fails" — this path is defensive.
+	// Strip action with injection but stripResponse "fails" - this path is defensive.
 	// We can't easily make stripResponse fail since Unmarshal always succeeds for valid JSON.
 	// Instead, test ForwardScanned strip action with write error on stripped response.
 	sc := testScannerWithAction(t, "strip")
@@ -2225,7 +2225,7 @@ func TestRunProxy_PolicyOnlyWithoutInputScanning(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	// Dangerous tool call — should be blocked by policy even without input scanning.
+	// Dangerous tool call - should be blocked by policy even without input scanning.
 	req := `{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm -rf /"}}}` + "\n"
 
 	policyCfg := policy.New(config.MCPToolPolicy{
@@ -2241,7 +2241,7 @@ func TestRunProxy_PolicyOnlyWithoutInputScanning(t *testing.T) {
 		},
 	})
 
-	// inputCfg is nil — only policy engine is active.
+	// inputCfg is nil - only policy engine is active.
 	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2269,7 +2269,7 @@ func TestRunProxy_PolicyOnlyMalformedJSONBlocked(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	// Malformed JSON — must be blocked (fail-closed) when policy is enabled
+	// Malformed JSON - must be blocked (fail-closed) when policy is enabled
 	// but input scanning is disabled.
 	req := "this is not valid json\n"
 
@@ -2286,7 +2286,7 @@ func TestRunProxy_PolicyOnlyMalformedJSONBlocked(t *testing.T) {
 		},
 	})
 
-	// inputCfg is nil — only policy engine is active.
+	// inputCfg is nil - only policy engine is active.
 	err := RunProxy(context.Background(), strings.NewReader(req), &out, logBuf, []string{"echo", cleanResponse}, MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -2781,7 +2781,7 @@ func TestRunProxy_CleanExitNoErrSubprocessExit(t *testing.T) {
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	// "true" exits with status 0 — no error expected.
+	// "true" exits with status 0 - no error expected.
 	err := RunProxy(context.Background(), strings.NewReader(""), &out, logBuf, []string{"true"}, testOpts(sc))
 	if err != nil {
 		t.Errorf("clean subprocess exit should not return error, got: %v", err)
@@ -2797,7 +2797,7 @@ func TestRunProxyWithSandbox_SubprocessExitWrapsErrSubprocessExit(t *testing.T) 
 	var out bytes.Buffer
 	logBuf := &syncBuffer{}
 
-	// Use a plain exec.Cmd (not sandboxed) — RunProxyWithSandbox only needs
+	// Use a plain exec.Cmd (not sandboxed) - RunProxyWithSandbox only needs
 	// an unstarted *exec.Cmd with working stdio pipes.
 	cmd := exec.CommandContext(context.Background(), "false") //nolint:gosec // test binary
 
@@ -3284,7 +3284,7 @@ func TestVerifyBinaryIntegrity_RequireSignatureBlocksInWarnMode(t *testing.T) {
 	icfg := &config.MCPBinaryIntegrity{
 		Enabled:          true,
 		ManifestPath:     mpath,
-		Action:           config.ActionWarn, // warn — must NOT relax trust
+		Action:           config.ActionWarn, // warn - must NOT relax trust
 		RequireSignature: true,
 		TrustedSigner:    "signer",
 		Keystore:         ksDir,
@@ -3331,7 +3331,7 @@ func TestVerifyBinaryIntegrity_RequireSignatureMissingSigFile(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save manifest: %v", err)
 	}
-	// Note: no signing.SaveSignature call — the .sig file is intentionally absent.
+	// Note: no signing.SaveSignature call - the .sig file is intentionally absent.
 
 	for _, action := range []string{config.ActionBlock, config.ActionWarn} {
 		icfg := &config.MCPBinaryIntegrity{
@@ -3361,7 +3361,7 @@ func TestVerifyBinaryIntegrity_RequireSignatureUnknownSigner(t *testing.T) {
 	}
 	dir := t.TempDir()
 	ksDir := filepath.Join(dir, "keys")
-	// Note: keystore exists but is empty — no key generated for "signer".
+	// Note: keystore exists but is empty - no key generated for "signer".
 	if err := os.MkdirAll(ksDir, 0o700); err != nil {
 		t.Fatalf("mkdir keystore: %v", err)
 	}

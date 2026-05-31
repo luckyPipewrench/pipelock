@@ -597,7 +597,7 @@ func TestDecide_DeterministicEvidenceOrder(t *testing.T) {
 	// two retainable positions (1 and 4). Expect ascending Index in
 	// each output slice on every call.
 	obs := []SegmentObservation{}
-	// idx 5 first in the slice — but emission must still be sorted.
+	// idx 5 first in the slice - but emission must still be sorted.
 	obs = append(obs, makeUniformObs(5, 87, 5)...)
 	for i := 0; i < 100; i++ {
 		obs = append(obs, SegmentObservation{Index: 1, Value: "v1", EventCount: 1})

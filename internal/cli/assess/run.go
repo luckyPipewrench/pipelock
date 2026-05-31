@@ -234,7 +234,7 @@ func evidenceFilename(primitive string) string {
 }
 
 // hashEvidenceFiles computes SHA-256 of each unskipped primitive's evidence
-// file. Missing files for unskipped primitives are a hard error — `run`
+// file. Missing files for unskipped primitives are a hard error - `run`
 // should have written them, so absence indicates a programming bug, not
 // user behavior. The returned map keys are file names like "simulate.jsonl".
 func hashEvidenceFiles(evidenceDir string, allPrimitives []string, skipSet map[string]bool) (map[string]string, error) {
@@ -443,7 +443,7 @@ func wrapDiscoverReport(r *discover.Report, _ string) AssessDiscoverReport {
 	}
 	for _, c := range r.Clients {
 		redactedClient := c
-		// Strip absolute config path — leaks home dir layout and project
+		// Strip absolute config path - leaks home dir layout and project
 		// names. The client identity stays in ClientConfig.Client.
 		redactedClient.ConfigPath = ""
 		// ParseError text from a failed config read often embeds the
@@ -466,7 +466,7 @@ func wrapDiscoverReport(r *discover.Report, _ string) AssessDiscoverReport {
 		redacted.ConfigPath = ""
 		redacted.ProjectPath = ""
 		// Command is often an absolute path on the operator's machine
-		// (e.g. /home/<user>/.local/bin/<tool>) — leaks username and
+		// (e.g. /home/<user>/.local/bin/<tool>) - leaks username and
 		// installed toolchain. Server identity stays in ServerName.
 		redacted.Command = ""
 		// ParseWarnings carry free-form strings from config parsing that

@@ -49,7 +49,7 @@ type RPCError struct {
 
 // RPCResponse represents a JSON-RPC 2.0 response envelope.
 // Result is json.RawMessage (not *ToolResult) to handle non-standard result
-// shapes without failing the entire parse — a typed *ToolResult would cause
+// shapes without failing the entire parse - a typed *ToolResult would cause
 // json.Unmarshal to error on string/array/non-object results, allowing bypass.
 // Method and Params are included to scan server notifications for injection.
 type RPCResponse struct {
@@ -78,13 +78,13 @@ type ScanVerdict struct {
 
 // ExtractText extracts all text content from an MCP tool result.
 // First tries to parse as a standard ToolResult with content blocks (extracting
-// text from ALL block types, not just "text" — prevents bypass via image blocks).
+// text from ALL block types, not just "text" - prevents bypass via image blocks).
 // Falls back to recursively extracting all string values from arbitrary JSON,
 // preventing bypass via non-standard result shapes.
 //
 // Content blocks are joined with a single space to preserve word boundaries.
 // Between-word splits ("previous" + "instructions") produce intact injections
-// the agent will act on — scanner must detect these. Mid-word splits
+// the agent will act on - scanner must detect these. Mid-word splits
 // ("Igno" + "re" → "Igno re") don't match, but the injection is also broken
 // for the agent, so this is not exploitable.
 func ExtractText(raw json.RawMessage) string {
@@ -121,7 +121,7 @@ func ExtractText(raw json.RawMessage) string {
 }
 
 // SortedKeys returns the keys of a map in sorted order. Used by JSON extraction
-// functions to ensure deterministic iteration — Go map order is random, so
+// functions to ensure deterministic iteration - Go map order is random, so
 // split-secret concat scanning would miss secrets nondeterministically without
 // stable ordering.
 func SortedKeys(m map[string]interface{}) []string {

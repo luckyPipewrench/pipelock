@@ -35,7 +35,7 @@ import (
 func TestCaptureMetadata_FetchPath_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	// Upstream that returns a tiny clean payload — the fetch path scans the
+	// Upstream that returns a tiny clean payload - the fetch path scans the
 	// URL, writes a URLVerdictRecord through the capture observer, and on
 	// allow proceeds to fetch the body. We only care about the
 	// URLVerdictRecord write here.
@@ -143,7 +143,7 @@ func TestCaptureMetadata_FetchPath_RoundTrip(t *testing.T) {
 
 	// The entry's outer envelope must carry session_id and an event kind
 	// derived from the capture surface. Empty session_id was the original
-	// bug — assert non-empty.
+	// bug - assert non-empty.
 	if envelope.SessionID == "" {
 		t.Errorf("capture entry session_id empty — SessionID stamping regressed")
 	}

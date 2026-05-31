@@ -98,7 +98,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 		return InputVerdict{Clean: false, Error: fmt.Sprintf("duplicate JSON object key: %v", err)}
 	}
 
-	var rpc jsonrpc.RPCResponse // Reuse struct — has Method and Params fields.
+	var rpc jsonrpc.RPCResponse // Reuse struct - has Method and Params fields.
 	if err := json.Unmarshal(trimmed, &rpc); err != nil {
 		if onParseError == config.ActionForward {
 			// Still scan raw text for secrets/injection before forwarding.
@@ -121,7 +121,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 
 	ctx = withMCPRequestWarnContext(ctx, mcpWarnResource(rpc.Method, trimmed))
 
-	// No params — but result/error/unknown fields may carry exfiltrable
+	// No params - but result/error/unknown fields may carry exfiltrable
 	// content (e.g., a compromised agent sending response-shaped messages).
 	// Extract individual string values and scan each one separately so that
 	// encoded-secret detection (base64, hex) works on field values, not on
@@ -230,7 +230,7 @@ func ScanRequest(ctx context.Context, line []byte, sc *scanner.Scanner, action, 
 		strs = []string{string(rpc.Params)}
 	}
 
-	// Include method name and ID in DLP scan — agents can exfiltrate
+	// Include method name and ID in DLP scan - agents can exfiltrate
 	// secrets by encoding them into method names or request IDs.
 	if rpc.Method != "" {
 		strs = append(strs, rpc.Method)

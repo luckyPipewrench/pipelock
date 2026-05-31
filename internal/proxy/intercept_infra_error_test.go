@@ -124,7 +124,7 @@ func TestInterceptTunnel_DNSInfrastructureError_NoSignal(t *testing.T) {
 }
 
 // TestInterceptTunnel_RealSSRF_RecordsSignalBlock is the paired regression
-// guard. Must run alongside the infrastructure test — if this one silently
+// guard. Must run alongside the infrastructure test - if this one silently
 // stops recording SignalBlock too, the fix has broken adaptive escalation
 // for genuine SSRF attempts.
 func TestInterceptTunnel_RealSSRF_RecordsSignalBlock(t *testing.T) {
@@ -197,7 +197,7 @@ func TestInterceptTunnel_RealSSRF_RecordsSignalBlock(t *testing.T) {
 	}
 
 	// Real SSRF must STILL record SignalBlock. This is the invariant we
-	// must not weaken — the fix excludes ONLY infrastructure errors from
+	// must not weaken - the fix excludes ONLY infrastructure errors from
 	// scoring, not actual private-IP resolutions.
 	foundBlock := false
 	for _, sig := range rec.signals {

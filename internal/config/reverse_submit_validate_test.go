@@ -11,7 +11,7 @@ import (
 
 // submitValidCfg builds a config that satisfies every submit-profile
 // validation rule. Tests then mutate one field and assert the expected
-// rejection — the negative-test pattern from validate.go's existing tests.
+// rejection - the negative-test pattern from validate.go's existing tests.
 func submitValidCfg() *Config {
 	cfg := Defaults()
 	cfg.ReverseProxy.Enabled = true

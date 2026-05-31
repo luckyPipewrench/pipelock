@@ -30,7 +30,7 @@ const TauBrittle = 0.50
 // Default exposure floors. A rule cannot be classified ConfidenceStable
 // or ConfidenceBrittle until ALL three floors are cleared, regardless of
 // how high the Wilson lower bound climbs. Floors are AND-composed with
-// Wilson — never OR — so a low-volume signal cannot promote itself to
+// Wilson - never OR - so a low-volume signal cannot promote itself to
 // stable just by being lucky on a handful of trials. Values come from
 // the contract inference engine design baseline.
 const (
@@ -102,7 +102,7 @@ func (f Floors) Resolved() Floors {
 }
 
 // ErrNegativeFloor is returned by Floors.Validate when any floor field
-// is negative. Callers MUST compare with errors.Is, not raw == — Validate
+// is negative. Callers MUST compare with errors.Is, not raw == - Validate
 // wraps the sentinel with fmt.Errorf("%w") so the field name and value
 // reach the operator without breaking errors.Is chains.
 //
@@ -140,7 +140,7 @@ func (f Floors) Validate() error {
 // if all three thresholds clear; AND-composed by design.
 //
 // Negative input counts return false. Callers should validate inputs at
-// the aggregator boundary, but FloorsPass is defensive — it never panics
+// the aggregator boundary, but FloorsPass is defensive - it never panics
 // on bad input and never silently treats a negative count as passing.
 func FloorsPass(observed, sessions, windows int, floors Floors) bool {
 	if observed < 0 || sessions < 0 || windows < 0 {
@@ -214,7 +214,7 @@ func (c Confidence) String() string {
 //
 // Production callers go through this single entry point; the locked
 // alpha is intentional. Tests that need to probe non-default alphas
-// call WilsonLowerBound directly — Classify must not grow an alpha
+// call WilsonLowerBound directly - Classify must not grow an alpha
 // parameter or functional options for that case.
 func Classify(observed, opportunity, sessions, windows int, floors Floors) Confidence {
 	if !FloorsPass(observed, sessions, windows, floors) {

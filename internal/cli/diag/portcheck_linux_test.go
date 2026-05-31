@@ -66,7 +66,7 @@ func TestParseProcNetIP_IPv6_AnyAddr(t *testing.T) {
 func TestEnumerateListenerHolders_Smoke(t *testing.T) {
 	// Smoke test: on a real Linux host the function should succeed and
 	// return some holders (the test process inherits a bunch of inherited
-	// listeners normally, but a fresh runner may have none — both are valid).
+	// listeners normally, but a fresh runner may have none - both are valid).
 	holders, err := enumerateListenerHolders()
 	if err != nil {
 		t.Fatalf("enumerateListenerHolders: %v", err)

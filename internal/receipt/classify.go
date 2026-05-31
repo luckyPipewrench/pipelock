@@ -21,7 +21,7 @@ func ClassifyHTTP(method string) ActionType {
 	case http.MethodTrace:
 		return ActionRead
 	case http.MethodConnect:
-		// CONNECT establishes a tunnel — classified as read because
+		// CONNECT establishes a tunnel - classified as read because
 		// the tunnel itself doesn't mutate; the tunneled requests do.
 		return ActionRead
 	default:
@@ -60,7 +60,7 @@ func ReversibilityFromMethod(method string) Reversibility {
 // This is best-effort based on naming conventions. Returns unclassified
 // for tools that can't be categorized from name alone.
 func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
-	// tools/list is a read operation — listing available tools
+	// tools/list is a read operation - listing available tools
 	if mcpMethod == "tools/list" || mcpMethod == "resources/list" || mcpMethod == "prompts/list" {
 		return ActionRead
 	}
@@ -73,7 +73,7 @@ func ClassifyMCPTool(toolName, mcpMethod string) ActionType {
 		return ActionRead
 	}
 
-	// tools/call — infer from tool name patterns
+	// tools/call - infer from tool name patterns
 	if mcpMethod == "tools/call" {
 		return classifyToolName(toolName)
 	}

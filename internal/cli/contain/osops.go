@@ -96,7 +96,7 @@ type installEnv struct {
 // defaultInstallEnv wires installEnv to the real OS. Callers fill in
 // pipelockBinary (from --pipelock-binary or os.Executable) before running
 // steps. operatorUser defaults to $SUDO_USER and is only honored if non-empty
-// — step1 (preflight) errors out cleanly if root invoked install without
+// - step1 (preflight) errors out cleanly if root invoked install without
 // sudo (where $SUDO_USER is empty) and -- no override flag was passed.
 func defaultInstallEnv(out io.Writer) *installEnv {
 	return &installEnv{
@@ -164,8 +164,8 @@ const (
 	// tool names/paths only. Mutation remains gated by root-owned directories.
 	modeCAReadable        os.FileMode = 0o644 // public CA certs, read by pipelock-agent
 	modeAllowListReadable os.FileMode = 0o644 // runtime policy metadata, read by pipelock-agent
-	modeConfigSecret      os.FileMode = 0o640 // /etc/pipelock/pipelock.yaml — pipelock-proxy reads, pipelock-agent denied
-	modePinSecret         os.FileMode = 0o600 // integrity pin — pipelock-proxy only
+	modeConfigSecret      os.FileMode = 0o640 // /etc/pipelock/pipelock.yaml - pipelock-proxy reads, pipelock-agent denied
+	modePinSecret         os.FileMode = 0o600 // integrity pin - pipelock-proxy only
 	modeSudoers           os.FileMode = 0o440 // /etc/sudoers.d/*
 	modeWrapperExec       os.FileMode = 0o755 // /usr/local/bin/plk-* wrappers, executed by operator
 	modeUnitFile          os.FileMode = 0o644
@@ -566,7 +566,7 @@ func popArchivedBackup(env *installEnv, bak string) string {
 
 // resolveUIDs returns the numeric UIDs for the configured proxy and agent
 // users. Returns an error wrapping os/user.UnknownUserError when either is
-// missing — callers translate that into a clear install error.
+// missing - callers translate that into a clear install error.
 func resolveUIDs(env *installEnv) (proxyUID, agentUID int, err error) {
 	proxy, err := env.lookupUser(env.proxyUserName)
 	if err != nil {

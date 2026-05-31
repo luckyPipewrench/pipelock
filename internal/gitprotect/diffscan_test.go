@@ -216,7 +216,7 @@ func TestScanDiff_FindsSecret(t *testing.T) {
 	if f.Severity != "critical" {
 		t.Errorf("expected severity 'critical', got %q", f.Severity)
 	}
-	// Verify secret is redacted — content should NOT contain the original key
+	// Verify secret is redacted - content should NOT contain the original key
 	if f.Content == `var key = "`+key+`"` {
 		t.Error("content should be redacted but contains original secret")
 	}

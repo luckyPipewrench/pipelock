@@ -138,7 +138,7 @@ func synthesizeAssessment(manifest AssessManifest, sources AssessSources) Assess
 	findings := generateFindings(sources)
 
 	// Compliance frameworks are only attached when this assessment can
-	// honestly claim coverage — meaning every primitive ran and produced
+	// honestly claim coverage - meaning every primitive ran and produced
 	// evidence. Partial runs omit the section and record why in the
 	// manifest so the operator (and any downstream reader) can tell
 	// "no coverage claim" from "didn't bother to check."
@@ -283,7 +283,7 @@ func scoreDeploymentVerification(verify *diag.VerifyReport) AssessmentSection {
 	}
 
 	// All recorded checks were N/A (e.g., host-mode run with no containment
-	// probes applicable). Reward because the report exists with checks —
+	// probes applicable). Reward because the report exists with checks -
 	// distinguishes "we looked and nothing applied" from "we have nothing
 	// to show".
 	if applicable == 0 {
@@ -510,7 +510,7 @@ func mapScoreFindingSeverity(sev string) string {
 
 // auditRemediation returns category-specific remediation text for
 // audit-score findings. Category names are matched against the
-// audit.Category* constants — keep this switch in sync with the
+// audit.Category* constants - keep this switch in sync with the
 // scoring functions in internal/cli/audit/.
 func auditRemediation(category string) string {
 	switch category {

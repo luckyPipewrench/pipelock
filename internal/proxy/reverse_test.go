@@ -713,7 +713,7 @@ func TestReverseProxy_BinaryRequestPassthrough(t *testing.T) {
 
 	proxy := reverseTestSetup(t, cfg, upstream)
 
-	// Send binary content type — should skip DLP scanning.
+	// Send binary content type - should skip DLP scanning.
 	imageData := "\x89PNG\r\n\x1a\n" + ("AKIA" + "IOSFODNN7EXAMPLE")
 	resp := testPost(t, proxy.URL+"/upload",
 		"image/png", imageData)
@@ -730,7 +730,7 @@ func TestReverseProxy_BinaryRequestPassthrough(t *testing.T) {
 func TestReverseProxy_UpstreamError(t *testing.T) {
 	cfg := reverseTestConfig()
 
-	// Create a server that immediately closes — simulates unreachable upstream.
+	// Create a server that immediately closes - simulates unreachable upstream.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -1342,7 +1342,7 @@ func TestReverseProxy_CompressedBodyBlocked(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Must block regardless of warn mode — nil buffer fail-closed.
+	// Must block regardless of warn mode - nil buffer fail-closed.
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 (compressed body fail-closed), got %d", resp.StatusCode)
 	}
@@ -1504,7 +1504,7 @@ func TestReverseProxy_AskModeBlocksWithEnforceDisabled(t *testing.T) {
 	resp := testGet(t, proxy.URL+"/api/data")
 	defer func() { _ = resp.Body.Close() }()
 
-	// ask without approver must block unconditionally — even with enforce=false.
+	// ask without approver must block unconditionally - even with enforce=false.
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 (ask fail-closed regardless of enforce), got %d", resp.StatusCode)
 	}
@@ -1530,7 +1530,7 @@ func TestReverseProxy_StripFailedBlocksWithEnforceDisabled(t *testing.T) {
 	resp := testGet(t, proxy.URL+"/api/data")
 	defer func() { _ = resp.Body.Close() }()
 
-	// Strip-failed blocks unconditionally — even with enforce=false.
+	// Strip-failed blocks unconditionally - even with enforce=false.
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 (strip-failed regardless of enforce), got %d", resp.StatusCode)
 	}
@@ -1552,7 +1552,7 @@ func TestReverseProxy_CompressedResponseBlocked(t *testing.T) {
 	resp := testGet(t, proxy.URL+"/api/data")
 	defer func() { _ = resp.Body.Close() }()
 
-	// Compressed responses must be blocked — regex can't scan gzip.
+	// Compressed responses must be blocked - regex can't scan gzip.
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403 (compressed response fail-closed), got %d", resp.StatusCode)
 	}
@@ -1582,7 +1582,7 @@ func TestReverseProxy_IdentityEncodingAllowed(t *testing.T) {
 	resp := testGet(t, proxy.URL+"/api/data")
 	defer func() { _ = resp.Body.Close() }()
 
-	// identity encoding is not compression — should pass through.
+	// identity encoding is not compression - should pass through.
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 (identity encoding), got %d", resp.StatusCode)
 	}
@@ -1737,7 +1737,7 @@ func TestReverseProxy_BodyDLPDefaultActionChain(t *testing.T) {
 	cfg.ResponseScanning.Enabled = true
 	cfg.ResponseScanning.Action = config.ActionBlock
 	cfg.ApplyDefaults()
-	// Override AFTER ApplyDefaults — this is the field under test.
+	// Override AFTER ApplyDefaults - this is the field under test.
 	cfg.RequestBodyScanning.Action = "" // both result.Action and cfg.Action empty → falls to block
 
 	upstream := func(w http.ResponseWriter, _ *http.Request) {

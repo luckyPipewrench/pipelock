@@ -34,7 +34,7 @@ func LoadConfigOrDefault(path string) (*config.Config, error) {
 //  4. /etc/pipelock/pipelock.yaml
 //
 // Returns the absolute path on first hit and the empty string when nothing
-// is found. Callers decide how to react to the empty-string return — for
+// is found. Callers decide how to react to the empty-string return - for
 // instance, the IDE install commands embed the discovered path into the
 // wrapped argv so the spawned subprocess loads the same config as the
 // operator's main pipelock service.

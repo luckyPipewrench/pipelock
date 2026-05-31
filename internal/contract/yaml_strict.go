@@ -109,7 +109,7 @@ func walkRejectBannedNodes(node ast.Node) error {
 		return walkRejectBannedNodes(n.Value)
 
 	case *ast.MappingValueNode:
-		// Check the key first — merge keys surface here.
+		// Check the key first - merge keys surface here.
 		if n.Key != nil && n.Key.IsMergeKey() {
 			return ErrYAMLMergeKey
 		}

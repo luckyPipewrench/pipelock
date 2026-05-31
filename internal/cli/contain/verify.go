@@ -158,7 +158,7 @@ func defaultProbeEnv() *probeEnv {
 // realRunCommand executes name+args under ctx, captures merged stdout
 // and stderr (bounded), and returns the process exit code. An
 // ExitError is treated as a successful invocation with a non-zero
-// exit code — only failure to start the binary returns a non-nil
+// exit code - only failure to start the binary returns a non-nil
 // error.
 func realRunCommand(ctx context.Context, name string, args ...string) (string, int, error) {
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec // G204: name comes from probe definitions (compile-time string literals or package consts), never user input.
@@ -358,7 +358,7 @@ func resolveToolInPath(env *probeEnv, name, pathList string) (string, bool) {
 }
 
 // probeCCLaunchAllowList runs `plk-launch <something-not-installed>` as
-// pipelock-agent and asserts the script exits 5 — "tool not in allow-list".
+// pipelock-agent and asserts the script exits 5 - "tool not in allow-list".
 // This exercises the full read path: sudoers grants no-password to
 // plk-launch, /etc/pipelock is directory-traversable for pipelock-agent,
 // /etc/pipelock/contain is traversable, /etc/pipelock/contain/tools.list
@@ -370,12 +370,12 @@ func resolveToolInPath(env *probeEnv, name, pathList string) (string, bool) {
 // exercises the denial branch.
 //
 // Exit code mapping (matches install.go renderLaunchWrapper):
-//   - 0  unexpected — the sentinel was somehow accepted and executed
+//   - 0  unexpected - the sentinel was somehow accepted and executed
 //   - 1  sudo refused (NOPASSWD rule missing) → skip
-//   - 3  tool-name regex rejected — sentinel chosen wrong
-//   - 4  tools.list unreadable — fail, this breaks the launcher boundary
-//   - 5  tool not in allow-list — PASS
-//   - 6  in allow-list but PATH lookup failed — unexpected
+//   - 3  tool-name regex rejected - sentinel chosen wrong
+//   - 4  tools.list unreadable - fail, this breaks the launcher boundary
+//   - 5  tool not in allow-list - PASS
+//   - 6  in allow-list but PATH lookup failed - unexpected
 func probeCCLaunchAllowList(ctx context.Context, env *probeEnv) (string, string) {
 	// Sentinel must satisfy containToolNameRegex (max 31 chars) so plk-launch
 	// reaches the allow-list rejection path (exit 5) instead of the up-front

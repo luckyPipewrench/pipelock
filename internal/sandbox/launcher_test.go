@@ -53,7 +53,7 @@ func TestLaunchSandboxed_NetworkBlocked(t *testing.T) {
 	}
 	workspace := t.TempDir()
 
-	// Verify network isolation by checking /proc/self/net/dev — in an
+	// Verify network isolation by checking /proc/self/net/dev - in an
 	// isolated namespace only loopback exists (2 header lines + 1 lo line).
 	// No external tools or network access needed.
 	var stdout, stderr bytes.Buffer

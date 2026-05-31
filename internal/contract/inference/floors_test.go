@@ -61,7 +61,7 @@ func TestThresholds_Locked(t *testing.T) {
 // TestFloors_Resolved exercises the "config omitted → defaults" layer.
 // Zero-valued fields take the corresponding default; non-zero fields
 // pass through unchanged; negative fields pass through (Resolved is not
-// a sanitizer — Validate is).
+// a sanitizer - Validate is).
 func TestFloors_Resolved(t *testing.T) {
 	t.Parallel()
 
@@ -286,7 +286,7 @@ func TestFloorsPass_NegativeInputsReturnFalse(t *testing.T) {
 
 // TestConfidence_String pins the wire-form labels for every defined
 // Confidence level plus the default "unknown" branch. These strings ship
-// in metrics labels and audit-log values — renaming is a downstream-
+// in metrics labels and audit-log values - renaming is a downstream-
 // breaking change.
 func TestConfidence_String(t *testing.T) {
 	t.Parallel()
@@ -492,7 +492,7 @@ func TestClassify_FloorAndCount(t *testing.T) {
 		// All values pass their respective floor when the row is
 		// "T" for that position; all values fail when the row is "F".
 		// Wilson is always (observed=opportunity), but observed
-		// itself acts as the events-floor input — passEvents=100
+		// itself acts as the events-floor input - passEvents=100
 		// clears the 20-event floor, failEvents=19 falls just short.
 		passEvents   = 100
 		failEvents   = 19
@@ -503,7 +503,7 @@ func TestClassify_FloorAndCount(t *testing.T) {
 		// Opportunity is fixed so wilson(observed, opportunity) is
 		// either >> TauStable (when observed=passEvents=100) or
 		// near-1 with smaller n (when observed=failEvents=19,
-		// wilson(19,19)≈0.832 — still high, still confirms the
+		// wilson(19,19)≈0.832 - still high, still confirms the
 		// floor-wins-over-Wilson contract).
 		opportunityHigh = 100
 		opportunityLow  = 19

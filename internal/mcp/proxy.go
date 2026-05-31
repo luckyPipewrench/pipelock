@@ -436,7 +436,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		if verdict.Clean {
 			// Clean message: decay threat score. Skip decay when tool-poisoning
-			// was detected for this message — a near-miss signal and a clean
+			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
 			if rec != nil && adaptiveCfg != nil && adaptiveCfg.Enabled && !toolPoisonDetected {
 				rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
@@ -815,7 +815,7 @@ func stripBatchDepth(line []byte, sc *scanner.Scanner, depth int) ([]byte, error
 	for i, elem := range batch {
 		stripped, err := stripResponseDepth(elem, sc, depth)
 		if err != nil {
-			// Never forward unstripped injection — block the element instead.
+			// Never forward unstripped injection - block the element instead.
 			result[i] = json.RawMessage(blockResponse(nil))
 		} else {
 			result[i] = json.RawMessage(stripped)
@@ -908,7 +908,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// Put the child in its own process group so pipelock can tear down
 	// any grandchildren the MCP server spawned when the child exits.
 	// Without this, a malicious (or misbehaving) server that detaches
-	// aggressive descendants leaves them reparented to PID 1 — the
+	// aggressive descendants leaves them reparented to PID 1 - the
 	// pre-tag gate round-4 finding. setupChildProcessGroup is a no-op
 	// on Windows builds where process groups do not apply.
 	setupChildProcessGroup(cmd)
@@ -918,7 +918,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// or systemd kills the unit). Without this, the direct child
 	// survives pipelock's death long enough to spawn or re-adopt
 	// grandchildren that bypass the normal post-Wait teardown. Linux
-	// only — macOS/other Unix are no-op.
+	// only - macOS/other Unix are no-op.
 	setPdeathsig(cmd)
 
 	// Enable PR_SET_CHILD_SUBREAPER (Linux) so orphaned grandchildren
@@ -931,7 +931,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// PPID=1, pgid != direct-child pgid).
 	//
 	// Idempotent and process-wide; safe to call before every subprocess
-	// spawn. Non-fatal on error — the later pgid-kill backstop still
+	// spawn. Non-fatal on error - the later pgid-kill backstop still
 	// handles the common case.
 	if srErr := enableSubreaper(); srErr != nil {
 		_, _ = fmt.Fprintf(logW, "pipelock: warning: PR_SET_CHILD_SUBREAPER failed, grandchild subtree teardown will be incomplete: %v\n", srErr)
@@ -944,7 +944,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// If subreaper setup fails (e.g. missing CAP_SYS_RESOURCE in containers),
 	// PID attribution is unreliable. Warn and disable the lineage tracker
 	// rather than silently producing wrong results. File sentry DLP scanning
-	// still runs — only process-tree attribution is affected.
+	// still runs - only process-tree attribution is affected.
 	lineage := opts.Lineage
 	if lineage != nil {
 		if err := lineage.EnableSubreaper(); err != nil {
@@ -979,7 +979,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 
 	// Drain adopted-descendant zombies live, while the direct child is
 	// still running. Without this, long-running MCP wraps (codex
-	// mcp-server, playwright MCP — multi-hour direct children) accumulate
+	// mcp-server, playwright MCP - multi-hour direct children) accumulate
 	// zombies under pipelock because the post-Wait killAdoptedDescendants
 	// sweep below only fires when the direct child exits. PR_SET_CHILD_SUBREAPER
 	// turned on above causes orphan adoption from minute one; this goroutine
@@ -1106,8 +1106,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		defer wgBlocked.Done()
 		for blocked := range blockedCh {
 			if blocked.IsNotification {
-				// Notifications have no ID — silently drop (no error response per JSON-RPC spec).
-				// Log the block for audit trail — silent drops with zero logging aid attacker reconnaissance.
+				// Notifications have no ID - silently drop (no error response per JSON-RPC spec).
+				// Log the block for audit trail - silent drops with zero logging aid attacker reconnaissance.
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
@@ -1144,13 +1144,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	//   2. 100ms grace, then SIGKILL the pgid for anything that ignored
 	//      SIGTERM (the pre-tag gate harness grandchild did exactly this).
 	//   3. killAdoptedDescendants sweeps /proc for processes whose PPID
-	//      is now pipelock's own PID — any grandchild that escaped the
+	//      is now pipelock's own PID - any grandchild that escaped the
 	//      original pgid via setsid/double-fork should have reparented
 	//      to us once PR_SET_CHILD_SUBREAPER fired above. SIGKILL is
 	//      best-effort; ESRCH/EPERM are non-fatal.
 	// Use the pgid captured at Start rather than re-reading
 	// cmd.Process.Pid here. After cmd.Wait returns, cmd.Process.Pid
-	// refers to a reaped pid the kernel is free to recycle — signaling
+	// refers to a reaped pid the kernel is free to recycle - signaling
 	// the negated pid at that point risks hitting an unrelated process
 	// that was assigned the same pgid. childPgid was locked in before
 	// Wait could reap the leader, so it remains the stable identifier
@@ -1159,7 +1159,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// no-ops because pgid is 0 there.
 	terminateProcessGroup(childPgid)
 	// Sweep orphans the pgid kill couldn't reach. Safe even on
-	// non-Linux builds — the stub is a no-op there.
+	// non-Linux builds - the stub is a no-op there.
 	killAdoptedDescendants()
 
 	// Wait for stdin goroutine to finish (server exit closes pipe, unblocking scanner).
@@ -1214,9 +1214,9 @@ var dangerousEnvKeys = map[string]bool{
 	"JAVA_TOOL_OPTIONS": true,
 	"_JAVA_OPTIONS":     true,
 	"JDK_JAVA_OPTIONS":  true,
-	// Credential helper injection — causes git to execute arbitrary programs.
+	// Credential helper injection - causes git to execute arbitrary programs.
 	"GIT_ASKPASS": true,
-	// Proxy redirection — the MCP proxy IS the controlled network path.
+	// Proxy redirection - the MCP proxy IS the controlled network path.
 	// Both cases listed because Go checks HTTP_PROXY/http_proxy, Node.js
 	// checks case-insensitively, etc. Mixed-case caught by IsDangerousEnvKey.
 	"HTTP_PROXY":  true,
@@ -1321,7 +1321,7 @@ func VerifyBinaryIntegrity(command []string, icfg *config.MCPBinaryIntegrity, lo
 // loadMCPIntegrityManifest reads the manifest, optionally verifying its
 // detached signature, and returns the parsed manifest. When
 // RequireSignature is true the bytes used for parsing are the exact bytes
-// the signature was verified against — no second os.ReadFile, no TOCTOU
+// the signature was verified against - no second os.ReadFile, no TOCTOU
 // window between trust establishment and parse.
 func loadMCPIntegrityManifest(icfg *config.MCPBinaryIntegrity) (*integrity.Manifest, error) {
 	if icfg.RequireSignature {

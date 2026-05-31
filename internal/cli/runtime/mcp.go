@@ -52,7 +52,7 @@ import (
 // --header. The MCP HTTP transport manages framing (Content-Type, Accept,
 // Content-Length, Transfer-Encoding), session correlation (Mcp-Session-Id),
 // and host routing (Host). Letting --header clobber any of these would
-// either break the transport contract or — for Mcp-Session-Id specifically —
+// either break the transport contract or - for Mcp-Session-Id specifically -
 // let an attacker pin the upstream's session correlation to a value of their
 // choice on the very first request, before HTTPClient has a session ID to
 // overwrite with. Lookup is canonical (textproto) so case variants like
@@ -73,8 +73,8 @@ var reservedTransportHeaders = map[string]struct{}{
 // (e.g. "Authorization Bearer xyz") can't silently drop the auth header.
 //
 // Reserved transport-managed headers are rejected with a descriptive error
-// so an operator does not accidentally poison transport framing or — in the
-// Mcp-Session-Id case — force the upstream onto an attacker-chosen session
+// so an operator does not accidentally poison transport framing or - in the
+// Mcp-Session-Id case - force the upstream onto an attacker-chosen session
 // correlation token on the first request. The transport also strips these
 // defensively (defense-in-depth), but rejecting at parse time gives a
 // clearer error than silent removal would.
@@ -691,7 +691,7 @@ signed action receipts for MCP decisions.`,
 				}
 				defer func() { _ = rec.Close() }()
 
-				// ConfigHash here uses cfg.Hash() (raw YAML bytes) — the
+				// ConfigHash here uses cfg.Hash() (raw YAML bytes) - the
 				// receipt is a point-in-time audit fingerprint of the
 				// loaded configuration file. The envelope emitter below
 				// uses cfg.CanonicalPolicyHash() because its contract is
@@ -710,8 +710,8 @@ signed action receipts for MCP decisions.`,
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)
 				// receipt.NewEmitter returns nil when no signing key is
-				// configured. Receipts must be signed — there is no
-				// "unsigned receipt" mode — so report the operator-facing
+				// configured. Receipts must be signed - there is no
+				// "unsigned receipt" mode - so report the operator-facing
 				// status by signing-key presence, not by emitter identity.
 				// This is more honest than the prior branch which could
 				// never execute.

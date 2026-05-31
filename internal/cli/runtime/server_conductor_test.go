@@ -45,7 +45,7 @@ func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
 	clientCertPath := filepath.Join(tmp, "client.crt")
 	clientKeyPath := filepath.Join(tmp, "client.key")
 	// conductor.enabled requires a real signed roster + pinned fingerprint even
-	// with honor_remote_kill_switch:false — the policy-bundle poller verifies
+	// with honor_remote_kill_switch:false - the policy-bundle poller verifies
 	// signed bundles against the pinned trust root.
 	bundleSigner := newRuntimePolicySigner(t)
 	rootFingerprint := writeRuntimeTrustRoster(t, trustPath, bundleSigner.pub, bundleSigner.id, signing.PurposePolicyBundleSigning)

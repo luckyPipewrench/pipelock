@@ -368,7 +368,7 @@ func TestEntropyTracker_Delete(t *testing.T) {
 
 	et.Delete("session-a")
 
-	// session-a should be gone — usage should be 0.
+	// session-a should be gone - usage should be 0.
 	if et.CurrentUsage("session-a") != 0 {
 		t.Error("deleted session should have zero usage")
 	}

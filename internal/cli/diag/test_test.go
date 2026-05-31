@@ -384,7 +384,7 @@ mcp_tool_scanning:
 }
 
 func TestTestCmd_ExitCodeOnFailure(t *testing.T) {
-	// Config with incomplete DLP patterns — only Anthropic pattern included.
+	// Config with incomplete DLP patterns - only Anthropic pattern included.
 	// Disable entropy so high-entropy tokens aren't caught by entropy scanner.
 	// Core DLP covers AWS and GitHub. OpenAI (sk-proj-) is NOT in core.
 	// With entropy disabled, OpenAI vector should fail (no matching pattern).

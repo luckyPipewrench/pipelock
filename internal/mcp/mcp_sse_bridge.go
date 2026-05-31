@@ -122,11 +122,11 @@ func startGETStream(
 			reader, err := httpClient.OpenGETStream(ctx)
 			if err != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream: %v\n", err)
-				// Permanent error — server does not support GET streams.
+				// Permanent error - server does not support GET streams.
 				if errors.Is(err, transport.ErrStreamNotSupported) {
 					return
 				}
-				// Transient error — backoff and retry.
+				// Transient error - backoff and retry.
 				select {
 				case <-ctx.Done():
 					return
@@ -149,7 +149,7 @@ func startGETStream(
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: GET stream scan error: %v\n", scanErr)
 			}
 
-			// Stream ended — reconnect with backoff unless cancelled.
+			// Stream ended - reconnect with backoff unless cancelled.
 			select {
 			case <-ctx.Done():
 				return

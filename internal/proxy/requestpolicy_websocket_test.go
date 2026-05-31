@@ -145,7 +145,7 @@ func TestWSProxyRequestPolicy_NonJSONFrameFailsClosed(t *testing.T) {
 
 // on_parse_error=warn relaxes the parse-error fail-closed: a non-JSON frame is
 // logged but forwarded. This also proves the handshake itself is not blocked by
-// a body-predicate rule on the route — the upgrade succeeds and the relay runs.
+// a body-predicate rule on the route - the upgrade succeeds and the relay runs.
 func TestWSProxyRequestPolicy_NonJSONFrameForwardsWhenParseErrorWarn(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

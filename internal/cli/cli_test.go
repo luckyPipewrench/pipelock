@@ -755,7 +755,7 @@ func TestRunCmd_InvalidConfig(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately — we don't want the server to start
+	cancel() // cancel immediately - we don't want the server to start
 
 	cmd := rootCmd()
 	cmd.SetContext(ctx)
@@ -1076,7 +1076,7 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 }
 
 func TestRunCmd_DefaultMode(t *testing.T) {
-	// Run with no config, no flags — should use default balanced mode.
+	// Run with no config, no flags - should use default balanced mode.
 	lc := net.ListenConfig{}
 	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1488,7 +1488,7 @@ response_scanning:
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	// Proxy started with ask mode — approver was created. Shut down cleanly.
+	// Proxy started with ask mode - approver was created. Shut down cleanly.
 	cancel()
 	select {
 	case err := <-errCh:

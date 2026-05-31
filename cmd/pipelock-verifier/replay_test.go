@@ -198,7 +198,7 @@ func TestReplay_VerdictChanged_PolicyLoosened(t *testing.T) {
 		PolicyHash:    "policy-fixture",
 	}
 	receiptPath := writeSignedReceiptFile(t, dir, ar)
-	// New policy has empty blocklist — would now allow.
+	// New policy has empty blocklist - would now allow.
 	policyPath := writePolicyFile(t, dir, nil)
 
 	report, _, exitCode := runReplayCommand(t,
@@ -286,7 +286,7 @@ func TestReplay_BadKeyMismatch(t *testing.T) {
 	receiptPath := writeSignedReceiptFile(t, dir, ar)
 	policyPath := writePolicyFile(t, dir, nil)
 
-	// Pass a different key — the verifier should reject.
+	// Pass a different key - the verifier should reject.
 	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)

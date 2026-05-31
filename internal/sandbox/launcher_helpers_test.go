@@ -89,7 +89,7 @@ func TestRemoveEnvKey_NotPresent(t *testing.T) {
 }
 
 func TestResolvePolicy_Default(t *testing.T) {
-	// No env var set — should return default policy.
+	// No env var set - should return default policy.
 	t.Setenv("__PIPELOCK_SANDBOX_POLICY", "")
 	p := resolvePolicy("/tmp/test-workspace")
 	if p.Workspace != "/tmp/test-workspace" {
@@ -167,7 +167,7 @@ func TestLookPathIn_RelativePath(t *testing.T) {
 }
 
 func TestLookPathIn_FallbackPATH(t *testing.T) {
-	// No PATH in env — uses fallback.
+	// No PATH in env - uses fallback.
 	path, err := lookPathIn("sh", []string{"HOME=/tmp"})
 	if err != nil {
 		t.Fatalf("lookPathIn: %v", err)

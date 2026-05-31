@@ -121,7 +121,7 @@ func TestCheckTextUnknownAllow(t *testing.T) {
 	cfg.UnknownAction = config.ActionAllow
 	c := NewChecker(cfg, nil)
 
-	// Completely different address — unknown.
+	// Completely different address - unknown.
 	result := c.CheckText("send to 0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "")
 	if len(result.Hits) != 1 {
 		t.Errorf("should detect 1 hit, got %d", len(result.Hits))

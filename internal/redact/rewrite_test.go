@@ -88,7 +88,7 @@ func TestRewriteJSON_WholeBodyScan(t *testing.T) {
 		t.Fatalf("expected at least 4 redactions (system AWS key + system FQDN + tool IPv4 + message IPv4), got %d", report.TotalRedactions)
 	}
 	outStr := string(out)
-	// Whole-body scan — the AWS key in `system` MUST be redacted (round-3
+	// Whole-body scan - the AWS key in `system` MUST be redacted (round-3
 	// bypass fix).
 	if strings.Contains(outStr, "AKIA"+"IOSFODNN7EXAMPLE") {
 		t.Fatalf("AWS access key leaked through system field: %s", outStr)
@@ -206,7 +206,7 @@ func TestRewriteJSON_OverflowBlocks(t *testing.T) {
 
 func TestRewriteJSON_DepthLimitBlocks(t *testing.T) {
 	t.Parallel()
-	// 6 levels of nesting, cap at 2 — should block.
+	// 6 levels of nesting, cap at 2 - should block.
 	body := []byte(`{"a":{"b":{"c":{"d":{"e":{"f":"x"}}}}}}`)
 	_, _, err := RewriteJSON(body, NewDefaultMatcher(), NewRedactor(), Limits{MaxDepth: 2})
 	be, ok := asBlockError(err)
@@ -319,7 +319,7 @@ func TestRewriteJSON_NumericScalarBypassBlocked(t *testing.T) {
 		{"visa-16", `{"cc": ` + "4111111111" + "111111}"},
 		{"mastercard-16", `{"cc": ` + "5555555555" + "554444}"},
 		{"amex-15", `{"cc": ` + "37828224" + "6310005}"},
-		{"ssn-shaped-would-not-match", `{"ssn_numeric": 123456789}`}, // SSN needs dashes, won't match — sanity check
+		{"ssn-shaped-would-not-match", `{"ssn_numeric": 123456789}`}, // SSN needs dashes, won't match - sanity check
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -344,7 +344,7 @@ func TestRewriteJSON_NumericScalarBypassBlocked(t *testing.T) {
 
 func TestRewriteJSON_NonStringScalarsUntouched(t *testing.T) {
 	t.Parallel()
-	// A JSON array of numbers — no scalars to scan, no redactions.
+	// A JSON array of numbers - no scalars to scan, no redactions.
 	body := []byte(`[1, 2, 3, 4]`)
 	out, report, err := RewriteJSON(body, NewDefaultMatcher(), NewRedactor(), Limits{})
 	if err != nil {

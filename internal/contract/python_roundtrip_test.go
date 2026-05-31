@@ -15,7 +15,7 @@ import (
 
 // TestGoldenVectors_PythonVerifier runs the cross-implementation Python
 // verifier against the Go-emitted golden vectors. Skipped if python3 is not
-// available or required deps are missing — this test is informational on
+// available or required deps are missing - this test is informational on
 // developer machines and load-bearing in CI.
 func TestGoldenVectors_PythonVerifier(t *testing.T) {
 	if testing.Short() {

@@ -438,7 +438,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		// that happened to produce the same effective policy through
 		// different YAML should still be distinguishable in a forensic
 		// trail. Envelope attestation (below) uses the policy-semantic
-		// hash because its contract is the opposite — identical
+		// hash because its contract is the opposite - identical
 		// effective policy should produce identical envelope ph
 		// regardless of YAML formatting.
 		s.receiptEmitter = receipt.NewEmitter(receipt.EmitterConfig{

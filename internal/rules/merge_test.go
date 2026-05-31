@@ -254,12 +254,12 @@ func TestMergeIntoConfig_IncludeDefaultsFalse_StandardSourceNone(t *testing.T) {
 func TestRemoveStandardTierDLP(t *testing.T) {
 	t.Parallel()
 	patterns := []config.DLPPattern{
-		{Name: "AWS Access ID", Compiled: true},                   // core compiled — kept (core name)
-		{Name: "Anthropic API Key", Compiled: true},               // standard compiled — removed
-		{Name: "Stripe Key", Compiled: true},                      // standard compiled — removed
-		{Name: "Stripe Key"},                                      // user override (same name, Compiled=false) — kept
-		{Name: "Custom User Pattern"},                             // user-defined — kept
-		{Name: "community:custom-rule", Bundle: "community-pack"}, // bundle — kept
+		{Name: "AWS Access ID", Compiled: true},                   // core compiled - kept (core name)
+		{Name: "Anthropic API Key", Compiled: true},               // standard compiled - removed
+		{Name: "Stripe Key", Compiled: true},                      // standard compiled - removed
+		{Name: "Stripe Key"},                                      // user override (same name, Compiled=false) - kept
+		{Name: "Custom User Pattern"},                             // user-defined - kept
+		{Name: "community:custom-rule", Bundle: "community-pack"}, // bundle - kept
 	}
 	result := removeStandardTierDLP(patterns)
 	if len(result) != 4 {
@@ -276,11 +276,11 @@ func TestRemoveStandardTierDLP(t *testing.T) {
 func TestRemoveStandardTierResponse(t *testing.T) {
 	t.Parallel()
 	patterns := []config.ResponseScanPattern{
-		{Name: "Prompt Injection", Compiled: true},               // core compiled — kept
-		{Name: "New Instructions", Compiled: true},               // standard compiled — removed
-		{Name: "CJK Jailbreak Mode", Compiled: true},             // standard compiled — removed
-		{Name: "My Custom Detection"},                            // user-defined — kept
-		{Name: "community:custom-inj", Bundle: "community-pack"}, // bundle — kept
+		{Name: "Prompt Injection", Compiled: true},               // core compiled - kept
+		{Name: "New Instructions", Compiled: true},               // standard compiled - removed
+		{Name: "CJK Jailbreak Mode", Compiled: true},             // standard compiled - removed
+		{Name: "My Custom Detection"},                            // user-defined - kept
+		{Name: "community:custom-inj", Bundle: "community-pack"}, // bundle - kept
 	}
 	result := removeStandardTierResponse(patterns)
 	if len(result) != 3 {

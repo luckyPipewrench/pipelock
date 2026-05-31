@@ -1,4 +1,4 @@
-// dnsresolver.go — host-level DNS resolver used by SSRF checks and the
+// dnsresolver.go - host-level DNS resolver used by SSRF checks and the
 // proxy dial path. The default resolver is net.DefaultResolver. Operators
 // may configure dns.host_overrides to map specific hostnames to static IPs
 // without touching system /etc/hosts; this is used by reproducible test
@@ -8,13 +8,13 @@
 //
 // Semantics:
 //   - Lookup matches on the hostname only (lowercased, trailing dot stripped).
-//     IP literals never hit overrides — the IP path bypasses the resolver.
+//     IP literals never hit overrides - the IP path bypasses the resolver.
 //   - If a hostname is in the override map, the static IPs are returned and
 //     the upstream resolver is not consulted. A trusted_domains entry for
 //     the same hostname tells the SSRF check to permit those IPs even when
 //     they fall inside RFC1918 / loopback.
 //   - If a hostname is NOT in the override map, the upstream resolver runs
-//     normally — fail-closed behavior on DNS errors is preserved.
+//     normally - fail-closed behavior on DNS errors is preserved.
 
 package scanner
 

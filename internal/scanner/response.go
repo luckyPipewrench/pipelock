@@ -25,7 +25,7 @@ type ResponseScanResult struct {
 	// StegoDetected fires when the raw response carries combining-mark density
 	// at or above normalize.ZalgoSuspiciousThreshold. The pattern-matching
 	// pipeline already neutralizes combining marks via StripCombiningMarks, so
-	// this is an exposure/provenance signal — Clean is NOT flipped on the
+	// this is an exposure/provenance signal - Clean is NOT flipped on the
 	// basis of this field alone. The taint/authority policy layer may key on
 	// this signal in strict mode without changing the scanner's verdict
 	// contract today. Maps to emit.EventTextStego.
@@ -57,8 +57,8 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 	original := content
 
 	// Stego exposure signal. Computed on the raw content before normalization
-	// strips combining marks. The deferred setter stamps every return path —
-	// including the context_canceled and clean fast paths — so downstream
+	// strips combining marks. The deferred setter stamps every return path -
+	// including the context_canceled and clean fast paths - so downstream
 	// consumers (taint/authority layer, audit emitters) can key on the
 	// signal without re-scanning. The signal does NOT flip Clean: the
 	// matching passes already neutralize combining marks via
@@ -82,7 +82,7 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) (out Respons
 		}
 	}
 
-	// Core response patterns run FIRST — immutable safety floor.
+	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
 	if coreSet := s.scanCoreResponse(ctx, original); len(coreSet.matches) > 0 {
 		coreMatches := filterEducationalQuotedResponseMatches(coreSet.content, coreSet.matches)
@@ -265,7 +265,7 @@ func filterEducationalQuotedResponseMatches(content string, matches []ResponseMa
 // tool definition, and developer instruction disclosure directives. The
 // pattern itself enforces the verb + target structure via its regex; the
 // name check alone is sufficient. Inspecting match.MatchText would be
-// unsafe — matchPatternsPreFiltered truncates MatchText at 100 runes and
+// unsafe - matchPatternsPreFiltered truncates MatchText at 100 runes and
 // an attacker can fill the regex's 80-char gap to push the target past
 // the truncation cap.
 func isSystemPromptDisclosureMatch(match ResponseMatch) bool {
@@ -596,7 +596,7 @@ func (s *Scanner) matchDecodedNormalized(decoded string) responseMatchSet {
 
 // ResponseScanningEnabled returns whether response scanning is active.
 // Always returns true when core response patterns exist, even if the
-// user disabled response_scanning.enabled — core is the safety floor.
+// user disabled response_scanning.enabled - core is the safety floor.
 func (s *Scanner) ResponseScanningEnabled() bool {
 	if s.core != nil && len(s.core.responsePatterns) > 0 {
 		return true
@@ -606,7 +606,7 @@ func (s *Scanner) ResponseScanningEnabled() bool {
 
 // ResponseAction returns the configured response scanning action (strip, warn, block).
 // When main response scanning is disabled but core patterns are active,
-// defaults to "block" — core findings are non-negotiable.
+// defaults to "block" - core findings are non-negotiable.
 func (s *Scanner) ResponseAction() string {
 	if s.responseAction == "" && s.core != nil && len(s.core.responsePatterns) > 0 {
 		return config.ActionBlock

@@ -5,7 +5,7 @@ package normalize
 
 // reservedSegmentsCanonical is the security-floor list of path
 // segments that cannot be collapsed to a wildcard at any entropy.
-// Hardcoded by design — operators may extend via
+// Hardcoded by design - operators may extend via
 // learn.inference.normalization.reserved_segments_extra but cannot
 // remove. Order is the design's emission order; tests assert no
 // duplicates and no empty entries.
@@ -30,7 +30,7 @@ func CanonicalReservedSegments() []string {
 
 // IsReserved reports whether `segment` matches the canonical list or
 // any operator-supplied extra. Comparison is byte-exact against the
-// already-normalized form (NFC + lowercase + percent-decoded — the
+// already-normalized form (NFC + lowercase + percent-decoded - the
 // caller is responsible for normalizing first; this function does NOT
 // re-normalize). Empty `segment` returns false.
 //

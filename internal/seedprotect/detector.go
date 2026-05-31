@@ -15,7 +15,7 @@ var validLengths = []int{12, 15, 18, 21, 24}
 // separatorRE splits on whitespace and common seed phrase delimiters.
 var separatorRE = regexp.MustCompile(`[-\s,|;:]+`)
 
-// SeedMatch is the internal detection result. Package-internal only —
+// SeedMatch is the internal detection result. Package-internal only -
 // converted to TextDLPMatch at the scanner integration boundary.
 // Never includes the actual mnemonic words.
 type SeedMatch struct {

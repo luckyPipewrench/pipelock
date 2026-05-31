@@ -29,7 +29,7 @@ import (
 //
 //   - mode, enforce, explain_blocks
 //   - DLP patterns, MCP tool policy rules, chain detection rules
-//     (order-preserving — rule order is first-match-wins semantics)
+//     (order-preserving - rule order is first-match-wins semantics)
 //   - scanner thresholds, action verdicts, allowlists/blocklists
 //   - kill switch sources, adaptive enforcement, taint, rules bundle
 //   - transport policy knobs under fetch_proxy / forward_proxy /
@@ -54,7 +54,7 @@ import (
 // Caching: the hash is memoized on the *Config value via an unexported
 // atomic.Value. First call computes and stores; subsequent calls return
 // the cached hex string. This is safe because Config instances are
-// treated as immutable after Load() — documented invariant. Mutating a
+// treated as immutable after Load() - documented invariant. Mutating a
 // Config after a canonical hash has been computed will silently return
 // a stale hash. Tests must use fresh Config values for sensitivity.
 func (c *Config) CanonicalPolicyHash() string {
@@ -98,7 +98,7 @@ func (c *Config) computeCanonicalPolicyHash() string {
 // policy-semantic projection of the config.
 //
 // A field is noise when its value does not change what pipelock would
-// decide about a scanned request — listen addresses, log destinations,
+// decide about a scanned request - listen addresses, log destinations,
 // telemetry endpoints, flight recorder paths, Sentry config, license
 // metadata, and the envelope signing key path (that changes how we sign
 // but not WHAT we scan, and must never flow into an emitted ph value).
@@ -119,7 +119,7 @@ func (c *Config) policySemanticView() Config {
 	// ReverseProxy) stay in the canonical view because they carry
 	// enforcement-relevant fields: Monitoring.Blocklist, entropy
 	// thresholds, rate limits, ForwardProxy.SNIVerification,
-	// MaxTunnelSeconds, RedirectWebSocketHosts — all of which change
+	// MaxTunnelSeconds, RedirectWebSocketHosts - all of which change
 	// what pipelock would decide about a scanned request. A blanket
 	// struct-zero would drop those policy knobs and leave ph
 	// insensitive to real policy changes, breaking the admission-grade
@@ -129,14 +129,14 @@ func (c *Config) policySemanticView() Config {
 	// plumbing and must not flow into ph. Rebinding `fetch_proxy.listen:
 	// :8888 → :8889` or pointing a reverse proxy at a different upstream
 	// changes where bytes go, not what gets enforced. Zero them
-	// surgically below — keeping the surrounding enforcement fields
+	// surgically below - keeping the surrounding enforcement fields
 	// (Monitoring, SNIVerification, timeouts, etc.) intact.
 	view.MetricsListen = ""
 	view.FetchProxy.Listen = ""
 	view.ReverseProxy.Listen = ""
 	view.ReverseProxy.Upstream = ""
 
-	// Telemetry and operational outputs — emit destinations, log
+	// Telemetry and operational outputs - emit destinations, log
 	// formatting, Sentry DSN, flight recorder path. None of these
 	// affect detection decisions; they affect where observations go.
 	view.Logging = LoggingConfig{}
@@ -145,7 +145,7 @@ func (c *Config) policySemanticView() Config {
 	view.FlightRecorder = FlightRecorder{}
 	view.Conductor = Conductor{}
 
-	// License metadata — determines whether a tier feature is available,
+	// License metadata - determines whether a tier feature is available,
 	// but the effective per-agent config that the request-time path
 	// resolves to already reflects gating outcomes (e.g. agent profile
 	// not applied when the agents feature is unlicensed). Including
@@ -162,7 +162,7 @@ func (c *Config) policySemanticView() Config {
 	view.LicenseRevoked = false
 	view.LicenseRevocationReason = ""
 
-	// Envelope signing key path — infrastructure, not policy. The key
+	// Envelope signing key path - infrastructure, not policy. The key
 	// material itself is never read here (we only hold a path), but
 	// including the path would cause ph to shift whenever ops rotates
 	// the file location without changing any detection semantics.
@@ -171,12 +171,12 @@ func (c *Config) policySemanticView() Config {
 	view.MediationEnvelope.SigningKeyPath = ""
 
 	// HealthWatchdog is excluded from the canonical hash via the `json:"-"`
-	// tag on the Config field — operational liveness, not policy. Whether
+	// tag on the Config field - operational liveness, not policy. Whether
 	// the watchdog is enabled or what tick interval it uses does not change
 	// what pipelock would decide about a scanned request; it only changes
 	// whether /health flips to 503 when internal state is wedged.
 
-	// Agents map — handled via per-agent resolved configs. See the
+	// Agents map - handled via per-agent resolved configs. See the
 	// CanonicalPolicyHash doc comment.
 	view.Agents = nil
 

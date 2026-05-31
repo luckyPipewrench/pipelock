@@ -81,14 +81,14 @@ func TestController_SentinelFile(t *testing.T) {
 
 	c := New(cfg)
 
-	// No sentinel file — inactive.
+	// No sentinel file - inactive.
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	d := c.IsActiveHTTP(r)
 	if d.Active {
 		t.Fatal("expected kill switch inactive when sentinel file absent")
 	}
 
-	// Create sentinel file — active.
+	// Create sentinel file - active.
 	if err := os.WriteFile(sentinelPath, []byte("kill"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestController_SentinelFile(t *testing.T) {
 		t.Errorf("expected source %q, got %q", srcSentinel, d.Source)
 	}
 
-	// Remove sentinel file — inactive again.
+	// Remove sentinel file - inactive again.
 	if err := os.Remove(sentinelPath); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestController_ORComposition(t *testing.T) {
 		t.Fatal("expected active from config")
 	}
 
-	// Add signal — still active.
+	// Add signal - still active.
 	c.ToggleSignal()
 	d = c.IsActiveHTTP(r)
 	if !d.Active {
@@ -203,7 +203,7 @@ func TestController_ORComposition(t *testing.T) {
 		t.Errorf("expected source %q, got %q", srcSentinel, d.Source)
 	}
 
-	// Remove sentinel — all sources off.
+	// Remove sentinel - all sources off.
 	if err := os.Remove(sentinelPath); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestController_MCPNotification(t *testing.T) {
 		t.Fatal("expected request to not be a notification")
 	}
 
-	// Notification with no id — check IsNotification.
+	// Notification with no id - check IsNotification.
 	d = c.IsActiveMCP(notification)
 	if !d.IsNotification {
 		t.Fatal("expected notification (no id) to have IsNotification=true")
@@ -544,7 +544,7 @@ func TestController_SourcePriority(t *testing.T) {
 		t.Errorf("expected source %q when all sources active, got %q", srcConfig, d.Source)
 	}
 
-	// Disable config — signal should be next.
+	// Disable config - signal should be next.
 	cfg2 := testConfig()
 	cfg2.KillSwitch.Enabled = false
 	cfg2.KillSwitch.SentinelFile = sentinelPath
@@ -555,7 +555,7 @@ func TestController_SourcePriority(t *testing.T) {
 		t.Errorf("expected source %q when config disabled, got %q", srcSignal, d.Source)
 	}
 
-	// Disable signal — sentinel should be next.
+	// Disable signal - sentinel should be next.
 	c.ToggleSignal()
 	d = c.IsActiveHTTP(r)
 	if d.Source != srcSentinel {
@@ -681,7 +681,7 @@ func TestController_BareIPAddress(t *testing.T) {
 
 	c := New(cfg)
 
-	// Request with bare IP (no port) — should be allowlisted.
+	// Request with bare IP (no port) - should be allowlisted.
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 	r.RemoteAddr = "10.0.0.1" // bare IP, no :port
 	d := c.IsActiveHTTP(r)
@@ -806,13 +806,13 @@ func TestController_SourcePriority_WithAPI(t *testing.T) {
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch", nil)
 
-	// All sources active — config wins
+	// All sources active - config wins
 	d := c.IsActiveHTTP(r)
 	if d.Source != srcConfig {
 		t.Errorf("expected source %q, got %q", srcConfig, d.Source)
 	}
 
-	// Disable config — api wins
+	// Disable config - api wins
 	cfg2 := testConfig()
 	cfg2.KillSwitch.SentinelFile = sentinelPath
 	c.Reload(cfg2)
@@ -821,14 +821,14 @@ func TestController_SourcePriority_WithAPI(t *testing.T) {
 		t.Errorf("expected source %q, got %q", srcAPI, d.Source)
 	}
 
-	// Disable api — signal wins
+	// Disable api - signal wins
 	c.SetAPI(false)
 	d = c.IsActiveHTTP(r)
 	if d.Source != srcSignal {
 		t.Errorf("expected source %q, got %q", srcSignal, d.Source)
 	}
 
-	// Disable signal — sentinel wins
+	// Disable signal - sentinel wins
 	c.ToggleSignal()
 	d = c.IsActiveHTTP(r)
 	if d.Source != srcSentinel {
@@ -899,7 +899,7 @@ func TestController_SeparatePort_Default(t *testing.T) {
 	cfg.KillSwitch.Enabled = true
 
 	c := New(cfg)
-	// separatePort defaults to false — API should be exempt as before.
+	// separatePort defaults to false - API should be exempt as before.
 
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/killswitch", nil)
 	d := c.IsActiveHTTP(r)
@@ -956,7 +956,7 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 		t.Fatalf("expected active from api, got active=%v source=%q", d.Active, d.Source)
 	}
 
-	// Deactivate API — signal and sentinel remain.
+	// Deactivate API - signal and sentinel remain.
 	c.SetAPI(false)
 	d = c.IsActiveHTTP(r)
 	if !d.Active {
@@ -966,7 +966,7 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 		t.Errorf("expected source %q after API off, got %q", srcSignal, d.Source)
 	}
 
-	// Deactivate signal — sentinel remains.
+	// Deactivate signal - sentinel remains.
 	c.ToggleSignal()
 	d = c.IsActiveHTTP(r)
 	if !d.Active {
@@ -976,7 +976,7 @@ func TestController_MultiSource_DeactivateAPI_OthersRemain(t *testing.T) {
 		t.Errorf("expected source %q after signal off, got %q", srcSentinel, d.Source)
 	}
 
-	// Remove sentinel — all off.
+	// Remove sentinel - all off.
 	if err := os.Remove(sentinelPath); err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1000,7 @@ func TestController_Reload_PreservesRuntimeState(t *testing.T) {
 		t.Fatalf("pre-reload: expected active from api, got active=%v source=%q", d.Active, d.Source)
 	}
 
-	// Reload with different message — API and signal must survive.
+	// Reload with different message - API and signal must survive.
 	cfg2 := testConfig()
 	cfg2.KillSwitch.Message = "after reload"
 	c.Reload(cfg2)
@@ -1074,7 +1074,7 @@ func TestController_Reload_InvalidCIDR(t *testing.T) {
 	cfg := testConfig()
 	c := New(cfg)
 
-	// Reload with an invalid CIDR — should log to stderr and continue,
+	// Reload with an invalid CIDR - should log to stderr and continue,
 	// not panic.
 	cfg2 := testConfig()
 	cfg2.KillSwitch.Enabled = true
@@ -1155,7 +1155,7 @@ func TestController_Reload_PicksUpEnvToken(t *testing.T) {
 }
 
 func TestAPIHandler_EnvTokenAuthenticates(t *testing.T) {
-	// No config token — only the env var provides it.
+	// No config token - only the env var provides it.
 	cfg := testConfig()
 
 	envToken := "env-api-" + "secret" //nolint:gosec // test credential

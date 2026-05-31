@@ -228,11 +228,11 @@ func TestValidateWIF(t *testing.T) {
 		{"valid uncompressed", "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTJ", true},
 		// Valid compressed WIF (K-prefix, version 0x80, 33-byte payload with 0x01 flag).
 		{"valid compressed K", "KwdMAjGmer" + "Yanjeui5SHS7Jkmp" + "ZvVipYvB2LJGU1ZxJwYvP98617", true},
-		// Invalid checksum — last char changed.
+		// Invalid checksum - last char changed.
 		{"bad checksum", "5HueCGU8rMjx" + "EXxiPuD5BDku4MkFqe" + "Zyd4dZ1jvhTVqvbTLvyTX", false},
 		// Too short.
 		{"too short", "5HueCGU8rMjxE", false},
-		// Random base58 string of correct length — astronomically unlikely to have valid checksum.
+		// Random base58 string of correct length - astronomically unlikely to have valid checksum.
 		{"random base58 51 chars", "5" + strings.Repeat("H", 50), false},
 	}
 	for _, tt := range tests {

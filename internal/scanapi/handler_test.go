@@ -399,7 +399,7 @@ func TestHandler_ToolCallBenignArgsAllowed(t *testing.T) {
 // must be DENIED even when the inline-proxy mcp_input_scanning toggle is off.
 // Before the fix, scanToolCall gated its DLP+injection sub-scans on
 // cfg.MCPInputScanning.Enabled (default false), so the API returned allow with
-// zero findings — silently declining to scan what the caller explicitly asked
+// zero findings - silently declining to scan what the caller explicitly asked
 // it to scan. The scan API is an on-demand surface; tool_call now scans
 // unconditionally like the url / dlp / prompt_injection kinds.
 func TestHandler_ToolCallDLPRunsWhenInputScanningDisabled(t *testing.T) {

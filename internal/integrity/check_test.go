@@ -370,7 +370,7 @@ func TestCheck_RespectsExcludes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Add a .log file — should not appear as a violation.
+	// Add a .log file - should not appear as a violation.
 	writeFile(t, dir, "debug.log", "log output\n")
 
 	violations, err := Check(dir, m)

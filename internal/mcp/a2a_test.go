@@ -478,7 +478,7 @@ func TestWalkA2AJSON_NumberAndBoolLeaves(t *testing.T) {
 		count++
 	})
 	// Keys "count", "active", "items" may emit as keys if URI-like (they're not),
-	// so only node counting occurs — no string leaf emissions for numbers/bools/null.
+	// so only node counting occurs - no string leaf emissions for numbers/bools/null.
 	// The important thing is no panic and no crash.
 	if count < 0 {
 		t.Error("unexpected negative count")
@@ -515,7 +515,7 @@ func TestWalkA2AJSON_NameFieldAsText(t *testing.T) {
 }
 
 func TestIsA2ARequest_BareVersionPath(t *testing.T) {
-	// /v1 with no trailing path — edge case in stripVersionPrefix.
+	// /v1 with no trailing path - edge case in stripVersionPrefix.
 	got := IsA2ARequest("/v1", "")
 	if got {
 		t.Error("bare /v1 should not match A2A paths")
@@ -557,7 +557,7 @@ func TestHashAgentCard_WithExtensionsAndModes(t *testing.T) {
 		t.Errorf("expected 64-char hex, got %d", len(h1))
 	}
 
-	// Change extension — hash should differ.
+	// Change extension - hash should differ.
 	card2 := card
 	card2.Capabilities.Extensions = []A2AExtension{
 		{URI: "urn:ext:v2", Description: "Changed", Required: false},
@@ -606,4 +606,4 @@ func TestCanonicalizeJSON_Empty(t *testing.T) {
 	}
 }
 
-// camelToSnake was removed — snake_case field names now use dedicated lookup tables.
+// camelToSnake was removed - snake_case field names now use dedicated lookup tables.

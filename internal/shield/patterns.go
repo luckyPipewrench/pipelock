@@ -57,8 +57,8 @@ const ariaHiddenTrapPattern = `(?i)<[^>]+aria-hidden\s*=\s*["']true["'][^>]*>[^<
 // best-effort defensive posture of the shield layer.
 
 // svgForeignObjectPattern matches <foreignObject>...</foreignObject> blocks.
-// foreignObject can embed arbitrary HTML — including iframes and script
-// tags — inside SVG, turning a nominally-image response into active web
+// foreignObject can embed arbitrary HTML - including iframes and script
+// tags - inside SVG, turning a nominally-image response into active web
 // content. Strip the whole element with its children.
 //
 // The optional `[\w-]+:` prefix matches namespace-prefixed element names
@@ -79,7 +79,7 @@ const svgSelfClosingForeignObjectPattern = `(?i)<(?:[\w-]+:)?foreignObject\b[^>]
 // pattern captures the leading whitespace so the resulting element tag
 // remains well-formed after removal. Quoted value handling covers both
 // single and double quotes. The third alternative catches unquoted values
-// (valid in HTML parsing contexts and some SVG serializers) — the value
+// (valid in HTML parsing contexts and some SVG serializers) - the value
 // runs until the next whitespace, >, or />.
 const svgEventHandlerPattern = `(?i)\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>"'/][^\s>"'/]*)`
 
@@ -93,7 +93,7 @@ const svgExternalXlinkHrefPattern = `(?i)\s+xlink:href\s*=\s*(?:"[^"#][^"]*"|'[^
 // svgExternalHrefPattern matches the plain href attribute (SVG2) when its
 // value is NOT a local fragment reference. Matches only on SVG elements
 // where href is a real reference target (use, image, a, link) to avoid
-// stripping unrelated HTML contexts — but since this pattern is only
+// stripping unrelated HTML contexts - but since this pattern is only
 // invoked from the SVG pipeline, the source doc is already known to be
 // SVG and matching any href= on any element is safe.
 const svgExternalHrefPattern = `(?i)\s+href\s*=\s*(?:"[^"#][^"]*"|'[^'#][^']*')`
@@ -116,7 +116,7 @@ const svgHiddenTextAttrPattern = `(?is)<(?:[\w-]+:)?text\b[^>]*(?:\bdisplay\s*=\
 // svgAnimationInjectionPattern matches SVG animation elements that target
 // event handler attributes. <set attributeName="onload" to="alert(1)"/> and
 // <animate attributeName="onclick" ...> can inject active content without
-// any direct on* attribute on the target element — the animation engine
+// any direct on* attribute on the target element - the animation engine
 // sets the attribute at runtime. The pattern matches <animate>, <set>,
 // <animateTransform>, and <animateMotion> elements where attributeName
 // points to an event handler (on*). Namespace-prefixed forms included.

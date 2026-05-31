@@ -11,33 +11,33 @@ import "errors"
 type BlockReason string
 
 const (
-	// ReasonBodyTooLarge — the request body exceeds the configured byte cap.
+	// ReasonBodyTooLarge - the request body exceeds the configured byte cap.
 	ReasonBodyTooLarge BlockReason = "body_too_large"
-	// ReasonBodyUnparseable — the body was expected to be JSON but did not
+	// ReasonBodyUnparseable - the body was expected to be JSON but did not
 	// parse.
 	ReasonBodyUnparseable BlockReason = "body_unparseable"
-	// ReasonNonJSONBody — Content-Type signaled non-JSON and the host is not
+	// ReasonNonJSONBody - Content-Type signaled non-JSON and the host is not
 	// on the operator's `allowlist_unparseable` list.
 	ReasonNonJSONBody BlockReason = "non_json_body"
-	// ReasonStreamingRequest — request used chunked or streaming transfer
+	// ReasonStreamingRequest - request used chunked or streaming transfer
 	// encoding which cannot be buffered safely.
 	ReasonStreamingRequest BlockReason = "streaming_request_unsupported"
-	// ReasonMultipart — request was multipart/form-data which v1 does not
+	// ReasonMultipart - request was multipart/form-data which v1 does not
 	// scan.
 	ReasonMultipart BlockReason = "multipart_unsupported"
-	// ReasonWebSocketFragmented — WebSocket message arrived with
+	// ReasonWebSocketFragmented - WebSocket message arrived with
 	// continuation frames.
 	ReasonWebSocketFragmented BlockReason = "ws_message_fragmented"
-	// ReasonOverflow — match count exceeded the per-request cap.
+	// ReasonOverflow - match count exceeded the per-request cap.
 	ReasonOverflow BlockReason = "redaction_overflow"
-	// ReasonDepthExceeded — JSON structure exceeded the configured nesting
+	// ReasonDepthExceeded - JSON structure exceeded the configured nesting
 	// depth cap (defensive against resource-exhaustion JSON).
 	ReasonDepthExceeded BlockReason = "json_depth_exceeded"
-	// ReasonKeyCollision — rewriting two different object keys produced
+	// ReasonKeyCollision - rewriting two different object keys produced
 	// the same placeholder. Silently letting one key overwrite another
 	// changes the forwarded object's structure, so we fail closed.
 	ReasonKeyCollision BlockReason = "key_collision"
-	// ReasonDuplicateKey — the input JSON contained a duplicate object
+	// ReasonDuplicateKey - the input JSON contained a duplicate object
 	// member name at the same nesting level. Decoding into
 	// map[string]interface{} silently collapses duplicates before
 	// redaction can see them, which lets an attacker smuggle a secret
@@ -45,13 +45,13 @@ const (
 	// parsers still treat the secret as authoritative). Fail closed on
 	// duplicates before decoding.
 	ReasonDuplicateKey BlockReason = "duplicate_object_key"
-	// ReasonSecretInNumericScalar — a numeric JSON scalar (json.Number)
+	// ReasonSecretInNumericScalar - a numeric JSON scalar (json.Number)
 	// matched a redaction pattern. Rewriting to a string placeholder would
 	// change the JSON type and likely break the upstream; redacting is
 	// impossible without type-coercion risk, so we fail closed. Legitimate
 	// bodies should not carry secrets as bare numbers.
 	ReasonSecretInNumericScalar BlockReason = "secret_in_numeric_scalar"
-	// ReasonRemarshalFailed — the redacted tree could not be re-encoded
+	// ReasonRemarshalFailed - the redacted tree could not be re-encoded
 	// to JSON. Distinguished from ReasonBodyUnparseable so telemetry can
 	// separate attacker-malformed input from an implementation bug.
 	ReasonRemarshalFailed BlockReason = "remarshal_failed"
@@ -69,7 +69,7 @@ type BlockError struct {
 	// MatchesBeforeBlock reports how many unique redactions were applied
 	// before the failure (0 when the failure prevents any scanning).
 	MatchesBeforeBlock int
-	// Detail is an optional human-readable hint. Not stable API — telemetry
+	// Detail is an optional human-readable hint. Not stable API - telemetry
 	// and receipts should key off Reason.
 	Detail string
 }

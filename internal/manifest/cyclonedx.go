@@ -76,7 +76,7 @@ var serialCounter atomic.Uint64
 func newSerialNumber() string {
 	var uuid [16]byte
 	if _, err := rand.Read(uuid[:]); err != nil {
-		// crypto/rand failure is critical — a zero UUID would be predictable.
+		// crypto/rand failure is critical - a zero UUID would be predictable.
 		// Combine timestamp + atomic counter to prevent same-microsecond collisions.
 		ts := time.Now().UnixNano()
 		seq := serialCounter.Add(1)

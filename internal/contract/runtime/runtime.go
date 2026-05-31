@@ -271,7 +271,7 @@ type EvaluateOptions struct {
 
 // Decision is the contract-aware verdict metadata for a request.
 //
-// Verdict is what the proxy MUST act on for this request — block or allow.
+// Verdict is what the proxy MUST act on for this request - block or allow.
 // LiveVerdict is what live mode WOULD have done given the same inputs:
 // in ModeLive these are equal; in ModeShadow / ModeCapture, Verdict
 // reflects the scanner-floor result (so the proxy never blocks more than

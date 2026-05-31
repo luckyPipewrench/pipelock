@@ -76,7 +76,7 @@ func reconstructSignatureBaseForTest(method, targetURI string, body []byte, medi
 // TestReverseProxy_SigningRoundTripper_TargetURIIsPostDirector is the
 // W3.2 regression test: when mediation envelope signing is enabled,
 // the Signature-Input's @target-uri component must reflect the URL
-// the request is actually being dispatched to — the upstream URL
+// the request is actually being dispatched to - the upstream URL
 // after httputil.ReverseProxy's Director rewrote req.URL.
 //
 // If we were still signing inside ServeHTTP (before Director), the
@@ -125,7 +125,7 @@ func TestReverseProxy_SigningRoundTripper_TargetURIIsPostDirector(t *testing.T) 
 	cfg.MediationEnvelope.CreatedSkewSeconds = config.DefaultEnvelopeSignCreatedSkewSecs
 	cfg.MediationEnvelope.MaxBodyBytes = config.DefaultEnvelopeSignMaxBodyBytes
 
-	// Build the signer directly (no file round-trip) — the config
+	// Build the signer directly (no file round-trip) - the config
 	// validator is tested separately; here we only care about the
 	// @target-uri plumbing through the RoundTripper wrapper.
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -235,7 +235,7 @@ func TestReverseProxy_SigningRoundTripper_TargetURIIsPostDirector(t *testing.T) 
 	// upstream actually received. httptest.NewServer's URL is
 	// http://127.0.0.1:NN, so the post-Director target-uri is
 	// http://127.0.0.1:NN/api/data. The inbound req.URL was the
-	// httptest proxySrv URL — a DIFFERENT host — so if signing ran
+	// httptest proxySrv URL - a DIFFERENT host - so if signing ran
 	// before Director, @target-uri would be the proxy URL and this
 	// assertion would fail.
 	captured := capturedURL
@@ -257,7 +257,7 @@ func TestReverseProxy_SigningRoundTripper_TargetURIIsPostDirector(t *testing.T) 
 	}
 
 	// And the recovered @target-uri must NOT equal the inbound
-	// proxySrv URL — that would prove signing happened too early.
+	// proxySrv URL - that would prove signing happened too early.
 	inboundURL := proxySrv.URL + "/api/data"
 	if !strings.Contains(sigBase, captured) {
 		t.Errorf("signature base does not contain upstream URL %q", captured)

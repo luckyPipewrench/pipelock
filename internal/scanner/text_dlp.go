@@ -70,7 +70,7 @@ func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPM
 func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns bool) TextDLPResult {
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 
-	// Core DLP runs FIRST — immutable safety floor. Core matches are
+	// Core DLP runs FIRST - immutable safety floor. Core matches are
 	// prepended to results; main scanner also runs to capture additional
 	// findings (env leaks, seed phrases, non-core patterns).
 	coreMatches := s.scanCoreDLP(text)
@@ -148,7 +148,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 
 	// Full normalization before DLP pattern matching: strip control chars,
 	// NFKC, cross-script confusable mapping, and combining mark removal.
-	// Must match response scanning depth — otherwise attackers use homoglyphs
+	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	cleaned := normalize.ForDLP(text)
 	matches = append(matches, s.scanCanaryText(cleaned)...)
@@ -200,7 +200,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	// in URLs within MCP tool arguments (e.g., "https://evil.com/<hex-key>/data")
 	// where whole-string decode fails because the text isn't pure hex/base64.
 	// Only skip segment decoding when enforced matches already exist.
-	// Warn-only matches must not gate off further scanning — an enforced
+	// Warn-only matches must not gate off further scanning - an enforced
 	// match might hide in a decoded segment.
 	if !hasEnforcedMatch(matches) {
 		matches = append(matches, s.decodeTextSegments(cleaned)...)
@@ -215,7 +215,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
 
-	// Prepend core matches — core findings cannot be overridden.
+	// Prepend core matches - core findings cannot be overridden.
 	if len(coreMatches) > 0 {
 		matches = append(coreMatches, matches...)
 		matches = deduplicateMatches(matches)

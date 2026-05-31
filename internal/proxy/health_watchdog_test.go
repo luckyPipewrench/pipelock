@@ -156,7 +156,7 @@ func TestHealth_ScannerDeadlock_FlipsTo503(t *testing.T) {
 	if body.Subsystems["scanner"] {
 		t.Errorf("expected subsystems.scanner=false, got true (body=%+v)", body)
 	}
-	// Other subsystems should remain healthy — wedge is isolated.
+	// Other subsystems should remain healthy - wedge is isolated.
 	if !body.Subsystems["config"] || !body.Subsystems["session"] ||
 		!body.Subsystems["killswitch"] || !body.Subsystems["watchdog"] {
 		t.Errorf("unexpected cascading unhealth: %+v", body.Subsystems)
@@ -191,7 +191,7 @@ func TestHealth_ProbeRecovers_RebeatsToHealthy(t *testing.T) {
 		t.Fatalf("expected scanner=true after re-beat")
 	}
 
-	// Now arm the probe to fail and age the scanner again — should flip to 503.
+	// Now arm the probe to fail and age the scanner again - should flip to 503.
 	failNext <- struct{}{}
 	p.wd.AgeScannerForTest(time.Hour)
 	code, body = callHealth(t, p)

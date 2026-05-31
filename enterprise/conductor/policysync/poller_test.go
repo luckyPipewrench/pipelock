@@ -42,7 +42,7 @@ func (errReader) Read([]byte) (int, error) { return 0, errors.New("read failure"
 
 // stubDoer serves a scripted sequence of steps (one per request) and records
 // the requests it received so tests can assert on headers (e.g. If-None-Match).
-// The response is constructed inside Do — not pre-built and stored — so the
+// The response is constructed inside Do - not pre-built and stored - so the
 // bodyclose linter correctly attributes the close to the code under test (the
 // poller defers resp.Body.Close()).
 type stubDoer struct {
@@ -213,7 +213,7 @@ func TestPollOnce_StatusHandling(t *testing.T) {
 		{name: "403 forbidden", status: http.StatusForbidden, wantErr: true, wantErrType: ErrPollResponse, wantApplied: 0},
 		{name: "200 invalid json", status: http.StatusOK, body: []byte("{not json"), wantErr: true, wantErrType: ErrPollResponse, wantApplied: 0},
 		{name: "200 unknown field", status: http.StatusOK, body: []byte(`{"bundle_id":"b1","totally_unknown":true}`), wantErr: true, wantErrType: ErrPollResponse, wantApplied: 0},
-		// A trailing JSON document is rejected BEFORE apply — a hostile leader
+		// A trailing JSON document is rejected BEFORE apply - a hostile leader
 		// must not be able to smuggle a second payload past the strict decoder.
 		{name: "200 trailing document", status: http.StatusOK, body: append(mkBundleJSON(t), []byte("\n{}")...), wantErr: true, wantErrType: ErrPollResponse, wantApplied: 0},
 		{name: "200 applier rejects", status: http.StatusOK, body: mkBundleJSON(t), applierErr: errors.New("bad signature"), wantErr: true, wantApplied: 1},

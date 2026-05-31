@@ -173,7 +173,7 @@ func applyMCPAutoEnable(c *Config, defaultToolPolicyRules func() []ToolPolicyRul
 // allocated so mutations to the clone never alias back into the receiver.
 //
 // rawBytes is copied verbatim so Hash() on the clone still reflects the
-// on-disk YAML bytes that were loaded — the receipt-audit fingerprint is
+// on-disk YAML bytes that were loaded - the receipt-audit fingerprint is
 // about "what YAML file was loaded", which does not change under bundle
 // merge or auto-enable. CanonicalPolicyHash recomputes from the clone's
 // current state the first time it is called.

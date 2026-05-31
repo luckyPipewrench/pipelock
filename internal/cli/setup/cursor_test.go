@@ -1155,7 +1155,7 @@ func TestCursorInstallCmd_MergePreservesArgs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// writeResponse coverage — normal path produces valid JSON
+// writeResponse coverage - normal path produces valid JSON
 // ---------------------------------------------------------------------------
 
 func TestWriteResponse_NormalPath(t *testing.T) {

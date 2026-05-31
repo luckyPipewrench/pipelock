@@ -229,7 +229,7 @@ func TestForwardHTTP_HeaderDLP_NonExemptHost_SignalRecorded(t *testing.T) {
 	cfg.RequestBodyScanning.Enabled = true
 	cfg.RequestBodyScanning.ScanHeaders = true
 	cfg.RequestBodyScanning.Action = config.ActionWarn
-	// No exempt domains — all hosts feed scoring.
+	// No exempt domains - all hosts feed scoring.
 	cfg.AdaptiveEnforcement.ExemptDomains = nil
 	savedInternal := cfg.Internal
 	cfg.ApplyDefaults()

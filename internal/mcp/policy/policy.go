@@ -46,7 +46,7 @@ var shellEscapeRe = regexp.MustCompile(`\\(\w)`)
 // shellPositionalRe strips $@ and $* which expand to empty when there are no
 // positional parameters (the common case in non-interactive MCP tool calls).
 // Attackers insert these to break command keywords: "r$@m" → "rm".
-// Only covers $@ $* ${@} ${*} — these are reliably empty in MCP contexts.
+// Only covers $@ $* ${@} ${*} - these are reliably empty in MCP contexts.
 // Does NOT strip $0-$9, $?, $_, etc. which are non-empty in real bash.
 //
 // Assumption: MCP tool calls execute commands without positional parameters.
@@ -63,7 +63,7 @@ var shellPositionalRe = regexp.MustCompile(`\$\{[@*]\}|\$[@*]`)
 //   - ${HOME:0:1} (standard offset:length)
 //   - ${HOME::1}  (omitted offset, equivalent to :0:1)
 //
-// Matches HOME, PWD, OLDPWD — variables whose first character is always "/".
+// Matches HOME, PWD, OLDPWD - variables whose first character is always "/".
 var shellHomeSlashRe = regexp.MustCompile(`\$\{(?:HOME|PWD|OLDPWD)(?::0:1|::1)\}`)
 
 // simpleCmdSubRe matches simple command substitutions used to build command names.
@@ -75,7 +75,7 @@ var simpleCmdSubRe = regexp.MustCompile(`\$\(\s*(?:echo|printf)\s+(?:['"]?%\S*['
 // backtickCmdSubRe matches backtick command substitutions equivalent to $().
 // `printf rm`, `echo rm` are evasion techniques identical to $(printf rm).
 // Backticks are stripped by shellQuoteStripper, but the command inside needs
-// to be resolved first — otherwise `printf rm` becomes "printf rm" (literal)
+// to be resolved first - otherwise `printf rm` becomes "printf rm" (literal)
 // instead of "rm" (resolved).
 var backtickCmdSubRe = regexp.MustCompile("`\\s*(?:echo|printf)\\s+(?:['\"]?%\\S*['\"]?\\s+)*['\"]?(\\w+)['\"]?\\s*`")
 
@@ -95,7 +95,7 @@ var braceExpansionRe = regexp.MustCompile(`\{([\w./:~@=*?+-]*(?:,[\w./:~@=*?+-]*
 
 // shellQuoteStripper removes shell quoting artifacts left over from ANSI-C
 // quoting (e.g. $'\x6d' framing). After decodeShellEscapes, r$'\x6d' becomes
-// r$'m' — the $' prefix and trailing quote prevent regex from seeing "rm".
+// r$'m' - the $' prefix and trailing quote prevent regex from seeing "rm".
 // The $' pair is stripped first (ANSI-C opening), then remaining lone quotes.
 var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "", "`", "")
 
@@ -114,11 +114,11 @@ var shellQuoteStripper = strings.NewReplacer("$'", "", `$"`, "", "'", "", `"`, "
 // the policy-normalized form (pre-normalizer + ForMatching) and the baseline
 // form (ForMatching only). A match on either view triggers the rule.
 var policyPreNormalize = strings.NewReplacer(
-	"\u0443", "u", // Cyrillic у — used as 'u' in curl/sudo/su/run
+	"\u0443", "u", // Cyrillic у - used as 'u' in curl/sudo/su/run
 	"\u0423", "U", // Cyrillic У (uppercase)
-	"\u0432", "b", // Cyrillic в — used as 'b' in bash/base64
+	"\u0432", "b", // Cyrillic в - used as 'b' in bash/base64
 	"\u0412", "B", // Cyrillic В (uppercase)
-	"\u043D", "n", // Cyrillic н — used as 'n' in node/npm/nc
+	"\u043D", "n", // Cyrillic н - used as 'n' in node/npm/nc
 	"\u041D", "N", // Cyrillic Н (uppercase)
 )
 
@@ -188,9 +188,9 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 // key-scoped extraction). rawArgs may be nil if no rules use arg_key.
 //
 // Three matching strategies handle different evasion techniques:
-//  1. Joined string — catches array-split evasion (["rm","-rf","/"])
-//  2. Individual strings — catches path patterns (.ssh/id_rsa)
-//  3. Pairwise token combinations — catches map-ordering evasion where
+//  1. Joined string - catches array-split evasion (["rm","-rf","/"])
+//  2. Individual strings - catches path patterns (.ssh/id_rsa)
+//  3. Pairwise token combinations - catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
 func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
@@ -241,7 +241,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			continue
 		}
 
-		// No arg pattern — tool name match alone triggers the rule.
+		// No arg pattern - tool name match alone triggers the rule.
 		if rule.ArgPattern == nil {
 			matchedRules = append(matchedRules, rule.Name)
 			action := rule.Action
@@ -265,7 +265,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
 		if rule.ArgKey != nil {
 			if len(rawArgs) == 0 {
-				continue // cannot scope without raw JSON — skip rule
+				continue // cannot scope without raw JSON - skip rule
 			}
 			scopedStrings := jsonrpc.ExtractStringsForKeys(rawArgs, rule.ArgKey)
 			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
@@ -355,7 +355,7 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 		}
 	}
 	// Pairwise: check "A B" and "B A" for every distinct pair.
-	// Typical arg lists have 3-10 tokens, so this is 6-90 checks — negligible cost.
+	// Typical arg lists have 3-10 tokens, so this is 6-90 checks - negligible cost.
 	// Capped at maxPairwiseTokens to prevent DoS from adversarial inputs.
 	if len(tokens) <= maxPairwiseTokens {
 		for i, a := range tokens {
@@ -381,7 +381,7 @@ func (pc *Config) CheckRequest(line []byte) Verdict {
 		return Verdict{}
 	}
 
-	// Batch request — iterate elements.
+	// Batch request - iterate elements.
 	if trimmed[0] == '[' {
 		return pc.checkBatch(trimmed)
 	}
@@ -607,7 +607,7 @@ func resolveShellConstruction(s string) string {
 }
 
 // expandBraces resolves bash brace expansion patterns. {rm,-rf,/tmp} becomes
-// "rm -rf /tmp" — commas become spaces. Only expands patterns with at least two
+// "rm -rf /tmp" - commas become spaces. Only expands patterns with at least two
 // items containing shell-safe characters to avoid false positives.
 func expandBraces(s string) string {
 	return braceExpansionRe.ReplaceAllStringFunc(s, func(m string) string {

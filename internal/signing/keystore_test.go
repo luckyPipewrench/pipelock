@@ -584,7 +584,7 @@ func TestKeystoreForceGenerateAgent_Success(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Force regenerate — should succeed and produce different key.
+	// Force regenerate - should succeed and produce different key.
 	pub2, err := ks.ForceGenerateAgent("myagent")
 	if err != nil {
 		t.Fatal(err)

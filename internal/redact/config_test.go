@@ -150,7 +150,7 @@ func TestConfig_BuildMatcherDefaultProfile(t *testing.T) {
 	if len(matches) != 1 || matches[0].Class != ClassAWSAccessKey {
 		t.Fatalf("expected 1 aws-access-key match, got %+v", matches)
 	}
-	// Code profile does NOT enable IPv4 — it shouldn't match.
+	// Code profile does NOT enable IPv4 - it shouldn't match.
 	ipMatches := m.Scan("ip 10.0.0.1 here")
 	for _, mv := range ipMatches {
 		if mv.Class == ClassIPv4 {
@@ -262,7 +262,7 @@ func TestConfig_BuildMatcherUnresolvedEntriesFile(t *testing.T) {
 func TestConfig_ValidateStructureWhenDisabled(t *testing.T) {
 	t.Parallel()
 
-	// Malformed allowlist entry, feature disabled — must still reject.
+	// Malformed allowlist entry, feature disabled - must still reject.
 	c := Config{
 		Enabled:              false,
 		AllowlistUnparseable: []string{"UPPERCASE.example.com"},
@@ -272,7 +272,7 @@ func TestConfig_ValidateStructureWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled-with-bad-allowlist should still fail, got %v", err)
 	}
 
-	// Malformed dictionary class, feature disabled — must still reject.
+	// Malformed dictionary class, feature disabled - must still reject.
 	c = Config{
 		Enabled: false,
 		Dictionaries: map[string]DictionarySpec{
@@ -284,7 +284,7 @@ func TestConfig_ValidateStructureWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled-with-bad-dict-class should still fail, got %v", err)
 	}
 
-	// Malformed provider profile, feature disabled — must still reject.
+	// Malformed provider profile, feature disabled - must still reject.
 	c = Config{
 		Enabled: false,
 		Providers: map[string]ProviderSpec{

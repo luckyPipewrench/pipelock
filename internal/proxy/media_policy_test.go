@@ -289,7 +289,7 @@ func TestApplyMediaPolicy_AudioVideoAllowed(t *testing.T) {
 func TestApplyMediaPolicy_ParseErrorFailsClosed(t *testing.T) {
 	t.Parallel()
 	cfg := config.Defaults()
-	// Wrong prefix — media.StripMetadata returns ErrInvalidJPEG.
+	// Wrong prefix - media.StripMetadata returns ErrInvalidJPEG.
 	v := applyMediaPolicy(cfg, "image/jpeg", []byte{0x00, 0x01, 0x02, 0x03})
 	if !v.Blocked {
 		t.Fatal("malformed jpeg must be blocked (fail-closed)")
@@ -511,7 +511,7 @@ func TestLogMediaExposureIfPresent_NoExposureNoCall(t *testing.T) {
 func TestLogMediaExposureIfPresent_NilLoggerSafe(t *testing.T) {
 	t.Parallel()
 	v := MediaPolicyVerdict{Exposure: &MediaExposureFields{}}
-	// Must not panic — transports may be wired before the logger is
+	// Must not panic - transports may be wired before the logger is
 	// initialized during startup.
 	logMediaExposureIfPresent(nil, audit.LogContext{}, v, "forward")
 }
@@ -522,7 +522,7 @@ func TestLogMediaExposureIfPresent_NilLoggerSafe(t *testing.T) {
 //
 // The fetch endpoint JSON-encodes the binary body into FetchResponse.Content,
 // which escapes control characters (\x00 → \u0000). Asserting on raw response
-// bytes would be a false negative — the substring "Exif\x00\x00..." can never
+// bytes would be a false negative - the substring "Exif\x00\x00..." can never
 // appear unescaped in the JSON. Decode the response and check the Content
 // field directly, plus the printable suffix of the payload.
 func TestFetchEndpoint_MediaPolicyStripsJPEG(t *testing.T) {
@@ -675,7 +675,7 @@ func TestReverseProxy_MediaPolicyBlocksAudioWhenResponseScanDisabled(t *testing.
 
 // TestForwardHTTP_MediaPolicyStripsWhenResponseScanDisabled regressions
 // the same bypass on the forward proxy. The original gate was
-// `if sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled` — media
+// `if sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled` - media
 // policy never buffered the body when both were off.
 func TestForwardHTTP_MediaPolicyStripsWhenResponseScanDisabled(t *testing.T) {
 	secretPayload := []byte("Exif\x00\x00forward-scan-disabled-leak")

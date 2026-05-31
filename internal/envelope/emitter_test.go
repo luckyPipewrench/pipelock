@@ -257,7 +257,7 @@ func TestEmitter_Build_PolicyHashOverride(t *testing.T) {
 }
 
 // TestEmitter_Build_PolicyHashFallback confirms that when BuildOpts.PolicyHash
-// is empty, the emitter's atomic fallback drives ph — preserving backward
+// is empty, the emitter's atomic fallback drives ph - preserving backward
 // compatibility for transports that do not yet thread per-agent config
 // through inject calls.
 func TestEmitter_Build_PolicyHashFallback(t *testing.T) {
@@ -432,7 +432,7 @@ func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
 	body := []byte(`{"auto":true}`)
 	req := newTestRequest(t, http.MethodPost, "https://upstream.example/api", strings.NewReader(string(body)))
 
-	// Caller does NOT have bytes in hand — mirrors "request body
+	// Caller does NOT have bytes in hand - mirrors "request body
 	// scanning disabled, signing enabled."
 	if err := em.InjectAndSign(req, nil, BuildOpts{
 		ActionID:  "01961f3a-7b2c-7000-8000-000000000010",
@@ -450,7 +450,7 @@ func TestEmitter_InjectAndSign_AutoBuffersBodyForSigner(t *testing.T) {
 		t.Errorf("Content-Digest = %q, want %q", got, wantDigest)
 	}
 
-	// Body must still be readable — a fresh NopCloser was installed.
+	// Body must still be readable - a fresh NopCloser was installed.
 	drained, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatalf("reading replaced body: %v", err)
@@ -529,7 +529,7 @@ func TestEmitter_InjectAndSign_OverCapBodyDropsDigest(t *testing.T) {
 		t.Fatalf("InjectAndSign: %v", err)
 	}
 
-	// Content-Digest must be absent — over-cap body cannot be digested.
+	// Content-Digest must be absent - over-cap body cannot be digested.
 	if got := req.Header.Get("Content-Digest"); got != "" {
 		t.Errorf("Content-Digest = %q, want empty", got)
 	}
@@ -626,7 +626,7 @@ func TestEmitter_InjectAndSign_OverCapUnknownLengthPreservesBody(t *testing.T) {
 	// An over-cap unknown-length body is not replayable. Per the
 	// GPT-5.4 PR #403 review we install a sentinel GetBody that
 	// errors loudly on 307/308 replay instead of silently dropping
-	// the body — stdlib otherwise follows the redirect with an
+	// the body - stdlib otherwise follows the redirect with an
 	// empty payload. The first-hop upstream still gets the full
 	// payload via the MultiReader preserved in req.Body.
 	if req.GetBody == nil {

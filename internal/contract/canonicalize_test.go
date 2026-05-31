@@ -303,7 +303,7 @@ func TestCanonicalize_MapContainsUnsupportedValue(t *testing.T) {
 
 func TestParseStrictFrom_UnexpectedDelimiter(t *testing.T) {
 	t.Parallel()
-	// parseStrictFrom dispatches on json.Delim — only '{' and '[' are valid.
+	// parseStrictFrom dispatches on json.Delim - only '{' and '[' are valid.
 	// Passing ']' exercises the default: branch inside the Delim switch (line 187-189).
 	// The decoder is not used for this token so any reader works.
 	dec := json.NewDecoder(bytes.NewReader([]byte(`null`)))
@@ -363,7 +363,7 @@ func TestParseJSONStrict_RejectsTrailingDelimiter(t *testing.T) {
 
 func TestParseJSONStrict_AcceptsTrailingWhitespace(t *testing.T) {
 	t.Parallel()
-	// Trailing whitespace (e.g., newline) is OK — it is not a token.
+	// Trailing whitespace (e.g., newline) is OK - it is not a token.
 	_, err := ParseJSONStrict([]byte("{\"a\":1}" + "\n"))
 	if err != nil {
 		t.Errorf("trailing whitespace rejected: %v", err)

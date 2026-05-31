@@ -317,7 +317,7 @@ func TestRollbackAuthorizationMismatches(t *testing.T) {
 			if tc.want != nil && !errors.Is(err, tc.want) {
 				t.Fatalf("storeVerified(%s) = %v, want %v", tc.name, err, tc.want)
 			}
-			// The active bundle must remain v2 — a rejected rollback never activates.
+			// The active bundle must remain v2 - a rejected rollback never activates.
 			active, activeErr := cache.Active()
 			if activeErr != nil {
 				t.Fatalf("Active(): %v", activeErr)

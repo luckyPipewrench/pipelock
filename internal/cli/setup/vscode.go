@@ -267,7 +267,7 @@ func runVscodeInstall(cmd *cobra.Command, global, project, dryRun bool, configFi
 
 	// Auto-discover the operator's pipelock.yaml when --config was not passed.
 	// Without this, the spawned MCP proxy loads config.Defaults() with MCP
-	// scanning and the flight recorder disabled — the wrap would look correct
+	// scanning and the flight recorder disabled - the wrap would look correct
 	// while silently providing no scanning. See discoverConfigForWrap below.
 	configFile = discoverConfigForWrap(cmd, configFile)
 

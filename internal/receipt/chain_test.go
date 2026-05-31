@@ -161,7 +161,7 @@ func TestVerifyChain_TamperedMidChain(t *testing.T) {
 	keyHex := hex.EncodeToString(pub)
 	chain := buildChain(t, priv, 5)
 
-	// Tamper with the 3rd receipt's target — breaks its signature.
+	// Tamper with the 3rd receipt's target - breaks its signature.
 	chain[2].ActionRecord.Target = "https://evil.com/tampered"
 
 	result := VerifyChain(chain, keyHex)

@@ -82,7 +82,7 @@ func TestRequestTracker_DuplicateTrack(t *testing.T) {
 	id := json.RawMessage(`"abc"`)
 
 	tr.Track(id)
-	tr.Track(id) // Duplicate — should be a no-op.
+	tr.Track(id) // Duplicate - should be a no-op.
 
 	if !tr.Validate(id) {
 		t.Error("expected first Validate to succeed after duplicate Track")
@@ -101,7 +101,7 @@ func TestRequestTracker_CapEviction(t *testing.T) {
 		tr.Track(id)
 	}
 
-	// Track one more — should evict the oldest (id-0).
+	// Track one more - should evict the oldest (id-0).
 	overflowID := json.RawMessage(`"overflow"`)
 	tr.Track(overflowID)
 
@@ -139,7 +139,7 @@ func TestRequestTracker_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Validate n IDs concurrently — each should succeed exactly once.
+	// Validate n IDs concurrently - each should succeed exactly once.
 	results := make([]bool, n)
 	for i := range n {
 		wg.Add(1)

@@ -162,7 +162,7 @@ func (t *AddressSimilarityTracker) Check(sessionID, text string) []AddressSimila
 				Suffix:       fp.suffix,
 			})
 		}
-		// If same full address, it's a repeat — no alert.
+		// If same full address, it's a repeat - no alert.
 	}
 
 	return results

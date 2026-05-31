@@ -46,7 +46,7 @@ func TestMediaPolicy_DefaultGetters(t *testing.T) {
 
 // TestMediaPolicy_ExplicitFalseOverridesDefault verifies that explicit false
 // in YAML overrides the nil-means-true default. This is the inverse direction
-// of the security default — operators must be able to turn off any individual
+// of the security default - operators must be able to turn off any individual
 // control without the struct silently re-enabling it.
 func TestMediaPolicy_ExplicitFalseOverridesDefault(t *testing.T) {
 	t.Parallel()
@@ -306,7 +306,7 @@ func TestValidateMediaPolicy_CanonicalizationAccepts(t *testing.T) {
 }
 
 // TestCanonicalizeMediaTypeEntry covers the edge cases of the shared
-// canonicalization helper directly — both parse-success and fallback
+// canonicalization helper directly - both parse-success and fallback
 // parse-error branches.
 func TestCanonicalizeMediaTypeEntry(t *testing.T) {
 	t.Parallel()
@@ -321,7 +321,7 @@ func TestCanonicalizeMediaTypeEntry(t *testing.T) {
 		{"image/jpeg ; charset=binary", "image/jpeg"},
 		{"", ""},
 		{"   ", ""},
-		// Parse error fallback — no slash, no media type. Result is
+		// Parse error fallback - no slash, no media type. Result is
 		// lowercased trimmed input; the validator then rejects it.
 		{"nonsense", "nonsense"},
 	}

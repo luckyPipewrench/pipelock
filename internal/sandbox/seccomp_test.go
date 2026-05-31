@@ -81,7 +81,7 @@ func runSeccompTestChild(op string) {
 		os.Exit(0) // expected: allowed
 
 	case "goroutine":
-		// Goroutines require clone3/futex — verify Go runtime still works.
+		// Goroutines require clone3/futex - verify Go runtime still works.
 		ch := make(chan int, 1)
 		go func() { ch <- 42 }()
 		if v := <-ch; v != 42 {
@@ -440,7 +440,7 @@ func TestSetNoNewPrivs_InProcess(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("linux only")
 	}
-	// Safe to call in-process — only prevents suid escalation.
+	// Safe to call in-process - only prevents suid escalation.
 	if err := SetNoNewPrivs(); err != nil {
 		t.Fatalf("SetNoNewPrivs: %v", err)
 	}

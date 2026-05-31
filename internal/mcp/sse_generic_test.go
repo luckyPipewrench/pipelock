@@ -943,8 +943,8 @@ func TestScanGenericSSEStream_NonUTF8WarnDropsEventAndContinues(t *testing.T) {
 
 func TestScanGenericSSEStream_NonUTF8PreservedInPassthrough(t *testing.T) {
 	// Passthrough mode (cfg disabled) does not scan, so the parser-
-	// differential vector does not apply. Raw bytes — including invalid
-	// UTF-8 — must forward verbatim so the proxy does not silently
+	// differential vector does not apply. Raw bytes - including invalid
+	// UTF-8 - must forward verbatim so the proxy does not silently
 	// corrupt opt-out streams.
 	nonUTF8 := []byte{0xC0, 0x80, 0xFF, 0xFE, 0x80, 0x81, 0xC3, 0x28}
 	body := append([]byte("data: "), nonUTF8...)
@@ -965,7 +965,7 @@ func TestScanGenericSSEStream_NonUTF8WithInjectionStillDetected(t *testing.T) {
 	// substring itself is ASCII) sandwiched in non-UTF-8 garbage must
 	// still trigger a finding. Today, the UTF-8 fail-closed fires first
 	// and the wrapped error is ErrSSEInvalidUTF8; either ErrSSEInvalidUTF8
-	// or an injection finding is acceptable — what is NOT acceptable is
+	// or an injection finding is acceptable - what is NOT acceptable is
 	// nil. This codifies "non-UTF-8 mixed with injection ALWAYS detects".
 	prefix := []byte{0xFF, 0xFE, 0xC3, 0x28}
 	body := append([]byte("data: "), prefix...)

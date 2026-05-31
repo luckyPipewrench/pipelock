@@ -27,7 +27,7 @@ const (
 	maxQueryLimit     = 1000
 	// uintTextWidth zero-pads stored uint64s so SQLite's lexicographic
 	// TEXT comparison matches numeric order across different digit
-	// counts. Without padding, "9" > "100" lexically — that wrecks
+	// counts. Without padding, "9" > "100" lexically - that wrecks
 	// range queries on the namespace_sequence index and makes
 	// detectFork unsound the moment we use SQL overlap checks.
 	uintTextWidth = 20

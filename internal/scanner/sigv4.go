@@ -35,7 +35,7 @@ import (
 //     parsed X-Amz-Credential value. AKIA anywhere else in the URL (path,
 //     hostname, other query params, subsequence-concatenated values) still
 //     blocks with ClassThreat.
-//   - The carve-out result is ClassStructuralExemption — adaptive-neutral,
+//   - The carve-out result is ClassStructuralExemption - adaptive-neutral,
 //     not clean-decay. A burst of legitimate presigned fetches must not
 //     drive a session's threat score down.
 //   - X-Amz-Expires above sigV4LongExpiryThreshold attaches a warn-tier
@@ -222,7 +222,7 @@ func detectValidSigV4(parsed *url.URL) sigV4Detection {
 // literal names (X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date,
 // X-Amz-Signature, X-Amz-Expires).
 //
-// Keys are compared byte-for-byte against the canonical literal — no
+// Keys are compared byte-for-byte against the canonical literal - no
 // percent-decoding on the key side. This keeps the detector and the
 // order-preserving scrubber in lockstep: an attacker who crafts a URL
 // with percent-encoded SigV4 key names (e.g. X%2DAmz%2DCredential)
@@ -290,8 +290,8 @@ func isAWSEndpointHost(hostname string) bool {
 // scrubSigV4Credential returns a clone of parsed with the access-key
 // component of X-Amz-Credential replaced by a same-length lowercase
 // placeholder. The rest of the credential value (date / region / service /
-// aws4_request) is preserved verbatim. All other URL components — path,
-// hostname, other query parameters, AND their order — are left untouched
+// aws4_request) is preserved verbatim. All other URL components - path,
+// hostname, other query parameters, AND their order - are left untouched
 // so any AKIA living outside the credential field is still scanned and
 // blocked, including by the ordered-subsequence detector in
 // querySubsequenceCoreDLP which reads pairs from RawQuery in iteration

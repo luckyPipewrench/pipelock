@@ -242,7 +242,7 @@ func TestSave_TargetIsDirectory(t *testing.T) {
 func TestHashFile_Directory(t *testing.T) {
 	dir := t.TempDir()
 
-	// Passing a directory to HashFile — io.Copy from dir fd fails with EISDIR.
+	// Passing a directory to HashFile - io.Copy from dir fd fails with EISDIR.
 	_, err := HashFile(dir)
 	if err == nil {
 		t.Fatal("expected error when hashing a directory")

@@ -76,7 +76,7 @@ func TestIsShieldExempt(t *testing.T) {
 
 		// Wildcard parity with scanner.MatchDomain. Every other domain
 		// list in pipelock (SSRF trusted-domains, response-scan exempt,
-		// body-scan exempt, adaptive exempt) supports "*.example.com" —
+		// body-scan exempt, adaptive exempt) supports "*.example.com" -
 		// shield used to be the odd one out and silently produced zero
 		// matches when an operator wrote a wildcard.
 		{"wildcard subdomain match", "challenges.cloudflare.com", []string{"*.cloudflare.com"}, true},
@@ -93,7 +93,7 @@ func TestIsShieldExempt(t *testing.T) {
 		{"adjacent-tld bypass attempt rejected", "example.com.attacker.test", []string{"*.example.com"}, false},
 
 		// Double-star (**) is not a recognized wildcard in
-		// scanner.MatchDomain — only "*." is. Operators who type "**"
+		// scanner.MatchDomain - only "*." is. Operators who type "**"
 		// expecting a different semantic should get a literal-prefix
 		// pattern that matches nothing real, not silent acceptance of
 		// every host. Test pins this so a future MatchDomain change

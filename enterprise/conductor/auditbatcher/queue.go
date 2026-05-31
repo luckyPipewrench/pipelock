@@ -123,7 +123,7 @@ func Open(cfg Config) (*Queue, error) {
 	// CreateTemp+rename; only crashes leave .tmp-* files behind, and they
 	// otherwise accumulate forever (listRecordFiles correctly ignores them,
 	// so they're invisible to claim but visible to df). Opening fresh is the
-	// only safe time to remove them — no other writer could legitimately
+	// only safe time to remove them - no other writer could legitimately
 	// have a .tmp-* in flight before Open returns.
 	for _, dir := range []string{q.pendingDir, q.inflightDir, q.deadDir} {
 		if err := sweepStaleTempsLocked(dir); err != nil {

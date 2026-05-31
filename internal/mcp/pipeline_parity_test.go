@@ -39,7 +39,7 @@ import (
 // through the transport's public entry (RunHTTPListenerProxy or
 // RunWSProxy) and asserts the block / redaction / pass-through
 // verdict the operator would see. The tests do not inspect detection
-// internals — the detection logic is already covered by the
+// internals - the detection logic is already covered by the
 // TestScanRequest_* corpus in input_test.go. These tests cover the
 // bytes-to-scanner wiring only.
 
@@ -95,7 +95,7 @@ func parityHTTPPost(t *testing.T, baseURL, body string) (int, string) {
 // parityInputBlockListener wires a scanner + InputScanConfig for HTTP
 // listener block-mode tests. Matches the config stdio uses in the
 // TestScanRequest_* fixtures so detection behaviour is comparable.
-// Upstream-call counting is the caller's responsibility — each test
+// Upstream-call counting is the caller's responsibility - each test
 // owns its own atomic.Int32 inside its httptest handler.
 func parityInputBlockListener(t *testing.T, upstreamURL string) string {
 	t.Helper()
@@ -300,7 +300,7 @@ func TestHTTPListener_ParityEnvelopeAntiSpoofStripped(t *testing.T) {
 	if bytes.Contains(upstreamBody.Bytes(), []byte(`"com.pipelock/mediation"`)) {
 		t.Fatalf("listener forwarded spoofed com.pipelock/mediation to upstream — strip regression. Body was:\n%s", upstreamBody.String())
 	}
-	// Tool call payload itself must still reach upstream — strip is
+	// Tool call payload itself must still reach upstream - strip is
 	// surgical, it must not gut legit tool fields.
 	if !bytes.Contains(upstreamBody.Bytes(), []byte(`"name":"echo"`)) {
 		t.Fatalf("listener strip dropped legitimate tool payload. Body was:\n%s", upstreamBody.String())
@@ -331,7 +331,7 @@ func TestHTTPListener_AntiSpoofMediationStripAdversarial(t *testing.T) {
 		{
 			name: "notification_no_id_stripped",
 			// JSON-RPC notifications have no "id" field. The strip
-			// must still apply — kill-switch / scan paths do not
+			// must still apply - kill-switch / scan paths do not
 			// guard the strip, the strip runs first unconditionally.
 			inbound: `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":50,"_meta":{"com.pipelock/mediation":{"spoofed":"forged"}}}}`,
 			mustContain: []string{
@@ -439,7 +439,7 @@ func TestHTTPListener_AntiSpoofMediationStripDoesNotLaunderDuplicateKeys(t *test
 // transport refactors.
 func TestRunWSProxy_ParityBase64EncodedSecretDLP(t *testing.T) {
 	// Server that accepts the connection but never expects a forwarded
-	// frame — the input scanner must block the base64-encoded secret
+	// frame - the input scanner must block the base64-encoded secret
 	// before anything reaches upstream.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)

@@ -104,7 +104,7 @@ The proxy exits cleanly on SIGINT/SIGTERM.`,
 // off to observeRunner. The loaded config is consulted to read
 // learn.capture_dir as a fallback when --capture-dir is not supplied; the
 // runtime reloads opts.ConfigFile from disk and is the source of truth for
-// every other field. The CLI does NOT mutate cfg — any such mutation would
+// every other field. The CLI does NOT mutate cfg - any such mutation would
 // be silently dropped on the runtime's reload, and the privacy enforcer
 // surface (LoadSalt + Apply) is not yet wired into the capture writer
 // path, so a "we set learn.enabled=true" claim would overstate behavior.

@@ -523,7 +523,7 @@ func VerifyToolsListProvenance(response []byte, cfg *config.MCPToolProvenance) P
 	}
 
 	if len(results) == 0 {
-		// No tools in response — nothing to verify.
+		// No tools in response - nothing to verify.
 		return ProvenanceVerdict{
 			Action:  cfg.Action,
 			Results: results,

@@ -222,7 +222,7 @@ func (w *Writer) worker() {
 		// Write payload sidecar if escrow is configured. Prefer scannerInput
 		// (exact scanner input for deterministic replay). Fall back to
 		// wirePayload (raw content before transformation) when scannerInput
-		// is empty — ObserveResponseVerdict stores raw response bytes only
+		// is empty - ObserveResponseVerdict stores raw response bytes only
 		// in wirePayload.
 		sidecarPayload := ce.scannerInput
 		if sidecarPayload == "" {

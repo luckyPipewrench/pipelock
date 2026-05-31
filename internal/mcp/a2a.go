@@ -27,7 +27,7 @@ const (
 	// Same scanners as FieldText but lower classification confidence.
 	FieldOpaque
 	// FieldBudgetExceeded signals the walker hit its node budget. Caller should
-	// fail closed — the payload is too wide for classified scanning.
+	// fail closed - the payload is too wide for classified scanning.
 	FieldBudgetExceeded
 )
 
@@ -218,7 +218,7 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 				childPath = path + "." + k
 			}
 
-			// Emit the key itself as a leaf — keys can be URLs or secrets.
+			// Emit the key itself as a leaf - keys can be URLs or secrets.
 			keyClass := classifyKeyAsLeaf(k)
 			if keyClass >= 0 {
 				emit(childPath+"@key", k, keyClass)
@@ -233,7 +233,7 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 		}
 
 	case nil:
-		// JSON null — nothing to scan.
+		// JSON null - nothing to scan.
 	}
 }
 
@@ -263,7 +263,7 @@ func classifyKeyAsLeaf(key string) FieldClass {
 	if isURILike(key) {
 		return FieldURL
 	}
-	// Don't emit boring keys — only emit keys that look like URIs or secrets.
+	// Don't emit boring keys - only emit keys that look like URIs or secrets.
 	// Regular field names are structural, not attacker content.
 	if normalizedSecretFields[normalizeFieldName(key)] {
 		return FieldSecret
@@ -369,7 +369,7 @@ func stripVersionPrefix(path string) string {
 		if idx >= 0 {
 			return "/" + rest[idx+1:] // "/tasks"
 		}
-		// /vN with no trailing content — treat as bare version path
+		// /vN with no trailing content - treat as bare version path
 		return "/"
 	}
 	return path
@@ -595,7 +595,7 @@ func HashAgentCard(card A2AAgentCard) string {
 		h.Write([]byte{0})
 	}
 
-	// Security schemes and requirements — canonicalize JSON so
+	// Security schemes and requirements - canonicalize JSON so
 	// semantically identical objects with different key order or
 	// whitespace produce the same hash.
 	_, _ = h.Write(canonicalizeJSON(card.SecuritySchemes))

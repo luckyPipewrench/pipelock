@@ -52,7 +52,7 @@ type Probe func(ctx context.Context) error
 //
 // SessionEnabled and KillSwitchEnabled mirror config-side opt-in flags. When
 // false, the corresponding subsystem is considered healthy regardless of
-// its pointer state — the operator legitimately turned the feature off, so
+// its pointer state - the operator legitimately turned the feature off, so
 // a missing controller is normal, not wedged. When the flag is true the
 // pointer must be wired or the subsystem reports unhealthy.
 type SnapshotInput struct {
@@ -101,7 +101,7 @@ type Watchdog struct {
 	// startedOnce flips true the first time Start is called and never goes
 	// back. Snapshot uses this so a Watchdog constructed but never Started
 	// (common in unit tests that exercise handlers without the full proxy
-	// lifecycle) reports watchdog=true — there is no goroutine that should
+	// lifecycle) reports watchdog=true - there is no goroutine that should
 	// be running, so there is no signal to be stale. Once Start is called,
 	// staleness on selfBeat means the goroutine died (or was deliberately
 	// Stopped, which we treat the same: no further heartbeats expected).
@@ -218,7 +218,7 @@ func (w *Watchdog) AgeScannerForTest(d time.Duration) {
 // Snapshot returns the current per-subsystem liveness map. The scanner
 // uses the hybrid rule: pointer alive AND (fresh heartbeat OR probe returns
 // nil within Interval/2). Config / session / killswitch are presence
-// checks. Watchdog is healthy iff its self-heartbeat is fresh — if the
+// checks. Watchdog is healthy iff its self-heartbeat is fresh - if the
 // goroutine dies, this flips to false within staleAfter.
 //
 // On a successful probe Snapshot re-beats the scanner so subsequent /health

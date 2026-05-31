@@ -37,7 +37,7 @@ func upstreamURLFromHTTPTest(httpURL string) string {
 // submitProfileTestConfig builds a config wired up for submit profile,
 // targeting the upstream URL passed in. Skips Validate() because httptest
 // URLs are IP literals (127.0.0.1) and submit profile rejects IP literals
-// on trusted_upstream.host by design — tests still exercise request-time
+// on trusted_upstream.host by design - tests still exercise request-time
 // gating which doesn't care about the load-time hostname constraint.
 func submitProfileTestConfig(upstreamURL string) (*config.Config, *url.URL) {
 	cfg := config.Defaults()
@@ -235,7 +235,7 @@ func TestSubmitProfile_PathRejection(t *testing.T) {
 }
 
 // TestSubmitProfile_BodyTooLarge verifies oversized bodies are rejected
-// with 413 BEFORE forwarding — body never reaches upstream.
+// with 413 BEFORE forwarding - body never reaches upstream.
 func TestSubmitProfile_BodyTooLarge(t *testing.T) {
 	var upstreamHit atomic.Bool
 	upstream := newIPv4Server(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
@@ -391,7 +391,7 @@ func TestSubmitProfile_GenericProfileUnaffected(t *testing.T) {
 	defer upstream.Close()
 
 	cfg, upstreamURL := submitProfileTestConfig(upstream.URL)
-	// Strip submit-profile selector — request path should now be allowed
+	// Strip submit-profile selector - request path should now be allowed
 	// to reach upstream because the generic profile has no allowlist.
 	cfg.ReverseProxy.Profile = ""
 	cfg.ReverseProxy.AllowedMethods = nil

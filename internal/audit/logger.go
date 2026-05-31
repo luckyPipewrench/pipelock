@@ -22,7 +22,7 @@ import (
 )
 
 // contentScanners identify block sources where the blocked URL (or target)
-// likely contains the very bytes that triggered the match — DLP firing on
+// likely contains the very bytes that triggered the match - DLP firing on
 // a query-param-embedded API key, seed-phrase detection on an address
 // embedded in the path, etc. When a block comes from one of these
 // scanners, LogBlocked truncates the URL/target to scheme+host before
@@ -670,7 +670,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("display_label", displayLabel).
 		optStr("mitre_technique", technique)
 
-	// includeBlocked gates local audit log only — external emission always fires
+	// includeBlocked gates local audit log only - external emission always fires
 	// so SIEM/webhook consumers see blocked events regardless of local verbosity.
 	if l.includeBlocked {
 		e.msg("request blocked")
@@ -810,7 +810,7 @@ type MediaExposureInfo struct {
 // SeverityWarn (set in internal/emit via EventSeverity map). Both the
 // zerolog stream and the emitter sink receive the same field set.
 //
-// Unlike LogAnomaly this is not a suspicion marker — it is an exposure
+// Unlike LogAnomaly this is not a suspicion marker - it is an exposure
 // provenance signal. Every media response that reaches the agent (allowed
 // or blocked) should produce one event when media_policy.log_media_exposure
 // is enabled, so the downstream policy engine can build an exposure
@@ -1010,7 +1010,7 @@ func (l *Logger) LogToolRedirect(ev ToolRedirectEvent) {
 		str("policy_rule", ev.PolicyRule).
 		str("result", ev.Result).
 		int64Field("latency_ms", ev.LatencyMs)
-	// session_id is local-log only — not emitted to external sinks.
+	// session_id is local-log only - not emitted to external sinks.
 	if ev.SessionID != "" {
 		e.event = e.event.Str("session_id", sanitizeString(ev.SessionID))
 	}
@@ -1141,7 +1141,7 @@ func (l *Logger) LogWSBlocked(target, direction, scannerName, reason, clientIP, 
 		str("request_id", requestID).
 		optStr("mitre_technique", technique)
 
-	// includeBlocked gates local audit log only — external emission always fires.
+	// includeBlocked gates local audit log only - external emission always fires.
 	if l.includeBlocked {
 		e.msg("websocket blocked")
 	}
@@ -1255,7 +1255,7 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 	}
 }
 
-// LogAdaptiveUpgrade logs an adaptive enforcement action upgrade — when the
+// LogAdaptiveUpgrade logs an adaptive enforcement action upgrade - when the
 // session's escalation level causes a stronger action to be applied to a
 // request than would otherwise have been (e.g. warn → block).
 func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, scanner, clientIP, requestID string) {
@@ -1280,7 +1280,7 @@ func (l *Logger) LogAdaptiveUpgrade(sessionKey, level, fromAction, toAction, sca
 		if toAction == actionBlock && scanner != "session_deny" {
 			// Actual escalation transitions emit at critical.
 			// session_deny (enforcement of existing block_all) stays at warn
-			// to prevent webhook flood — one critical on escalation, not
+			// to prevent webhook flood - one critical on escalation, not
 			// one per denied request.
 			sev = emit.SeverityCritical
 		}
@@ -1542,7 +1542,7 @@ func (l *Logger) LogShieldRewrite(category string, hits int, transport, targetUR
 
 // With returns a sub-logger that includes the given key-value pair in every
 // log entry. The sub-logger shares the parent's file handle and config but
-// does NOT own the file — only the root logger should be Close()'d.
+// does NOT own the file - only the root logger should be Close()'d.
 func (l *Logger) With(key, value string) *Logger {
 	return &Logger{
 		zl:             l.zl.With().Str(key, value).Logger(),

@@ -187,7 +187,7 @@ func Scan(dir string) (*Report, error) {
 // envVarAlwaysSafe holds env var names whose values are structurally
 // guaranteed not to be secrets. These are standard CI runner, shell,
 // and locale variables. Any match against a DLP pattern on these is a
-// false positive. Keeping the list narrow — only names that are
+// false positive. Keeping the list narrow - only names that are
 // defined by well-known infrastructure and whose values never contain
 // credentials.
 var envVarAlwaysSafe = map[string]bool{
@@ -218,7 +218,7 @@ var envVarAlwaysSafe = map[string]bool{
 	"RUNNER_ENVIRONMENT": true, "RUNNER_NAME": true,
 	"RUNNER_OS": true, "RUNNER_TEMP": true,
 	"RUNNER_TOOL_CACHE": true, "RUNNER_WORKSPACE": true,
-	// CI_* is GitLab's prefix — mirror coverage for parity.
+	// CI_* is GitLab's prefix - mirror coverage for parity.
 	"CI": true, "CI_COMMIT_REF_NAME": true, "CI_PIPELINE_ID": true,
 	"CI_PROJECT_DIR": true, "CI_RUNNER_ID": true,
 }
@@ -226,7 +226,7 @@ var envVarAlwaysSafe = map[string]bool{
 // envValueIsNeverSecret returns true when the env var value is
 // structurally impossible to be a credential (e.g., an absolute file
 // path). File paths can match digit-heavy regexes (Credit Card Number,
-// etc.) but are never themselves the secret — at most they point at
+// etc.) but are never themselves the secret - at most they point at
 // one.
 func envValueIsNeverSecret(value string) bool {
 	// Unix absolute path: starts with "/" and contains a "/" separator

@@ -18,7 +18,7 @@ func TestLoopbackUp_ReturnsError(t *testing.T) {
 	}
 	// On the host without CAP_NET_ADMIN, loopbackUp returns EPERM.
 	// Inside a sandbox namespace (as root), it succeeds.
-	// Either outcome is valid — we just verify it doesn't panic.
+	// Either outcome is valid - we just verify it doesn't panic.
 	err := loopbackUp()
 	if err != nil {
 		// Expected on host: EPERM because we lack CAP_NET_ADMIN.
@@ -34,7 +34,7 @@ func TestBringUpLoopback_DoesNotPanic(t *testing.T) {
 		t.Skip("linux only")
 	}
 	// bringUpLoopback uses raw netlink syscalls.
-	// On unprivileged host, returns EPERM — we just verify no panic.
+	// On unprivileged host, returns EPERM - we just verify no panic.
 	_ = bringUpLoopback()
 }
 

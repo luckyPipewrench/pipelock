@@ -93,7 +93,7 @@ func TestCaptureReplayRoundTrip(t *testing.T) {
 	candidateCfg.Internal = nil // disable SSRF checks (no DNS in tests)
 	candidateCfg.SSRF.IPAllowlist = []string{testCIDRLoopback, testCIDRIPv6}
 	candidateCfg.DLP.ScanEnv = false // no env leak scanning
-	// Candidate blocks both domains — api.example.com was previously allowed,
+	// Candidate blocks both domains - api.example.com was previously allowed,
 	// so it becomes a new_block. evil.example.com was already blocked, so it
 	// remains unchanged.
 	candidateCfg.FetchProxy.Monitoring.Blocklist = []string{

@@ -22,7 +22,7 @@ func TestToolBaseline_ResetDriftState_ClearsHashes(t *testing.T) {
 
 	tb.ResetDriftState()
 
-	// After reset, tool-a is unknown again — first insertion, no drift.
+	// After reset, tool-a is unknown again - first insertion, no drift.
 	drifted, prev := tb.CheckAndUpdate("tool-a", "hash-a-new")
 	if drifted {
 		t.Error("ResetDriftState left tool-a in hashes; expected first-insertion semantics")
@@ -186,7 +186,7 @@ func TestDetectDriftRisingEdge_ResetEffect(t *testing.T) {
 	tb.CheckAndUpdate("tool-a", "hash-a-original")
 	tb.CheckAndUpdate("tool-b", "hash-b-original")
 
-	// State 2: operator disables drift. Maps preserved — verify by
+	// State 2: operator disables drift. Maps preserved - verify by
 	// probing with a different hash; drift must still be reported.
 	if edge.Observe(false) {
 		t.Fatal("Observe(false) reported a rising edge")

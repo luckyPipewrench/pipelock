@@ -47,7 +47,7 @@ const DefaultHeadroomSize = 0.50
 // floor, and the property test pack uses Median to prove the
 // percentile-monotonicity invariant.
 //
-// No YAML or JSON tags here — this is a pure value type. The config and
+// No YAML or JSON tags here - this is a pure value type. The config and
 // persistence layers wrap it later with their own tags.
 type Budget struct {
 	// P99 is the 99th-percentile observed value across the input window.
@@ -68,7 +68,7 @@ type Budget struct {
 
 	// SampleCount is the count of samples that produced these
 	// statistics (NOT the number of samples retained after any drop or
-	// dedup pass — the BudgetStats constructor does no filtering, so
+	// dedup pass - the BudgetStats constructor does no filtering, so
 	// this equals len(window) at construction time).
 	SampleCount int
 }
@@ -78,7 +78,7 @@ type Budget struct {
 //
 // Empty input (`len(window) == 0`) returns a zero-valued Budget with
 // SampleCount = 0. Empty windows are a valid "no observations yet"
-// state, parallel to zero-opportunity in Wilson — neither a panic nor
+// state, parallel to zero-opportunity in Wilson - neither a panic nor
 // an error condition.
 //
 // Single-element input returns a Budget where P99, P95, Median, and Max
@@ -89,7 +89,7 @@ type Budget struct {
 // a sorted copy of the window. For percentile p in (0, 100], the rank
 // is ceil(p * n / 100); the value at that 1-indexed position in the
 // sorted slice is returned. Nearest-rank is deterministic, requires no
-// interpolation, and is exact for integer-valued samples — properties
+// interpolation, and is exact for integer-valued samples - properties
 // that matter for cross-deployment audit parity. The sort runs once and
 // the four percentile reads are constant-time lookups, so this is
 // O(n log n) total with no extra allocations beyond the sorted copy.
@@ -134,7 +134,7 @@ func BudgetStats(window []float64) Budget {
 // sorted (ascending) slice. p is in (0, 100]; the slice is non-empty.
 //
 // Formula: rank = ceil(p * n / 100), 1-indexed. Implemented with integer
-// arithmetic — `(p*n + 99) / 100` — to keep results deterministic
+// arithmetic - `(p*n + 99) / 100` - to keep results deterministic
 // without dragging math.Ceil and float-rounding quirks into the path.
 // The rank is clamped into [1, n] so a percentile
 // of 100 (which would otherwise round to n+1 on n-element slices via

@@ -113,7 +113,7 @@ func isCanonicalSPIFFEPath(p string) bool {
 }
 
 // IsValidTrustDomain reports whether s is a syntactically valid SPIFFE
-// trust domain — a non-empty DNS-shaped label with no scheme, slashes,
+// trust domain - a non-empty DNS-shaped label with no scheme, slashes,
 // userinfo, or port. Per SPIFFE-ID §2 the trust domain MUST be a DNS
 // name; raw IP addresses (IPv4 or IPv6) are explicitly forbidden so a
 // partner cannot impersonate a domain by claiming a numeric host. Used

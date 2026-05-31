@@ -366,7 +366,7 @@ func TestVerifyCmd_TextFullCoverageIsHonest(t *testing.T) {
 	}
 	s := out.String()
 	// Full coverage must surface manifest + enabled state AND stay honest that
-	// terminal egress is cooperative — never a bare "full" that reads as
+	// terminal egress is cooperative - never a bare "full" that reads as
 	// enforced network isolation.
 	for _, want := range []string{"Manifest present: true", "Plugin enabled:   true", "Coverage:", "full", "cooperative"} {
 		if !strings.Contains(s, want) {

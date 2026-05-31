@@ -306,7 +306,7 @@ func validateLockRootFingerprint(fp string) error {
 // invoke the redaction hook in scanRequestBody. A cross-check here
 // rejects the configuration where redaction is on but the body-scanning
 // path that hosts the hook is off, because that combination would
-// silently disable the feature — the exact footgun class the feature
+// silently disable the feature - the exact footgun class the feature
 // is meant to prevent.
 func (c *Config) validateRedaction() error {
 	if err := c.Redaction.Validate(); err != nil {
@@ -338,7 +338,7 @@ func (c *Config) validateRedaction() error {
 // YAML path the operator sees in pipelock.yaml
 // (learn.inference.floors.min_sessions, …). Keeping the validator local
 // also avoids importing inference here, mirroring the privacy package
-// layering — schema-level checks live in config; resolver semantics
+// layering - schema-level checks live in config; resolver semantics
 // live in the contract package.
 func (c *Config) validateLearn() error {
 	if c.Learn.Enabled && c.Learn.CaptureDir == "" {
@@ -407,7 +407,7 @@ func validateLearnInferenceNormalization(n LearnInferenceNormalization) error {
 // validateLearnInferenceFloors rejects negative exposure-floor counts on
 // the YAML wire layer. The fields are checked in declaration order
 // (sessions, events, windows) so a config with multiple negative values
-// always reports the first one — operators get a deterministic error
+// always reports the first one - operators get a deterministic error
 // message regardless of map ordering or future field additions.
 func validateLearnInferenceFloors(f LearnInferenceFloors) error {
 	if f.MinSessions < 0 {
@@ -426,7 +426,7 @@ func validateLearnInferenceFloors(f LearnInferenceFloors) error {
 // values are resolved here so config-load fails loud if the file is
 // missing, traversal-bearing, relative, or world/group readable. Env-var
 // references are accepted as-is and resolved at observe time. Other values
-// are accepted as literal salts (test/dev only) — production deployments
+// are accepted as literal salts (test/dev only) - production deployments
 // should always use file: or ${VAR} so the salt never lives in config YAML.
 func validateLearnSaltSource(src string) error {
 	if src == "" {
@@ -531,7 +531,7 @@ func (c *Config) validateLogging() error {
 
 func (c *Config) validateDLP() error {
 	// Reject unsupported DLP action fields. Request-side DLP redaction (strip)
-	// is not implemented — DLP matches follow the transport-level action
+	// is not implemented - DLP matches follow the transport-level action
 	// (request_body_scanning.action, mcp_input_scanning.action, or enforce mode).
 	// These fields exist on the struct so YAML doesn't silently drop them;
 	// validation rejects non-empty values with an explicit error.
@@ -713,7 +713,7 @@ func (c *Config) validateMCPInputScanning() error {
 	if c.MCPInputScanning.Enabled {
 		switch c.MCPInputScanning.Action {
 		case ActionWarn, ActionBlock:
-			// valid (ask not supported for input scanning — no terminal interaction on request path)
+			// valid (ask not supported for input scanning - no terminal interaction on request path)
 		default:
 			return fmt.Errorf("invalid mcp_input_scanning action %q: must be warn or block", c.MCPInputScanning.Action)
 		}
@@ -1432,7 +1432,7 @@ func (c *Config) validateToolChainDetection() error {
 	// Keep these label strings in lockstep with the chains package
 	// (internal/mcp/chains/classify.go: SensitivityUntrustedSource,
 	// SensitivitySensitiveSource, SensitivityExternalSink). The
-	// duplication is deliberate — importing chains from config would
+	// duplication is deliberate - importing chains from config would
 	// create a cycle since chains imports config for ToolChainDetection.
 	for label, patterns := range c.ToolChainDetection.SensitivityLabels {
 		switch label {
@@ -1689,7 +1689,7 @@ func (c *Config) validateSSRF() error {
 		if err != nil {
 			return fmt.Errorf("invalid ssrf.ip_allowlist CIDR %q: %w", cidr, err)
 		}
-		// Reject catch-all prefixes (/0) — they disable SSRF protection entirely.
+		// Reject catch-all prefixes (/0) - they disable SSRF protection entirely.
 		ones, _ := ipNet.Mask.Size()
 		if ones == 0 {
 			return fmt.Errorf("ssrf.ip_allowlist CIDR %q is a catch-all (/0) and would disable SSRF protection", cidr)
@@ -1751,7 +1751,7 @@ func (c *Config) validateRules() error {
 		}
 		c.Rules.Disabled[i] = d
 		if strings.Contains(d, ":") {
-			// Namespaced ID like "community:rule-name" — validate structure.
+			// Namespaced ID like "community:rule-name" - validate structure.
 			parts := strings.SplitN(d, ":", 2)
 			if parts[0] == "" || parts[1] == "" {
 				return fmt.Errorf("rules: disabled[%d] %q must be bundle:rule or a glob pattern", i, d)
@@ -1759,7 +1759,7 @@ func (c *Config) validateRules() error {
 			continue
 		}
 		if strings.ContainsAny(d, "*?") {
-			// Glob pattern like "community:*" or "test-*" — valid.
+			// Glob pattern like "community:*" or "test-*" - valid.
 			continue
 		}
 		return fmt.Errorf("rules: disabled[%d] %q must contain ':' (namespaced) or be a glob pattern with * or ?", i, d)
@@ -1869,7 +1869,7 @@ func (c *Config) validateScanAPI() error {
 }
 
 // validateListenWarnings emits advisories when the listen address is not
-// loopback. It returns no error because the condition is advisory only —
+// loopback. It returns no error because the condition is advisory only -
 // the proxy startup also logs non-loopback warnings via the audit logger
 // (proxy.go Start); these warnings are duplicative but surface at config
 // load time so operators see them during pipelock diag verify-install.
@@ -2312,7 +2312,7 @@ const (
 
 // DefaultEnvelopeSignedComponents returns the RFC 9421 component set
 // pipelock declares when sign: true and signed_components is empty.
-// Callers must not mutate the returned slice — it is returned by copy so
+// Callers must not mutate the returned slice - it is returned by copy so
 // each caller gets its own backing array.
 func DefaultEnvelopeSignedComponents() []string {
 	return []string{"@method", "@target-uri", "content-digest", "pipelock-mediation"}
@@ -2347,7 +2347,7 @@ func (c *Config) validateMediationEnvelope() error {
 	}
 
 	if !me.Sign {
-		// Signing disabled — normalization is enough; skip the
+		// Signing disabled - normalization is enough; skip the
 		// keyfile load that's only meaningful when signing is on.
 		return c.validateInboundMediationEnvelopeTrust()
 	}
@@ -2361,7 +2361,7 @@ func (c *Config) validateMediationEnvelope() error {
 	// Load the key once at validate time so the pipelock binary refuses
 	// to start against an unreadable or malformed key rather than
 	// spawning a signer that cannot sign. The key material itself is
-	// discarded — runtime wiring re-reads the file on every reload so
+	// discarded - runtime wiring re-reads the file on every reload so
 	// operators can rotate without touching the config file.
 	if _, err := signing.LoadPrivateKeyFile(me.SigningKeyPath); err != nil {
 		return fmt.Errorf("mediation_envelope.signing_key_path %q: %w", me.SigningKeyPath, err)
@@ -2417,7 +2417,7 @@ func (c *Config) validateInboundMediationEnvelopeTrust() error {
 	if verify.ReplayCache.MaxEntries < 0 {
 		return fmt.Errorf("mediation_envelope.verify_inbound.replay_cache.max_entries must be >= 0")
 	}
-	// Signer expiry must not exceed the replay window — otherwise a
+	// Signer expiry must not exceed the replay window - otherwise a
 	// captured signature stays valid after its nonce is evicted from
 	// the cache, defeating replay protection. When signature_expires
 	// is empty, the runtime defaults the signer's lifetime to window
@@ -2446,7 +2446,7 @@ func mediationEnvelopeReplayWindow(raw string) (time.Duration, error) {
 
 // mediationEnvelopeSignatureExpires parses the operator-supplied signer
 // lifetime. Empty falls back to the supplied window so the signer and
-// verifier agree by default — the validator then accepts the value by
+// verifier agree by default - the validator then accepts the value by
 // construction (window <= window). Operators who set an explicit value
 // must keep it <= window or validation rejects.
 func mediationEnvelopeSignatureExpires(raw string, window time.Duration) (time.Duration, error) {
@@ -2530,7 +2530,7 @@ func validatePathGlobs(patterns []string, label string) error {
 // validateMediaPolicy checks media_policy settings for consistency.
 // Runs on every Load() and hot reload. Validation is deliberately strict on
 // explicit values but permissive on unset/default (nil bool, zero int, empty
-// slice) — Defaults() and the getters handle those cases so operators who
+// slice) - Defaults() and the getters handle those cases so operators who
 // partially configure don't hit spurious errors.
 //
 // Structural validation runs regardless of whether the master switch is
@@ -2546,7 +2546,7 @@ func (c *Config) validateMediaPolicy() error {
 
 	// AllowedImageTypes must contain only image/* media types. Empty list
 	// falls through to DefaultAllowedImageTypes via the getter. SVG is
-	// rejected here because it is active content, not a raster image —
+	// rejected here because it is active content, not a raster image -
 	// the browser shield pipeline handles SVG separately.
 	//
 	// Canonicalization uses the same helper that EffectiveAllowedImageTypes
@@ -2629,7 +2629,7 @@ func validateEscalationActions(level string, a *EscalationActions) error {
 func validateEscalationMonotonic(levels *EscalationLevels) error {
 	// Compare elevated vs high: high must be >= elevated on every dimension.
 	// When the lower level has block_all=true it already denies all traffic,
-	// so per-action upgrades at the higher level are irrelevant — skip the
+	// so per-action upgrades at the higher level are irrelevant - skip the
 	// strength comparison to avoid false monotonic violations.
 	elevatedBlockAll := levels.Elevated.BlockAll != nil && *levels.Elevated.BlockAll
 	if !elevatedBlockAll {

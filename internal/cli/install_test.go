@@ -76,7 +76,7 @@ func TestInstall_RejectsNonRegularDest(t *testing.T) {
 
 // TestInstall_StatErrorSurfaces ensures the install subcommand returns
 // the Lstat error when a destination path cannot be stat'd for reasons
-// other than "does not exist" — for example, when the parent path is a
+// other than "does not exist" - for example, when the parent path is a
 // regular file so resolving the destination hits ENOTDIR. Without this
 // branch, install would silently swallow a meaningful filesystem
 // signal.
@@ -89,7 +89,7 @@ func TestInstall_StatErrorSurfaces(t *testing.T) {
 		t.Fatalf("seed blocker file: %v", err)
 	}
 	// Destination sits under a path whose parent component is a regular
-	// file — Lstat should return ENOTDIR rather than ENOENT.
+	// file - Lstat should return ENOTDIR rather than ENOENT.
 	dest := filepath.Join(parentAsFile, "pipelock")
 
 	cmd := installCmd()
@@ -138,7 +138,7 @@ func TestInstall_HappyPath(t *testing.T) {
 	}
 
 	// Re-running install over the now-existing regular file must
-	// succeed (idempotent update flow — an operator upgrading a sidecar
+	// succeed (idempotent update flow - an operator upgrading a sidecar
 	// expects to overwrite the prior binary without needing to rm it
 	// first).
 	cmd2 := installCmd()

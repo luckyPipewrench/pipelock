@@ -127,7 +127,7 @@ func evaluateSubmitProfileGate(cfg *config.Config, r *http.Request) submitProfil
 	// cannot be enforced before reading.
 	bodyCap := effectiveSubmitBodyCap(cfg)
 	if bodyCap <= 0 {
-		// Should not happen — validateReverseProxySubmit requires positive.
+		// Should not happen - validateReverseProxySubmit requires positive.
 		// Defense in depth: fail closed if the operator's config slipped past.
 		return submitProfileDeny(
 			http.StatusInternalServerError,
@@ -182,12 +182,12 @@ func effectiveSubmitBodyCap(cfg *config.Config) int64 {
 //
 // Patterns rejected:
 //
-//   - %2e or %2E (encoded dot — would let "/%2e%2e/foo" canonicalize to "/foo")
-//   - %2f or %2F (encoded slash — would let "/api%2fsecret" appear as one segment)
-//   - %5c or %5C (encoded backslash — Windows path traversal in some parsers)
-//   - %25 (encoded percent — blocks double-encoded traversal like %252e%252e)
-//   - ; (semicolon path parameter — RFC 3986 leftover that some routers strip)
-//   - %3b or %3B (encoded semicolon — would decode to ; after the gate
+//   - %2e or %2E (encoded dot - would let "/%2e%2e/foo" canonicalize to "/foo")
+//   - %2f or %2F (encoded slash - would let "/api%2fsecret" appear as one segment)
+//   - %5c or %5C (encoded backslash - Windows path traversal in some parsers)
+//   - %25 (encoded percent - blocks double-encoded traversal like %252e%252e)
+//   - ; (semicolon path parameter - RFC 3986 leftover that some routers strip)
+//   - %3b or %3B (encoded semicolon - would decode to ; after the gate
 //     runs, defeating the literal-semicolon rejection above)
 func submitProfileRawPathRejection(rawPath string) (string, bool) {
 	upper := strings.ToUpper(rawPath)

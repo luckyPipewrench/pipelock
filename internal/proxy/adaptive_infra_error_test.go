@@ -40,7 +40,7 @@ func threatResult() scanner.Result {
 
 // TestRecordSessionActivity_InfrastructureError_NoSignal verifies that a single
 // infrastructure-error result produces no adaptive-score increment. This is
-// the core fix — prior to the change, the block fell through the !result.Allowed
+// the core fix - prior to the change, the block fell through the !result.Allowed
 // branch and recorded SignalBlock (+3.0).
 func TestRecordSessionActivity_InfrastructureError_NoSignal(t *testing.T) {
 	cfg := adaptiveConfig()
@@ -132,7 +132,7 @@ func TestRecordSessionActivity_RealSSRF_StillSignalBlock(t *testing.T) {
 	before := rec.ThreatScore()
 
 	// Two real SSRF blocks would have pushed into airlock hard tier pre-fix.
-	// Post-fix they must STILL do that (this is the invariant — the fix must
+	// Post-fix they must STILL do that (this is the invariant - the fix must
 	// not weaken detection of genuinely adversarial behavior).
 	p.recordSessionActivity(adaptiveSessionKeyLoopback, agentAnonymous, "evil.internal",
 		"req-ssrf-1", threatResult(), cfg, logger, true)
@@ -213,7 +213,7 @@ func TestHasFindingFormula_InfrastructureError(t *testing.T) {
 
 // TestHasFindingFormula_RealThreat verifies the same formula still flips
 // for real threats. This is the regression guard paired with the neutrality
-// test above — if someone weakens IsAdaptiveNeutral() to cover ClassThreat,
+// test above - if someone weakens IsAdaptiveNeutral() to cover ClassThreat,
 // this test fails loudly.
 func TestHasFindingFormula_RealThreat(t *testing.T) {
 	r := threatResult()
@@ -265,7 +265,7 @@ func TestAdaptiveConfigEscalationThreshold(t *testing.T) {
 // TestRecordSessionActivity_InfrastructureError_NoDecay verifies that
 // infrastructure errors don't trigger clean-decay either. A session with an
 // elevated threat score must not have that score reduced by a DNS wobble.
-// Score-neutral means exactly that — no bump, no decay.
+// Score-neutral means exactly that - no bump, no decay.
 func TestRecordSessionActivity_InfrastructureError_NoDecay(t *testing.T) {
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()

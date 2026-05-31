@@ -53,7 +53,7 @@ func (sr *StdioReader) ReadMessage() ([]byte, error) {
 		if len(line) == 0 {
 			continue
 		}
-		// Return a copy — bufio.Scanner reuses the backing array.
+		// Return a copy - bufio.Scanner reuses the backing array.
 		msg := make([]byte, len(line))
 		copy(msg, line)
 		return msg, nil

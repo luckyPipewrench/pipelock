@@ -395,7 +395,7 @@ func TestStripPNG_NoMetadataIsIdentical(t *testing.T) {
 
 // TestStripPNG_TruncatesTrailingBytesAfterIEND mirrors the JPEG EOI handling:
 // junk after the canonical IEND marker is truncated, not blocked. Same
-// rationale — forwarding the trailing bytes would leave a parser-differential
+// rationale - forwarding the trailing bytes would leave a parser-differential
 // surface and carry any hidden trailing payload past the media-policy scan.
 func TestStripPNG_TruncatesTrailingBytesAfterIEND(t *testing.T) {
 	t.Parallel()

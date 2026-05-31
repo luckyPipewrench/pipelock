@@ -377,7 +377,7 @@ func TestBuildExplanation_NoneTierAttachesEvidence(t *testing.T) {
 		Kind: "anomaly", Target: "new.example.com", Detail: "domain burst",
 		Severity: "warn", Score: 2.0,
 	})
-	// Do NOT escalate — stay at none.
+	// Do NOT escalate - stay at none.
 
 	snap, found := sm.AdminSnapshotByKey(explainIdentityKey)
 	if !found {

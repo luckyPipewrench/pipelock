@@ -26,7 +26,7 @@ var DLPValidators = map[string]func(string) bool{
 // for non-card digit strings. Issuer validation is done in Go code instead of
 // the regex so it's maintainable and testable without 8-file regex propagation.
 func validateLuhn(s string) bool {
-	// Extract digits only — cards can be space/dash separated.
+	// Extract digits only - cards can be space/dash separated.
 	var digits [19]byte // stack-allocated, max 19 digits
 	n := 0
 	for i := 0; i < len(s); i++ {
@@ -102,11 +102,11 @@ func validCardIssuer(digits []byte, n int) bool {
 }
 
 // validateMod97 implements ISO 7064 mod-97 validation for IBAN numbers.
-// Uses iterative modular arithmetic — no math/big needed. Rearranges the
+// Uses iterative modular arithmetic - no math/big needed. Rearranges the
 // IBAN (move first 4 chars to end), converts letters to numbers (A=10..Z=35),
 // and checks that the result mod 97 equals 1. Eliminates ~99% of false positives.
 func validateMod97(s string) bool {
-	// Strip spaces and dashes, uppercase — IBANs are often formatted with
+	// Strip spaces and dashes, uppercase - IBANs are often formatted with
 	// spaces every 4 characters (e.g. "GB29 NWBK 6016 1331 9268 19").
 	cleaned := strings.Map(func(r rune) rune {
 		if r == ' ' || r == '-' {
@@ -208,7 +208,7 @@ func validateABA(s string) bool {
 // WIF keys have version byte 0x80 (mainnet) with 32-byte (uncompressed)
 // or 33-byte (compressed, ends with 0x01 flag) payloads. Eliminates
 // false positives from conversation text that happens to match the
-// base58 character class — invalid checksums have a 1-in-2^32 chance
+// base58 character class - invalid checksums have a 1-in-2^32 chance
 // of passing.
 func validateWIF(s string) bool {
 	payload, version, err := addressprotect.Base58CheckDecode(s)

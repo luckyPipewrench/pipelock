@@ -28,7 +28,7 @@ const learnNamespace = "pipelock_learn"
 type ActionClass = receipt.ActionType
 
 // Canonical ActionClass values per the action-class taxonomy.
-// Wire form (snake_case lowercase verb) — must agree with the recorder
+// Wire form (snake_case lowercase verb) - must agree with the recorder
 // emitter's wire output byte-for-byte. Add a new constant here when
 // the taxonomy gains a verb; never widen the closed set silently.
 const (

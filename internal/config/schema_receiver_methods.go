@@ -249,7 +249,7 @@ func (m *MediaPolicy) EffectiveMaxImageBytes() int64 {
 // Entries are canonicalized (lowercased, whitespace-trimmed, parameters
 // stripped) so validation and runtime matching can never disagree on
 // ambiguous YAML forms like " image/png " or "image/jpeg; charset=binary".
-// Canonicalizing at read time — not at Load() — keeps Config free of
+// Canonicalizing at read time - not at Load() - keeps Config free of
 // side-effect mutation and lets hot reload pick up whatever the operator
 // changed without re-canonicalizing the stored struct.
 func (m *MediaPolicy) EffectiveAllowedImageTypes() []string {

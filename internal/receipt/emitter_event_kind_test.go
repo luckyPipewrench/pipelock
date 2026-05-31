@@ -114,7 +114,7 @@ func TestEmit_StampsEventKind_GETIsRead(t *testing.T) {
 }
 
 // TestEmitTranscriptRoot_StampsEventKind verifies that transcript_root entries
-// stamp event_kind="transcript_root" — a fixed envelope label that signals to
+// stamp event_kind="transcript_root" - a fixed envelope label that signals to
 // chain-walkers and downstream consumers that this row is the chain seal, not
 // a per-action receipt.
 func TestEmitTranscriptRoot_StampsEventKind(t *testing.T) {

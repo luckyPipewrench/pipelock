@@ -134,7 +134,7 @@ func RunHTTPProxy(
 			}
 		}
 
-		// Input scanning — call ScanRequest and CheckRequest directly.
+		// Input scanning - call ScanRequest and CheckRequest directly.
 		// The sequential (non-concurrent) architecture means no channel needed.
 		decision := scanHTTPInputDecision(msg, safeLogW, invocationKey, invocationKey, fwdOpts)
 		if decision.Blocked != nil {
@@ -192,7 +192,7 @@ func RunHTTPProxy(
 		if err != nil {
 			// Log full upstream error details to stderr for debugging.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
-			// Send sanitized error to client — don't include upstream body content
+			// Send sanitized error to client - don't include upstream body content
 			// which could contain prompt injection payloads.
 			rpcID := frame.ID
 			errResp := upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed"))

@@ -330,7 +330,7 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Internal == nil {
 		c.Internal = []string{
-			"0.0.0.0/8",      // "this" network — services listening on all interfaces
+			"0.0.0.0/8",      // "this" network - services listening on all interfaces
 			"127.0.0.0/8",    // loopback
 			"10.0.0.0/8",     // RFC 1918 private
 			"172.16.0.0/12",  // RFC 1918 private
@@ -676,7 +676,7 @@ func (c *Config) ApplyDefaults() {
 		}
 	}
 
-	// Flight recorder defaults — applied when section is present.
+	// Flight recorder defaults - applied when section is present.
 	// Redact and SignCheckpoints default to true via applySecurityDefaults.
 	if c.FlightRecorder.CheckpointInterval <= 0 {
 		c.FlightRecorder.CheckpointInterval = 1000 // entries between signed checkpoints

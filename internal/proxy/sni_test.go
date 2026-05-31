@@ -571,7 +571,7 @@ func TestVerifySNI_Timeout(t *testing.T) {
 	defer func() { _ = clientConn.Close() }()
 	defer func() { _ = serverConn.Close() }()
 
-	// Don't write anything — let it timeout
+	// Don't write anything - let it timeout
 	reader := bufio.NewReaderSize(clientConn, sniPeekSize)
 
 	start := time.Now()

@@ -73,7 +73,7 @@ func TestAssess_EndToEnd_Licensed(t *testing.T) {
 		t.Fatalf("runAssessFinalize: %v", err)
 	}
 
-	// 6. Verify — exit code 0 (integrity + authenticity).
+	// 6. Verify - exit code 0 (integrity + authenticity).
 	exitCode, err := runAssessVerify(runDir, agentName, keystoreDir)
 	if err != nil {
 		t.Fatalf("runAssessVerify: unexpected error: %v", err)
@@ -191,7 +191,7 @@ func TestAssess_EndToEnd_Unlicensed(t *testing.T) {
 		t.Fatalf("runAssessFinalize: %v", err)
 	}
 
-	// 5. Verify — exit code 3 (integrity verified, unsigned).
+	// 5. Verify - exit code 3 (integrity verified, unsigned).
 	exitCode, err := runAssessVerify(runDir, "", "")
 	// runAssessVerify returns (3, nil) for unsigned-but-integrity-OK.
 	if err != nil {
@@ -367,7 +367,7 @@ func TestAssess_EndToEnd_SkippedPrimitive(t *testing.T) {
 		// manifest.AllowPartial was already asserted above; the B cap reason
 		// is recorded in CapReasons (Assessment-level only, not in Summary).
 		// The Summary.GradeCap is only non-empty when the cap forced a lower
-		// grade than the raw score — if the raw score is already B or worse,
+		// grade than the raw score - if the raw score is already B or worse,
 		// GradeCap stays empty. Both cases are valid; we only assert the grade.
 	})
 }

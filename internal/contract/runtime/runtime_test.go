@@ -277,7 +277,7 @@ func TestEvaluateHTTP_ContractAllowAndDenyDefault(t *testing.T) {
 func TestEvaluateHTTP_DefaultDenyOnceContractHasEnforceRule(t *testing.T) {
 	// A contract with at least one enforce rule claims jurisdiction. Traffic
 	// to a host the contract does not enumerate is denied by default in live
-	// mode — without this the "lock" is just per-host policy refinement and
+	// mode - without this the "lock" is just per-host policy refinement and
 	// any new domain (including exfil) falls through to the scanner.
 	resolved := resolvedContractWithRules(enforceRule("r-chat", "chat.example.com", "/v1/chat", http.MethodPost))
 

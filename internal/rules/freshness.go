@@ -73,7 +73,7 @@ func CheckFreshness(b *Bundle, state *FreshnessState, now time.Time, allowStale 
 						b.Name, b.ExpiresAt),
 				}
 			}
-			// Allow stale with warning — caller should emit a loud warning.
+			// Allow stale with warning - caller should emit a loud warning.
 			return FreshnessResult{
 				OK:      true,
 				Expired: true,
@@ -99,7 +99,7 @@ func RecordVersion(state *FreshnessState, tier, name string, version uint64) {
 
 // LoadFreshnessState reads the freshness state from the rules directory.
 // Returns an empty state if the file doesn't exist (first run).
-// Returns an error if the file exists but is unreadable or corrupt — this
+// Returns an error if the file exists but is unreadable or corrupt - this
 // fails closed to prevent an attacker from bypassing rollback protection
 // by corrupting the state file. Delete the file manually to reset.
 func LoadFreshnessState(rulesDir string) (*FreshnessState, error) {

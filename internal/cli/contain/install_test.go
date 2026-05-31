@@ -874,7 +874,7 @@ func TestRenderLaunchWrapper_HasExpectedEnv(t *testing.T) {
 			t.Errorf("plk-launch body missing %q", s)
 		}
 	}
-	// plk-launch must never call sudo as a command — the per-tool wrapper
+	// plk-launch must never call sudo as a command - the per-tool wrapper
 	// does the outer sudo. We allow the word "sudo" to appear inside
 	// comments (describing why we set our own PATH instead of inheriting
 	// sudo's secure_path), but NOT as an actual command invocation.

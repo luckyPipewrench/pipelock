@@ -578,7 +578,7 @@ func TestEnvelope_ReloadInstallsFreshEmitter(t *testing.T) {
 	if newEmitter == origEmitter {
 		t.Fatal("expected fresh emitter instance after reload (key rotation path requires this)")
 	}
-	// And the fresh emitter should reflect the reloaded config — its
+	// And the fresh emitter should reflect the reloaded config - its
 	// build produces a different policy hash than the pre-reload one.
 	wantPH := envelope.PolicyHashFromHex(reloadCfg.CanonicalPolicyHash())
 	got, err := newEmitter.Build(envelope.BuildOpts{

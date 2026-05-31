@@ -67,7 +67,7 @@ const (
 
 // Redactor manages per-request redaction state: sequence numbering per class
 // and value-level deduplication. A fresh Redactor must be created per request.
-// Across requests, placeholder numbers restart from 1 per class — no
+// Across requests, placeholder numbers restart from 1 per class - no
 // cross-request correlation is exposed upstream (redaction-v1 spec §5.3).
 //
 // Not goroutine-safe. DLP scans a request body on a single goroutine and the
@@ -142,7 +142,7 @@ func safePlaceholderClass(c Class) bool {
 	return true
 }
 
-// Total returns the count of unique redactions applied so far — every dedup
+// Total returns the count of unique redactions applied so far - every dedup
 // hit counts once, regardless of how many times the same value appeared.
 func (r *Redactor) Total() int {
 	return r.total

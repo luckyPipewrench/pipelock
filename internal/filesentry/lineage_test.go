@@ -165,7 +165,7 @@ func TestLineage_HasFileOpen_ExitedProcess(t *testing.T) {
 		t.Skip("linux only")
 	}
 	l := NewLineage()
-	// Track a PID that doesn't exist — HasFileOpen should handle gracefully.
+	// Track a PID that doesn't exist - HasFileOpen should handle gracefully.
 	l.TrackPID(99999999)
 	if l.HasFileOpen("/tmp/nonexistent") {
 		t.Error("expected false for exited process")
@@ -237,10 +237,10 @@ func TestIsDescendant_CycleProtection(t *testing.T) {
 		t.Skip("linux only")
 	}
 	l := NewLineage()
-	// Track PID 1 — walking up from a random high PID should terminate
+	// Track PID 1 - walking up from a random high PID should terminate
 	// without infinite loop (cycle protection via visited map).
 	l.TrackPID(1)
-	// Use a PID that doesn't exist — parentPID will fail, loop terminates.
+	// Use a PID that doesn't exist - parentPID will fail, loop terminates.
 	if l.IsDescendant(99999998) {
 		t.Error("nonexistent PID should not be a descendant of init")
 	}

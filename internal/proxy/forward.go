@@ -214,7 +214,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// Audit/warn mode: header DLP found something but did not block.
 		// Record a near-miss signal. Blocked findings go through
 		// recordSessionActivity(allowed=false) which fires SignalBlock.
-		// Skip signal recording for adaptive-exempt destinations — auth
+		// Skip signal recording for adaptive-exempt destinations - auth
 		// headers to trusted services are expected and should not feed
 		// escalation. Uses exempt_domains (trust), not api_allowlist (reachability).
 		if !isAdaptiveExempt(host, cfg.AdaptiveEnforcement.ExemptDomains) {
@@ -1068,7 +1068,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Request body DLP scanning: read and scan body before Clone so the
 	// cloned request gets the re-wrapped buffered bytes. The scanned
 	// bytes are also hoisted out of the scanner block so the envelope
-	// signer below can pass them as content-digest input — otherwise
+	// signer below can pass them as content-digest input - otherwise
 	// the signer would have to re-drain req.Body itself and the caller
 	// would lose deterministic bookkeeping about byte counts.
 	var forwardBodyBytes []byte
@@ -1340,7 +1340,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	if forwardHeaderHadFinding && cfg.AdaptiveEnforcement.Enabled && !isAdaptiveExempt(r.URL.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
 		// Record adaptive signal for header DLP findings.
 		// Blocked → SignalBlock (high confidence); warn-mode → SignalNearMiss.
-		// Skip for adaptive-exempt destinations — auth headers to trusted
+		// Skip for adaptive-exempt destinations - auth headers to trusted
 		// services are expected and should not feed escalation.
 		headerSignal := session.SignalNearMiss
 		if forwardHeaderBlocked {
@@ -1654,7 +1654,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Size limit: tighter of max_response_mb and remaining byte budget.
 	// configMaxBytes and budgetLimited are kept distinct so the buffered scan
 	// path can tell the two reasons apart. Exceeding the SCAN cap means we
-	// could not fully inspect the response — fail closed (block) like the TLS
+	// could not fully inspect the response - fail closed (block) like the TLS
 	// intercept and reverse proxy paths. Exceeding the data BUDGET is a
 	// deliberate, separately-logged truncation policy and must not turn into a
 	// 403. See the buffered-scan over-limit handling below.
@@ -1894,10 +1894,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Headers are copied AFTER the scan decision so blocked responses don't
 	// leak upstream headers (Set-Cookie, Content-Encoding, etc.) to the client.
 	// Skip for response-exempt domains. Use the final response origin after
-	// redirects — an exempt host that 302s to a non-exempt host must be scanned.
+	// redirects - an exempt host that 302s to a non-exempt host must be scanned.
 	// Buffer the response when ANY of response scanning, browser shield, or
 	// media policy is enabled. Media policy cannot be gated behind the
-	// scanning flag — an operator who disables response scanning for
+	// scanning flag - an operator who disables response scanning for
 	// performance would otherwise stream raw media past the policy and
 	// lose image metadata stripping, audio/video blocks, and exposure
 	// events.
@@ -1906,7 +1906,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// authoritative path for text/event-stream, and the exclusion here
 	// is defense-in-depth that protects SSE TTFB if future refactors
 	// reorder the blocks. MediaPolicy/BrowserShield have no work to do on
-	// text/event-stream payloads — both target images/audio/video/HTML
+	// text/event-stream payloads - both target images/audio/video/HTML
 	// content types.
 	if !IsSSEContentType(resp.Header.Get("Content-Type")) &&
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled()) {
@@ -1942,7 +1942,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				respBody = respBody[:maxBytes]
 			} else {
 				// Could not fully inspect the response within the configured
-				// scan cap — block fail-closed, matching intercept/reverse.
+				// scan cap - block fail-closed, matching intercept/reverse.
 				p.logger.LogBlocked(actx, "response_scan", "response too large for scanning")
 				p.metrics.RecordBlocked(fwdRespHost, "response_scan", time.Since(start), agentLabel)
 				writeBlockedError(w,
@@ -1989,7 +1989,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			respBody = mediaVerdict.Body
 			resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(respBody)))
 			// Clear body-derived validators. Content-MD5 describes a
-			// hash of the upstream bytes — stale after metadata
+			// hash of the upstream bytes - stale after metadata
 			// stripping, and a validating client or intermediary
 			// will reject the response.
 			resp.Header.Del("ETag")
@@ -2132,7 +2132,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				reason := fmt.Sprintf("response injection: %s", strings.Join(patternNames, ", "))
 
 				// Adaptive enforcement: upgrade the response action before the switch.
-				// Exempt domains skip upgrade — operator's trust decision overrides escalation.
+				// Exempt domains skip upgrade - operator's trust decision overrides escalation.
 				originalAction := action
 				if forwardRec != nil && !fwdRespExempt {
 					action = decide.UpgradeAction(action, forwardRec.EscalationLevel(), &cfg.AdaptiveEnforcement)
@@ -2156,7 +2156,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
-					// Exempt domains skip scoring — findings are logged but don't escalate.
+					// Exempt domains skip scoring - findings are logged but don't escalate.
 					if !fwdRespExempt {
 						if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
 							sessionKey := clientIP
@@ -2195,7 +2195,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		} // end ResponseScanningEnabled
 
-		// Scan passed — now copy upstream headers and write response.
+		// Scan passed - now copy upstream headers and write response.
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		n, _ := w.Write(respBody)
@@ -2239,7 +2239,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// No response scanning: copy headers and stream directly for lower latency.
 	// This branch runs only when response scanning, Browser Shield, and media
-	// policy are ALL disabled, so there is no scan to fail closed on — maxBytes
+	// policy are ALL disabled, so there is no scan to fail closed on - maxBytes
 	// here acts purely as a streaming data-budget cap, and an over-cap body is
 	// truncated and reported via the budget_truncated anomaly below. (Whether
 	// max_response_mb should remain a silent streaming cap on this no-scan path

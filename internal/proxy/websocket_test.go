@@ -887,7 +887,7 @@ func TestWSProxyInjection_ExemptDomain(t *testing.T) {
 	backendAddr, backendCleanup := wsInjectionServer(t)
 	defer backendCleanup()
 
-	// The backend addr is "127.0.0.1:PORT" — exempt 127.0.0.1.
+	// The backend addr is "127.0.0.1:PORT" - exempt 127.0.0.1.
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
 		cfg.ResponseScanning.Enabled = true
 		cfg.ResponseScanning.Action = config.ActionBlock
@@ -2025,8 +2025,8 @@ func TestWSProxy_CrossMessageDLP_ThreeWaySplit(t *testing.T) {
 	// Anthropic DLP pattern requires sk-ant- + 10+ alphanumeric chars.
 	// Part2 must have <10 chars so tail("sk-ant-")+part2 doesn't match.
 	parts := []string{
-		"sk-ant-",                    // 7 chars — no DLP match alone
-		"IOSFOD",                     // 6 chars — tail+this = "sk-ant-IOSFOD" (6 after prefix, <10)
+		"sk-ant-",                    // 7 chars - no DLP match alone
+		"IOSFOD",                     // 6 chars - tail+this = "sk-ant-IOSFOD" (6 after prefix, <10)
 		"NN7EXAMPLE1234567890abcdef", // completes key in tail+this
 	}
 
@@ -2368,7 +2368,7 @@ func TestWSProxyWSSScheme(t *testing.T) {
 	conn, _, _, err := ws.Dialer{Extensions: nil}.Dial(ctx, wsURL)
 	if err != nil {
 		// Expected: upstream dial fails because echo server isn't TLS.
-		// This is fine — the wss branch was exercised before the dial.
+		// This is fine - the wss branch was exercised before the dial.
 		return
 	}
 	defer conn.Close() //nolint:errcheck // test
@@ -2708,7 +2708,7 @@ func TestWSProxyInjectionStrip_ServerSide(t *testing.T) {
 	// we should get a response (transformed) or a close (block fallback).
 	msg, _, readErr := wsutil.ReadServerData(conn)
 	if readErr != nil {
-		// Block fallback is fine — strip may not always work.
+		// Block fallback is fine - strip may not always work.
 		return
 	}
 	// If we got a message, it should be the stripped version.
@@ -2963,7 +2963,7 @@ func TestWSProxyAPIKeyHeader(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Proxy coverage hardening — transport integration tests for features already
+// Proxy coverage hardening - transport integration tests for features already
 // unit-tested in their own packages. These prove the WS proxy wiring works.
 // ---------------------------------------------------------------------------
 
@@ -3103,7 +3103,7 @@ func TestWSProxyCEEEntropyBlocked(t *testing.T) {
 	if blockedAt < 0 {
 		t.Fatal("expected CEE to block after entropy budget exceeded, but all messages passed")
 	}
-	// Must not block on the first message — proves accumulation, not single-frame blocking.
+	// Must not block on the first message - proves accumulation, not single-frame blocking.
 	if blockedAt == 0 {
 		t.Fatalf("CEE blocked on first message (budget 100 bits should require multiple frames)")
 	}
@@ -3112,7 +3112,7 @@ func TestWSProxyCEEEntropyBlocked(t *testing.T) {
 // TestWSProxyInjectionStrip verifies that the response scanning strip action
 // works through the WS proxy (websocket.go:766-778). The injection server
 // sends a payload that matches the primary regex pass, producing a non-empty
-// TransformedContent — so the strip-succeeded path is exercised. The test
+// TransformedContent - so the strip-succeeded path is exercised. The test
 // asserts strip actually succeeds (connection stays open, redaction marker
 // present) rather than accepting the block fallback.
 func TestWSProxyInjectionStrip(t *testing.T) {
@@ -3424,7 +3424,7 @@ func TestWSRelay_KillSwitch_ClientToUpstream(t *testing.T) {
 	// Activate kill switch mid-stream.
 	ks.SetAPI(true)
 
-	// Send another message — the relay should close the connection.
+	// Send another message - the relay should close the connection.
 	_ = wsutil.WriteClientMessage(conn, ws.OpText, []byte("after-ks"))
 
 	// Set a read deadline to prevent CI from hanging if a regression keeps the
@@ -3466,7 +3466,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 			_ = wsutil.WriteServerMessage(srvConn, ws.OpText, []byte(testWSHello))
 			// Wait for the client to signal that the kill switch is active.
 			_, _, _ = wsutil.ReadClientData(srvConn)
-			// Send another frame — the relay should block this due to kill switch.
+			// Send another frame - the relay should block this due to kill switch.
 			_ = wsutil.WriteServerMessage(srvConn, ws.OpText, []byte("after-ks"))
 		}),
 		ReadHeaderTimeout: 15 * time.Second, // generous for CI under load
@@ -3495,7 +3495,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	// History:
 	//   * 15s (original): safe but hit the proxy's max-connection-time
 	//     ceiling on other tests.
-	//   * 1s: too aggressive — initial-frame delivery under GitHub
+	//   * 1s: too aggressive - initial-frame delivery under GitHub
 	//     Actions load can exceed 1s, turning the relay's first read
 	//     deadline into a false timeout that closed the client with
 	//     1001 before testWSHello was ever forwarded.
@@ -3586,7 +3586,7 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	// here rather than limping along until idle fires.
 	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 
-	// Read until closed — relay should terminate due to kill switch.
+	// Read until closed - relay should terminate due to kill switch.
 	ksStart := time.Now()
 	for {
 		_, _, loopErr := wsutil.ReadServerData(conn)

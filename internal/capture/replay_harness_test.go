@@ -97,7 +97,7 @@ type sessionSpec struct {
 // for v2.4: 3 sessions, ~12 records each, mix of URL / DLP / response /
 // tool_policy surfaces, mix of allow / block / warn original outcomes. Adding
 // records means appending sessions or appending to the tail of an existing
-// session — never rewriting earlier records, since that would mask whether a
+// session - never rewriting earlier records, since that would mask whether a
 // regression caused a golden drift.
 func harnessCorpus() []sessionSpec {
 	return []sessionSpec{
@@ -160,7 +160,7 @@ func harnessCorpus() []sessionSpec {
 // (action, outcome, surface) tuple so the corpus stays explicit. Per-record
 // callers vary only the transport, method, URL, and (for blocked/warned) the
 // finding pattern. unparam flagged earlier signatures because the variable
-// fields are constants in practice — we keep the constants out of the
+// fields are constants in practice - we keep the constants out of the
 // signature to make the corpus declaration easier to read at the call site.
 func allowedURLSpec(transport, method, url string) recordSpec {
 	return recordSpec{
@@ -450,7 +450,7 @@ func harnessCompileConfig(refs []contract.InputRef) contractcompile.CompileConfi
 // records, so the replay diff produces new_block deltas the golden snapshot
 // can prove are stable).
 //
-// CRITICAL — tool policy invariant. The candidate MUST configure a
+// CRITICAL - tool policy invariant. The candidate MUST configure a
 // tool-policy deny rule for system-file writes (matching the corpus's
 // `write_file` to `/etc/hosts` record). Without it the original block
 // becomes a `new_allow` in the replay diff, which would bake a privilege-
@@ -671,7 +671,7 @@ func TestReplayHarness_CompileDeterministic(t *testing.T) {
 	}
 }
 
-// TestReplayHarness_CompileMatchesGolden snapshots the compile output —
+// TestReplayHarness_CompileMatchesGolden snapshots the compile output -
 // signed contract YAML, compile manifest JSON, and operator review.md.
 //
 // The manifest's module_digest_root and module_digests fields are
@@ -748,7 +748,7 @@ func TestReplayHarness_ReplayDiffMatchesGolden(t *testing.T) {
 		t.Fatalf("rendered diff missing expected exfil.example.net reference")
 	}
 
-	// SECURITY INVARIANT — privilege-boundary preservation.
+	// SECURITY INVARIANT - privilege-boundary preservation.
 	// A tool-policy record going from block to allow is a privilege-
 	// expansion regression. The harness is here to catch exactly that;
 	// snapshotting it as expected would defeat the purpose. If a future

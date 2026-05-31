@@ -29,7 +29,7 @@ func checkNoDuplicateKeys(body []byte) error {
 // MCP redaction and MCP input scanning select tools/call routing fields
 // (`method`, `params`, `arguments`) from a decoded map BEFORE
 // RewriteJSON's own guard runs, so they need this check at the ingress
-// point — not inside the redaction engine.
+// point - not inside the redaction engine.
 //
 // The check walks the token stream of body via encoding/json so it sees
 // the raw key order, not the post-map representation. Arrays are walked
@@ -61,7 +61,7 @@ func walkForDuplicates(dec *json.Decoder) error {
 	}
 	delim, ok := tok.(json.Delim)
 	if !ok {
-		// Scalar: string / number / bool / null — nothing to do.
+		// Scalar: string / number / bool / null - nothing to do.
 		return nil
 	}
 	switch delim {

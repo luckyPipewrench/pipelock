@@ -128,7 +128,7 @@ func TestLoadSalt_FileStatNonENOENT(t *testing.T) {
 }
 
 // Deliberately-permissive modes used to exercise the rejection branch.
-// Typed os.FileMode constants keep gosec G302 quiet — these are test
+// Typed os.FileMode constants keep gosec G302 quiet - these are test
 // fixtures, never production write modes.
 const (
 	looseModeWorld os.FileMode = 0o644
@@ -237,7 +237,7 @@ func TestLoadSalt_FileOpenFails(t *testing.T) {
 		t.Fatalf("LoadSalt: want error for unreadable file")
 	}
 	// OpenFile returns EACCES wrapped in os.PathError; the resolver wraps
-	// it again. We don't pin a sentinel — just confirm it's neither
+	// it again. We don't pin a sentinel - just confirm it's neither
 	// Missing nor Mode (those are the named branches we route to).
 	if errors.Is(err, ErrSaltMissing) || errors.Is(err, ErrSaltMode) ||
 		errors.Is(err, ErrSaltUnset) || errors.Is(err, ErrSaltNotAbsolute) {

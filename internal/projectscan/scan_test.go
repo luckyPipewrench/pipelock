@@ -574,7 +574,7 @@ func TestScanEnvSecrets_SkipsSafeNames(t *testing.T) {
 	// Use a value that matches the CCN regex (\b\d{4}(?:[- ]?\d){11,15}\b)
 	// but is NOT path-shaped, so envValueIsNeverSecret cannot short-circuit
 	// the skip. The only filter that can still exclude GITHUB_PATH is
-	// envVarAlwaysSafe — which is what this test is meant to prove. The
+	// envVarAlwaysSafe - which is what this test is meant to prove. The
 	// value is assembled from string literals at runtime so hardcoded-
 	// credential linters do not flag the source.
 	fakeCCN := "1234-" + "5678-" + "9012-" + "3456"
@@ -592,7 +592,7 @@ func TestScanEnvSecrets_SkipsSafeNames(t *testing.T) {
 // their name. Paths can match digit-heavy regexes by coincidence but
 // are never themselves secrets.
 func TestScanEnvSecrets_SkipsPathValues(t *testing.T) {
-	// Unknown var name — wouldn't be in envVarAlwaysSafe — but with a
+	// Unknown var name - wouldn't be in envVarAlwaysSafe - but with a
 	// path-shaped value, it must still be skipped.
 	t.Setenv("MY_CUSTOM_PATH", "/tmp/_some_long_path_with_digits_1234567890123456")
 	findings := scanEnvSecrets(mustCompileDLPPatterns(t))

@@ -7,7 +7,7 @@ package sandbox
 
 import "fmt"
 
-// ApplyLandlock is not used on macOS — seatbelt (sandbox-exec) handles
+// ApplyLandlock is not used on macOS - seatbelt (sandbox-exec) handles
 // filesystem restrictions. Returns ErrUnavailable.
 func ApplyLandlock(_ Policy) (LayerStatus, error) {
 	return LayerStatus{

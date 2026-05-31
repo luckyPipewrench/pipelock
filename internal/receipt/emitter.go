@@ -29,7 +29,7 @@ const recorderEntryType = "action_receipt"
 const recorderSessionID = "proxy"
 
 // Emitter produces signed action receipts and writes them to the flight recorder.
-// It is safe for concurrent use — the underlying recorder handles its own locking.
+// It is safe for concurrent use - the underlying recorder handles its own locking.
 type Emitter struct {
 	recorder   *recorder.Recorder
 	privKey    ed25519.PrivateKey
@@ -38,7 +38,7 @@ type Emitter struct {
 	actor      string
 	initErr    error
 
-	// Chain state — mutex-protected, updated on each Emit.
+	// Chain state - mutex-protected, updated on each Emit.
 	chainMu       sync.Mutex
 	chainSeq      uint64
 	chainPrevHash string
@@ -57,7 +57,7 @@ type EmitterConfig struct {
 }
 
 // NewEmitter creates a receipt emitter. Returns nil if the recorder is nil
-// or the private key is missing — callers can safely call Emit on a nil Emitter.
+// or the private key is missing - callers can safely call Emit on a nil Emitter.
 func NewEmitter(cfg EmitterConfig) *Emitter {
 	if cfg.Recorder == nil {
 		return nil
@@ -117,7 +117,7 @@ type EmitOpts struct {
 }
 
 // Emit creates, signs, and records an action receipt for a proxy decision.
-// The call is synchronous through the recorder mutex — same as recordDecision.
+// The call is synchronous through the recorder mutex - same as recordDecision.
 // Errors are returned but should be logged, not propagated to callers.
 // Safe to call on a nil Emitter (no-op).
 func (e *Emitter) Emit(opts EmitOpts) error {
@@ -236,7 +236,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 }
 
 // UpdateConfigHash sets the config hash for new receipts. Called on hot reload.
-// Safe for concurrent use with Emit — uses atomic.Value internally.
+// Safe for concurrent use with Emit - uses atomic.Value internally.
 func (e *Emitter) UpdateConfigHash(hash string) {
 	if e == nil {
 		return

@@ -57,7 +57,7 @@ func defaultResolverDeps() resolverDeps {
 //
 // Returns a descriptive error when no token can be located so operators
 // get a clear message instead of a 401 from the server. File perms on
-// any config path sourced from step (3) are checked here — world-readable
+// any config path sourced from step (3) are checked here - world-readable
 // files are rejected outright per the admin API threat model.
 func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 	ep := endpoint{
@@ -79,7 +79,7 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 	cfgPath := resolveConfigPath(flags.configPath, deps.userHomeDir, deps.stat, deps.getenv)
 	if cfgPath == "" {
 		// No config file located and the caller provided neither URL nor
-		// token via flags/env — fail with a clear message.
+		// token via flags/env - fail with a clear message.
 		if ep.Token == "" {
 			return endpoint{}, errors.New("admin API token is required: set --api-token, PIPELOCK_KILLSWITCH_API_TOKEN, or point --config at a pipelock config file")
 		}
@@ -122,7 +122,7 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 // resolveConfigPath returns the best-effort path to the active pipelock
 // config file. Checks (in order): explicit flag, PIPELOCK_CONFIG env,
 // ~/.config/pipelock/pipelock.yaml, /etc/pipelock/pipelock.yaml.
-// Returns empty string when no candidate exists — the caller decides
+// Returns empty string when no candidate exists - the caller decides
 // whether that is an error.
 func resolveConfigPath(explicit string, userHomeDir func() (string, error), stat func(string) (os.FileInfo, error), getenv func(string) string) string {
 	if explicit != "" {
@@ -148,14 +148,14 @@ func resolveConfigPath(explicit string, userHomeDir func() (string, error), stat
 
 // checkConfigPerms refuses any config file that carries group/world
 // permission bits OR an owner-execute bit. The admin API token is a
-// shared secret — a loose file perm is treated as a deployment error
+// shared secret - a loose file perm is treated as a deployment error
 // rather than a warning, and an executable config file is a policy
 // smell regardless of who can read it (per CLAUDE.md: always 0o600 for
 // files, never 0o644/0o755/0o700). The 0o177 mask catches:
 //
-//	0o100  owner execute  — reject (executable config files never ok)
-//	0o070  any group bit  — reject
-//	0o007  any world bit  — reject
+//	0o100  owner execute  - reject (executable config files never ok)
+//	0o070  any group bit  - reject
+//	0o007  any world bit  - reject
 //
 // Allows 0o600 (rw owner) and 0o400 (r owner), which are the only
 // reasonable deployment modes for a credential-bearing config.

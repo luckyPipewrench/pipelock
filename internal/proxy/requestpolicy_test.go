@@ -66,7 +66,7 @@ func TestRequestPolicyBlockInfo_HeaderShape(t *testing.T) {
 //
 // The fixture uses a zero-value *receipt.Emitter because requestPolicyBlockInfo
 // only consults receiptEmitterPtr.Load() for non-nil presence (mirroring
-// emitReceipt's nil check) — it never calls Emit, so no recorder or signing key
+// emitReceipt's nil check) - it never calls Emit, so no recorder or signing key
 // is needed to exercise the gating.
 func TestRequestPolicyBlockInfo_ReceiptGatedOnEmitter(t *testing.T) {
 	t.Parallel()

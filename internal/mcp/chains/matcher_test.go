@@ -184,7 +184,7 @@ func TestMatcher_Record(t *testing.T) {
 	}
 	m := New(cfg)
 
-	// Record a read followed by exec — should match patReadThenExec
+	// Record a read followed by exec - should match patReadThenExec
 	v1 := m.Record("session1", "read_file")
 	if v1.Matched {
 		t.Error("single read should not match any pattern")
@@ -414,14 +414,14 @@ func TestMatcher_SessionIsolation(t *testing.T) {
 	// Session A: record read
 	m.Record("sessionA", "read_file")
 
-	// Session B: record exec — should NOT match read-then-exec because
+	// Session B: record exec - should NOT match read-then-exec because
 	// the read was in a different session.
 	v := m.Record("sessionB", "bash_command")
 	if v.Matched {
 		t.Error("sessions should be isolated: exec in sessionB should not see read from sessionA")
 	}
 
-	// Session A: record exec — SHOULD match because both are in sessionA
+	// Session A: record exec - SHOULD match because both are in sessionA
 	v2 := m.Record("sessionA", "bash_command")
 	if !v2.Matched {
 		t.Error("read + exec in same session should match")
@@ -487,9 +487,9 @@ func TestMatcher_MaxGapRetry(t *testing.T) {
 	// First read, then too many gaps before exec
 	m.Record("s1", "read_file")    // read at pos 0
 	m.Record("s1", "list_files")   // gap 1
-	m.Record("s1", "list_files")   // gap 2 — too many
-	m.Record("s1", "read_file")    // read at pos 3 — retry start
-	m.Record("s1", "bash_command") // exec at pos 4 — gap 0 from pos 3
+	m.Record("s1", "list_files")   // gap 2 - too many
+	m.Record("s1", "read_file")    // read at pos 3 - retry start
+	m.Record("s1", "bash_command") // exec at pos 4 - gap 0 from pos 3
 
 	// Should match starting from the second read
 	sh, _ := m.sessions.Load("s1")
@@ -588,7 +588,7 @@ func TestMatcher_ClearSession(t *testing.T) {
 	}
 	m := New(cfg)
 
-	// Record read_file — first step of patReadThenExec.
+	// Record read_file - first step of patReadThenExec.
 	v := m.Record("s1", "read_file")
 	if v.Matched {
 		t.Fatal("single read should not match")
@@ -597,7 +597,7 @@ func TestMatcher_ClearSession(t *testing.T) {
 	// Clear the session, wiping the read history.
 	m.ClearSession("s1")
 
-	// Now record exec — should NOT match because read was cleared.
+	// Now record exec - should NOT match because read was cleared.
 	v = m.Record("s1", "bash_command")
 	if v.Matched {
 		t.Error("expected no match after ClearSession wiped history")
@@ -1112,7 +1112,7 @@ func TestLethalTrifecta_ActionOverride(t *testing.T) {
 }
 
 func TestLethalTrifecta_NeutralCallsDoNotBreakChain(t *testing.T) {
-	// MaxGap defaults to 3 — insert a neutral call between trifecta steps
+	// MaxGap defaults to 3 - insert a neutral call between trifecta steps
 	// and confirm the chain still matches.
 	m := newTestMatcherForTrifecta(t, nil)
 	session := "s5"

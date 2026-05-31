@@ -48,7 +48,7 @@ type MCPDecision struct {
 }
 
 // EmitMCPDecision emits the receipt and (optionally) injects the
-// mediation envelope for d. Returns the outbound message bytes —
+// mediation envelope for d. Returns the outbound message bytes -
 // envelope-injected when d.Envelope is non-nil, d.InboundMsg verbatim
 // otherwise. The returned error is the receipt-emit error if one
 // occurred; envelope injection does not return an error (the existing

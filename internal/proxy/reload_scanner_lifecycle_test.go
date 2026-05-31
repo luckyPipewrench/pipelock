@@ -74,7 +74,7 @@ func TestProxy_Reload_ScannerLifecycleStateMatrix(t *testing.T) {
 		t.Fatal("sc3 reported Closed immediately after being installed")
 	}
 
-	// State 4: downgrade/revocation — strip the custom blocklist back to defaults.
+	// State 4: downgrade/revocation - strip the custom blocklist back to defaults.
 	cfg4 := defaultsClone()
 	sc4 := scanner.New(cfg4)
 	p.Reload(cfg4, sc4)
@@ -127,7 +127,7 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 	p.Reload(cfg, newSc)
 
 	// The closed flag is published synchronously by Close, but BeginUse on
-	// initialSc must already reject newcomers — that is the gate that lets
+	// initialSc must already reject newcomers - that is the gate that lets
 	// drain finish bounded. waitForClosed gives 2 seconds; under -race on
 	// loaded CI a 500ms budget is a known flake source for goroutine
 	// scheduling, so reuse the helper that the state-matrix test uses.
@@ -162,7 +162,7 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 
 // waitForClosed polls Closed() until it returns true or the timeout
 // expires. Reload runs Close in a goroutine, so the prior scanner's
-// closed flag is published asynchronously — but the flag is set before
+// closed flag is published asynchronously - but the flag is set before
 // drain begins, so this should resolve in microseconds for an idle test.
 func waitForClosed(t *testing.T, sc *scanner.Scanner, label string) {
 	t.Helper()

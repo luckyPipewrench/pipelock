@@ -41,7 +41,7 @@ func compileCanaryTokens(cfg config.CanaryTokens) []compiledCanaryToken {
 // It owns normalization: applies ForDLP internally, then iterative URL
 // decoding, base64/hex decoding, and separator canonicalization.
 // Callers pass raw (un-normalized) text. matchCanaryTokens receives
-// already-normalized text and only lowercases — no re-normalization.
+// already-normalized text and only lowercases - no re-normalization.
 func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {
 		return nil
@@ -91,7 +91,7 @@ func (s *Scanner) scanCanaryText(text string) []TextDLPMatch {
 }
 
 // matchCanaryTokens checks pre-normalized text for canary token matches.
-// The caller (scanCanaryText) is responsible for ForDLP normalization —
+// The caller (scanCanaryText) is responsible for ForDLP normalization -
 // this function only lowercases and optionally canonicalizes.
 func (s *Scanner) matchCanaryTokens(text, encoding string, canonical bool) []TextDLPMatch {
 	if len(s.canaryTokens) == 0 || text == "" {

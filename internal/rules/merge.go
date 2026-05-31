@@ -235,7 +235,7 @@ func buildTierKeyMapping(keys []config.TrustedKey) map[string]string {
 	for _, k := range keys {
 		if k.Tier != "" {
 			if existing, dup := mapping[k.Tier]; dup {
-				// First key wins. Log but don't error — config validation
+				// First key wins. Log but don't error - config validation
 				// is the right place for strict checks.
 				_, _ = fmt.Fprintf(os.Stderr, "pipelock: warning: duplicate tier binding for %q: key %q ignored, keeping %q\n",
 					k.Tier, k.PublicKey, existing)
@@ -244,7 +244,7 @@ func buildTierKeyMapping(keys []config.TrustedKey) map[string]string {
 			mapping[k.Tier] = k.PublicKey
 		}
 	}
-	// Official (embedded) keys are NOT added here — they are verified
+	// Official (embedded) keys are NOT added here - they are verified
 	// separately by isOfficialFingerprint in the loader. Adding them
 	// would break key rotation when the keyring has multiple keys
 	// (last-writer-wins on the map).

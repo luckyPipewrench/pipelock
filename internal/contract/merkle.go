@@ -17,7 +17,7 @@ const (
 )
 
 // MerkleRoot computes a binary SHA-256 Merkle root over the canonical bytes
-// of each Rule. Order-sensitive — caller is responsible for emitting rules
+// of each Rule. Order-sensitive - caller is responsible for emitting rules
 // in canonical order.
 //
 // Empty input returns sha256(0x00) hex with the "sha256:" prefix as the

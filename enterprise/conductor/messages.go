@@ -49,7 +49,7 @@ const (
 // acceptedSchemaVersions mirrors internal/recorder/entry.go's v1+v2 coexistence
 // pattern. New writes use SchemaVersion; verifiers accept anything in the set so
 // rolling fleet upgrades survive a schema bump. Extend by adding the new version
-// key when the schema changes — never remove old keys without a release-note
+// key when the schema changes - never remove old keys without a release-note
 // gate on rollout.
 var acceptedSchemaVersions = map[int]bool{1: true}
 
@@ -84,16 +84,16 @@ var (
 
 // allowedPolicyBundleSections is the default-deny allowlist of top-level config
 // sections a signed policy bundle may carry in its config_yaml. It contains ONLY
-// enforcement-policy surfaces — what pipelock decides about a scanned request.
+// enforcement-policy surfaces - what pipelock decides about a scanned request.
 //
 // Everything not listed is rejected so a signed bundle cannot reconfigure
 // operational/infrastructure surfaces remotely: listeners, telemetry/emit,
 // logging, sentry, kill switch, flight recorder, the conductor control plane
 // itself, license, or mediation-envelope signing. It also rejects sections that
 // mix enforcement with a local trust boundary, identity, certificate, routing,
-// or OS-isolation concern — `internal`/`ssrf`/`dns`/`trusted_domains` (SSRF and
+// or OS-isolation concern - `internal`/`ssrf`/`dns`/`trusted_domains` (SSRF and
 // DNS trust), `agents` (per-agent identity/credentials), `tls_interception`
-// (MITM certs/passthrough), and `sandbox` (OS isolation) — until those are split
+// (MITM certs/passthrough), and `sandbox` (OS isolation) - until those are split
 // into narrower policy-only surfaces. Keeping them operator-local means a bundle
 // cannot loosen SSRF, add a trusted domain, retarget DNS, push agent identity,
 // change TLS interception, or weaken sandboxing.
@@ -570,7 +570,7 @@ func (b PolicyBundle) validateHashes() error {
 }
 
 // ValidateAtTime extends Validate with a freshness check: now must fall inside
-// [NotBefore, ExpiresAt]. Callers that apply the bundle must use this variant —
+// [NotBefore, ExpiresAt]. Callers that apply the bundle must use this variant -
 // Validate alone passes a future-dated or already-expired bundle.
 func (b PolicyBundle) ValidateAtTime(now time.Time) error {
 	if err := b.Validate(); err != nil {
@@ -817,7 +817,7 @@ func (a AuditBatchEnvelope) Validate() error {
 // maxSkew bounds |now - EmittedAt|; replay protection requires this be tight
 // (default DefaultAuditMaxSkew, ceiling MaxAllowedAuditSkew). Callers that
 // configure a higher skew must do so consciously and log a warning at config
-// load time. Validate alone does NOT enforce skew — a captured signed batch
+// load time. Validate alone does NOT enforce skew - a captured signed batch
 // could otherwise be replayed at any future time.
 func (a AuditBatchEnvelope) ValidateForConductor(now time.Time, maxSkew time.Duration) error {
 	if err := a.Validate(); err != nil {
@@ -948,8 +948,8 @@ func (c CapabilitiesResponse) ValidateWithLocalThresholdCap(maxThreshold int) er
 			return err
 		}
 	}
-	// Couple to recorder.EntryVersion — the version the local recorder
-	// actively WRITES — so a recorder bump (v2→v3) automatically tightens
+	// Couple to recorder.EntryVersion - the version the local recorder
+	// actively WRITES - so a recorder bump (v2→v3) automatically tightens
 	// the handshake instead of leaving this stranded on a hardcoded "2".
 	// Conductor must advertise that version or the follower can never produce
 	// ingestable batches.
@@ -1061,7 +1061,7 @@ func verifySignatureThreshold(
 // checkLifecycle rejects a roster key whose validity window has not begun, has
 // ended, or that has been revoked. NotBefore zero is treated as "always valid
 // from epoch", NotAfter zero as "never expires". RevokedAt non-nil rejects
-// unconditionally — revocation overrides any window check.
+// unconditionally - revocation overrides any window check.
 func (k SignatureKey) checkLifecycle(now time.Time) error {
 	if k.RevokedAt != nil {
 		return fmt.Errorf("%w: revoked_at=%s verification_time=%s", ErrSignatureVerification, k.RevokedAt.UTC().Format(time.RFC3339), now.Format(time.RFC3339))
@@ -1127,7 +1127,7 @@ func withinValidity(now, notBefore, expiresAt time.Time) error {
 
 // validateMinPipelockVersion accepts a non-empty major.minor.patch semver-like
 // shape. Full SemVer 2.0.0 (pre-release / build metadata) is intentionally not
-// supported in MVP — bundles target release versions only. The follower-side
+// supported in MVP - bundles target release versions only. The follower-side
 // sanity window (max_min_version_major_skew / minor_skew per spec) is enforced
 // at apply time with the follower's runtime version on hand, not here.
 func validateMinPipelockVersion(v string) error {

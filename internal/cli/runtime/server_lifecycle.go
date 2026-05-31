@@ -300,7 +300,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// existing handler rather than building a second one so
 		// Reload's SetAPIToken rotation covers the dedicated-port
 		// mount too. p.SessionAPI() returns nil when no api_token is
-		// configured — in that case we skip registration and the
+		// configured - in that case we skip registration and the
 		// admin routes simply don't exist on the listener.
 		if sessionAPI := s.proxy.SessionAPI(); sessionAPI != nil {
 			apiMux.HandleFunc("/api/v1/adaptive/status", sessionAPI.HandleAdaptiveStatus)

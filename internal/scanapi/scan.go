@@ -152,7 +152,7 @@ func (h *Handler) scanToolCall(
 	// request surface: whether tool_call is offered at all is governed by
 	// scan_api.kinds.tool_call (default true). Gating Stage 2 on the
 	// inline-proxy MCPInputScanning toggle (default false) made a caller's
-	// tool_call request return allow with zero findings — a fail-open where
+	// tool_call request return allow with zero findings - a fail-open where
 	// the API silently declined to scan what it was asked to. The sibling
 	// kinds (url / dlp / prompt_injection) all scan unconditionally; tool_call
 	// now matches that contract.

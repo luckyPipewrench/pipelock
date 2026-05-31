@@ -332,7 +332,7 @@ func TestSessionAPI_SetAPIToken_HotReload(t *testing.T) {
 		}
 	}
 
-	// Rotating to empty string must disable the endpoint entirely —
+	// Rotating to empty string must disable the endpoint entirely -
 	// operators use this to revoke access without tearing down the
 	// listener. authenticate returns 503 (not configured), matching
 	// the bootstrap path when no api_token is in the YAML.

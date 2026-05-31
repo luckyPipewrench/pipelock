@@ -151,7 +151,7 @@ type Rules struct {
 }
 
 // TrustedKey is a named Ed25519 public key for verifying third-party bundles.
-// When Tier is set, this key is bound to that tier — bundles signed by this
+// When Tier is set, this key is bound to that tier - bundles signed by this
 // key must declare the matching tier, preventing key-swap attacks.
 type TrustedKey struct {
 	Name      string `yaml:"name"`
@@ -231,7 +231,7 @@ type AgentSandboxOverride struct {
 //
 // Landlock is an allowlist model. Execute access is bundled with read
 // (RODirs grants execute). RWDirs grants full access including execute.
-// There is no separate allow_exec field — writable dirs are executable.
+// There is no separate allow_exec field - writable dirs are executable.
 type SandboxFilesystem struct {
 	AllowRead  []string `yaml:"allow_read"`
 	AllowWrite []string `yaml:"allow_write"`
@@ -239,7 +239,7 @@ type SandboxFilesystem struct {
 
 // RequestPolicy configures explicit outbound API operation safety rails. It is
 // an allow-by-default deny-list: a request forwards unless a rule matches.
-// Gated by its own Enabled flag, independent of request_body_scanning — it
+// Gated by its own Enabled flag, independent of request_body_scanning - it
 // composes with the learn-lock contract gate (a ratified allowlist) and with
 // DLP, and is neither. See the request-policy operation-rails design.
 type RequestPolicy struct {
@@ -270,7 +270,7 @@ type RequestPolicyBatch struct {
 
 // RequestPolicyRule is one operation safety rail. It matches on route (host /
 // method / path / content type) and, optionally, on a GraphQL operation
-// predicate. Action is per-rule (block or warn) — there is deliberately no
+// predicate. Action is per-rule (block or warn) - there is deliberately no
 // section-level default_action knob, so the section can never be configured
 // into default-deny.
 type RequestPolicyRule struct {
@@ -405,11 +405,11 @@ type Config struct {
 
 	// canonicalHashCache memoises CanonicalPolicyHash() so repeated calls
 	// on the same *Config value do not re-walk and re-marshal the struct.
-	// Unexported — json.Marshal skips it, yaml does not see it, and test
+	// Unexported - json.Marshal skips it, yaml does not see it, and test
 	// helpers that build fresh Config values always start with a nil
 	// pointer (lazy-initialised on first hash read). The field is a
 	// pointer rather than an embedded atomic.Value so that struct copies
-	// (e.g., Config.Clone's `clone := *c`) duplicate the pointer only —
+	// (e.g., Config.Clone's `clone := *c`) duplicate the pointer only -
 	// atomic.Value forbids copying after first use, and every caller that
 	// wants a fresh cache explicitly reassigns the pointer. Config
 	// instances are treated as immutable after Load(); any mutation after
@@ -705,7 +705,7 @@ type DLP struct {
 	MinEnvSecretLength int          `yaml:"min_env_secret_length"` // minimum env var length for leak detection (default 16)
 	IncludeDefaults    *bool        `yaml:"include_defaults"`      // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns           []DLPPattern `yaml:"patterns"`
-	Action             string       `yaml:"action,omitempty"` // reserved — not yet implemented; rejected at validation
+	Action             string       `yaml:"action,omitempty"` // reserved - not yet implemented; rejected at validation
 }
 
 // DLPPattern is a named regex pattern for detecting secrets in URLs.
@@ -715,14 +715,14 @@ type DLPPattern struct {
 	Severity      string   `yaml:"severity"`            // critical, high, medium, low
 	Validator     string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
 	ExemptDomains []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
-	Action        string   `yaml:"action,omitempty"`    // reserved — not yet implemented; rejected at validation
+	Action        string   `yaml:"action,omitempty"`    // reserved - not yet implemented; rejected at validation
 	Bundle        string   `yaml:"-"`                   // set by rules loader, not from YAML
 	BundleVersion string   `yaml:"-"`                   // set by rules loader, not from YAML
 	Compiled      bool     `yaml:"-"`                   // true for patterns created in Defaults()
 }
 
 // AddressProtection configures crypto address poisoning detection.
-// This is destination verification, not secret detection — separate from DLP.
+// This is destination verification, not secret detection - separate from DLP.
 // Detects lookalike blockchain addresses compared against a user-supplied
 // allowlist of known-good destinations.
 type AddressProtection struct {
@@ -751,7 +751,7 @@ type SimilarityConfig struct {
 }
 
 // SeedPhraseDetection configures BIP-39 mnemonic seed phrase detection.
-// Action is not configurable here — it follows the transport-level DLP action
+// Action is not configurable here - it follows the transport-level DLP action
 // (URL scan: block, MCP/body/header: transport config).
 type SeedPhraseDetection struct {
 	Enabled        *bool `yaml:"enabled"`         // nil = true (security default)
@@ -777,7 +777,7 @@ type SSRF struct {
 // at a stable hostname while raw-IP SSRF attacks targeting the same range
 // remain blocked, because the IP-literal path never consults this map.
 // HostOverrides is empty by default; configuring it does not weaken any
-// security check on its own — exemption still requires a trusted_domains
+// security check on its own - exemption still requires a trusted_domains
 // entry for the same hostname.
 type DNS struct {
 	HostOverrides map[string][]string `yaml:"host_overrides"`
@@ -924,7 +924,7 @@ type KillSwitch struct {
 // passive heartbeats are the normal-path signal, and a bounded synthetic
 // scanner probe runs only when the scanner heartbeat is stale.
 //
-// Settings are immutable across hot reload for v1 — changes require a process
+// Settings are immutable across hot reload for v1 - changes require a process
 // restart. Reload logs a warning if values differ from startup. Enabled
 // defaults to true (fail-open for the watchdog: detection on by default so an
 // operator who omits the section still gets wedge protection).
@@ -1137,7 +1137,7 @@ type MediationEnvelope struct {
 	Enabled bool `yaml:"enabled"`
 
 	// Sign enables RFC 9421 HTTP Message Signatures on outbound mediated
-	// requests. HTTP only — MCP stdio cannot be signed in band.
+	// requests. HTTP only - MCP stdio cannot be signed in band.
 	// Default false; explicit opt-in. When true, SigningKeyPath is
 	// required and must load as an Ed25519 private key at startup and
 	// on every hot reload. Reload failures abort the reload rather
@@ -1217,7 +1217,7 @@ type MediationEnvelopeTrustedKey struct {
 	WellKnownURL string `yaml:"well_known_url"`
 	// TrustDomains, when non-empty, restricts which actor trust
 	// domains a signed envelope may claim under this key_id. Empty
-	// means "any trust domain" — the v2.4 migration default that lets
+	// means "any trust domain" - the v2.4 migration default that lets
 	// a single partner key sign for any actor. Production deployments
 	// should pin each key to the specific federation peer's trust
 	// domain(s) so a compromised partner cannot impersonate another.
@@ -1426,7 +1426,7 @@ type MediaPolicy struct {
 // MediaPolicy.AllowedImageTypes is empty. Scoped to the formats the
 // metadata stripper can actually sanitize (JPEG, PNG). GIF and WebP are
 // intentionally excluded by default because internal/media.StripMetadata
-// does not yet parse their chunk formats — admitting them here would
+// does not yet parse their chunk formats - admitting them here would
 // pass through any embedded metadata (XMP in WebP, comment blocks in
 // GIF) without stripping. Operators who accept that trade-off can add
 // them explicitly via media_policy.allowed_image_types. SVG is excluded
@@ -1521,7 +1521,7 @@ type LearnPrivacy struct {
 
 // LearnInference governs the contract-compile inference engine
 // (internal/contract/inference). The threshold constants (Wilson alpha,
-// tau_brittle, tau_stable, headroom defaults) are NOT exposed here —
+// tau_brittle, tau_stable, headroom defaults) are NOT exposed here -
 // they are part of the statistical contract and are hardcoded in the
 // inference package. Floors ARE deployment-configurable because traffic
 // volumes differ across deployments, and the floors are exposure gates
@@ -1682,7 +1682,7 @@ const (
 // and gates proxy decisions on it. The block is operational (excluded
 // from the canonical policy hash) so two deployments that ratify the
 // same contract but enforce in different modes do not produce diverging
-// receipts. Settings are immutable across hot reload — the loader's
+// receipts. Settings are immutable across hot reload - the loader's
 // fsnotify watcher runs against StoreDir, so changes to StoreDir or
 // PinnedRootFingerprint require a process restart.
 //
@@ -1697,9 +1697,9 @@ type LearnLock struct {
 	Enabled bool `yaml:"enabled"`
 
 	// Mode controls the gate semantics.
-	//   - "live"    — promoted contract gates proxy decisions
-	//   - "shadow"  — contract evaluates and emits drift but never blocks
-	//   - "capture" — contract path is silent (no signal, no receipts)
+	//   - "live"    - promoted contract gates proxy decisions
+	//   - "shadow"  - contract evaluates and emits drift but never blocks
+	//   - "capture" - contract path is silent (no signal, no receipts)
 	// Empty Mode falls through to "shadow" so a misconfigured config
 	// fails toward observation, not enforcement. Operators who want
 	// live enforcement must say so.

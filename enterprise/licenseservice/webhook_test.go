@@ -386,7 +386,7 @@ func TestCheckFoundingCap_CapReached(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	// Should preserve founding_pro — customer paid the founding price.
+	// Should preserve founding_pro - customer paid the founding price.
 	if ent.Tier != tierFoundingPro {
 		t.Errorf("Tier = %q, want %q (paid checkout honored)", ent.Tier, tierFoundingPro)
 	}
@@ -409,7 +409,7 @@ func TestCheckFoundingCap_DeadlinePassed(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	// Should preserve founding_pro — customer paid the founding price.
+	// Should preserve founding_pro - customer paid the founding price.
 	if ent.Tier != tierFoundingPro {
 		t.Errorf("Tier = %q, want %q (paid checkout honored despite deadline)", ent.Tier, tierFoundingPro)
 	}
@@ -475,7 +475,7 @@ func TestCheckFoundingCap_ProductChangeCantReopenSlot(t *testing.T) {
 		t.Fatalf("checkFoundingCap: %v", err)
 	}
 
-	// Should preserve founding_pro — customer paid the founding price.
+	// Should preserve founding_pro - customer paid the founding price.
 	// The slot is over cap but the checkout is honored; archiving the
 	// Polar product is the real enforcement.
 	if ent.Tier != tierFoundingPro {

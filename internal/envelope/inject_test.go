@@ -55,7 +55,7 @@ func TestStripInbound(t *testing.T) {
 	// Byte-sequence items in Signature / Signature-Input must carry
 	// valid base64 between the ":" delimiters, otherwise the RFC 8941
 	// dict parse in StripInbound rejects the whole header value. The
-	// literal bytes here are not verifiable signatures — they are just
+	// literal bytes here are not verifiable signatures - they are just
 	// placeholder payloads that parse cleanly.
 	h.Set(HeaderName, "v=1, act=\"write\", vd=\"allow\"")
 	h.Set("Signature-Input", "pipelock1=(\"@method\");tag=\"pipelock-mediation\"")
@@ -98,13 +98,13 @@ func TestStripInbound_NoHeaders(t *testing.T) {
 // TestStripInbound_PipelockMemberWithQuotedComma is the regression test
 // for the strings.Split comma bug in stripPipelockSignatureMembers. An
 // attacker-controlled inbound request can carry a pipelock* dictionary
-// member whose quoted parameter value contains a literal comma — RFC 8941
+// member whose quoted parameter value contains a literal comma - RFC 8941
 // permits this. strings.Split(val, ",") treats that comma as a top-level
 // member separator, producing a post-comma fragment (e.g. `b"`) that no
 // longer has the "pipelock" prefix. The buggy loop preserves the fragment
 // because HasPrefix(trimmed, "pipelock") is false, leaving broken noise
 // in the outbound Signature-Input. That both corrupts any surviving sig1
-// member and creates a downstream dictionary-parse failure — either of
+// member and creates a downstream dictionary-parse failure - either of
 // which is a bypass vector for inbound sanitisation.
 func TestStripInbound_PipelockMemberWithQuotedComma(t *testing.T) {
 	t.Parallel()
@@ -138,7 +138,7 @@ func TestStripInbound_PipelockMemberWithQuotedComma(t *testing.T) {
 		t.Errorf("Signature-Input members = %v, want [sig1]", names)
 	}
 
-	// And the sig1 inner list's tag must still be "web-bot-auth" — the
+	// And the sig1 inner list's tag must still be "web-bot-auth" - the
 	// buggy path can truncate or drop it when dropping the pipelock1
 	// fragment ahead of it.
 	member, ok := dict.Get("sig1")
@@ -209,7 +209,7 @@ func TestStripInbound_MultiLineDict(t *testing.T) {
 // test for the pre-tag gate-found bug where the entire Signature header was
 // deleted whenever httpsfv parsing failed, even when no pipelock member
 // was present. Cloudflare Web Bot Auth sig1 values with non-strict-base64
-// or otherwise parse-fragile members were silently dropped — turning
+// or otherwise parse-fragile members were silently dropped - turning
 // pipelock into a signature-stripping middlebox for unrelated auth
 // schemes.
 //

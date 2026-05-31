@@ -994,7 +994,7 @@ func TestDecide_Shell_ArgKey_ScopedBlock(t *testing.T) {
 func TestDecide_File_ArgKey_ScopedBlock(t *testing.T) {
 	cfg, sc, pc := testSetupWithArgKey(t)
 
-	// File read with /etc/shadow as file_path — should trigger the scoped rule.
+	// File read with /etc/shadow as file_path - should trigger the scoped rule.
 	action := Action{
 		Source: "cursor",
 		Kind:   EventReadFile,

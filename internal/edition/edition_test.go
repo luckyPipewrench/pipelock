@@ -63,7 +63,7 @@ func TestNoopEdition_ResolveAgent_DefaultIdentity(t *testing.T) {
 		t.Fatalf("newNoopEdition: %v", err)
 	}
 
-	// No header — should resolve to config default identity with config-default auth.
+	// No header - should resolve to config default identity with config-default auth.
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://example.com", nil)
 	_, id := ed.ResolveAgent(context.Background(), r)
 

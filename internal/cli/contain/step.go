@@ -15,7 +15,7 @@ import (
 // Each step owns its own idempotency check: apply must be safe to call on
 // already-correct state and return (false, nil) to indicate "nothing to do".
 // When apply returns (true, nil) the step is considered applied and is added
-// to the rollback chain — if a later step fails, this step's undo runs to
+// to the rollback chain - if a later step fails, this step's undo runs to
 // restore the prior state.
 //
 // undo must itself be idempotent: rollback may be invoked when the step never
@@ -43,7 +43,7 @@ type stepOutcome struct {
 // runSteps walks steps in order. When a step fails, every previously-applied
 // step's undo runs in reverse order before returning the original error.
 //
-// A step whose apply returns (false, nil) — i.e. already done — is NOT added
+// A step whose apply returns (false, nil) - i.e. already done - is NOT added
 // to the rollback chain. We must not undo state we did not create.
 func runSteps(ctx context.Context, env *installEnv, w io.Writer, steps []step) ([]stepOutcome, error) {
 	outcomes := make([]stepOutcome, 0, len(steps))
@@ -79,7 +79,7 @@ func runSteps(ctx context.Context, env *installEnv, w io.Writer, steps []step) (
 }
 
 // rollbackApplied walks the applied steps in reverse and invokes each undo.
-// Errors are collected and printed but do not stop the chain — a partial
+// Errors are collected and printed but do not stop the chain - a partial
 // rollback is always better than a half-installed state with an early exit.
 func rollbackApplied(ctx context.Context, env *installEnv, w io.Writer, applied []step) {
 	if len(applied) == 0 {

@@ -152,14 +152,14 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.
 		event.Fingerprint[i] = s.ScrubString(fp)
 	}
 
-	// Scrub exceptions — both Type and Value can contain secrets.
+	// Scrub exceptions - both Type and Value can contain secrets.
 	for i := range event.Exception {
 		event.Exception[i].Type = s.ScrubString(event.Exception[i].Type)
 		event.Exception[i].Value = s.ScrubString(event.Exception[i].Value)
 		s.scrubStacktrace(event.Exception[i].Stacktrace)
 	}
 
-	// Scrub threads — same Stacktrace structure as exceptions.
+	// Scrub threads - same Stacktrace structure as exceptions.
 	for i := range event.Threads {
 		s.scrubStacktrace(event.Threads[i].Stacktrace)
 	}
@@ -181,7 +181,7 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.
 		event.Tags[k] = s.ScrubString(v)
 	}
 
-	// Scrub contexts — auto-populated with device/os/runtime info (ints,
+	// Scrub contexts - auto-populated with device/os/runtime info (ints,
 	// bools for OS/device/runtime) but custom contexts could contain secrets.
 	// Fail-closed: delete non-string values to prevent serialization leaks.
 	for ctxName, ctx := range event.Contexts {
@@ -194,13 +194,13 @@ func (s *Scrubber) ScrubEvent(event *sentry.Event, _ *sentry.EventHint) *sentry.
 		}
 	}
 
-	// Wipe request entirely — URLs, headers, body all dangerous.
+	// Wipe request entirely - URLs, headers, body all dangerous.
 	event.Request = nil
 
-	// Wipe user — IP could identify targets.
+	// Wipe user - IP could identify targets.
 	event.User = sentry.User{}
 
-	// Wipe server name — reveals internal infrastructure hostname.
+	// Wipe server name - reveals internal infrastructure hostname.
 	event.ServerName = ""
 
 	return event

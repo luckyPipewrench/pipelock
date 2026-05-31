@@ -37,7 +37,7 @@ func TestFramework_CoverageSummary(t *testing.T) {
 
 func TestCatalog_ReturnsFrameworks(t *testing.T) {
 	frameworks := Catalog()
-	// Catalog ordering is part of the rendered output contract — both
+	// Catalog ordering is part of the rendered output contract - both
 	// the free-tier compliance grid and the paid annex iterate in this
 	// order, and any reorder is a visible UI change.
 	wantOrder := []string{

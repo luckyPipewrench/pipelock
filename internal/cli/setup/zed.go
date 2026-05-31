@@ -245,7 +245,7 @@ func zedDefaultCandidates() ([]string, error) {
 
 // resolveZedTargets returns the paths the command should operate on. When
 // override is set, only that path is returned (and is treated as required,
-// even if missing — install creates it, remove no-ops on it). When override
+// even if missing - install creates it, remove no-ops on it). When override
 // is empty, every default-discovery candidate is probed; only the ones that
 // exist are returned in existingPaths, but candidatePaths always carries
 // every probed location so the "no settings.json found" message can name

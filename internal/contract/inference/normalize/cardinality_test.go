@@ -214,7 +214,7 @@ func TestCapPerHost_Overflow_PromotionBlocked(t *testing.T) {
 	// Tail = 30% of total → blocks promotion.
 	// The kept entries must dominate (top-N by EventCount DESC), so
 	// they get the larger counts. The dropped entries make up the
-	// tail — with EventCount that totals 30% of all events.
+	// tail - with EventCount that totals 30% of all events.
 	// 10 kept × 70 = 700 events. 2 dropped × 150 = 300 events. Total = 1000.
 	// 300/1000 = 30% > 5% threshold → block.
 	families := make([]PathFamily, 0, 12)
@@ -300,7 +300,7 @@ func TestCapPerHost_TailExactlyAtThreshold(t *testing.T) {
 	t.Parallel()
 	// Build families where the tail is exactly 5% of total events.
 	// 11 families, cap=10. Kept gets 950 events; tail (one entry)
-	// gets 50 events. 50/1000 = 5.0% — strict-greater-than means
+	// gets 50 events. 50/1000 = 5.0% - strict-greater-than means
 	// PromotionBlock is FALSE.
 	families := make([]PathFamily, 0, 11)
 	for i := range 10 {
@@ -363,7 +363,7 @@ func TestCapPerHost_StableTieBreaking(t *testing.T) {
 func TestCapPerHost_DeterministicAcross1000Calls(t *testing.T) {
 	t.Parallel()
 	// Build 100 random-ish families. Using a seeded RNG for the test
-	// itself doesn't matter — we just need a fixed corpus that
+	// itself doesn't matter - we just need a fixed corpus that
 	// exercises ties + ordering.
 	rng := rand.New(rand.NewPCG(0xCAFE, 0xBEEF)) //nolint:gosec // G404: deterministic test corpus, not security-sensitive
 	families := make([]PathFamily, 100)

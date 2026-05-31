@@ -291,7 +291,7 @@ func TestRequestPolicy_FetchIgnoresInboundControlPlaneHeaders(t *testing.T) {
 	t.Parallel()
 	// A rule that would match a POST/application/json request must NOT fire on
 	// a /fetch call merely because the agent set those headers on the inbound
-	// control-plane request — the outbound fetch is always a plain GET.
+	// control-plane request - the outbound fetch is always a plain GET.
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -746,7 +746,7 @@ func TestRequestPolicy_RedirectHopGraphQLOverGETBenignForwards(t *testing.T) {
 func TestRequestPolicy_EnforcesWithoutContract(t *testing.T) {
 	t.Parallel()
 	// No learn_lock contract is configured, so EvaluateGate would allow. The
-	// request_policy block must still fire — proving it runs independently and
+	// request_policy block must still fire - proving it runs independently and
 	// before the contract gate, not gated behind it.
 	p := newTestProxyWithConfig(t, reqPolicyConfig(blockRule(http.MethodDelete)))
 	if p.currentContractLoader() != nil {

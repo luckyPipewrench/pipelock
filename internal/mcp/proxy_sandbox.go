@@ -153,7 +153,7 @@ func RunProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, clientIn io.
 		sandbox.ReapOrphans()
 	}
 
-	// Drain with timeout — detached descendants can hold pipes open.
+	// Drain with timeout - detached descendants can hold pipes open.
 	// Use ctx for cancellation so the caller can control shutdown.
 	drainCtx, drainCancel := context.WithTimeout(ctx, 5*time.Second)
 	defer drainCancel()

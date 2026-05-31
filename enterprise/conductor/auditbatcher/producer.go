@@ -193,7 +193,7 @@ func (p *Producer) enqueueSegment(entries []recorder.Entry) error {
 		return nil
 	}
 	// The recorder committed this checkpoint to its local hash chain before
-	// we observed it, so advance the chain tail unconditionally — even on a
+	// we observed it, so advance the chain tail unconditionally - even on a
 	// drop. The next segment's PreviousSegmentTail must reflect the true
 	// local chain; drops are accounted separately in DroppedAccounting. If a
 	// drop path left the tail un-advanced, the next segment would claim

@@ -506,7 +506,7 @@ func TestEnforcedValue_ClampsAtZero(t *testing.T) {
 // bounds. The test uses p=0 to drive the rank<1 branch and p=200 to
 // drive the rank>n branch, returning sorted[0] and sorted[n-1]
 // respectively. Removing the clamps would also make this test
-// disappear — by design, since the clamps are the contract.
+// disappear - by design, since the clamps are the contract.
 func TestNearestRank_DefensiveClamps(t *testing.T) {
 	t.Parallel()
 

@@ -3,8 +3,8 @@
 // Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 // Lives in package cli_test (not cli) so the blank import of
-// enterprise/cli — which itself imports internal/cli to register commands
-// — does not create a build-time import cycle. External test packages
+// enterprise/cli - which itself imports internal/cli to register commands
+// - does not create a build-time import cycle. External test packages
 // can pull in both sides without forming one.
 package cli_test
 
@@ -24,7 +24,7 @@ import (
 // production package keeps rootCmd unexported; for tests in the external
 // package we re-derive the tree by invoking Execute against a no-op
 // args set. Instead, we expose a thin helper via cli.ExportRootCmd in the
-// internal-test file — see root_test_export_test.go.
+// internal-test file - see root_test_export_test.go.
 func TestFleetSinkHelpRegistered(t *testing.T) {
 	cmd := cli.ExportRootCmd()
 	var out bytes.Buffer

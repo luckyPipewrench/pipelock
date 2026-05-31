@@ -149,7 +149,7 @@ func evaluateListenerCollision(l configuredListener, port uint16, holders map[ui
 	}
 	check.Status = doctorStatusWarn
 	if holder.PID == os.Getpid() {
-		// pipelock itself is holding the port — this is the doctor running
+		// pipelock itself is holding the port - this is the doctor running
 		// against a live process. Surface as OK, not a collision.
 		check.Status = doctorStatusOK
 		check.Detail = fmt.Sprintf("port %d (%s) held by this pipelock process (pid %d)", port, l.Address, holder.PID)
@@ -157,7 +157,7 @@ func evaluateListenerCollision(l configuredListener, port uint16, holders map[ui
 	}
 	if holder.PID == 0 {
 		// Holder identified by inode in /proc/net/tcp but no /proc/<pid>/fd
-		// entry pointed to that inode — typical when the holder runs as a
+		// entry pointed to that inode - typical when the holder runs as a
 		// different user and the doctor wasn't run as root.
 		check.Detail = fmt.Sprintf("port %d (%s) is held by another process; run as root to identify it", port, l.Address)
 		check.Next = "rerun `pipelock doctor --check-ports` as root, OR use `ss -tlnp | grep :" + strconv.Itoa(int(port)) + "` to identify the holder"

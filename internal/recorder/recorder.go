@@ -47,12 +47,12 @@ const (
 	recorderTypeReceipt = "action_receipt"
 
 	// eventKindCheckpoint is the EventKind value stamped on checkpoint
-	// entries written by the recorder. Fixed value — checkpoints are an
+	// entries written by the recorder. Fixed value - checkpoints are an
 	// envelope concern owned by the recorder package.
 	eventKindCheckpoint = "checkpoint"
 
 	// eventKindProxyDecision is the EventKind value stamped on signed
-	// decision entries written via RecordDecision. Fixed value — these are
+	// decision entries written via RecordDecision. Fixed value - these are
 	// signed verdict proofs and the classifier is the entry type itself.
 	eventKindProxyDecision = "proxy_decision"
 )
@@ -144,7 +144,7 @@ func New(cfg Config, redactFn RedactFunc, privKey ed25519.PrivateKey) (*Recorder
 	// exists but is not writable. Without this, pipelock boots successfully
 	// with a read-only recorder dir (e.g. misconfigured volume mount or
 	// wrong filesystem perms) and silently drops every receipt's persistence
-	// while still enforcing policy — round-3 of the pre-tag gate finding. Operators end up
+	// while still enforcing policy - round-3 of the pre-tag gate finding. Operators end up
 	// running in a degraded, non-auditable state without a clear signal.
 	probe, probeErr := os.CreateTemp(filepath.Clean(cfg.Dir), ".pipelock-writability-probe-*")
 	if probeErr != nil {
@@ -314,7 +314,7 @@ func (r *Recorder) RecordDecision(dr DecisionRecord) error {
 			return fmt.Errorf("invalid decision record: %w", err)
 		}
 		// Verify pre-signed records cryptographically, not just structurally.
-		// Reject if no verification key is available — accepting unverified
+		// Reject if no verification key is available - accepting unverified
 		// signatures into the evidence chain would undermine audit integrity.
 		if len(r.privKey) != ed25519.PrivateKeySize {
 			return errors.New("pre-signed decision record rejected: no verification key available")
@@ -400,7 +400,7 @@ func (r *Recorder) checkpointLocked() error {
 		PrevHash:  r.prevHash,
 	}
 
-	// Sign if we have a key — sign the hash of the chain up to this point
+	// Sign if we have a key - sign the hash of the chain up to this point
 	if r.cfg.SignCheckpoints && r.privKey != nil {
 		// Sign the previous hash (represents the chain state)
 		sig := ed25519.Sign(r.privKey, []byte(r.prevHash))
@@ -656,7 +656,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 	// through rm -rf as long as the fd is open; previous prerelease builds
 	// guards only triggered when r.file was nil, so writes kept
 	// succeeding against an unlinked file and the operator saw nothing
-	// (the pre-tag gate rounds 3/4/5 — especially round 5's "recreation still
+	// (the pre-tag gate rounds 3/4/5 - especially round 5's "recreation still
 	// silent" repro). Statting the configured dir on every call catches
 	// the disappearance while r.file is still the stale fd.
 	dir := filepath.Clean(r.cfg.Dir)
@@ -678,7 +678,7 @@ func (r *Recorder) ensureFile(sessionID string, seqStart uint64) error {
 			"pipelock: recorder: evidence directory %s disappeared mid-run and was recreated; prior receipts are lost\n",
 			r.cfg.Dir)
 		// Drop the stale fd so the next OpenFile lands in the freshly
-		// recreated directory. Ignore close errors — the fd was
+		// recreated directory. Ignore close errors - the fd was
 		// already pointing at an unlinked inode.
 		if r.file != nil {
 			_ = r.file.Close()

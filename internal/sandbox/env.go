@@ -11,7 +11,7 @@ import (
 )
 
 // safePassthroughKeys are the ONLY parent environment variables passed to the
-// sandboxed child. This is an allowlist, not a blocklist — any variable not
+// sandboxed child. This is an allowlist, not a blocklist - any variable not
 // listed here is dropped. Matches the MCP proxy's safeEnv() approach to
 // prevent accidental secret leakage (OPENAI_API_KEY, AWS_*, LD_PRELOAD, etc.).
 var safePassthroughKeys = []string{

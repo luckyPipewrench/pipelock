@@ -45,10 +45,10 @@ var InvisibleRanges = &unicode.RangeTable{
 
 // confusableMap maps Unicode characters from non-Latin scripts that are visually
 // identical to Latin letters. NFKC normalization does NOT handle cross-script
-// confusables — Cyrillic а (U+0430) stays as а, not Latin a.
+// confusables - Cyrillic а (U+0430) stays as а, not Latin a.
 //
 // Covers Cyrillic, Greek, Armenian, Cherokee, and Latin Extended (small caps/IPA)
-// lookalikes commonly used in homoglyph attacks. Not exhaustive — focused on
+// lookalikes commonly used in homoglyph attacks. Not exhaustive - focused on
 // characters that appear in English-language injection phrases and DLP key prefixes.
 var confusableMap = map[rune]rune{
 	// Cyrillic uppercase → Latin
@@ -113,18 +113,18 @@ var confusableMap = map[rune]rune{
 	'\u0585': 'o', // օ (Armenian Small Letter Oh)
 	'\u054D': 'S', // Ս (Armenian Capital Letter Seh)
 	'\u057D': 's', // ս (Armenian Small Letter Seh)
-	'\u054C': 'L', // Լ — not perfect but close in sans-serif
+	'\u054C': 'L', // Լ - not perfect but close in sans-serif
 	'\u0570': 'h', // հ (Armenian Small Letter Ho)
-	'\u0578': 'n', // ո (Armenian Small Letter Vo — looks like n)
-	'\u057C': 'n', // ռ (Armenian Small Letter Ra — looks like n in some fonts)
-	'\u0561': 'a', // ա (Armenian Small Letter Ayb — similar to a in some fonts)
+	'\u0578': 'n', // ո (Armenian Small Letter Vo - looks like n)
+	'\u057C': 'n', // ռ (Armenian Small Letter Ra - looks like n in some fonts)
+	'\u0561': 'a', // ա (Armenian Small Letter Ayb - similar to a in some fonts)
 
 	// Cherokee → Latin (uppercase only)
-	'\u13AA': 'A', // Ꭺ (Cherokee Letter GA — looks like A)
-	'\u13A2': 'I', // Ꭲ (Cherokee Letter I — looks like I)
+	'\u13AA': 'A', // Ꭺ (Cherokee Letter GA - looks like A)
+	'\u13A2': 'I', // Ꭲ (Cherokee Letter I - looks like I)
 	'\u13D2': 'P', // Ꮲ
 	'\u13DA': 'S', // Ꮪ
-	'\u13A1': 'E', // Ꭱ — visually close to E
+	'\u13A1': 'E', // Ꭱ - visually close to E
 	'\u13B3': 'W', // Ꮃ
 	'\u13D4': 'T', // Ꮤ
 
@@ -317,7 +317,7 @@ const ZalgoSuspiciousThreshold = 3
 //
 // Implementation note: the longest run of consecutive Mn runes equals the
 // maximum marks-per-base because combining marks attach to the preceding base.
-// A run that begins at string start with no base character is still counted —
+// A run that begins at string start with no base character is still counted -
 // a stream of combining marks with no base is pathological either way.
 func ZalgoDensity(s string) int {
 	maxRun := 0
@@ -517,7 +517,7 @@ func FoldVowels(s string) string {
 // ForToolText applies normalization for MCP tool description scanning. Strips ALL
 // control chars and invisibles, then NFKC + confusable + marks + leetspeak +
 // whitespace. More aggressive than ForMatching because tool descriptions have no
-// legitimate control chars — any present are evasion attempts.
+// legitimate control chars - any present are evasion attempts.
 func ForToolText(s string) string {
 	s = StripControlChars(s)
 	s = norm.NFKC.String(s)

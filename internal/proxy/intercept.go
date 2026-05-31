@@ -365,7 +365,7 @@ func newInterceptHandler(
 		// silently dropped. Every other transport (CONNECT, fetch,
 		// WebSocket, reverse proxy) verifies-then-strips; the TLS-MITM
 		// inner request path is the only one that previously stripped
-		// without verifying — leaving forged or replayed inner-request
+		// without verifying - leaving forged or replayed inner-request
 		// envelopes unchecked when verify_inbound is enabled.
 		if ic.Proxy != nil {
 			if err := ic.Proxy.verifyInboundEnvelope(r, ic.Config); err != nil {
@@ -392,7 +392,7 @@ func newInterceptHandler(
 		}
 		// Strip inbound mediation envelope headers to prevent forgery.
 		// Runs after verification so verified envelopes from trusted
-		// peers do not survive to upstreams either — strip is
+		// peers do not survive to upstreams either - strip is
 		// unconditional; the verifier decides whether the envelope was
 		// trusted before we drop it.
 		envelope.StripInbound(r.Header)
@@ -492,7 +492,7 @@ func newInterceptHandler(
 		// Raw relay (relay.go) polls this per copy iteration. Intercepted
 		// tunnels must check per inner request. Use IsActiveForIP (not
 		// IsActiveHTTP) because inner request paths belong to the upstream
-		// origin — /health and /metrics exemptions must not apply here.
+		// origin - /health and /metrics exemptions must not apply here.
 		if ic.KillSwitch != nil {
 			d := ic.KillSwitch.IsActiveForIP(ic.ClientIP)
 			if d.Active {
@@ -501,7 +501,7 @@ func newInterceptHandler(
 				// sources, contract hash, generation). The runtime
 				// guarantees that KillSwitchActive=true returns
 				// Verdict=Block with WinningSource=KillSwitch, so we
-				// never branch on the verdict — kill switch always wins.
+				// never branch on the verdict - kill switch always wins.
 				if gate, gateErr := EvaluateGate(ContractGateInput{
 					Loader:           interceptContractLoader(ic),
 					Agent:            ic.Agent,
@@ -553,11 +553,11 @@ func newInterceptHandler(
 
 		// NOTE: outer guard keeps !IsProtective() (not IsAdaptiveNeutral) so
 		// that infrastructure errors still enter this branch and return 403
-		// (fail-closed). The neutral-handling is done inline below — hasFinding
+		// (fail-closed). The neutral-handling is done inline below - hasFinding
 		// stays false and the signal switch skips SignalBlock.
 		if !urlResult.Allowed && !urlResult.IsProtective() {
 			// Infrastructure errors (e.g. DNS resolver timeout) must not
-			// taint the finding flag — they are score-neutral and are not
+			// taint the finding flag - they are score-neutral and are not
 			// evidence of agent misbehavior. Fail-closed block still fires
 			// below; this only guards downstream "finding" logic such as
 			// clean-decay suppression.
@@ -640,7 +640,7 @@ func newInterceptHandler(
 				return
 			}
 			// Audit mode near-miss: URL was flagged but allowed. Infrastructure
-			// errors are score-neutral even here — resolver failures are not
+			// errors are score-neutral even here - resolver failures are not
 			// evidence of misbehavior and must not feed adaptive scoring via
 			// the audit path either.
 			if !urlResult.IsInfrastructureError() {
@@ -660,7 +660,7 @@ func newInterceptHandler(
 			a2aHdrResult := mcp.ScanA2AHeaders(r.Context(), r.Header, ic.Scanner, &ic.Config.A2AScanning)
 			if !a2aHdrResult.Clean {
 				// Infrastructure errors (DNS resolver failures on A2A-Extensions
-				// URIs) block the request but must not taint the finding flag —
+				// URIs) block the request but must not taint the finding flag -
 				// resolver wobble is not evidence of misbehavior, same rationale
 				// as the URL-scan path above.
 				if !a2aHdrResult.IsInfrastructureError() {
@@ -808,7 +808,7 @@ func newInterceptHandler(
 				// upgrades. Separate from api_allowlist (reachability) to avoid
 				// weakening scoring on general allowlisted hosts like github.com.
 				// Address protection findings and fail-closed body errors are NOT
-				// exempted — only DLP pattern matches.
+				// exempted - only DLP pattern matches.
 				dlpExempt := scannerLabel == scannerLabelBodyDLP &&
 					len(result.DLPMatches) > 0 &&
 					isAdaptiveExempt(r.URL.Hostname(), ic.Config.AdaptiveEnforcement.ExemptDomains)
@@ -819,7 +819,7 @@ func newInterceptHandler(
 				}
 
 				// Adaptive enforcement: upgrade the body action.
-				// Skip upgrade for DLP-exempt destinations — prevents
+				// Skip upgrade for DLP-exempt destinations - prevents
 				// legitimate LLM traffic from cascading into session blocks.
 				originalBodyAction := action
 				if !dlpExempt {
@@ -1578,7 +1578,7 @@ func newInterceptHandler(
 			resp.Header.Set("Content-Length", strconv.Itoa(len(respBody)))
 			// Delete body-derived validators. Content-MD5 is often
 			// set alongside ETag and describes a hash of the upstream
-			// bytes — stale after metadata stripping, and a client or
+			// bytes - stale after metadata stripping, and a client or
 			// intermediary that validates it will reject the response.
 			resp.Header.Del("ETag")
 			resp.Header.Del("Digest")
@@ -1717,7 +1717,7 @@ func newInterceptHandler(
 					action = config.ActionWarn
 				}
 				// Adaptive enforcement: upgrade the response action before the switch.
-				// Exempt domains skip upgrade — operator's trust decision overrides escalation.
+				// Exempt domains skip upgrade - operator's trust decision overrides escalation.
 				originalAction := action
 				if !interceptRespExempt {
 					action = decide.UpgradeAction(action, recEscalationLevel(ic.Recorder), &ic.Config.AdaptiveEnforcement)
@@ -1765,7 +1765,7 @@ func newInterceptHandler(
 					return
 				case config.ActionStrip:
 					// Record SignalStrip for adaptive enforcement scoring.
-					// Exempt domains skip scoring — findings are logged but don't escalate.
+					// Exempt domains skip scoring - findings are logged but don't escalate.
 					if !interceptRespExempt && ic.SessionMgr != nil && ic.Config.AdaptiveEnforcement.Enabled {
 						ceeSM := ic.SessionMgr
 						if ic.Proxy != nil {
@@ -1815,7 +1815,7 @@ func newInterceptHandler(
 
 		// Count intercepted request in stats so /stats reflects CONNECT traffic.
 		// Use agentAnonymous (bounded cardinality) since intercept handler
-		// doesn't resolve agent profiles — avoids Prometheus label explosion.
+		// doesn't resolve agent profiles - avoids Prometheus label explosion.
 		ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
 		interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
 			ActionID:  actionID,

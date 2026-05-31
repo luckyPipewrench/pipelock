@@ -28,8 +28,8 @@ func TestLearnLock_EffectiveModeFallsBackToShadow(t *testing.T) {
 	cases := map[string]string{
 		"":         LockModeShadow,
 		"unknown":  LockModeShadow,
-		"  live  ": LockModeShadow, // strict match — no whitespace coercion
-		"Live":     LockModeShadow, // strict match — case-sensitive
+		"  live  ": LockModeShadow, // strict match - no whitespace coercion
+		"Live":     LockModeShadow, // strict match - case-sensitive
 		"live":     LockModeLive,
 		"shadow":   LockModeShadow,
 		"capture":  LockModeCapture,

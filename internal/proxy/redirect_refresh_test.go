@@ -146,7 +146,7 @@ func TestCheckRedirect_RefreshesEnvelopeHop(t *testing.T) {
 	}
 
 	// Signature-Input must still exist and the signature must still
-	// declare @target-uri — the refresh had to re-sign over the new
+	// declare @target-uri - the refresh had to re-sign over the new
 	// URL, not carry over the stale signature from the first hop.
 	if finalSigInput == "" {
 		t.Fatal("final upstream received no Signature-Input header")
@@ -351,7 +351,7 @@ func TestCheckRedirect_ChainRefreshesHopMonotonically(t *testing.T) {
 	}))
 	t.Cleanup(hop2.Close)
 
-	// hop1: 302 to hop2 — this is the first hop after the original.
+	// hop1: 302 to hop2 - this is the first hop after the original.
 	hop1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, hop2.URL+"/leg2", http.StatusFound)
 	}))
@@ -400,7 +400,7 @@ func TestCheckRedirect_ChainRefreshesHopMonotonically(t *testing.T) {
 		t.Errorf("Hop on final refreshed envelope = %d, want 3", env.Hop)
 	}
 	// The final leg's target URL must match finalUpstream's /leg3
-	// path — proves @target-uri tracked the chain, not the original.
+	// path - proves @target-uri tracked the chain, not the original.
 	if !strings.HasSuffix(finalURL, "/leg3") {
 		t.Errorf("final captured URL = %q, expected /leg3 suffix", finalURL)
 	}

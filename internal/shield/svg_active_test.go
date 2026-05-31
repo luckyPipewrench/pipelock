@@ -197,7 +197,7 @@ func TestRewriteSVG_CombinedAttackVectors(t *testing.T) {
 // TestRewriteSVG_StripsHiddenTextPresentationAttributes exercises the
 // presentation-attribute form of the hidden-text attack, which SVG 1.1
 // allows in addition to the inline style= form. Every attacker who knows
-// about the style= strip will try display="none" next — this must catch
+// about the style= strip will try display="none" next - this must catch
 // all three variants.
 func TestRewriteSVG_StripsHiddenTextPresentationAttributes(t *testing.T) {
 	t.Parallel()

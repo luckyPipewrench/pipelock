@@ -20,7 +20,7 @@ const (
 
 // canonicalHashOf builds a fresh Config from Defaults(), applies mut, and
 // returns the canonical policy hash computed on that value. Using a fresh
-// value every time avoids any interaction with the atomic cache — that
+// value every time avoids any interaction with the atomic cache - that
 // way each subtest observes a true recomputation.
 func canonicalHashOf(t *testing.T, mut func(*Config)) string {
 	t.Helper()
@@ -96,7 +96,7 @@ func TestCanonicalPolicyHash_NoiseFieldsDoNotAffect(t *testing.T) {
 			mut:  func(c *Config) { c.MetricsListen = ":19997" },
 		},
 		{
-			// fetch_proxy.listen is operational plumbing — rebinding the
+			// fetch_proxy.listen is operational plumbing - rebinding the
 			// port does not change any enforcement decision. Explicitly
 			// excluded in policySemanticView so ops can move the listen
 			// address without shifting ph. See canonical.go.
@@ -436,7 +436,7 @@ func TestCanonicalPolicyHash_SetLikeSlicesSortedIntoCanonicalOrder(t *testing.T)
 func TestCanonicalPolicyHash_BehavioralSlicesPreserveOrder(t *testing.T) {
 	t.Parallel()
 
-	// DLP.Patterns is ordered — first-match-wins enforcement. Two
+	// DLP.Patterns is ordered - first-match-wins enforcement. Two
 	// otherwise-identical configs with the same patterns in different
 	// order MUST produce different canonical hashes, because they can
 	// produce different enforcement decisions on the same input.
@@ -480,7 +480,7 @@ func TestCanonicalPolicyHash_RawBytesInvariance(t *testing.T) {
 	// Two Config values with identical semantic shape but different
 	// rawBytes (from different whitespace / comment styles) must hash
 	// equally. rawBytes is an unexported field that json.Marshal skips,
-	// so this is true by construction — test is a guard against someone
+	// so this is true by construction - test is a guard against someone
 	// adding rawBytes to the canonical view by accident.
 	a := canonicalHashOf(t, func(c *Config) {
 		c.rawBytes = []byte("# a comment\nmode: balanced\n")
@@ -496,7 +496,7 @@ func TestCanonicalPolicyHash_RawBytesInvariance(t *testing.T) {
 func TestCanonicalPolicyHash_SortedCopyNilSafe(t *testing.T) {
 	t.Parallel()
 
-	// Nil in, nil out — documented so that an omitted-slice and an
+	// Nil in, nil out - documented so that an omitted-slice and an
 	// empty-slice hash identically.
 	if got := sortedCopy(nil); got != nil {
 		t.Errorf("sortedCopy(nil) = %v, want nil", got)

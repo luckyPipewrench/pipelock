@@ -23,7 +23,7 @@ func IsStandaloneInitMode() bool {
 }
 
 // bringUpLoopback brings up the loopback interface inside a new network
-// namespace using raw netlink syscalls. No external tools required — works
+// namespace using raw netlink syscalls. No external tools required - works
 // in minimal containers without iproute2.
 func bringUpLoopback() error {
 	return loopbackUp()

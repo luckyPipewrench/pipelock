@@ -904,7 +904,7 @@ func TestRunWSProxy_ParentContextCancellation(t *testing.T) {
 	_ = pw.Close()
 
 	wg.Wait()
-	// Should return context.Canceled or nil — not hang.
+	// Should return context.Canceled or nil - not hang.
 	if runErr != nil && !strings.Contains(runErr.Error(), "context canceled") {
 		t.Errorf("unexpected error: %v", runErr)
 	}

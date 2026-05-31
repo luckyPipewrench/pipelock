@@ -191,7 +191,7 @@ func TestURLDLP_WarnDoesNotPreventEnforceBlock(t *testing.T) {
 		hookCalled = append(hookCalled, patternName)
 	})
 
-	// URL with both warn and enforce matches — should be blocked by enforce.
+	// URL with both warn and enforce matches - should be blocked by enforce.
 	url := "https://example.com/?a=warnurl-AAAAAAAAAA&b=enforceurl-BBBBBBBBBB"
 	result := s.Scan(context.Background(), url)
 
@@ -225,7 +225,7 @@ func TestURLDLP_WarnMatchFromSubsequenceCombination(t *testing.T) {
 	})
 	s := New(cfg)
 
-	// Secret split across 3 query params — subsequence recombination should
+	// Secret split across 3 query params - subsequence recombination should
 	// produce a warn match instead of blocking.
 	url := "https://example.com/?a=staged-subseq-&x=junk&b=AABBCCDDEE&y=junk&c=FFEEDDCCBBAA"
 	result := s.Scan(context.Background(), url)
@@ -298,7 +298,7 @@ func TestFragmentBuffer_WarnPatternNotEnforced(t *testing.T) {
 
 	matches := fb.ScanForSecrets(context.Background(), "session-1", s)
 	// Warn-only cross-request matches must NOT appear in the enforcement
-	// return — CEE callers treat len(matches) > 0 as an enforcement signal.
+	// return - CEE callers treat len(matches) > 0 as an enforcement signal.
 	// The DLPWarnHook inside ScanTextForDLP handles audit emission.
 	if len(matches) != 0 {
 		t.Errorf("warn-only pattern should not produce enforcement matches, got %d", len(matches))
@@ -401,7 +401,7 @@ func TestDLPWarnHook_NilDoesNotPanic(t *testing.T) {
 	cfg := testDLPConfig("hook-nil", `hook-nil-[A-Za-z0-9]{10,}`, true)
 	s := New(cfg)
 
-	// No hook set — dlpWarnHook is nil by default.
+	// No hook set - dlpWarnHook is nil by default.
 	// Should not panic with nil hook.
 	s.ScanTextForDLP(context.Background(), "hook-nil-ABCDEFGHIJ1234")
 	s.Scan(context.Background(), "https://example.com/?key=hook-nil-ABCDEFGHIJ1234")

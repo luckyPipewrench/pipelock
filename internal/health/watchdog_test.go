@@ -158,7 +158,7 @@ func TestSnapshot_ScannerStale_ProbeOK_RebeatsAndHealthy(t *testing.T) {
 	clock.Advance(4 * testInterval)
 
 	// First Snapshot: scanner beat stale → probe runs → healthy.
-	// But watchdog beat is also stale because goroutine stopped — split that
+	// But watchdog beat is also stale because goroutine stopped - split that
 	// out by re-seeding selfBeat to "now" so we can isolate the scanner path.
 	w.selfBeat.Store(clock.Now().UnixNano())
 
@@ -474,7 +474,7 @@ func TestSnapshot_NeverStarted_WatchdogReportsHealthy(t *testing.T) {
 	clock := newFakeClock()
 	w := mustNew(t, Config{Interval: testInterval, Probe: okProbe, NowFn: clock.Now})
 
-	// Construct only — no Start. Tests that exercise handlers without the
+	// Construct only - no Start. Tests that exercise handlers without the
 	// full proxy lifecycle hit this path. Watchdog must report healthy
 	// because there is no goroutine that should be bumping selfBeat.
 	snap := w.Snapshot(context.Background(), allAlive)
@@ -500,7 +500,7 @@ func TestAgeScannerForTest_BackdatesBeat(t *testing.T) {
 	w.Stop()
 	w.selfBeat.Store(clock.Now().UnixNano()) // isolate from watchdog staleness
 
-	// Without aging, Snapshot uses the fresh seeded heartbeat — no probe.
+	// Without aging, Snapshot uses the fresh seeded heartbeat - no probe.
 	_ = w.Snapshot(ctx, allAlive)
 	if probe.calls.Load() != 0 {
 		t.Fatalf("probe ran without aging; expected 0 calls, got %d", probe.calls.Load())
@@ -535,7 +535,7 @@ func TestGoroutineBumpsSelfBeat(t *testing.T) {
 		if w.selfBeat.Load() > initial {
 			return
 		}
-		// Yield without sleeping — the ticker fires on real wallclock.
+		// Yield without sleeping - the ticker fires on real wallclock.
 		select {
 		case <-time.After(time.Millisecond):
 		case <-ctx.Done():

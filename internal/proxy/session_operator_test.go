@@ -13,7 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// Test-local constants for session operator helpers. goconst friendly —
+// Test-local constants for session operator helpers. goconst friendly -
 // any string that appears in 3+ places in this file gets a name.
 const (
 	operKey    = "agent-a|10.0.0.1"

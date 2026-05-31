@@ -1189,7 +1189,7 @@ func TestSessionManager_CleanupLoop_DoneStops(t *testing.T) {
 	sm.Close()
 
 	// After Close, the session should still exist (cleanup loop stopped before
-	// the timer fired, or the timer fired and cleaned up — both are valid).
+	// the timer fired, or the timer fired and cleaned up - both are valid).
 	// The key invariant: no panic, no goroutine leak, no race.
 }
 
@@ -1369,7 +1369,7 @@ func TestSessionState_TryAutoRecover_CustomBlockAllAtLowerLevel(t *testing.T) {
 	if to != 1 {
 		t.Errorf("expected to=1, got %d", to)
 	}
-	// blockAllCheck(1) returns true — session stays blocked at the lower level.
+	// blockAllCheck(1) returns true - session stays blocked at the lower level.
 	if !sess.BlockAll() {
 		t.Error("expected atBlockAll=true at level 1 with custom config")
 	}
@@ -1664,7 +1664,7 @@ func TestSessionManager_RecomputeBlockAllOnConfigChange(t *testing.T) {
 
 	sess := sm.GetOrCreate(testClient)
 
-	// Session at level 2 (high) — not block_all in current config.
+	// Session at level 2 (high) - not block_all in current config.
 	sess.mu.Lock()
 	sess.escalationLevel = 2
 	sess.mu.Unlock()
@@ -3006,7 +3006,7 @@ func TestSessionManager_BaselineEvictionOnCleanup(t *testing.T) {
 	sess.lastActivity = time.Now().Add(-2 * time.Minute)
 	sess.mu.Unlock()
 
-	// Run cleanup — should evict and record baseline.
+	// Run cleanup - should evict and record baseline.
 	sm.cleanup()
 
 	// Session should be removed.

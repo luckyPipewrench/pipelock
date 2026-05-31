@@ -803,8 +803,8 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 // reload case. The previous field-by-field guard only preserved ReverseProxy
 // when listen/enabled/upstream changed, so a reload that flipped ONLY the
 // profile slipped through: the submit gate would read the new profile from the
-// live config while the SSRF-safe dialer — installed on the transport at
-// startup — stayed frozen. With the whole struct compared, a profile-only
+// live config while the SSRF-safe dialer - installed on the transport at
+// startup - stayed frozen. With the whole struct compared, a profile-only
 // change is preserved until restart like every other reverse_proxy field.
 func TestServer_Reload_ReverseProxyProfileOnlyIgnored(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
@@ -816,7 +816,7 @@ func TestServer_Reload_ReverseProxyProfileOnlyIgnored(t *testing.T) {
 	oldCfg := s.proxy.CurrentConfig()
 
 	// Change ONLY the profile (and a submit-listener field). Listen, enabled,
-	// and upstream are untouched — the old guard would not have fired.
+	// and upstream are untouched - the old guard would not have fired.
 	newCfg := oldCfg.Clone()
 	newCfg.ReverseProxy.Profile = "submit"
 	newCfg.ReverseProxy.RequestTimeoutSeconds = 30

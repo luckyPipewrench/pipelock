@@ -6,7 +6,7 @@ package audit
 import "context"
 
 // EventDLPWarn is emitted when a warn-mode DLP pattern matches.
-// The match is informational only — no enforcement action is taken.
+// The match is informational only - no enforcement action is taken.
 const EventDLPWarn EventType = "dlp_warn"
 
 // LogDLPWarn emits an audit event for a DLP pattern match in warn mode.

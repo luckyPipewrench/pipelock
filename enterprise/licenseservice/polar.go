@@ -130,7 +130,7 @@ const webhookTimestampTolerance = 5 * time.Minute
 // The signed content is "{msg_id}.{timestamp}.{body}". Standard Webhooks
 // secrets have a "whsec_" prefix with base64-encoded key material. Polar
 // secrets (prefixed "polar_whs_") use the full secret string as raw HMAC
-// key bytes — no prefix stripping, no base64 decoding.
+// key bytes - no prefix stripping, no base64 decoding.
 func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, secret string) error {
 	if msgID == "" {
 		return fmt.Errorf("missing webhook-id header")
@@ -160,7 +160,7 @@ func ValidateWebhookSignature(body []byte, msgID, timestamp, signatureHeader, se
 	// Polar (polar_whs_ prefix or other): use the ENTIRE secret string
 	// as raw HMAC key bytes. Polar does NOT follow Standard Webhooks
 	// key derivation despite using the same signing envelope. Confirmed
-	// empirically — no prefix stripping, no base64 decoding.
+	// empirically - no prefix stripping, no base64 decoding.
 	var secretBytes []byte
 	if strings.HasPrefix(secret, "whsec_") {
 		decoded, err := base64.StdEncoding.DecodeString(secret[6:])

@@ -122,7 +122,7 @@ func resolvePolicy(workspace string) Policy {
 	var p Policy
 	if err := json.Unmarshal([]byte(policyJSON), &p); err != nil {
 		// Fail closed: corrupted policy could widen access if we fall back
-		// to defaults. Log the error and exit — the parent validated this
+		// to defaults. Log the error and exit - the parent validated this
 		// JSON before passing it, so corruption indicates a real problem.
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: invalid policy JSON: %v\n", err)
 		os.Exit(1)

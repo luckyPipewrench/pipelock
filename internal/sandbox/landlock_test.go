@@ -311,7 +311,7 @@ func TestBuildRules_HandlesNonexistentPaths(t *testing.T) {
 // TestLandlock_InheritedByChild verifies that Landlock restrictions are
 // inherited by child processes spawned from the sandboxed process.
 // The sandboxed child spawns a grandchild (via shell) that attempts to
-// read HOME — it should be blocked by the inherited Landlock domain.
+// read HOME - it should be blocked by the inherited Landlock domain.
 func TestLandlock_InheritedByChild(t *testing.T) {
 	if runtime.GOOS != osLinux {
 		t.Skip("landlock requires linux")

@@ -163,7 +163,7 @@ func TestForwardHTTP_EnvelopeSignedRedirectChain(t *testing.T) {
 // TestForwardHTTP_EnvelopeSignedPOST exercises the forward HTTP proxy
 // signing path for body-bearing POST requests. This covers the
 // forwardBodyBytes hoisting, InjectAndSign with body, GetBody
-// installation, and Content-Digest computation in handleForwardHTTP —
+// installation, and Content-Digest computation in handleForwardHTTP -
 // all of which are uncovered by GET-only tests.
 func TestForwardHTTP_EnvelopeSignedPOST(t *testing.T) {
 	t.Parallel()

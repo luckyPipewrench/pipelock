@@ -929,7 +929,7 @@ func TestMergeAgentProfile_SandboxNilInherits(t *testing.T) {
 	cfg.Sandbox.Strict = true
 	cfg.Sandbox.Workspace = testBaseWorkspace
 
-	// Profile with nil Sandbox — should inherit everything from base.
+	// Profile with nil Sandbox - should inherit everything from base.
 	profile := &config.AgentProfile{}
 	merged, err := MergeAgentProfile(cfg, profile)
 	if err != nil {
@@ -1018,7 +1018,7 @@ func TestMergeAgentProfile_SandboxBestEffortInherits(t *testing.T) {
 	cfg := testConfig()
 	cfg.Sandbox.BestEffort = true
 
-	// Profile with nil BestEffort — should inherit from base.
+	// Profile with nil BestEffort - should inherit from base.
 	profile := &config.AgentProfile{
 		Sandbox: &config.AgentSandboxOverride{},
 	}
@@ -1102,7 +1102,7 @@ func TestMergeAgentProfile_TrustedDomainsNilInherits(t *testing.T) {
 	cfg := testConfig()
 	cfg.TrustedDomains = []string{"inherited.example.com"}
 
-	// Profile with nil TrustedDomains — should inherit from base.
+	// Profile with nil TrustedDomains - should inherit from base.
 	profile := &config.AgentProfile{}
 	merged, err := MergeAgentProfile(cfg, profile)
 	if err != nil {

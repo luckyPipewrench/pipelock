@@ -5,7 +5,7 @@ package main
 
 // `pipelock-verifier replay` re-evaluates a Pipelock action receipt against
 // a current policy. The point: turn receipts from "what happened" into
-// "what would happen today under current policy" — the governance-evidence
+// "what would happen today under current policy" - the governance-evidence
 // shift. Codex 2026-05-21 leadership review framed this as the
 // load-bearing primitive for receipts as evidence rather than logs.
 //
@@ -197,7 +197,7 @@ func runReplay(stdout, stderr io.Writer, receiptPath string, opts replayOptions)
 
 // verdictsAgree compares an original receipt verdict (block / allow / warn /
 // strip / redirect / ask / forward) against a replay verdict (block / allow).
-// Warn and strip are "soft allows" — they let the action through with a
+// Warn and strip are "soft allows" - they let the action through with a
 // finding logged. Redirect, ask, forward are also "soft allows" relative
 // to a binary block/allow comparison.
 func verdictsAgree(original, replay string) bool {

@@ -90,7 +90,7 @@ func applyMediaPolicy(cfg *config.Config, contentType string, body []byte) Media
 	// it falls under the policy's scope.
 	//
 	// We do NOT override explicit non-generic declarations like text/html
-	// or application/pdf — those are deliberate content-type claims that
+	// or application/pdf - those are deliberate content-type claims that
 	// the upstream may well honor. The attacker path this closes is the
 	// common case of a raw byte dump with no or default Content-Type.
 	if !isMediaType(mt) && contentTypeIsGeneric(mt) && len(body) > 0 {

@@ -113,7 +113,7 @@ func (r *Reloader) tryReload() {
 	// Coalesce-to-latest: the buffer holds one pending config. If the consumer
 	// has not drained the previous reload, replace it with this fresher one
 	// rather than dropping the new config. Dropping the NEW config would strand
-	// the proxy on a STALE pending config — e.g. write a weak config, then
+	// the proxy on a STALE pending config - e.g. write a weak config, then
 	// quickly write a stronger one before the slow reload (scanner rebuild)
 	// drains: the strong config would be lost and the weak one applied. Always
 	// keeping the latest Load() result avoids that security-relevant inversion.

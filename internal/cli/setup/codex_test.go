@@ -443,7 +443,7 @@ func TestPlanCodexInstall(t *testing.T) {
 func TestPlanCodexInstall_DifferentPipelockBinIsSkipped(t *testing.T) {
 	// Server is wrapped with an OLDER pipelock binary path (e.g.,
 	// /tmp/pipelock-dev or a previous install location). A fresh install from
-	// a different pipelock binary must NOT re-wrap it — that would produce
+	// a different pipelock binary must NOT re-wrap it - that would produce
 	// nested `pipelock proxy -- pipelock proxy -- node x.js` and break unwrap.
 	// Detection keys on basename "pipelock" + canonical args prefix, not on
 	// exact-match against the running pipelock path.
@@ -917,7 +917,7 @@ func TestRunCodexInstall_RealInstall(t *testing.T) {
 }
 
 func TestRunCodexInstall_AlreadyWrappedSkipped(t *testing.T) {
-	// Wrapped server's command is a "pipelock" basename at any path —
+	// Wrapped server's command is a "pipelock" basename at any path -
 	// detection is location-independent so a server wrapped by an earlier
 	// pipelock binary at a different path is still treated as already-wrapped.
 	listJSON := `[{
@@ -984,7 +984,7 @@ func TestRunCodexInstall_URLServer(t *testing.T) {
 }
 
 func TestRunCodexInstall_UnsupportedTransport(t *testing.T) {
-	// Stdio transport with empty command — falls through to skip-unsupported.
+	// Stdio transport with empty command - falls through to skip-unsupported.
 	listJSON := `[{
 		"name": "weird",
 		"enabled": true,

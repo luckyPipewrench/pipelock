@@ -132,7 +132,7 @@ func TestHandler_RequiresFullNamespaceOnList(t *testing.T) {
 // TestHandler_EnforcesKeyBinding rejects valid signatures whose signing
 // key is configured with a tenant binding that does not match the
 // envelope's namespace. Binding enforcement runs AFTER signature
-// verification — only proven-possession keys can trip it.
+// verification - only proven-possession keys can trip it.
 func TestHandler_EnforcesKeyBinding(t *testing.T) {
 	pub, priv, err := signing.GenerateKeyPair()
 	if err != nil {
@@ -157,7 +157,7 @@ func TestHandler_EnforcesKeyBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// signedEnvelope uses org-test/fleet-prod/instance-a — does NOT match the binding.
+	// signedEnvelope uses org-test/fleet-prod/instance-a - does NOT match the binding.
 	payload := []byte(`{"events":[{"message":"clean"}]}`)
 	mismatch := signedEnvelope(t, "batch-binding-fail", 1, 1, payload, priv)
 	resp := postBatch(t, handler, mismatch, payload)
@@ -261,13 +261,13 @@ func TestStore_DetectForkUsesSeqRangeOverlap(t *testing.T) {
 		t.Fatalf("third = %d body=%s", resp.Code, resp.Body.String())
 	}
 
-	// A new batch with seq [3,4] does NOT overlap either — must succeed.
+	// A new batch with seq [3,4] does NOT overlap either - must succeed.
 	middle := signedEnvelope(t, "batch-non-overlap-2", 3, 4, []byte(`{"events":[{"m":"b"}]}`), priv)
 	if resp := postBatch(t, handler, middle, []byte(`{"events":[{"m":"b"}]}`)); resp.Code != http.StatusAccepted {
 		t.Fatalf("middle = %d body=%s; non-overlapping seq window should not trigger fork", resp.Code, resp.Body.String())
 	}
 
-	// A batch with seq [2,3] DOES overlap [1,2] — must be flagged.
+	// A batch with seq [2,3] DOES overlap [1,2] - must be flagged.
 	overlap := signedEnvelope(t, "batch-overlap", 2, 3, []byte(`{"events":[{"m":"z"}]}`), priv)
 	if resp := postBatch(t, handler, overlap, []byte(`{"events":[{"m":"z"}]}`)); resp.Code != http.StatusConflict {
 		t.Fatalf("overlap = %d body=%s; overlapping seq with different content must conflict", resp.Code, resp.Body.String())

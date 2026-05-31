@@ -418,7 +418,7 @@ func TestEvaluateMCP_RejectsEmptyServerOrTool(t *testing.T) {
 func TestEvaluateMCP_RejectsUnsupportedRuleLifecycle(t *testing.T) {
 	t.Parallel()
 	rule := mcpEnforceRule("r-bad", nil)
-	rule.LifecycleState = "enforce " // trailing space — bypass attempt
+	rule.LifecycleState = "enforce " // trailing space - bypass attempt
 	resolved := mcpResolved(rule)
 	_, err := EvaluateMCP(EvaluateMCPOptions{
 		Resolved:       &resolved,
@@ -805,7 +805,7 @@ func mcpResolved(rules ...contract.Rule) ResolvedContract {
 // mcpEnforceRule builds a LifecycleEnforce mcp_tool_call rule for tests.
 // All current tests use mcpTestServer + mcpTestTool; broaden to
 // parameters when a future test exercises a different upstream server
-// or tool. args is optional — pass nil for unconstrained server+tool
+// or tool. args is optional - pass nil for unconstrained server+tool
 // match, or a list of {key, value} maps for arg-equality matching.
 func mcpEnforceRule(ruleID string, args []map[string]any) contract.Rule {
 	selector := map[string]any{

@@ -215,7 +215,7 @@ func (w *fsWatcher) Close() error {
 	// queued event writes to the maps after we nil them.
 	err := w.watcher.Close()
 
-	// Now safe to collect and clear pending state — event loop is done.
+	// Now safe to collect and clear pending state - event loop is done.
 	w.mu.Lock()
 	pendingPaths := make([]string, 0, len(w.timers))
 	pendingAgent := make([]bool, 0, len(w.timers))
@@ -238,12 +238,12 @@ func (w *fsWatcher) Close() error {
 }
 
 // addRecursive walks a directory tree and adds an fsnotify watch on every
-// subdirectory. Files themselves don't need watches — directory watches
+// subdirectory. Files themselves don't need watches - directory watches
 // catch all file events within them.
 func (w *fsWatcher) addRecursive(root string) error {
 	// Verify root exists and is a directory. WalkDir silently returns nil
 	// for nonexistent paths, which would leave us watching nothing.
-	// Files are rejected — inotify watches directories, not individual files.
+	// Files are rejected - inotify watches directories, not individual files.
 	info, err := os.Stat(root)
 	if err != nil {
 		return fmt.Errorf("watch root: %w", err)
@@ -269,7 +269,7 @@ func (w *fsWatcher) addRecursive(root string) error {
 
 // handleEvent processes a single fsnotify event.
 func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
-	// New directory created — add a recursive watch so we catch writes inside it.
+	// New directory created - add a recursive watch so we catch writes inside it.
 	// Errors here are non-fatal: the initial Arm() call fail-closes on watch
 	// failures, but runtime directory creation is best-effort. We log failures
 	// so the operator can see the gap.
@@ -291,7 +291,7 @@ func (w *fsWatcher) handleEvent(ctx context.Context, ev fsnotify.Event) {
 		return
 	}
 
-	// Skip directories — we only scan file content.
+	// Skip directories - we only scan file content.
 	if info, err := os.Stat(ev.Name); err != nil || info.IsDir() {
 		return
 	}
@@ -402,7 +402,7 @@ func (w *fsWatcher) flushScan(path string, isAgent bool) {
 			IsAgent:     isAgent,
 		}:
 		case <-time.After(flushSendTimeout):
-			// Timed out — consumer stopped reading. Log but don't block
+			// Timed out - consumer stopped reading. Log but don't block
 			// shutdown indefinitely. Buffer is 64, so this only fires
 			// when the consumer is truly gone.
 			if w.onError != nil {
@@ -488,7 +488,7 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent bool, check
 		select {
 		case w.findings <- f:
 		default:
-			// Channel full — drop finding rather than blocking the watcher.
+			// Channel full - drop finding rather than blocking the watcher.
 		}
 		if checkClosed {
 			w.mu.Unlock()

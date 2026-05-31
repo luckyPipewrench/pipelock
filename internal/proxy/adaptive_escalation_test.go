@@ -1713,7 +1713,7 @@ func TestForwardHTTP_Adaptive_ResponseScan_WarnUpgradeToBlock(t *testing.T) {
 
 // TestForwardHTTP_Adaptive_ResponseScan_StripRecordsSignal verifies that when
 // the response scan action is strip and a forward proxy session receives an
-// injected response, SignalStrip is recorded in the session — matching the
+// injected response, SignalStrip is recorded in the session - matching the
 // strip-signal behavior in fetch (filterAndActOnResponseScan) and WebSocket
 // (upstreamToClient).
 func TestForwardHTTP_Adaptive_ResponseScan_StripRecordsSignal(t *testing.T) {
@@ -1773,7 +1773,7 @@ func TestAdaptive_RateLimitBlock_NoEscalation(t *testing.T) {
 	}
 	defer p.Close()
 
-	// 10 protective blocks — should NOT escalate.
+	// 10 protective blocks - should NOT escalate.
 	for i := 0; i < 10; i++ {
 		p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org",
 			fmt.Sprintf("req-%d", i),
@@ -1830,7 +1830,7 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 		t.Fatal("expected non-zero score after DLP block")
 	}
 
-	// Protective block with deferClean=false — should NOT change score.
+	// Protective block with deferClean=false - should NOT change score.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
 		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
 		cfg, logger, false)
@@ -1839,7 +1839,7 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 			scoreAfterDLP, sess.ThreatScore())
 	}
 
-	// Clean repeat request with deferClean=false — SHOULD decay. Use an
+	// Clean repeat request with deferClean=false - SHOULD decay. Use an
 	// already-seen hostname so this test isolates rate-limit neutrality from
 	// adaptive domain-burst scoring.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-clean",
@@ -1924,7 +1924,7 @@ func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Rate limit block in audit mode — score should stay at 0.
+	// Rate limit block in audit mode - score should stay at 0.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
 		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},
 		cfg, logger, false)
@@ -1935,7 +1935,7 @@ func TestAdaptive_RateLimitBlock_AuditMode_ScoreNeutral(t *testing.T) {
 		t.Errorf("ThreatScore = %v, want 0 in audit mode after protective block", sess.ThreatScore())
 	}
 
-	// Clean repeat request — verify no crash and score stays 0. Use an
+	// Clean repeat request - verify no crash and score stays 0. Use an
 	// already-seen hostname so this test isolates rate-limit neutrality from
 	// adaptive domain-burst scoring.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-clean",
@@ -1984,7 +1984,7 @@ func TestAdaptive_RateLimitBlock_AuditMode_AlreadyEscalated(t *testing.T) {
 		t.Fatal("expected escalation after DLP blocks")
 	}
 
-	// Protective block on already-escalated session — score may decay (clean
+	// Protective block on already-escalated session - score may decay (clean
 	// decay fires on protective results) but must never escalate further.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-rl",
 		scanner.Result{Allowed: false, Scanner: scanner.ScannerRateLimit, Score: 0.7, Class: scanner.ClassProtective},

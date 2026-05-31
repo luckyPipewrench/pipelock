@@ -328,7 +328,7 @@ func actionRemoveWrapper(label, name string) step {
 
 // actionRemoveToolWrappers removes every wrapper listed in the inventory.
 // Falls back to the static defaultToolWrappers list when the inventory is
-// missing — that's the case when rollback runs against a half-installed
+// missing - that's the case when rollback runs against a half-installed
 // system where the inventory was never written.
 func actionRemoveToolWrappers() step {
 	return step{

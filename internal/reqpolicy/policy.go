@@ -5,7 +5,7 @@
 // allow-by-default deny/warn safety rails on outbound HTTP API operations.
 //
 // It is independent of request_body_scanning and complementary to the
-// learn-lock contract gate — it is neither a DLP scanner nor a behavioral
+// learn-lock contract gate - it is neither a DLP scanner nor a behavioral
 // allowlist. It matches on route (host / effective method / normalized path /
 // content type) and optional extracted operations such as GraphQL root fields.
 // The Matcher precompiles rule regexes once at config (re)load; Evaluate is
@@ -37,8 +37,8 @@ var methodOverrideHeaders = []string{"X-HTTP-Method-Override", "X-Method-Overrid
 const maxUnescapeRounds = 5
 
 // RequestMeta is the transport-neutral view of an outbound request that
-// Evaluate needs. Transports build it once — after computing the effective
-// method and normalizing the path — and pass it in.
+// Evaluate needs. Transports build it once - after computing the effective
+// method and normalizing the path - and pass it in.
 type RequestMeta struct {
 	Host        string // lowercased hostname, no port
 	Method      string // effective HTTP method, uppercased
@@ -350,8 +350,8 @@ func (m *Matcher) EvaluateUninspectable(meta RequestMeta, action string, kind Bo
 // Stricter returns the stricter of two decisions using the same ordering
 // Evaluate applies internally: block > warn > allow, and at equal action an
 // enforced decision beats a shadow one. A transport that evaluates the same
-// request under more than one effective method — to stop a method-override
-// header from downgrading a method-scoped rule, per EffectiveMethod's caveat —
+// request under more than one effective method - to stop a method-override
+// header from downgrading a method-scoped rule, per EffectiveMethod's caveat -
 // combines the per-method results with this.
 func Stricter(a, b Decision) Decision {
 	if betterDecision(a, b) {

@@ -156,7 +156,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 	instanceID := q.Get("instance_id")
 	// Require the full namespace tuple on list. Without it, an
 	// authorized reader could enumerate every tenant's batches in
-	// one request — even on a single-tenant deployment that's
+	// one request - even on a single-tenant deployment that's
 	// information disclosure we don't need to grant.
 	if orgID == "" || fleetID == "" || instanceID == "" {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: org_id, fleet_id, and instance_id are required", ErrInvalidRequestBody))
@@ -232,8 +232,8 @@ func (h *Handler) checkReaderAuth(r *http.Request) error {
 
 // enforceBindings rejects an envelope whose signers include any keys
 // whose configured binding does not match the envelope's namespace.
-// Every signature that contributed to verification is checked — not
-// just the threshold — so a single bound key being used outside its
+// Every signature that contributed to verification is checked - not
+// just the threshold - so a single bound key being used outside its
 // scope rejects the entire batch even if other unbound keys also
 // signed. Keys with no binding entry are unrestricted.
 func (h *Handler) enforceBindings(env conductor.AuditBatchEnvelope) error {

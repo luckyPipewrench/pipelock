@@ -1040,7 +1040,7 @@ func TestScanDiffCmd_InvalidFormat(t *testing.T) {
 }
 
 func TestScanDiffCmd_SARIF_HighSeverity(t *testing.T) {
-	// Google API Key has severity "high" — should map to SARIF "error", not "note".
+	// Google API Key has severity "high" - should map to SARIF "error", not "note".
 	diff := "diff --git a/config.go b/config.go\n--- a/config.go\n+++ b/config.go\n@@ -1,2 +1,3 @@\n package config\n+var key = \"" + "AIza" + "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" + "A\"\n\n"
 
 	r, w, _ := os.Pipe()

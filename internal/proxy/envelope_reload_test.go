@@ -48,7 +48,7 @@ func writeEnvelopeKey(t *testing.T) string {
 }
 
 // envelopeReloadProxy builds a minimal Proxy suitable for exercising
-// the envelope reload path. No recorder, no receipt emitter — the
+// the envelope reload path. No recorder, no receipt emitter - the
 // envelope reload lane is independent of flight recorder state.
 func envelopeReloadProxy(t *testing.T) *Proxy {
 	t.Helper()
@@ -270,7 +270,7 @@ func TestProxy_ReloadEnvelopeEmitter_AbortsOnMissingKey(t *testing.T) {
 	brokenCfg := config.Defaults()
 	brokenCfg.Internal = nil
 	brokenCfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	// Skip cfg.Validate() here — we want to exercise the reload-time
+	// Skip cfg.Validate() here - we want to exercise the reload-time
 	// key read path, not startup validation. Load() would reject the
 	// missing file earlier.
 	brokenCfg.MediationEnvelope.Enabled = true
@@ -284,7 +284,7 @@ func TestProxy_ReloadEnvelopeEmitter_AbortsOnMissingKey(t *testing.T) {
 	brokenSc := scanner.New(brokenCfg)
 	p.Reload(brokenCfg, brokenSc)
 
-	// The envelope emitter pointer must be unchanged — same *Emitter
+	// The envelope emitter pointer must be unchanged - same *Emitter
 	// value, same signer key id. If reloadEnvelopeEmitter did install
 	// a fresh emitter without a signer, or Reload swapped config with
 	// the old signer still on the emitter, this assertion fails.
@@ -296,7 +296,7 @@ func TestProxy_ReloadEnvelopeEmitter_AbortsOnMissingKey(t *testing.T) {
 		t.Fatal("post-abort emitter lost its signer")
 	}
 
-	// The config pointer must also be unchanged — the fail-closed
+	// The config pointer must also be unchanged - the fail-closed
 	// contract is that a broken envelope signer aborts the WHOLE
 	// reload, not just the envelope slot.
 	if p.cfgPtr.Load() != beforeCfg {
@@ -682,7 +682,7 @@ func signAndCaptureForTest(t *testing.T, em *envelope.Emitter, path string) capt
 	return capturedSignature{base: b.String(), sigBytes: sigBytes}
 }
 
-// verifySigForTest runs ed25519.Verify without failing the test —
+// verifySigForTest runs ed25519.Verify without failing the test -
 // tests that want success call it and assert the return value.
 func verifySigForTest(t *testing.T, pub ed25519.PublicKey, base string, sig []byte) bool {
 	t.Helper()
@@ -745,7 +745,7 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 		pubKeys[i] = pub
 	}
 
-	// Shared-path key file — each reload overwrites this from one
+	// Shared-path key file - each reload overwrites this from one
 	// of the pre-generated sources.
 	sharedPath := filepath.Join(keyDir, "shared.key")
 	if err := copyFileForTest(keyPaths[0], sharedPath); err != nil {
@@ -755,7 +755,7 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	// Disable the per-source-IP rate limit — the soak intentionally
+	// Disable the per-source-IP rate limit - the soak intentionally
 	// fires 200 hits from a single test client so we would otherwise
 	// collide with the default 20/minute cap and see 429s that have
 	// nothing to do with signing correctness.

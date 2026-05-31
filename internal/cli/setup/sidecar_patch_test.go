@@ -510,7 +510,7 @@ func TestGenerateSidecarPatch_MCPDisableScrubsAnnotationsAndEnv(t *testing.T) {
 	// Re-running init sidecar without --mcp-upstream after a prior run with
 	// it must remove the agent-side contract entirely. Otherwise the agent
 	// keeps PIPELOCK_MCP_PROXY_URL pointed at a Service port the
-	// regenerated companion no longer exposes — a silent feature drift.
+	// regenerated companion no longer exposes - a silent feature drift.
 	manifest, err := detectWorkload(testdataPath(t, "deployment.yaml"))
 	if err != nil {
 		t.Fatalf("detectWorkload: %v", err)

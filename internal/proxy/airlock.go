@@ -229,7 +229,7 @@ func (a *AirlockState) TryDeescalate(timers *config.AirlockTimers) (changed bool
 func (a *AirlockState) RegisterCancel(cancel context.CancelFunc) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	// If already at hard/drain, cancel immediately — the escalation
+	// If already at hard/drain, cancel immediately - the escalation
 	// that would have torn this down already fired before registration.
 	if a.tier == config.AirlockTierHard || a.tier == config.AirlockTierDrain {
 		cancel()

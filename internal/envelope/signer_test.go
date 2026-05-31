@@ -19,7 +19,7 @@ import (
 
 // newTestRequest wraps http.NewRequestWithContext with a background
 // context so the tests stay noctx-lint clean without any per-caller
-// ceremony. Tests never need a deadline — the signer does not talk
+// ceremony. Tests never need a deadline - the signer does not talk
 // to the network.
 func newTestRequest(t *testing.T, method, url string, body *strings.Reader) *http.Request {
 	t.Helper()
@@ -308,7 +308,7 @@ func TestSignRequest_GETDropsContentDigest(t *testing.T) {
 
 // TestSignRequest_OverSizedBodyDropsContentDigest proves that a body
 // larger than MaxBodyBytes is treated as a body-less request from the
-// signer's perspective — the declared list drops content-digest
+// signer's perspective - the declared list drops content-digest
 // instead of partially-digesting the payload or failing outright.
 func TestSignRequest_OverSizedBodyDropsContentDigest(t *testing.T) {
 	t.Parallel()

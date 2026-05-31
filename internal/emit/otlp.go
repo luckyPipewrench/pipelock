@@ -100,7 +100,7 @@ func NewOTLPSink(endpoint, version string, minSev Severity, headers map[string]s
 		queueSize = DefaultOTLPQueueSize
 	}
 
-	// Resource carries stable attributes. instance_id is NOT baked here —
+	// Resource carries stable attributes. instance_id is NOT baked here -
 	// it comes from the event (set by the Emitter) so it stays consistent
 	// with webhook/syslog across hot-reloads.
 	resource := &respb.Resource{

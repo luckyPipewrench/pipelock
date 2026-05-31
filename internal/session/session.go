@@ -18,16 +18,16 @@ import (
 type SignalType int
 
 const (
-	SignalBlock                      SignalType = iota // +3 — hard block from any scanner/transport
-	SignalNearMiss                                     // +1 — warn-level finding from any scanner/transport
-	SignalDomainAnomaly                                // +2 — domain burst detection
-	SignalEntropyBudget                                // +2 — CEE entropy exceeded
-	SignalFragmentDLP                                  // +3 — CEE fragment reassembly found secret
-	SignalStrip                                        // +2 — active mitigation, repeated stripping = sustained attack
-	SignalShieldRewrite                                // +0.25 — Browser Shield rewrote browser-side probes/traps
-	SignalIPDomainAnomaly                              // +3 — IP-level domain burst across agent identities
-	SignalDomainAnomalyCooperative                     // +0.4 — downweighted domain burst from cooperative tool UA
-	SignalIPDomainAnomalyCooperative                   // +0.6 — downweighted IP burst from cooperative tool UA
+	SignalBlock                      SignalType = iota // +3 - hard block from any scanner/transport
+	SignalNearMiss                                     // +1 - warn-level finding from any scanner/transport
+	SignalDomainAnomaly                                // +2 - domain burst detection
+	SignalEntropyBudget                                // +2 - CEE entropy exceeded
+	SignalFragmentDLP                                  // +3 - CEE fragment reassembly found secret
+	SignalStrip                                        // +2 - active mitigation, repeated stripping = sustained attack
+	SignalShieldRewrite                                // +0.25 - Browser Shield rewrote browser-side probes/traps
+	SignalIPDomainAnomaly                              // +3 - IP-level domain burst across agent identities
+	SignalDomainAnomalyCooperative                     // +0.4 - downweighted domain burst from cooperative tool UA
+	SignalIPDomainAnomalyCooperative                   // +0.6 - downweighted IP burst from cooperative tool UA
 )
 
 // SignalPoints maps signal types to their score contribution.
@@ -113,7 +113,7 @@ func NextInvocationKey(prefix string) string {
 //
 // Task IDs are emitted in envelopes, MCP _meta, action receipts, and
 // session snapshots. They are correlation identifiers, not auth
-// tokens — but they leave the trust boundary, so using opaque
+// tokens - but they leave the trust boundary, so using opaque
 // high-entropy UUIDv7 values prevents downstream components from
 // treating a monotonically-predictable "task-N" sequence as
 // meaningful context. Matches the UUIDv7 pattern already used for
@@ -122,7 +122,7 @@ func NextTaskID() string {
 	id, err := uuid.NewV7()
 	if err != nil {
 		// UUIDv7 generation fails only when crypto/rand or the
-		// clock is broken — neither happens in practice. Emit a
+		// clock is broken - neither happens in practice. Emit a
 		// sentinel that is clearly non-colliding and easy to
 		// grep for if it ever appears in a receipt.
 		return "task-00000000-0000-7000-8000-000000000000"

@@ -245,7 +245,7 @@ func TestScrubSigV4Credential(t *testing.T) {
 		t.Parallel()
 		raw := buildSigV4URL(t, fakeAKIAExample, "3600", "")
 		parsed := mustParseURL(t, raw)
-		// Pass an AKIA different from what's in the URL — defensive guard.
+		// Pass an AKIA different from what's in the URL - defensive guard.
 		scrubbed := scrubSigV4Credential(parsed, fakeASIAExample)
 		if scrubbed.Query().Get("X-Amz-Credential") != fakeAKIAExample+"/"+validSigV4Scope {
 			t.Errorf("scrub fired when AKIA did not match the credential value")
@@ -466,7 +466,7 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 
 	t.Run("a3t_prefix_19_chars_rejected", func(t *testing.T) {
 		t.Parallel()
-		// "A3T" + 16 alphanumerics = 19 chars total — must be rejected.
+		// "A3T" + 16 alphanumerics = 19 chars total - must be rejected.
 		shortA3T := "A3T" + "ABCDEFGHIJKLMNOP" // 3 + 16 = 19
 		raw := strings.Replace(
 			buildSigV4URL(t, fakeAKIAExample, "3600", ""),
@@ -502,7 +502,7 @@ func TestDetectValidSigV4_DefensiveGuards(t *testing.T) {
 
 	t.Run("mixed_literal_and_encoded_keys_rejected", func(t *testing.T) {
 		t.Parallel()
-		// Only the credential key is encoded — the other four are literal.
+		// Only the credential key is encoded - the other four are literal.
 		// Still must invalidate, because the asymmetry hits one field only
 		// and that's the one we scrub.
 		raw := "https://examplebucket.s3.amazonaws.com/x" +
@@ -653,7 +653,7 @@ func TestSigV4CarveoutEndToEnd(t *testing.T) {
 				if !strings.Contains(got.Reason, tc.wantBlockReason) {
 					t.Errorf("Reason = %q, want substring %q", got.Reason, tc.wantBlockReason)
 				}
-				// Blocks must NOT be marked adaptive-neutral — they must
+				// Blocks must NOT be marked adaptive-neutral - they must
 				// still feed SignalBlock for adaptive enforcement.
 				if got.IsAdaptiveNeutral() {
 					t.Errorf("blocked result classified as adaptive-neutral; would suppress SignalBlock")

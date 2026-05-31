@@ -105,7 +105,7 @@ func auditPreset() *config.Config {
 	cfg.Mode = config.ModeAudit
 	// Audit mode: detect and log everything but never block.
 	// All DLP patterns, blocklists, and entropy checks stay active for
-	// visibility — enforce=false makes them log-only.
+	// visibility - enforce=false makes them log-only.
 	enforce := false
 	cfg.Enforce = &enforce
 	cfg.Logging.IncludeAllowed = true

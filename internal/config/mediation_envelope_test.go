@@ -34,7 +34,7 @@ func TestValidateMediationEnvelope_DisabledSignOK(t *testing.T) {
 	t.Parallel()
 
 	c := Defaults()
-	// Default shape: Enabled:false, Sign:false — must validate cleanly.
+	// Default shape: Enabled:false, Sign:false - must validate cleanly.
 	if err := c.validateMediationEnvelope(); err != nil {
 		t.Errorf("default mediation_envelope should validate: %v", err)
 	}

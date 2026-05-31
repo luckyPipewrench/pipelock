@@ -393,7 +393,7 @@ func TestDecisionRecord_Sign_InvalidRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Missing required fields — Validate should fail
+	// Missing required fields - Validate should fail
 	dr := DecisionRecord{
 		SessionID: "", // required
 		Verdict:   "block",

@@ -307,7 +307,7 @@ Defenders should scan for these patterns in input validation.`
 func TestScanResponse_BlocksQuotedSystemPromptDisclosureInEducationalContext(t *testing.T) {
 	s := New(testResponseConfig())
 	// Long-fill case (last entry) exercises the regex's 80-char gap with
-	// max-length verb + target — the resulting 112-char match overflows
+	// max-length verb + target - the resulting 112-char match overflows
 	// the 100-rune MatchText truncation cap. The carve-out must not depend
 	// on inspecting MatchText for the target substring.
 	longFillGap := " " + strings.Repeat("a", 78) + " "
@@ -619,7 +619,7 @@ func TestResponseScanningEnabled(t *testing.T) {
 	s2 := New(cfg2)
 
 	// With core patterns, ResponseScanningEnabled returns true even when
-	// response_scanning.enabled is false — core is the safety floor.
+	// response_scanning.enabled is false - core is the safety floor.
 	if !s2.ResponseScanningEnabled() {
 		t.Error("expected response scanning enabled (core patterns active)")
 	}
@@ -753,10 +753,10 @@ func TestStripZeroWidth(t *testing.T) {
 		{"tab_preserved", "ignore\tprevious", "ignore\tprevious"},
 		{"newline_preserved", "ignore\nprevious", "ignore\nprevious"},
 		{"cr_preserved", "ignore\rprevious", "ignore\rprevious"},
-		// Unicode Tags block (U+E0000-E007F) — Pliny steganography vector.
+		// Unicode Tags block (U+E0000-E007F) - Pliny steganography vector.
 		{"tags_block", "ig\U000E0001\U000E006Enore", "ignore"},
 		{"tags_block_full_range", "\U000E0000\U000E007F", ""},
-		// Variation selectors (U+FE00-FE0F) — emoji steganography.
+		// Variation selectors (U+FE00-FE0F) - emoji steganography.
 		{"variation_selector", "ignore\uFE01 previous\uFE0F instructions", "ignore previous instructions"},
 		// Variation selectors supplement (U+E0100-U+E01EF).
 		{"variation_selector_supplement", "ignore\U000E0100previous\U000E01EFinstructions", "ignorepreviousinstructions"},
@@ -3212,7 +3212,7 @@ func TestSkillPoisoningFalsePositives(t *testing.T) {
 
 // TestScanResponse_StegoSignal verifies that ZalgoSuspicious wiring populates
 // the StegoDetected / StegoDensity fields on the response scan result without
-// altering the Clean verdict. The signal is exposure-only — pattern matching
+// altering the Clean verdict. The signal is exposure-only - pattern matching
 // still drives block decisions. Mirrors the behavior contract documented on
 // ResponseScanResult.StegoDetected and matches the TODO closeout intent.
 func TestScanResponse_StegoSignal(t *testing.T) {

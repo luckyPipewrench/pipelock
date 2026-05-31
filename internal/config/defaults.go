@@ -215,7 +215,7 @@ func Defaults() *Config {
 				// (ep.Token = X, req.APIKey = Y) are still immune because
 				// the credential key is preceded by . or another word
 				// character, which is neither ^ nor [?&;]. The rule is
-				// scoped to URL/body-embedded credentials only — env-var
+				// scoped to URL/body-embedded credentials only - env-var
 				// dumps like DB_PASSWORD=... are handled by the separate
 				// Environment Variable Secret pattern below, which requires
 				// UPPER_CASE identifiers. Hyphen-compound params
@@ -230,13 +230,13 @@ func Defaults() *Config {
 				// The keyword must end the variable name so benign suffixes like
 				// *_TOKEN_BUCKET, *_PASSWORD_POLICY, and *_ROTATION_DAYS do not match.
 				// (?-i:) overrides the scanner's auto (?i) prefix for the variable
-				// name prefix — env vars are UPPER_CASE by convention, URL params
+				// name prefix - env vars are UPPER_CASE by convention, URL params
 				// are lower_case (next_token, csrf_token_id). This avoids FP on
 				// URL params while catching env var dumps.
 				// Min value length of 8 prevents FP on short config values.
 				{Name: "Environment Variable Secret", Regex: `(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*\S{8,}`, Severity: "high"},
 
-				// Financial identifiers — validated with post-match checksums to minimize
+				// Financial identifiers - validated with post-match checksums to minimize
 				// false positives. Credit card regex is intentionally broad (any 15-19
 				// digit number); issuer prefix + length validation is in validateLuhn
 				// where it's maintainable Go code, not regex soup across 8 files.
@@ -288,7 +288,7 @@ func Defaults() *Config {
 				{Name: "Instruction Downgrade", Regex: `(?i)(treat|consider|regard|reinterpret|downgrade)\s+((?:the|all)\s+)?(previous|prior|above|earlier|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt|policies|guardrails|parameters)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)`},
 				{Name: "Instruction Dismissal", Regex: `(?i)(set|put)\s+(the\s+)?(previous|prior|above|earlier|system|original)\s+(\w+\s+)?(instructions?|directives|rules|constraints|context|prompt|safeguards|guidelines|policies|guardrails)\s+(aside|away|to\s+(one|the)\s+side)`},
 				{Name: "Priority Override", Regex: `(?i)\bprioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)`},
-				// State/control poisoning — detect credential solicitation,
+				// State/control poisoning - detect credential solicitation,
 				// memory persistence, and preference manipulation in tool results.
 				{Name: "Credential Solicitation", Regex: `(?is)\b(send|provide|paste|return|include|supply|submit|share)\b.{0,80}\b(password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`},
 				{Name: "Credential Path Directive", Regex: `(?is)\b(read|get|fetch|retrieve|cat|copy|extract|open)\b.{0,80}(\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|\bid_rsa\b|\bid_ed25519\b|\bkubeconfig\b|/etc/passwd\b|/etc/shadow\b)`},
@@ -296,17 +296,17 @@ func Defaults() *Config {
 				{Name: "Memory Persistence Directive", Regex: `(?is)\b(save|store|remember|retain|persist|record|cache)\b.{0,40}\b(this|these|that|it|the)\b.{0,60}\b(for future|for later|across sessions?|next session|next time|future tasks?|future sessions?|for all future|subsequent|permanently|from now on|going forward|in all future)\b`},
 				{Name: "Preference Poisoning", Regex: `(?is)\b(from now on|always|going forward|in future)\b.{0,80}\b(prefer|prioritize|trust|choose|use|default to)\b.{0,60}\b(this tool|that tool|my tool|the external|the remote)\b`},
 				{Name: "Silent Credential Handling", Regex: `(?is)\b(do not|don'?t|never)\s+(mention|display|show|tell|reveal|log|report)\b.{0,100}\b(password|token|secret|credential|private[_ -]?key|api[_ -]?key)\b`},
-				// Covert action directives — instructions to perform actions
+				// Covert action directives - instructions to perform actions
 				// secretly, silently, or without the user's knowledge.
 				{Name: "Covert Action Directive", Regex: `(?is)(secretly|silently|covertly|quietly|without\s+(?:the\s+user\s+)?(?:knowing|noticing|seeing))[,;:]?\s+.{0,40}\b(execut\w*|run|call|invoke|send|fetch|curl|wget|download|upload|post|exfiltrat\w*|leak|stream|transmit|relay|forward|smuggle)\b`},
-				// Model-specific instruction boundary tokens — ChatML, Llama, Mistral.
+				// Model-specific instruction boundary tokens - ChatML, Llama, Mistral.
 				// Presence in tool output is a strong injection signal.
 				{Name: "Instruction Boundary", Regex: `(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<<SYS>>)`},
 				{Name: "Spanish Instruction Override", Regex: `(?i)\b(ignora|omite|olvida|desobedece|descarta)\b.{0,30}\b(las\s+)?(instrucciones|indicaciones|directivas|reglas)\b.{0,30}\b(anteriores|previas|precedentes|de\s+arriba)\b`},
 				{Name: "Spanish System Prompt Disclosure", Regex: `(?i)\b(muestra|revela|imprime|expone|dime)\b.{0,40}\b(prompt|mensaje)\s+(del\s+)?sistema\b`},
 				{Name: "Cross-Lingual Instruction Override", Regex: `(?i)\b(ignore|disregard|forget|abandon|ignora|omite|olvida|desobedece|descarta)\b.{0,40}\b(previous|prior|above|earlier|anteriores|previas|precedentes|de\s+arriba)\b.{0,40}\b(instructions?|instrucciones|indicaciones|directivas|reglas|prompts?|context|constraints?|policies|guardrails)\b`},
 				{Name: "Cross-Lingual System Prompt Disclosure", Regex: `(?i)\b(show|reveal|print|display|dump|muestra|revela|imprime|expone|dime)\b.{0,40}\b(system\s+prompt|prompt\s+(del\s+)?sistema|mensaje\s+(del\s+)?sistema)\b`},
-				// CJK injection patterns — Chinese, Japanese, Korean prompt
+				// CJK injection patterns - Chinese, Japanese, Korean prompt
 				// injection phrases sourced from published attack research,
 				// jailbreak datasets, and security disclosures. Patterns use
 				// .{0,N} ranges instead of \b because CJK has no word boundaries.

@@ -170,7 +170,7 @@ func TestScanURL_RealSSRF_StillThreat(t *testing.T) {
 	defer s.Close()
 
 	// Hostname decodes directly to 127.0.0.1 via the alternative-IP path,
-	// so no DNS lookup is required — this keeps the test hermetic.
+	// so no DNS lookup is required - this keeps the test hermetic.
 	result := s.Scan(context.Background(), "https://0x7f000001/")
 
 	if result.Allowed {

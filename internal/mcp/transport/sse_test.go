@@ -138,7 +138,7 @@ func TestSSEReader_IDWithNULLIgnored(t *testing.T) {
 		t.Errorf("after first event: LastEventID() = %q, want %q", r.LastEventID(), "valid-id")
 	}
 
-	// Second event: id contains NULL — should be ignored, keeping previous id.
+	// Second event: id contains NULL - should be ignored, keeping previous id.
 	msg2, err := r.ReadMessage()
 	if err != nil {
 		t.Fatalf("msg2: unexpected error: %v", err)
@@ -180,7 +180,7 @@ func TestSSEReader_ScannerError(t *testing.T) {
 	sr := &SSEReader{
 		scanner: func() *bufio.Scanner {
 			s := bufio.NewScanner(strings.NewReader(longLine))
-			s.Buffer(make([]byte, 0, 64), 100) // 100 byte max — line won't fit
+			s.Buffer(make([]byte, 0, 64), 100) // 100 byte max - line won't fit
 			return s
 		}(),
 	}

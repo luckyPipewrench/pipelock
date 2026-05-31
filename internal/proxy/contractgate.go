@@ -274,7 +274,7 @@ type ForwardBlockReceiptInput struct {
 // absolute-URI forward request denied by the buildHandler-level kill
 // switch. Agent identity is not resolved at that layer (the kill
 // switch fires before resolveAgentRuntimeFromRequest), so the receipt
-// carries no taint or contract context — the layer + transport + URL
+// carries no taint or contract context - the layer + transport + URL
 // is enough to keep the audit chain unbroken.
 func forwardKillSwitchReceiptOpts(actionID, requestID, method, target string) receipt.EmitOpts {
 	return receipt.EmitOpts{

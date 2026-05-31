@@ -47,7 +47,7 @@ func TestFlightRecorder_BlockedRequestCreatesEvidence(t *testing.T) {
 		t.Fatalf("proxy.New: %v", pErr)
 	}
 
-	// pastebin.com is on the default blocklist — request should be blocked.
+	// pastebin.com is on the default blocklist - request should be blocked.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url=https://pastebin.com/raw/abc", nil)
 	w := httptest.NewRecorder()
 
@@ -129,7 +129,7 @@ func TestFlightRecorder_NilRecorder_NoOp(t *testing.T) {
 
 	logger := audit.NewNop()
 	sc := scanner.New(cfg)
-	// No WithRecorder option — recorder is nil.
+	// No WithRecorder option - recorder is nil.
 	p, pErr := New(cfg, logger, sc, metrics.New())
 	if pErr != nil {
 		t.Fatalf("proxy.New: %v", pErr)

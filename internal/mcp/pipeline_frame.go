@@ -30,7 +30,7 @@ var ErrInvalidMethodType = errors.New("mcp: method must be a string")
 // callers must check ParseErr before trusting Method or ToolCallName:
 // when ParseErr is non-nil the fields may be unset even if the
 // underlying bytes contained recognisable substrings. Fail-closed on
-// ParseErr — the existing input-scanner already does this via the
+// ParseErr - the existing input-scanner already does this via the
 // onParseError knob, and the Frame preserves that contract by surfacing
 // the error rather than swallowing it.
 //
@@ -68,7 +68,7 @@ type MCPFrame struct {
 	Args json.RawMessage
 
 	// IsBatch is true when Raw (after whitespace trimming) begins with
-	// '[' — a JSON-RPC batch array. Batches are rejected unconditionally
+	// '[' - a JSON-RPC batch array. Batches are rejected unconditionally
 	// on the inbound MCP path; callers short-circuit on this flag
 	// before attempting field access.
 	IsBatch bool

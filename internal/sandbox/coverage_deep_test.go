@@ -1566,7 +1566,7 @@ func TestNewBridgeProxy_DefaultAddr(t *testing.T) {
 
 	bp, err := NewBridgeProxy(socketPath, "")
 	if err != nil {
-		// Bind conflict (address already in use) is expected in CI — skip.
+		// Bind conflict (address already in use) is expected in CI - skip.
 		if isBindConflict(err) {
 			t.Skipf("NewBridgeProxy bind conflict (expected in CI): %v", err)
 		}

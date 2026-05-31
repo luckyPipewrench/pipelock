@@ -154,7 +154,7 @@ func RunHTTPListenerProxy(
 	// Envelope-refresh implication: because redirects never follow,
 	// the mediation envelope signing refresh path that lives at
 	// internal/proxy/proxy.go:348 (CheckRedirect) is moot for the
-	// MCP HTTP transport — there is no second hop to rebuild an
+	// MCP HTTP transport - there is no second hop to rebuild an
 	// envelope over. If a future change enables redirect following
 	// here (for example, to support upstream servers that relocate
 	// endpoints) the refresh helper must be wired into the new

@@ -287,7 +287,7 @@ func TestAgentThreatDetectionAttrs_FullEventMapping(t *testing.T) {
 			Fields: map[string]any{
 				fieldAction:  testSeverityWarn,
 				fieldScanner: testScannerDefault,
-				// no request_id — correlation_id should be omitted
+				// no request_id - correlation_id should be omitted
 			},
 		}
 		attrs := agentThreatDetectionAttrs(event, testBinaryVersion)

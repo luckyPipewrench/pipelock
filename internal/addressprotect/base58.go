@@ -10,7 +10,7 @@ import (
 )
 
 // base58Alphabet is the Bitcoin base58 alphabet (excludes 0, O, I, l to avoid
-// visual ambiguity — the same property that makes it popular for addresses).
+// visual ambiguity - the same property that makes it popular for addresses).
 const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 var (

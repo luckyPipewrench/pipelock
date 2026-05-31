@@ -134,7 +134,7 @@ func TestSessionCLI_Integration_ListInspectRelease(t *testing.T) {
 		t.Errorf("inspect output missing event detail: %s", out)
 	}
 
-	// Step 3: release to none — wraps HandleAirlock with ForceSetTier.
+	// Step 3: release to none - wraps HandleAirlock with ForceSetTier.
 	out, err = runCommand(releaseCmd(&rootFlags{}), integSessionKey, "--to", "none")
 	if err != nil {
 		t.Fatalf("release: %v; out=%s", err, out)

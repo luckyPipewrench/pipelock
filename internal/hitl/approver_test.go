@@ -112,7 +112,7 @@ func TestApprover_EmptyInputBlocks(t *testing.T) {
 }
 
 func TestApprover_Timeout(t *testing.T) {
-	// Empty reader — ReadString will block, triggering timeout.
+	// Empty reader - ReadString will block, triggering timeout.
 	output := &bytes.Buffer{}
 	r, w := io.Pipe() //nolint:govet // shadow is fine in test
 	t.Cleanup(func() {

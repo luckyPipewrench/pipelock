@@ -747,7 +747,7 @@ func TestValidate_FileSentryValid(t *testing.T) {
 func TestValidate_FileSentryDisabledNoWatchPaths(t *testing.T) {
 	cfg := Defaults()
 	cfg.FileSentry.Enabled = false
-	// No watch_paths — should be fine when disabled.
+	// No watch_paths - should be fine when disabled.
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("disabled file_sentry with no watch_paths should not error: %v", err)
 	}
@@ -1249,7 +1249,7 @@ func TestValidate_DLPPatternActionWarn(t *testing.T) {
 func TestValidate_DLPPatternActionWarnOnBuiltin(t *testing.T) {
 	cfg := Defaults()
 	// Built-in default patterns have Compiled=true. Setting warn on them
-	// must be rejected — the immutable safety floor is never warnable.
+	// must be rejected - the immutable safety floor is never warnable.
 	for i := range cfg.DLP.Patterns {
 		if cfg.DLP.Patterns[i].Compiled {
 			cfg.DLP.Patterns[i].Action = ActionWarn
@@ -1883,7 +1883,7 @@ func TestValidateReload_SSRFIPAllowlistUnchanged_NoWarning(t *testing.T) {
 }
 
 func TestValidateReload_SSRFIPAllowlist_NarrowedNoWarning(t *testing.T) {
-	// Replacing 10.0.0.0/8 with 10.0.0.0/16 narrows the range — no warning.
+	// Replacing 10.0.0.0/8 with 10.0.0.0/16 narrows the range - no warning.
 	old := Defaults()
 	old.SSRF.IPAllowlist = []string{"10.0.0.0/8"}
 	updated := Defaults()
@@ -1898,7 +1898,7 @@ func TestValidateReload_SSRFIPAllowlist_NarrowedNoWarning(t *testing.T) {
 }
 
 func TestValidateReload_SSRFIPAllowlist_WidenedWarns(t *testing.T) {
-	// Replacing 10.0.0.0/16 with 10.0.0.0/8 widens the range — should warn.
+	// Replacing 10.0.0.0/16 with 10.0.0.0/8 widens the range - should warn.
 	old := Defaults()
 	old.SSRF.IPAllowlist = []string{"10.0.0.0/16"}
 	updated := Defaults()
@@ -1942,7 +1942,7 @@ func TestValidateReload_SSRFIPAllowlist_NewRangeWarns(t *testing.T) {
 
 func TestSSRFIPAllowlistExpanded_MalformedCIDR(t *testing.T) {
 	// Malformed entries in the updated list should still produce warnings
-	// (fail-open for warnings — config validation catches them separately).
+	// (fail-open for warnings - config validation catches them separately).
 	expanded := ssrfIPAllowlistExpanded(nil, []string{"not-a-cidr"})
 	if len(expanded) != 1 || expanded[0] != "not-a-cidr" {
 		t.Errorf("malformed CIDR should appear in expanded list, got: %v", expanded)
@@ -2913,7 +2913,7 @@ func TestApplyDefaults_UserPatternOverridesDefaultByName(t *testing.T) {
 	cfg.ApplyDefaults()
 
 	defaults := Defaults()
-	// Same count as defaults — user pattern replaced one default by name.
+	// Same count as defaults - user pattern replaced one default by name.
 	if len(cfg.DLP.Patterns) != len(defaults.DLP.Patterns) {
 		t.Errorf("expected %d DLP patterns (user overrides one default), got %d",
 			len(defaults.DLP.Patterns), len(cfg.DLP.Patterns))
@@ -3749,7 +3749,7 @@ func TestValidateReload_ResponseScanningExemptDomainsExpanded(t *testing.T) {
 
 func TestValidateReload_ResponseScanningExemptDomainsNarrowed_StillWarns(t *testing.T) {
 	// Narrowing from wildcard to exact is still a change to the exemption
-	// surface — any change to security-sensitive config should be visible.
+	// surface - any change to security-sensitive config should be visible.
 	old := Defaults()
 	old.ResponseScanning.ExemptDomains = []string{"*.openai.com"}
 	updated := Defaults()
@@ -3785,7 +3785,7 @@ func TestValidateReload_ResponseScanningExemptDomainsSubsetReduced_NoWarning(t *
 
 func TestValidateReload_ResponseScanningExemptDomainsBroadened_SameLength(t *testing.T) {
 	// Replacing api.openai.com with *.openai.com keeps the same count
-	// but widens trust — must warn.
+	// but widens trust - must warn.
 	old := Defaults()
 	old.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
 	updated := Defaults()
@@ -3805,7 +3805,7 @@ func TestValidateReload_ResponseScanningExemptDomainsBroadened_SameLength(t *tes
 }
 
 func TestValidateReload_ResponseScanningExemptDomainsCleared(t *testing.T) {
-	// Clearing all exempt domains should warn — any change to exemption
+	// Clearing all exempt domains should warn - any change to exemption
 	// surface must be visible to the operator.
 	old := Defaults()
 	old.ResponseScanning.ExemptDomains = []string{"api.openai.com"}
@@ -4224,7 +4224,7 @@ func TestValidate_MCPToolPolicyRedirectMatchAbsPathAcceptsAbsolute(t *testing.T)
 }
 
 func TestValidate_MCPToolPolicyRedirectDefaultUnusedIsValid(t *testing.T) {
-	// Default action=redirect but all rules override to warn — no profiles needed.
+	// Default action=redirect but all rules override to warn - no profiles needed.
 	cfg := Defaults()
 	cfg.MCPToolPolicy.Enabled = true
 	cfg.MCPToolPolicy.Action = ActionRedirect
@@ -6373,7 +6373,7 @@ func TestValidate_KillSwitchInvalidSentinelDir(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
 	cfg.KillSwitch.SentinelFile = "/nonexistent/dir/sentinel"
-	// Should still validate — sentinel existence is checked at runtime, not config time.
+	// Should still validate - sentinel existence is checked at runtime, not config time.
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("kill switch with nonexistent sentinel path should validate: %v", err)
 	}
@@ -6817,7 +6817,7 @@ func TestApplyDefaults_OTLPTimeoutAndQueue(t *testing.T) {
 
 func TestValidate_EmitNoSinksConfigured(t *testing.T) {
 	cfg := Defaults()
-	// No URL or address set — should pass validation
+	// No URL or address set - should pass validation
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("config with no emit sinks should validate, got: %v", err)
 	}
@@ -6891,7 +6891,7 @@ func TestValidateReload_EmitOTLPDisabled(t *testing.T) {
 	old := Defaults()
 	old.Emit.OTLP.Endpoint = testOTLPEndpoint
 	updated := Defaults()
-	// Endpoint cleared — OTLP disabled on reload.
+	// Endpoint cleared - OTLP disabled on reload.
 
 	warnings := ValidateReload(old, updated)
 	found := false
@@ -6944,7 +6944,7 @@ func TestValidate_KillSwitchAPIListen_EnvTokenValid(t *testing.T) {
 func TestValidate_KillSwitchAPIListen_Empty(t *testing.T) {
 	cfg := Defaults()
 	cfg.ApplyDefaults()
-	// Empty api_listen is the default — should always pass.
+	// Empty api_listen is the default - should always pass.
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("empty api_listen should pass validation: %v", err)
 	}
@@ -7655,7 +7655,7 @@ func TestTLSInterception_ValidateGroupReadableKeyAllowed(t *testing.T) {
 }
 
 func TestTLSInterception_ValidateOwnerExecuteKeyRejected(t *testing.T) {
-	// Owner-execute (0o700/0o740) should be rejected — PEM keys are never executable.
+	// Owner-execute (0o700/0o740) should be rejected - PEM keys are never executable.
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "ca.pem")
 	keyPath := filepath.Join(dir, "ca-key.pem")
@@ -10682,7 +10682,7 @@ func TestSeedPhraseDetection_ReloadNoWarning_SameConfig(t *testing.T) {
 }
 
 func TestSeedPhraseDetection_LoadPath_Omitted(t *testing.T) {
-	// seed_phrase_detection entirely omitted from YAML — should default to enabled.
+	// seed_phrase_detection entirely omitted from YAML - should default to enabled.
 	yaml := "version: 1\nmode: balanced\n"
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -11290,7 +11290,7 @@ func TestEscalationLevels_MonotonicValidation(t *testing.T) {
 
 func TestEscalationLevels_LegalUnusualCombination(t *testing.T) {
 	// Elevated with upgrade_ask=block is unusual (most operators wouldn't set it)
-	// but legal — higher levels will default to >= this, so monotonic holds.
+	// but legal - higher levels will default to >= this, so monotonic holds.
 	cfg := adaptiveBase()
 	cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeAsk = strPtr(ActionBlock)
 	cfg.ApplyDefaults()
@@ -11530,7 +11530,7 @@ adaptive_enforcement:
 }
 
 // TestLoad_AdaptiveCooperativeDownweightYAMLNull covers the YAML null/blank
-// state — a section with the key explicitly set to ~. The setBoolDefault
+// state - a section with the key explicitly set to ~. The setBoolDefault
 // helper treats nil as "omitted" and fails-open-to-default-true, mirroring
 // the established security-default pattern.
 func TestLoad_AdaptiveCooperativeDownweightYAMLNull(t *testing.T) {
@@ -11682,7 +11682,7 @@ func TestValidate_ReverseProxy_ValidConfig(t *testing.T) {
 func TestValidate_ReverseProxy_DisabledSkipsValidation(t *testing.T) {
 	cfg := Defaults()
 	cfg.ReverseProxy.Enabled = false
-	// No upstream or listen — should be fine when disabled.
+	// No upstream or listen - should be fine when disabled.
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("unexpected validation error when disabled: %v", err)

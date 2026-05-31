@@ -857,7 +857,7 @@ func TestScanTextForDLP_Deduplication(t *testing.T) {
 
 	// The raw secret appears in the text AND the base64-decoded form also matches.
 	// The raw match (Encoded="") should appear once, the base64 match (Encoded="base64")
-	// should appear once — no duplicates within the same PatternName+Encoded pair.
+	// should appear once - no duplicates within the same PatternName+Encoded pair.
 	secret := testAnthropicPrefix + strings.Repeat("x", 25)
 	// Construct text that has the raw secret AND its base64 encoding
 	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
@@ -1536,7 +1536,7 @@ func TestScanTextForDLP_CredentialInURL_SkipsStructAssignment(t *testing.T) {
 
 	longVal := "hunter" + "x" + "abcd"
 
-	// Go struct assignments — the credential key is preceded by `.` or
+	// Go struct assignments - the credential key is preceded by `.` or
 	// another word char, not ^ or [?&;]. These must stay clean.
 	negatives := []string{
 		"ep.Token = " + longVal,
@@ -1767,7 +1767,7 @@ func TestScanTextForDLP_FileSecretDistinctFromEnv(t *testing.T) {
 	// Also inject an env secret
 	s.envSecrets = []string{"EnvOnlySecretValue11"}
 
-	// Text contains file secret — should match "Known Secret Leak"
+	// Text contains file secret - should match "Known Secret Leak"
 	result := s.ScanTextForDLP(context.Background(), fileSecret)
 	if result.Clean {
 		t.Fatal("expected detection")
@@ -1997,7 +1997,7 @@ func TestScanTextForDLP_CreditCard(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Valid Visa test card — should match.
+	// Valid Visa test card - should match.
 	result := s.ScanTextForDLP(context.Background(), "Please send payment to card 4111111111111111")
 	if result.Clean {
 		t.Error("expected credit card number to be detected in text")
@@ -2012,7 +2012,7 @@ func TestScanTextForDLP_CreditCard_FalsePositiveRejected(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Invalid Visa (fails Luhn) — should NOT match.
+	// Invalid Visa (fails Luhn) - should NOT match.
 	result := s.ScanTextForDLP(context.Background(), "Reference number 4111111111111112 for your order")
 	found := false
 	for _, m := range result.Matches {
@@ -2030,7 +2030,7 @@ func TestScanTextForDLP_IBAN(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Valid German IBAN — should match.
+	// Valid German IBAN - should match.
 	result := s.ScanTextForDLP(context.Background(), "Wire to DE89370400440532013000 immediately")
 	if result.Clean {
 		t.Error("expected IBAN to be detected in text")
@@ -2045,7 +2045,7 @@ func TestScanTextForDLP_IBAN_FalsePositiveRejected(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Invalid IBAN (zeroed check digits, fails mod-97) — should NOT match.
+	// Invalid IBAN (zeroed check digits, fails mod-97) - should NOT match.
 	result := s.ScanTextForDLP(context.Background(), "Account ref DE00370400440532013000 in our system")
 	found := false
 	for _, m := range result.Matches {
@@ -2096,7 +2096,7 @@ func TestScanTextForDLP_IBAN_FakeCountryCode(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// ZZ is not a valid IBAN country code — should NOT match even if mod-97 passes.
+	// ZZ is not a valid IBAN country code - should NOT match even if mod-97 passes.
 	result := s.ScanTextForDLP(context.Background(), "Wire to ZZ8212345678901234567890")
 	found := false
 	for _, m := range result.Matches {
@@ -2114,7 +2114,7 @@ func TestScanTextForDLP_CreditCard_WithSeparators(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Visa with dashes — should match.
+	// Visa with dashes - should match.
 	result := s.ScanTextForDLP(context.Background(), "Card: 4111-1111-1111-1111")
 	if result.Clean {
 		t.Error("expected dash-separated credit card to be detected")
@@ -2126,13 +2126,13 @@ func TestScanTextForDLP_CreditCard_Amex465Format(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Amex 4-6-5 display format with spaces — should match.
+	// Amex 4-6-5 display format with spaces - should match.
 	result := s.ScanTextForDLP(context.Background(), "Pay with 3782 822463 10005")
 	if result.Clean {
 		t.Error("expected Amex 4-6-5 space format to be detected in text DLP")
 	}
 
-	// Amex 4-6-5 display format with dashes — should match.
+	// Amex 4-6-5 display format with dashes - should match.
 	result2 := s.ScanTextForDLP(context.Background(), "Pay with 3782-822463-10005")
 	if result2.Clean {
 		t.Error("expected Amex 4-6-5 dash format to be detected in text DLP")
@@ -2144,7 +2144,7 @@ func TestScanTextForDLP_CreditCard_WithSpaces(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Visa with spaces — should match (regex allows space separators).
+	// Visa with spaces - should match (regex allows space separators).
 	result := s.ScanTextForDLP(context.Background(), "Card: 4111 1111 1111 1111")
 	if result.Clean {
 		t.Error("expected space-separated credit card to be detected")
@@ -2186,7 +2186,7 @@ func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
 	s := New(cfg)
 	defer s.Close()
 
-	// Valid ABA (JPMorgan Chase) — should match.
+	// Valid ABA (JPMorgan Chase) - should match.
 	result := s.ScanTextForDLP(context.Background(), "Routing: 021000021")
 	found := false
 	for _, m := range result.Matches {
@@ -2198,7 +2198,7 @@ func TestScanTextForDLP_ABA_OptIn(t *testing.T) {
 		t.Error("expected valid ABA routing number to be detected")
 	}
 
-	// Invalid ABA (bad checksum + bad prefix) — should NOT match.
+	// Invalid ABA (bad checksum + bad prefix) - should NOT match.
 	result2 := s.ScanTextForDLP(context.Background(), "ID number 999999999")
 	found2 := false
 	for _, m := range result2.Matches {
@@ -2217,7 +2217,7 @@ func TestScanTextForDLP_ValidatorSurvivesReload(t *testing.T) {
 	// scanner is replaced by a new one built from the reloaded config.
 	cfg := testConfig()
 
-	// First scanner — verify credit card detection works.
+	// First scanner - verify credit card detection works.
 	s1 := New(cfg)
 	result1 := s1.ScanTextForDLP(context.Background(), "Pay with 4111111111111111")
 	s1.Close()
@@ -2225,7 +2225,7 @@ func TestScanTextForDLP_ValidatorSurvivesReload(t *testing.T) {
 		t.Fatal("first scanner should detect credit card")
 	}
 
-	// Second scanner from same config — simulates reload.
+	// Second scanner from same config - simulates reload.
 	s2 := New(cfg)
 	defer s2.Close()
 	result2 := s2.ScanTextForDLP(context.Background(), "Pay with 4111111111111111")

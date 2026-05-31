@@ -224,7 +224,7 @@ func TestSessionAPI_HandleTerminate_EmptyBodyOK(t *testing.T) {
 	sm.GetOrCreate(terminateIdentityKey)
 	handler := newTestSessionAPIHandler(t, sm)
 
-	// Zero-length body is allowed — decodeJSONBody treats empty as "no
+	// Zero-length body is allowed - decodeJSONBody treats empty as "no
 	// fields" and leaves the target struct at its zero value.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, terminateURLFor(terminateIdentityKey), bytes.NewBuffer(nil))
 	req.Header.Set("Authorization", terminateAuthHeader)
@@ -237,7 +237,7 @@ func TestSessionAPI_HandleTerminate_EmptyBodyOK(t *testing.T) {
 }
 
 func TestSessionAPI_HandleTerminate_NoCEEPointers(t *testing.T) {
-	// No CEE pointers wired in — handler should still terminate cleanly.
+	// No CEE pointers wired in - handler should still terminate cleanly.
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()
 	sm.GetOrCreate(terminateIdentityKey)
@@ -269,7 +269,7 @@ func TestSessionAPI_HandleTerminate_NoCEEPointers(t *testing.T) {
 }
 
 func TestSessionAPI_HandleTerminate_NoCEEStateLoaded(t *testing.T) {
-	// CEE pointers provided but nothing Stored — Load returns nil.
+	// CEE pointers provided but nothing Stored - Load returns nil.
 	sm, cleanup := setupSessionAPITestManager(t)
 	defer cleanup()
 	sm.GetOrCreate(terminateIdentityKey)
@@ -330,7 +330,7 @@ func TestExtractSessionKeyOnly_BadPaths(t *testing.T) {
 }
 
 func TestAttachMostRecentEvidence_AllEmptyEvents(t *testing.T) {
-	// All events have empty Kind AND empty Detail — loop skips everything
+	// All events have empty Kind AND empty Detail - loop skips everything
 	// without setting evidence fields.
 	exp := &SessionExplanation{}
 	events := []SessionEvent{{Kind: "", Detail: ""}, {Kind: "", Detail: ""}}

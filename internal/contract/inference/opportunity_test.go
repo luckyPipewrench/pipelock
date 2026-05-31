@@ -21,7 +21,7 @@ const (
 
 // TestOpportunityLevel_String pins the wire-form label for every defined
 // level (and the invalid-default case). These strings ship in error
-// messages and metrics labels — renaming is a downstream-breaking change.
+// messages and metrics labels - renaming is a downstream-breaking change.
 func TestOpportunityLevel_String(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +81,7 @@ func TestOpportunityLevel_Valid(t *testing.T) {
 		OpportunityLevelUnknown,
 		OpportunityLevel(-1),
 		OpportunityLevel(99),
-		// One past the last defined level — exercises the upper-bound
+		// One past the last defined level - exercises the upper-bound
 		// guard in Valid() without exporting the sentinel.
 		OpportunityLevel(int(OpportunityLevelSequenceNGram) + 1),
 	}
@@ -159,7 +159,7 @@ func TestDenominator_RejectsUnknownLevel(t *testing.T) {
 		{"zero_value", OpportunityLevelUnknown},
 		{"out_of_range_high", OpportunityLevel(99)},
 		{"out_of_range_negative", OpportunityLevel(-1)},
-		// Exactly one past the last defined level — exercises the
+		// Exactly one past the last defined level - exercises the
 		// default branch boundary without leaking the sentinel.
 		{
 			"one_past_last",

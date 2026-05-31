@@ -13,7 +13,7 @@ import (
 // discOutcome is the result of evaluating a discriminator predicate against a
 // parsed JSON body. It is intentionally three-valued: a present-but-unmatched
 // string and an absent field are both "no match" (the allow-by-default rail
-// forwards), but a present-but-non-string value — or a non-object body — is
+// forwards), but a present-but-non-string value - or a non-object body - is
 // opaque so the caller can fail closed per on_opaque_operation rather than let
 // a type the upstream might still dispatch on slip through unmatched.
 type discOutcome uint8

@@ -323,7 +323,7 @@ func TestClient_HTTPError_Propagates(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected network error")
 	}
-	// Should NOT be an APIError — it's a transport failure.
+	// Should NOT be an APIError - it's a transport failure.
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		t.Error("network failure should not be APIError")
@@ -370,7 +370,7 @@ func TestAPIError_ErrorString(t *testing.T) {
 }
 
 func TestAPIError_ErrorString_StripsQuery(t *testing.T) {
-	// Query strings are part of the path for display purposes — they
+	// Query strings are part of the path for display purposes - they
 	// belong in the error (they might say ?tier=hard) but the scheme
 	// and host still need stripping.
 	e := &APIError{
@@ -389,8 +389,8 @@ func TestAPIError_ErrorString_StripsQuery(t *testing.T) {
 }
 
 func TestAPIError_ErrorString_FallbackOnUnparseable(t *testing.T) {
-	// When url.Parse cannot recover a Path — e.g. the caller handed us
-	// something exotic — fall back to the raw URL rather than emitting
+	// When url.Parse cannot recover a Path - e.g. the caller handed us
+	// something exotic - fall back to the raw URL rather than emitting
 	// an empty path that would make the error unreadable.
 	e := &APIError{Method: "POST", URL: "not a url", StatusCode: 500, Body: "internal"}
 	got := e.Error()
@@ -416,7 +416,7 @@ func TestIsNotFound_Nil(t *testing.T) {
 
 func TestClient_Release_MarshalError(t *testing.T) {
 	// Release builds a bytes.NewReader from a map[string]string which never
-	// fails to marshal — the happy-path test above exercises that branch.
+	// fails to marshal - the happy-path test above exercises that branch.
 	// Here we assert Release on an unreachable server returns a transport
 	// error rather than a marshal error.
 	c := newClient(endpoint{URL: "http://127.0.0.1:1", Token: testToken})
@@ -427,7 +427,7 @@ func TestClient_Release_MarshalError(t *testing.T) {
 }
 
 func TestClient_Do_BadJSONBody(t *testing.T) {
-	// Server returns 200 with a body that isn't valid JSON — the decode
+	// Server returns 200 with a body that isn't valid JSON - the decode
 	// branch should surface an error.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentTypeJSON)

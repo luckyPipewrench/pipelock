@@ -305,7 +305,7 @@ Examples:
 			// RootKind is enum-validated and OldFingerprint/NewFingerprint
 			// match the sha256:<hex> pattern, so they don't carry control
 			// characters; effective_at is RFC 3339 validated by the loader.
-			// No quoting needed for these — they're constrained.
+			// No quoting needed for these - they're constrained.
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(),
 				"transition verified: kind=%s, old=%s, new=%s, effective_at=%s\n",
 				loaded.Body.RootKind, loaded.Body.OldFingerprint,
@@ -399,7 +399,7 @@ func resolvePubkey(label, hexFlag, fileFlag string) ([]byte, error) {
 // sanitizeForTerminal returns a Go-quoted form of s suitable for printing to
 // a terminal without risking control-character or newline injection. Even
 // signed artifact fields like reason and operator_identity are
-// attacker-controlled before signing — an operator tricked into verifying a
+// attacker-controlled before signing - an operator tricked into verifying a
 // hostile signed file should not have their terminal repainted by the
 // printed output. %q escapes control bytes and quotes the result so the
 // boundary between operator-supplied content and CLI chrome stays visible.

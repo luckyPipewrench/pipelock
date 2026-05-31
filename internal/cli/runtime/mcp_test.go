@@ -208,7 +208,7 @@ func TestHandleProxyError_OtherErrorWithSentry(t *testing.T) {
 	other := errors.New("connection refused")
 	var logBuf bytes.Buffer
 
-	// Non-nil client (enabled=false zero value) — exercises the
+	// Non-nil client (enabled=false zero value) - exercises the
 	// sentryClient != nil branch without needing a real DSN.
 	client := &plsentry.Client{}
 

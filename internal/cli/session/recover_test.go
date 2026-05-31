@@ -208,7 +208,7 @@ func TestHTTPDispatcher_Inspect(t *testing.T) {
 	// gets test coverage too.
 	flags := stubRecoverServer(t)
 	overrideClientFactory(t, flags)
-	// No stub — uses httpDispatcher{}.
+	// No stub - uses httpDispatcher{}.
 
 	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "leave")
 	if err != nil {
@@ -219,7 +219,7 @@ func TestHTTPDispatcher_Inspect(t *testing.T) {
 func TestHTTPDispatcher_Release_Real(t *testing.T) {
 	flags := stubRecoverServer(t)
 	overrideClientFactory(t, flags)
-	// No stub — uses httpDispatcher{}.
+	// No stub - uses httpDispatcher{}.
 
 	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "release-none"); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -229,7 +229,7 @@ func TestHTTPDispatcher_Release_Real(t *testing.T) {
 func TestHTTPDispatcher_Terminate_Real(t *testing.T) {
 	flags := stubRecoverServer(t)
 	overrideClientFactory(t, flags)
-	// No stub — uses httpDispatcher{}.
+	// No stub - uses httpDispatcher{}.
 
 	if _, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "terminate"); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -249,7 +249,7 @@ func errorServer(t *testing.T, status int) *rootFlags {
 func TestHTTPDispatcher_InspectPropagatesError(t *testing.T) {
 	flags := errorServer(t, http.StatusNotFound)
 	overrideClientFactory(t, flags)
-	// No stub — uses httpDispatcher.
+	// No stub - uses httpDispatcher.
 
 	_, err := runCommand(recoverCmd(&rootFlags{}), testKeyIdent, "--choice", "leave")
 	if err == nil {

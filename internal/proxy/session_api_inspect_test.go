@@ -180,7 +180,7 @@ func TestSessionAPI_HandleInspect_RateLimited(t *testing.T) {
 
 func TestSessionAPI_HandleInspect_ManagerDisabled(t *testing.T) {
 	var smPtr atomic.Pointer[SessionManager]
-	// Never Store() anything — Load() returns nil.
+	// Never Store() anything - Load() returns nil.
 	var etPtr atomic.Pointer[scanner.EntropyTracker]
 	var fbPtr atomic.Pointer[scanner.FragmentBuffer]
 	handler := NewSessionAPIHandler(SessionAPIOptions{

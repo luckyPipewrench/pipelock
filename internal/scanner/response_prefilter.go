@@ -205,7 +205,7 @@ func extractLiteralRun(s string) string {
 		colon := strings.Index(s, ":")
 		closeIdx := strings.Index(s, ")")
 		if colon > 0 && (closeIdx < 0 || colon < closeIdx) {
-			// Flag group (?-i: or (?: — skip past the colon
+			// Flag group (?-i: or (?: - skip past the colon
 			s = s[colon+1:]
 			// Also strip trailing ) if it's the last char
 			s = strings.TrimSuffix(s, ")")
@@ -227,12 +227,12 @@ func extractLiteralRun(s string) string {
 				next := s[i+1]
 				switch next {
 				case '.', '\\', '-', '_', '\'', '[', ']', '(', ')', '{', '}', '+', '*', '?', '^', '$', '|', '/', '!', ':':
-					// Escaped literal character — treat as keyword content.
+					// Escaped literal character - treat as keyword content.
 					result = append(result, next)
 					i++
 					continue
 				default:
-					// \s, \d, \b, \w, etc. are metacharacters — stop.
+					// \s, \d, \b, \w, etc. are metacharacters - stop.
 					return string(result)
 				}
 			}

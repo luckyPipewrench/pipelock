@@ -14,6 +14,13 @@
     ],
     "target": "https://api.example.com/v1/agents/spawn",
     "intent": "delegated-subagent-write",
+    "data_classes_in": [
+      "prompt",
+      "secret"
+    ],
+    "data_classes_out": [
+      "summary"
+    ],
     "side_effect_class": "external_write",
     "reversibility": "compensatable",
     "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -26,6 +33,7 @@
         "kind": "response_injection",
         "level": 4,
         "timestamp": "2026-04-15T12:00:00Z",
+        "receipt_id": "conformance-taint-00000",
         "match_reason": "ignore_previous_instructions"
       }
     ],
@@ -34,6 +42,7 @@
     "authority_kind": "delegated",
     "taint_decision": "allow_with_constraints",
     "taint_decision_reason": "task_scope_permits_write",
+    "task_override_applied": true,
     "contract_winning_source": "operator_policy",
     "contract_live_verdict": "allow",
     "contract_policy_sources": [
@@ -48,6 +57,7 @@
     "transport": "https",
     "method": "POST",
     "layer": "tool_policy",
+    "pattern": "spawn_subagent",
     "severity": "medium",
     "redaction": {
       "profile": "strict",
@@ -57,17 +67,39 @@
       "by_class": {
         "api_key": 1,
         "email": 1
-      }
+      },
+      "cache_boundary_kept": true
     },
     "shield": {
       "pipeline": "browser_shield_v1",
-      "total_rewrites": 1,
-      "agent_traps": 1
+      "total_rewrites": 5,
+      "extension_probes": 1,
+      "tracking_beacons": 2,
+      "agent_traps": 1,
+      "fingerprint_shim_injected": true,
+      "svg_foreign_objects": 1,
+      "svg_event_handlers": 1,
+      "svg_external_references": 1,
+      "svg_hidden_text": 1,
+      "svg_animation_injections": 1,
+      "body_bytes": 4096,
+      "scanned_bytes": 4096,
+      "partial": true,
+      "adaptive_signals_recorded": 3,
+      "adaptive_signal_max_per_body": 8
     },
     "request_id": "req-7f3a",
     "chain_prev_hash": "genesis",
-    "chain_seq": 0
+    "chain_seq": 0,
+    "venue": "us-east",
+    "jurisdiction": "operator-default",
+    "rulebook_id": "rulebook-v1",
+    "remedy_class": "compensate",
+    "contestation_window": "24h",
+    "precedent_refs": [
+      "conformance-precedent-1"
+    ]
   },
-  "signature": "ed25519:4da6b80f86871bc2729b10b7a9859c57e2569464185d55ce9dfa4488a7d25d11fb785ee2929233c61e2fd3fc36c5c5ca3c40cab8c357fd7e88c1190b4323ed01",
+  "signature": "ed25519:e49c4513f8ae214d5f4ee14d6b6a2e90dfc1ecfa2532dd6801f18191022585325aaa8503f07361abad8756d1a96d7984fcea601e5ea237276ca3e90353b41a05",
   "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
 }

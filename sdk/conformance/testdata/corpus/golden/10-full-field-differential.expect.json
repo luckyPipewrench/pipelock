@@ -3,9 +3,9 @@
   "category": "golden",
   "input_format": "receipt",
   "verdict": "accept",
-  "description": "Allow on a delegated sub-agent write carrying parent_action_id, taint context (scalars + a nested recent_taint_sources entry), contract context, redaction, and shield. Every block here was missing from at least one reference verifier's canonical field list.",
+  "description": "Allow on a delegated sub-agent write that populates EVERY omitempty field in the ActionRecord — parent_action_id, data classes, the full taint block (scalars + a nested recent_taint_sources entry with receipt_id), the contract block, the jurisdictional block, and fully-populated nested redaction and shield objects. At least one reference verifier historically dropped each of these from its canonical field list.",
   "expected_chain_length": 1,
   "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
-  "expected_root_hash": "2af9e2cfe675e5e42e528de0cd77a31719c10b12edef3a4595f260285dcc6aa8",
+  "expected_root_hash": "7d9996d79ab566731a858fab35a533e39252e032537b75740326365d707fb8dc",
   "notes": "Verifier MUST accept. This is the cross-language drift sentinel: a verifier MUST mirror the full Go ActionRecord field set, declaration order, and omitempty semantics — including nested object key order for recent_taint_sources, redaction, and shield. Any omitted or reordered field recomputes a different signing hash and wrongly reports signature_invalid."
 }

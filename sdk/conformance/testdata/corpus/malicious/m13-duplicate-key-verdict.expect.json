@@ -5,5 +5,5 @@
   "verdict": "reject",
   "reject_reason": "duplicate_key",
   "description": "action_record carries two verdict keys (\"allow\" then the signed \"block\"). Valid JSON, last-wins parsing makes the signature verify, so a verifier without duplicate-key rejection silently accepts while a first-occurrence display layer shows the opposite verdict.",
-  "notes": "Verifier MUST reject duplicate object keys at parse time, at any nesting depth, before signature verification. Use a raw token/pair scan (Go json.Decoder token loop, JS reviver/pair check, serde_json with reject_duplicate, Python object_pairs_hook) — last-wins map insertion hides the duplicate."
+  "notes": "Verifier MUST reject duplicate object keys at parse time, at any nesting depth, before signature verification, with explicit duplicate-key detection during raw parsing — last-wins map insertion hides the duplicate. Examples: a Go json.Decoder token loop, a JS pair/key scan, a Rust serde Visitor that tracks map keys (serde_json has no built-in reject-duplicate option; struct fields error on repeats but map-like decoding is last-wins), and Python's object_pairs_hook."
 }

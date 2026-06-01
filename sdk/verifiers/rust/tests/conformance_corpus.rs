@@ -48,6 +48,11 @@ fn duplicate_key_corpus_receipt_rejected() {
     )
     .expect("run receipt");
     assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("duplicate object key"));
 }
 
 #[test]
@@ -78,9 +83,10 @@ fn reject_duplicate_keys_unicode_escaped_dup() {
 
 #[test]
 fn reject_duplicate_keys_over_deep_nesting() {
-    // serde_json's default recursion limit (128) is the shared cross-language
-    // nesting cap; input nested well beyond it must be rejected, not crash.
-    let deep = format!("{}1{}", "[".repeat(200), "]".repeat(200));
+    let max_depth = format!("{}1{}", "[".repeat(128), "]".repeat(128));
+    reject_duplicate_keys(&max_depth).expect("exact max-depth nesting");
+
+    let deep = format!("{}1{}", "[".repeat(129), "]".repeat(129));
     assert!(reject_duplicate_keys(&deep).is_err());
 }
 

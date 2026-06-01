@@ -13,12 +13,20 @@ on:
   push:
     branches: [main]
     paths:
+      - 'cmd/pipelock/**'
+      - 'internal/jsonscan/**'
+      - 'internal/receipt/**'
+      - 'internal/recorder/**'
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
       - 'sdk/conformance/**'
       - '.github/workflows/verifiers.yaml'
   pull_request:
     paths:
+      - 'cmd/pipelock/**'
+      - 'internal/jsonscan/**'
+      - 'internal/receipt/**'
+      - 'internal/recorder/**'
       - 'sdk/verifiers/**'
       - 'sdk/audit-packet/**'
       - 'sdk/conformance/**'
@@ -133,6 +141,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/agent-egress-bench
+          ref: main
           path: _aeb
           persist-credentials: false
 
@@ -140,6 +149,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/pipelock-verify-python
+          ref: main
           path: _pyverify
           persist-credentials: false
 

@@ -21,11 +21,9 @@ var ErrDuplicateKey = fmt.Errorf("duplicate object key")
 // deeply nested document could overflow the goroutine stack and panic — and the
 // verify paths run this scan before json.Unmarshal, which would otherwise be the
 // depth backstop. The cap is the shared cross-language receipt-nesting limit:
-// the Rust verifier inherits the same 128 from serde_json's default recursion
-// limit, and the TypeScript and Python verifiers enforce it explicitly, so all
-// reference verifiers reject input nested beyond this depth. Receipts nest ~4
-// levels, so honest input is never affected; over-deep input is rejected, not
-// crashed.
+// all reference verifiers enforce 128 explicitly, so they reject input nested
+// beyond this depth. Receipts nest ~4 levels, so honest input is never
+// affected; over-deep input is rejected, not crashed.
 const MaxNestingDepth = 128
 
 // RejectDuplicateKeys reports an error if data contains a duplicate object key

@@ -72,10 +72,10 @@ test("rejectDuplicateKeys: surrogate-pair key matches its escaped form", () => {
   );
 });
 
-test("rejectDuplicateKeys: over-deep nesting throws, modest passes", () => {
-  assert.doesNotThrow(() => rejectDuplicateKeys("[".repeat(100) + "1" + "]".repeat(100)));
+test("rejectDuplicateKeys: over-deep nesting throws, exact max passes", () => {
+  assert.doesNotThrow(() => rejectDuplicateKeys("[".repeat(128) + "1" + "]".repeat(128)));
   assert.throws(
-    () => rejectDuplicateKeys("[".repeat(200) + "1" + "]".repeat(200)),
+    () => rejectDuplicateKeys("[".repeat(129) + "1" + "]".repeat(129)),
     /maximum depth/u,
   );
 });

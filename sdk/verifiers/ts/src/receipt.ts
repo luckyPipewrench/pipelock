@@ -20,23 +20,27 @@ export async function runReceipt(pathname: string, signerKey: string): Promise<R
   const clean = path.normalize(pathname);
   const keyHex = resolveSignerKey(signerKey);
   const text = readFileSync(clean, "utf8");
-  const receipt = parseJSON<Receipt>(text, "receipt json");
   const report: ReceiptReport = {
     path: clean,
     valid: false,
-    action_id: receipt.action_record?.action_id,
-    verdict: receipt.action_record?.verdict,
-    transport: receipt.action_record?.transport,
-    signer_key: receipt.signer_key,
-    policy_hash: receipt.action_record?.policy_hash,
-    chain_seq: receipt.action_record?.chain_seq,
   };
   try {
-    // Reject duplicate object keys before signature verification: last-wins
-    // parsing would otherwise let a smuggled first-occurrence value diverge
-    // from the signed value. Treated as an invalid receipt (exit 1), matching
-    // the Go and Python verifiers.
+    // Reject duplicate object keys before parsing or populating report
+    // metadata. Last-wins parsing would otherwise let attacker-controlled
+    // duplicate values leak into the displayed rejection report.
     rejectDuplicateKeys(text);
+  } catch (err) {
+    report.error = (err as Error).message;
+    return report;
+  }
+  const receipt = parseJSON<Receipt>(text, "receipt json");
+  report.action_id = receipt.action_record?.action_id;
+  report.verdict = receipt.action_record?.verdict;
+  report.transport = receipt.action_record?.transport;
+  report.signer_key = receipt.signer_key;
+  report.policy_hash = receipt.action_record?.policy_hash;
+  report.chain_seq = receipt.action_record?.chain_seq;
+  try {
     await verifyReceipt(receipt, keyHex);
     report.valid = true;
   } catch (err) {

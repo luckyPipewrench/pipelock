@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e11-html-escape-canonicalization",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Intent contains characters Go's encoding/json escapes in Marshal output: \u003c, \u003e, \u0026, U+2028, and U+2029.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "279042de97a54af2c73e00b2b7a239e435b552ac2a3afddbfcaaccf6cdc004aa",
+  "notes": "Verifier MUST accept. Non-Go verifiers must post-process canonical JSON to match Go's HTMLEscape behavior before hashing."
+}

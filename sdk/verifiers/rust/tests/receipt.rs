@@ -46,6 +46,28 @@ fn invalid_signature_is_rejected() {
 }
 
 #[test]
+fn duplicate_key_rejected_before_metadata_population() {
+    let path = std::env::temp_dir().join(format!(
+        "pipelock-rust-verifier-dup-{}.json",
+        std::process::id()
+    ));
+    fs::write(
+        &path,
+        r#"{"version":1,"action_record":{"version":1,"action_id":"x","action_type":"write","timestamp":"2026-04-15T12:00:00Z","verdict":"allow","verdict":"block","target":"https://e.example","transport":"https","chain_prev_hash":"genesis","chain_seq":0},"signature":"ed25519:00","signer_key":"00"}"#,
+    )
+    .unwrap();
+    let report = run_receipt(path.to_str().unwrap(), "").unwrap();
+    let _ = fs::remove_file(path);
+    assert!(!report.valid);
+    assert!(report
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("duplicate object key"));
+    assert_eq!(report.verdict, None);
+}
+
+#[test]
 fn armored_public_key_file_accepts_crlf_line_endings() {
     let root = common::repo_root();
     let key: Value = serde_json::from_str(

@@ -159,12 +159,24 @@ function normalizeMaps(value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => normalizeMaps(item));
   if (!isPlainObject(value)) return value;
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
+  for (const key of Object.keys(value).sort(compareCodePointStrings)) {
     const item = value[key];
     if (item === undefined) continue;
     out[key] = normalizeMaps(item);
   }
   return out;
+}
+
+function compareCodePointStrings(a: string, b: string): number {
+  const left = Array.from(a);
+  const right = Array.from(b);
+  const n = Math.min(left.length, right.length);
+  for (let i = 0; i < n; i++) {
+    const leftCodePoint = left[i]?.codePointAt(0) ?? 0;
+    const rightCodePoint = right[i]?.codePointAt(0) ?? 0;
+    if (leftCodePoint !== rightCodePoint) return leftCodePoint - rightCodePoint;
+  }
+  return left.length - right.length;
 }
 
 function stringifyCompact(value: unknown): string {

@@ -58,9 +58,27 @@ verdict() { # cmd... path -> prints accept/reject
   if "$@" "$path" --key "$KEY" >/dev/null 2>&1; then echo accept; else echo reject; fi
 }
 
+smoke_verifier() { # label cmd...
+  local label="$1"; shift
+  local smoke="$CORPUS/golden/01-allow-clean-get.json"
+  if [ ! -f "$smoke" ]; then
+    echo "FATAL: smoke fixture missing: $smoke" >&2
+    exit 2
+  fi
+  if ! "$@" "$smoke" --key "$KEY" >/dev/null 2>&1; then
+    echo "FATAL: $label verifier failed smoke fixture $smoke; check command wiring" >&2
+    exit 2
+  fi
+}
+
 expect_verdict() { # expect-file -> accept/reject
   grep -o '"verdict": *"[a-z]*"' "$1" | head -1 | sed 's/.*"\([a-z]*\)"$/\1/'
 }
+
+smoke_verifier Go $GO_VERIFY
+smoke_verifier TypeScript $TS_VERIFY
+smoke_verifier Rust $RUST_VERIFY
+smoke_verifier Python $PY_VERIFY
 
 fails=0
 checked=0

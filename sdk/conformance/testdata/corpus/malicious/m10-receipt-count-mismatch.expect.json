@@ -1,7 +1,7 @@
 {
   "fixture_id": "m10-receipt-count-mismatch",
   "category": "malicious",
-  "input_format": "chain",
+  "input_format": "receipt_bundle",
   "verdict": "reject",
   "reject_reason": "receipt_count_mismatch",
   "description": "Wrapper envelope claims declared_receipt_count=5 but only 4 receipts are present in the body.",

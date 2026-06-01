@@ -52,14 +52,14 @@ func TestRejectDuplicateKeys(t *testing.T) {
 func TestRejectDuplicateKeys_DepthBounded(t *testing.T) {
 	t.Parallel()
 
-	// Modest nesting is accepted.
-	modest := strings.Repeat("[", 100) + "1" + strings.Repeat("]", 100)
-	if err := RejectDuplicateKeys([]byte(modest)); err != nil {
-		t.Errorf("modest nesting rejected: %v", err)
+	// Exactly MaxNestingDepth levels are accepted.
+	maxDepth := strings.Repeat("[", MaxNestingDepth) + "1" + strings.Repeat("]", MaxNestingDepth)
+	if err := RejectDuplicateKeys([]byte(maxDepth)); err != nil {
+		t.Errorf("max-depth nesting rejected: %v", err)
 	}
 
 	// Over-deep nesting must produce an error, not a panic.
-	depth := MaxNestingDepth + 16
+	depth := MaxNestingDepth + 1
 	deep := strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth)
 	if err := RejectDuplicateKeys([]byte(deep)); err == nil {
 		t.Fatal("expected error on over-deep nesting, got nil")
@@ -73,6 +73,15 @@ func TestRejectDuplicateKeys_EmptyAndScalar(t *testing.T) {
 	for _, in := range []string{"", "   ", "123", `"x"`, "true", "null"} {
 		if err := RejectDuplicateKeys([]byte(in)); err != nil {
 			t.Errorf("RejectDuplicateKeys(%q) = %v, want nil (defer to json.Unmarshal)", in, err)
+		}
+	}
+}
+
+func TestRejectDuplicateKeys_MalformedAfterStart(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{`{"a":`, `{"a":1`, `[1,`, `{"a":{"b":`} {
+		if err := RejectDuplicateKeys([]byte(in)); err == nil {
+			t.Errorf("RejectDuplicateKeys(%q) = nil, want malformed JSON error", in)
 		}
 	}
 }

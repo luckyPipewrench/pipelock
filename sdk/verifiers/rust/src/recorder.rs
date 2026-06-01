@@ -14,8 +14,9 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         if line.is_empty() {
             continue;
         }
-        reject_duplicate_keys(line)?;
         let entry = parse_json_line(line, &format!("line {}", index + 1))?;
+        reject_duplicate_keys(line)
+            .map_err(|err| VerifierError::Invalid(format!("line {}: {}", index + 1, err)))?;
         let version = entry.get("v").and_then(serde_json::Value::as_u64);
         if version != Some(1) && version != Some(2) {
             errors_unsupported(index + 1, version)?;

@@ -40,13 +40,12 @@ export function parseJSON<T>(text: string, label: string): T {
 // duplicate key, so {"verdict":"allow","verdict":"block"} parses as "block"
 // with no error — a parser-differential smuggling vector where a display or log
 // layer reading the first occurrence sees a different value than the one the
-// signature was checked against. The caller MUST have already validated text as
-// well-formed JSON (e.g. via parseJSON); this scanner relies on that and only
-// needs to locate object-key string positions, not validate structure.
+// signature was checked against. This scanner only needs to locate object-key
+// string positions, not validate the full structure; malformed JSON is still
+// reported by the caller's normal JSON.parse path.
 // maxDuplicateKeyScanDepth bounds nesting so the scanner agrees with the other
-// reference verifiers on rejecting absurdly deep input (Rust's serde_json
-// enforces the same 128-level default; Go uses the matching cap). Receipts nest
-// ~4 levels, so this never affects honest input.
+// reference verifiers on rejecting absurdly deep input. Receipts nest ~4
+// levels, so this never affects honest input.
 const maxDuplicateKeyScanDepth = 128;
 
 export function rejectDuplicateKeys(text: string): void {

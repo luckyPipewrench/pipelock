@@ -12,8 +12,8 @@ export function readEntries(file: string): RecorderEntry[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.trim() ?? "";
     if (line === "") continue;
-    rejectDuplicateKeys(line);
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
+    rejectDuplicateKeys(line);
     if (entry.v !== 1 && entry.v !== 2) {
       throw new RuntimeError(
         `line ${i + 1}: unsupported entry version ${String(entry.v)} (accepted: 1, 2)`,

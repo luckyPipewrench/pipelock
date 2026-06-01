@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e10-non-bmp-map-key-order",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Redaction by_class map contains a non-BMP key and a private-use BMP key.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "ba0b358c94acd3dcd7c6b3388f50913124f63a9e45d4d5afbefbef62fa9d6b07",
+  "notes": "Verifier MUST accept. Go orders map keys by UTF-8/code-point order; JavaScript's default UTF-16 sort orders this pair differently, so this fixture catches map-key canonicalization drift."
+}

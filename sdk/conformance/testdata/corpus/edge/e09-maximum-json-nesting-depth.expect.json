@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e09-maximum-json-nesting-depth",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Receipt carries an ignored top-level probe field that brings the whole JSON document to exactly 128 nesting levels.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "34f2780dcb510c03f55fc31387c993066fad23e328a2bf5f64b630b8d58a0dfb",
+  "notes": "Verifier MUST accept. The shared raw-JSON scanner limit allows 128 nested arrays/objects including the receipt root object and rejects the 129th; this fixture catches off-by-one differences between language runtimes."
+}

@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "conformance-00000",
+    "action_type": "write",
+    "timestamp": "2026-04-15T12:00:00Z",
+    "principal": "org:conformance-test",
+    "actor": "agent:conformance-runner",
+    "delegation_chain": [
+      "test-policy-v1",
+      "test-grant"
+    ],
+    "target": "https://api.example.com/v1/data",
+    "side_effect_class": "external_write",
+    "reversibility": "compensatable",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "allow",
+    "transport": "https",
+    "method": "POST",
+    "redaction": {
+      "profile": "strict",
+      "provider": "provider.example",
+      "parser": "json",
+      "total_redactions": 3,
+      "by_class": {
+        "api_key": 1,
+        "": 2,
+        "𐀀": 3
+      }
+    },
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:5d7f424c66074f1d5b5424b87879a042afd66d0569870a07d39290fc256c3d3d8bc6fe5f7753a9d272b8c2258bbc5aa0e78db4408a2b665503816f0465def909",
+  "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+}

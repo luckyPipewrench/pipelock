@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "conformance-00000",
+    "action_type": "write",
+    "timestamp": "2026-04-15T12:00:00Z",
+    "principal": "org:conformance-test",
+    "actor": "agent:conformance-runner",
+    "delegation_chain": [
+      "test-policy-v1",
+      "test-grant"
+    ],
+    "target": "https://attacker.example.net/exfil",
+    "side_effect_class": "external_write",
+    "reversibility": "compensatable",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "block",
+    "transport": "https",
+    "method": "POST",
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:5b78fafc57c7f8d085278f30d6c1226f8eb5b7d93a39afcc1d688045415deec10df6eccd1bdbdafcd22fb29b624e478f173a5e23ea8b2bcef23e28ad6141ca08",
+  "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "dup_probe": [{"a":1,"\u0061":2}]
+}

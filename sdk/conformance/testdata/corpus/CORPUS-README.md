@@ -53,7 +53,7 @@ receipts/v0/conformance/
 
 Each fixture is two files sharing a base name:
 
-- `<name>.json` for single-receipt fixtures or `<name>.jsonl` for chain fixtures (the input to the verifier). Chains are JSONL with one receipt per line; the generator writes the `.jsonl` extension whenever a fixture contains more than one linked receipt.
+- `<name>.json` for single-receipt fixtures and receipt-bundle wrappers, or `<name>.jsonl` for raw chain fixtures (the input to the verifier). Chains are JSONL with one receipt per line.
 - `<name>.expect.json` for the expected verifier output.
 
 ### `.expect.json` schema
@@ -62,7 +62,7 @@ Each fixture is two files sharing a base name:
 {
   "fixture_id": "string, immutable",
   "category": "golden | malicious | edge",
-  "input_format": "receipt | chain",
+  "input_format": "receipt | chain | receipt_bundle",
   "verdict": "accept | reject",
   "reject_reason": "machine-readable enum (omitted when accept)",
   "description": "human prose",
@@ -172,6 +172,17 @@ additions follow the rule above.
     Strict-JSON requirements. No honest receipt has duplicate keys, so this
     hardens against a parser-differential smuggling vector without changing any
     honest receipt's verdict — it does not warrant a `v1` fork.
+- **2026-06-01** — Added boundary fixtures that lock down cross-language
+  canonicalization assumptions:
+  - `e09-maximum-json-nesting-depth` accepts an ignored probe field that brings
+    the whole JSON document to exactly 128 levels deep, proving verifiers share
+    the same depth boundary.
+  - `e10-non-bmp-map-key-order` exercises Go-compatible map-key ordering for
+    non-BMP Unicode keys.
+  - `e11-html-escape-canonicalization` exercises Go's JSON HTMLEscape behavior
+    for `<`, `>`, `&`, U+2028, and U+2029.
+  - `m14-duplicate-key-nested-unicode` rejects duplicate keys hidden inside an
+    array using a unicode-escaped equivalent key.
 
 ## What a passing verifier looks like
 

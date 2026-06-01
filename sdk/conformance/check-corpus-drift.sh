@@ -49,36 +49,50 @@ fi
 
 drift=0
 
-# Compare the test key (vendored test-key.json <- master _generator/test-key.json).
-if ! cmp -s "$VENDORED/test-key.json" "$MASTER/_generator/test-key.json"; then
-  echo "DRIFT: test-key.json differs from agent-egress-bench master"
-  drift=1
-fi
+vendored_to_master() {
+  case "$1" in
+    test-key.json) echo "_generator/test-key.json" ;;
+    CORPUS-README.md) echo "README.md" ;;
+    *) echo "$1" ;;
+  esac
+}
 
-# Compare every fixture file in golden/ malicious/ edge/ both directions.
-for category in golden malicious edge; do
-  # vendored -> master (modified or extra in vendored)
-  while IFS= read -r vf; do
-    rel="${vf#"$VENDORED"/}"
-    mf="$MASTER/$rel"
-    if [ ! -f "$mf" ]; then
-      echo "DRIFT: $rel present in vendored copy but not in master"
-      drift=1
-    elif ! cmp -s "$vf" "$mf"; then
-      echo "DRIFT: $rel differs from master"
-      drift=1
-    fi
-  done < <(find "$VENDORED/$category" -type f | sort)
+master_to_vendored() {
+  case "$1" in
+    _generator/test-key.json) echo "test-key.json" ;;
+    _generator/*) echo "" ;;
+    README.md) echo "CORPUS-README.md" ;;
+    *) echo "$1" ;;
+  esac
+}
 
-  # master -> vendored (missing from vendored)
-  while IFS= read -r mf; do
-    rel="${mf#"$MASTER"/}"
-    if [ ! -f "$VENDORED/$rel" ]; then
-      echo "DRIFT: $rel present in master but missing from vendored copy"
-      drift=1
-    fi
-  done < <(find "$MASTER/$category" -type f | sort)
-done
+# Compare every vendored corpus file, including top-level documentation and
+# keys. _generator/main.go and _generator/go.mod stay only in the master repo;
+# the vendored copy includes just the deterministic test key material.
+while IFS= read -r vf; do
+  rel="${vf#"$VENDORED"/}"
+  master_rel="$(vendored_to_master "$rel")"
+  mf="$MASTER/$master_rel"
+  if [ ! -f "$mf" ]; then
+    echo "DRIFT: $rel present in vendored copy but not in agent-egress-bench master"
+    drift=1
+  elif ! cmp -s "$vf" "$mf"; then
+    echo "DRIFT: $rel differs from agent-egress-bench master $master_rel"
+    drift=1
+  fi
+done < <(find "$VENDORED" -type f | sort)
+
+# Symmetric pass: any source corpus file that should be vendored must exist in
+# the copy here. Generator source files are intentionally not vendored.
+while IFS= read -r mf; do
+  rel="${mf#"$MASTER"/}"
+  vendored_rel="$(master_to_vendored "$rel")"
+  [ -n "$vendored_rel" ] || continue
+  if [ ! -f "$VENDORED/$vendored_rel" ]; then
+    echo "DRIFT: $rel present in agent-egress-bench master but missing from vendored copy"
+    drift=1
+  fi
+done < <(find "$MASTER" -type f | sort)
 
 if [ "$drift" -ne 0 ]; then
   echo "----"

@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "conformance-00000",
+    "action_type": "read",
+    "timestamp": "2026-04-15T12:00:00Z",
+    "principal": "org:conformance-test",
+    "actor": "agent:conformance-runner",
+    "delegation_chain": [
+      "test-policy-v1",
+      "test-grant"
+    ],
+    "target": "https://api.example.com/v1/data",
+    "intent": "render \u003cscript\u003ealert('x')\u003c/script\u003e \u0026 preserve \u2028 and \u2029 separators",
+    "side_effect_class": "external_read",
+    "reversibility": "full",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "allow",
+    "transport": "https",
+    "method": "GET",
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:776b0105e31f9b3e560ff059dbcb5d8e93ac5fedfbe27930b8f21069a53711a661948abc96ec45d49634346f9eacbdfe8b763579c7e2ed0b4d2b67f861caad07",
+  "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+}

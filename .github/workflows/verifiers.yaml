@@ -140,7 +140,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/agent-egress-bench
-          ref: c0c91017efd302aeaf3b6d2d6ee4aa80a6259cd8
+          ref: 977cd463cc0c973d2010023d74258cf901d155fc
           path: _aeb
           persist-credentials: false
 

@@ -410,6 +410,15 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		re:   regexp.MustCompile(`(?i)(\.ssh|\.env|\.aws|credentials|private[_\s]?key|id_rsa|passwd).{0,40}(read|send|include|exfiltrate|steal|access|retrieve|fetch|dump|upload|cat|prepend|append|add|attach|embed)\b`),
 	},
 	{
+		name: "Cross-Tool Sensitive File Directive",
+		// Catches tool descriptions that instruct the agent to invoke another
+		// read-style tool with a concrete sensitive path. This is distinct
+		// from generic cross-tool routing: a benign "call read_file with the
+		// requested path" should not match without a secret-bearing path.
+		re: regexp.MustCompile(`(?i)\b(?:first\s+)?(?:call|use|invoke)\s+(?:the\s+)?[\w.-]*(?:read|file|secret|credential)[\w.-]*(?:\s+(?:tool|function))?\b.{0,100}` +
+			`(?:path|file|target|argument)?\s*[:=]?\s*['"]?(?:~?/)?(?:\.ssh[/\\]|\.aws[/\\]credentials|\.env\b|\.npmrc\b|\.pypirc\b|\.netrc\b|id_rsa\b|id_ed25519\b|/etc/passwd\b|/etc/shadow\b|private[_\s-]?key)`),
+	},
+	{
 		name: "Cross-Tool Manipulation",
 		re:   regexp.MustCompile(`(?i)(instead\s+of|rather\s+than|don't\s+use|never\s+use|always\s+prefer)\s+(using\s+)?(the\s+)?\w+\s+(tool|function|command)`),
 	},

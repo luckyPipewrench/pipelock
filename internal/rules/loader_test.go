@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -47,7 +48,7 @@ func testBundleV2(name, tier string, monotonic uint64, rules []Rule) *Bundle {
 		Tier:             tier,
 		MonotonicVersion: monotonic,
 		PublishedAt:      "2026-04-01T00:00:00Z",
-		ExpiresAt:        "2026-06-01T00:00:00Z",
+		ExpiresAt:        time.Now().UTC().AddDate(1, 0, 0).Format(time.RFC3339),
 		KeyID:            "sha256:test-key-id",
 		Rules:            rules,
 	}

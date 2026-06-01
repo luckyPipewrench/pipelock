@@ -32,6 +32,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -376,14 +377,16 @@ func parseCertChainPEM(data []byte) ([]*x509.Certificate, error) {
 	rest := data
 	for {
 		var block *pem.Block
+		rest = bytes.TrimLeftFunc(rest, unicode.IsSpace)
+		if len(rest) == 0 {
+			break
+		}
+		if !bytes.HasPrefix(rest, []byte("-----BEGIN ")) {
+			return nil, fmt.Errorf("%w: leading non-whitespace before PEM block", ErrMalformedInput)
+		}
 		block, rest = pem.Decode(rest)
 		if block == nil {
-			// No further PEM block. Any non-whitespace remainder is junk that a
-			// lax parser would silently ignore — reject it.
-			if len(bytes.TrimSpace(rest)) > 0 {
-				return nil, fmt.Errorf("%w: trailing data after PEM block(s)", ErrMalformedInput)
-			}
-			break
+			return nil, fmt.Errorf("%w: malformed PEM block", ErrMalformedInput)
 		}
 		if block.Type != "CERTIFICATE" {
 			return nil, fmt.Errorf("%w: unexpected PEM block type %q", ErrMalformedInput, block.Type)

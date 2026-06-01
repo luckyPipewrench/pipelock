@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/url"
 	"testing"
@@ -355,7 +356,9 @@ func TestValidateSVID_MalformedInput(t *testing.T) {
 		{"non-svid x509 (no URI SAN)", certsToPEM(nonSVID)},
 		{"pem but wrong block type", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("xx")})},
 		{"empty cert block body", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: nil})},
+		{"leading garbage before valid cert", append([]byte("junk before cert\n"), certsToPEM(good)...)},
 		{"valid cert then trailing garbage", append(certsToPEM(good), []byte("\nthis is trailing garbage that did not PEM-decode")...)},
+		{"junk between valid cert blocks", append(append(certsToPEM(good), []byte("\njunk between certs\n")...), certsToPEM(good)...)},
 		{"valid cert then undecodable second block", append(certsToPEM(good), []byte("\n-----BEGIN CERTIFICATE-----\nnot base64!!!\n-----END CERTIFICATE-----\n")...)},
 	}
 	for _, tc := range cases {
@@ -738,26 +741,32 @@ func TestTrustBundleHistory_ConcurrentPinAndValidate(t *testing.T) {
 	leaf := ca.issueSVID(t, idAlpha, base, base.Add(100*24*time.Hour))
 	pemBytes := certsToPEM(leaf)
 
-	done := make(chan struct{})
+	rotations := make([]Generation, 0, 50)
+	for i := 1; i <= 50; i++ {
+		caN := newTestCA(t, "rotation")
+		g, gErr := NewGeneration(base.Add(time.Duration(i)*time.Hour), time.Time{}, []*x509.Certificate{caN.cert})
+		if gErr != nil {
+			t.Fatalf("gen %d: %v", i, gErr)
+		}
+		rotations = append(rotations, g)
+	}
+
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
-		for i := 1; i <= 50; i++ {
-			caN := newTestCA(t, "rotation")
-			g, gErr := NewGeneration(base.Add(time.Duration(i)*time.Hour), time.Time{}, []*x509.Certificate{caN.cert})
-			if gErr != nil {
-				t.Errorf("gen %d: %v", i, gErr)
-				return
-			}
+		for i, g := range rotations {
 			if pErr := h.Pin(g); pErr != nil {
-				t.Errorf("pin %d: %v", i, pErr)
+				done <- fmt.Errorf("pin %d: %w", i+1, pErr)
 				return
 			}
 		}
+		done <- nil
 	}()
 	for i := 0; i < 200; i++ {
 		// Validate at gen0's window; result may be valid or stale depending on
 		// interleaving, but it must never race or panic.
 		_, _ = ValidateSVID(pemBytes, Options{TrustDomain: tdExample, History: h, At: base.Add(30 * time.Minute)})
 	}
-	<-done
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
 }

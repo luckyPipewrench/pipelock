@@ -39,6 +39,7 @@ var sinkReadyHook func()
 
 func SinkCmd() *cobra.Command {
 	var listenAddr string
+	var probeListen string
 	var storageDir string
 	var trustedKeys []string
 	var maxSkew time.Duration
@@ -112,37 +113,97 @@ func SinkCmd() *cobra.Command {
 			}
 			server.TLSConfig = tlsConfig
 
-			runCtx, stop := signalContext(ctx)
+			probeHandler := newProbeHandler()
+			baseCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			runCtx, stop := signalContext(baseCtx)
 			defer stop()
+
+			ln, err := (&net.ListenConfig{}).Listen(runCtx, "tcp", listenAddr)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = ln.Close() }()
+
+			var probeLn net.Listener
+			if strings.TrimSpace(probeListen) != "" {
+				probeLn, err = (&net.ListenConfig{}).Listen(runCtx, "tcp", probeListen)
+				if err != nil {
+					return fmt.Errorf("probe bind %s: %w", probeListen, err)
+				}
+				defer func() { _ = probeLn.Close() }()
+			}
+
+			var probeServer *http.Server
+			if probeLn != nil {
+				probeServer = &http.Server{
+					Addr:              probeListen,
+					Handler:           probeHandler,
+					ReadHeaderTimeout: 5 * time.Second,
+					ReadTimeout:       15 * time.Second,
+					WriteTimeout:      15 * time.Second,
+					IdleTimeout:       60 * time.Second,
+					MaxHeaderBytes:    64 * 1024,
+				}
+			}
 			go func() {
 				<-runCtx.Done()
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				_ = server.Shutdown(shutdownCtx)
+				if probeServer != nil {
+					_ = probeServer.Shutdown(shutdownCtx)
+				}
 			}()
 
 			// Setup is complete here (store migrated, handler built, shutdown
 			// wired). Tests use this seam to cancel at a deterministic point so
-			// ListenAndServe is exercised and exits cleanly via Shutdown.
+			// Serve is exercised and exits cleanly via Shutdown.
 			if sinkReadyHook != nil {
 				sinkReadyHook()
 			}
 
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: fleet sink listening on %s\n", listenAddr)
-			if tlsCert != "" || tlsKey != "" {
-				if err := server.ListenAndServeTLS(tlsCert, tlsKey); err != nil && !errors.Is(err, http.ErrServerClosed) {
-					return err
+			serverCount := 1
+			errCh := make(chan error, 2)
+			go func() {
+				var err error
+				if tlsCert != "" || tlsKey != "" {
+					err = server.ServeTLS(ln, tlsCert, tlsKey)
+				} else {
+					err = server.Serve(ln)
 				}
-				return nil
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
+					errCh <- err
+					return
+				}
+				errCh <- nil
+			}()
+			if probeServer != nil {
+				serverCount++
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "pipelock: fleet sink probes listening on %s\n", probeListen)
+				go func() {
+					if err := probeServer.Serve(probeLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+						errCh <- err
+						return
+					}
+					errCh <- nil
+				}()
 			}
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return err
+
+			var firstErr error
+			for range serverCount {
+				if err := <-errCh; err != nil && firstErr == nil {
+					firstErr = err
+					cancel()
+				}
 			}
-			return nil
+			return firstErr
 		},
 	}
 
 	cmd.Flags().StringVar(&listenAddr, "listen", "127.0.0.1:8894", "address for the fleet sink HTTP listener")
+	cmd.Flags().StringVar(&probeListen, "probe-listen", "", "plain HTTP address for fleet sink health probes; empty disables the probe listener")
 	cmd.Flags().StringVar(&storageDir, "storage-dir", "", "directory for the fleet sink SQLite store")
 	cmd.Flags().StringArrayVar(&trustedKeys, "trusted-audit-key", nil,
 		"trusted audit signing key as comma-separated kv pairs: 'id=ID,(inline=BASE64|file=/path)[,org=ORG][,fleet=FLEET][,instance=INSTANCE]'; repeatable")
@@ -154,6 +215,20 @@ func SinkCmd() *cobra.Command {
 		"path to a file containing the bearer token required for GET requests; required for non-loopback bind without --client-ca")
 	cmd.Flags().StringVar(&licenseCRLFile, "license-crl-file", "", "signed license revocation list file; falls back to PIPELOCK_LICENSE_CRL_FILE")
 	return cmd
+}
+
+func newProbeHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodHead)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	return mux
 }
 
 // auditKeySpec is one parsed --trusted-audit-key value.

@@ -238,6 +238,7 @@ fleetSink:
   service:
     type: ClusterIP
     port: 8894
+    probePort: 9093
   tls:
     serverSecretRef:
       name: ""

@@ -109,3 +109,5 @@ networkPolicy:
     - ports:
         - port: 443
           protocol: TCP
+        - port: 80
+          protocol: TCP

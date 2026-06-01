@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: fleet-sink
 spec:
   replicas: {{ .Values.fleetSink.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "pipelock.selectorLabels" . | nindent 6 }}
@@ -44,6 +46,8 @@ spec:
             - fleet-sink
             - --listen
             - {{ printf "0.0.0.0:%d" (int .Values.fleetSink.service.port) | quote }}
+            - --probe-listen
+            - {{ printf "0.0.0.0:%d" (int .Values.fleetSink.service.probePort) | quote }}
             - --storage-dir
             - {{ .Values.fleetSink.persistence.mountPath | quote }}
             - --tls-cert
@@ -68,20 +72,21 @@ spec:
             - name: https
               containerPort: {{ .Values.fleetSink.service.port }}
               protocol: TCP
+            - name: probe
+              containerPort: {{ .Values.fleetSink.service.probePort }}
+              protocol: TCP
           livenessProbe:
             httpGet:
-              scheme: HTTPS
               path: /health
-              port: https
+              port: probe
             initialDelaySeconds: 5
             periodSeconds: 30
             timeoutSeconds: 3
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              scheme: HTTPS
               path: /health
-              port: https
+              port: probe
             initialDelaySeconds: 2
             periodSeconds: 10
             timeoutSeconds: 2

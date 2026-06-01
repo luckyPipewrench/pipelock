@@ -45,6 +45,8 @@ spec:
         {{- else if eq $mode "fleetSink" }}
         - port: {{ .Values.fleetSink.service.port }}
           protocol: TCP
+        - port: {{ .Values.fleetSink.service.probePort }}
+          protocol: TCP
         {{- end }}
     - from:
         - podSelector:

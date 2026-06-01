@@ -170,6 +170,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Helm
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v3.20.0
+
       - name: Verify Helm chart
         run: bash scripts/check-helm-chart.sh
 

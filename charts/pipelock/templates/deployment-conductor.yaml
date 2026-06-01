@@ -8,6 +8,8 @@ metadata:
     app.kubernetes.io/component: conductor
 spec:
   replicas: {{ .Values.conductor.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "pipelock.selectorLabels" . | nindent 6 }}

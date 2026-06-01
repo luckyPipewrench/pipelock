@@ -15,6 +15,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -317,7 +319,32 @@ func TestSignalContextCancel(t *testing.T) {
 	}
 }
 
-// TestSinkCmd_RunOnLoopback covers the happy-path RunE up to ListenAndServe
+func TestProbeHandlerOnlyServesHealth(t *testing.T) {
+	handler := newProbeHandler()
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /health status = %d, want %d", w.Code, http.StatusOK)
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/health", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /health status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, sink.AuditBatchesPath, nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("audit path status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+// TestSinkCmd_RunOnLoopback covers the happy-path RunE up to Serve
 // returning the harmless ErrServerClosed after we cancel the parent context.
 // This wires together the resolver, store, scanner, and handler so all of
 // SinkCmd's setup branches are exercised.

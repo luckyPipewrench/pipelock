@@ -98,7 +98,7 @@ Enterprise server modes use the license Secret as `PIPELOCK_LICENSE_KEY` because
 |---|---|---|
 | `conductorFollower.conductorURL` | `""` | HTTPS URL of the Conductor follower API |
 | `conductorFollower.serverCASecretRef.name` | `""` | Existing Secret containing the Conductor server CA |
-| `conductorFollower.clientSecretRef.name` | `""` | Existing TLS Secret for follower mTLS client identity |
+| `conductorFollower.clientSecretRef.name` | `""` | Existing Kubernetes TLS Secret for follower mTLS client identity; must contain `tls.crt` and `tls.key`, mounted at `client_cert_path` and `client_key_path` |
 | `conductorFollower.trustRosterSecretRef.name` | `""` | Existing Secret containing the signed trust roster |
 | `conductorFollower.persistence.bundleCache.enabled` | `false` | PVC for signed policy bundle cache |
 | `conductorFollower.persistence.auditQueue.enabled` | `false` | PVC for durable audit queue |
@@ -108,6 +108,7 @@ Enterprise server modes use the license Secret as `PIPELOCK_LICENSE_KEY` because
 | Key | Default | Description |
 |---|---|---|
 | `fleetSink.service.port` | `8894` | Audit sink listener |
+| `fleetSink.service.probePort` | `9093` | Plain HTTP health probe listener |
 | `fleetSink.tls.serverSecretRef.name` | `""` | Existing TLS Secret with `tls.crt` and `tls.key` |
 | `fleetSink.tls.clientCASecretRef.name` | `""` | Existing Secret with follower client CA bundle |
 | `fleetSink.readerToken.secretRef.name` | `""` | Existing Secret for audit query reader token file |

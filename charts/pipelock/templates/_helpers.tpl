@@ -85,6 +85,12 @@ Validate mode and security-critical enterprise chart requirements.
 {{- if and (eq $mode "fleetSink") .Values.podMonitor.enabled -}}
 {{- fail "podMonitor.enabled is not supported in fleetSink mode because the standalone sink does not expose a Prometheus metrics endpoint" -}}
 {{- end -}}
+{{- if and (eq $mode "conductor") .Values.conductor.persistence.enabled (gt (int .Values.conductor.replicaCount) 1) (has "ReadWriteOnce" (default list .Values.conductor.persistence.accessModes)) -}}
+{{- fail "conductor.replicaCount must be 1 when conductor.persistence.accessModes includes ReadWriteOnce" -}}
+{{- end -}}
+{{- if and (eq $mode "fleetSink") .Values.fleetSink.persistence.enabled (gt (int .Values.fleetSink.replicaCount) 1) (has "ReadWriteOnce" (default list .Values.fleetSink.persistence.accessModes)) -}}
+{{- fail "fleetSink.replicaCount must be 1 when fleetSink.persistence.accessModes includes ReadWriteOnce" -}}
+{{- end -}}
 {{- if .Values.conductorFollower.enabled -}}
 {{- $_ := required "conductorFollower.conductorURL is required when conductorFollower.enabled=true" .Values.conductorFollower.conductorURL -}}
 {{- $_ := required "conductorFollower.serverCASecretRef.name is required when conductorFollower.enabled=true" .Values.conductorFollower.serverCASecretRef.name -}}

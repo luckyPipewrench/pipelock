@@ -86,4 +86,22 @@ spec:
       targetPort: https
       protocol: TCP
       name: https
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipelock.fullname" . }}-fleet-sink-probes
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet-sink
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pipelock.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet-sink
+  ports:
+    - port: {{ .Values.fleetSink.service.probePort }}
+      targetPort: probe
+      protocol: TCP
+      name: probe
 {{- end }}

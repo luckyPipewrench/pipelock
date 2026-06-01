@@ -87,6 +87,9 @@ networkPolicy:
             matchLabels:
               pipelock.io/operator: "true"
       ports:
+        # Kubelet probe traffic is node-originated and may require CNI
+        # hostEndpoint or host-protection policy outside Kubernetes
+        # NetworkPolicy. This rule is for operator/Prometheus access.
         - port: 9092
           protocol: TCP
   egress:

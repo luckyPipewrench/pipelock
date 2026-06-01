@@ -18,6 +18,7 @@ fleetSink:
   service:
     type: ClusterIP
     port: 8894
+    probePort: 9093
   tls:
     serverSecretRef:
       name: fleet-sink-server-tls
@@ -62,6 +63,11 @@ networkPolicy:
               pipelock.io/operator: "true"
       ports:
         - port: 8894
+          protocol: TCP
+        # Kubelet probe traffic is node-originated and may require CNI
+        # hostEndpoint or host-protection policy outside Kubernetes
+        # NetworkPolicy. This rule is for operator/Prometheus access.
+        - port: 9093
           protocol: TCP
   egress:
     - to:

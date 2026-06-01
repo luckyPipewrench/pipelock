@@ -47,7 +47,7 @@ func testBundleV2(name, tier string, monotonic uint64, rules []Rule) *Bundle {
 		Tier:             tier,
 		MonotonicVersion: monotonic,
 		PublishedAt:      "2026-04-01T00:00:00Z",
-		ExpiresAt:        "2026-06-01T00:00:00Z",
+		ExpiresAt:        "2126-06-01T00:00:00Z",
 		KeyID:            "sha256:test-key-id",
 		Rules:            rules,
 	}

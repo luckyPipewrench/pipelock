@@ -39,6 +39,14 @@ expect_template_error "enterprise modes require explicit networkPolicy.ingress a
   --set networkPolicy.ingress=null \
   --set networkPolicy.egress=null
 
+expect_template_error "conductor.replicaCount must be 1 when conductor.persistence.accessModes includes ReadWriteOnce" \
+  -f "$chart/examples/values-enterprise-conductor.yaml" \
+  --set conductor.replicaCount=2
+
+expect_template_error "fleetSink.replicaCount must be 1 when fleetSink.persistence.accessModes includes ReadWriteOnce" \
+  -f "$chart/examples/values-enterprise-devfleet.yaml" \
+  --set fleetSink.replicaCount=2
+
 grep -q -- "- run" "$render_dir/default.yaml"
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"
@@ -51,7 +59,9 @@ grep -q -- "--publisher-token-file" "$render_dir/values-enterprise-conductor.yam
 grep -q -- "pipelock-conductor-probes" "$render_dir/values-enterprise-conductor.yaml"
 
 grep -q -- "- fleet-sink" "$render_dir/values-enterprise-devfleet.yaml"
+grep -q -- "--probe-listen" "$render_dir/values-enterprise-devfleet.yaml"
 grep -q -- "--reader-token-file" "$render_dir/values-enterprise-devfleet.yaml"
+grep -q -- "pipelock-fleet-sink-probes" "$render_dir/values-enterprise-devfleet.yaml"
 grep -q -- "pipelock-fleet-sink-storage" "$render_dir/values-enterprise-devfleet.yaml"
 
 if grep -R "publisher.token:" "$render_dir" >/dev/null; then

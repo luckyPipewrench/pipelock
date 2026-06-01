@@ -16,6 +16,10 @@ Pipelock follower.
 Fleet audit sink endpoint:
   kubectl port-forward svc/{{ include "pipelock.fullname" . }}-fleet-sink {{ .Values.fleetSink.service.port }}:{{ .Values.fleetSink.service.port }}
 
+Fleet sink probe endpoint:
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }}-fleet-sink-probes {{ .Values.fleetSink.service.probePort }}:{{ .Values.fleetSink.service.probePort }}
+  curl http://127.0.0.1:{{ .Values.fleetSink.service.probePort }}/health
+
 This mode runs the standalone `pipelock fleet-sink` server for signed audit
 batch ingest and query storage. It is not an inline enforcement dependency.
 {{- else }}

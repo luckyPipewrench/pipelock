@@ -1,0 +1,109 @@
+{
+  "declared_receipt_count": 5,
+  "receipts": [
+    {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "read",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/v1/data",
+        "side_effect_class": "external_read",
+        "reversibility": "full",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "transport": "https",
+        "method": "GET",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:1f2afffae9147815ff4cff126f144766b5e3964c95451b0cab940e7f6be27a48fef13075520f8b59d9355fba5232613a97ece81ce691c1366a0f7e2d77f5de0b",
+      "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+    },
+    {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00001",
+        "action_type": "read",
+        "timestamp": "2026-04-15T12:00:01Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/v1/data",
+        "side_effect_class": "external_read",
+        "reversibility": "full",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "transport": "https",
+        "method": "GET",
+        "chain_prev_hash": "34f2780dcb510c03f55fc31387c993066fad23e328a2bf5f64b630b8d58a0dfb",
+        "chain_seq": 1
+      },
+      "signature": "ed25519:a74fb2658de0f899befa9673f06b725fff34575491bf00d8b24c6d6fcdd37fa24614f4723994e1369f91be41b3ea266a8ef6d57f73424b79cc1a7706015ac30c",
+      "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+    },
+    {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00002",
+        "action_type": "read",
+        "timestamp": "2026-04-15T12:00:02Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/v1/data",
+        "side_effect_class": "external_read",
+        "reversibility": "full",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "transport": "https",
+        "method": "GET",
+        "chain_prev_hash": "066037ef5bf14ea2c7135d091ca5fb9a5e743d75f8300d2073c427665aec4536",
+        "chain_seq": 2
+      },
+      "signature": "ed25519:0b8bd6868eecf2d934a3e7e804caa2b7787bd2ef866142f2b8dd1a376385bfa74189496bed9c14bece659fc5602e5e523d47d6253145538938edfc617a19bc0a",
+      "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+    },
+    {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00003",
+        "action_type": "read",
+        "timestamp": "2026-04-15T12:00:03Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/v1/data",
+        "side_effect_class": "external_read",
+        "reversibility": "full",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "transport": "https",
+        "method": "GET",
+        "chain_prev_hash": "cdf5642821ab773e65f7014cd90827c7c725aec1c0cf94c7121afffa26c5fee5",
+        "chain_seq": 3
+      },
+      "signature": "ed25519:b8e98441b2bf9a5afd57c8959fa084a8dfe3544e2e7e648564a37b4e6e12837c50eb3d4cf474cacce207738c6bbaa39a89870a5d70c4b03d98394e5b68a5d20c",
+      "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+    }
+  ]
+}

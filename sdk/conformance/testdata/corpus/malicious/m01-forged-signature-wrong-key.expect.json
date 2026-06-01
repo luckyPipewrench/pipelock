@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m01-forged-signature-wrong-key",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "signature_invalid",
+  "description": "Signature is well-formed Ed25519 but was produced with a foreign key. signer_key was rewritten to claim the pinned key.",
+  "notes": "Verifier MUST recompute SHA-256(canonical(action_record)) and run ed25519.Verify against the embedded signer_key. The forge fails because the foreign signature does not verify against the pinned public key."
+}

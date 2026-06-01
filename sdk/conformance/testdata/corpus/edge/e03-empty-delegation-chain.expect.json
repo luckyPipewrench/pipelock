@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e03-empty-delegation-chain",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "DelegationChain is an empty array — legal at the schema layer (root-policy direct action).",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "3794b6d8a85eb50b3bc3f59d8f719dafe2f8bb12314bac019e8da3f8720260c1",
+  "notes": "Verifier MUST accept. Empty array MUST encode as [], NOT null. A verifier that demands at least one delegation entry would reject all root-authority actions."
+}

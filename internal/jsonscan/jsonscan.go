@@ -1,0 +1,102 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+// Package jsonscan provides a streaming duplicate-key check used on the receipt
+// and flight-recorder verify paths. It is a leaf package so both internal/receipt
+// and internal/recorder can share one implementation (receipt imports recorder,
+// so the shared helper cannot live in either of them).
+package jsonscan
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+// ErrDuplicateKey is returned when input contains a duplicate object key.
+var ErrDuplicateKey = fmt.Errorf("duplicate object key")
+
+// MaxNestingDepth bounds the scanner's recursion. json.Decoder.Token() (unlike
+// json.Unmarshal) does NOT enforce a nesting limit, so without this bound a
+// deeply nested document could overflow the goroutine stack and panic — and the
+// verify paths run this scan before json.Unmarshal, which would otherwise be the
+// depth backstop. The cap is the shared cross-language receipt-nesting limit:
+// the Rust verifier inherits the same 128 from serde_json's default recursion
+// limit, and the TypeScript and Python verifiers enforce it explicitly, so all
+// reference verifiers reject input nested beyond this depth. Receipts nest ~4
+// levels, so honest input is never affected; over-deep input is rejected, not
+// crashed.
+const MaxNestingDepth = 128
+
+// RejectDuplicateKeys reports an error if data contains a duplicate object key
+// at any nesting depth. It streams tokens with a json.Decoder so it sees every
+// key occurrence, not the last-wins map encoding/json would build. encoding/json
+// silently keeps the last value for a duplicate key, which lets an attacker
+// smuggle a different value past a display, log, or summary layer that reads the
+// first occurrence (a parser-differential vector).
+func RejectDuplicateKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
+		// Empty or malformed input: defer to the caller's json.Unmarshal so it
+		// produces the canonical parse error rather than masking it here.
+		return nil
+	}
+	return check(dec, tok, 0)
+}
+
+// check recursively validates the value whose opening token is tok. For objects
+// it tracks the set of keys seen at that level; for arrays it recurses into each
+// element; scalars are accepted as-is. depth bounds the recursion to prevent a
+// stack-overflow panic on maliciously nested input.
+func check(dec *json.Decoder, tok json.Token, depth int) error {
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return nil // scalar value
+	}
+	if depth >= MaxNestingDepth {
+		return fmt.Errorf("JSON nesting exceeds maximum depth %d", MaxNestingDepth)
+	}
+	switch delim {
+	case '{':
+		seen := make(map[string]struct{})
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return fmt.Errorf("object key is not a string")
+			}
+			if _, dup := seen[key]; dup {
+				return fmt.Errorf("%w: %q", ErrDuplicateKey, key)
+			}
+			seen[key] = struct{}{}
+			valTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if err := check(dec, valTok, depth+1); err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil { // consume '}'
+			return err
+		}
+	case '[':
+		for dec.More() {
+			valTok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if err := check(dec, valTok, depth+1); err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil { // consume ']'
+			return err
+		}
+	}
+	return nil
+}

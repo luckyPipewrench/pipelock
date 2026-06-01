@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e06-nested-jsonrpc-intent",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Intent field carries a JSON-RPC envelope as a string (not nested JSON).",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "2709c0c715a561212e107561f9c1a0b0a95c0fa434988bac055a14ade769e20d",
+  "notes": "Verifier MUST accept. The receipt itself is JSON; the intent value is a string. Verifiers that try to parse intent as nested JSON will violate the type contract — intent is opaque to verification."
+}

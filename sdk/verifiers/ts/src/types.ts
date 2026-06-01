@@ -19,6 +19,7 @@ export interface Receipt {
 export interface ActionRecord {
   version?: number;
   action_id?: string;
+  parent_action_id?: string;
   action_type?: string;
   timestamp?: string;
   principal?: string;
@@ -55,6 +56,7 @@ export interface ActionRecord {
   pattern?: string;
   severity?: string;
   redaction?: RedactionSummary;
+  shield?: ShieldSummary;
   request_id?: string;
   chain_prev_hash?: string;
   chain_seq?: number;
@@ -84,6 +86,26 @@ export interface RedactionSummary {
   total_redactions?: number;
   by_class?: Record<string, number>;
   cache_boundary_kept?: boolean;
+  [key: string]: unknown;
+}
+
+export interface ShieldSummary {
+  pipeline?: string;
+  total_rewrites?: number;
+  extension_probes?: number;
+  tracking_beacons?: number;
+  agent_traps?: number;
+  fingerprint_shim_injected?: boolean;
+  svg_foreign_objects?: number;
+  svg_event_handlers?: number;
+  svg_external_references?: number;
+  svg_hidden_text?: number;
+  svg_animation_injections?: number;
+  body_bytes?: number;
+  scanned_bytes?: number;
+  partial?: boolean;
+  adaptive_signals_recorded?: number;
+  adaptive_signal_max_per_body?: number;
   [key: string]: unknown;
 }
 

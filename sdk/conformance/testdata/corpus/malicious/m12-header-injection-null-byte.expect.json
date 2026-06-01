@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m12-header-injection-null-byte",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "header_injection",
+  "description": "principal field contains a NUL byte followed by a second agent identifier. Downstream consumers that string-split on common delimiters could be tricked into trusting the second identifier.",
+  "notes": "Verifier MUST reject control bytes (0x00-0x1F except whitespace) in identifier fields. This is a transport-level integrity check, not a signature check."
+}

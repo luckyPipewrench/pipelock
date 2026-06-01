@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e02-maximum-delegation-chain",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "DelegationChain with 64 entries — exercises canonical-JSON encoder on a long array.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "037a45d663cdc8412c13c8d054b1103bfcc9e307eb0c5cff9e8a57334f4f0595",
+  "notes": "Verifier MUST accept. The cap is enforced at policy-write time, not verification time."
+}

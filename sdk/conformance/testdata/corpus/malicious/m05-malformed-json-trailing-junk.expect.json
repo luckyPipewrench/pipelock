@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m05-malformed-json-trailing-junk",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "malformed_json",
+  "description": "Receipt JSON is followed by garbage bytes. A strict parser must reject; a forgiving parser may silently consume the prefix and trust an unauthenticated trailer.",
+  "notes": "Verifier MUST consume the entire input as a single JSON value (use json.Decoder + EOF check). Loose parsers create a smuggling vector for unsigned content."
+}

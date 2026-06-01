@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m10-receipt-count-mismatch",
+  "category": "malicious",
+  "input_format": "chain",
+  "verdict": "reject",
+  "reject_reason": "receipt_count_mismatch",
+  "description": "Wrapper envelope claims declared_receipt_count=5 but only 4 receipts are present in the body.",
+  "notes": "Mirrors the audit-packet schema's summary.receipt_count vs verifier.receipt_count divergence check. Vendors MUST flag the gap rather than silently using whichever count is smaller."
+}

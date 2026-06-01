@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt, RecorderEntry } from "./types.js";
-import { RuntimeError, parseJSON } from "./util.js";
+import { RuntimeError, parseJSON, rejectDuplicateKeys } from "./util.js";
 
 const actionReceiptType = "action_receipt";
 
@@ -12,6 +12,7 @@ export function readEntries(file: string): RecorderEntry[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]?.trim() ?? "";
     if (line === "") continue;
+    rejectDuplicateKeys(line);
     const entry = parseJSON<RecorderEntry>(line, `line ${i + 1}`);
     if (entry.v !== 1 && entry.v !== 2) {
       throw new RuntimeError(

@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // EntryVersion is the current schema version for new writes. Readers MUST
@@ -254,6 +256,13 @@ func ReadEntries(path string) ([]Entry, error) {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
+		}
+
+		// Reject duplicate object keys before json.Unmarshal collapses them
+		// last-wins (a parser-differential smuggling vector); shared with the
+		// receipt verify path via internal/jsonscan.
+		if err := jsonscan.RejectDuplicateKeys([]byte(line)); err != nil {
+			return nil, fmt.Errorf("line %d: parsing entry: %w", lineNum, err)
 		}
 
 		var e Entry

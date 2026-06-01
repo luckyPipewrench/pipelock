@@ -35,6 +35,106 @@ export function parseJSON<T>(text: string, label: string): T {
   }
 }
 
+// rejectDuplicateKeys throws InvalidError if text contains a duplicate object
+// key at any nesting depth. JSON.parse silently keeps the last value for a
+// duplicate key, so {"verdict":"allow","verdict":"block"} parses as "block"
+// with no error — a parser-differential smuggling vector where a display or log
+// layer reading the first occurrence sees a different value than the one the
+// signature was checked against. The caller MUST have already validated text as
+// well-formed JSON (e.g. via parseJSON); this scanner relies on that and only
+// needs to locate object-key string positions, not validate structure.
+// maxDuplicateKeyScanDepth bounds nesting so the scanner agrees with the other
+// reference verifiers on rejecting absurdly deep input (Rust's serde_json
+// enforces the same 128-level default; Go uses the matching cap). Receipts nest
+// ~4 levels, so this never affects honest input.
+const maxDuplicateKeyScanDepth = 128;
+
+export function rejectDuplicateKeys(text: string): void {
+  interface Frame {
+    isObject: boolean;
+    keys: Set<string>;
+    expectKey: boolean;
+  }
+  const stack: Frame[] = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    const c = text[i];
+    if (c === '"') {
+      let str = "";
+      i++; // opening quote
+      while (i < n) {
+        const ch = text[i];
+        if (ch === "\\") {
+          const esc = text[i + 1];
+          if (esc === "u") {
+            const code = Number.parseInt(text.slice(i + 2, i + 6), 16);
+            i += 6;
+            // Merge a UTF-16 surrogate pair into one code point so this scanner
+            // decodes keys identically to Go/Rust/Python (which all merge). A
+            // lone high surrogate is kept as-is.
+            if (code >= 0xd800 && code <= 0xdbff && text[i] === "\\" && text[i + 1] === "u") {
+              const low = Number.parseInt(text.slice(i + 2, i + 6), 16);
+              if (low >= 0xdc00 && low <= 0xdfff) {
+                str += String.fromCodePoint((code - 0xd800) * 0x400 + (low - 0xdc00) + 0x10000);
+                i += 6;
+              } else {
+                str += String.fromCharCode(code);
+              }
+            } else {
+              str += String.fromCharCode(code);
+            }
+          } else {
+            const simple: Record<string, string> = {
+              '"': '"',
+              "\\": "\\",
+              "/": "/",
+              b: "\b",
+              f: "\f",
+              n: "\n",
+              r: "\r",
+              t: "\t",
+            };
+            str += simple[esc] ?? esc;
+            i += 2;
+          }
+        } else if (ch === '"') {
+          i++; // closing quote
+          break;
+        } else {
+          str += ch;
+          i++;
+        }
+      }
+      const top = stack[stack.length - 1];
+      if (top !== undefined && top.isObject && top.expectKey) {
+        if (top.keys.has(str)) throw new InvalidError(`duplicate object key: ${str}`);
+        top.keys.add(str);
+      }
+      continue;
+    }
+    if (c === "{" || c === "[") {
+      if (stack.length >= maxDuplicateKeyScanDepth) {
+        throw new InvalidError(`JSON nesting exceeds maximum depth ${maxDuplicateKeyScanDepth}`);
+      }
+    }
+    if (c === "{") {
+      stack.push({ isObject: true, keys: new Set(), expectKey: true });
+    } else if (c === "[") {
+      stack.push({ isObject: false, keys: new Set(), expectKey: false });
+    } else if (c === "}" || c === "]") {
+      stack.pop();
+    } else if (c === ":") {
+      const top = stack[stack.length - 1];
+      if (top !== undefined && top.isObject) top.expectKey = false;
+    } else if (c === ",") {
+      const top = stack[stack.length - 1];
+      if (top !== undefined && top.isObject) top.expectKey = true;
+    }
+    i++;
+  }
+}
+
 export function decodeHex(input: string, byteLength: number, label: string): Uint8Array {
   const trimmed = input.trim().toLowerCase();
   if (!/^[0-9a-f]*$/u.test(trimmed) || trimmed.length !== byteLength * 2) {

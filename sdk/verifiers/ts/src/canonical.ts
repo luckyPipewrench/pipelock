@@ -1,11 +1,12 @@
 import type { ActionRecord, Receipt, JSONValue } from "./types.js";
 
 type FieldSpec = readonly [name: string, omitempty: boolean, nested?: NestedKind];
-type NestedKind = "action_record" | "redaction" | "taint_source";
+type NestedKind = "action_record" | "redaction" | "shield" | "taint_source";
 
 const actionRecordFields: readonly FieldSpec[] = [
   ["version", false],
   ["action_id", false],
+  ["parent_action_id", true],
   ["action_type", false],
   ["timestamp", false],
   ["principal", false],
@@ -42,6 +43,7 @@ const actionRecordFields: readonly FieldSpec[] = [
   ["pattern", true],
   ["severity", true],
   ["redaction", true, "redaction"],
+  ["shield", true, "shield"],
   ["request_id", true],
   ["chain_prev_hash", false],
   ["chain_seq", false],
@@ -67,6 +69,29 @@ const redactionFields: readonly FieldSpec[] = [
   ["total_redactions", true],
   ["by_class", true],
   ["cache_boundary_kept", true],
+];
+
+// shieldFields mirrors receipt.ShieldSummary in Go struct-declaration order.
+// The nested shield object MUST be reordered to this exact order before
+// serialization or a shield-bearing receipt recomputes a different signing
+// hash than the Go signer produced.
+const shieldFields: readonly FieldSpec[] = [
+  ["pipeline", true],
+  ["total_rewrites", true],
+  ["extension_probes", true],
+  ["tracking_beacons", true],
+  ["agent_traps", true],
+  ["fingerprint_shim_injected", true],
+  ["svg_foreign_objects", true],
+  ["svg_event_handlers", true],
+  ["svg_external_references", true],
+  ["svg_hidden_text", true],
+  ["svg_animation_injections", true],
+  ["body_bytes", true],
+  ["scanned_bytes", true],
+  ["partial", true],
+  ["adaptive_signals_recorded", true],
+  ["adaptive_signal_max_per_body", true],
 ];
 
 const taintSourceFields: readonly FieldSpec[] = [
@@ -108,6 +133,8 @@ function orderStruct(
       fieldValue = orderStruct(fieldValue, actionRecordFields);
     } else if (nested === "redaction" && isPlainObject(fieldValue)) {
       fieldValue = orderStruct(fieldValue, redactionFields);
+    } else if (nested === "shield" && isPlainObject(fieldValue)) {
+      fieldValue = orderStruct(fieldValue, shieldFields);
     } else if (nested === "taint_source" && Array.isArray(fieldValue)) {
       fieldValue = fieldValue.map((item) =>
         isPlainObject(item) ? orderStruct(item, taintSourceFields) : item,

@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "conformance-00000",
+    "parent_action_id": "conformance-parent-00000",
+    "action_type": "write",
+    "timestamp": "2026-04-15T12:00:00Z",
+    "principal": "org:conformance-test",
+    "actor": "agent:conformance-runner",
+    "delegation_chain": [
+      "test-policy-v1",
+      "test-grant"
+    ],
+    "target": "https://api.example.com/v1/agents/spawn",
+    "intent": "delegated-subagent-write",
+    "side_effect_class": "external_write",
+    "reversibility": "compensatable",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "allow",
+    "session_taint_level": "suspected",
+    "session_contaminated": true,
+    "recent_taint_sources": [
+      {
+        "url": "https://compromised-blog.example/post/9",
+        "kind": "response_injection",
+        "level": 4,
+        "timestamp": "2026-04-15T12:00:00Z",
+        "match_reason": "ignore_previous_instructions"
+      }
+    ],
+    "session_task_id": "task-abc123",
+    "session_task_label": "research-and-summarize",
+    "authority_kind": "delegated",
+    "taint_decision": "allow_with_constraints",
+    "taint_decision_reason": "task_scope_permits_write",
+    "contract_winning_source": "operator_policy",
+    "contract_live_verdict": "allow",
+    "contract_policy_sources": [
+      "operator_policy",
+      "org_default"
+    ],
+    "contract_rule_id": "rule-write-allow-7",
+    "active_manifest_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "contract_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "contract_selector_id": "selector-9",
+    "contract_generation": 4,
+    "transport": "https",
+    "method": "POST",
+    "layer": "tool_policy",
+    "severity": "medium",
+    "redaction": {
+      "profile": "strict",
+      "provider": "provider.example",
+      "parser": "json",
+      "total_redactions": 2,
+      "by_class": {
+        "api_key": 1,
+        "email": 1
+      }
+    },
+    "shield": {
+      "pipeline": "browser_shield_v1",
+      "total_rewrites": 1,
+      "agent_traps": 1
+    },
+    "request_id": "req-7f3a",
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:4da6b80f86871bc2729b10b7a9859c57e2569464185d55ce9dfa4488a7d25d11fb785ee2929233c61e2fd3fc36c5c5ca3c40cab8c357fd7e88c1190b4323ed01",
+  "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+}

@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m06-missing-required-verdict",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "missing_required_field",
+  "description": "Required action_record.verdict field has been removed. Even if signature math worked over an empty-verdict record, the receipt is not well-formed.",
+  "notes": "Verifier MUST enforce a schema-required field set before falling through to signature verification. A field-by-field absent-string treated as 'allow' would create an existence-based bypass."
+}

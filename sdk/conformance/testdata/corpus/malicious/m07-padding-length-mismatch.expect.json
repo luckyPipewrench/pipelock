@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m07-padding-length-mismatch",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "padding_attack",
+  "description": "Receipt is wrapped in a transport envelope that claims declared_length=9999 but the body is much smaller. Verifiers that trust the declared length without re-measuring create a smuggling primitive.",
+  "notes": "Verifier MUST measure body length itself rather than trusting envelope-declared length. Length-vs-body divergence is a classic protocol-layer attack."
+}

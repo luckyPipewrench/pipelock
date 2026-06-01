@@ -4,7 +4,13 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        # The vendored receipt-verifier conformance corpus must stay
+        # byte-identical to the agent-egress-bench master (the drift guard
+        # enforces this with cmp). Hygiene rewrites would break that parity —
+        # some fixtures intentionally omit a trailing newline.
+        exclude: '^sdk/conformance/testdata/corpus/'
       - id: end-of-file-fixer
+        exclude: '^sdk/conformance/testdata/corpus/'
       - id: check-yaml
         # Narrow: name only the intentionally-malformed strict-YAML test
         # fixtures. The rest of internal/contract/testdata/invalid/ stays

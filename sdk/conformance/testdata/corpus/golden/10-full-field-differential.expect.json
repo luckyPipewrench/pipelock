@@ -1,0 +1,11 @@
+{
+  "fixture_id": "10-full-field-differential",
+  "category": "golden",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Allow on a delegated sub-agent write carrying parent_action_id, taint context (scalars + a nested recent_taint_sources entry), contract context, redaction, and shield. Every block here was missing from at least one reference verifier's canonical field list.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "2af9e2cfe675e5e42e528de0cd77a31719c10b12edef3a4595f260285dcc6aa8",
+  "notes": "Verifier MUST accept. This is the cross-language drift sentinel: a verifier MUST mirror the full Go ActionRecord field set, declaration order, and omitempty semantics — including nested object key order for recent_taint_sources, redaction, and shield. Any omitted or reordered field recomputes a different signing hash and wrongly reports signature_invalid."
+}

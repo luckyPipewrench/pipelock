@@ -1,5 +1,5 @@
 use crate::types::Receipt;
-use crate::util::{parse_json_line, Result, VerifierError};
+use crate::util::{parse_json_line, reject_duplicate_keys, Result, VerifierError};
 use std::fs;
 use std::path::Path;
 
@@ -14,6 +14,7 @@ pub fn read_entries(path: &Path) -> Result<Vec<serde_json::Value>> {
         if line.is_empty() {
             continue;
         }
+        reject_duplicate_keys(line)?;
         let entry = parse_json_line(line, &format!("line {}", index + 1))?;
         let version = entry.get("v").and_then(serde_json::Value::as_u64);
         if version != Some(1) && version != Some(2) {

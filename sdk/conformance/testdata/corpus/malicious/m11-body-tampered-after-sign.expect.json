@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m11-body-tampered-after-sign",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "body_tampered",
+  "description": "Signature was valid for the original target, but action_record.target has been rewritten post-signing. SHA-256(canonical(action_record)) no longer matches.",
+  "notes": "Verifier MUST recompute the canonical-JSON hash from the current action_record bytes. Caching the hash from an envelope field or trusting the signer is an exploitable shortcut."
+}

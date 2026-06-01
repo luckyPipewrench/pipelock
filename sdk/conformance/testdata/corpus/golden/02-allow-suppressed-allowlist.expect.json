@@ -1,0 +1,11 @@
+{
+  "fixture_id": "02-allow-suppressed-allowlist",
+  "category": "golden",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Allow on a destination that matched DLP but is on the suppression allowlist.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "e3a1eeb8b2bcaeb86d90893fb58250608153655d44906cc427db46e8ca7bda89",
+  "notes": "Verifier MUST accept and MUST NOT collapse the layer/pattern fields — they are evidence the operator made a deliberate exception."
+}

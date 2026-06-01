@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e04-edge-of-freshness-window",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Timestamp sits 1 second inside the corpus max_age window of 1 year.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "738150a51a69822bfeddfc06cf057ed92652d986a324dbf8acc78b1ff77e568d",
+  "notes": "Verifier MUST accept. Vendors who use an open-interval (\u003e) comparison instead of inclusive (\u003e=) will fire spurious expired rejects on this fixture."
+}

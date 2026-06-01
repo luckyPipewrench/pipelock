@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Receipt } from "./types.js";
 import { verifyReceipt } from "./signing.js";
-import { parseJSON, resolveSignerKey } from "./util.js";
+import { parseJSON, rejectDuplicateKeys, resolveSignerKey } from "./util.js";
 
 export interface ReceiptReport {
   path: string;
@@ -19,7 +19,8 @@ export interface ReceiptReport {
 export async function runReceipt(pathname: string, signerKey: string): Promise<ReceiptReport> {
   const clean = path.normalize(pathname);
   const keyHex = resolveSignerKey(signerKey);
-  const receipt = parseJSON<Receipt>(readFileSync(clean, "utf8"), "receipt json");
+  const text = readFileSync(clean, "utf8");
+  const receipt = parseJSON<Receipt>(text, "receipt json");
   const report: ReceiptReport = {
     path: clean,
     valid: false,
@@ -31,6 +32,11 @@ export async function runReceipt(pathname: string, signerKey: string): Promise<R
     chain_seq: receipt.action_record?.chain_seq,
   };
   try {
+    // Reject duplicate object keys before signature verification: last-wins
+    // parsing would otherwise let a smuggled first-occurrence value diverge
+    // from the signed value. Treated as an invalid receipt (exit 1), matching
+    // the Go and Python verifiers.
+    rejectDuplicateKeys(text);
     await verifyReceipt(receipt, keyHex);
     report.valid = true;
   } catch (err) {

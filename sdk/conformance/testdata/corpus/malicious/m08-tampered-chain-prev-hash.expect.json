@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m08-tampered-chain-prev-hash",
+  "category": "malicious",
+  "input_format": "chain",
+  "verdict": "reject",
+  "reject_reason": "chain_break",
+  "description": "Every receipt signature is individually valid, but receipt[3]'s chain_prev_hash does not match the SHA-256 of receipt[2]. Indicates an insert or removal in the chain.",
+  "notes": "Verifier MUST walk the chain in order, recompute SHA-256(canonical(receipt[N])), and compare against receipt[N+1].action_record.chain_prev_hash."
+}

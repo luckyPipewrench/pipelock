@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m09-verdict-chain-mismatch",
+  "category": "malicious",
+  "input_format": "chain",
+  "verdict": "reject",
+  "reject_reason": "verdict_chain_mismatch",
+  "description": "Same target blocked then immediately allowed under identical policy_hash. A semantic verifier MUST flag this as a chain-internal contradiction.",
+  "notes": "A purely-syntactic verifier (one that only checks signatures and chain_prev_hash) will accept this. Vendors implementing semantic checks must reject. The audit-packet schema's verifier.verdict surfaces this distinction."
+}

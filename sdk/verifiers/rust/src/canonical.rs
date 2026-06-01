@@ -4,6 +4,7 @@ use serde_json::{Map, Number, Value};
 enum NestedKind {
     ActionRecord,
     Redaction,
+    Shield,
     TaintSource,
 }
 
@@ -17,6 +18,7 @@ struct FieldSpec {
 const ACTION_RECORD_FIELDS: &[FieldSpec] = &[
     field("version", false),
     field("action_id", false),
+    field("parent_action_id", true),
     field("action_type", false),
     field("timestamp", false),
     field("principal", false),
@@ -53,6 +55,7 @@ const ACTION_RECORD_FIELDS: &[FieldSpec] = &[
     field("pattern", true),
     field("severity", true),
     nested_field("redaction", true, NestedKind::Redaction),
+    nested_field("shield", true, NestedKind::Shield),
     field("request_id", true),
     field("chain_prev_hash", false),
     field("chain_seq", false),
@@ -78,6 +81,28 @@ const REDACTION_FIELDS: &[FieldSpec] = &[
     field("total_redactions", true),
     field("by_class", true),
     field("cache_boundary_kept", true),
+];
+
+// SHIELD_FIELDS mirrors receipt.ShieldSummary in Go struct-declaration order.
+// A shield-bearing receipt must reorder the nested shield object to this exact
+// order or it recomputes a different signing hash than the Go signer produced.
+const SHIELD_FIELDS: &[FieldSpec] = &[
+    field("pipeline", true),
+    field("total_rewrites", true),
+    field("extension_probes", true),
+    field("tracking_beacons", true),
+    field("agent_traps", true),
+    field("fingerprint_shim_injected", true),
+    field("svg_foreign_objects", true),
+    field("svg_event_handlers", true),
+    field("svg_external_references", true),
+    field("svg_hidden_text", true),
+    field("svg_animation_injections", true),
+    field("body_bytes", true),
+    field("scanned_bytes", true),
+    field("partial", true),
+    field("adaptive_signals_recorded", true),
+    field("adaptive_signal_max_per_body", true),
 ];
 
 const TAINT_SOURCE_FIELDS: &[FieldSpec] = &[
@@ -142,6 +167,9 @@ fn order_struct(value: &Value, fields: &[FieldSpec]) -> Value {
             }
             Some(NestedKind::Redaction) if field_value.is_object() => {
                 order_struct(&field_value, REDACTION_FIELDS)
+            }
+            Some(NestedKind::Shield) if field_value.is_object() => {
+                order_struct(&field_value, SHIELD_FIELDS)
             }
             Some(NestedKind::TaintSource) if field_value.is_array() => Value::Array(
                 field_value

@@ -42,6 +42,119 @@ pub fn parse_json_line(text: &str, label: &str) -> Result<Value> {
     serde_json::from_str(text).map_err(|err| VerifierError::Runtime(format!("{label}: {err}")))
 }
 
+/// reject_duplicate_keys returns an Invalid error if text contains a duplicate
+/// object key at any nesting depth. serde_json keeps the last value for a
+/// duplicate key, so {"verdict":"allow","verdict":"block"} deserializes as
+/// "block" with no error — a parser-differential smuggling vector where a
+/// display or log layer reading the first occurrence sees a value different
+/// from the one the signature was verified against. The verify path rejects
+/// such input before signature verification. Implemented as a recursive serde
+/// Visitor so it reuses serde_json's tokenizer rather than a hand parser.
+pub fn reject_duplicate_keys(text: &str) -> Result<()> {
+    use serde::de::Deserialize;
+    // serde_json's default recursion limit (128) is the shared cross-language
+    // receipt-nesting cap: the Go and TypeScript verifiers enforce the same 128,
+    // so all reference verifiers reject input nested beyond this depth. Receipts
+    // nest ~4 levels, so honest input is never affected. Do NOT call
+    // disable_recursion_limit() here — that bound is intentional.
+    let mut de = serde_json::Deserializer::from_str(text);
+    match NoDup::deserialize(&mut de) {
+        Ok(_) => Ok(()),
+        Err(err) => Err(VerifierError::Invalid(err.to_string())),
+    }
+}
+
+/// NoDup deserializes any JSON value purely to assert there are no duplicate
+/// object keys; it carries no data.
+struct NoDup;
+
+impl<'de> serde::de::Deserialize<'de> for NoDup {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, SeqAccess, Visitor};
+        use std::collections::HashSet;
+        use std::fmt;
+
+        struct NoDupVisitor;
+
+        impl<'de> Visitor<'de> for NoDupVisitor {
+            type Value = NoDup;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("any JSON value")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<NoDup, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut seen: HashSet<String> = HashSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(de::Error::custom(format!("duplicate object key: {key}")));
+                    }
+                    map.next_value::<NoDup>()?;
+                }
+                Ok(NoDup)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<NoDup, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                while seq.next_element::<NoDup>()?.is_some() {}
+                Ok(NoDup)
+            }
+
+            fn visit_bool<E>(self, _v: bool) -> std::result::Result<NoDup, E>
+            where
+                E: de::Error,
+            {
+                Ok(NoDup)
+            }
+
+            fn visit_i64<E>(self, _v: i64) -> std::result::Result<NoDup, E>
+            where
+                E: de::Error,
+            {
+                Ok(NoDup)
+            }
+
+            fn visit_u64<E>(self, _v: u64) -> std::result::Result<NoDup, E>
+            where
+                E: de::Error,
+            {
+                Ok(NoDup)
+            }
+
+            fn visit_f64<E>(self, _v: f64) -> std::result::Result<NoDup, E>
+            where
+                E: de::Error,
+            {
+                Ok(NoDup)
+            }
+
+            fn visit_str<E>(self, _v: &str) -> std::result::Result<NoDup, E>
+            where
+                E: de::Error,
+            {
+                Ok(NoDup)
+            }
+
+            fn visit_unit<E>(self) -> std::result::Result<NoDup, E>
+            where
+                E: de::Error,
+            {
+                Ok(NoDup)
+            }
+        }
+
+        deserializer.deserialize_any(NoDupVisitor)
+    }
+}
+
 pub fn decode_hex(
     input: &str,
     byte_len: usize,

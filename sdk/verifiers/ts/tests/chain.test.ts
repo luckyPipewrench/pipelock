@@ -64,3 +64,18 @@ test("malformed JSONL raises an error", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("JSONL recorder extraction rejects duplicate keys inside receipt detail", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pipelock-ts-verifier-"));
+  const file = join(dir, "duplicate-key.jsonl");
+  try {
+    writeFileSync(
+      file,
+      '{"v":1,"seq":0,"ts":"2026-05-10T00:00:00Z","session_id":"s","type":"action_receipt","transport":"https","summary":"","detail":{"version":1,"action_record":{"version":1,"action_id":"x","action_type":"write","timestamp":"2026-04-15T12:00:00Z","target":"https://e.example","verdict":"allow","verdict":"block","transport":"https","chain_prev_hash":"genesis","chain_seq":0},"signature":"ed25519:00","signer_key":"00"},"prev_hash":"genesis","hash":"h"}\n',
+      { mode: 0o600 },
+    );
+    assert.throws(() => extractReceipts(file), /duplicate object key/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

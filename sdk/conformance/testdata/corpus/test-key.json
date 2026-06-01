@@ -1,0 +1,6 @@
+{
+  "note": "TEST KEY ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
+  "public_key_hex": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "seed_hex": "b22f6ab95d1862a73e26a3cca832387bdcfa9af15815dfdf585b7d6466d6cd62",
+  "seed_phrase": "agent-egress-bench-receipt-conformance-test-key-v1"
+}

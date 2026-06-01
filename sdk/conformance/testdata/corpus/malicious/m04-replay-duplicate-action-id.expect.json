@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m04-replay-duplicate-action-id",
+  "category": "malicious",
+  "input_format": "chain",
+  "verdict": "reject",
+  "reject_reason": "replay_detected",
+  "description": "Two receipts in the chain share the same action_id — a replay or attempted re-presentation of an earlier decision.",
+  "notes": "Verifier MUST detect duplicate action_id within the same session. action_id is UUIDv7 in production; collision implies forgery or replay."
+}

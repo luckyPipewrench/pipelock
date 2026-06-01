@@ -1,0 +1,11 @@
+{
+  "fixture_id": "06-ask-hitl-deny",
+  "category": "golden",
+  "input_format": "chain",
+  "verdict": "accept",
+  "description": "Two-receipt chain: ASK verdict followed by HITL operator denial (block).",
+  "expected_chain_length": 2,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "7d4aa4ba0fd0ca06d1130409e0d73c5c9f8c5ef342318f100377d4395ec37253",
+  "notes": "Verifier MUST accept the chain. This proves an operator was offered a decision and chose to block — a procurement-relevant artifact."
+}

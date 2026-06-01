@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -375,6 +376,24 @@ func TestSign_PreservesTimestamp(t *testing.T) {
 	}
 	if !r.ActionRecord.Timestamp.Equal(fixedTime) {
 		t.Errorf("timestamp = %v, want %v", r.ActionRecord.Timestamp, fixedTime)
+	}
+}
+
+func TestUnmarshalRejectsDuplicateKeys(t *testing.T) {
+	t.Parallel()
+	// A duplicate key nested inside the action_record must be rejected on the
+	// verify path with the shared sentinel. Exhaustive scanner cases (nesting,
+	// arrays, depth bound, unicode escapes, string-delimiter handling) live in
+	// internal/jsonscan.
+	dupReceipt := `{"version":1,"action_record":{"version":1,"verdict":"allow","verdict":"block"},"signature":"ed25519:00","signer_key":"00"}`
+	if _, err := Unmarshal([]byte(dupReceipt)); !errors.Is(err, ErrDuplicateKey) {
+		t.Errorf("Unmarshal(dup verdict) = %v, want errors.Is ErrDuplicateKey", err)
+	}
+	// A clean receipt must not trip the duplicate-key check (it fails later on
+	// signature, not on ErrDuplicateKey).
+	clean := `{"version":1,"action_record":{"version":1},"signature":"ed25519:00","signer_key":"00"}`
+	if _, err := Unmarshal([]byte(clean)); errors.Is(err, ErrDuplicateKey) {
+		t.Errorf("Unmarshal(clean) wrongly reported ErrDuplicateKey: %v", err)
 	}
 }
 

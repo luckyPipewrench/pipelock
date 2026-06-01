@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m02-signer-key-untrusted",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "signer_key_untrusted",
+  "description": "Receipt is signed correctly by a different key. The signature math is valid but the key is not on the verifier's pinned list.",
+  "notes": "Verifier MUST distinguish 'signature math broken' (signature_invalid) from 'signature math fine, key unknown' (signer_key_untrusted). Conflating them loses evidence."
+}

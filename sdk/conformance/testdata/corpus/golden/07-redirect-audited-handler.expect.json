@@ -1,0 +1,11 @@
+{
+  "fixture_id": "07-redirect-audited-handler",
+  "category": "golden",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Redirect verdict: tool policy diverted the call to an audited handler program.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "7b039776c352c7b86d1bf5c12e9c31d68b75463da936eeae1e61906836144328",
+  "notes": "Verifier MUST accept. Redirect is a non-block, non-allow third-state vendors often forget — fixture exists so they implement it."
+}

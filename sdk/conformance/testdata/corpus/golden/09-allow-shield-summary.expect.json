@@ -1,0 +1,11 @@
+{
+  "fixture_id": "09-allow-shield-summary",
+  "category": "golden",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Allow on a fetched page where Browser Shield rewrote tracking beacons and an agent trap.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "6c609bd30d6a169a733bae50a65204523973c70244dc0cd3eb305c06166705f4",
+  "notes": "Verifier MUST accept. The nested shield object MUST be included in the canonical field list (after redaction, before request_id); a verifier that drops it recomputes a different signing hash and wrongly reports signature_invalid."
+}

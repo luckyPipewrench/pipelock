@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e07-binary-base64-pattern",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Pattern carries base64-encoded binary content (e.g., entropy fingerprint).",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "0e0c5deb58ab61d86b9fabde2d2783d59e4ba0f2982e46bcb97f76bfdb767029",
+  "notes": "Verifier MUST accept. Base64 sits inside a string field — the verifier is not required to decode it. Vendors who try to decode-and-revalidate will produce false negatives."
+}

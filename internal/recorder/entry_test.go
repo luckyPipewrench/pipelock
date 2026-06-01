@@ -225,6 +225,23 @@ func TestReadEntries_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestReadEntries_RejectsDuplicateKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "duplicate.jsonl")
+	line := `{"v":1,"seq":0,"ts":"2026-03-28T12:00:00Z","session_id":"s1","type":"action_receipt","transport":"fetch","summary":"test","detail":{"version":1,"action_record":{"version":1,"action_id":"x","action_type":"write","timestamp":"2026-04-15T12:00:00Z","target":"https://e.example","verdict":"allow","verdict":"block","transport":"https","chain_prev_hash":"genesis","chain_seq":0},"signature":"ed25519:00","signer_key":"00"},"prev_hash":"genesis","hash":"abc"}` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := recorder.ReadEntries(path)
+	if err == nil {
+		t.Fatal("expected error for duplicate key")
+	}
+	if got := err.Error(); !strings.Contains(got, "duplicate object key") {
+		t.Errorf("error = %q, want duplicate object key", got)
+	}
+}
+
 func TestVerifyChain_Valid(t *testing.T) {
 	entries := buildChain(t, 3)
 	if err := recorder.VerifyChain(entries); err != nil {

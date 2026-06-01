@@ -1,0 +1,11 @@
+{
+  "fixture_id": "e01-unicode-agent-identifier",
+  "category": "edge",
+  "input_format": "receipt",
+  "verdict": "accept",
+  "description": "Unicode (CJK + Greek) in principal and actor fields.",
+  "expected_chain_length": 1,
+  "expected_signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa",
+  "expected_root_hash": "cc490fbd5d83adc047f14715019005620382b116f14590cd634f98dd853692be",
+  "notes": "Verifier MUST accept and preserve the bytes. Canonical JSON encodes non-ASCII differently across implementations; either escaped or raw UTF-8 forms are acceptable provided the canonical form is stable."
+}

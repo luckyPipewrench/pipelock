@@ -1,0 +1,9 @@
+{
+  "fixture_id": "m03-expired-timestamp",
+  "category": "malicious",
+  "input_format": "receipt",
+  "verdict": "reject",
+  "reject_reason": "expired",
+  "description": "Receipt timestamp is 2024-01-01, well beyond the corpus max_age window of 1 year.",
+  "notes": "Verifier MUST treat the timestamp as the proof's freshness anchor. Long-lived receipts must be replayed via flight-recorder archival, not re-presented as fresh."
+}

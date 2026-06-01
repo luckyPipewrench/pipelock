@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "action_record": {
+    "version": 1,
+    "action_id": "conformance-00000",
+    "action_type": "read",
+    "timestamp": "2026-04-15T12:00:00Z",
+    "principal": "org:conformance-test",
+    "actor": "agent:conformance-runner",
+    "delegation_chain": [
+      "test-policy-v1",
+      "test-grant"
+    ],
+    "target": "https://api.example.com/v1/data",
+    "side_effect_class": "external_read",
+    "reversibility": "full",
+    "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "verdict": "block",
+    "transport": "https",
+    "method": "GET",
+    "layer": "dlp",
+    "pattern": "patrón-α-€",
+    "severity": "medium",
+    "chain_prev_hash": "genesis",
+    "chain_seq": 0
+  },
+  "signature": "ed25519:6c761508346071cb61bca6d52b2e9e0cb2f6678c4bb7e2006410d54b31ba254fc39c4aa9927f35d752fe6e38d7aeb2ec83959fcb1f89c0ba891c821889c1c803",
+  "signer_key": "890726e93f89e773fb3b4298271245a69c1884fd1003846c3358b8b65a2288fa"
+}

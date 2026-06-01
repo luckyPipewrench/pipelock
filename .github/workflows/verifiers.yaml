@@ -106,3 +106,89 @@ jobs:
 
       - name: cargo build
         run: cargo build --release
+
+  # Cross-language conformance gate: builds all four reference verifiers (Go,
+  # TypeScript, Rust, Python) and runs them over the vendored conformance corpus
+  # under sdk/conformance/testdata/corpus, failing if they disagree on any
+  # single-receipt fixture (a cross-language differential) or diverge from the
+  # fixture's expected verdict outside the documented policy carve-outs. It also
+  # guards the vendored corpus against drift from the agent-egress-bench master.
+  #
+  # The corpus master lives in agent-egress-bench and the Python verifier lives
+  # in pipelock-verify-python; both are public and checked out here. Merge
+  # ordering for a coordinated corpus/verifier change: agent-egress-bench first,
+  # then pipelock-verify-python, then this repo, because this job compares
+  # against the default branch of both.
+  conformance:
+    name: Cross-language conformance gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout pipelock
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Checkout agent-egress-bench (corpus master)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: luckyPipewrench/agent-egress-bench
+          path: _aeb
+          persist-credentials: false
+
+      - name: Checkout pipelock-verify-python (Python verifier)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: luckyPipewrench/pipelock-verify-python
+          path: _pyverify
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.26'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/verifiers/ts/package-lock.json
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Drift guard (vendored corpus vs agent-egress-bench master)
+        run: AEB_LOCAL="$GITHUB_WORKSPACE/_aeb" bash sdk/conformance/check-corpus-drift.sh
+
+      - name: Build Go verifier
+        run: go build -o "$RUNNER_TEMP/pipelock" ./cmd/pipelock
+
+      - name: Build TypeScript verifier
+        working-directory: sdk/verifiers/ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Rust verifier
+        working-directory: sdk/verifiers/rust
+        run: cargo build --release
+
+      - name: Install Python verifier
+        working-directory: _pyverify
+        run: pip install .
+
+      - name: Run cross-language conformance gate
+        env:
+          GO_VERIFY: ${{ runner.temp }}/pipelock verify-receipt
+          TS_VERIFY: node ${{ github.workspace }}/sdk/verifiers/ts/dist/src/cli.js receipt
+          RUST_VERIFY: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs receipt
+          PY_VERIFY: python -m pipelock_verify
+        run: bash sdk/conformance/corpus-gate.sh

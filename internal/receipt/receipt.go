@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // ReceiptVersion is the current receipt envelope schema version.
@@ -127,10 +129,27 @@ func Marshal(r Receipt) ([]byte, error) {
 }
 
 // Unmarshal parses a JSON-encoded receipt.
+//
+// Before decoding, it rejects any input that contains a duplicate object key at
+// any nesting depth. encoding/json silently keeps the last value for a
+// duplicate key, so {"verdict":"allow","verdict":"block"} would decode as
+// "block" with no error. That is a parser-differential smuggling vector: a
+// display, log, or summary layer that reads the first occurrence sees a
+// different value than the one the signature was checked against. The verify
+// path runs through Unmarshal, so this closes the gap on the verify side
+// without touching the signing input (Sign uses Marshal, not Unmarshal).
 func Unmarshal(data []byte) (Receipt, error) {
+	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
+	}
 	var r Receipt
 	if err := json.Unmarshal(data, &r); err != nil {
 		return Receipt{}, fmt.Errorf("unmarshal receipt: %w", err)
 	}
 	return r, nil
 }
+
+// ErrDuplicateKey is returned when a receipt contains a duplicate object key.
+// It aliases the shared scanner's sentinel so errors.Is(err, ErrDuplicateKey)
+// works on errors surfaced through Unmarshal.
+var ErrDuplicateKey = jsonscan.ErrDuplicateKey

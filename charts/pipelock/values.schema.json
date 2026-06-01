@@ -4,6 +4,10 @@
   "type": "object",
   "additionalProperties": true,
   "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["proxy", "conductor", "fleetSink"]
+    },
     "replicaCount": {
       "type": "integer",
       "minimum": 1
@@ -88,7 +92,85 @@
         "enabled": { "type": "boolean" },
         "existingSecret": { "type": "string" },
         "secretKey": { "type": "string" },
-        "mountPath": { "type": "string" }
+        "mountPath": { "type": "string" },
+        "crlSecretRef": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" },
+            "mountPath": { "type": "string" }
+          }
+        },
+        "publicKeySecretRef": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "key": { "type": "string" }
+          }
+        }
+      }
+    },
+    "conductorFollower": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "conductorURL": { "type": "string" },
+        "orgID": { "type": "string" },
+        "fleetID": { "type": "string" },
+        "instanceID": { "type": "string" },
+        "trustRosterRootFingerprint": { "type": "string" },
+        "auditSigningKeyID": { "type": "string" },
+        "recorderKeyID": { "type": "string" },
+        "pollInterval": { "type": "string" },
+        "emergencyStream": { "type": "boolean" },
+        "honorRemoteKillSwitch": { "type": "boolean" },
+        "serverCASecretRef": { "type": "object" },
+        "clientSecretRef": { "type": "object" },
+        "trustRosterSecretRef": { "type": "object" },
+        "persistence": { "type": "object" }
+      }
+    },
+    "conductor": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 1 },
+        "conductorID": { "type": "string" },
+        "followerTrustDomain": { "type": "string" },
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "probePort": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "tls": { "type": "object" },
+        "tokens": { "type": "object" },
+        "trustedAuditKeys": { "type": "array" },
+        "trustedControlKeys": { "type": "array" },
+        "persistence": { "type": "object" },
+        "resources": { "type": "object" }
+      }
+    },
+    "fleetSink": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "replicaCount": { "type": "integer", "minimum": 1 },
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "tls": { "type": "object" },
+        "readerToken": { "type": "object" },
+        "trustedAuditKeys": { "type": "array" },
+        "persistence": { "type": "object" },
+        "resources": { "type": "object" }
       }
     },
     "sentry": {
@@ -140,7 +222,13 @@
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" }
+        "enabled": { "type": "boolean" },
+        "preset": {
+          "type": "string",
+          "enum": ["dev", "restricted", "airgapped"]
+        },
+        "ingress": { "type": "array" },
+        "egress": { "type": "array" }
       }
     },
     "livenessProbe": { "type": "object" },

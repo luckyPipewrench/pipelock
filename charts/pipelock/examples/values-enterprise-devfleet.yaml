@@ -1,0 +1,78 @@
+# Single-cluster development fleet audit sink.
+#
+# Use this when testing Conductor audit ingestion separately from the full
+# control plane. Production installs should prefer the restricted Conductor and
+# follower examples with externally managed Secrets.
+
+mode: fleetSink
+
+license:
+  enabled: true
+  existingSecret: pipelock-enterprise-license
+  secretKey: license.token
+  crlSecretRef:
+    name: pipelock-license-crl
+    key: license.crl
+
+fleetSink:
+  service:
+    type: ClusterIP
+    port: 8894
+  tls:
+    serverSecretRef:
+      name: fleet-sink-server-tls
+    clientCASecretRef:
+      name: fleet-sink-follower-ca
+      key: ca.crt
+  readerToken:
+    secretRef:
+      name: fleet-sink-reader-token
+      key: token
+  trustedAuditKeys:
+    - id: audit-signer-dev
+      orgID: org-dev
+      fleetID: fleet-dev
+      instanceID: ""
+      secretRef:
+        name: fleet-sink-audit-keys
+        key: audit-signer-dev.pub
+  persistence:
+    size: 10Gi
+
+networkPolicy:
+  enabled: true
+  preset: dev
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-dev
+          podSelector:
+            matchLabels:
+              pipelock.io/follower: "true"
+      ports:
+        - port: 8894
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-dev
+          podSelector:
+            matchLabels:
+              pipelock.io/operator: "true"
+      ports:
+        - port: 8894
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP

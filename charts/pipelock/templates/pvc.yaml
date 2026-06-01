@@ -1,0 +1,75 @@
+{{- if and (eq (include "pipelock.mode" .) "conductor") .Values.conductor.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pipelock.conductorStorageName" . }}
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: conductor
+spec:
+  accessModes:
+    {{- toYaml .Values.conductor.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.conductor.persistence.size | quote }}
+  {{- with .Values.conductor.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- if and (eq (include "pipelock.mode" .) "fleetSink") .Values.fleetSink.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pipelock.fleetSinkStorageName" . }}
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet-sink
+spec:
+  accessModes:
+    {{- toYaml .Values.fleetSink.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.fleetSink.persistence.size | quote }}
+  {{- with .Values.fleetSink.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- if and (eq (include "pipelock.mode" .) "proxy") .Values.conductorFollower.enabled .Values.conductorFollower.persistence.bundleCache.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pipelock.followerBundleCacheName" . }}
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: follower
+spec:
+  accessModes:
+    {{- toYaml .Values.conductorFollower.persistence.bundleCache.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.conductorFollower.persistence.bundleCache.size | quote }}
+  {{- with .Values.conductorFollower.persistence.bundleCache.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
+{{- if and (eq (include "pipelock.mode" .) "proxy") .Values.conductorFollower.enabled .Values.conductorFollower.persistence.auditQueue.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pipelock.followerAuditQueueName" . }}
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: follower
+spec:
+  accessModes:
+    {{- toYaml .Values.conductorFollower.persistence.auditQueue.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.conductorFollower.persistence.auditQueue.size | quote }}
+  {{- with .Values.conductorFollower.persistence.auditQueue.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

@@ -1,3 +1,4 @@
+{{- if eq (include "pipelock.mode" .) "proxy" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,4 +17,30 @@ data:
     {{- if and .Values.license.enabled .Values.license.existingSecret }}
     {{- $_ := set $cfg "license_file" (printf "%s/%s" .Values.license.mountPath .Values.license.secretKey) }}
     {{- end }}
+    {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+    {{- $_ := set $cfg "license_crl_file" (printf "%s/%s" .Values.license.crlSecretRef.mountPath .Values.license.crlSecretRef.key) }}
+    {{- end }}
+    {{- if .Values.conductorFollower.enabled }}
+    {{- $conductor := merge (dict
+      "enabled" true
+      "conductor_url" .Values.conductorFollower.conductorURL
+      "org_id" .Values.conductorFollower.orgID
+      "fleet_id" .Values.conductorFollower.fleetID
+      "instance_id" .Values.conductorFollower.instanceID
+      "server_ca_file" (printf "%s/%s" .Values.conductorFollower.serverCASecretRef.mountPath .Values.conductorFollower.serverCASecretRef.key)
+      "client_cert_path" (printf "%s/tls.crt" .Values.conductorFollower.clientSecretRef.mountPath)
+      "client_key_path" (printf "%s/tls.key" .Values.conductorFollower.clientSecretRef.mountPath)
+      "trust_roster_path" (printf "%s/%s" .Values.conductorFollower.trustRosterSecretRef.mountPath .Values.conductorFollower.trustRosterSecretRef.key)
+      "bundle_cache_dir" .Values.conductorFollower.persistence.bundleCache.mountPath
+      "durable_audit_queue_dir" .Values.conductorFollower.persistence.auditQueue.mountPath
+      "trust_roster_root_fingerprint" .Values.conductorFollower.trustRosterRootFingerprint
+      "audit_signing_key_id" .Values.conductorFollower.auditSigningKeyID
+      "recorder_key_id" .Values.conductorFollower.recorderKeyID
+      "poll_interval" .Values.conductorFollower.pollInterval
+      "emergency_stream" .Values.conductorFollower.emergencyStream
+      "honor_remote_kill_switch" .Values.conductorFollower.honorRemoteKillSwitch
+    ) (default dict $cfg.conductor) }}
+    {{- $_ := set $cfg "conductor" $conductor }}
+    {{- end }}
     {{- toYaml $cfg | nindent 4 }}
+{{- end }}

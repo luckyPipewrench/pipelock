@@ -161,6 +161,18 @@ jobs:
       - name: Python pin policy
         run: bash scripts/check-python-pins.sh
 
+  helm:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify Helm chart
+        run: bash scripts/check-helm-chart.sh
+
   govulncheck:
     needs: [security-scan]
     runs-on: ubuntu-latest
@@ -188,7 +200,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [security-scan, test, lint]
+    needs: [security-scan, test, lint, helm]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:

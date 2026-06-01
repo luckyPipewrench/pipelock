@@ -1,0 +1,111 @@
+# Enterprise follower deployment.
+#
+# This remains `mode: proxy`: the follower enforces locally and only uses
+# Conductor for signed bundle polling, remote kill state, and audit batching.
+
+mode: proxy
+replicaCount: 2
+
+license:
+  enabled: true
+  existingSecret: pipelock-enterprise-license
+  secretKey: license.token
+  crlSecretRef:
+    name: pipelock-license-crl
+    key: license.crl
+
+conductorFollower:
+  enabled: true
+  conductorURL: https://pipelock-conductor.pipelock-control.svc.cluster.local:8895
+  orgID: org-prod
+  fleetID: fleet-prod
+  instanceID: follower-a
+  trustRosterRootFingerprint: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  auditSigningKeyID: audit-signer-prod
+  recorderKeyID: recorder-prod
+  pollInterval: 30s
+  emergencyStream: true
+  honorRemoteKillSwitch: true
+  serverCASecretRef:
+    name: conductor-server-ca
+    key: ca.crt
+  clientSecretRef:
+    name: follower-client-tls
+  trustRosterSecretRef:
+    name: conductor-trust-roster
+    key: trust-roster.json
+  persistence:
+    bundleCache:
+      enabled: true
+      size: 2Gi
+    auditQueue:
+      enabled: true
+      size: 10Gi
+
+pipelock:
+  mode: strict
+  enforce: true
+  dlp:
+    include_defaults: true
+  response_scanning:
+    enabled: true
+    action: block
+  request_body_scanning:
+    enabled: true
+  flight_recorder:
+    enabled: true
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  preset: restricted
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agent-workloads
+          podSelector:
+            matchLabels:
+              pipelock.io/agent-egress: "true"
+      ports:
+        - port: 8888
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-ops
+          podSelector:
+            matchLabels:
+              pipelock.io/operator: "true"
+      ports:
+        - port: 9091
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-control
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: conductor
+      ports:
+        - port: 8895
+          protocol: TCP
+    - ports:
+        - port: 443
+          protocol: TCP

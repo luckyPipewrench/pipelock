@@ -1,3 +1,4 @@
+{{- if eq (include "pipelock.mode" .) "proxy" }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -29,3 +30,60 @@ spec:
       protocol: TCP
       name: admin
     {{- end }}
+{{- end }}
+{{- if eq (include "pipelock.mode" .) "conductor" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipelock.fullname" . }}-conductor
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: conductor
+spec:
+  type: {{ .Values.conductor.service.type }}
+  selector:
+    {{- include "pipelock.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: conductor
+  ports:
+    - port: {{ .Values.conductor.service.port }}
+      targetPort: follower
+      protocol: TCP
+      name: follower
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipelock.fullname" . }}-conductor-probes
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: conductor
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "pipelock.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: conductor
+  ports:
+    - port: {{ .Values.conductor.service.probePort }}
+      targetPort: probe
+      protocol: TCP
+      name: probe
+{{- end }}
+{{- if eq (include "pipelock.mode" .) "fleetSink" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipelock.fullname" . }}-fleet-sink
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet-sink
+spec:
+  type: {{ .Values.fleetSink.service.type }}
+  selector:
+    {{- include "pipelock.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet-sink
+  ports:
+    - port: {{ .Values.fleetSink.service.port }}
+      targetPort: https
+      protocol: TCP
+      name: https
+{{- end }}

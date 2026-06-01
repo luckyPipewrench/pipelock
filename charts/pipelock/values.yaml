@@ -1,3 +1,5 @@
+mode: proxy # proxy | conductor | fleetSink
+
 replicaCount: 1
 
 image:
@@ -28,6 +30,8 @@ podLabels: {}
 podSecurityContext:
   seccompProfile:
     type: RuntimeDefault
+  fsGroup: 65534
+  fsGroupChangePolicy: OnRootMismatch
 
 securityContext:
   readOnlyRootFilesystem: true
@@ -105,10 +109,170 @@ license:
   # Secret must contain the key named below (default: license.token).
   existingSecret: ""
   secretKey: "license.token"
-  # Path inside the container where the secret is mounted. The chart also
-  # sets PIPELOCK_LICENSE_KEY from the Secret; license_file is rendered for
-  # operators who prefer file-based license loading.
+  # Path inside the container where the Secret is mounted. Proxy mode renders
+  # license_file to this path. Enterprise server modes still set
+  # PIPELOCK_LICENSE_KEY from the Secret because those commands do not accept
+  # a license-file flag.
   mountPath: "/etc/pipelock/license"
+  # Optional signed license CRL mounted as a file and referenced by config or
+  # Enterprise server flags. The chart never templates CRL contents.
+  crlSecretRef:
+    name: ""
+    key: "license.crl"
+    mountPath: "/etc/pipelock/license-crl"
+  # Optional verifier public key for self-hosted/unofficial builds.
+  publicKeySecretRef:
+    name: ""
+    key: "public-key-hex"
+
+# Follower wiring keeps Pipelock in proxy mode while enabling the Enterprise
+# conductor client runtime. Followers enforce locally; Conductor only
+# coordinates signed policy bundles, remote kill, and audit transport.
+conductorFollower:
+  enabled: false
+  conductorURL: ""
+  orgID: ""
+  fleetID: ""
+  instanceID: ""
+  trustRosterRootFingerprint: ""
+  auditSigningKeyID: ""
+  recorderKeyID: ""
+  pollInterval: 30s
+  emergencyStream: true
+  honorRemoteKillSwitch: true
+  serverCASecretRef:
+    name: ""
+    key: "ca.crt"
+    mountPath: "/etc/pipelock/conductor/server-ca"
+  clientSecretRef:
+    name: ""
+    mountPath: "/etc/pipelock/conductor/client"
+  trustRosterSecretRef:
+    name: ""
+    key: "trust-roster.json"
+    mountPath: "/etc/pipelock/conductor/trust"
+  persistence:
+    bundleCache:
+      enabled: false
+      mountPath: "/var/lib/pipelock/conductor/bundles"
+      size: 1Gi
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ""
+    auditQueue:
+      enabled: false
+      mountPath: "/var/lib/pipelock/conductor/audit-queue"
+      size: 5Gi
+      accessModes:
+        - ReadWriteOnce
+      storageClassName: ""
+
+# Enterprise Conductor control-plane mode. Requires an enterprise build image
+# and an Enterprise license with the fleet feature.
+conductor:
+  replicaCount: 1
+  conductorID: "conductor"
+  followerTrustDomain: "pipelock.local"
+  service:
+    type: ClusterIP
+    port: 8895
+    probePort: 9092
+  tls:
+    serverSecretRef:
+      name: ""
+      mountPath: "/etc/pipelock/conductor/tls/server"
+    clientCASecretRef:
+      name: ""
+      key: "ca.crt"
+      mountPath: "/etc/pipelock/conductor/tls/client-ca"
+  tokens:
+    publisher:
+      secretRef:
+        name: ""
+        key: "publisher.token"
+      mountPath: "/etc/pipelock/conductor/tokens/publisher"
+    auditor:
+      secretRef:
+        name: ""
+        key: "auditor.token"
+      mountPath: "/etc/pipelock/conductor/tokens/auditor"
+    admin:
+      secretRef:
+        name: ""
+        key: "admin.token"
+      mountPath: "/etc/pipelock/conductor/tokens/admin"
+  trustedAuditKeys: []
+  # - id: audit-signer-prod
+  #   orgID: org-prod
+  #   fleetID: fleet-prod
+  #   instanceID: ""
+  #   secretRef:
+  #     name: conductor-audit-keys
+  #     key: audit-signer-prod.pub
+  trustedControlKeys: []
+  # - id: remote-kill-1
+  #   purpose: remote-kill-signing
+  #   secretRef:
+  #     name: conductor-control-keys
+  #     key: remote-kill-1.pub
+  persistence:
+    enabled: true
+    mountPath: "/var/lib/pipelock/conductor"
+    size: 20Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# Standalone fleet audit sink mode. It remains a separate chart mode because
+# the binary exposes a dedicated `pipelock fleet-sink` server with independent
+# listener, storage, auth, mTLS, and retention characteristics.
+fleetSink:
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8894
+  tls:
+    serverSecretRef:
+      name: ""
+      mountPath: "/etc/pipelock/fleet-sink/tls/server"
+    clientCASecretRef:
+      name: ""
+      key: "ca.crt"
+      mountPath: "/etc/pipelock/fleet-sink/tls/client-ca"
+  readerToken:
+    secretRef:
+      name: ""
+      key: "reader.token"
+    mountPath: "/etc/pipelock/fleet-sink/tokens/reader"
+  trustedAuditKeys: []
+  # - id: audit-signer-prod
+  #   orgID: org-prod
+  #   fleetID: fleet-prod
+  #   instanceID: ""
+  #   secretRef:
+  #     name: fleet-sink-audit-keys
+  #     key: audit-signer-prod.pub
+  persistence:
+    enabled: true
+    mountPath: "/var/lib/pipelock/fleet-sink"
+    size: 20Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
 
 # Sentry error reporting. When enabled, sets SENTRY_DSN from a Secret.
 sentry:
@@ -136,7 +300,7 @@ adminApi:
 # When adminApi.enabled is true, kill_switch.api_listen is also templated from
 # service.adminPort and should not be set here.
 #
-# Common v2.5 sections you may want to add under pipelock: below:
+# Common sections you may want to add under pipelock: below:
 #   mediation_envelope:     SPIFFE actor format, inbound verification trust list
 #   health_watchdog:        wedge-detection liveness probe surface
 #   browser_shield:         oversize action, exempt domains, max bytes
@@ -185,6 +349,12 @@ podMonitor:
 # Network policy
 networkPolicy:
   enabled: false
+  preset: dev # dev | restricted | airgapped
+  # Override rendered ingress/egress rules with explicit Kubernetes
+  # NetworkPolicyPeer rules. Enterprise examples set these instead of relying
+  # on broad defaults.
+  ingress: []
+  egress: []
 
 livenessProbe:
   httpGet:

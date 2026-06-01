@@ -1,0 +1,190 @@
+{{- if eq (include "pipelock.mode" .) "fleetSink" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipelock.fullname" . }}-fleet-sink
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: fleet-sink
+spec:
+  replicas: {{ .Values.fleetSink.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pipelock.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: fleet-sink
+  template:
+    metadata:
+      labels:
+        {{- include "pipelock.labels" . | nindent 8 }}
+        app.kubernetes.io/component: fleet-sink
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pipelock.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: fleet-sink
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - fleet-sink
+            - --listen
+            - {{ printf "0.0.0.0:%d" (int .Values.fleetSink.service.port) | quote }}
+            - --storage-dir
+            - {{ .Values.fleetSink.persistence.mountPath | quote }}
+            - --tls-cert
+            - {{ printf "%s/tls.crt" .Values.fleetSink.tls.serverSecretRef.mountPath | quote }}
+            - --tls-key
+            - {{ printf "%s/tls.key" .Values.fleetSink.tls.serverSecretRef.mountPath | quote }}
+            - --client-ca
+            - {{ printf "%s/%s" .Values.fleetSink.tls.clientCASecretRef.mountPath .Values.fleetSink.tls.clientCASecretRef.key | quote }}
+            {{- if and .Values.fleetSink.readerToken.secretRef.name .Values.fleetSink.readerToken.secretRef.key }}
+            - --reader-token-file
+            - {{ printf "%s/%s" .Values.fleetSink.readerToken.mountPath .Values.fleetSink.readerToken.secretRef.key | quote }}
+            {{- end }}
+            {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+            - --license-crl-file
+            - {{ printf "%s/%s" .Values.license.crlSecretRef.mountPath .Values.license.crlSecretRef.key | quote }}
+            {{- end }}
+            {{- range .Values.fleetSink.trustedAuditKeys }}
+            - --trusted-audit-key
+            - {{ printf "id=%s,file=/etc/pipelock/fleet-sink/trust/audit/%s/%s,org=%s,fleet=%s,instance=%s" .id .id .secretRef.key .orgID .fleetID .instanceID | quote }}
+            {{- end }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.fleetSink.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health
+              port: https
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /health
+              port: https
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 2
+          {{- $hasLicense := and .Values.license.enabled .Values.license.existingSecret }}
+          {{- $hasLicensePub := and .Values.license.publicKeySecretRef.name .Values.license.publicKeySecretRef.key }}
+          {{- if or $hasLicense $hasLicensePub }}
+          env:
+            {{- if $hasLicense }}
+            - name: PIPELOCK_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.existingSecret | quote }}
+                  key: {{ .Values.license.secretKey | quote }}
+            {{- end }}
+            {{- if $hasLicensePub }}
+            - name: PIPELOCK_LICENSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.publicKeySecretRef.name | quote }}
+                  key: {{ .Values.license.publicKeySecretRef.key | quote }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.fleetSink.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: fleet-sink-storage
+              mountPath: {{ .Values.fleetSink.persistence.mountPath | quote }}
+            - name: fleet-sink-server-tls
+              mountPath: {{ .Values.fleetSink.tls.serverSecretRef.mountPath | quote }}
+              readOnly: true
+            - name: fleet-sink-client-ca
+              mountPath: {{ .Values.fleetSink.tls.clientCASecretRef.mountPath | quote }}
+              readOnly: true
+            {{- if and .Values.fleetSink.readerToken.secretRef.name .Values.fleetSink.readerToken.secretRef.key }}
+            - name: fleet-sink-reader-token
+              mountPath: {{ .Values.fleetSink.readerToken.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+            - name: license-crl
+              mountPath: {{ .Values.license.crlSecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- range .Values.fleetSink.trustedAuditKeys }}
+            - name: fleet-sink-trusted-audit-{{ .id }}
+              mountPath: {{ printf "/etc/pipelock/fleet-sink/trust/audit/%s" .id | quote }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: fleet-sink-storage
+          persistentVolumeClaim:
+            claimName: {{ include "pipelock.fleetSinkStorageName" . }}
+        - name: fleet-sink-server-tls
+          secret:
+            secretName: {{ required "fleetSink.tls.serverSecretRef.name is required in fleetSink mode" .Values.fleetSink.tls.serverSecretRef.name | quote }}
+            defaultMode: 0440
+        - name: fleet-sink-client-ca
+          secret:
+            secretName: {{ required "fleetSink.tls.clientCASecretRef.name is required in fleetSink mode" .Values.fleetSink.tls.clientCASecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "fleetSink.tls.clientCASecretRef.key is required in fleetSink mode" .Values.fleetSink.tls.clientCASecretRef.key | quote }}
+                path: {{ .Values.fleetSink.tls.clientCASecretRef.key | quote }}
+        {{- if and .Values.fleetSink.readerToken.secretRef.name .Values.fleetSink.readerToken.secretRef.key }}
+        - name: fleet-sink-reader-token
+          secret:
+            secretName: {{ .Values.fleetSink.readerToken.secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.fleetSink.readerToken.secretRef.key | quote }}
+                path: {{ .Values.fleetSink.readerToken.secretRef.key | quote }}
+        {{- end }}
+        {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+        - name: license-crl
+          secret:
+            secretName: {{ .Values.license.crlSecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.license.crlSecretRef.key | quote }}
+                path: {{ .Values.license.crlSecretRef.key | quote }}
+        {{- end }}
+        {{- range .Values.fleetSink.trustedAuditKeys }}
+        - name: fleet-sink-trusted-audit-{{ .id }}
+          secret:
+            secretName: {{ required "fleetSink.trustedAuditKeys[].secretRef.name is required" .secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "fleetSink.trustedAuditKeys[].secretRef.key is required" .secretRef.key | quote }}
+                path: {{ .secretRef.key | quote }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

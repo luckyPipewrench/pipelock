@@ -1,3 +1,5 @@
+{{- include "pipelock.validate" . }}
+{{- if eq (include "pipelock.mode" .) "proxy" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -128,6 +130,34 @@ spec:
               mountPath: {{ .Values.license.mountPath | quote }}
               readOnly: true
             {{- end }}
+            {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+            - name: license-crl
+              mountPath: {{ .Values.license.crlSecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.serverCASecretRef.name }}
+            - name: conductor-server-ca
+              mountPath: {{ .Values.conductorFollower.serverCASecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.clientSecretRef.name }}
+            - name: conductor-client-tls
+              mountPath: {{ .Values.conductorFollower.clientSecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.trustRosterSecretRef.name }}
+            - name: conductor-trust-roster
+              mountPath: {{ .Values.conductorFollower.trustRosterSecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.persistence.bundleCache.enabled }}
+            - name: conductor-bundle-cache
+              mountPath: {{ .Values.conductorFollower.persistence.bundleCache.mountPath | quote }}
+            {{- end }}
+            {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.persistence.auditQueue.enabled }}
+            - name: conductor-audit-queue
+              mountPath: {{ .Values.conductorFollower.persistence.auditQueue.mountPath | quote }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -139,10 +169,53 @@ spec:
         - name: license
           secret:
             secretName: {{ .Values.license.existingSecret | quote }}
-            defaultMode: 0400
+            defaultMode: 0440
+        {{- end }}
+        {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+        - name: license-crl
+          secret:
+            secretName: {{ .Values.license.crlSecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.license.crlSecretRef.key | quote }}
+                path: {{ .Values.license.crlSecretRef.key | quote }}
+        {{- end }}
+        {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.serverCASecretRef.name }}
+        - name: conductor-server-ca
+          secret:
+            secretName: {{ .Values.conductorFollower.serverCASecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.conductorFollower.serverCASecretRef.key | quote }}
+                path: {{ .Values.conductorFollower.serverCASecretRef.key | quote }}
+        {{- end }}
+        {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.clientSecretRef.name }}
+        - name: conductor-client-tls
+          secret:
+            secretName: {{ .Values.conductorFollower.clientSecretRef.name | quote }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.trustRosterSecretRef.name }}
+        - name: conductor-trust-roster
+          secret:
+            secretName: {{ .Values.conductorFollower.trustRosterSecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.conductorFollower.trustRosterSecretRef.key | quote }}
+                path: {{ .Values.conductorFollower.trustRosterSecretRef.key | quote }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.persistence.bundleCache.enabled }}
+        - name: conductor-bundle-cache
+          persistentVolumeClaim:
+            claimName: {{ include "pipelock.followerBundleCacheName" . }}
+        {{- end }}
+        {{- if and .Values.conductorFollower.enabled .Values.conductorFollower.persistence.auditQueue.enabled }}
+        - name: conductor-audit-queue
+          persistentVolumeClaim:
+            claimName: {{ include "pipelock.followerAuditQueueName" . }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
@@ -160,3 +233,4 @@ spec:
       topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}

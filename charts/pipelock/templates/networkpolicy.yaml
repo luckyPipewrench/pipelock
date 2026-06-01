@@ -1,4 +1,8 @@
 {{- if .Values.networkPolicy.enabled }}
+{{- $mode := include "pipelock.mode" . }}
+{{- $preset := default "dev" .Values.networkPolicy.preset }}
+{{- $ingress := default list .Values.networkPolicy.ingress }}
+{{- $egress := default list .Values.networkPolicy.egress }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -9,36 +13,85 @@ spec:
   podSelector:
     matchLabels:
       {{- include "pipelock.selectorLabels" . | nindent 6 }}
+      {{- if eq $mode "conductor" }}
+      app.kubernetes.io/component: conductor
+      {{- else if eq $mode "fleetSink" }}
+      app.kubernetes.io/component: fleet-sink
+      {{- end }}
   policyTypes:
     - Ingress
     - Egress
   ingress:
+    {{- if eq $preset "airgapped" }}
+    []
+    {{- else if gt (len $ingress) 0 }}
+    {{- toYaml $ingress | nindent 4 }}
+    {{- else }}
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              pipelock.io/agent-egress: "true"
       ports:
+        {{- if eq $mode "proxy" }}
         - port: {{ .Values.service.port }}
           protocol: TCP
-        {{- if .Values.mcp.enabled }}
+        {{- if and .Values.mcp.enabled .Values.mcp.upstream }}
         - port: {{ .Values.service.mcpPort }}
           protocol: TCP
         {{- end }}
+        {{- else if eq $mode "conductor" }}
+        - port: {{ .Values.conductor.service.port }}
+          protocol: TCP
+        {{- else if eq $mode "fleetSink" }}
+        - port: {{ .Values.fleetSink.service.port }}
+          protocol: TCP
+        {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              pipelock.io/operator: "true"
+      ports:
+        {{- if eq $mode "proxy" }}
         - port: {{ .Values.service.metricsPort }}
           protocol: TCP
         {{- if .Values.adminApi.enabled }}
         - port: {{ .Values.service.adminPort }}
           protocol: TCP
         {{- end }}
+        {{- else if eq $mode "conductor" }}
+        - port: {{ .Values.conductor.service.probePort }}
+          protocol: TCP
+        {{- else if eq $mode "fleetSink" }}
+        - port: {{ .Values.fleetSink.service.port }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
   egress:
-    # DNS resolution required for all proxy modes
-    - ports:
+    {{- if eq $preset "airgapped" }}
+    []
+    {{- else if gt (len $egress) 0 }}
+    {{- toYaml $egress | nindent 4 }}
+    {{- else }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
         - port: 53
           protocol: UDP
         - port: 53
           protocol: TCP
-    # HTTPS egress — pipelock proxies agent traffic to the internet
+    {{- if ne $mode "fleetSink" }}
     - ports:
         - port: 443
           protocol: TCP
+        {{- if eq $preset "dev" }}
         - port: 80
           protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- end }}
 {{- end }}

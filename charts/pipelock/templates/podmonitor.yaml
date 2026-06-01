@@ -12,7 +12,12 @@ spec:
   selector:
     matchLabels:
       {{- include "pipelock.selectorLabels" . | nindent 6 }}
+      {{- if eq (include "pipelock.mode" .) "conductor" }}
+      app.kubernetes.io/component: conductor
+      {{- else if eq (include "pipelock.mode" .) "fleetSink" }}
+      app.kubernetes.io/component: fleet-sink
+      {{- end }}
   podMetricsEndpoints:
-    - port: metrics
+    - port: {{ if eq (include "pipelock.mode" .) "conductor" }}probe{{ else if eq (include "pipelock.mode" .) "fleetSink" }}https{{ else }}metrics{{ end }}
       interval: {{ .Values.podMonitor.interval }}
 {{- end }}

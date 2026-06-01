@@ -1,0 +1,114 @@
+# Enterprise Conductor control plane.
+#
+# The chart references existing Secrets only. Create TLS, token, license, CRL,
+# and trust-key Secrets out of band with your normal secret manager.
+
+mode: conductor
+
+license:
+  enabled: true
+  existingSecret: pipelock-enterprise-license
+  secretKey: license.token
+  crlSecretRef:
+    name: pipelock-license-crl
+    key: license.crl
+
+conductor:
+  conductorID: conductor-prod-1
+  followerTrustDomain: pipelock.local
+  service:
+    type: ClusterIP
+    port: 8895
+    probePort: 9092
+  tls:
+    serverSecretRef:
+      name: conductor-server-tls
+    clientCASecretRef:
+      name: conductor-follower-ca
+      key: ca.crt
+  tokens:
+    publisher:
+      secretRef:
+        name: conductor-publisher-token
+        key: token
+    auditor:
+      secretRef:
+        name: conductor-auditor-token
+        key: token
+    admin:
+      secretRef:
+        name: conductor-admin-token
+        key: token
+  trustedAuditKeys:
+    - id: audit-signer-prod
+      orgID: org-prod
+      fleetID: fleet-prod
+      instanceID: ""
+      secretRef:
+        name: conductor-audit-keys
+        key: audit-signer-prod.pub
+  trustedControlKeys:
+    - id: remote-kill-prod
+      purpose: remote-kill-signing
+      secretRef:
+        name: conductor-control-keys
+        key: remote-kill-prod.pub
+    - id: rollback-prod
+      purpose: policy-bundle-rollback
+      secretRef:
+        name: conductor-control-keys
+        key: rollback-prod.pub
+  persistence:
+    size: 50Gi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  enabled: true
+  preset: restricted
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-fleet
+          podSelector:
+            matchLabels:
+              pipelock.io/follower: "true"
+      ports:
+        - port: 8895
+          protocol: TCP
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-ops
+          podSelector:
+            matchLabels:
+              pipelock.io/operator: "true"
+      ports:
+        - port: 9092
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: pipelock-kms
+          podSelector:
+            matchLabels:
+              pipelock.io/signing-service: "true"
+      ports:
+        - port: 443
+          protocol: TCP

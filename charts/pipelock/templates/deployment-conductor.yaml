@@ -1,0 +1,234 @@
+{{- if eq (include "pipelock.mode" .) "conductor" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipelock.fullname" . }}-conductor
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+    app.kubernetes.io/component: conductor
+spec:
+  replicas: {{ .Values.conductor.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pipelock.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: conductor
+  template:
+    metadata:
+      labels:
+        {{- include "pipelock.labels" . | nindent 8 }}
+        app.kubernetes.io/component: conductor
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "pipelock.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: conductor
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - conductor
+            - serve
+            - --listen
+            - {{ printf "0.0.0.0:%d" (int .Values.conductor.service.port) | quote }}
+            - --probe-listen
+            - {{ printf "0.0.0.0:%d" (int .Values.conductor.service.probePort) | quote }}
+            - --storage-dir
+            - {{ .Values.conductor.persistence.mountPath | quote }}
+            - --conductor-id
+            - {{ .Values.conductor.conductorID | quote }}
+            - --follower-trust-domain
+            - {{ .Values.conductor.followerTrustDomain | quote }}
+            - --tls-cert
+            - {{ printf "%s/tls.crt" .Values.conductor.tls.serverSecretRef.mountPath | quote }}
+            - --tls-key
+            - {{ printf "%s/tls.key" .Values.conductor.tls.serverSecretRef.mountPath | quote }}
+            - --client-ca
+            - {{ printf "%s/%s" .Values.conductor.tls.clientCASecretRef.mountPath .Values.conductor.tls.clientCASecretRef.key | quote }}
+            - --publisher-token-file
+            - {{ printf "%s/%s" .Values.conductor.tokens.publisher.mountPath .Values.conductor.tokens.publisher.secretRef.key | quote }}
+            - --auditor-token-file
+            - {{ printf "%s/%s" .Values.conductor.tokens.auditor.mountPath .Values.conductor.tokens.auditor.secretRef.key | quote }}
+            - --admin-token-file
+            - {{ printf "%s/%s" .Values.conductor.tokens.admin.mountPath .Values.conductor.tokens.admin.secretRef.key | quote }}
+            {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+            - --license-crl-file
+            - {{ printf "%s/%s" .Values.license.crlSecretRef.mountPath .Values.license.crlSecretRef.key | quote }}
+            {{- end }}
+            {{- range .Values.conductor.trustedAuditKeys }}
+            - --trusted-audit-key
+            - {{ printf "id=%s,file=/etc/pipelock/conductor/trust/audit/%s/%s,org=%s,fleet=%s,instance=%s" .id .id .secretRef.key .orgID .fleetID .instanceID | quote }}
+            {{- end }}
+            {{- range .Values.conductor.trustedControlKeys }}
+            - --trusted-control-key
+            - {{ printf "id=%s,purpose=%s,file=/etc/pipelock/conductor/trust/control/%s/%s" .id .purpose .id .secretRef.key | quote }}
+            {{- end }}
+          ports:
+            - name: follower
+              containerPort: {{ .Values.conductor.service.port }}
+              protocol: TCP
+            - name: probe
+              containerPort: {{ .Values.conductor.service.probePort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probe
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probe
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 2
+          {{- $hasLicense := and .Values.license.enabled .Values.license.existingSecret }}
+          {{- $hasLicensePub := and .Values.license.publicKeySecretRef.name .Values.license.publicKeySecretRef.key }}
+          {{- if or $hasLicense $hasLicensePub }}
+          env:
+            {{- if $hasLicense }}
+            - name: PIPELOCK_LICENSE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.existingSecret | quote }}
+                  key: {{ .Values.license.secretKey | quote }}
+            {{- end }}
+            {{- if $hasLicensePub }}
+            - name: PIPELOCK_LICENSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.license.publicKeySecretRef.name | quote }}
+                  key: {{ .Values.license.publicKeySecretRef.key | quote }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.conductor.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: conductor-storage
+              mountPath: {{ .Values.conductor.persistence.mountPath | quote }}
+            - name: conductor-server-tls
+              mountPath: {{ .Values.conductor.tls.serverSecretRef.mountPath | quote }}
+              readOnly: true
+            - name: conductor-client-ca
+              mountPath: {{ .Values.conductor.tls.clientCASecretRef.mountPath | quote }}
+              readOnly: true
+            - name: conductor-publisher-token
+              mountPath: {{ .Values.conductor.tokens.publisher.mountPath | quote }}
+              readOnly: true
+            - name: conductor-auditor-token
+              mountPath: {{ .Values.conductor.tokens.auditor.mountPath | quote }}
+              readOnly: true
+            - name: conductor-admin-token
+              mountPath: {{ .Values.conductor.tokens.admin.mountPath | quote }}
+              readOnly: true
+            {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+            - name: license-crl
+              mountPath: {{ .Values.license.crlSecretRef.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+            {{- range .Values.conductor.trustedAuditKeys }}
+            - name: conductor-trusted-audit-{{ .id }}
+              mountPath: {{ printf "/etc/pipelock/conductor/trust/audit/%s" .id | quote }}
+              readOnly: true
+            {{- end }}
+            {{- range .Values.conductor.trustedControlKeys }}
+            - name: conductor-trusted-control-{{ .id }}
+              mountPath: {{ printf "/etc/pipelock/conductor/trust/control/%s" .id | quote }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: conductor-storage
+          persistentVolumeClaim:
+            claimName: {{ include "pipelock.conductorStorageName" . }}
+        - name: conductor-server-tls
+          secret:
+            secretName: {{ required "conductor.tls.serverSecretRef.name is required in conductor mode" .Values.conductor.tls.serverSecretRef.name | quote }}
+            defaultMode: 0440
+        - name: conductor-client-ca
+          secret:
+            secretName: {{ required "conductor.tls.clientCASecretRef.name is required in conductor mode" .Values.conductor.tls.clientCASecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "conductor.tls.clientCASecretRef.key is required in conductor mode" .Values.conductor.tls.clientCASecretRef.key | quote }}
+                path: {{ .Values.conductor.tls.clientCASecretRef.key | quote }}
+        - name: conductor-publisher-token
+          secret:
+            secretName: {{ required "conductor.tokens.publisher.secretRef.name is required in conductor mode" .Values.conductor.tokens.publisher.secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "conductor.tokens.publisher.secretRef.key is required in conductor mode" .Values.conductor.tokens.publisher.secretRef.key | quote }}
+                path: {{ .Values.conductor.tokens.publisher.secretRef.key | quote }}
+        - name: conductor-auditor-token
+          secret:
+            secretName: {{ required "conductor.tokens.auditor.secretRef.name is required in conductor mode" .Values.conductor.tokens.auditor.secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "conductor.tokens.auditor.secretRef.key is required in conductor mode" .Values.conductor.tokens.auditor.secretRef.key | quote }}
+                path: {{ .Values.conductor.tokens.auditor.secretRef.key | quote }}
+        - name: conductor-admin-token
+          secret:
+            secretName: {{ required "conductor.tokens.admin.secretRef.name is required in conductor mode" .Values.conductor.tokens.admin.secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "conductor.tokens.admin.secretRef.key is required in conductor mode" .Values.conductor.tokens.admin.secretRef.key | quote }}
+                path: {{ .Values.conductor.tokens.admin.secretRef.key | quote }}
+        {{- if and .Values.license.crlSecretRef.name .Values.license.crlSecretRef.key }}
+        - name: license-crl
+          secret:
+            secretName: {{ .Values.license.crlSecretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.license.crlSecretRef.key | quote }}
+                path: {{ .Values.license.crlSecretRef.key | quote }}
+        {{- end }}
+        {{- range .Values.conductor.trustedAuditKeys }}
+        - name: conductor-trusted-audit-{{ .id }}
+          secret:
+            secretName: {{ required "conductor.trustedAuditKeys[].secretRef.name is required" .secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "conductor.trustedAuditKeys[].secretRef.key is required" .secretRef.key | quote }}
+                path: {{ .secretRef.key | quote }}
+        {{- end }}
+        {{- range .Values.conductor.trustedControlKeys }}
+        - name: conductor-trusted-control-{{ .id }}
+          secret:
+            secretName: {{ required "conductor.trustedControlKeys[].secretRef.name is required" .secretRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ required "conductor.trustedControlKeys[].secretRef.key is required" .secretRef.key | quote }}
+                path: {{ .secretRef.key | quote }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

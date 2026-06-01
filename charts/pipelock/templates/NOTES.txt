@@ -1,5 +1,24 @@
 Pipelock {{ .Chart.AppVersion }} deployed as release {{ .Release.Name }}.
 
+{{- if eq (include "pipelock.mode" .) "conductor" }}
+Conductor follower mTLS endpoint:
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }}-conductor {{ .Values.conductor.service.port }}:{{ .Values.conductor.service.port }}
+
+Conductor probe endpoint:
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }}-conductor-probes {{ .Values.conductor.service.probePort }}:{{ .Values.conductor.service.probePort }}
+  curl http://127.0.0.1:{{ .Values.conductor.service.probePort }}/readyz
+
+This chart makes complete mediation deployable by wiring fleet control-plane
+storage, mTLS, and network boundaries. Mediation completeness is still
+deployment-enforced: agents must be prevented from bypassing their local
+Pipelock follower.
+{{- else if eq (include "pipelock.mode" .) "fleetSink" }}
+Fleet audit sink endpoint:
+  kubectl port-forward svc/{{ include "pipelock.fullname" . }}-fleet-sink {{ .Values.fleetSink.service.port }}:{{ .Values.fleetSink.service.port }}
+
+This mode runs the standalone `pipelock fleet-sink` server for signed audit
+batch ingest and query storage. It is not an inline enforcement dependency.
+{{- else }}
 Proxy endpoint:
   kubectl port-forward svc/{{ include "pipelock.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
 
@@ -36,6 +55,7 @@ Admin API (port {{ .Values.service.adminPort }}):
   # Read it locally and pass with --api-token, or export it as your env (see pipelock adaptive --help).
   pipelock adaptive status --api-url http://127.0.0.1:{{ .Values.service.adminPort }}
   pipelock session list   --api-url http://127.0.0.1:{{ .Values.service.adminPort }}
+{{- end }}
 {{- end }}
 
 {{- if and .Values.license.enabled (not .Values.license.existingSecret) }}

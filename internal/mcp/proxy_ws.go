@@ -205,9 +205,10 @@ func RunWSProxy(
 		}
 	}
 
-	// Close the WS connection to unblock ForwardScanned's ReadMessage.
-	// WSClient.ReadMessage maps "use of closed network connection" to io.EOF
-	// via IsExpectedCloseErr, so ForwardScanned exits cleanly.
+	// Close the WS connection to unblock ForwardScanned's ReadMessage. The
+	// blocked read returns net.ErrClosed ("use of closed network connection"),
+	// which ForwardScanned treats as a clean stream end via
+	// wsutil.IsExpectedCloseErr, so it exits without a spurious error.
 	cancel()
 	_ = wsClient.Close()
 	wg.Wait()

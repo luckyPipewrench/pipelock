@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
 // ErrSubprocessExit indicates the wrapped MCP server process exited with a
@@ -149,7 +150,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	for {
 		line, err := reader.ReadMessage()
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			// A clean stream end is io.EOF; a proxy-initiated connection
+			// teardown surfaces net.ErrClosed ("use of closed network
+			// connection"), and a peer drop surfaces as reset/broken-pipe,
+			// from a blocked transport read. All mean "no more traffic to
+			// scan", not a fatal error. IsExpectedCloseErr covers io.EOF too.
+			if wsutil.IsExpectedCloseErr(err) {
 				break
 			}
 			return foundInjection, fmt.Errorf("reading input: %w", err)

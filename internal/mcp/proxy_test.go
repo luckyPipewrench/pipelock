@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2412,6 +2413,52 @@ func TestStripOrBlock_NonRedactable_FallsBackToBlock(t *testing.T) {
 }
 
 // makeResponse helper is defined in scan_test.go
+
+// wsTeardownReader simulates a WS upstream whose blocked read is interrupted by
+// a proxy-initiated connection teardown (cancel + Close): ReadMessage returns a
+// wrapped net.ErrClosed ("use of closed network connection") or a peer reset,
+// not io.EOF. This is the deterministic form of the race behind the flaky
+// TestRunWSProxy_ChainDetectionBlocks.
+type wsTeardownReader struct{ err error }
+
+func (r *wsTeardownReader) ReadMessage() ([]byte, error) { return nil, r.err }
+
+// A proxy-initiated teardown surfaces net.ErrClosed (not io.EOF) from a blocked
+// upstream read; ForwardScanned must treat expected-close errors as a clean
+// stream end, otherwise RunWSProxy returns a spurious error under load.
+func TestForwardScanned_ExpectedCloseTreatedAsCleanEOF(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	cases := []struct {
+		name string
+		err  error
+	}{
+		// Mirrors transport/wsclient.go's "reading ws payload: %w" wrap.
+		{"use of closed network connection", fmt.Errorf("reading ws payload: %w", net.ErrClosed)},
+		{"connection reset by peer", errors.New("reading ws payload: read tcp 127.0.0.1:1->127.0.0.1:2: connection reset by peer")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, log bytes.Buffer
+			reader := &wsTeardownReader{err: tc.err}
+			_, err := ForwardScanned(reader, transport.NewStdioWriter(&out), &log, NewRequestTracker(), testOpts(sc))
+			if err != nil {
+				t.Fatalf("proxy-initiated teardown (%s) must be a clean exit, got %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// A genuine (non-close) read error must still surface, so the expected-close
+// handling does not swallow real failures.
+func TestForwardScanned_GenuineReadErrorStillSurfaces(t *testing.T) {
+	sc := testScannerWithAction(t, "warn")
+	var out, log bytes.Buffer
+	reader := &wsTeardownReader{err: errors.New("reading ws payload: malformed frame header")}
+	_, err := ForwardScanned(reader, transport.NewStdioWriter(&out), &log, NewRequestTracker(), testOpts(sc))
+	if err == nil {
+		t.Fatal("a genuine read error must surface, not be treated as clean EOF")
+	}
+}
 
 // --- Confused Deputy tests ---
 

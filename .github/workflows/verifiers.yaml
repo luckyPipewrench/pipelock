@@ -123,10 +123,9 @@ jobs:
   # guards the vendored corpus against drift from the agent-egress-bench master.
   #
   # The corpus master lives in agent-egress-bench and the Python verifier lives
-  # in pipelock-verify-python; both are public and checked out here. Merge
-  # ordering for a coordinated corpus/verifier change: agent-egress-bench first,
-  # then pipelock-verify-python, then this repo, because this job compares
-  # against the default branch of both.
+  # in pipelock-verify-python; both are public and checked out here at pinned
+  # commits. For coordinated corpus/verifier changes, land those repos first,
+  # then bump these refs deliberately in the pipelock PR.
   conformance:
     name: Cross-language conformance gate
     runs-on: ubuntu-latest
@@ -141,7 +140,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/agent-egress-bench
-          ref: main
+          ref: c0c91017efd302aeaf3b6d2d6ee4aa80a6259cd8
           path: _aeb
           persist-credentials: false
 
@@ -149,7 +148,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: luckyPipewrench/pipelock-verify-python
-          ref: main
+          ref: 5ecd1adcc92e2a5b11f99d942065bef68bcbb5db
           path: _pyverify
           persist-credentials: false
 

@@ -80,6 +80,7 @@ func Cmd() *cobra.Command {
 		Short: "Run Conductor control-plane services",
 	}
 	cmd.AddCommand(serveCmd())
+	cmd.AddCommand(bootstrapCmd())
 	return cmd
 }
 

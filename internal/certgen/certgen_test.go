@@ -14,6 +14,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1181,5 +1183,91 @@ func TestGenerateLeaf_RejectsNonPositiveTTL(t *testing.T) {
 		if err == nil {
 			t.Errorf("GenerateLeaf(ttl=%v): expected error, got nil", dur)
 		}
+	}
+}
+
+func TestGenerateLeafCert_SPIFFEClientIdentity(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spiffeURI, err := url.Parse("spiffe://pipelock.local/orgs/org-main/fleets/dev/instances/follower-1/environments/dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := GenerateLeafCert(ca, caKey, LeafOptions{
+		CommonName:  "follower-1",
+		URIs:        []*url.URL{spiffeURI},
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		TTL:         time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("GenerateLeafCert: %v", err)
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.URIs) != 1 || parsed.URIs[0].String() != spiffeURI.String() {
+		t.Fatalf("URIs = %v, want [%s]", parsed.URIs, spiffeURI)
+	}
+	if len(parsed.ExtKeyUsage) != 1 || parsed.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Fatalf("ExtKeyUsage = %v, want [ClientAuth]", parsed.ExtKeyUsage)
+	}
+	if len(parsed.DNSNames) != 0 || len(parsed.IPAddresses) != 0 {
+		t.Fatalf("unexpected DNS/IP SANs: dns=%v ip=%v", parsed.DNSNames, parsed.IPAddresses)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	if _, err := parsed.Verify(x509.VerifyOptions{
+		Roots:     pool,
+		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}); err != nil {
+		t.Errorf("client cert does not chain to CA: %v", err)
+	}
+}
+
+func TestGenerateLeafCert_RejectsNoSAN(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = GenerateLeafCert(ca, caKey, LeafOptions{CommonName: "no-san", TTL: time.Hour})
+	if err == nil || !strings.Contains(err.Error(), "at least one SAN") {
+		t.Fatalf("GenerateLeafCert(no SAN) error = %v, want SAN-required error", err)
+	}
+}
+
+func TestGenerateLeafCert_RejectsNonPositiveTTL(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = GenerateLeafCert(ca, caKey, LeafOptions{CommonName: "x", DNSNames: []string{"x"}, TTL: 0})
+	if err == nil || !strings.Contains(err.Error(), "TTL must be positive") {
+		t.Fatalf("GenerateLeafCert(zero TTL) error = %v, want TTL error", err)
+	}
+}
+
+func TestGenerateLeafCert_DefaultsToServerAuth(t *testing.T) {
+	ca, caKey, _, err := GenerateCA(testOrg, testValidityDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := GenerateLeafCert(ca, caKey, LeafOptions{
+		CommonName:  "srv",
+		DNSNames:    []string{"localhost"},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+		TTL:         time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("GenerateLeafCert: %v", err)
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.ExtKeyUsage) != 1 || parsed.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+		t.Fatalf("ExtKeyUsage = %v, want [ServerAuth] default", parsed.ExtKeyUsage)
 	}
 }

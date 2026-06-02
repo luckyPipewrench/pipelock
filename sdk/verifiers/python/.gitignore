@@ -1,0 +1,16 @@
+# Copyright 2026 Josh Waldrep
+# SPDX-License-Identifier: Apache-2.0
+
+# Python build / test / lint artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.tox/
+.venv/

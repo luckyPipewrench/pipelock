@@ -1,0 +1,8 @@
+{
+  "attack_class": "downgraded",
+  "category": "malicious",
+  "description": "a key scoped to the mediator role signing as countersig cannot satisfy a mediated claim",
+  "fixture_id": "m06-role-escalation",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

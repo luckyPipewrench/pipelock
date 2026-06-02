@@ -26,6 +26,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         return Err(VerifierError::Usage(usage(None)));
     };
     match command.as_str() {
+        "aarp" => crate::aarp::run_aarp(rest),
         "audit-packet" => run_audit_packet_command(rest),
         "chain" => run_chain_command(rest),
         "receipt" => run_receipt_command(rest),
@@ -220,6 +221,7 @@ fn usage(command: Option<&str>) -> String {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE] [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
         Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE] [--dir] [--session-id ID]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE]".to_string(),
-        _ => "Usage: pipelock-verifier-rs {audit-packet|chain|receipt} PATH [flags]".to_string(),
+        _ => "Usage: pipelock-verifier-rs {aarp|audit-packet|chain|receipt} PATH [flags]"
+            .to_string(),
     }
 }

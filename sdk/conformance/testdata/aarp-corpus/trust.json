@@ -1,0 +1,12 @@
+{
+  "trust_entries": {
+    "k-signer": {
+      "mediator_id": "mediator.example",
+      "role": "mediator"
+    }
+  },
+  "trusted_keys": {
+    "k-issuer": "64569652ab4ada59f5d70c6870ef650251968d1fa85d5370382f5efdeadca1af",
+    "k-signer": "c7dee6a7b1f617b538c45865c9a8b348d6e3fdcf16b520a8b44f4ea2bf970f7c"
+  }
+}

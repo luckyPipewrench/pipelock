@@ -1,0 +1,8 @@
+{
+  "attack_class": "forged",
+  "category": "malicious",
+  "description": "swapping mediator_id after signing breaks the payload digest and the signature",
+  "fixture_id": "m08-mediator-id-swap",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

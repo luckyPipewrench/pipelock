@@ -1,0 +1,8 @@
+{
+  "attack_class": "baseline-chain",
+  "category": "golden",
+  "description": "genesis chain link is well-formed and signed; chain_linked is confirmed",
+  "fixture_id": "g03-chain-genesis-linked",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

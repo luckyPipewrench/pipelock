@@ -1,0 +1,8 @@
+{
+  "attack_class": "schema",
+  "category": "edge",
+  "description": "an unknown field in an AARP object is fatal: a producer cannot smuggle unsigned content past appraisal",
+  "fixture_id": "p07-unknown-field",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

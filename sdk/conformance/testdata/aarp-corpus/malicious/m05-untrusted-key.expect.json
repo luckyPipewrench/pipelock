@@ -1,0 +1,8 @@
+{
+  "attack_class": "forged",
+  "category": "malicious",
+  "description": "a cryptographically valid signature under an untrusted key is unknown_key, never verified",
+  "fixture_id": "m05-untrusted-key",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

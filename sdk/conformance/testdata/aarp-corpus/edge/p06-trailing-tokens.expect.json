@@ -1,0 +1,8 @@
+{
+  "attack_class": "parser-differential",
+  "category": "edge",
+  "description": "non-whitespace tokens after the envelope are fatal: trailing data is an injection vector",
+  "fixture_id": "p06-trailing-tokens",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

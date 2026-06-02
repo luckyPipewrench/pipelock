@@ -1,0 +1,8 @@
+{
+  "attack_class": "forged",
+  "category": "malicious",
+  "description": "appending a claim after signing changes the payload digest; the signature no longer verifies",
+  "fixture_id": "m07-post-sign-claim-add",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

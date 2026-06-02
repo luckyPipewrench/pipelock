@@ -42,6 +42,8 @@ const (
 	ClassSentryAuthToken   Class = "sentry-auth-token"  //nolint:gosec // class label, not a secret value
 	ClassTelegramToken     Class = "telegram-bot-token" //nolint:gosec // class label, not a secret value
 	ClassDiscordToken      Class = "discord-bot-token"  //nolint:gosec // class label, not a secret value
+	ClassTwilioAPIKey      Class = "twilio-api-key"     //nolint:gosec // class label, not a secret value
+	ClassMailgunAPIKey     Class = "mailgun-api-key"    //nolint:gosec // class label, not a secret value
 	ClassJWT               Class = "jwt"
 	ClassHashMD5           Class = "hash-md5"
 	ClassHashSHA1          Class = "hash-sha1"

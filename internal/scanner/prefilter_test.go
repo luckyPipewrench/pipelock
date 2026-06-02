@@ -23,7 +23,7 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		{"gocspx", "(?i)GOCSPX-[A-Za-z0-9_]{28,}", "gocspx-"},
 		{"github pat", "(?i)github_pat_[a-zA-Z0-9_]{36,}", "github_pat_"},
 		{"sendgrid", `(?i)SG\.[a-zA-Z0-9_-]{22}`, "sg."},
-		{"mailgun", "(?i)key-[a-zA-Z0-9]{32}", "key-"},
+		{"mailgun", "(?i)\\bkey-[a-zA-Z0-9]{32}\\b", "key-"},
 		{"hugging face", "(?i)hf_[A-Za-z0-9]{34,37}\\b", "hf_"},
 		{"databricks", "(?i)dapi[0-9a-f]{32,}", "dapi"},
 		{"replicate", "(?i)r8_[a-f0-9]{40}\\b", "r8_"},
@@ -68,7 +68,7 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		{"empty", "", ""},
 		{"just flag", "(?i)", ""},
 		{"no flag", "sk-ant-foo", "sk-ant-foo"},
-		{"twilio", "(?i)SK[a-f0-9]{32}", "sk"},
+		{"twilio", "(?i)\\bSK[a-f0-9]{32}\\b", "sk"},
 	}
 
 	for _, tt := range tests {

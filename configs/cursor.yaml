@@ -157,13 +157,13 @@ dlp:
       severity: critical
     # Communication service keys
     - name: "Twilio API Key"
-      regex: 'SK[a-f0-9]{32}'
+      regex: '\bSK[a-f0-9]{32}\b'
       severity: high
     - name: "SendGrid API Key"
       regex: 'SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
       severity: critical
     - name: "Mailgun API Key"
-      regex: 'key-[a-zA-Z0-9]{32}'
+      regex: '\bkey-[a-zA-Z0-9]{32}\b'
       severity: high
     # Observability / monitoring
     - name: "New Relic API Key"

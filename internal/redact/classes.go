@@ -67,7 +67,7 @@ const (
 // Split across category helpers so no single function trips funlen and the
 // priority story stays scannable category by category.
 func classRegistry() []classPattern {
-	out := make([]classPattern, 0, 36)
+	out := make([]classPattern, 0, 38)
 	out = append(out, tokenClasses()...)
 	out = append(out, hashClasses()...)
 	out = append(out, networkClasses()...)
@@ -109,6 +109,13 @@ func tokenClasses() []classPattern {
 		{class: ClassSentryAuthToken, pattern: regexp.MustCompile(`(?i)\bsntrys_[A-Za-z0-9]{40,}\b`), priority: 100},
 		{class: ClassTelegramToken, pattern: regexp.MustCompile(`\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b`), priority: 100},
 		{class: ClassDiscordToken, pattern: regexp.MustCompile(`\b[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b`), priority: 100},
+		// Twilio API Key SID: SK + 32 hex (34 total). Boundaries match the
+		// tightened DLP default so an allowlisted host gets a placeholder
+		// rather than the leaked SID passing through raw.
+		{class: ClassTwilioAPIKey, pattern: regexp.MustCompile(`(?i)\bSK[a-f0-9]{32}\b`), priority: 100},
+		// Mailgun private API key: "key-" + 32 alphanumeric. Boundaries match
+		// the tightened DLP default.
+		{class: ClassMailgunAPIKey, pattern: regexp.MustCompile(`(?i)\bkey-[A-Za-z0-9]{32}\b`), priority: 100},
 		{class: ClassBearer, pattern: regexp.MustCompile(`(?i)\bbearer\s+[A-Za-z0-9._~+/-]{20,}\b`), priority: 95},
 		// JWT: three base64url segments separated by dots; first segment
 		// starts with `eyJ` (decodes to '{"').

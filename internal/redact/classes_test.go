@@ -55,6 +55,8 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"sentry-auth-token", "token SNTRYS_" + strings.Repeat("A", 40), ClassSentryAuthToken},
 		{"telegram-token", "bot 1234567890:" + strings.Repeat("F", 35), ClassTelegramToken},
 		{"discord-token", "bot M" + strings.Repeat("G", 23) + "." + strings.Repeat("H", 6) + "." + strings.Repeat("I", 27), ClassDiscordToken},
+		{"twilio-api-key", "sid SK" + strings.Repeat("a", 32), ClassTwilioAPIKey},
+		{"mailgun-api-key", "send key-" + strings.Repeat("b", 32), ClassMailgunAPIKey},
 		{"bearer-token", "Authorization: bearer " + strings.Repeat("J", 24), ClassBearer},
 		{"jwt", "bearer eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"ssh-openssh", "-----BEGIN OPENSSH PRIVATE " + "KEY-----", ClassSSHPrivateKey},
@@ -158,6 +160,31 @@ func TestDefaultMatcher_ProviderTokenBoundaries(t *testing.T) {
 			name:  "sentry followed by underscore suffix",
 			input: "sntrys_" + strings.Repeat("A", 40) + "_payload",
 			class: ClassSentryAuthToken,
+		},
+		{
+			// "task"/"disk"/"risk" + 32 hex must not match: no word boundary
+			// between the trailing "sk" of the word and the digest.
+			name:  "twilio after word ending in sk",
+			input: "task" + strings.Repeat("a", 32),
+			class: ClassTwilioAPIKey,
+		},
+		{
+			// SK + a longer hex blob is an opaque ID, not a 34-char SID.
+			name:  "twilio followed by extra hex",
+			input: "SK" + strings.Repeat("a", 40),
+			class: ClassTwilioAPIKey,
+		},
+		{
+			// "monkey-" embeds "key-" mid-word: no boundary before "key".
+			name:  "mailgun embedded in word",
+			input: "monkey-" + strings.Repeat("a", 32),
+			class: ClassMailgunAPIKey,
+		},
+		{
+			// "key-" + a longer opaque value is not a 36-char Mailgun key.
+			name:  "mailgun followed by extra chars",
+			input: "key-" + strings.Repeat("a", 40),
+			class: ClassMailgunAPIKey,
 		},
 	}
 

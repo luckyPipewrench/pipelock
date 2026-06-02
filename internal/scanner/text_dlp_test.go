@@ -84,6 +84,41 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean:   false,
 			wantPattern: "Stripe Key",
 		},
+		// Twilio / Mailgun boundary tightening. Positive cases guard against a
+		// false-negative; the wantClean cases prove the old short-prefix false
+		// positives are closed at the text-DLP layer.
+		{
+			name:        "raw DLP pattern match - Twilio API Key",
+			text:        "twilio sid SK" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+			wantClean:   false,
+			wantPattern: "Twilio API Key",
+		},
+		{
+			name:        "raw DLP pattern match - Mailgun API Key",
+			text:        "mailgun send key-" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+			wantClean:   false,
+			wantPattern: "Mailgun API Key",
+		},
+		{
+			name:      "Twilio FP - 32-hex digest after word ending in sk",
+			text:      "disk" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+			wantClean: true,
+		},
+		{
+			name:      "Twilio FP - SK followed by longer hex blob",
+			text:      "SK" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4a1b2c3d4",
+			wantClean: true,
+		},
+		{
+			name:      "Mailgun FP - key- embedded mid-word",
+			text:      "monkey-" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+			wantClean: true,
+		},
+		{
+			name:      "Mailgun FP - key- with longer opaque value",
+			text:      "key-" + "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4wxyzWXYZ",
+			wantClean: true,
+		},
 		{
 			name: "base64-encoded secret decoded and matched",
 			text: func() string {

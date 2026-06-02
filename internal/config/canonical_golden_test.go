@@ -136,7 +136,12 @@ const (
 	// this hash depend on the ambient TMPDIR. Excluding the operational path
 	// makes the hash environment-independent (identical policy -> identical
 	// hash), which is the admission-grade contract.
-	goldenHashDefaults = "5e449278f4437345fa3a3fea9dafa3f2b1c73e55bc028c0c35f19af999ad0d4b"
+	// Re-bumped for the Twilio + Mailgun DLP pattern boundary tightening
+	// (defaults.go DLP set): SK[a-f0-9]{32} -> \bSK[a-f0-9]{32}\b and
+	// key-[a-zA-Z0-9]{32} -> \bkey-[a-zA-Z0-9]{32}\b. Word boundaries close
+	// the short-prefix false-positive surface on opaque digests / longer IDs
+	// while still matching the documented 34/36-char key formats.
+	goldenHashDefaults = "bb20f80925589ce948a423024197dce46307d967c831b134c3b1251c2fce199c"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -207,7 +212,10 @@ const (
 	// Bumped for fetch_proxy.monitoring.query_entropy_exclusions: see the
 	// goldenHashDefaults note above.
 	// Re-bumped for the file_sentry max_file_bytes field: see goldenHashDefaults note.
-	goldenHashRichConfig = "dc7d6e0a9f20d83124f56b55bb5f8a93528988e98ef07c6ed419db5d60667c5d"
+	// Re-bumped for the Twilio + Mailgun DLP boundary tightening: see
+	// goldenHashDefaults note above. The rich fixture inherits the default DLP
+	// pattern set, so the hash shifts in lockstep.
+	goldenHashRichConfig = "e84f39a304665d618b12a653c2216afe94cb67e7e0adbce1d377e09d8db46ce0"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

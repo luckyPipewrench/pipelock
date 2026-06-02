@@ -115,9 +115,25 @@ func Defaults() *Config {
 				{Name: "Discord Bot Token", Regex: `[MN][A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}`, Severity: SeverityCritical},
 
 				// Communication service keys
-				{Name: "Twilio API Key", Regex: `SK[a-f0-9]{32}`, Severity: "high"},
+				// Twilio API Key SIDs are an "SK" prefix + exactly 32 hex chars
+				// (34 total). Word boundaries keep the short prefix from matching
+				// a 32-hex MD5/digest that merely follows a word ending in "sk"
+				// (task/disk/risk...), and reject longer opaque hex blobs that
+				// happen to start with SK. (?i) is retained for evasion coverage.
+				// Source: https://www.twilio.com/docs/glossary/what-is-a-sid
+				{Name: "Twilio API Key", Regex: `\bSK[a-f0-9]{32}\b`, Severity: "high"},
 				{Name: "SendGrid API Key", Regex: `SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}`, Severity: SeverityCritical},
-				{Name: "Mailgun API Key", Regex: `key-[a-zA-Z0-9]{32}`, Severity: "high"},
+				// Mailgun private API keys are a "key-" prefix + exactly 32
+				// alphanumeric chars. The previous unbounded form matched the
+				// hyper-common "key-" literal anywhere and any 32-char prefix of
+				// a longer opaque ID. Boundaries require token-shaped edges:
+				// "key-" must start at a word boundary (so "monkey-<id>" and
+				// word-embedded uses don't match) and end after exactly 32 chars (so
+				// longer opaque "key-<40+>" values don't match). Charset is kept
+				// alphanumeric because real keys are lowercase base36-ish
+				// (e.g. key-3ax6xnjp...), not hex - narrowing to hex would be a
+				// false-negative.
+				{Name: "Mailgun API Key", Regex: `\bkey-[a-zA-Z0-9]{32}\b`, Severity: "high"},
 
 				// Observability / monitoring
 				// New Relic user API keys: "NRAK-" prefix, 27+ uppercase alphanumeric.

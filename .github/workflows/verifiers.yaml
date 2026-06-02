@@ -192,7 +192,13 @@ jobs:
 
       - name: Install Python verifier
         working-directory: _pyverify
-        run: pip install .
+        # Hash-pinned dependency install (Scorecard Pinned-Dependencies):
+        # cryptography + its transitive deps are locked with --require-hashes,
+        # then the verifier itself is installed from its pinned checkout with
+        # --no-deps so no unpinned package is ever fetched.
+        run: |
+          pip install --require-hashes -r "$GITHUB_WORKSPACE/sdk/conformance/pyverify-requirements.txt"
+          pip install --no-deps .
 
       - name: Run cross-language conformance gate
         env:

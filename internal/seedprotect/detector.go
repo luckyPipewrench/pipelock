@@ -5,15 +5,15 @@ package seedprotect
 
 import (
 	"crypto/sha256"
-	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // validLengths are the BIP-39 mnemonic word counts (128-256 bits of entropy).
 var validLengths = []int{12, 15, 18, 21, 24}
-
-// separatorRE splits on whitespace and common seed phrase delimiters.
-var separatorRE = regexp.MustCompile(`[-\s,|;:]+`)
 
 // SeedMatch is the internal detection result. Package-internal only -
 // converted to TextDLPMatch at the scanner integration boundary.
@@ -95,14 +95,42 @@ func DetectSpans(text string, minWords int, verifyChecksum bool) []SeedSpan {
 	return matches
 }
 
-// tokenize splits text into lowercase words using the separator pattern.
+// isSeedSeparator splits on whitespace and common seed-phrase delimiters. It
+// covers the full Go whitespace set (ASCII whitespace, NBSP, Unicode line and
+// paragraph separators, NEL), the historical Mongolian vowel separator used in
+// existing DLP whitespace normalization, Unicode dash punctuation (en/em/figure
+// dashes vs ASCII hyphen), and literal , _ / | ; : • · delimiters seen in
+// numbered or bulleted backups. Broadening this closes the "split words with a
+// glyph the tokenizer ignores" evasion class.
+//
+// "." is deliberately NOT a separator: the request-body scanner joins distinct
+// JSON field values with "." (proxy.bodyDLPJoinSeparator) so cross-field DLP
+// works without merging tokens. Treating "." as intra-phrase here would let the
+// detector synthesize a mnemonic across separate fields (a false positive that
+// proxy.TestScanRequestBody_SeedPhraseDoesNotSpanJSONFields guards against).
+func isSeedSeparator(r rune) bool {
+	if unicode.IsSpace(r) || unicode.Is(unicode.Pd, r) || r == '\u180E' {
+		return true
+	}
+	switch r {
+	case ',', '_', '/', '|', ';', ':', '•', '·':
+		return true
+	default:
+		return false
+	}
+}
+
+// tokenize splits text into lowercase words using seed phrase separators.
 func tokenizeWithSpans(text string) []tokenSpan {
-	sepLocs := separatorRE.FindAllStringIndex(text, -1)
-	tokens := make([]tokenSpan, 0, len(sepLocs)+1)
+	tokens := make([]tokenSpan, 0, 16)
 	start := 0
-	for _, loc := range sepLocs {
-		appendTokenSpan(&tokens, text, start, loc[0])
-		start = loc[1]
+	for i := 0; i < len(text); {
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if isSeedSeparator(r) {
+			appendTokenSpan(&tokens, text, start, i)
+			start = i + size
+		}
+		i += size
 	}
 	appendTokenSpan(&tokens, text, start, len(text))
 	return tokens
@@ -113,7 +141,13 @@ func appendTokenSpan(tokens *[]tokenSpan, text string, start, end int) {
 		return
 	}
 	raw := text[start:end]
-	word := strings.ToLower(strings.TrimSpace(raw))
+	// Canonicalize the token for the wordlist lookup the same way the main DLP
+	// scanner canonicalizes secrets (normalize.ForDLP): strip control/invisible
+	// and exotic-whitespace characters, NFKC-fold compatibility forms (fullwidth),
+	// map cross-script homoglyphs (Cyrillic/Greek lookalikes) to ASCII, and strip
+	// combining marks. This is match-only: the span offsets below still index the
+	// ORIGINAL bytes, so redaction removes the real on-wire characters.
+	word := strings.ToLower(normalize.ForDLP(strings.TrimSpace(raw)))
 	if word == "" {
 		return
 	}

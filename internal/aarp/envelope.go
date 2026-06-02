@@ -148,7 +148,7 @@ type Envelope struct {
 	Signatures []Signature `json:"signatures"`
 	// CritExt lists envelope-level critical extension names. Any name not in the
 	// known registry rejects the whole envelope (fail closed).
-	CritExt []string `json:"crit_ext,omitempty"`
+	CritExt []string `json:"crit_ext"`
 	// Ext carries non-critical extensions. Unknown non-critical extensions are
 	// ignored safely; they are not part of the signed payload.
 	Ext map[string]json.RawMessage `json:"ext,omitempty"`
@@ -294,8 +294,14 @@ func (e Envelope) validateStructure() error {
 	return nil
 }
 
-// Marshal returns the JSON encoding of an envelope.
+// Marshal returns the JSON encoding of an envelope. An empty critical-extension
+// list is emitted as "crit_ext": [] (never omitted), matching the signed payload
+// and the spec wire form so strict external implementations and golden vectors
+// agree byte-for-byte.
 func Marshal(e Envelope) ([]byte, error) {
+	if e.CritExt == nil {
+		e.CritExt = []string{}
+	}
 	return json.Marshal(e)
 }
 

@@ -144,7 +144,7 @@ func Defaults() *Config {
 				// secret (the PEM private_key) is caught by "Private Key Header"
 				// below and IS redactable via the ssh-private-key class, which
 				// now also covers bare PKCS#8.
-				{Name: "GCP Service Account Private Key ID", Regex: `"private_key_id"\s*:\s*"[a-f0-9]{40}"`, Severity: "high"},
+				{Name: "GCP Service Account Private Key ID", Regex: `"private_key_id"\s*:\s*"[a-f0-9]{40}"`, Severity: SeverityHigh},
 				// Azure storage account key: 512-bit key -> 88 base64 chars
 				// (86 + "==") in an AccountKey= connection-string field. Anchored
 				// on AccountKey= so arbitrary 88-char base64 does not match.
@@ -153,7 +153,7 @@ func Defaults() *Config {
 				// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
 				// Anchored on the urlencoded padding; severity "high" reflects the
 				// generality of a "sig=" parameter name.
-				{Name: "Azure SAS Token", Regex: `\bsig=[A-Za-z0-9%]{43,}%3d\b`, Severity: "high"},
+				{Name: "Azure SAS Token", Regex: `\bsig=[A-Za-z0-9%]{43,}%3d\b`, Severity: SeverityHigh},
 
 				// Messaging platform tokens
 				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},

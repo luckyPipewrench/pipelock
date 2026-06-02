@@ -115,6 +115,12 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "GitLab Runner Token",
 		},
 		{
+			name:        "GitLab grouped service token glffct variant",
+			text:        "glffct-" + strings.Repeat("A", 24),
+			wantClean:   false,
+			wantPattern: "GitLab Service Token",
+		},
+		{
 			name:      "GitLab FP - english word starting gl",
 			text:      "glance-2026-summary-report-final",
 			wantClean: true,
@@ -126,10 +132,22 @@ func TestScanTextForDLP(t *testing.T) {
 			wantPattern: "GCP Service Account Key",
 		},
 		{
+			name:        "GCP service account private_key_id",
+			text:        `"private_key_id": "` + strings.Repeat("a", 40) + `"`,
+			wantClean:   false,
+			wantPattern: "GCP Service Account Private Key ID",
+		},
+		{
 			name:        "Azure storage account key",
 			text:        "AccountKey=" + strings.Repeat("A", 86) + "==",
 			wantClean:   false,
 			wantPattern: "Azure Storage Account Key",
+		},
+		{
+			name:        "Azure SAS signature",
+			text:        "sv=2024-11-04&sig=" + strings.Repeat("A", 43) + "%3D",
+			wantClean:   false,
+			wantPattern: "Azure SAS Token",
 		},
 		{
 			name:      "Azure storage FP - short value",

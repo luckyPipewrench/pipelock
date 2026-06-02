@@ -137,12 +137,13 @@ const (
 	// makes the hash environment-independent (identical policy -> identical
 	// hash), which is the admission-grade contract.
 	// Re-bumped for the secret-pattern expansion (defaults.go
-	// DLP set, 48 -> 63): added DB connection-string patterns (postgres/mysql/
+	// DLP set, 48 -> 62): added DB connection-string patterns (postgres/mysql/
 	// mongodb/redis with embedded creds), the remaining GitLab token families
 	// (gldt-/glrt-/glcbt-/glptt-/gloas-/glsoat-/grouped service tokens), and
-	// cloud SA key patterns (GCP service_account marker + private_key_id,
-	// Azure storage account key, Azure SAS signature). New detection patterns
-	// change policy semantics, so the canonical hash shifts.
+	// cloud SA key patterns (GCP private_key_id, Azure storage account key,
+	// Azure SAS signature). The GCP service_account marker is core DLP, not a
+	// default pattern. New detection patterns change policy semantics, so the
+	// canonical hash shifts.
 	goldenHashDefaults = "4284691e1d053260fa7e273f6fdfe0db8444d75fe724a95755ba89eaf820fb53"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via

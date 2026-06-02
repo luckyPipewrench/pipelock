@@ -97,16 +97,18 @@ func TestDLP_GitLabTokenFamilies(t *testing.T) {
 
 	t.Run("positive", func(t *testing.T) {
 		cases := map[string]string{
-			"deploy":       "gldt-" + suffix,
-			"runner":       "glrt-" + suffix,
-			"runner glrtr": "glrtr-" + suffix,
-			"ci job":       "glcbt-" + suffix,
-			"trigger":      "glptt-" + suffix,
-			"oauth secret": "gloas-" + suffix,
-			"scim":         "glsoat-" + suffix,
-			"feed":         "glft-" + suffix,
-			"agent":        "glagent-" + suffix,
-			"workspace":    "glwt-" + suffix,
+			"deploy":        "gldt-" + suffix,
+			"runner":        "glrt-" + suffix,
+			"runner glrtr":  "glrtr-" + suffix,
+			"ci job":        "glcbt-" + suffix,
+			"trigger":       "glptt-" + suffix,
+			"oauth secret":  "gloas-" + suffix,
+			"scim":          "glsoat-" + suffix,
+			"feed":          "glft-" + suffix,
+			"incoming mail": "glimt-" + suffix,
+			"agent":         "glagent-" + suffix,
+			"workspace":     "glwt-" + suffix,
+			"feature flags": "glffct-" + suffix,
 		}
 		for name, v := range cases {
 			assertBlockedByDLP(t, s, name, v)
@@ -142,7 +144,7 @@ func TestDLP_CloudServiceAccountKeys(t *testing.T) {
 			"gcp sa marker": saMarker,
 			"gcp key id":    `"private_key_id":"` + hex40 + `"`,
 			"azure storage": "AccountKey=" + b64,
-			"azure sas":     "sig=" + sig,
+			"azure sas":     "sv=2024-11-04&se=2026-06-01T00%3A00%3A00Z&sig=" + sig,
 		}
 		for name, v := range cases {
 			assertBlockedByDLP(t, s, name, v)

@@ -65,6 +65,8 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"gitlab-deploy-token", "token gldt-" + strings.Repeat("A", 24), ClassGitLabToken},
 		{"gitlab-runner-token", "token glrtr-" + strings.Repeat("A", 24), ClassGitLabToken},
 		{"gitlab-oauth-secret", "token gloas-" + strings.Repeat("A", 24), ClassGitLabToken},
+		{"gitlab-service-token-glimt", "token glimt-" + strings.Repeat("A", 24), ClassGitLabToken},
+		{"gitlab-service-token-glffct", "token glffct-" + strings.Repeat("A", 24), ClassGitLabToken},
 		// Database connection string: password between ':' and '@'.
 		{"db-conn-postgres", "dsn postgres://u:" + strings.Repeat("p", 12) + "@h:5432/app", ClassDBConnString},
 		{"db-conn-redis-pwonly", "dsn redis://:" + strings.Repeat("p", 12) + "@cache:6379", ClassDBConnString},

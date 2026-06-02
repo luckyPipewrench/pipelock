@@ -106,7 +106,9 @@ func TestScanRequestBody_SecretCoverageFamilies(t *testing.T) {
 		{"gitlab runner", `{"t":"glrtr-` + suffix + `"}`, "application/json", "GitLab Runner Token"},
 		{"gitlab ci job", `{"t":"glcbt-` + suffix + `"}`, "application/json", "GitLab CI Job Token"},
 		{"gitlab service", `{"t":"glagent-` + suffix + `"}`, "application/json", "GitLab Service Token"},
+		{"gitlab feature flags", `{"t":"glffct-` + suffix + `"}`, "application/json", "GitLab Service Token"},
 		{"azure storage", `{"conn":"AccountKey=` + b64 + `"}`, "application/json", "Azure Storage Account Key"},
+		{"azure sas", `{"url":"https://store.blob.core.windows.net/c/blob?sv=2024-11-04&sig=` + strings.Repeat("A", 43) + `%3D"}`, "application/json", "Azure SAS Token"},
 		// GCP structural markers span a JSON key+value, so a parsed-JSON body
 		// (scalar-value walk) cannot match them — they fire on raw-text
 		// surfaces. Prove the marker on a text/plain body (raw scan path).

@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // syncBuffer is defined in helpers_test.go (no build constraint).
@@ -516,17 +517,15 @@ func freePort(t *testing.T) string {
 // waitForPort polls a TCP address until it accepts connections or times out.
 func waitForPort(t *testing.T, addr string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
 	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-	for time.Now().Before(deadline) {
+	testwait.For(t, 15*time.Second, func() bool {
 		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
 		if err == nil {
 			_ = conn.Close()
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("port %s not ready within 15s", addr)
+		return false
+	}, "port %s to accept connections", addr)
 }
 
 // waitForPortOrCommandExit polls a TCP address while also surfacing early
@@ -534,9 +533,8 @@ func waitForPort(t *testing.T, addr string) {
 // generic readiness timeout.
 func waitForPortOrCommandExit(t *testing.T, addr string, cmdErr <-chan error, stderr fmt.Stringer) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
 	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-	for time.Now().Before(deadline) {
+	testwait.For(t, 15*time.Second, func() bool {
 		select {
 		case err := <-cmdErr:
 			t.Fatalf("RunCmd exited before port %s was ready: %v\nstderr:\n%s", addr, err, stderr.String())
@@ -545,11 +543,10 @@ func waitForPortOrCommandExit(t *testing.T, addr string, cmdErr <-chan error, st
 		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
 		if err == nil {
 			_ = conn.Close()
-			return
+			return true
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("port %s not ready within 15s\nstderr:\n%s", addr, stderr.String())
+		return false
+	}, "port %s to accept connections\nstderr:\n%s", addr, stderr.String())
 }
 
 // doGet issues a context-aware GET and fails the test on error.

@@ -135,14 +135,20 @@ func TestReaper_ProtectedDirectPIDRegistry(t *testing.T) {
 // deadline passes. Returns the final value of cond().
 func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		if cond() {
 			return true
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-timer.C:
+			return cond()
+		case <-ticker.C:
+		}
 	}
-	return cond()
 }
 
 // countAdoptedZombies returns the number of zombies under our PID
@@ -225,23 +231,26 @@ func TestReaper_DoneChannelStopsGoroutine(t *testing.T) {
 	warmDone := make(chan struct{})
 	startAdoptedReaper(0, warmDone)
 	close(warmDone)
-	// Drain any pre-existing goroutines (test infra, prior test leftovers,
-	// and the warm-up reaper) by sleeping and re-sampling - gives Go's
-	// scheduler a chance to settle.
-	time.Sleep(50 * time.Millisecond)
+	if !waitForCondition(t, time.Second, func() bool {
+		return !isProtectedDirectPID(0)
+	}) {
+		t.Fatal("warm-up reaper did not unregister protected direct PID")
+	}
 	before := runtime.NumGoroutine()
 
 	for range iterations {
 		done := make(chan struct{})
 		startAdoptedReaper(0, done) // directPID=0 is impossible - never matches
-		// Let the goroutine reach its select on done/sigCh.
-		time.Sleep(10 * time.Millisecond)
 		// Send a self-SIGCHLD to deterministically exercise the sigCh
 		// branch. The reaper sweep is a no-op (no adopted zombies under
 		// this test process) but the branch is hit, which is the goal.
 		_ = syscall.Kill(os.Getpid(), syscall.SIGCHLD)
-		time.Sleep(10 * time.Millisecond)
 		close(done)
+		if !waitForCondition(t, time.Second, func() bool {
+			return !isProtectedDirectPID(0)
+		}) {
+			t.Fatal("reaper did not unregister protected direct PID")
+		}
 	}
 	// Give all goroutines a chance to observe close(done) and exit.
 	var after int

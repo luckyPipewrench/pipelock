@@ -54,13 +54,14 @@ func TestAirlockState_EnteredAt(t *testing.T) {
 	}
 
 	// Transition to hard updates enteredAt.
-	time.Sleep(5 * time.Millisecond)
+	beforeHard := time.Now()
 	if changed, _, _ := a.SetTier(config.AirlockTierHard); !changed {
 		t.Fatal("expected transition")
 	}
+	afterHard := time.Now()
 	newTs := a.EnteredAt()
-	if !newTs.After(got) {
-		t.Errorf("EnteredAt after hard transition should advance: got %v, prev %v", newTs, got)
+	if newTs.Before(beforeHard) || newTs.After(afterHard) {
+		t.Errorf("EnteredAt after hard transition: got %v, want within [%v, %v]", newTs, beforeHard, afterHard)
 	}
 }
 

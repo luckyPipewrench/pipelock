@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // reloadStateMatrix exercises the five reload states required by
@@ -150,14 +151,9 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 	// proves the close goroutine actually completed rather than relying
 	// solely on the earlier mid-drain BeginUse rejection.
 	release()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if initialSc.Drained() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("Close goroutine did not finish draining initialSc within 2s of release")
+	testwait.For(t, 2*time.Second, func() bool {
+		return initialSc.Drained()
+	}, "initial scanner close goroutine to finish draining")
 }
 
 // waitForClosed polls Closed() until it returns true or the timeout
@@ -166,14 +162,9 @@ func TestProxy_Reload_DrainsBeforeClose(t *testing.T) {
 // drain begins, so this should resolve in microseconds for an idle test.
 func waitForClosed(t *testing.T, sc *scanner.Scanner, label string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if sc.Closed() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("%s did not reach Closed=true within deadline", label)
+	testwait.For(t, 2*time.Second, func() bool {
+		return sc.Closed()
+	}, "%s to reach Closed=true", label)
 }
 
 // TestReverseProxy_EmitReceipt_NilGuards exercises the no-op paths of

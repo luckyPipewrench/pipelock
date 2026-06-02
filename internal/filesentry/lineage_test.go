@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const testOSLinux = "linux"
@@ -79,15 +81,9 @@ func TestLineage_HasFileOpen(t *testing.T) {
 	l := NewLineage()
 	l.TrackPID(cmd.Process.Pid)
 
-	// Poll until tail opens the file (up to 2s). Avoids fixed sleep that
-	// races under CI load or the race detector.
-	deadline := time.Now().Add(2 * time.Second)
-	for !l.HasFileOpen(testFile) {
-		if time.Now().After(deadline) {
-			t.Fatal("timeout: tail did not open file within 2s")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.For(t, 2*time.Second, func() bool {
+		return l.HasFileOpen(testFile)
+	}, "tail opens test file")
 }
 
 func TestLineage_HasFileOpen_NotOpen(t *testing.T) {
@@ -130,17 +126,13 @@ func TestLineage_GrandchildDescendant(t *testing.T) {
 		t.Error("expected bash child to be a descendant")
 	}
 
-	// Poll until bash forks the sleep grandchild (up to 5s).
+	// Poll until bash forks the sleep grandchild.
 	// Under -race, process tree inspection is slower.
 	var descendants []int
-	deadline := time.Now().Add(10 * time.Second)
-	for len(descendants) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("no grandchild found within 10s — collectDescendants may be broken")
-		}
-		time.Sleep(20 * time.Millisecond)
+	testwait.For(t, 10*time.Second, func() bool {
 		descendants = collectDescendants(cmd.Process.Pid)
-	}
+		return len(descendants) > 0
+	}, "bash forks sleep grandchild")
 	sleepPID := descendants[0]
 	if !l.IsDescendant(sleepPID) {
 		t.Errorf("expected grandchild PID %d to be a descendant", sleepPID)

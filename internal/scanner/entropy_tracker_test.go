@@ -137,8 +137,7 @@ func TestEntropyTrackerWindowExpiry(t *testing.T) {
 		t.Fatal("expected non-zero usage immediately after recording")
 	}
 
-	// Wait for the window to expire.
-	time.Sleep(1200 * time.Millisecond) // 1.2s: comfortably past the 1s window
+	expireEntropyEntries(t, et, testSessionKey)
 
 	usage = et.CurrentUsage(testSessionKey)
 	if usage != 0 {
@@ -273,8 +272,8 @@ func TestEntropyTrackerCleanup(t *testing.T) {
 		t.Fatal("expected non-zero usage for session 2 immediately after recording")
 	}
 
-	// Wait for the window to expire.
-	time.Sleep(1200 * time.Millisecond) // 1.2s: comfortably past the 1s window
+	expireEntropyEntries(t, et, testSessionKey)
+	expireEntropyEntries(t, et, testSessionKey2)
 
 	// Call cleanup directly to evict expired entries without waiting
 	// for the 60-second cleanup ticker.
@@ -299,7 +298,7 @@ func TestEntropyTrackerCleanup_RetainsValidEntries(t *testing.T) {
 
 	// Record old data, let it expire.
 	et.Record(testSessionKey, []byte("old data that will expire"))
-	time.Sleep(2200 * time.Millisecond) // 2.2s: past the 2s window
+	expireEntropyEntries(t, et, testSessionKey)
 
 	// Record fresh data for session 2 (still within window).
 	et.Record(testSessionKey2, []byte("fresh data still valid"))
@@ -395,8 +394,7 @@ func TestEntropyTrackerInlinePruning(t *testing.T) {
 	// Record initial data.
 	et.Record(testSessionKey, []byte("data that will expire"))
 
-	// Wait for expiry.
-	time.Sleep(1200 * time.Millisecond)
+	expireEntropyEntries(t, et, testSessionKey)
 
 	// Record again on same session. Inline pruning should remove expired entries.
 	et.Record(testSessionKey, []byte("fresh data"))
@@ -410,4 +408,19 @@ func TestEntropyTrackerInlinePruning(t *testing.T) {
 	if entryCount != 1 {
 		t.Fatalf("expected 1 entry after inline pruning, got %d", entryCount)
 	}
+}
+
+func expireEntropyEntries(t *testing.T, et *EntropyTracker, sessionKey string) {
+	t.Helper()
+	et.mu.Lock()
+	defer et.mu.Unlock()
+	sess := et.sessions[sessionKey]
+	if sess == nil {
+		t.Fatalf("session %q missing", sessionKey)
+	}
+	expiredAt := time.Now().Add(-time.Duration(et.windowSecs+1) * time.Second)
+	for i := range sess.entries {
+		sess.entries[i].timestamp = expiredAt
+	}
+	sess.lastAccess = expiredAt
 }

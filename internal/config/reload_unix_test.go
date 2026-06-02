@@ -13,6 +13,31 @@ import (
 	"time"
 )
 
+func signalUntilReload(t *testing.T, r *Reloader, mode string) *Config {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
+			t.Fatalf("failed to send SIGHUP: %v", err)
+		}
+		select {
+		case cfg, ok := <-r.Changes():
+			if !ok {
+				t.Fatal("changes channel closed before SIGHUP-based reload")
+			}
+			if cfg.Mode == mode {
+				return cfg
+			}
+			t.Fatalf("expected mode %s after SIGHUP, got %s", mode, cfg.Mode)
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatalf("timed out waiting for SIGHUP-based reload to mode %s", mode)
+		}
+	}
+}
+
 func TestReloader_SIGHUPReload(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "pipelock.yaml")
@@ -30,26 +55,10 @@ func TestReloader_SIGHUPReload(t *testing.T) {
 		}
 	}()
 
-	// Give watcher time to start
-	time.Sleep(200 * time.Millisecond)
+	waitForReloaderReady(t, r)
 
 	// Update config file (SIGHUP reloads from disk, so the file must change)
 	writeTestConfig(t, cfgPath, ModeAudit)
 
-	// Small delay so the file is written before signal
-	time.Sleep(50 * time.Millisecond)
-
-	// Send SIGHUP to ourselves
-	if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
-		t.Fatalf("failed to send SIGHUP: %v", err)
-	}
-
-	select {
-	case cfg := <-r.Changes():
-		if cfg.Mode != ModeAudit {
-			t.Errorf("expected mode audit after SIGHUP, got %s", cfg.Mode)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for SIGHUP-based reload")
-	}
+	signalUntilReload(t, r, ModeAudit)
 }

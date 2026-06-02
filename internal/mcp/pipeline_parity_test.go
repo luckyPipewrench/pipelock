@@ -441,14 +441,7 @@ func TestRunWSProxy_ParityBase64EncodedSecretDLP(t *testing.T) {
 	// Server that accepts the connection but never expects a forwarded
 	// frame - the input scanner must block the base64-encoded secret
 	// before anything reaches upstream.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -482,6 +475,9 @@ func TestRunWSProxy_ParityBase64EncodedSecretDLP(t *testing.T) {
 	if !strings.Contains(out, parityErrInputBlockCode) {
 		t.Errorf("expected input block code %s on WS path, got: %s", parityErrInputBlockCode, out)
 	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("base64 secret block forwarded %d frame(s) upstream, want 0", got)
+	}
 }
 
 // TestRunWSProxy_ParityRedactsToolCallArguments mirrors
@@ -495,6 +491,7 @@ func TestRunWSProxy_ParityRedactsToolCallArguments(t *testing.T) {
 	// (which would race under -race). Uses gobwasutil helpers for
 	// frame read/write, matching the rest of proxy_ws_test.go.
 	forwardedCh := make(chan []byte, 1)
+	responseSent := make(chan struct{})
 	cleanResponse := []byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ok"}]}}`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
@@ -514,7 +511,7 @@ func TestRunWSProxy_ParityRedactsToolCallArguments(t *testing.T) {
 			}
 		}
 		_ = gobwasutil.WriteServerMessage(conn, ws.OpText, cleanResponse)
-		time.Sleep(50 * time.Millisecond)
+		close(responseSent)
 	}))
 	defer srv.Close()
 
@@ -559,9 +556,7 @@ func TestRunWSProxy_ParityRedactsToolCallArguments(t *testing.T) {
 		t.Fatal("upstream never received the forwarded tool-call frame")
 	}
 
-	// Give the proxy a moment to complete the response loop, then close
-	// stdin so RunWSProxy returns cleanly.
-	time.Sleep(20 * time.Millisecond)
+	waitForResponse(t, responseSent)
 	_ = pw.Close()
 	wg.Wait()
 	if proxyErr != nil {

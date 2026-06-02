@@ -5,12 +5,38 @@ package hitl
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) contains(s string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Contains(b.buf.String(), s)
+}
+
+func (b *lockedBuffer) count(s string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Count(b.buf.String(), s)
+}
 
 func testApprover(t *testing.T, input string, timeoutSec int) (*Approver, *bytes.Buffer) { //nolint:unparam // timeout varies in manual tests
 	t.Helper()
@@ -174,7 +200,7 @@ func TestApprover_CloseBlocksPending(t *testing.T) {
 		_ = r.Close()
 	})
 
-	output := &bytes.Buffer{}
+	output := &lockedBuffer{}
 	a := New(30,
 		WithInput(r),
 		WithOutput(output),
@@ -186,8 +212,9 @@ func TestApprover_CloseBlocksPending(t *testing.T) {
 		done <- a.Ask(&Request{URL: "https://test.com", Reason: "test"})
 	}()
 
-	// Give the goroutine time to submit the request.
-	time.Sleep(50 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return output.contains("PIPELOCK: THREAT DETECTED")
+	}, "pending HITL prompt")
 	a.Close()
 
 	d := <-done
@@ -305,40 +332,41 @@ func TestApprover_TimeoutThenSuccess(t *testing.T) {
 	// First request times out (no input within timeout).
 	// Stale input arrives AFTER timeout. Second request drains it, then
 	// receives fresh "y\n" and returns allow.
-	r, w := io.Pipe()
-	output := &bytes.Buffer{}
-	a := New(1, // 1 second timeout
-		WithInput(r),
-		WithOutput(output),
-		WithTerminal(true),
-	)
-	t.Cleanup(func() {
-		_ = w.Close()
-		a.Close()
-	})
+	output := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	a := &Approver{
+		timeout: 500 * time.Millisecond,
+		output:  output,
+		ctx:     ctx,
+	}
+	lines := make(chan string, 2)
 
 	// First request: no input → times out → sets lastPromptTimedOut = true.
-	d1 := a.Ask(&Request{URL: "https://test.com", Reason: "first"})
+	d1 := a.prompt(lines, &Request{URL: "https://test.com", Reason: "first"})
 	if d1 != DecisionBlock {
 		t.Fatalf("expected timeout block, got %d", d1)
 	}
 
-	// Write stale input that gets buffered in the lines channel.
-	// The readLines goroutine reads it and puts it in the channel.
+	lines <- "stale"
+	done := make(chan Decision, 1)
 	go func() {
-		_, _ = w.Write([]byte("stale\n"))
-		// Give time for readLines to buffer this, then write real response.
-		time.Sleep(200 * time.Millisecond)
-		_, _ = w.Write([]byte("y\n"))
+		done <- a.prompt(lines, &Request{URL: "https://test.com", Reason: "second"})
 	}()
 
-	// Give time for the stale line to be read into the channel.
-	time.Sleep(100 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return output.count("PIPELOCK: THREAT DETECTED") >= 2
+	}, "second HITL prompt after stale input drain")
+	lines <- "y"
 
 	// Second request: drainStaleLines removes "stale", then prompt reads "y".
-	d2 := a.Ask(&Request{URL: "https://test.com", Reason: "second"})
-	if d2 != DecisionAllow {
-		t.Fatalf("expected allow after drain, got %d", d2)
+	select {
+	case d2 := <-done:
+		if d2 != DecisionAllow {
+			t.Fatalf("expected allow after drain, got %d", d2)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for second HITL decision")
 	}
 }
 
@@ -349,20 +377,24 @@ func TestApprover_ContextCancel(t *testing.T) {
 		_ = w.Close()
 		_ = r.Close()
 	})
-	output := &bytes.Buffer{}
+	output := &lockedBuffer{}
 	a := New(30, // long timeout
 		WithInput(r),
 		WithOutput(output),
 		WithTerminal(true),
 	)
 
-	// Close the approver (cancels context) in background
+	done := make(chan Decision, 1)
 	go func() {
-		time.Sleep(200 * time.Millisecond)
-		a.Close()
+		done <- a.Ask(&Request{URL: "https://test.com", Reason: "test"})
 	}()
 
-	d := a.Ask(&Request{URL: "https://test.com", Reason: "test"})
+	testwait.For(t, time.Second, func() bool {
+		return output.contains("PIPELOCK: THREAT DETECTED")
+	}, "pending HITL prompt before context cancel")
+	a.Close()
+
+	d := <-done
 	if d != DecisionBlock {
 		t.Fatalf("expected block on context cancel, got %d", d)
 	}

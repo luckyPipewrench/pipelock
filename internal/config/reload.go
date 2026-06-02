@@ -22,7 +22,11 @@ type Reloader struct {
 	path      string
 	onChange  chan *Config
 	done      chan struct{}
+	ready     chan struct{}
+	readyOnce sync.Once
 	closeOnce sync.Once
+	startMu   sync.Mutex
+	started   bool
 }
 
 // NewReloader creates a config reloader that watches path for changes.
@@ -32,6 +36,7 @@ func NewReloader(path string) *Reloader {
 		path:     path,
 		onChange: make(chan *Config, 1),
 		done:     make(chan struct{}),
+		ready:    make(chan struct{}),
 	}
 }
 
@@ -45,6 +50,14 @@ func (r *Reloader) Changes() <-chan *Config {
 // channel is closed. Reload failures are logged to stderr via tryReload;
 // the old config remains active.
 func (r *Reloader) Start(ctx context.Context) error {
+	r.startMu.Lock()
+	if r.started {
+		r.startMu.Unlock()
+		return fmt.Errorf("config reloader already started")
+	}
+	r.started = true
+	r.startMu.Unlock()
+
 	defer close(r.onChange)
 
 	watcher, err := fsnotify.NewWatcher()
@@ -63,6 +76,10 @@ func (r *Reloader) Start(ctx context.Context) error {
 	sigCh := make(chan os.Signal, 1)
 	notifyReloadSignal(sigCh) // SIGHUP on Unix, no-op on Windows
 	defer signal.Stop(sigCh)
+	// Readiness signaling is idempotent. Start itself is one-shot because it
+	// closes Changes() on return and rejects later calls before touching
+	// watcher/channel state.
+	r.readyOnce.Do(func() { close(r.ready) })
 
 	baseName := filepath.Base(r.path)
 

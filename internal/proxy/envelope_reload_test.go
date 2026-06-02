@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -843,9 +844,8 @@ func TestProxy_ReloadEnvelopeEmitter_ConcurrentWithTraffic(t *testing.T) {
 			enableEnvelopeSigning(t, rotatedCfg, sharedPath)
 			p.Reload(rotatedCfg, scanner.New(rotatedCfg))
 			// Yield so traffic workers can make progress between
-			// reload churn cycles. Using time.Sleep rather than
-			// runtime.Gosched to give the scheduler a real chance.
-			time.Sleep(5 * time.Millisecond)
+			// reload churn cycles.
+			runtime.Gosched()
 		}
 	}()
 

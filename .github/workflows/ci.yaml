@@ -161,6 +161,12 @@ jobs:
       - name: Python pin policy
         run: bash scripts/check-python-pins.sh
 
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Test stability policy
+        run: bash scripts/check-test-stability.sh
+
   helm:
     needs: [security-scan]
     runs-on: ubuntu-latest

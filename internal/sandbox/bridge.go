@@ -32,6 +32,9 @@ type BridgeProxy struct {
 	listener   net.Listener
 	socketPath string // parent's Unix domain socket path
 	wg         sync.WaitGroup
+	mu         sync.Mutex
+	closed     bool
+	closeOnce  sync.Once
 }
 
 // NewBridgeProxy creates a bridge proxy inside the sandbox namespace.
@@ -70,7 +73,14 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 		if err != nil {
 			return // listener closed
 		}
+		bp.mu.Lock()
+		if bp.closed {
+			bp.mu.Unlock()
+			_ = conn.Close()
+			return
+		}
 		bp.wg.Add(1)
+		bp.mu.Unlock()
 		go func() {
 			defer bp.wg.Done()
 			bp.handleConn(conn)
@@ -80,8 +90,13 @@ func (bp *BridgeProxy) Serve(ctx context.Context) {
 
 // Close shuts down the proxy and waits for active connections.
 func (bp *BridgeProxy) Close() {
-	_ = bp.listener.Close()
-	bp.wg.Wait()
+	bp.closeOnce.Do(func() {
+		bp.mu.Lock()
+		bp.closed = true
+		_ = bp.listener.Close()
+		bp.mu.Unlock()
+		bp.wg.Wait()
+	})
 }
 
 // handleConn bridges a single TCP connection from the sandbox to the

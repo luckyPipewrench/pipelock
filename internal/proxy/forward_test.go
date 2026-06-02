@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // readerConn wraps a bufio.Reader and a net.Conn so that TLS can read
@@ -507,7 +508,7 @@ func listenHold(t *testing.T) net.Listener {
 			}
 			go func() {
 				defer func() { _ = conn.Close() }()
-				time.Sleep(10 * time.Second)
+				_, _ = io.Copy(io.Discard, conn)
 			}()
 		}
 	}()
@@ -1210,8 +1211,7 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 	}()
 
 	// Wait for server to be ready, draining errCh to detect startup failures.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 2*time.Second, func() bool {
 		select {
 		case startErr := <-errCh:
 			t.Fatalf("proxy Start() failed: %v", startErr)
@@ -1221,10 +1221,10 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 		conn, dialErr := d.DialContext(context.Background(), "tcp", addr)
 		if dialErr == nil {
 			_ = conn.Close()
-			break
+			return true
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	}, "forward proxy listens on %s", addr)
 
 	cleanup := func() {
 		cancel()

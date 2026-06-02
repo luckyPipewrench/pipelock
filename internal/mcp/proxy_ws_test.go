@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func testScannerForWS(t *testing.T) *scanner.Scanner {
@@ -52,6 +54,18 @@ func waitForResponse(t *testing.T, ch <-chan struct{}) {
 	}
 }
 
+func waitForResponseNumber(t *testing.T, ch <-chan int, want int) {
+	t.Helper()
+	select {
+	case got := <-ch:
+		if got != want {
+			t.Fatalf("upstream response signal = %d, want %d", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for upstream response %d", want)
+	}
+}
+
 // wsRespondServer creates a test WS server that reads one client message,
 // sends the given response, then signals via responseSent before closing.
 func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}) *httptest.Server {
@@ -71,8 +85,32 @@ func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}
 		if responseSent != nil {
 			close(responseSent)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}))
+}
+
+func wsDrainServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var frames atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, err := ws.UpgradeHTTP(r, w)
+		if err != nil {
+			t.Errorf("ws upgrade: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for {
+			msgs, err := gobwasutil.ReadClientMessage(conn, nil)
+			if err != nil {
+				return
+			}
+			for _, msg := range msgs {
+				if msg.OpCode == ws.OpText || msg.OpCode == ws.OpBinary {
+					frames.Add(1)
+				}
+			}
+		}
+	}))
+	return srv, &frames
 }
 
 func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
@@ -85,7 +123,7 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 
 	// Use a pipe so we control when EOF arrives.
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr lockedHTTPBuffer
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -98,10 +136,15 @@ func TestRunWSProxy_ForwardsCleanRequest(t *testing.T) {
 		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
 	}()
 
-	// Send request, wait for response to arrive, then close stdin.
+	// Send request, wait for the response to be written through the proxy, then
+	// close stdin. Waiting only for the upstream write is insufficient: closing
+	// stdin immediately afterward can close the WS before the response goroutine
+	// copies the frame to stdout.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
 	waitForResponse(t, responseSent)
-	time.Sleep(20 * time.Millisecond) // Let ForwardScanned write to stdout.
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains("hello world")
+	}, "clean WS response forwarded to stdout")
 	_ = pw.Close()
 
 	wg.Wait()
@@ -140,7 +183,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr lockedHTTPBuffer
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -155,7 +198,9 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
 	waitForResponse(t, responseSent)
-	time.Sleep(20 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains("injection detected") && stderr.contains("injection detected")
+	}, "injected WS response blocked and logged")
 	_ = pw.Close()
 
 	wg.Wait()
@@ -187,7 +232,8 @@ func TestRunWSProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 
 	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout lockedHTTPBuffer
+	var stderr bytes.Buffer
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -202,7 +248,9 @@ func TestRunWSProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
 	waitForResponse(t, responseSent)
-	time.Sleep(20 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains("-32000")
+	}, "blocked WS response forwarded to stdout")
 	_ = pw.Close()
 
 	wg.Wait()
@@ -232,15 +280,8 @@ func TestRunWSProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 }
 
 func TestRunWSProxy_InputDLPBlocking(t *testing.T) {
-	// Server that waits briefly then closes (no client message expected).
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	// Server drains until the proxy closes the upstream connection.
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -275,18 +316,13 @@ func TestRunWSProxy_InputDLPBlocking(t *testing.T) {
 	if !strings.Contains(output, "-32001") {
 		t.Errorf("expected input block error code -32001, got: %s", output)
 	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("blocked input forwarded %d frame(s) upstream, want 0", got)
+	}
 }
 
 func TestRunWSProxy_KillSwitchDeniesAll(t *testing.T) {
-	// Server that waits briefly then closes.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -317,17 +353,13 @@ func TestRunWSProxy_KillSwitchDeniesAll(t *testing.T) {
 	if !strings.Contains(output, "-32004") {
 		t.Errorf("expected kill switch error code -32004, got: %s", output)
 	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("kill switch forwarded %d frame(s) upstream, want 0", got)
+	}
 }
 
 func TestRunWSProxy_KillSwitchDropsNotification(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -358,18 +390,14 @@ func TestRunWSProxy_KillSwitchDropsNotification(t *testing.T) {
 	if !strings.Contains(stderr.String(), "kill switch dropped notification") {
 		t.Errorf("expected drop log on stderr, got: %s", stderr.String())
 	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("dropped notification forwarded %d frame(s) upstream, want 0", got)
+	}
 }
 
 func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
-	// Server waits (no message expected since policy blocks it).
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	// Server drains until the proxy closes the upstream connection.
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -410,6 +438,9 @@ func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
 	output := strings.TrimSpace(stdout.String())
 	if !strings.Contains(output, "-32002") {
 		t.Errorf("expected policy block error code -32002, got: %s", output)
+	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("tool policy block forwarded %d frame(s) upstream, want 0", got)
 	}
 }
 
@@ -460,7 +491,8 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 	}
 
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout lockedHTTPBuffer
+	var stderr bytes.Buffer
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -475,10 +507,8 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 
 	// First tool call: read_file.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{}}}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
 	// Second tool call: send_message (should trigger chain).
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send_message","arguments":{}}}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
 	_ = pw.Close()
 
 	wg.Wait()
@@ -493,14 +523,7 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 
 func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 	// Exercises the non-nil auditLogger path in scanHTTPInput via RunWSProxy.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -533,6 +556,9 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 	if !strings.Contains(output, "-32001") {
 		t.Errorf("expected input block error code -32001, got: %s", output)
 	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("blocked audit-logged input forwarded %d frame(s) upstream, want 0", got)
+	}
 }
 
 func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
@@ -554,7 +580,8 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 	}
 
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout lockedHTTPBuffer
+	var stderr bytes.Buffer
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -569,7 +596,9 @@ func TestRunWSProxy_ToolScanningDetectsPoison(t *testing.T) {
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
 	waitForResponse(t, responseSent)
-	time.Sleep(20 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return stdout.contains("-32000")
+	}, "tool scan block response forwarded to stdout")
 	_ = pw.Close()
 
 	wg.Wait()
@@ -626,6 +655,7 @@ func TestRunWSProxy_MultipleMessages(t *testing.T) {
 	// Server sends a response for each received message.
 	var msgCount int
 	var mu sync.Mutex
+	responses := make(chan int, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
@@ -644,6 +674,7 @@ func TestRunWSProxy_MultipleMessages(t *testing.T) {
 				mu.Unlock()
 				resp := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[{"type":"text","text":"resp"}]}}`, n))
 				_ = gobwasutil.WriteServerMessage(conn, ws.OpText, resp)
+				responses <- n
 			}
 		}
 	}))
@@ -652,7 +683,8 @@ func TestRunWSProxy_MultipleMessages(t *testing.T) {
 	sc := testScannerForWS(t)
 
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout lockedHTTPBuffer
+	var stderr bytes.Buffer
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -666,9 +698,12 @@ func TestRunWSProxy_MultipleMessages(t *testing.T) {
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"a","arguments":{}}}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
+	waitForResponseNumber(t, responses, 1)
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"b","arguments":{}}}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
+	waitForResponseNumber(t, responses, 2)
+	testwait.For(t, time.Second, func() bool {
+		return strings.Count(strings.TrimSpace(stdout.String()), "\n") >= 1
+	}, "two WS responses forwarded to stdout")
 	_ = pw.Close()
 
 	wg.Wait()
@@ -696,7 +731,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 
 	fakeKey := "AKIA" + "IOSFODNN7EXAMPLE"
 	pr, pw := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stderr bytes.Buffer
 
 	inputCfg := &InputScanConfig{
 		Enabled:      true,
@@ -708,16 +743,19 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	defer cancel()
 
 	var proxyErr error
+	var safeStdout lockedHTTPBuffer
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
+		proxyErr = RunWSProxy(ctx, pr, &safeStdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"` + fakeKey + `"}}}` + "\n"))
 	waitForResponse(t, responseSent)
-	time.Sleep(20 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return safeStdout.contains(`"result"`)
+	}, "warn-mode WS response forwarded to stdout")
 	_ = pw.Close()
 
 	wg.Wait()
@@ -726,7 +764,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 	}
 
 	// Warn mode: response should be forwarded to stdout.
-	output := strings.TrimSpace(stdout.String())
+	output := strings.TrimSpace(safeStdout.String())
 	if output == "" {
 		t.Error("expected response forwarded in warn mode")
 	}
@@ -737,14 +775,7 @@ func TestRunWSProxy_InputScanWarnMode(t *testing.T) {
 }
 
 func TestRunWSProxy_BlockedNotificationSilent(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(200 * time.Millisecond)
-	}))
+	srv, upstreamFrames := wsDrainServer(t)
 	defer srv.Close()
 
 	cfg := config.Defaults()
@@ -773,6 +804,9 @@ func TestRunWSProxy_BlockedNotificationSilent(t *testing.T) {
 
 	if strings.TrimSpace(stdout.String()) != "" {
 		t.Errorf("expected no stdout for blocked notification, got: %s", stdout.String())
+	}
+	if got := upstreamFrames.Load(); got != 0 {
+		t.Errorf("blocked notification forwarded %d frame(s) upstream, want 0", got)
 	}
 }
 
@@ -811,7 +845,6 @@ func TestRunWSProxy_BindingConfigWired(t *testing.T) {
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"))
 	waitForResponse(t, responseSent)
-	time.Sleep(20 * time.Millisecond)
 	_ = pw.Close()
 
 	wg.Wait()
@@ -822,6 +855,7 @@ func TestRunWSProxy_BindingConfigWired(t *testing.T) {
 
 func TestRunWSProxy_UpstreamWriteError(t *testing.T) {
 	// Server accepts upgrade, reads one message, then closes.
+	firstRead := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
@@ -829,6 +863,7 @@ func TestRunWSProxy_UpstreamWriteError(t *testing.T) {
 		}
 		// Read one message, then close to trigger write error on second.
 		_, _ = gobwasutil.ReadClientMessage(conn, nil)
+		close(firstRead)
 		_ = conn.Close()
 	}))
 	defer srv.Close()
@@ -851,10 +886,9 @@ func TestRunWSProxy_UpstreamWriteError(t *testing.T) {
 
 	// First message accepted by server.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"test","params":{}}` + "\n"))
-	time.Sleep(100 * time.Millisecond)
+	waitForResponse(t, firstRead)
 	// Second message: server already closed, write should fail.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"test","params":{}}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
 	_ = pw.Close()
 
 	wg.Wait()
@@ -865,6 +899,7 @@ func TestRunWSProxy_ParentContextCancellation(t *testing.T) {
 	// Cancel the parent context while stdin is producing messages.
 	// This exercises the ctx.Done goroutine (lines 57-63) that force-closes
 	// the WS connection, plus the innerCtx check in the stdin loop (lines 110-120).
+	firstRead := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
@@ -872,10 +907,12 @@ func TestRunWSProxy_ParentContextCancellation(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 		// Keep reading to keep the connection open.
+		var once sync.Once
 		for {
 			if _, readErr := gobwasutil.ReadClientMessage(conn, nil); readErr != nil {
 				return
 			}
+			once.Do(func() { close(firstRead) })
 		}
 	}))
 	defer srv.Close()
@@ -898,9 +935,8 @@ func TestRunWSProxy_ParentContextCancellation(t *testing.T) {
 
 	// Send one message, let it forward, then cancel context.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}` + "\n"))
-	time.Sleep(100 * time.Millisecond)
+	waitForResponse(t, firstRead)
 	cancel()
-	time.Sleep(50 * time.Millisecond)
 	_ = pw.Close()
 
 	wg.Wait()
@@ -916,14 +952,7 @@ type errReaderWS struct{ err error }
 func (r *errReaderWS) Read([]byte) (int, error) { return 0, r.err }
 
 func TestRunWSProxy_StdinReadError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, _, _, err := ws.UpgradeHTTP(r, w)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		time.Sleep(500 * time.Millisecond)
-	}))
+	srv, _ := wsDrainServer(t)
 	defer srv.Close()
 
 	sc := testScannerForWS(t)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // syncBuffer is defined in helpers_test.go (no build constraint).
@@ -29,12 +30,9 @@ func TestRegisterKillSwitchSignal(t *testing.T) {
 		t.Fatalf("failed to send SIGUSR1: %v", err)
 	}
 
-	// Wait for the goroutine to process the signal.
-	time.Sleep(200 * time.Millisecond)
-
-	if !buf.contains("ACTIVATED") {
-		t.Error("expected ACTIVATED message after first SIGUSR1")
-	}
+	testwait.For(t, 2*time.Second, func() bool {
+		return buf.contains("ACTIVATED")
+	}, "ACTIVATED message after first SIGUSR1")
 
 	// Send SIGUSR1 again to toggle OFF.
 	buf.reset()
@@ -42,11 +40,9 @@ func TestRegisterKillSwitchSignal(t *testing.T) {
 		t.Fatalf("failed to send second SIGUSR1: %v", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
-
-	if !buf.contains("DEACTIVATED") {
-		t.Error("expected DEACTIVATED message after second SIGUSR1")
-	}
+	testwait.For(t, 2*time.Second, func() bool {
+		return buf.contains("DEACTIVATED")
+	}, "DEACTIVATED message after second SIGUSR1")
 }
 
 func TestReloadSignalHint(t *testing.T) {

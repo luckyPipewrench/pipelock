@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestProducer_EnqueuesSignedCheckpointSegment(t *testing.T) {
@@ -139,6 +140,7 @@ func TestProducer_CloseRacesWithObserver(t *testing.T) {
 	}
 
 	var stop atomic.Bool
+	var observed atomic.Int64
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
 		wg.Add(1)
@@ -146,10 +148,16 @@ func TestProducer_CloseRacesWithObserver(t *testing.T) {
 			defer wg.Done()
 			for !stop.Load() {
 				producer.ObserveRecorderEntry(recorder.Entry{Version: recorder.EntryVersion})
+				observed.Add(1)
 			}
 		}()
 	}
-	time.Sleep(10 * time.Millisecond)
+	// Close must race against Observe in flight, not before the goroutines are
+	// scheduled. Wait until contention is genuinely underway (observable, not a
+	// timing guess) so the -race coverage is deterministic.
+	testwait.For(t, time.Second, func() bool {
+		return observed.Load() >= 100
+	}, "producers to start observing under contention")
 	if err := producer.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -527,8 +535,13 @@ func testRecorderEntry(summary string) recorder.Entry {
 
 func waitForPending(t *testing.T, q *Queue, producer *Producer, want int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	// Poll without time.Sleep. A ticker (not testwait.For) is used here so the
+	// failure diagnostic can include the live droppedAccounting() snapshot,
+	// which testwait.For's eagerly-evaluated format args cannot capture.
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Second)
+	for {
 		stats, err := q.Stats()
 		if err != nil {
 			t.Fatalf("Stats: %v", err)
@@ -536,13 +549,12 @@ func waitForPending(t *testing.T, q *Queue, producer *Producer, want int) {
 		if stats.Pending == want {
 			return
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-deadline:
+			t.Fatalf("pending = %d, want %d; dropped=%#v", stats.Pending, want, producer.droppedAccounting())
+		case <-ticker.C:
+		}
 	}
-	stats, err := q.Stats()
-	if err != nil {
-		t.Fatalf("Stats after wait: %v", err)
-	}
-	t.Fatalf("pending = %d, want %d; dropped=%#v", stats.Pending, want, producer.droppedAccounting())
 }
 
 func splitJSONLines(payload []byte) [][]byte {

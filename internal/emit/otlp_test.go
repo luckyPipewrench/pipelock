@@ -19,6 +19,8 @@ import (
 	respb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const otlpLogsPath = "/v1/logs"
@@ -489,20 +491,21 @@ func TestOTLPSink_NetworkErrorRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewOTLPSink: %v", err)
 	}
-	defer func() { _ = sink.Close() }()
-
-	// Close server immediately so retries hit network errors.
-	srv.Close()
 
 	_ = sink.Emit(context.Background(), Event{Severity: SeverityCritical, Type: testStr, Timestamp: time.Now()})
+	testwait.For(t, 5*time.Second, func() bool {
+		return attempts.Load() >= 2
+	}, "OTLP retry path to issue at least two requests")
 
-	// Wait for retry exhaustion (3 attempts * ~1-2s backoff each, but network
-	// errors return fast since server is closed).
-	time.Sleep(3 * time.Second)
+	// Close the server after observing the retry path so the remaining retry
+	// attempt exercises the network-error branch rather than proving nothing.
+	srv.Close()
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
-	// Should have attempted multiple times before giving up.
-	if attempts.Load() > 0 {
-		t.Log("server received requests before closing (expected)")
+	if got := attempts.Load(); got < 2 {
+		t.Errorf("expected at least 2 attempts before server close, got %d", got)
 	}
 }
 

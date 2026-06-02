@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
 	_ "github.com/luckyPipewrench/pipelock/enterprise/testinit"
 )
@@ -412,12 +413,20 @@ func TestAgentIdentityEndToEnd(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 	t.Cleanup(func() { p.Close() })
+	p.client.Transport = &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if strings.HasPrefix(addr, "pastebin.com:") {
+				return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(backend.URL, "http://"))
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/fetch", p.handleFetch)
 
 	// blocklisted URL (*.pastebin.com is in the default blocklist).
-	blockedURL := "https://pastebin.com/raw/abc"
+	blockedURL := "http://pastebin.com/raw/abc"
 	// allowed URL (the test backend, which is not blocklisted).
 	allowedURL := backend.URL + "/text"
 
@@ -874,14 +883,12 @@ func TestAgentListenerBinding(t *testing.T) {
 func waitForListener(t *testing.T, addr string) {
 	t.Helper()
 	d := net.Dialer{Timeout: 100 * time.Millisecond}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 3*time.Second, func() bool {
 		conn, err := d.DialContext(context.Background(), "tcp", addr)
 		if err == nil {
 			_ = conn.Close()
-			return
+			return true
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("listener %s did not start within 3s", addr)
+		return false
+	}, "listener %s starts", addr)
 }

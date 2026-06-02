@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // fakeAWSKey returns an AWS-looking access key ID assembled at runtime so
@@ -845,17 +846,9 @@ func TestScanGenericSSEStream_StreamsIncrementally(t *testing.T) {
 	if _, err := pw.Write([]byte("data: first\n\n")); err != nil {
 		t.Fatalf("pw.Write: %v", err)
 	}
-	// Wait briefly for the scanner to consume the first event.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if flusher.Count() >= 1 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if flusher.Count() < 1 {
-		t.Fatalf("expected first event flushed before second arrives, got %d", flusher.Count())
-	}
+	testwait.For(t, time.Second, func() bool {
+		return flusher.Count() >= 1
+	}, "first SSE event flushed before second arrives")
 	flushesAfterFirst := flusher.Count()
 
 	if _, err := pw.Write([]byte("data: second\n\n")); err != nil {
@@ -993,7 +986,7 @@ type slowWriter struct {
 
 func (s *slowWriter) Write(p []byte) (int, error) {
 	if s.blockPerWrite > 0 {
-		time.Sleep(s.blockPerWrite)
+		<-time.After(s.blockPerWrite)
 	}
 	atomic.AddInt32(&s.writes, 1)
 	return s.buf.Write(p)

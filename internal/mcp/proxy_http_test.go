@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -60,6 +62,29 @@ type recordingEmitSinkHTTP struct {
 	events []emit.Event
 }
 
+type lockedHTTPBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedHTTPBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedHTTPBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *lockedHTTPBuffer) contains(s string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.Contains(b.buf.String(), s)
+}
+
 func (s *recordingEmitSinkHTTP) Emit(_ context.Context, ev emit.Event) error {
 	s.events = append(s.events, ev)
 	return nil
@@ -71,6 +96,25 @@ func (s *recordingEmitSinkHTTP) Close() error {
 
 func testHTTPRedactionMatcher() *redact.Matcher {
 	return redact.NewDefaultMatcher()
+}
+
+func waitForHTTPHealth(t *testing.T, baseURL string) {
+	t.Helper()
+	client := &http.Client{Timeout: 250 * time.Millisecond}
+	testwait.For(t, 3*time.Second, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/health", nil)
+		if err != nil {
+			t.Fatalf("NewRequest /health: %v", err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode >= 200 && resp.StatusCode < 300
+	}, "HTTP listener health at %s", baseURL)
 }
 
 func newTestReceiptEmitter(t *testing.T) (*receipt.Emitter, *recorder.Recorder, string) {
@@ -470,7 +514,7 @@ func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 	// Use a pipe so we control when stdin EOF happens. This avoids a race where
 	// cancel() fires before the GET stream goroutine can deliver its notification.
 	stdinR, stdinW := io.Pipe()
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr lockedHTTPBuffer
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -490,8 +534,9 @@ func TestRunHTTPProxy_GETStreamReceivesServerNotifications(t *testing.T) {
 		t.Fatal("timeout waiting for GET stream to be called")
 	}
 
-	// Small delay to let the GET notification be forwarded to stdout.
-	time.Sleep(50 * time.Millisecond)
+	testwait.For(t, 2*time.Second, func() bool {
+		return stdout.contains("notifications/resources/updated")
+	}, "GET notification forwarded to stdout")
 	_ = stdinW.Close()
 
 	err := <-done
@@ -952,7 +997,10 @@ func TestScanHTTPInput_Disabled(t *testing.T) {
 }
 
 func TestRunHTTPProxy_ContextCancellation(t *testing.T) {
+	requestSeen := make(chan struct{})
+	var requestSeenOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestSeenOnce.Do(func() { close(requestSeen) })
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
@@ -971,7 +1019,11 @@ func TestRunHTTPProxy_ContextCancellation(t *testing.T) {
 
 	// Send one request so the proxy is active.
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"test"}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-requestSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for upstream request")
+	}
 
 	// Cancel context and close stdin - ReadMessage blocks on io.Reader,
 	// so we must close the pipe to unblock it after context cancellation.
@@ -1307,8 +1359,26 @@ func TestRunHTTPProxy_GETStream405PermanentStop(t *testing.T) {
 	// Send initialize to establish session.
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
 
-	// Wait for the GET attempt and give time for potential retries.
-	time.Sleep(200 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return atomic.LoadInt32(&getCount) >= 1
+	}, "initial GET stream attempt")
+
+	initialGets := atomic.LoadInt32(&getCount)
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+stable:
+	for {
+		select {
+		case <-deadline.C:
+			break stable
+		case <-ticker.C:
+			if got := atomic.LoadInt32(&getCount); got != initialGets {
+				t.Fatalf("405 GET stream retried after permanent stop: got %d attempts, want %d", got, initialGets)
+			}
+		}
+	}
 
 	// Close stdin to stop the proxy.
 	_ = stdinW.Close()
@@ -1368,9 +1438,9 @@ func TestRunHTTPProxy_GETStreamTransientReconnect(t *testing.T) {
 	// Send initialize.
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
 
-	// Wait for transient error, backoff (1s), and successful reconnect.
-	// The GET stream backoff starts at 1s, so we need to wait at least that long.
-	time.Sleep(2500 * time.Millisecond)
+	testwait.For(t, 3*time.Second, func() bool {
+		return atomic.LoadInt32(&getCount) >= 2
+	}, "transient GET stream retry")
 
 	_ = stdinW.Close()
 
@@ -1426,22 +1496,36 @@ func TestRunHTTPProxy_GETStreamKillSwitchPause(t *testing.T) {
 	_, _ = stdinW.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
 
 	// Wait for at least one GET attempt.
-	time.Sleep(500 * time.Millisecond)
+	testwait.For(t, time.Second, func() bool {
+		return atomic.LoadInt32(&getCount) >= 1
+	}, "initial GET attempt before kill switch")
 	countBefore := atomic.LoadInt32(&getCount)
-	if countBefore < 1 {
-		_ = stdinW.Close()
-		<-done
-		t.Fatalf("expected at least 1 GET attempt before kill switch, got %d", countBefore)
-	}
 
 	// Activate kill switch - GET stream should pause.
 	ks.SetAPI(true)
-	time.Sleep(1500 * time.Millisecond)
+	pauseTimer := time.NewTimer(1500 * time.Millisecond)
+	pauseTicker := time.NewTicker(25 * time.Millisecond)
+	for {
+		select {
+		case <-pauseTimer.C:
+			pauseTicker.Stop()
+			goto pauseDone
+		case <-pauseTicker.C:
+			if got := atomic.LoadInt32(&getCount); got > countBefore+1 {
+				pauseTicker.Stop()
+				pauseTimer.Stop()
+				t.Fatalf("expected GET stream to pause during kill switch: before=%d during=%d", countBefore, got)
+			}
+		}
+	}
+pauseDone:
 	countDuring := atomic.LoadInt32(&getCount)
 
 	// Deactivate - should resume.
 	ks.SetAPI(false)
-	time.Sleep(1500 * time.Millisecond)
+	testwait.For(t, 3*time.Second, func() bool {
+		return atomic.LoadInt32(&getCount) > countDuring
+	}, "GET stream resumes after kill switch clears")
 	countAfter := atomic.LoadInt32(&getCount)
 
 	_ = stdinW.Close()
@@ -1620,9 +1704,15 @@ func TestScanHTTPInput_InjectionInArgs(t *testing.T) {
 
 func TestRunHTTPProxy_ContextCancelDuringRead(t *testing.T) {
 	// Exercise the ctx.Done path in the main loop (lines 67-71).
+	requestStarted := make(chan struct{})
+	unblockResponse := make(chan struct{})
+	var requestStartedOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Slow response - gives time for context cancellation.
-		time.Sleep(200 * time.Millisecond)
+		requestStartedOnce.Do(func() { close(requestStarted) })
+		select {
+		case <-unblockResponse:
+		case <-time.After(2 * time.Second):
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
@@ -1643,11 +1733,16 @@ func TestRunHTTPProxy_ContextCancelDuringRead(t *testing.T) {
 
 	// Write first message, wait for it to be consumed, then cancel.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"initialize"}` + "\n"))
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-requestStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for upstream request")
+	}
 
 	// Write a second message and immediately cancel context.
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}` + "\n"))
 	cancel()
+	close(unblockResponse)
 	_ = pw.Close()
 
 	err := <-done
@@ -1772,16 +1867,7 @@ func startListenerProxy(
 
 	// Wait for server to accept connections.
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	t.Cleanup(func() {
 		cancel()
@@ -1960,16 +2046,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	}()
 
 	baseURL := "http://" + ln.Addr().String()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(req)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", body)
@@ -2415,16 +2492,7 @@ func TestHTTPListener_ConfiguredSensitiveHeaderDLP(t *testing.T) {
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(jsonToolsList))
 	req.Header.Set("Content-Type", "application/json")
@@ -2586,15 +2654,7 @@ func TestHTTPListener_RedactsToolCallArguments(t *testing.T) {
 	})
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, connErr := http.Get(baseURL + "/health") //nolint:gosec,noctx // test
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use ` + secret + ` to deploy"}}}`
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
@@ -3138,7 +3198,14 @@ func TestHTTPListener_GracefulShutdown(t *testing.T) {
 
 	// Cancel context to trigger shutdown.
 	cancel()
-	time.Sleep(200 * time.Millisecond)
+	testwait.For(t, 2*time.Second, func() bool {
+		resp, err := http.Get(baseURL + "/health") //nolint:gosec,noctx // test
+		if err == nil {
+			_ = resp.Body.Close()
+			return false
+		}
+		return true
+	}, "listener proxy shutdown")
 
 	// Should no longer accept connections.
 	resp2, err := http.Get(baseURL + "/health") //nolint:gosec,noctx // test
@@ -3554,16 +3621,7 @@ func startListenerProxyFull(
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	t.Cleanup(func() {
 		cancel()
@@ -4688,16 +4746,7 @@ func TestHTTPListener_StoreAdaptive(t *testing.T) {
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
 	resp, httpErr := http.Post(baseURL+"/", "application/json", strings.NewReader(body)) //nolint:gosec,noctx // test
@@ -4859,16 +4908,7 @@ func TestHTTPListener_DoWBlock(t *testing.T) {
 	})
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"` + testDoWToolName + `","arguments":{"q":"hello"}}}`
 	postReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(body))
@@ -5007,16 +5047,7 @@ func TestHTTPListener_AdaptiveCfgFn_HotReload(t *testing.T) {
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	// First request: adaptive enabled.
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}`
@@ -5102,16 +5133,7 @@ func TestHTTPListener_PolicyCfgFn_HotReload(t *testing.T) {
 	})
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	post := func() (int, string) {
 		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"dangerous_tool","arguments":{}}}`
@@ -5526,16 +5548,7 @@ func TestHTTPListener_A2AHeaderBlock(t *testing.T) {
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	// Send a request with a malicious A2A-Extensions header containing a
 	// disallowed scheme. The URL scanner blocks non-http/https schemes.
@@ -5595,16 +5608,7 @@ func TestHTTPListener_AuthDLPWithAdaptiveSignal(t *testing.T) {
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	// Send a request with a leaked secret in Authorization header.
 	secret := "sk-ant-" + strings.Repeat("z", 25)
@@ -5665,16 +5669,7 @@ func TestHTTPListener_AuthWarnPreservesListenerWarnMetadata(t *testing.T) {
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		hReq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/health", nil)
-		resp, connErr := http.DefaultClient.Do(hReq)
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`))
 	req.Header.Set("Content-Type", "application/json")

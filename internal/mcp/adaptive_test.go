@@ -484,15 +484,7 @@ func startListenerProxyWithStore(
 	}()
 
 	baseURL := "http://" + addr
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		resp, connErr := http.Get(baseURL + "/health") //nolint:gosec,noctx // test helper
-		if connErr == nil {
-			_ = resp.Body.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHTTPHealth(t, baseURL)
 
 	t.Cleanup(func() {
 		cancel()

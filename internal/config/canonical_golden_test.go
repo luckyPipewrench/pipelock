@@ -144,7 +144,10 @@ const (
 	// Azure SAS signature). The GCP service_account marker is core DLP, not a
 	// default pattern. New detection patterns change policy semantics, so the
 	// canonical hash shifts.
-	goldenHashDefaults = "4284691e1d053260fa7e273f6fdfe0db8444d75fe724a95755ba89eaf820fb53"
+	// Re-bumped again: the "Private Key Header" pattern now also matches PGP
+	// armor and the trailing BLOCK keyword, aligning DLP detection with the
+	// ssh-private-key redaction class.
+	goldenHashDefaults = "ffda4ddbad7c6f8e1e558908b3f566f84439120bb098df3771d8b38c60af7f12"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -218,7 +221,7 @@ const (
 	// Re-bumped for the secret-pattern expansion: see
 	// goldenHashDefaults note above. The rich fixture inherits the default DLP
 	// pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "ae23c7ccb87361eee2a70bba69e136f9d922d83a92b62c0096df5278ec0a98d2"
+	goldenHashRichConfig = "696c917fa28960f0c074328f36728e957cad8a4c8fa4badb43c2303d5dd9e147"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

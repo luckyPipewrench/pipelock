@@ -155,6 +155,15 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean: true,
 		},
 		{
+			// PGP private key armor must be detected, matching the
+			// ssh-private-key redaction class. Split in source so the
+			// detect-private-key pre-commit hook does not flag the fixture.
+			name:        "PGP private key block",
+			text:        "-----BEGIN PGP PRIVATE " + "KEY BLOCK-----",
+			wantClean:   false,
+			wantPattern: "Private Key Header",
+		},
+		{
 			name: "base64-encoded secret decoded and matched",
 			text: func() string {
 				secret := testAnthropicPrefix + strings.Repeat("b", 25)

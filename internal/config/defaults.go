@@ -226,7 +226,9 @@ func Defaults() *Config {
 				{Name: "Sentry Auth Token", Regex: `\bsntrys_[A-Za-z0-9]{40,}\b`, Severity: "high"},
 
 				// Cryptographic material
-				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`, Severity: SeverityCritical},
+				// PGP + optional trailing BLOCK keep DLP detection aligned with
+				// the ssh-private-key redaction class (which covers PGP/BLOCK).
+				{Name: "Private Key Header", Regex: `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----`, Severity: SeverityCritical},
 				{Name: "JWT Token", Regex: `(ey[a-zA-Z0-9_\-=]{10,}\.){2}[a-zA-Z0-9_\-=]{10,}`, Severity: "high"},
 
 				// Cryptocurrency private keys

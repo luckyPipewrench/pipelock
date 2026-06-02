@@ -107,6 +107,9 @@ func TestScanRequestBody_SecretCoverageFamilies(t *testing.T) {
 		{"gitlab ci job", `{"t":"glcbt-` + suffix + `"}`, "application/json", "GitLab CI Job Token"},
 		{"gitlab service", `{"t":"glagent-` + suffix + `"}`, "application/json", "GitLab Service Token"},
 		{"gitlab feature flags", `{"t":"glffct-` + suffix + `"}`, "application/json", "GitLab Service Token"},
+		{"gitlab pipeline trigger", `{"t":"glptt-` + suffix + `"}`, "application/json", "GitLab Pipeline Trigger Token"},
+		{"gitlab oauth secret", `{"t":"gloas-` + suffix + `"}`, "application/json", "GitLab OAuth Application Secret"},
+		{"gitlab scim", `{"t":"glsoat-` + suffix + `"}`, "application/json", "GitLab SCIM Token"},
 		{"azure storage", `{"conn":"AccountKey=` + b64 + `"}`, "application/json", "Azure Storage Account Key"},
 		{"azure sas", `{"url":"https://store.blob.core.windows.net/c/blob?sv=2024-11-04&sig=` + strings.Repeat("A", 43) + `%3D"}`, "application/json", "Azure SAS Token"},
 		// GCP structural markers span a JSON key+value, so a parsed-JSON body
@@ -155,6 +158,9 @@ func TestScanRequestBody_SecretCoverageFamilies(t *testing.T) {
 				MaxBytes:    1024 * 1024,
 				Scanner:     sc,
 			})
+			if !result.Clean {
+				t.Errorf("expected clean body scan for %q, got %+v", tc.body, result)
+			}
 			if len(result.DLPMatches) != 0 {
 				t.Errorf("expected no DLP match for %q, got %+v", tc.body, result.DLPMatches)
 			}

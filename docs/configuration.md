@@ -646,7 +646,7 @@ dlp:
 | MySQL Connection String | `mysql://user:pass@` | critical |
 | MongoDB Connection String | `mongodb(+srv)://user:pass@` | critical |
 | Redis Connection String | `redis(s)://user:pass@` | critical |
-| GCP Service Account Key | `"type":"service_account"` | high |
+| GCP Service Account Key (always-on core pattern, not part of the 62 default count) | `"type":"service_account"` | critical |
 | GCP Service Account Private Key ID | `"private_key_id":"<40 hex>"` | high |
 | Azure Storage Account Key | `AccountKey=<88-char base64>` | critical |
 | Azure SAS Token | `sig=<base64>%3D` | high |

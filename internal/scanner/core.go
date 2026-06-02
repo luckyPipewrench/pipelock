@@ -103,8 +103,11 @@ func coreDLPPatternDefs() []coreDLPPattern {
 
 		// Cryptographic material
 		{
-			name:     "Private Key Header",
-			regex:    `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+)?PRIVATE\s+KEY-----`,
+			name: "Private Key Header",
+			// PGP and the trailing BLOCK keyword are included so PGP private
+			// key armor is blocked, keeping DLP detection aligned with the
+			// ssh-private-key redaction class (which already covers PGP/BLOCK).
+			regex:    `-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----`,
 			severity: "critical",
 		},
 	}

@@ -17,6 +17,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -73,10 +74,45 @@ func GenerateCA(org string, validity time.Duration) (*x509.Certificate, *ecdsa.P
 	return cert, key, pemBytes, nil
 }
 
-// GenerateLeaf creates a leaf certificate for a hostname or IP, signed by the CA.
+// LeafOptions describes a leaf certificate to issue from a CA. It generalizes
+// GenerateLeaf so callers can mint mTLS client identities (SPIFFE URI SANs,
+// client-auth EKU) in addition to plain server certs. KeyUsage is fixed to
+// DigitalSignature because the leaf key is always ECDSA P-256 (RFC 5480
+// Section 3); ExtKeyUsage defaults to server-auth when left empty.
+type LeafOptions struct {
+	CommonName  string
+	DNSNames    []string
+	IPAddresses []net.IP
+	URIs        []*url.URL
+	ExtKeyUsage []x509.ExtKeyUsage
+	TTL         time.Duration
+}
+
+// GenerateLeaf creates a server leaf certificate for a hostname or IP, signed
+// by the CA. It is a thin convenience wrapper over GenerateLeafCert preserved
+// for existing callers (TLS-interception cert cache).
 func GenerateLeaf(ca *x509.Certificate, caKey crypto.PrivateKey, host string, ttl time.Duration) (*tls.Certificate, error) {
-	if ttl <= 0 {
+	opts := LeafOptions{CommonName: host, TTL: ttl}
+	if ip := net.ParseIP(host); ip != nil {
+		opts.IPAddresses = []net.IP{ip}
+	} else {
+		opts.DNSNames = []string{host}
+	}
+	return GenerateLeafCert(ca, caKey, opts)
+}
+
+// GenerateLeafCert issues a leaf certificate from the CA according to opts. It
+// supports SPIFFE URI SANs and arbitrary extended key usages so the same path
+// mints both the Conductor server cert (server-auth, DNS/IP SAN) and follower
+// mTLS client certs (client-auth, SPIFFE URI SAN). At least one SAN
+// (DNS/IP/URI) must be present; a leaf with no SAN is not usable by modern TLS
+// verifiers and is rejected rather than silently issued.
+func GenerateLeafCert(ca *x509.Certificate, caKey crypto.PrivateKey, opts LeafOptions) (*tls.Certificate, error) {
+	if opts.TTL <= 0 {
 		return nil, errors.New("leaf certificate TTL must be positive")
+	}
+	if len(opts.DNSNames) == 0 && len(opts.IPAddresses) == 0 && len(opts.URIs) == 0 {
+		return nil, errors.New("leaf certificate requires at least one SAN (DNS, IP, or URI)")
 	}
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -89,19 +125,21 @@ func GenerateLeaf(ca *x509.Certificate, caKey crypto.PrivateKey, host string, tt
 	}
 	serial.Add(serial, big.NewInt(1)) // X.509 serials must be positive
 
-	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: host},
-		NotBefore:    time.Now().Add(-1 * time.Hour), // backdate 1h for clock skew tolerance
-		NotAfter:     time.Now().Add(ttl),
-		KeyUsage:     x509.KeyUsageDigitalSignature, // ECDSA: DigitalSignature only (RFC 5480 Section 3)
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	extKeyUsage := opts.ExtKeyUsage
+	if len(extKeyUsage) == 0 {
+		extKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
 	}
 
-	if ip := net.ParseIP(host); ip != nil {
-		template.IPAddresses = []net.IP{ip}
-	} else {
-		template.DNSNames = []string{host}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: opts.CommonName},
+		NotBefore:    time.Now().Add(-1 * time.Hour), // backdate 1h for clock skew tolerance
+		NotAfter:     time.Now().Add(opts.TTL),
+		KeyUsage:     x509.KeyUsageDigitalSignature, // ECDSA: DigitalSignature only (RFC 5480 Section 3)
+		ExtKeyUsage:  extKeyUsage,
+		DNSNames:     opts.DNSNames,
+		IPAddresses:  opts.IPAddresses,
+		URIs:         opts.URIs,
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, ca, &leafKey.PublicKey, caKey)

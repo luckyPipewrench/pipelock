@@ -232,13 +232,19 @@ func VerifyToolsList(response []byte, cfg VerifyConfig) ([]VerificationResult, e
 		malformedSet[name] = true
 	}
 
-	// Build attestation index, rejecting duplicate tool names.
-	attByName := make(map[string]Attestation, len(extraction.Attestations))
-	duplicates := make(map[string]bool)
-	for _, ta := range extraction.Attestations {
-		if _, exists := attByName[ta.ToolName]; exists {
-			duplicates[ta.ToolName] = true
+	// Build tool-name counts from the response itself. Duplicate names are
+	// ambiguous regardless of whether either entry carries provenance.
+	nameCounts := make(map[string]int, len(rpc.Result.Tools))
+	for _, raw := range rpc.Result.Tools {
+		var tool toolWithMeta
+		if err := json.Unmarshal(raw, &tool); err == nil {
+			nameCounts[tool.Name]++
 		}
+	}
+
+	// Build attestation index.
+	attByName := make(map[string]Attestation, len(extraction.Attestations))
+	for _, ta := range extraction.Attestations {
 		attByName[ta.ToolName] = ta.Attestation
 	}
 
@@ -255,7 +261,7 @@ func VerifyToolsList(response []byte, cfg VerifyConfig) ([]VerificationResult, e
 		}
 
 		// Duplicate tool names are ambiguous and unsafe.
-		if duplicates[tool.Name] {
+		if nameCounts[tool.Name] > 1 {
 			results = append(results, VerificationResult{
 				ToolName: tool.Name,
 				Status:   StatusError,

@@ -125,6 +125,20 @@ func sortAndMarshal(v interface{}) interface{} {
 	}
 }
 
+// provenanceSigContext domain-separates pipelock-mode signatures. The signed
+// bytes are this context string followed by the tool digest, so a signature
+// produced here can never be replayed as evidence in another context that
+// signs a SHA-256 hex string with the same key (the JWT-style cross-protocol
+// reuse problem). The ":" delimiter is unambiguous because the digest is hex.
+// The "/v1" segment versions the scheme for future agility.
+const provenanceSigContext = "pipelock/provenance/v1:"
+
+// pipelockSigningInput returns the domain-separated bytes signed and verified
+// for a pipelock-mode attestation over the given tool digest.
+func pipelockSigningInput(digest string) []byte {
+	return []byte(provenanceSigContext + digest)
+}
+
 // SignPipelock signs tool definitions with an Ed25519 private key (offline, no network).
 // keyID identifies the signing key (typically the encoded public key or a fingerprint).
 // Returns one Attestation per tool.
@@ -140,8 +154,8 @@ func SignPipelock(tools []ToolDef, privKey ed25519.PrivateKey, keyID string) ([]
 			return nil, fmt.Errorf("failed to compute digest for tool %q", tool.Name)
 		}
 
-		// Sign the hex-encoded digest bytes.
-		sig := ed25519.Sign(privKey, []byte(digest))
+		// Sign the domain-separated digest (context-bound, see provenanceSigContext).
+		sig := ed25519.Sign(privKey, pipelockSigningInput(digest))
 		bundle := base64.StdEncoding.EncodeToString(sig)
 
 		attestations = append(attestations, Attestation{
@@ -177,7 +191,7 @@ func VerifyPipelock(att Attestation, pubKey ed25519.PublicKey) (bool, error) {
 		return false, errors.New("invalid Ed25519 public key size")
 	}
 
-	return ed25519.Verify(pubKey, []byte(att.Digest.SHA256), sig), nil
+	return ed25519.Verify(pubKey, pipelockSigningInput(att.Digest.SHA256), sig), nil
 }
 
 // SignSigstore signs tool definitions via Sigstore keyless signing.

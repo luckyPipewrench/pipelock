@@ -217,7 +217,7 @@ Different deployments (region A, region B) sign their own envelopes. A central a
 
 ### External auditor
 
-The auditor doesn't run Pipelock at all. They can use the Go reference verifier today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the Pipelock deployment's well-known directory. The auditor verifies individual receipts the deployment emits without ever needing the deployment's blessing — the public verification keys are public, the directory endpoint is open.
+The auditor doesn't run Pipelock at all. They can use the standalone Go `pipelock-verifier` today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the Pipelock deployment's well-known directory. The auditor verifies individual receipts the deployment emits without ever needing the deployment's blessing — the public verification keys are public, the directory endpoint is open.
 
 ## Receipt verification
 
@@ -226,7 +226,7 @@ A request that traverses two mediated Pipelocks accumulates two layers of signed
 1. The originating Pipelock signs an outbound envelope.
 2. The receiving Pipelock verifies the inbound envelope and emits its own outbound envelope on the next hop (or on the response). The `EvidenceReceipt v2` schema reserves `proxy_decision.policy_sources` for runtime contract-aware decision evidence as that emit path is wired progressively.
 
-External auditors verify both envelopes independently using the Go reference verifier today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the corresponding deployments' well-known directories.
+External auditors verify both envelopes independently using the standalone Go `pipelock-verifier` today, or `pipelock-verify-python` after the prepared 0.2.0 update is published, against the corresponding deployments' well-known directories.
 
 ## Failure modes
 

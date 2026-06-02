@@ -14,13 +14,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
-	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // chainOptions holds resolved CLI flags for the chain subcommand.
 type chainOptions struct {
-	signerKey  string
-	sessionID  string
+	signerKey string
+	sessionID string
+	evidenceBindingOptions
 	jsonOutput bool
 	asDir      bool
 }
@@ -29,11 +31,17 @@ func newChainCmd() *cobra.Command {
 	var opts chainOptions
 
 	cmd := &cobra.Command{
-		Use:   "chain PATH",
-		Short: "Verify a Pipelock receipt chain",
-		Long: `Verifies the hash linkage and Ed25519 signatures of a Pipelock receipt
-chain. PATH may be a single .jsonl evidence file or a session directory
-when --dir is set.
+		Use:     "chain PATH",
+		Aliases: []string{"evidence"},
+		Short:   "Verify a Pipelock receipt chain",
+		Long: `Verifies the hash linkage of a Pipelock receipt chain. PATH may be a
+single .jsonl evidence file or a session directory when --dir is set.
+
+Legacy ActionReceipt v1 chains verify signatures against the embedded signer
+key unless --key is supplied. EvidenceReceipt v2 chains do not embed a public
+key, so without --key the verifier checks structure, signer-id consistency,
+seq monotonicity, and hash linkage only; with --key it verifies every Ed25519
+signature against the pinned key.
 
 Without --key the verifier confirms self-consistency: every receipt's
 signer must match the first receipt's signer, and prev-hash linkage must
@@ -52,6 +60,10 @@ key.`,
 
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
 	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside the evidence directory (--dir)")
+	cmd.Flags().StringVar(&opts.expectSignerKeyID, "expect-signer-id", "", "EvidenceReceipt v2: require signer_key_id")
+	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
+	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
+	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single file")
 
@@ -61,13 +73,16 @@ key.`,
 // chainReport is the structured form emitted by --json on the chain
 // subcommand.
 type chainReport struct {
-	Path         string `json:"path"`
-	Valid        bool   `json:"valid"`
-	ReceiptCount uint64 `json:"receipt_count"`
-	FinalSeq     uint64 `json:"final_seq"`
-	RootHash     string `json:"root_hash,omitempty"`
-	Error        string `json:"error,omitempty"`
-	BrokenAtSeq  uint64 `json:"broken_at_seq,omitempty"`
+	Path               string `json:"path"`
+	RecordType         string `json:"record_type,omitempty"`
+	Valid              bool   `json:"valid"`
+	ReceiptCount       uint64 `json:"receipt_count"`
+	FinalSeq           uint64 `json:"final_seq"`
+	RootHash           string `json:"root_hash,omitempty"`
+	SignaturesVerified bool   `json:"signatures_verified"`
+	SignerKeyID        string `json:"signer_key_id,omitempty"`
+	Error              string `json:"error,omitempty"`
+	BrokenAtSeq        uint64 `json:"broken_at_seq,omitempty"`
 }
 
 func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error {
@@ -76,17 +91,18 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve signer key: %w", err))
 	}
 
-	var (
-		receipts []receipt.Receipt
-		label    string
-	)
+	var label string
 	if opts.asDir {
 		clean := filepath.Clean(target)
-		receipts, err = receipt.ExtractReceiptsFromSessionDir(clean, opts.sessionID)
-		if err != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
-		}
 		label = fmt.Sprintf("%s (session %s)", clean, opts.sessionID)
+		if handled, handleErr := runEvidenceChainFromDir(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
+			return handleErr
+		}
+		receipts, extractErr := actionreceipt.ExtractReceiptsFromSessionDir(clean, opts.sessionID)
+		if extractErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+		}
+		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	} else {
 		clean := filepath.Clean(target)
 		info, statErr := os.Stat(clean)
@@ -96,32 +112,92 @@ func runChain(stdout, stderr io.Writer, target string, opts chainOptions) error 
 		if info.IsDir() {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("%q is a directory; pass --dir to verify a session directory", target))
 		}
-		receipts, err = receipt.ExtractReceipts(clean)
-		if err != nil {
-			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", err))
-		}
 		label = clean
+		if handled, handleErr := runEvidenceChainFromFile(stdout, stderr, clean, label, keyHex, opts); handled || handleErr != nil {
+			return handleErr
+		}
+		receipts, extractErr := actionreceipt.ExtractReceipts(clean)
+		if extractErr != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract receipts: %w", extractErr))
+		}
+		return verifyActionChain(stdout, stderr, label, receipts, keyHex, opts)
 	}
+}
 
+func verifyActionChain(stdout, stderr io.Writer, label string, receipts []actionreceipt.Receipt, keyHex string, opts chainOptions) error {
+	if opts.anySet() {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
+	}
 	if len(receipts) == 0 {
 		report := chainReport{Path: label, Valid: false, Error: "no receipts in chain"}
 		emitChainReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("empty chain"))
 	}
 
-	res := receipt.VerifyChain(receipts, keyHex)
+	res := actionreceipt.VerifyChain(receipts, keyHex)
 	report := chainReport{
 		Path:         label,
+		RecordType:   recordTypeActionV1,
 		Valid:        res.Valid,
 		ReceiptCount: res.ReceiptCount,
 		FinalSeq:     res.FinalSeq,
 		RootHash:     res.RootHash,
-		Error:        res.Error,
-		BrokenAtSeq:  res.BrokenAtSeq,
+		// Provenance only when an out-of-band key is pinned AND every
+		// signature verified; an empty key is self-consistency only.
+		SignaturesVerified: res.Valid && keyHex != "",
+		Error:              res.Error,
+		BrokenAtSeq:        res.BrokenAtSeq,
 	}
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
 	if !res.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
+	}
+	return nil
+}
+
+func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
+	receipts, err := contractreceipt.ExtractEvidenceReceipts(clean)
+	if err != nil {
+		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract evidence receipts: %w", err))
+	}
+	if len(receipts) == 0 {
+		return false, nil
+	}
+	return true, verifyEvidenceChain(stdout, stderr, label, receipts, keyHex, opts)
+}
+
+func runEvidenceChainFromDir(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
+	receipts, err := contractreceipt.ExtractEvidenceReceiptsFromSessionDir(clean, opts.sessionID)
+	if err != nil {
+		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract evidence receipts: %w", err))
+	}
+	if len(receipts) == 0 {
+		return false, nil
+	}
+	return true, verifyEvidenceChain(stdout, stderr, label, receipts, keyHex, opts)
+}
+
+func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []contractreceipt.EvidenceReceipt, keyHex string, opts chainOptions) error {
+	chainOpts, err := opts.chainVerifyOptions(keyHex)
+	if err != nil {
+		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("resolve evidence verification options: %w", err))
+	}
+	res := contractreceipt.VerifyChain(receipts, chainOpts)
+	report := chainReport{
+		Path:               label,
+		RecordType:         recordTypeEvidenceV2,
+		Valid:              res.Valid,
+		ReceiptCount:       res.ReceiptCount,
+		FinalSeq:           res.FinalSeq,
+		RootHash:           res.RootHash,
+		SignaturesVerified: res.SignaturesVerified,
+		SignerKeyID:        res.SignerKeyID,
+		Error:              res.Error,
+		BrokenAtSeq:        res.BrokenAtSeq,
+	}
+	emitChainReport(stdout, stderr, report, opts.jsonOutput)
+	if !res.Valid {
+		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error))
 	}
 	return nil
 }

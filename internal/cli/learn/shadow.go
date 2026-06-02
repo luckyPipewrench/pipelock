@@ -324,12 +324,14 @@ func emitShadowReceipts(flags shadowFlags, body contract.Contract, report shadow
 	}
 	defer func() { _ = rec.Close() }()
 	emitter := shadow.NewEmitter(shadow.EmitterConfig{
-		Recorder:           rec,
-		Signer:             signer,
-		Principal:          "learn",
-		Actor:              "shadow",
-		ActiveManifestHash: body.ContractHash,
-		SelectorID:         body.Selector.SelectorID,
+		Recorder:  rec,
+		Signer:    signer,
+		Principal: "learn",
+		Actor:     "shadow",
+		// Shadow replay evaluates a candidate contract before promotion; there
+		// is no active manifest yet to bind. The receipt remains bound to the
+		// candidate via contract_hash.
+		SelectorID: body.Selector.SelectorID,
 		Clock: func() time.Time {
 			return now
 		},

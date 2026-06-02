@@ -74,9 +74,20 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 	}
 	if r.Valid {
 		_, _ = fmt.Fprintf(stdout, "CHAIN VALID: %s\n", r.Path)
+		if r.RecordType != "" {
+			_, _ = fmt.Fprintf(stdout, "  record_type: %s\n", r.RecordType)
+		}
 		_, _ = fmt.Fprintf(stdout, "  receipts:   %d\n", r.ReceiptCount)
 		_, _ = fmt.Fprintf(stdout, "  final seq:  %d\n", r.FinalSeq)
 		_, _ = fmt.Fprintf(stdout, "  root hash:  %s\n", r.RootHash)
+		if r.RecordType == recordTypeEvidenceV2 {
+			_, _ = fmt.Fprintf(stdout, "  signer:     %s\n", r.SignerKeyID)
+			if r.SignaturesVerified {
+				_, _ = fmt.Fprintln(stdout, "  signatures: verified")
+			} else {
+				_, _ = fmt.Fprintln(stdout, "  signatures: not checked (self-consistency only; pass --key for provenance)")
+			}
+		}
 		return
 	}
 	_, _ = fmt.Fprintf(stderr, "CHAIN BROKEN: %s\n", r.Path)
@@ -96,6 +107,26 @@ func emitReceiptReport(stdout, stderr io.Writer, r receiptReport, jsonMode bool)
 	}
 	if r.Valid {
 		_, _ = fmt.Fprintf(stdout, "RECEIPT VALID: %s\n", r.Path)
+		if r.RecordType != "" {
+			_, _ = fmt.Fprintf(stdout, "  record_type:  %s\n", r.RecordType)
+		}
+		if r.RecordType == recordTypeEvidenceV2 {
+			_, _ = fmt.Fprintf(stdout, "  payload_kind: %s\n", r.PayloadKind)
+			_, _ = fmt.Fprintf(stdout, "  signer:       %s\n", r.SignerKeyID)
+			if r.ContractHash != "" {
+				_, _ = fmt.Fprintf(stdout, "  contract:     %s\n", r.ContractHash)
+			}
+			if r.ActiveManifestHash != "" {
+				_, _ = fmt.Fprintf(stdout, "  manifest:     %s\n", r.ActiveManifestHash)
+			}
+			if r.SignaturesVerified {
+				_, _ = fmt.Fprintln(stdout, "  signature:    verified")
+			} else {
+				_, _ = fmt.Fprintln(stdout, "  signature:    not checked (pass --key for provenance)")
+			}
+			_, _ = fmt.Fprintf(stdout, "  chain_seq:    %d\n", r.ChainSeq)
+			return
+		}
 		_, _ = fmt.Fprintf(stdout, "  action_id:    %s\n", r.ActionID)
 		_, _ = fmt.Fprintf(stdout, "  verdict:      %s\n", r.Verdict)
 		_, _ = fmt.Fprintf(stdout, "  transport:    %s\n", r.Transport)

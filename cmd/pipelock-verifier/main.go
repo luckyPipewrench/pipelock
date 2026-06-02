@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package main is the entry point for pipelock-verifier, a self-contained
-// binary that verifies Pipelock action receipts and Audit Packets.
+// binary that verifies Pipelock receipts, receipt chains, and Audit Packets.
 //
 // The binary is deliberately separate from `pipelock` so callers (CI runners,
 // auditors, third parties) can drop in just the verifier without provisioning
@@ -16,9 +16,10 @@
 //	                    re-verify the embedded receipt chain and confirm the
 //	                    packet's claimed verdict / receipt_count / totals
 //	                    match the chain's actual contents.
-//	chain PATH          Verify a receipt chain (single .jsonl file or a
-//	                    session directory) for hash linkage and signatures.
-//	receipt PATH        Verify a single receipt JSON file's signature.
+//	chain PATH          Verify a v1 or v2 receipt chain (single .jsonl file
+//	                    or a session directory).
+//	evidence PATH       Alias for chain.
+//	receipt PATH        Verify a single v1 or v2 receipt JSON file.
 //
 // All subcommands accept --key (raw hex, public-key text, or file path) for
 // trusted verification, and --json for machine-readable output. Exit codes:
@@ -47,9 +48,9 @@ func main() {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "pipelock-verifier",
-		Short: "Verify Pipelock action receipts and Audit Packets",
-		Long: `pipelock-verifier validates Pipelock action receipts, receipt chains, and
-Audit Packets against the locked v0 schema and signing rules. It is a
+		Short: "Verify Pipelock receipts and Audit Packets",
+		Long: `pipelock-verifier validates Pipelock action receipts, EvidenceReceipt v2
+envelopes, receipt chains, and Audit Packets against their schema and signing rules. It is a
 self-contained binary with no network surface; consumers can drop it into a
 CI runner, an auditor's laptop, or an isolated environment.`,
 		SilenceUsage:  true,

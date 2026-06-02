@@ -1,0 +1,44 @@
+{
+  "report_version": 1,
+  "generated_at": "2026-04-30T12:00:00Z",
+  "contract_hash": "sha256:example-contract",
+  "total_records": 1,
+  "replayed": 1,
+  "changed": 1,
+  "new_blocks": 1,
+  "new_allows": 0,
+  "evidence_only": 0,
+  "summary_only": 0,
+  "rules": [
+    {
+      "rule_id": "rule-api",
+      "evaluations": 1,
+      "new_blocks": 1,
+      "new_allows": 0,
+      "unchanged": 0,
+      "new_block_rate_pct": 100,
+      "state": "clear",
+      "reason": "below_denominator_floor"
+    }
+  ],
+  "batches": [
+    {
+      "ContractHash": "sha256:example-contract",
+      "RuleID": "rule-api",
+      "OriginalVerdict": "allow",
+      "CandidateVerdict": "block",
+      "WindowStart": "2026-04-30T11:30:00Z",
+      "WindowEnd": "2026-04-30T11:31:00Z",
+      "LosslessCount": 1,
+      "ExemplarIDs": [
+        "sha256:ad30b8035ffde2c3bba42d7d6e2edbbdfbe8501d6ba7146ddde86f037a58c9f7"
+      ]
+    }
+  ],
+  "capture_surfaces": {
+    "url": {
+      "grade": "full",
+      "sidecar": false
+    }
+  }
+}

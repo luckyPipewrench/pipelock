@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/contract/shadow"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -234,6 +235,26 @@ func TestRunShadowWritesReportsThenReceipts(t *testing.T) {
 	entries := readRecorderEntries(t, recorderDir)
 	if countEntries(entries, "evidence_receipt") != 1 {
 		t.Fatalf("receipt entries = %d, want 1", countEntries(entries, "evidence_receipt"))
+	}
+	var receipt contractreceipt.EvidenceReceipt
+	for _, entry := range entries {
+		if entry.Type != "evidence_receipt" {
+			continue
+		}
+		detail, marshalErr := json.Marshal(entry.Detail)
+		if marshalErr != nil {
+			t.Fatalf("Marshal receipt detail: %v", marshalErr)
+		}
+		if err := json.Unmarshal(detail, &receipt); err != nil {
+			t.Fatalf("Unmarshal evidence receipt: %v", err)
+		}
+		break
+	}
+	if receipt.ContractHash == "" {
+		t.Fatal("shadow receipt contract_hash is empty")
+	}
+	if receipt.ActiveManifestHash != "" {
+		t.Fatalf("shadow receipt active_manifest_hash = %q, want empty for candidate shadow replay", receipt.ActiveManifestHash)
 	}
 	var audit auditEvent
 	if err := json.Unmarshal(lastJSONLine(stderr.Bytes()), &audit); err != nil {

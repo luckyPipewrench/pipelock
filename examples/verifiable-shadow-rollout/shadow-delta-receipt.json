@@ -1,0 +1,34 @@
+{
+  "actor": "shadow",
+  "chain_prev_hash": "genesis",
+  "chain_seq": 0,
+  "contract_hash": "sha256:example-contract",
+  "event_id": "019e0000-0000-7000-8000-000000000001",
+  "payload": {
+    "aggregation": {
+      "delta_sample_count": 1,
+      "exemplar_ids": [
+        "sha256:ad30b8035ffde2c3bba42d7d6e2edbbdfbe8501d6ba7146ddde86f037a58c9f7"
+      ],
+      "lossless_count": 1,
+      "window_end": "2026-04-30T11:31:00Z",
+      "window_start": "2026-04-30T11:30:00Z"
+    },
+    "candidate_verdict": "block",
+    "contract_hash": "sha256:example-contract",
+    "original_verdict": "allow",
+    "rule_id": "rule-api"
+  },
+  "payload_kind": "shadow_delta",
+  "principal": "learn",
+  "receipt_version": 2,
+  "record_type": "evidence_receipt_v2",
+  "selector_id": "selector-a",
+  "signature": {
+    "algorithm": "ed25519",
+    "key_purpose": "receipt-signing",
+    "signature": "ed25519:d2b7f50d370b1cf6ceb5d94012283ca435f7fde1d00f5c85edb541f48c3b1754458a4ec563159cac6e56989df787eee6015fc963294a0ac218ea1e41b2ac3805",
+    "signer_key_id": "deterministic-receipt-signing"
+  },
+  "timestamp": "2026-04-30T12:00:00Z"
+}

@@ -1,0 +1,9 @@
+{
+  "event_id": "019e0000-0000-7000-8000-000000000001",
+  "payload_kind": "shadow_delta",
+  "receipt_path": "shadow-delta-receipt.json",
+  "signer_key_id": "deterministic-receipt-signing",
+  "signer_public_key": "a976c9f481c9e70cd91b8bf5525664b705ffdb5f7762f156118ca6f8714da1ca",
+  "timestamp": "2026-04-30T12:00:00Z",
+  "verification": "PASS"
+}

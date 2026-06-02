@@ -1,0 +1,67 @@
+{
+  "body": {
+    "schema_version": 1,
+    "contract_kind": "behavioral_contract",
+    "contract_hash": "sha256:example-contract",
+    "signer_key_id": "example-signer",
+    "key_purpose": "contract-compile-signing",
+    "data_class_root": "internal",
+    "field_data_classes": {},
+    "selector": {
+      "agent": "agent-a",
+      "selector_id": "selector-a"
+    },
+    "observation_window": {
+      "start": "2026-04-30T11:00:00Z",
+      "end": "2026-04-30T12:00:00Z",
+      "event_count": 1,
+      "session_count": 1,
+      "observation_window_root": "sha256:example-window"
+    },
+    "compile": {
+      "pipelock_version": "example",
+      "pipelock_build_sha": "example",
+      "go_version": "example",
+      "module_digest_root": "sha256:example-modules",
+      "compile_config_hash": "sha256:example-compile-config",
+      "inference_algorithm": "example",
+      "normalization_algorithm": "example"
+    },
+    "defaults": {
+      "fidelity": "full",
+      "confidence": {},
+      "privacy": {
+        "default_data_class": "internal",
+        "salt_epoch": 0,
+        "forbid_classes": []
+      }
+    },
+    "rules": [
+      {
+        "rule_id": "rule-api",
+        "display_name": "API access rule",
+        "rule_kind": "http_destination",
+        "lifecycle_state": "enforce",
+        "required_capture_grade": "full",
+        "observed_capture_grade": "full",
+        "confidence": "stable",
+        "wilson_lower": "0.99",
+        "observation": {},
+        "selector": {
+          "host": {
+            "value": "api.vendor.example"
+          },
+          "paths": [
+            {
+              "value": "/repos/foo"
+            }
+          ]
+        },
+        "rationale": {},
+        "recurring_support": {},
+        "opportunity_health": {}
+      }
+    ]
+  },
+  "signature": "ed25519:92866a9f352a31d21758035931f181200458bdf5bc11dfd2946768800f9c1ef5f1529e41a4ecae9facb7346224ce92d2a32173eb78ca0806ebdafaebd5f4c305"
+}

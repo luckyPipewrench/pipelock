@@ -160,9 +160,10 @@ would have produced broken or forgeable chains at restart.
 ## Standalone `pipelock-verifier` CLI
 
 As of v2.5.0, Pipelock ships a standalone `pipelock-verifier` binary under
-`cmd/pipelock-verifier/`. It verifies Audit Packet receipts and chains
-without running the proxy — auditors and SIEMs can drop it next to the
-agent platform without inheriting any of Pipelock's runtime surface.
+`cmd/pipelock-verifier/`. It verifies legacy ActionReceipt v1 receipts and
+chains, EvidenceReceipt v2 envelopes and chains, and Audit Packets without
+running the proxy — auditors and SIEMs can drop it next to the agent platform
+without inheriting any of Pipelock's runtime surface.
 
 ```bash
 # Verify an individual receipt
@@ -171,15 +172,27 @@ pipelock-verifier receipt receipt.json
 # Verify a full chain
 pipelock-verifier chain evidence-proxy-0.jsonl
 
+# Verify an EvidenceReceipt v2 shadow chain with provenance
+pipelock-verifier chain evidence-proxy-0.jsonl \
+  --key receipt-signing.pub \
+  --expect-payload-kind shadow_delta \
+  --expect-contract sha256:...
+
 # Verify an Audit Packet directory or packet.json file
 pipelock-verifier audit-packet ./audit-packet
 ```
 
-The standalone binary reads the same Audit Packet v0 schema and receipt
-signing conventions as the in-tree `pipelock verify-receipt` subcommand. It
-returns exit 0 for valid evidence, exit 1 for invalid evidence, exit 2 for
-runtime errors, and exit 64 for CLI usage errors. Use this binary in
-post-incident review and nightly audit jobs.
+For EvidenceReceipt v2, `--key` pins the trusted Ed25519 receipt-signing public
+key. Without `--key`, the verifier can check structure, hash linkage, sequence
+monotonicity, and signer-id consistency, but it reports signatures as not
+checked because v2 receipts do not embed public keys.
+
+The standalone binary reads the same Audit Packet v0 schema and receipt signing
+conventions as the in-tree `pipelock verify-receipt` subcommand, plus the
+EvidenceReceipt v2 schema used by learn-and-lock. It returns exit 0 for valid
+evidence, exit 1 for invalid evidence, exit 2 for runtime errors, and exit 64
+for CLI usage errors. Use this binary in post-incident review and nightly audit
+jobs.
 
 ## Language-portable verifier packages
 
@@ -189,7 +202,7 @@ Go reference verifier. Pick whichever fits your downstream audit pipeline:
 
 | Runtime | Path | Use case |
 |---|---|---|
-| Go (in-tree reference) | `sdk/audit-packet/` and `cmd/pipelock-verifier/` | Server-side audit pipelines, CI workflows |
+| Go (in-tree reference) | `sdk/audit-packet/` and `cmd/pipelock-verifier/` | Server-side audit pipelines, CI workflows, EvidenceReceipt v2 receipt/chain verification |
 | TypeScript | [`sdk/verifiers/ts/`](../../sdk/verifiers/ts/) | Node-based audit / SIEM, browser-side evidence inspection |
 | Rust | [`sdk/verifiers/rust/`](../../sdk/verifiers/rust/) | Embedded use, audit-platform sidecars, no-runtime environments |
 | Python (companion) | [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) | Python-based audit pipelines and Jupyter analysis. v1 chains today; EvidenceReceipt v2 envelopes after the prepared 0.2.0 release. |

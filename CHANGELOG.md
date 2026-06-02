@@ -5,6 +5,16 @@ All notable changes to Pipelock will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### New Features
+
+- **`pipelock-verifier` verifies EvidenceReceipt v2 chains.** The standalone verifier now verifies EvidenceReceipt v2 evidence (learn-and-lock `shadow_delta`, `proxy_decision`, and contract-lifecycle receipts), so an auditor or SIEM can verify shadow-rollout evidence offline without the source tree. The `receipt` and `chain` subcommands version-detect v1 ActionReceipts from v2 EvidenceReceipts by `record_type`, and `evidence` aliases `chain`. v2 chain verification recomputes the hash chain (`chain_seq` monotonicity, genesis root, `chain_prev_hash` linkage) and verifies every signature against a pinned `--key`; without `--key` it confirms structure, signer-id consistency, and hash linkage only and reports `signatures_verified: false`, because a detached signature cannot prove provenance without an out-of-band key. `--expect-signer-id`, `--expect-contract`, `--expect-manifest`, and `--expect-payload-kind` bind a chain to known values on every receipt. v1 paths now report `signatures_verified` consistently (true only when a key is pinned and verification passed). v2 receipt parsing rejects duplicate JSON keys to prevent parser-differential smuggling.
+
+### Changed
+
+- **Shadow candidate receipts omit `active_manifest_hash`.** `pipelock learn shadow` no longer stamps the candidate contract hash into `active_manifest_hash`; shadow-delta receipts are bound via `contract_hash` only, because a candidate contract is not yet an active manifest.
+
 ## [2.6.0] - 2026-05-30
 
 ### Highlights

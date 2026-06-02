@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
@@ -27,6 +29,8 @@ const (
 	tHTTPS         = "https"
 	tNotPipelock   = "not-pipelock"
 	verdictAllowed = "allow"
+	v2SignerID     = "receipt-signing-v2-test"
+	v2ContractHash = "sha256:v2-contract"
 )
 
 // fixture holds a fully signed chain of receipts plus the keys that signed
@@ -37,6 +41,99 @@ type fixture struct {
 	priv     ed25519.PrivateKey
 	receipts []receipt.Receipt
 	keyHex   string
+}
+
+type evidenceFixture struct {
+	pub      ed25519.PublicKey
+	priv     ed25519.PrivateKey
+	receipts []contractreceipt.EvidenceReceipt
+	keyHex   string
+}
+
+func newEvidenceFixture(t *testing.T, n int) *evidenceFixture {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+	receipts := make([]contractreceipt.EvidenceReceipt, 0, n)
+	prev := contractreceipt.GenesisHash
+	base := time.Date(2026, 4, 30, 12, 0, 0, 0, time.UTC)
+	for i := range n {
+		payload := contractreceipt.PayloadShadowDeltaStruct{
+			ContractHash:     v2ContractHash,
+			RuleID:           "rule-api",
+			OriginalVerdict:  "allow",
+			CandidateVerdict: "block",
+			Aggregation: contractreceipt.ShadowDeltaAggregation{
+				WindowStart:      base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339Nano),
+				WindowEnd:        base.Add(time.Duration(i+1) * time.Minute).Format(time.RFC3339Nano),
+				LosslessCount:    1,
+				DeltaSampleCount: 1,
+				ExemplarIDs:      []string{fmt.Sprintf("sha256:exemplar-%d", i)},
+			},
+		}
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		r := contractreceipt.EvidenceReceipt{
+			RecordType:     contractreceipt.RecordTypeEvidenceV2,
+			ReceiptVersion: 2,
+			PayloadKind:    contractreceipt.PayloadShadowDelta,
+			EventID:        fmt.Sprintf("019e0000-0000-7000-8000-%012d", i+1),
+			Timestamp:      base.Add(time.Duration(i) * time.Second),
+			Principal:      "learn",
+			Actor:          "shadow",
+			ChainSeq:       uint64(i),
+			ChainPrevHash:  prev,
+			ContractHash:   v2ContractHash,
+			SelectorID:     "selector-a",
+			Payload:        payloadJSON,
+		}
+		preimage, err := r.SignablePreimage()
+		if err != nil {
+			t.Fatalf("preimage: %v", err)
+		}
+		r.Signature = contractreceipt.SignatureProof{
+			SignerKeyID: v2SignerID,
+			KeyPurpose:  "receipt-signing",
+			Algorithm:   "ed25519",
+			Signature:   "ed25519:" + hex.EncodeToString(ed25519.Sign(priv, preimage)),
+		}
+		h, err := contractreceipt.ReceiptHash(r)
+		if err != nil {
+			t.Fatalf("receipt hash: %v", err)
+		}
+		prev = h
+		receipts = append(receipts, r)
+	}
+	return &evidenceFixture{
+		pub:      pub,
+		priv:     priv,
+		receipts: receipts,
+		keyHex:   hex.EncodeToString(pub),
+	}
+}
+
+func (f *evidenceFixture) writeEvidenceJSONL(t *testing.T, path string) {
+	t.Helper()
+	var buf bytes.Buffer
+	for _, r := range f.receipts {
+		entry := map[string]any{
+			"type":   "evidence_receipt",
+			"detail": r,
+		}
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("marshal evidence entry: %v", err)
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatalf("write evidence jsonl: %v", err)
+	}
 }
 
 func newFixture(t *testing.T, n int) *fixture {
@@ -622,6 +719,126 @@ func TestReceipt_JSONOutput(t *testing.T) {
 	}
 }
 
+func TestReceipt_V1WithoutKeyIsNotProvenance(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "r.json")
+	data, err := receipt.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write receipt: %v", err)
+	}
+
+	stdout, _, code := runRoot(t, "receipt", "--json", rPath)
+	if code != cliutil.ExitOK {
+		t.Fatalf("valid v1 receipt should pass without a key")
+	}
+	var rpt receiptReport
+	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	if !rpt.Valid {
+		t.Fatalf("expected valid=true, got %+v", rpt)
+	}
+	// Without a pinned --key, v1 verifies against the embedded signer key
+	// (self-consistency), which is not provenance — mirror the v2 contract.
+	if rpt.SignaturesVerified {
+		t.Error("v1 receipt without --key must report signatures_verified=false")
+	}
+}
+
+func TestReceipt_EvidenceV2PinnedKey(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "shadow-delta.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal evidence receipt: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write evidence receipt: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t,
+		"receipt",
+		"--key", fix.keyHex,
+		"--expect-payload-kind", string(contractreceipt.PayloadShadowDelta),
+		"--expect-contract", v2ContractHash,
+		rPath,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("v2 receipt should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "signature:    verified") {
+		t.Fatalf("stdout = %q, want signature verified", stdout)
+	}
+}
+
+func TestReceipt_EvidenceV2WithoutKeyIsNotProvenance(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "shadow-delta.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal evidence receipt: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write evidence receipt: %v", err)
+	}
+
+	stdout, stderr, code := runRoot(t, "receipt", rPath)
+	if code != cliutil.ExitOK {
+		t.Fatalf("v2 receipt structure check should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "not checked") {
+		t.Fatalf("stdout = %q, want not checked trust boundary", stdout)
+	}
+}
+
+func TestReceipt_EvidenceV2RejectsWrongPinnedKey(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	wrong := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "shadow-delta.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal evidence receipt: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write evidence receipt: %v", err)
+	}
+
+	_, stderr, code := runRoot(t, "receipt", "--key", wrong.keyHex, rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 receipt signed by wrong key should fail, stderr=%q", stderr)
+	}
+}
+
+func TestReceipt_EvidenceV2ExpectationMismatch(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "shadow-delta.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("Marshal evidence receipt: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write evidence receipt: %v", err)
+	}
+
+	_, stderr, code := runRoot(t, "receipt", "--expect-contract", "sha256:other", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 receipt contract mismatch should fail, stderr=%q", stderr)
+	}
+}
+
 func TestReceipt_BadJSON(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -886,6 +1103,58 @@ func TestChain_WithExplicitKey(t *testing.T) {
 	_, _, code := runRoot(t, "chain", "--key", keyPath, evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("chain --key should pass")
+	}
+}
+
+func TestChain_EvidenceV2PinnedKey(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	fix.writeEvidenceJSONL(t, evidence)
+
+	stdout, stderr, code := runRoot(t,
+		"chain",
+		"--key", fix.keyHex,
+		"--expect-signer-id", v2SignerID,
+		"--expect-payload-kind", string(contractreceipt.PayloadShadowDelta),
+		"--expect-contract", v2ContractHash,
+		evidence,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("v2 chain should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "signatures: verified") {
+		t.Fatalf("stdout = %q, want signatures verified", stdout)
+	}
+}
+
+func TestChain_EvidenceAliasDirMode(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+
+	stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+	if code != cliutil.ExitOK {
+		t.Fatalf("v2 evidence alias dir mode should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "record_type: evidence_receipt_v2") {
+		t.Fatalf("stdout = %q, want v2 record type", stdout)
+	}
+}
+
+func TestChain_EvidenceV2WrongPinnedKey(t *testing.T) {
+	t.Parallel()
+	forged := newEvidenceFixture(t, 2)
+	legit := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	forged.writeEvidenceJSONL(t, evidence)
+
+	_, stderr, code := runRoot(t, "chain", "--key", legit.keyHex, evidence)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 chain signed by wrong key should fail, stderr=%q", stderr)
 	}
 }
 

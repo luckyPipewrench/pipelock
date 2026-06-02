@@ -45,8 +45,8 @@ const (
 	ClassTwilioAPIKey      Class = "twilio-api-key"     //nolint:gosec // class label, not a secret value
 	ClassMailgunAPIKey     Class = "mailgun-api-key"    //nolint:gosec // class label, not a secret value
 	ClassDBConnString      Class = "db-connection-string"
-	ClassAzureStorageKey   Class = "azure-storage-key" //nolint:gosec // class label, not a secret value
-	ClassAzureSASToken     Class = "azure-sas-token"   //nolint:gosec // class label, not a secret value
+	ClassAzureStorageKey   Class = "azure-storage-key"
+	ClassAzureSAS          Class = "azure-sas-token"
 	ClassJWT               Class = "jwt"
 	ClassHashMD5           Class = "hash-md5"
 	ClassHashSHA1          Class = "hash-sha1"

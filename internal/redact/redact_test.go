@@ -144,7 +144,7 @@ func TestRedactor_BuiltInClassesFormatCorrectly(t *testing.T) {
 		ClassLinearAPIKey, ClassNotionAPIKey, ClassSentryAuthToken,
 		ClassTelegramToken, ClassDiscordToken,
 		ClassTwilioAPIKey, ClassMailgunAPIKey,
-		ClassDBConnString, ClassAzureStorageKey, ClassAzureSASToken,
+		ClassDBConnString, ClassAzureStorageKey, ClassAzureSAS,
 		ClassJWT,
 		ClassHashMD5, ClassHashSHA1, ClassHashSHA256, ClassHashSHA512,
 		ClassMAC, ClassSSN, ClassCreditCard,

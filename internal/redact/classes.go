@@ -107,7 +107,7 @@ func tokenClasses() []classPattern {
 		// Azure SAS signature: the sig= parameter is a URL-encoded base64
 		// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
 		// Anchored on the urlencoded padding to bound the match.
-		{class: ClassAzureSASToken, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
+		{class: ClassAzureSAS, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)\bfw_[A-Za-z0-9]{22}\b`), priority: 100},
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)\bhf_[A-Za-z0-9]{34,37}\b`), priority: 100},

@@ -75,7 +75,7 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		// Azure storage account key (88-char base64 in AccountKey= field).
 		{"azure-storage-key", "conn AccountKey=" + strings.Repeat("A", 86) + "==", ClassAzureStorageKey},
 		// Azure SAS signature parameter.
-		{"azure-sas-token", "url sig=" + strings.Repeat("A", 43) + "%3d", ClassAzureSASToken},
+		{"azure-sas-token", "url sig=" + strings.Repeat("A", 43) + "%3d", ClassAzureSAS},
 		{"env-secret", fakeTelegramEnvSecret(), ClassEnvSecret},
 		{"seed-phrase", "mnemonic abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ClassSeedPhrase},
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},

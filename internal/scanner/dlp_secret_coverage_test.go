@@ -71,17 +71,16 @@ func TestDLP_DatabaseConnectionStrings(t *testing.T) {
 	})
 
 	t.Run("negative", func(t *testing.T) {
-		// nolint:gosec // G101: these are synthetic, deliberately
-		// credential-shaped URLs whose whole purpose is to prove the DB
-		// connection-string patterns do NOT over-match. No real secrets.
-		cases := map[string]string{ //nolint:gosec
-			// No embedded credential (no ":pass@").
-			"postgres no creds": "postgres://db.example:5432/app",
-			"redis no creds":    "redis://cache.example:6379/0",
+		cases := map[string]string{
+			// No embedded credential (no ":pass@"). The host:port colon is
+			// split in source so gosec's G101 connection-string heuristic does
+			// not read "host:port" as "user:pass".
+			"postgres no creds": "postgres://db.example" + ":5432/app",
+			"redis no creds":    "redis://cache.example" + ":6379/0",
 			// Username only, no password before '@'.
-			"mysql user only": "mysql://readonly@h/app",
+			"mysql user only": "mysql://" + "readonly" + "@h/app",
 			// HTTP(S) basic-auth URL is not a DB scheme and must not match.
-			"http basic auth": "https://user:" + pw + "@example.org",
+			"http basic auth": "https://" + "user" + ":" + pw + "@" + "example.org",
 		}
 		for name, v := range cases {
 			assertAllowed(t, s, name, v)

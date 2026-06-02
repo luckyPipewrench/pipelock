@@ -209,8 +209,50 @@ and no matching trust entry gets `mediated` reported claim-only.
 
 Revocation status is **snapshotted at signing time** and is a distinct, additive
 artifact from any later-compromise evidence; a verifier never re-fetches live
-material to reinterpret an old receipt. (The signing-time SVID snapshot lands
-with the attestation binding.)
+material to reinterpret an old receipt.
+
+## SVID attestation binding (verified workload identity)
+
+A producer may attach **X.509-SVID** evidence that cryptographically proves the
+workload identity that mediated the action. Only X.509-SVID counts toward
+verified workload identity; JWT-SVID is a bearer token and stays claim-only.
+
+The SVID leaf's private key signs a **binding payload**, JCS-canonicalized, whose
+first field is the domain-separation context `pipelock-aarp-v0.1/svid-receipt-binding`:
+
+```jsonc
+{
+  "context": "pipelock-aarp-v0.1/svid-receipt-binding",
+  "profile": "aarp/v0.1",
+  "action_record_sha256": "<v1 ActionRecord digest>",
+  "receipt_envelope_sha256": "<receipt envelope digest>",
+  "assurance_assertion_sha256": "<the envelope's canonical payload digest>",
+  "receipt_signer_key": "<receipt Ed25519 public key>",
+  "mediator_id": "pipelock-prod-1",
+  "spiffe_id": "spiffe://example.org/mediators/pipelock-prod",
+  "issued_at": "RFC3339Nano",
+  "nonce": "<128-bit random, base64url>"
+}
+```
+
+The verifier confirms, all offline and fail-closed:
+
+- the SVID chain validates to a **pinned historical trust bundle** at the
+  **action time** (not "now"), via the shared `internal/svid` substrate;
+- the SVID's trust domain matches and its SPIFFE ID is permitted by policy;
+- the binding's `assurance_assertion_sha256` equals the envelope's canonical
+  payload digest, and `receipt_signer_key` matches the receipt — so the SVID is
+  bound to *this* receipt and assertion (the `nonce` defeats cross-action replay);
+- the proof-of-possession signature verifies under the SVID leaf key (ECDSA-P256
+  or Ed25519; a declared algorithm that disagrees with the leaf key type fails
+  closed).
+
+On success the verifier adds `workload_identity_verified` and `x509_svid_bound`
+to the **identity** axis and `svid_valid_at_action_time` to the **freshness**
+axis. Attestation is only considered on a **signed** assertion (the binding ties
+to the signed assertion digest); an SVID that fails any check never removes a
+core claim and never adds an attestation one — the producer's workload-identity
+claim is reported claimed-but-unverified, with a warning.
 
 ## Appraisal vocabulary
 

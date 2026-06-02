@@ -32,6 +32,15 @@ const (
 	// stream. The name says "present", not "linked/verified", to avoid implying a
 	// continuity guarantee a single envelope cannot give.
 	ClaimChainLinkPresent = "chain_link_present"
+	// ClaimWorkloadIdentityVerified: a receipt-bound X.509-SVID proof-of-
+	// possession verified against a pinned trust bundle (Wave 1.3 attestation).
+	ClaimWorkloadIdentityVerified = "workload_identity_verified"
+	// ClaimX509SVIDBound: the SVID leaf key signed a binding tying it to this
+	// receipt and assurance assertion digest.
+	ClaimX509SVIDBound = "x509_svid_bound"
+	// ClaimSVIDValidAtActionTime: the SVID validated at the action time (offline,
+	// point-in-time), not merely at "now".
+	ClaimSVIDValidAtActionTime = "svid_valid_at_action_time"
 )
 
 // docsNotAsserted is the fixed set of properties an AARP appraisal never

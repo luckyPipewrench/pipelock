@@ -40,13 +40,13 @@ type VerifyOptions struct {
 // A nil value means the claim is structurally claim-only in v0.1 (never
 // verifiable), so it is always reported unverified.
 var claimVerifiedBy = map[string][]string{
-	"mediated":                   {ClaimMediatorKeyPinned},
-	"complete-mediation":         nil,
-	"complete_mediation":         nil,
-	"workload_identity_verified": {"workload_identity_verified"},
-	"x509_svid_bound":            {"x509_svid_bound"},
-	"svid_valid_at_action_time":  {"svid_valid_at_action_time"},
-	"transparency_inclusion":     nil,
+	"mediated":                    {ClaimMediatorKeyPinned},
+	"complete-mediation":          nil,
+	"complete_mediation":          nil,
+	ClaimWorkloadIdentityVerified: {ClaimWorkloadIdentityVerified},
+	ClaimX509SVIDBound:            {ClaimX509SVIDBound},
+	ClaimSVIDValidAtActionTime:    {ClaimSVIDValidAtActionTime},
+	"transparency_inclusion":      nil,
 }
 
 // Verify appraises an AARP envelope and returns a structured result. It rejects
@@ -59,6 +59,20 @@ var claimVerifiedBy = map[string][]string{
 // The appraisal never reports "trusted" or "safe". A relying party applies its
 // own claim policy to the verified_claims and axes.
 func Verify(e Envelope, opts VerifyOptions) (*Appraisal, error) {
+	ap, err := appraiseCore(e, opts)
+	if err != nil {
+		return nil, err
+	}
+	classifyClaims(ap)
+	return ap, nil
+}
+
+// appraiseCore runs the full envelope appraisal EXCEPT the final claim
+// classification, returning an appraisal whose verified claims are populated.
+// Verify finishes it with classifyClaims; AppraiseWithSVID adds the
+// workload-identity claims first, then classifies, so an attestation claim moves
+// from claimed-unverified to verified in one consistent pass.
+func appraiseCore(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 	if err := e.validateStructure(); err != nil {
 		return nil, err
 	}
@@ -96,8 +110,6 @@ func Verify(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 		// input, not a producer-authored claim.
 		ap.Warnings = append(ap.Warnings, "no signature verified under a trusted key; all assurance claims are untrusted input")
 	}
-
-	classifyClaims(ap)
 	return ap, nil
 }
 

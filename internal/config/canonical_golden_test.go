@@ -136,7 +136,14 @@ const (
 	// this hash depend on the ambient TMPDIR. Excluding the operational path
 	// makes the hash environment-independent (identical policy -> identical
 	// hash), which is the admission-grade contract.
-	goldenHashDefaults = "5e449278f4437345fa3a3fea9dafa3f2b1c73e55bc028c0c35f19af999ad0d4b"
+	// Re-bumped for the secret-pattern expansion (defaults.go
+	// DLP set, 48 -> 63): added DB connection-string patterns (postgres/mysql/
+	// mongodb/redis with embedded creds), the remaining GitLab token families
+	// (gldt-/glrt-/glcbt-/glptt-/gloas-/glsoat-/grouped service tokens), and
+	// cloud SA key patterns (GCP service_account marker + private_key_id,
+	// Azure storage account key, Azure SAS signature). New detection patterns
+	// change policy semantics, so the canonical hash shifts.
+	goldenHashDefaults = "4284691e1d053260fa7e273f6fdfe0db8444d75fe724a95755ba89eaf820fb53"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -207,7 +214,10 @@ const (
 	// Bumped for fetch_proxy.monitoring.query_entropy_exclusions: see the
 	// goldenHashDefaults note above.
 	// Re-bumped for the file_sentry max_file_bytes field: see goldenHashDefaults note.
-	goldenHashRichConfig = "dc7d6e0a9f20d83124f56b55bb5f8a93528988e98ef07c6ed419db5d60667c5d"
+	// Re-bumped for the secret-pattern expansion: see
+	// goldenHashDefaults note above. The rich fixture inherits the default DLP
+	// pattern set, so the hash shifts in lockstep.
+	goldenHashRichConfig = "ae23c7ccb87361eee2a70bba69e136f9d922d83a92b62c0096df5278ec0a98d2"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

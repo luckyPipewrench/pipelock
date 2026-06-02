@@ -74,6 +74,92 @@ func TestScanRequestBody_JSONWithSecret(t *testing.T) {
 	}
 }
 
+// TestScanRequestBody_SecretCoverageFamilies proves the secret
+// patterns (DB connection strings, GitLab token families, cloud SA keys) fire
+// on the request-body transport too, matching the URL/text coverage. Fixtures
+// are low-entropy and built at runtime. Positive cases assert the pattern name;
+// negative cases assert no DLP match (false-positive guard).
+func TestScanRequestBody_SecretCoverageFamilies(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+
+	pw := strings.Repeat("p", 12)
+	suffix := strings.Repeat("A", 24)
+	hex40 := strings.Repeat("a", 40)
+	b64 := strings.Repeat("A", 86) + "=="
+
+	// GCP SA private_key PEM (the actual signing secret) in a JSON body is
+	// caught as a scalar value by the pre-existing "Private Key Header"
+	// pattern. Split in source so gitleaks/gosec don't flag the fixture.
+	gcpKeyBody := `{"type":"service` + `_account","private_key":"-----BEGIN PRIVATE ` +
+		`KEY-----\nMIIabc\n-----END PRIVATE ` + `KEY-----\n"}`
+
+	positive := []struct {
+		name, body, contentType, pattern string
+	}{
+		{"postgres", `{"dsn":"postgres://u:` + pw + `@h:5432/app"}`, "application/json", "PostgreSQL Connection String"},
+		{"mysql", `{"dsn":"mysql://u:` + pw + `@h/app"}`, "application/json", "MySQL Connection String"},
+		{"mongodb", `{"dsn":"mongodb+srv://u:` + pw + `@c.example/app"}`, "application/json", "MongoDB Connection String"},
+		{"redis", `{"dsn":"redis://:` + pw + `@cache:6379"}`, "application/json", "Redis Connection String"},
+		{"gitlab deploy", `{"t":"gldt-` + suffix + `"}`, "application/json", "GitLab Deploy Token"},
+		{"gitlab runner", `{"t":"glrtr-` + suffix + `"}`, "application/json", "GitLab Runner Token"},
+		{"gitlab ci job", `{"t":"glcbt-` + suffix + `"}`, "application/json", "GitLab CI Job Token"},
+		{"gitlab service", `{"t":"glagent-` + suffix + `"}`, "application/json", "GitLab Service Token"},
+		{"azure storage", `{"conn":"AccountKey=` + b64 + `"}`, "application/json", "Azure Storage Account Key"},
+		// GCP structural markers span a JSON key+value, so a parsed-JSON body
+		// (scalar-value walk) cannot match them — they fire on raw-text
+		// surfaces. Prove the marker on a text/plain body (raw scan path).
+		{"gcp marker text body", `{"type": "service` + `_account"}`, "text/plain", "GCP Service Account Key"},
+		{"gcp key id text body", `"private_key_id": "` + hex40 + `"`, "text/plain", "GCP Service Account Private Key ID"},
+		// Prove the real GCP SA secret (private_key PEM) IS caught in a JSON body.
+		{"gcp private key pem in json", gcpKeyBody, "application/json", "Private Key Header"},
+	}
+	for _, tc := range positive {
+		t.Run("positive/"+tc.name, func(t *testing.T) {
+			_, result := scanRequestBody(context.Background(), BodyScanRequest{
+				Body:        strings.NewReader(tc.body),
+				ContentType: tc.contentType,
+				MaxBytes:    1024 * 1024,
+				Scanner:     sc,
+			})
+			found := false
+			for _, m := range result.DLPMatches {
+				if strings.Contains(m.PatternName, tc.pattern) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected body %q (%s) to match pattern %q; got %+v",
+					tc.body, tc.contentType, tc.pattern, result.DLPMatches)
+			}
+		})
+	}
+
+	negative := []struct {
+		name, body string
+	}{
+		{"postgres no creds", `{"dsn":"postgres://h:5432/app"}`},
+		{"gitlab short", `{"t":"gldt-AAAA"}`},
+		{"gcp non-sa", `{"type":"authorized_user"}`},
+		{"azure short key", `{"conn":"AccountKey=AAAA"}`},
+	}
+	for _, tc := range negative {
+		t.Run("negative/"+tc.name, func(t *testing.T) {
+			_, result := scanRequestBody(context.Background(), BodyScanRequest{
+				Body:        strings.NewReader(tc.body),
+				ContentType: "application/json",
+				MaxBytes:    1024 * 1024,
+				Scanner:     sc,
+			})
+			if len(result.DLPMatches) != 0 {
+				t.Errorf("expected no DLP match for %q, got %+v", tc.body, result.DLPMatches)
+			}
+		})
+	}
+}
+
 func TestScanRequestBody_DLPHonorsScopedSuppress(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.New(cfg)

@@ -84,6 +84,58 @@ func TestScanTextForDLP(t *testing.T) {
 			wantClean:   false,
 			wantPattern: "Stripe Key",
 		},
+		// secret-pattern expansion (text-DLP transport).
+		{
+			name:        "DB connection string - postgres with password",
+			text:        "DATABASE_URL=postgres://admin:" + strings.Repeat("p", 12) + "@db.example:5432/app",
+			wantClean:   false,
+			wantPattern: "PostgreSQL Connection String",
+		},
+		{
+			name:        "DB connection string - redis password-only",
+			text:        "redis://:" + strings.Repeat("p", 12) + "@cache:6379",
+			wantClean:   false,
+			wantPattern: "Redis Connection String",
+		},
+		{
+			name:      "DB connection string FP - no embedded credential",
+			text:      "postgres://db.example:5432/app",
+			wantClean: true,
+		},
+		{
+			name:        "GitLab deploy token",
+			text:        "token gldt-" + strings.Repeat("A", 24),
+			wantClean:   false,
+			wantPattern: "GitLab Deploy Token",
+		},
+		{
+			name:        "GitLab runner token glrtr variant",
+			text:        "glrtr-" + strings.Repeat("A", 24),
+			wantClean:   false,
+			wantPattern: "GitLab Runner Token",
+		},
+		{
+			name:      "GitLab FP - english word starting gl",
+			text:      "glance-2026-summary-report-final",
+			wantClean: true,
+		},
+		{
+			name:        "GCP service account marker",
+			text:        `{"type": "` + "service" + "_account" + `", "project_id": "x"}`,
+			wantClean:   false,
+			wantPattern: "GCP Service Account Key",
+		},
+		{
+			name:        "Azure storage account key",
+			text:        "AccountKey=" + strings.Repeat("A", 86) + "==",
+			wantClean:   false,
+			wantPattern: "Azure Storage Account Key",
+		},
+		{
+			name:      "Azure storage FP - short value",
+			text:      "AccountKey=" + strings.Repeat("A", 20),
+			wantClean: true,
+		},
 		{
 			name: "base64-encoded secret decoded and matched",
 			text: func() string {

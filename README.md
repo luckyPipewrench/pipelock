@@ -25,7 +25,7 @@
 
 **Agent-external evidence built in.** Runtime logs and in-process receipts are useful telemetry. Pipelock receipts are signed by a mediator outside the agent process and outside its credentials, so verifiers can reason about the traffic that actually crossed the Pipelock boundary.
 
-**Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for wrapped outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 48 credential patterns, and 29 injection patterns with 6-pass normalization.
+**Covers MCP security, agent egress security, DLP for AI agents, and prompt injection defense.** Pipelock acts as an agent egress proxy for wrapped outbound HTTP, WebSocket, and MCP traffic, with bidirectional MCP scanning, 62 credential patterns, and 29 injection patterns with 6-pass normalization.
 
 **Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
@@ -89,7 +89,7 @@ Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and
 
 ### 11-Layer URL Scanner
 
-Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (48 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment variable secrets, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
+Every request passes through: scheme validation, CRLF injection detection, path traversal blocking, domain blocklist, DLP pattern matching (62 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment variable secrets, and financial identifiers with checksum validation), path entropy analysis, subdomain entropy analysis, SSRF protection with DNS rebinding prevention, per-domain rate limiting, URL length limits, and per-domain data budgets.
 
 DLP runs before DNS resolution, designed to catch secrets before any DNS query leaves the proxy. BIP-39 seed phrase detection uses a dedicated scanner with dictionary lookup, sliding window matching, and SHA-256 checksum validation to catch cryptocurrency mnemonic exfiltration across all transport surfaces.
 
@@ -415,7 +415,7 @@ python3 demo.py    # needs python3 + cryptography + pipelock on PATH
 
 ## Community Rules
 
-Signed rule bundles add detection patterns beyond the 48 built-in defaults. 28 community rules across DLP, injection, and tool-poison categories:
+Signed rule bundles add detection patterns beyond the 62 built-in defaults. 28 community rules across DLP, injection, and tool-poison categories:
 
 ```bash
 pipelock rules install pipelock-community

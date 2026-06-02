@@ -67,7 +67,7 @@ const (
 // Split across category helpers so no single function trips funlen and the
 // priority story stays scannable category by category.
 func classRegistry() []classPattern {
-	out := make([]classPattern, 0, 36)
+	out := make([]classPattern, 0, 39)
 	out = append(out, tokenClasses()...)
 	out = append(out, hashClasses()...)
 	out = append(out, networkClasses()...)
@@ -88,7 +88,26 @@ func tokenClasses() []classPattern {
 		{class: ClassAWSSecretKey, pattern: regexp.MustCompile(`(?i)\b(?:aws_secret_access_key|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}\b`), priority: 100},
 		{class: ClassGoogleAPIKey, pattern: regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`), priority: 100},
 		{class: ClassGitHubToken, pattern: regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b`), priority: 100},
-		{class: ClassGitLabToken, pattern: regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}\b`), priority: 100},
+		// All documented GitLab token prefixes (token overview: glpat-,
+		// gloas-, gldt-, glrt-/glrtr-, glcbt-, glptt-, glft-, glimt-,
+		// glagent-, glwt-, glsoat-, glffct-) share the gl<type>- + base64url
+		// shape, so one class covers every DLP detection pattern in the
+		// GitLab family and an allowlisted host gets a placeholder instead of
+		// the raw token. (?i) tolerates an uppercased leak.
+		{class: ClassGitLabToken, pattern: regexp.MustCompile(`(?i)\bgl(?:pat|oas|dt|rtr?|cbt|ptt|ft|imt|agent|wt|soat|ffct)-[A-Za-z0-9_-]{20,}\b`), priority: 100},
+		// Database connection strings carry the password between ':' and '@'.
+		// Redacting scheme://user:pass@host masks the credential while the rest
+		// of the scalar (path, query) is untouched. Matches the four DLP
+		// connection-string families (postgres, mysql, mongodb, redis).
+		{class: ClassDBConnString, pattern: regexp.MustCompile(`(?i)\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis(?:s)?)://[^:/?#\s]*:[^@/?#\s]+@[^/?#\s]+`), priority: 100},
+		// Azure storage account key: 512-bit key -> 88 base64 chars (86 + "==")
+		// in an AccountKey= connection-string field. Anchored on AccountKey= to
+		// avoid matching arbitrary base64.
+		{class: ClassAzureStorageKey, pattern: regexp.MustCompile(`(?i)\bAccountKey=[A-Za-z0-9+/]{86}==`), priority: 100},
+		// Azure SAS signature: the sig= parameter is a URL-encoded base64
+		// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
+		// Anchored on the urlencoded padding to bound the match.
+		{class: ClassAzureSASToken, pattern: regexp.MustCompile(`(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`), priority: 100},
 		{class: ClassSlackToken, pattern: regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{10,}\b`), priority: 100},
 		{class: ClassFireworksAPIKey, pattern: regexp.MustCompile(`(?i)\bfw_[A-Za-z0-9]{22}\b`), priority: 100},
 		{class: ClassHuggingFaceToken, pattern: regexp.MustCompile(`(?i)\bhf_[A-Za-z0-9]{34,37}\b`), priority: 100},
@@ -113,7 +132,11 @@ func tokenClasses() []classPattern {
 		// JWT: three base64url segments separated by dots; first segment
 		// starts with `eyJ` (decodes to '{"').
 		{class: ClassJWT, pattern: regexp.MustCompile(`\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b`), priority: 100},
-		{class: ClassSSHPrivateKey, pattern: regexp.MustCompile(`-----BEGIN (?:OPENSSH|RSA|DSA|EC|PGP) PRIVATE KEY(?: BLOCK)?-----`), priority: 100},
+		// The key-type qualifier is optional so a bare PKCS#8 PEM header (the
+		// one with no RSA/EC/DSA/OpenSSH qualifier before the key label), as
+		// used by GCP service-account JSON private_key fields, is recognised
+		// alongside the qualified forms.
+		{class: ClassSSHPrivateKey, pattern: regexp.MustCompile(`-----BEGIN (?:(?:OPENSSH|RSA|DSA|EC|PGP) )?PRIVATE KEY(?: BLOCK)?-----`), priority: 100},
 	}
 }
 

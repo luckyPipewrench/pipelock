@@ -69,6 +69,32 @@ func TestExtractLiteralPrefix(t *testing.T) {
 		{"just flag", "(?i)", ""},
 		{"no flag", "sk-ant-foo", "sk-ant-foo"},
 		{"twilio", "(?i)SK[a-f0-9]{32}", "sk"},
+
+		// secret-pattern expansion.
+		// DB connection strings: ':' and '/' are literal (not metachars), so
+		// mysql keeps the full "mysql://" prefix; the others stop at the
+		// optional group before "://".
+		{"postgres conn", `(?i)postgres(?:ql)?://[^:/?#\s]*:[^@/?#\s]+@`, "postgres"},
+		{"mysql conn", `(?i)mysql://[^:/?#\s]*:[^@/?#\s]+@`, "mysql://"},
+		{"mongodb conn", `(?i)mongodb(?:\+srv)?://[^:/?#\s]*:[^@/?#\s]+@`, "mongodb"},
+		// Optional-suffix gotcha: redis(?:s)? must use a group so extraction
+		// stops at "(" and yields "redis" (gating redis:// AND rediss://). A
+		// bare "rediss?" would wrongly extract "rediss" and miss redis://.
+		{"redis conn optional-s group", `(?i)redis(?:s)?://[^:/?#\s]*:[^@/?#\s]+@`, "redis"},
+		// GitLab token families.
+		{"gitlab deploy", `(?i)gldt-[a-zA-Z0-9\-_]{20,}`, "gldt-"},
+		// Same optional-suffix gotcha: glrt(?:r)?- yields "glrt", gating both
+		// glrt- and glrtr-.
+		{"gitlab runner optional-r group", `(?i)glrt(?:r)?-[a-zA-Z0-9\-_]{20,}`, "glrt"},
+		{"gitlab ci job", `(?i)glcbt-[a-zA-Z0-9\-_]{20,}`, "glcbt-"},
+		{"gitlab oauth secret", `(?i)gloas-[a-zA-Z0-9\-_]{20,}`, "gloas-"},
+		// Grouped GitLab service tokens: alternation after "gl" -> prefix "gl".
+		{"gitlab service alternation", `(?i)gl(?:ft|imt|agent|wt|ffct)-[a-zA-Z0-9\-_]{20,}`, "gl"},
+		// Cloud SA keys.
+		{"gcp sa marker", `(?i)"type"\s*:\s*"service_account"`, `"type"`},
+		{"gcp private key id", `(?i)"private_key_id"\s*:\s*"[a-f0-9]{40}"`, `"private_key_id"`},
+		{"azure storage key", `(?i)AccountKey=[A-Za-z0-9+/]{86}==`, "accountkey="},
+		{"azure sas token", `(?i)\bsig=[A-Za-z0-9%]{43,}%3d\b`, "sig="},
 	}
 
 	for _, tt := range tests {

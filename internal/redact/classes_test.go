@@ -59,6 +59,19 @@ func TestDefaultMatcher_StructuredClasses(t *testing.T) {
 		{"jwt", "bearer eyJ" + "hbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c", ClassJWT},
 		{"ssh-openssh", "-----BEGIN OPENSSH PRIVATE " + "KEY-----", ClassSSHPrivateKey},
 		{"ssh-rsa", "-----BEGIN RSA PRIVATE " + "KEY-----", ClassSSHPrivateKey},
+		// Bare PKCS#8 header (GCP service-account private_key) now redactable.
+		{"ssh-pkcs8", "-----BEGIN PRIVATE " + "KEY-----", ClassSSHPrivateKey},
+		// GitLab token class broadened to every documented prefix family.
+		{"gitlab-deploy-token", "token gldt-" + strings.Repeat("A", 24), ClassGitLabToken},
+		{"gitlab-runner-token", "token glrtr-" + strings.Repeat("A", 24), ClassGitLabToken},
+		{"gitlab-oauth-secret", "token gloas-" + strings.Repeat("A", 24), ClassGitLabToken},
+		// Database connection string: password between ':' and '@'.
+		{"db-conn-postgres", "dsn postgres://u:" + strings.Repeat("p", 12) + "@h:5432/app", ClassDBConnString},
+		{"db-conn-redis-pwonly", "dsn redis://:" + strings.Repeat("p", 12) + "@cache:6379", ClassDBConnString},
+		// Azure storage account key (88-char base64 in AccountKey= field).
+		{"azure-storage-key", "conn AccountKey=" + strings.Repeat("A", 86) + "==", ClassAzureStorageKey},
+		// Azure SAS signature parameter.
+		{"azure-sas-token", "url sig=" + strings.Repeat("A", 43) + "%3d", ClassAzureSASToken},
 		{"env-secret", fakeTelegramEnvSecret(), ClassEnvSecret},
 		{"seed-phrase", "mnemonic abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", ClassSeedPhrase},
 		{"ad-user", "CONTOSO\\jsmith logged in", ClassADUser},

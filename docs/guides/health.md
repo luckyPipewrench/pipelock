@@ -18,7 +18,7 @@ Healthy response (HTTP 200):
   "version": "v2.6.0",
   "mode": "balanced",
   "uptime_seconds": 1234.56,
-  "dlp_patterns": 48,
+  "dlp_patterns": 62,
   "response_scan_enabled": true,
   "git_protection_enabled": false,
   "rate_limit_enabled": true,

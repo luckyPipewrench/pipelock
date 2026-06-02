@@ -97,6 +97,33 @@ func Defaults() *Config {
 				{Name: "GitHub Fine-Grained PAT", Regex: `github_pat_[a-zA-Z0-9_]{36,}`, Severity: SeverityCritical},
 				// GitLab personal access tokens: "glpat-" prefix, 20+ chars.
 				{Name: "GitLab PAT", Regex: `glpat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				// Remaining GitLab token families. All documented prefixes share
+				// the gl<type>- + base64url shape (GitLab token overview). Optional
+				// suffix chars use the (?:x)? form so the DLP pre-filter extracts
+				// the shorter literal prefix (e.g. "glrt" gates glrt- and glrtr-).
+				// Source: https://docs.gitlab.com/security/tokens/
+				{Name: "GitLab Deploy Token", Regex: `gldt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				{Name: "GitLab Runner Token", Regex: `glrt(?:r)?-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				{Name: "GitLab CI Job Token", Regex: `glcbt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				{Name: "GitLab Pipeline Trigger Token", Regex: `glptt-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				{Name: "GitLab OAuth Application Secret", Regex: `gloas-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				{Name: "GitLab SCIM Token", Regex: `glsoat-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+				// Feed / incoming-mail / agent / workspace / feature-flags-client
+				// tokens grouped: lower prevalence, identical shape. Alternation
+				// after "gl" yields no pre-filter prefix but is one cheap regex.
+				{Name: "GitLab Service Token", Regex: `gl(?:ft|imt|agent|wt|ffct)-[a-zA-Z0-9\-_]{20,}`, Severity: SeverityCritical},
+
+				// Database connection strings with embedded credentials. The
+				// password between ':' and '@' is the secret. Scheme-locked so
+				// http(s) basic-auth URLs do not match; the ":pass@" requirement
+				// means a credential-less URI (postgres://host/db, redis://h:6379)
+				// is ignored. Per-scheme patterns give the pre-filter a clean
+				// literal prefix. The user segment is optional ([^...]*) so
+				// redis://:password@host (password-only) still matches.
+				{Name: "PostgreSQL Connection String", Regex: `postgres(?:ql)?://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},
+				{Name: "MySQL Connection String", Regex: `mysql://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},
+				{Name: "MongoDB Connection String", Regex: `mongodb(?:\+srv)?://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},
+				{Name: "Redis Connection String", Regex: `redis(?:s)?://[^:/?#\s]*:[^@/?#\s]+@`, Severity: SeverityCritical},
 
 				// Cloud provider credentials
 				// All AWS credential prefixes: AKIA (access key), ASIA (STS temp), AROA (role),
@@ -108,6 +135,25 @@ func Defaults() *Config {
 				// Separator class handles YAML (: ), env (=), JSON (":"), and quoted formats.
 				{Name: "AWS Secret Key", Regex: `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`, Severity: SeverityCritical},
 				{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical},
+				// GCP service-account JSON private_key_id. The "service_account"
+				// type marker is already an always-on CORE pattern (see
+				// scanner/core.go), so it is deliberately NOT duplicated here;
+				// this adds the 40-hex private_key_id. Detection-only marker (no
+				// redaction class): a bare 40-hex value cannot be redacted
+				// without over-matching git SHAs / digests. The actual signing
+				// secret (the PEM private_key) is caught by "Private Key Header"
+				// below and IS redactable via the ssh-private-key class, which
+				// now also covers bare PKCS#8.
+				{Name: "GCP Service Account Private Key ID", Regex: `"private_key_id"\s*:\s*"[a-f0-9]{40}"`, Severity: "high"},
+				// Azure storage account key: 512-bit key -> 88 base64 chars
+				// (86 + "==") in an AccountKey= connection-string field. Anchored
+				// on AccountKey= so arbitrary 88-char base64 does not match.
+				{Name: "Azure Storage Account Key", Regex: `AccountKey=[A-Za-z0-9+/]{86}==`, Severity: SeverityCritical},
+				// Azure SAS signature: the sig= parameter is a URL-encoded base64
+				// HMAC-SHA256 (32 bytes -> 44 base64 chars, trailing '=' as %3D).
+				// Anchored on the urlencoded padding; severity "high" reflects the
+				// generality of a "sig=" parameter name.
+				{Name: "Azure SAS Token", Regex: `\bsig=[A-Za-z0-9%]{43,}%3d\b`, Severity: "high"},
 
 				// Messaging platform tokens
 				{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical},

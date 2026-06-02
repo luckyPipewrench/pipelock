@@ -76,6 +76,22 @@ var compiledStandardDLPNames = map[string]bool{
 	"Environment Variable Secret": true,
 	"Credit Card Number":          true,
 	"IBAN":                        true,
+	// secret-pattern expansion (standard tier; "GCP Service
+	// Account Key" is core, not listed here).
+	"GitLab Deploy Token":                true,
+	"GitLab Runner Token":                true,
+	"GitLab CI Job Token":                true,
+	"GitLab Pipeline Trigger Token":      true,
+	"GitLab OAuth Application Secret":    true,
+	"GitLab SCIM Token":                  true,
+	"GitLab Service Token":               true,
+	"PostgreSQL Connection String":       true,
+	"MySQL Connection String":            true,
+	"MongoDB Connection String":          true,
+	"Redis Connection String":            true,
+	"GCP Service Account Private Key ID": true,
+	"Azure Storage Account Key":          true,
+	"Azure SAS Token":                    true,
 }
 
 // compiledStandardResponseNames is the set of response pattern names from

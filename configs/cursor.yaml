@@ -135,6 +135,44 @@ dlp:
     - name: "GitLab PAT"
       regex: 'glpat-[a-zA-Z0-9\-_]{20,}'
       severity: critical
+    # Remaining GitLab token families (token overview docs); optional suffix
+    # chars use (?:x)? so the DLP pre-filter extracts the shorter prefix.
+    - name: "GitLab Deploy Token"
+      regex: 'gldt-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "GitLab Runner Token"
+      regex: 'glrt(?:r)?-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "GitLab CI Job Token"
+      regex: 'glcbt-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "GitLab Pipeline Trigger Token"
+      regex: 'glptt-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "GitLab OAuth Application Secret"
+      regex: 'gloas-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "GitLab SCIM Token"
+      regex: 'glsoat-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    - name: "GitLab Service Token"
+      regex: 'gl(?:ft|imt|agent|wt|ffct)-[a-zA-Z0-9\-_]{20,}'
+      severity: critical
+    # Database connection strings with embedded credentials (password between
+    # ':' and '@'); scheme-locked, requires ':pass@' so credential-less URIs
+    # are ignored.
+    - name: "PostgreSQL Connection String"
+      regex: 'postgres(?:ql)?://[^:/?#\s]*:[^@/?#\s]+@'
+      severity: critical
+    - name: "MySQL Connection String"
+      regex: 'mysql://[^:/?#\s]*:[^@/?#\s]+@'
+      severity: critical
+    - name: "MongoDB Connection String"
+      regex: 'mongodb(?:\+srv)?://[^:/?#\s]*:[^@/?#\s]+@'
+      severity: critical
+    - name: "Redis Connection String"
+      regex: 'redis(?:s)?://[^:/?#\s]*:[^@/?#\s]+@'
+      severity: critical
     # Cloud provider credentials
     - name: "AWS Access ID"
       regex: '(AKIA|A3T|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16,}'
@@ -145,6 +183,19 @@ dlp:
     - name: "Google OAuth Token"
       regex: 'ya29\.[a-zA-Z0-9_-]{20,}'
       severity: critical
+    # GCP service-account private_key_id (the "service_account" type marker is
+    # an always-on core pattern, not duplicated here; the private_key PEM body
+    # is caught by "Private Key Header").
+    - name: "GCP Service Account Private Key ID"
+      regex: '"private_key_id"\s*:\s*"[a-f0-9]{40}"'
+      severity: high
+    # Azure: 88-char storage account key in AccountKey=, and SAS sig= signature.
+    - name: "Azure Storage Account Key"
+      regex: 'AccountKey=[A-Za-z0-9+/]{86}=='
+      severity: critical
+    - name: "Azure SAS Token"
+      regex: '\bsig=[A-Za-z0-9%]{43,}%3d\b'
+      severity: high
     # Messaging platform tokens
     - name: "Slack Token"
       regex: 'xox[bpras]-[0-9a-zA-Z-]{15,}'

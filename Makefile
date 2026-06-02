@@ -15,7 +15,7 @@ LDFLAGS := -ldflags "-s -w \
 	-X $(MODULE)/internal/license.PublicKeyHex=$(LICENSE_PUBLIC_KEY) \
 	-X $(MODULE)/internal/rules.KeyringHex=$(RULES_KEYRING_HEX)"
 
-.PHONY: all build build-verifier test bench bench-egress bench-egress-long bench-egress-release lint clean docker install fmt vet tidy-check fuzz stats docs-check \
+.PHONY: all build build-verifier test bench bench-egress bench-egress-long bench-egress-release lint test-stability-check clean docker install fmt vet tidy-check fuzz stats docs-check \
 	test-runtime-critical test-replay-harness release-audit runtime-policy-audit debt-check release-check hermes-e2e
 
 all: build
@@ -82,6 +82,10 @@ vet:
 
 lint: vet
 	golangci-lint run ./...
+	./scripts/check-test-stability.sh
+
+test-stability-check:
+	./scripts/check-test-stability.sh
 
 release-audit:
 	./scripts/release-audit.sh

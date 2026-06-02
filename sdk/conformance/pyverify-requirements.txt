@@ -2,13 +2,14 @@
 # installed in the cross-language conformance gate (.github/workflows/verifiers.yaml).
 #
 # Scorecard "Pinned-Dependencies" requires CI pip installs to be hash-pinned.
-# The verifier itself is installed with `pip install --no-deps .` from its
-# pinned git checkout; its only runtime dependency is cryptography>=48.0.0,
-# whose transitive tree (cffi -> pycparser) is locked here with hashes.
+# Runtime dependency cryptography and its transitive tree are locked here.
+# The pinned verifier checkout is installed with --no-deps and
+# --no-build-isolation, so the setuptools build backend and wheel are also
+# pinned here instead of being fetched into an isolated build env.
 #
-# Regenerate after a cryptography bump:
-#   echo 'cryptography>=48.0.0' > req.in
-#   pip-compile --generate-hashes --no-header --strip-extras -o pyverify-requirements.txt req.in
+# Regenerate after a cryptography/build-backend bump:
+#   uv pip compile --generate-hashes --no-header --annotation-style split \
+#     -o pyverify-requirements.txt pyverify-requirements.in
 cffi==2.0.0 \
     --hash=sha256:00bdf7acc5f795150faa6957054fbbca2439db2f775ce831222b66f192f03beb \
     --hash=sha256:07b271772c100085dd28b74fa0cd81c8fb1a3ba18b21e03d7c27f3436a10606b \
@@ -145,8 +146,20 @@ cryptography==48.0.0 \
     --hash=sha256:ecde28a596bead48b0cfd2a1b4416c3d43074c2d785e3a398d7ec1fc4d0f7fbb \
     --hash=sha256:f5333311663ea94f75dd408665686aaf426563556bb5283554a3539177e03b8c \
     --hash=sha256:fdfef35d751d510fcef5252703621574364fec16418c4a1e5e1055248401054b
-    # via -r /tmp/pyverify-req.in
+    # via -r pyverify-requirements.in
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e \
+    --hash=sha256:ff452ff5a3e828ce110190feff1178bb1f2ea2281fa2075aadb987c2fb221661
+    # via wheel
 pycparser==3.0 \
     --hash=sha256:600f49d217304a5902ac3c37e1281c9fe94e4d0489de643a9504c5cdfdfc6b29 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
     # via cffi
+setuptools==82.0.1 \
+    --hash=sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9 \
+    --hash=sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb
+    # via -r pyverify-requirements.in
+wheel==0.47.0 \
+    --hash=sha256:212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced \
+    --hash=sha256:cc72bd1009ba0cf63922e28f94d9d83b920aa2bb28f798a31d0691b02fa3c9b3
+    # via -r pyverify-requirements.in

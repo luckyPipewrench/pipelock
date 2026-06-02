@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Test-scoped constants to avoid goconst triggers.
@@ -83,8 +84,7 @@ const waitForReceiptTimeout = 2 * time.Second
 // been persisted. Callers can then Close() the recorder and extract.
 func waitForReceiptOrTimeout(t *testing.T, dir string) {
 	t.Helper()
-	deadline := time.Now().Add(waitForReceiptTimeout)
-	for time.Now().Before(deadline) {
+	testwait.For(t, waitForReceiptTimeout, func() bool {
 		entries, _ := os.ReadDir(filepath.Clean(dir))
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") {
@@ -92,11 +92,11 @@ func waitForReceiptOrTimeout(t *testing.T, dir string) {
 			}
 			info, err := e.Info()
 			if err == nil && info.Size() > 0 {
-				return
+				return true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	}, "receipt JSONL in %s", dir)
 }
 
 // newCoverageEmitter creates a recorder and emitter pair for coverage tests.

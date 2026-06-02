@@ -139,6 +139,8 @@ type Loader struct {
 	storeOpts store.Options
 	reloadMu  sync.Mutex
 	current   atomic.Pointer[ActiveSet]
+	ready     chan struct{}
+	readyOnce sync.Once
 	mode      Mode
 	metrics   LoaderMetrics
 	now       func() time.Time
@@ -181,6 +183,7 @@ func NewLoader(opts LoaderOptions, metrics LoaderMetrics) (*Loader, error) {
 	l := &Loader{
 		store:    store.New(opts.StoreDir),
 		storeDir: filepath.Clean(opts.StoreDir),
+		ready:    make(chan struct{}),
 		mode:     opts.Mode,
 		metrics:  metrics,
 		now:      now,
@@ -380,6 +383,7 @@ func (l *Loader) Watch(ctx context.Context) error {
 	if err := watcher.Add(l.storeDir); err != nil {
 		return fmt.Errorf("contract runtime: watch %s: %w", l.storeDir, err)
 	}
+	l.readyOnce.Do(func() { close(l.ready) })
 
 	// debounce is reset on every relevant event. When it fires, a single
 	// Reload runs and debounce resets to nil so a quiescent loop does not

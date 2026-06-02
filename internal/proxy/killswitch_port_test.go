@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // doReq is a test helper that creates and executes an HTTP request with context.
@@ -251,19 +252,18 @@ func TestKillSwitchPortIsolation_DefaultBehavior(t *testing.T) {
 	// Wait for the server to start by polling /health.
 	// Use raw client.Get (not doReq) because connection refused is expected during startup.
 	client := &http.Client{Timeout: 5 * time.Second}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 2*time.Second, func() bool {
 		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet,
 			fmt.Sprintf("http://%s/health", addr), nil)
 		resp, reqErr := client.Do(req)
 		if reqErr == nil {
 			resp.Body.Close() //nolint:errcheck,gosec // test
 			if resp.StatusCode == http.StatusOK {
-				break
+				return true
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	}, "proxy health endpoint on %s", addr)
 
 	// API route should be reachable on the main port.
 	resp := doReq(t, client, http.MethodGet,

@@ -249,7 +249,16 @@ func TestMatcher_WindowEviction(t *testing.T) {
 	m2 := New(cfg2)
 
 	m2.Record("s2", "read_file")
-	time.Sleep(1100 * time.Millisecond) // Wait for window to expire
+	sh2, ok := m2.sessions.Load("s2")
+	if !ok {
+		t.Fatal("session s2 not found")
+	}
+	sess2 := sh2.(*sessionHistory)
+	sess2.mu.Lock()
+	for i := range sess2.records {
+		sess2.records[i].timestamp = time.Now().Add(-2 * time.Second)
+	}
+	sess2.mu.Unlock()
 
 	// The read should be evicted. New exec should not match read-then-exec.
 	v := m2.Record("s2", "bash_command")

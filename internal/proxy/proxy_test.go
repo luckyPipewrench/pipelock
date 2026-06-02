@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -76,7 +77,11 @@ func setupTestProxy(t *testing.T) (*Proxy, *httptest.Server) {
 			w.Header().Set("Content-Type", "text/plain")
 			_, _ = fmt.Fprint(w, "Hello world")
 		case "/slow":
-			time.Sleep(5 * time.Second)
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(5 * time.Second):
+			}
 			_, _ = fmt.Fprint(w, "too slow")
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -2723,9 +2728,6 @@ func TestProxy_StartAndShutdown(t *testing.T) {
 		errCh <- p.Start(ctx)
 	}()
 
-	// Give the server a moment to start
-	time.Sleep(100 * time.Millisecond)
-
 	// Cancel context to trigger shutdown
 	cancel()
 
@@ -5070,14 +5072,14 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 	// Wait for server to be serving.
 	addr := ln.Addr().String()
 	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-	for i := 0; i < 50; i++ {
+	testwait.For(t, time.Second, func() bool {
 		conn, dialErr := dialer.DialContext(context.Background(), "tcp4", addr)
 		if dialErr == nil {
 			_ = conn.Close()
-			break
+			return true
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return false
+	}, "agent server listens on %s", addr)
 
 	// ShutdownAgentServers should cleanly stop it.
 	p.ShutdownAgentServers()

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
@@ -352,21 +354,36 @@ func TestServer_WebhookProcessingError_Returns500(t *testing.T) {
 	}
 }
 
-func TestServer_ListenAndShutdown(t *testing.T) {
+func TestServer_ServeAndShutdown(t *testing.T) {
 	srv := newTestServer(t)
 
-	// Use a random port for this test.
-	srv.cfg.ListenAddr = "127.0.0.1:0"
-	srv.srv.Addr = "127.0.0.1:0"
+	// Bind an ephemeral loopback port and read the resolved address back so
+	// readiness is observable (dialable) without a startup sleep. The public
+	// ListenAndServe binds a :0 port it never surfaces, leaving nothing to
+	// poll. Serving the underlying http.Server with a test-owned listener
+	// exercises the graceful-shutdown path deterministically; the
+	// ListenAndServe wrapper only logs startup and delegates to this server.
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	addr := ln.Addr().String()
 
-	// Start the server in a goroutine.
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- srv.ListenAndServe()
+		errCh <- srv.srv.Serve(ln)
 	}()
 
-	// Give the server a moment to start listening.
-	time.Sleep(50 * time.Millisecond)
+	// Wait until the server actually accepts connections before shutting down.
+	testwait.For(t, 2*time.Second, func() bool {
+		conn, derr := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(t.Context(), "tcp", addr)
+		if derr != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, "license server to accept connections")
 
 	// Gracefully shut down.
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -376,8 +393,8 @@ func TestServer_ListenAndShutdown(t *testing.T) {
 		t.Fatalf("Shutdown: %v", err)
 	}
 
-	// ListenAndServe should return http.ErrServerClosed.
+	// Serve should return http.ErrServerClosed after graceful shutdown.
 	if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-		t.Errorf("ListenAndServe returned unexpected error: %v", err)
+		t.Errorf("Serve returned unexpected error: %v", err)
 	}
 }

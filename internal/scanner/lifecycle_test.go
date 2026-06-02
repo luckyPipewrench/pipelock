@@ -4,12 +4,14 @@
 package scanner_test
 
 import (
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestScanner_BeginUse_OkBeforeClose verifies the happy path: BeginUse
@@ -150,14 +152,7 @@ func TestScanner_Close_DrainTimeoutDefersTeardown(t *testing.T) {
 	// Releasing the hung user lets the detached goroutine finish drain
 	// and run teardown; Drained flips shortly afterwards.
 	release()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if sc.Drained() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("Drained() did not flip after hung user released")
+	testwait.For(t, 2*time.Second, sc.Drained, "scanner drained after hung user release")
 }
 
 // TestScanner_Close_Idempotent verifies repeated Close calls are safe
@@ -189,7 +184,7 @@ func TestScanner_BeginUse_RaceFree(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			if release, ok := sc.BeginUse(); ok {
-				time.Sleep(time.Microsecond)
+				runtime.Gosched()
 				release()
 			}
 		}()

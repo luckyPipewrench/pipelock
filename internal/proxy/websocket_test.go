@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
@@ -3557,28 +3558,20 @@ func TestWSRelay_KillSwitch_UpstreamToClient(t *testing.T) {
 	// relay→backend handshake can be slow under load.
 	var conn net.Conn
 	var reply []byte
-	const maxAttempts = 10
-	for attempt := range maxAttempts {
+	testwait.For(t, 10*time.Second, func() bool {
 		c, dialErr := dialWSConn(proxyAddr, backendAddr)
 		if dialErr != nil {
-			if attempt == maxAttempts-1 {
-				t.Fatalf("dial/read initial frame after %d attempts: dial error: %v", maxAttempts, dialErr)
-			}
-			time.Sleep(250 * time.Millisecond)
-			continue
+			return false
 		}
 		r, _, readErr := wsutil.ReadServerData(c)
 		if readErr == nil && string(r) == testWSHello {
 			conn = c
 			reply = r
-			break
+			return true
 		}
 		_ = c.Close()
-		if attempt == maxAttempts-1 {
-			t.Fatalf("read initial frame after %d attempts: last error: %v", maxAttempts, readErr)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+		return false
+	}, "dial/read initial WebSocket frame from %s via %s", backendAddr, proxyAddr)
 	_ = reply // used in assertion above
 	defer func() { _ = conn.Close() }()
 

@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/contract/runtime/contractruntimetest"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestNewLoader_RejectsMissingFields(t *testing.T) {
@@ -381,8 +382,7 @@ func TestLoader_Watch_CancelExitsCleanly(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- loader.Watch(ctx) }()
 
-	// Give Watch enough time to call fsnotify.NewWatcher + Add.
-	time.Sleep(50 * time.Millisecond)
+	waitForLoaderReady(t, loader)
 	cancel()
 
 	select {
@@ -419,7 +419,7 @@ func TestLoader_Watch_FileReplacementTriggersReload(t *testing.T) {
 		cancel()
 		<-done
 	})
-	time.Sleep(80 * time.Millisecond) // let watcher.Add complete
+	waitForLoaderReady(t, loader)
 
 	// Promote generation 2 with the correct prior-hash chain.
 	writeSignedActiveStore(t, fixture, storeDir, 2, priorHash, env)
@@ -455,7 +455,7 @@ func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 		cancel()
 		<-done
 	})
-	time.Sleep(80 * time.Millisecond)
+	waitForLoaderReady(t, loader)
 
 	// Fire a burst of WRITEs against the same content. fsnotify will emit
 	// multiple events; the 100ms debounce window should coalesce them
@@ -487,7 +487,24 @@ func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 
 	// Drain any trailing event for a hair longer than the debounce window
 	// so a coalesced second pass would have already fired.
-	time.Sleep(reloadDebounceWindow + 100*time.Millisecond)
+	quiet := time.NewTimer(reloadDebounceWindow + 100*time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	for {
+		select {
+		case <-quiet.C:
+			ticker.Stop()
+			goto quietDone
+		case <-ticker.C:
+			if got := metrics.outcome("same_hash"); got > 2 {
+				ticker.Stop()
+				if !quiet.Stop() {
+					<-quiet.C
+				}
+				t.Fatalf("same_hash = %d, want <= 2 (5-event burst should coalesce)", got)
+			}
+		}
+	}
+quietDone:
 
 	// 5 burst writes should coalesce; tolerate up to 2 same_hash outcomes
 	// in case the OS spreads the burst across two debounce windows under
@@ -529,7 +546,7 @@ func TestLoader_Watch_RejectedReloadKeepsWatcherAlive(t *testing.T) {
 		cancel()
 		<-done
 	})
-	time.Sleep(80 * time.Millisecond)
+	waitForLoaderReady(t, loader)
 
 	// Generation downgrade: write generation 1 over generation 2.
 	writeSignedActiveStore(t, fixture, storeDir, 1, "sha256:older", env)
@@ -596,7 +613,7 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 		cancel()
 		<-done
 	})
-	time.Sleep(80 * time.Millisecond)
+	waitForLoaderReady(t, loader)
 
 	// Producer that rewrites the same content every 40ms (well below
 	// the 100ms debounce window). Without the maxDebounceWait cap, the
@@ -638,16 +655,9 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 	// flaked on CI while local runs always saw the flush within
 	// 200ms past maxDebounceWait. Five seconds keeps the test
 	// well under the package timeout.
-	deadline := time.Now().Add(maxDebounceWait + 5*time.Second)
-	for time.Now().Before(deadline) {
-		if metrics.outcome("same_hash") >= 1 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if metrics.outcome("same_hash") < 1 {
-		t.Fatalf("debounce never flushed under sustained writes; metrics = %v", snapshotOutcomes(metrics))
-	}
+	testwait.For(t, maxDebounceWait+5*time.Second, func() bool {
+		return metrics.outcome("same_hash") >= 1
+	}, "debounce flush under sustained writes; metrics = %v", snapshotOutcomes(metrics))
 }
 
 func TestLoader_Watch_RemoveEventTriggersReload(t *testing.T) {
@@ -678,7 +688,7 @@ func TestLoader_Watch_RemoveEventTriggersReload(t *testing.T) {
 		cancel()
 		<-done
 	})
-	time.Sleep(80 * time.Millisecond)
+	waitForLoaderReady(t, loader)
 
 	// Remove active.json directly. The watcher should see Remove and
 	// trigger a Reload through the debounce. Reload then rejects the
@@ -923,7 +933,7 @@ func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- loader.Watch(ctx) }()
-	time.Sleep(80 * time.Millisecond)
+	waitForLoaderReady(t, loader)
 
 	// Drop the entire store directory. fsnotify fires a Remove event on
 	// the watched directory; Watch surfaces the loss to the caller so
@@ -954,19 +964,34 @@ func TestLoader_Watch_DirectoryDeletionEndsWatcher(t *testing.T) {
 // tight enough that a stuck watcher fails fast.
 const watchTestTimeout = 2 * time.Second
 
+func waitForLoaderReady(t *testing.T, loader *Loader) {
+	t.Helper()
+	select {
+	case <-loader.ready:
+	case <-time.After(watchTestTimeout):
+		t.Fatal("loader watcher did not report ready")
+	}
+}
+
 // waitFor polls cond until it returns true or watchTestTimeout elapses.
 // Returns true on success, false on timeout. Used by Watch tests where
 // the signal is the watcher goroutine landing a Reload outcome: poll
 // the metric to increment rather than guess a fixed sleep.
 func waitFor(cond func() bool) bool {
-	deadline := time.Now().Add(watchTestTimeout)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(watchTestTimeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		if cond() {
 			return true
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-timer.C:
+			return cond()
+		case <-ticker.C:
+		}
 	}
-	return cond()
 }
 
 // snapshotOutcomes returns a copy of the current outcome counters for

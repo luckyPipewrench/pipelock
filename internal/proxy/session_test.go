@@ -179,10 +179,11 @@ func TestSessionManager_MaxSessions_EvictsOldestIdle(t *testing.T) {
 	sm := NewSessionManager(cfg, nil, nil)
 	defer sm.Close()
 
-	// Create two sessions
-	sm.GetOrCreate("old")
-	time.Sleep(time.Millisecond) // ensure time difference
-	sm.GetOrCreate("new")
+	// Create two sessions with deterministic activity order.
+	oldSess := sm.GetOrCreate("old")
+	newSess := sm.GetOrCreate("new")
+	setSessionLastActivity(t, oldSess, time.Now().Add(-time.Minute))
+	setSessionLastActivity(t, newSess, time.Now())
 
 	// 3rd session evicts "old" (oldest lastActivity)
 	sm.GetOrCreate("newest")
@@ -897,9 +898,7 @@ func TestSessionManager_EvictOldest_EscalatedGaugeDecrement(t *testing.T) {
 	}
 
 	// Ensure "escalated-session" has older lastActivity than "second-session".
-	// RecordSignal doesn't update lastActivity, so we just need to ensure the
-	// second session is created after with a newer timestamp.
-	time.Sleep(time.Millisecond)
+	setSessionLastActivity(t, sess, time.Now().Add(-time.Minute))
 	sm.GetOrCreate("second-session")
 
 	// Adding a third session when at capacity evicts "escalated-session"
@@ -1122,14 +1121,13 @@ func TestSessionState_CriticalNoActivityRefresh(t *testing.T) {
 
 	// Simulate proxy setting block_all flag after escalation.
 	sess.SetBlockAll(true)
+	setSessionLastActivity(t, sess, time.Now().Add(-time.Minute))
 
 	// Record the last activity time.
 	sess.mu.Lock()
 	activityBefore := sess.lastActivity
 	sess.mu.Unlock()
 
-	// Wait a moment, then RecordRequest at block_all.
-	time.Sleep(10 * time.Millisecond)
 	sess.RecordRequest("example.com", cfg)
 
 	sess.mu.Lock()
@@ -1156,12 +1154,12 @@ func TestSessionState_SubCriticalActivityRefresh(t *testing.T) {
 	if sess.EscalationLevel() < 1 || sess.EscalationLevel() >= 3 {
 		t.Fatalf("expected level 1-2, got %d", sess.EscalationLevel())
 	}
+	setSessionLastActivity(t, sess, time.Now().Add(-time.Minute))
 
 	sess.mu.Lock()
 	activityBefore := sess.lastActivity
 	sess.mu.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
 	sess.RecordRequest("example.com", cfg)
 
 	sess.mu.Lock()
@@ -1172,6 +1170,13 @@ func TestSessionState_SubCriticalActivityRefresh(t *testing.T) {
 	if !activityAfter.After(activityBefore) {
 		t.Error("lastActivity should be refreshed at sub-critical escalation levels")
 	}
+}
+
+func setSessionLastActivity(t *testing.T, sess *SessionState, at time.Time) {
+	t.Helper()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	sess.lastActivity = at
 }
 
 func TestSessionManager_CleanupLoop_DoneStops(t *testing.T) {

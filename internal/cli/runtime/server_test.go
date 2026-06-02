@@ -19,12 +19,17 @@ import (
 	mcptools "github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const (
 	serverTestUpstreamURL     = "http://127.0.0.1:1"
 	serverTestEphemeralListen = "127.0.0.1:0"
 )
+
+type stringerFunc func() string
+
+func (f stringerFunc) String() string { return f() }
 
 // newServerTestFreePort returns a free 127.0.0.1 TCP port by binding and
 // releasing it, same pattern used in run_test.go:freePort.
@@ -73,29 +78,19 @@ func newTestServer(t *testing.T, mutate func(*ServerOpts)) (*Server, *syncBuffer
 
 func waitForServerCancel(t *testing.T, s *Server) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.For(t, 2*time.Second, func() bool {
 		s.cancelMu.Lock()
 		ready := s.internalCancel != nil
 		s.cancelMu.Unlock()
-		if ready {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("server did not publish internal cancel")
+		return ready
+	}, "server to publish internal cancel")
 }
 
 func waitForServerOutput(t *testing.T, buf *syncBuffer, want string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if buf.contains(want) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("server output missing %q:\n%s", want, buf.String())
+	testwait.For(t, 3*time.Second, func() bool {
+		return buf.contains(want)
+	}, "server output %q:\n%s", want, stringerFunc(buf.String))
 }
 
 // TestNewServer_AppliesCLIOverrides verifies that ModeChanged / ListenChanged

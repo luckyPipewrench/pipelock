@@ -339,42 +339,86 @@ func TestDoW_ConcurrentLimit_Default(t *testing.T) {
 }
 
 func TestDoW_ConcurrentLimit_ThreadSafe(t *testing.T) {
+	const limit = 50
 	tracker := NewDoWTracker(DoWConfig{
-		MaxConcurrentToolCalls: 50,
+		MaxConcurrentToolCalls: limit,
 		Action:                 actionBlock,
 	})
 
 	var wg sync.WaitGroup
 	allowed := make(chan bool, 100)
+	releaseHolders := make(chan struct{})
+	holderResults := make(chan bool, limit)
+	contenderResults := make(chan bool, 50)
 
-	// Launch 100 goroutines trying to acquire.
-	for range 100 {
+	// Fill the concurrent-call limit with holders first, then launch
+	// contenders. That deterministically exercises both allowed and denied
+	// paths instead of depending on goroutine scheduling timing.
+	for range limit {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			result := tracker.AcquireConcurrent()
 			allowed <- result.Allowed
+			holderResults <- result.Allowed
 			if result.Allowed {
-				// Hold briefly then release.
-				time.Sleep(time.Millisecond)
+				<-releaseHolders
 				tracker.ReleaseConcurrent()
 			}
 		}()
 	}
 
+	for range limit {
+		select {
+		case ok := <-holderResults:
+			if !ok {
+				t.Fatal("holder acquire was denied before limit was full")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for holders to acquire concurrent slots")
+		}
+	}
+
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result := tracker.AcquireConcurrent()
+			allowed <- result.Allowed
+			contenderResults <- result.Allowed
+			if result.Allowed {
+				tracker.ReleaseConcurrent()
+			}
+		}()
+	}
+
+	for range 50 {
+		select {
+		case <-contenderResults:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for contenders to attempt concurrent acquire")
+		}
+	}
+
+	close(releaseHolders)
 	wg.Wait()
 	close(allowed)
 
 	allowedCount := 0
+	deniedCount := 0
 	for a := range allowed {
 		if a {
 			allowedCount++
+		} else {
+			deniedCount++
 		}
 	}
 
-	// At least some should succeed, and we should never exceed the limit.
-	if allowedCount == 0 {
-		t.Error("at least some concurrent acquires should succeed")
+	if allowedCount == 0 || allowedCount > limit {
+		t.Errorf("allowed concurrent acquires = %d, want 1..%d", allowedCount, limit)
+	}
+	if deniedCount == 0 {
+		t.Error("expected some concurrent acquires to be denied while holders occupied the limit")
 	}
 
 	// Final inflight should be 0 (all released).

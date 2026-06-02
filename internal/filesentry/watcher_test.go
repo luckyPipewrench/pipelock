@@ -15,6 +15,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func ptrBool(b bool) *bool { return &b }
@@ -37,6 +38,20 @@ func armAndStart(t *testing.T, w Watcher, ctx context.Context) {
 			t.Errorf("Start: %v", err)
 		}
 	})
+}
+
+func waitForPendingTimer(t *testing.T, w Watcher, path string) {
+	t.Helper()
+	fw, ok := w.(*fsWatcher)
+	if !ok {
+		t.Fatalf("watcher type %T is not *fsWatcher", w)
+	}
+	testwait.For(t, time.Second, func() bool {
+		fw.mu.Lock()
+		defer fw.mu.Unlock()
+		_, ok := fw.timers[path]
+		return ok
+	}, "pending file sentry timer for %s", path)
 }
 
 func TestWatcher_DetectsSecretWrite(t *testing.T) {
@@ -689,7 +704,6 @@ func TestWatcher_DebounceTimerRace(t *testing.T) {
 		if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
 			t.Fatalf("WriteFile[%d]: %v", i, err)
 		}
-		time.Sleep(5 * time.Millisecond) // faster than debounce (50ms)
 	}
 
 	// Wait for the single debounced scan.
@@ -934,22 +948,17 @@ func TestWatcher_CloseFlushesLastWrite(t *testing.T) {
 		t.Fatalf("NewWatcher: %v", err)
 	}
 
-	if armErr := w.Arm(); armErr != nil {
-		t.Fatalf("Arm: %v", armErr)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = w.Start(ctx) }()
+	armAndStart(t, w, ctx)
 
 	// Write a secret - this starts a debounce timer.
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-	if writeErr := os.WriteFile(filepath.Join(dir, "last-write.json"), []byte(secret), 0o600); writeErr != nil {
+	lastWritePath := filepath.Join(dir, "last-write.json")
+	if writeErr := os.WriteFile(lastWritePath, []byte(secret), 0o600); writeErr != nil {
 		t.Fatalf("WriteFile: %v", writeErr)
 	}
 
-	// Small delay to ensure the fsnotify event is delivered and the
-	// debounce timer is started, but NOT long enough for debounce to fire.
-	time.Sleep(10 * time.Millisecond)
+	waitForPendingTimer(t, w, lastWritePath)
 
 	// Close should flush the pending scan synchronously.
 	cancel()
@@ -986,18 +995,15 @@ func TestWatcher_CloseFlushScanDisabled(t *testing.T) {
 		t.Fatalf("NewWatcher: %v", err)
 	}
 
-	if armErr := w.Arm(); armErr != nil {
-		t.Fatalf("Arm: %v", armErr)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = w.Start(ctx) }()
+	armAndStart(t, w, ctx)
 
 	secret := "sk-ant-" + "api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
-	if writeErr := os.WriteFile(filepath.Join(dir, "no-scan.json"), []byte(secret), 0o600); writeErr != nil {
+	noScanPath := filepath.Join(dir, "no-scan.json")
+	if writeErr := os.WriteFile(noScanPath, []byte(secret), 0o600); writeErr != nil {
 		t.Fatalf("WriteFile: %v", writeErr)
 	}
-	time.Sleep(10 * time.Millisecond)
+	waitForPendingTimer(t, w, noScanPath)
 
 	cancel()
 	_ = w.Close()
@@ -1034,17 +1040,14 @@ func TestWatcher_CloseFlushEmptyFile(t *testing.T) {
 		t.Fatalf("NewWatcher: %v", err)
 	}
 
-	if armErr := w.Arm(); armErr != nil {
-		t.Fatalf("Arm: %v", armErr)
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
-	go func() { _ = w.Start(ctx) }()
+	armAndStart(t, w, ctx)
 
-	if writeErr := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o600); writeErr != nil {
+	emptyPath := filepath.Join(dir, "empty.txt")
+	if writeErr := os.WriteFile(emptyPath, []byte{}, 0o600); writeErr != nil {
 		t.Fatalf("WriteFile: %v", writeErr)
 	}
-	time.Sleep(10 * time.Millisecond)
+	waitForPendingTimer(t, w, emptyPath)
 
 	cancel()
 	_ = w.Close()

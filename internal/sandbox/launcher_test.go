@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestLaunchSandboxed_EchoCommand(t *testing.T) {
@@ -244,9 +243,6 @@ func TestLaunchSandboxed_ChildCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LaunchSandboxed: %v", err)
 	}
-
-	// Give child time to start.
-	time.Sleep(100 * time.Millisecond)
 
 	// Kill the child process.
 	if cmd.Process != nil {

@@ -4,16 +4,58 @@
 package diag
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"github.com/spf13/cobra"
 )
+
+type lockedStringWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (w *lockedStringWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *lockedStringWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func (w *lockedStringWriter) contains(s string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return strings.Contains(w.buf.String(), s)
+}
+
+func waitForLogOutput(t *testing.T, buf *lockedStringWriter, errCh <-chan error, cancel context.CancelFunc, want string) {
+	t.Helper()
+	testwait.For(t, time.Second, func() bool {
+		if buf.contains(want) {
+			return true
+		}
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("logs --follow exited before output %q: %v\nstdout:\n%s", want, err, buf.String())
+		default:
+		}
+		return false
+	}, "log output %q", want)
+}
 
 // logsRoot creates a minimal root command with the logs subcommand registered.
 func logsRoot() *cobra.Command {
@@ -40,7 +82,7 @@ func TestLogsCmd_FollowMode(t *testing.T) {
 
 	cmd := logsRoot()
 	cmd.SetContext(ctx)
-	buf := &strings.Builder{}
+	buf := &lockedStringWriter{}
 	cmd.SetOut(buf)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"logs", "--file", logPath, "--follow"})
@@ -50,8 +92,7 @@ func TestLogsCmd_FollowMode(t *testing.T) {
 		errCh <- cmd.Execute()
 	}()
 
-	// Give the command time to read initial content and enter follow mode
-	time.Sleep(200 * time.Millisecond)
+	waitForLogOutput(t, buf, errCh, cancel, "first.com")
 
 	// Append a new line while follow mode is active
 	f, err := os.OpenFile(filepath.Clean(logPath), os.O_APPEND|os.O_WRONLY, 0o600)
@@ -62,8 +103,7 @@ func TestLogsCmd_FollowMode(t *testing.T) {
 	_, _ = f.WriteString("{\"event\":\"blocked\",\"url\":\"https://appended.com\"}\n")
 	_ = f.Close()
 
-	// Give follow mode time to pick up the new line
-	time.Sleep(500 * time.Millisecond)
+	waitForLogOutput(t, buf, errCh, cancel, "appended.com")
 
 	// Cancel to break out via context
 	cancel()
@@ -99,7 +139,7 @@ func TestLogsCmd_FollowWithFilter(t *testing.T) {
 
 	cmd := logsRoot()
 	cmd.SetContext(ctx)
-	buf := &strings.Builder{}
+	buf := &lockedStringWriter{}
 	cmd.SetOut(buf)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"logs", "--file", logPath, "--follow", "--filter", "blocked"})
@@ -108,8 +148,6 @@ func TestLogsCmd_FollowWithFilter(t *testing.T) {
 	go func() {
 		errCh <- cmd.Execute()
 	}()
-
-	time.Sleep(200 * time.Millisecond)
 
 	// Append lines: one allowed (filtered), one blocked (shown)
 	f, err := os.OpenFile(filepath.Clean(logPath), os.O_APPEND|os.O_WRONLY, 0o600)
@@ -121,7 +159,7 @@ func TestLogsCmd_FollowWithFilter(t *testing.T) {
 	_, _ = f.WriteString("{\"event\":\"blocked\",\"url\":\"https://caught.com\"}\n")
 	_ = f.Close()
 
-	time.Sleep(500 * time.Millisecond)
+	waitForLogOutput(t, buf, errCh, cancel, "caught.com")
 	cancel()
 
 	select {

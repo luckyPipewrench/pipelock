@@ -1366,9 +1366,8 @@ func TestInterceptTunnel_ContextDeadline(t *testing.T) {
 	t.Cleanup(func() { _ = clientConn.Close() })
 
 	// Already-expired context forces handshake to fail with deadline.
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
-	time.Sleep(5 * time.Millisecond) // ensure deadline passes
 
 	// Start interceptTunnel with the expired context. The TLS handshake
 	// should fail because the context deadline constrains the handshake.

@@ -1,0 +1,4 @@
+# Exact findings allowed by scripts/check-test-stability.sh.
+# Format: paste the full `path:line:source` finding emitted by the check.
+# Keep this empty unless a test genuinely validates elapsed wall-clock behavior
+# and cannot use a fake clock, channel, or observable condition wait.

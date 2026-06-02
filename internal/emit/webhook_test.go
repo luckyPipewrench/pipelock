@@ -39,8 +39,9 @@ func TestWebhookSink_BelowMinSeverity(t *testing.T) {
 		t.Fatalf("expected nil error for dropped event, got %v", err)
 	}
 
-	// Give background goroutine a moment - no request should arrive.
-	time.Sleep(50 * time.Millisecond)
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 }
 
 func TestWebhookSink_SuccessfulPost(t *testing.T) {
@@ -176,8 +177,11 @@ func TestWebhookSink_NoAuthHeaderWithoutToken(t *testing.T) {
 func TestWebhookSink_QueueFull(t *testing.T) {
 	// Server blocks long enough for the queue to fill.
 	blocker := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
 
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		startedOnce.Do(func() { close(started) })
 		<-blocker
 	}))
 	defer srv.Close()
@@ -201,8 +205,10 @@ func TestWebhookSink_QueueFull(t *testing.T) {
 			queueFullSeen = true
 			break
 		}
-		// Brief pause to let the goroutine pick up the first event and block on HTTP.
-		time.Sleep(time.Millisecond)
+		select {
+		case <-started:
+		default:
+		}
 	}
 
 	if !queueFullSeen {
@@ -499,7 +505,10 @@ func TestWebhookSink_SendConnectionRefused(t *testing.T) {
 func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 	// Create a sink with a tiny queue so the second select path is exercised.
 	blocker := make(chan struct{})
+	started := make(chan struct{})
+	var startedOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		startedOnce.Do(func() { close(started) })
 		<-blocker
 	}))
 	defer srv.Close()
@@ -517,16 +526,17 @@ func TestWebhookSink_EmitClosedDuringQueueWait(t *testing.T) {
 	if err := sink.Emit(context.Background(), event); err != nil {
 		t.Fatalf("first Emit: %v", err)
 	}
-	time.Sleep(10 * time.Millisecond) // let goroutine pick it up
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first webhook request")
+	}
 	if err := sink.Emit(context.Background(), event); err != nil {
 		t.Fatalf("second Emit: %v", err)
 	}
 
 	// Close while queue is full - exercises the <-w.done path in the second select.
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		close(blocker) // unblock the server so Close can finish
-	}()
+	close(blocker)
 	_ = sink.Close()
 
 	// Emit after close should return error

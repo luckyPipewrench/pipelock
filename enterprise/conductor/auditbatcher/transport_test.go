@@ -16,8 +16,11 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestTransportDeliverOnceSuccessAcksRecord(t *testing.T) {
@@ -258,7 +261,9 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 	if _, err := q.Enqueue(signedTestBatch(t, "batch-shutdown", priv)); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
+	var attempts atomic.Int64
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
 	defer srv.Close()
@@ -283,8 +288,12 @@ func TestTransportRun_GracefulShutdown(t *testing.T) {
 		runErrCh <- tr.Run(ctx)
 	}()
 
-	// Give the loop a turn so we exercise the retry-sleep path before cancel.
-	time.Sleep(25 * time.Millisecond)
+	// Wait until the transport has actually attempted a send (and hit the 503
+	// retry path) before cancelling, so the shutdown-mid-retry path is
+	// exercised deterministically instead of via a timing guess.
+	testwait.For(t, time.Second, func() bool {
+		return attempts.Load() >= 1
+	}, "transport to attempt at least one send before cancel")
 	cancel()
 
 	select {

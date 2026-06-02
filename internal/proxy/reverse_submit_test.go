@@ -350,8 +350,12 @@ func TestSubmitProfile_CleanRequestForwards(t *testing.T) {
 }
 
 func TestSubmitProfile_RequestTimeoutApplied(t *testing.T) {
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(1500 * time.Millisecond)
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(1500 * time.Millisecond):
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()

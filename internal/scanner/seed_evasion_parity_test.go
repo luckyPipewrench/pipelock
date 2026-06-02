@@ -61,3 +61,29 @@ func TestScanTextForDLP_SeedEvasionParity(t *testing.T) {
 		})
 	}
 }
+
+// TestScan_SeedEvasionURLTargetParity proves the third detection surface: the
+// URL/target scan path (Scan builds seed candidates from query values, hostname
+// labels, and path segments). An underscore-separated mnemonic in a path was a
+// single un-tokenizable blob before the separator hardening; "_" is now a
+// separator, so the segments tokenize into the 12 words and the phrase is
+// caught. ASCII-only, so there is no URL-encoding noise. Seed detection runs in
+// the DLP layer before SSRF/DNS, so Internal=nil keeps the test offline.
+func TestScan_SeedEvasionURLTargetParity(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+	s := New(cfg)
+	defer s.Close()
+
+	underscored := strings.ReplaceAll(testSeedPhrase12, " ", "_")
+	r := s.Scan(context.Background(), "https://evil.example/"+underscored)
+	if r.Allowed {
+		t.Fatalf("underscore-separated seed in URL path NOT blocked via Scan (URL/target parity gap): %+v", r)
+	}
+	if !strings.Contains(r.Reason, "Seed Phrase") {
+		t.Fatalf("blocked but not for a seed phrase: %q", r.Reason)
+	}
+}

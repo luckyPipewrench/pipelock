@@ -90,8 +90,10 @@ type SVIDEvidence struct {
 	Binding SVIDBinding `json:"binding"`
 }
 
-// bindingPayload is the exact object the SVID leaf key signs. Its first field is
-// the domain-separation context; every numeric-like field is a typed string.
+// bindingPayload is the exact object the SVID leaf key signs. It carries a
+// signed domain-separation context field (JCS sorts keys, so "context" is part
+// of the signed bytes but not necessarily first in canonical order); every
+// numeric-like field is a typed string.
 type bindingPayload struct {
 	Context                  string `json:"context"`
 	Profile                  string `json:"profile"`
@@ -199,6 +201,32 @@ func VerifySVIDBinding(e Envelope, ev SVIDEvidence, opts SVIDVerifyOptions) (str
 	}
 	if !spiffeIDPermitted(validated.SPIFFEID, opts.AllowedSPIFFEIDs) {
 		return "", fmt.Errorf("%w: %q", ErrSVIDNotPermitted, validated.SPIFFEID)
+	}
+
+	// The signed assertion must declare the same trust domain the SVID validated
+	// against (ValidateSVID already pins the SVID to opts.TrustDomain). Without
+	// this, a valid SVID from one trust domain could back an assertion claiming
+	// another — trust-domain confusion. trust_domain is required when an SVID
+	// binding is present.
+	if e.Assertion.TrustDomain == "" {
+		return "", fmt.Errorf("%w: assertion.trust_domain is required with an SVID binding", ErrSVIDBinding)
+	}
+	if e.Assertion.TrustDomain != opts.TrustDomain {
+		return "", fmt.Errorf("%w: assertion trust_domain %q != validated SVID trust domain %q", ErrSVIDBinding, e.Assertion.TrustDomain, opts.TrustDomain)
+	}
+
+	// The proof-of-possession must have been issued while the SVID was valid: a
+	// binding stamped after the leaf expired (or before it was issued) signals
+	// post-expiry key use, not a fresh possession proof. issued_at is producer-
+	// asserted (there is no trusted timestamp without a TSA, Rung-2), so this is
+	// a fail-closed sanity bound on top of the action-time chain validation, not
+	// a substitute for it.
+	issuedAt, perr := time.Parse(time.RFC3339Nano, ev.IssuedAt)
+	if perr != nil {
+		return "", fmt.Errorf("%w: issued_at: %w", ErrSVIDEvidence, perr)
+	}
+	if issuedAt.Before(validated.Leaf.NotBefore) || issuedAt.After(validated.Leaf.NotAfter) {
+		return "", fmt.Errorf("%w: binding issued_at %s outside the SVID leaf validity window", ErrSVIDBinding, ev.IssuedAt)
 	}
 
 	// Recompute the canonical binding payload and verify the proof-of-possession

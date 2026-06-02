@@ -22,9 +22,8 @@ import (
 )
 
 const (
-	testSPIFFEID  = "spiffe://example.org/mediators/pipelock-prod"
-	testNonce     = "Zm9vYmFyYmF6cXV4MTIzNA"
-	bindingIssued = "2026-06-01T00:00:00Z"
+	testSPIFFEID = "spiffe://example.org/mediators/pipelock-prod"
+	testNonce    = "Zm9vYmFyYmF6cXV4MTIzNA"
 )
 
 // svidFixture is a minted ECDSA SVID leaf, its CA, and a pinned trust-bundle
@@ -97,12 +96,19 @@ func mintSVID(t *testing.T, trustDomain, spiffeID string) svidFixture {
 // the binding payload derived from env.
 func signedEvidence(t *testing.T, env Envelope, fx svidFixture, spiffeID string) SVIDEvidence {
 	t.Helper()
+	// issued_at must fall within the SVID leaf validity window; the action time
+	// (= leaf midpoint in the fixture) always does.
+	return signedEvidenceAt(t, env, fx, spiffeID, fx.actionTime.UTC().Format(time.RFC3339Nano))
+}
+
+func signedEvidenceAt(t *testing.T, env Envelope, fx svidFixture, spiffeID, issuedAt string) SVIDEvidence {
+	t.Helper()
 	ev := SVIDEvidence{
 		Type:       "x509",
 		SPIFFEID:   spiffeID,
 		LeafDERB64: base64.StdEncoding.EncodeToString(fx.leafDER),
 		Nonce:      testNonce,
-		IssuedAt:   bindingIssued,
+		IssuedAt:   issuedAt,
 		Binding:    SVIDBinding{Alg: BindingAlgECDSAP256SHA256, Context: ContextSVIDBinding},
 	}
 	canonical, err := bindingCanonical(env, ev)
@@ -351,7 +357,7 @@ func TestSVID_Ed25519LeafPoP(t *testing.T) {
 	ev := SVIDEvidence{
 		Type: "x509", SPIFFEID: testSPIFFEID,
 		LeafDERB64: base64.StdEncoding.EncodeToString(leafDER),
-		Nonce:      testNonce, IssuedAt: bindingIssued,
+		Nonce:      testNonce, IssuedAt: now.UTC().Format(time.RFC3339Nano),
 		Binding: SVIDBinding{Alg: BindingAlgEd25519, Context: ContextSVIDBinding},
 	}
 	canonical, _ := bindingCanonical(env, ev)

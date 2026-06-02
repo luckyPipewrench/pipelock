@@ -217,8 +217,10 @@ A producer may attach **X.509-SVID** evidence that cryptographically proves the
 workload identity that mediated the action. Only X.509-SVID counts toward
 verified workload identity; JWT-SVID is a bearer token and stays claim-only.
 
-The SVID leaf's private key signs a **binding payload**, JCS-canonicalized, whose
-first field is the domain-separation context `pipelock-aarp-v0.1/svid-receipt-binding`:
+The SVID leaf's private key signs a **binding payload**, JCS-canonicalized, which
+carries a signed domain-separation context field
+`pipelock-aarp-v0.1/svid-receipt-binding` (JCS sorts object keys, so the context
+is part of the signed bytes but not necessarily first in canonical order):
 
 ```jsonc
 {

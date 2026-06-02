@@ -33,7 +33,7 @@ const (
 	// continuity guarantee a single envelope cannot give.
 	ClaimChainLinkPresent = "chain_link_present"
 	// ClaimWorkloadIdentityVerified: a receipt-bound X.509-SVID proof-of-
-	// possession verified against a pinned trust bundle (Wave 1.3 attestation).
+	// possession verified against a pinned trust bundle (attestation layer).
 	ClaimWorkloadIdentityVerified = "workload_identity_verified"
 	// ClaimX509SVIDBound: the SVID leaf key signed a binding tying it to this
 	// receipt and assurance assertion digest.

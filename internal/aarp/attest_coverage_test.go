@@ -5,6 +5,7 @@ package aarp
 
 import (
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
@@ -48,7 +49,7 @@ func TestSVID_P384CurveConfusion(t *testing.T) {
 	ev := SVIDEvidence{
 		Type: "x509", SPIFFEID: testSPIFFEID,
 		LeafDERB64: base64.StdEncoding.EncodeToString(leafDER),
-		Nonce:      testNonce, IssuedAt: bindingIssued,
+		Nonce:      testNonce, IssuedAt: now.UTC().Format(time.RFC3339Nano),
 		Binding: SVIDBinding{Alg: BindingAlgECDSAP256SHA256, Context: ContextSVIDBinding},
 	}
 	canonical, _ := bindingCanonical(env, ev)
@@ -86,6 +87,62 @@ func TestSVID_EmptyLeafDERRejected(t *testing.T) {
 	ev.LeafDERB64 = "" // decodes to empty
 	if _, err := VerifySVIDBinding(env, ev, svopts); !errors.Is(err, ErrSVIDEvidence) {
 		t.Fatalf("empty leaf DER = %v, want ErrSVIDEvidence", err)
+	}
+}
+
+func TestSVID_AssertionTrustDomainMismatch(t *testing.T) {
+	// A valid example.org SVID must NOT back an assertion claiming a different
+	// trust domain (trust-domain confusion at the appraisal layer).
+	fx := mintSVID(t, testTrustDomain, testSPIFFEID)
+	pub, priv := genKey(t)
+	signer, _ := NewEd25519Signer(testKeyID, "mediator", priv)
+	e := baseEnvelope()
+	e.Assertion.TrustDomain = "other.example" // claims a domain the SVID is not in
+	e.Assertion.EvidenceRefs = []string{"spiffe_svid"}
+	env, err := Sign(e, signer)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	ev := signedEvidence(t, env, fx, testSPIFFEID)
+	svopts := SVIDVerifyOptions{TrustDomain: testTrustDomain, History: fx.history, ActionTime: fx.actionTime}
+
+	if _, err := VerifySVIDBinding(env, ev, svopts); !errors.Is(err, ErrSVIDBinding) {
+		t.Fatalf("trust-domain confusion: got %v, want ErrSVIDBinding", err)
+	}
+	ap, err := AppraiseWithSVID(env, &ev, VerifyOptions{TrustedKeys: map[string]ed25519.PublicKey{testKeyID: pub}}, svopts)
+	if err != nil {
+		t.Fatalf("AppraiseWithSVID: %v", err)
+	}
+	if contains(ap.VerifiedClaims, ClaimWorkloadIdentityVerified) {
+		t.Fatal("workload_identity_verified despite trust-domain confusion")
+	}
+}
+
+func TestSVID_AssertionTrustDomainRequired(t *testing.T) {
+	fx := mintSVID(t, testTrustDomain, testSPIFFEID)
+	_, priv := genKey(t)
+	signer, _ := NewEd25519Signer(testKeyID, "mediator", priv)
+	e := baseEnvelope()
+	e.Assertion.TrustDomain = "" // missing with an SVID binding present
+	env, err := Sign(e, signer)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	ev := signedEvidence(t, env, fx, testSPIFFEID)
+	svopts := SVIDVerifyOptions{TrustDomain: testTrustDomain, History: fx.history, ActionTime: fx.actionTime}
+	if _, err := VerifySVIDBinding(env, ev, svopts); !errors.Is(err, ErrSVIDBinding) {
+		t.Fatalf("empty trust_domain: got %v, want ErrSVIDBinding", err)
+	}
+}
+
+func TestSVID_IssuedAtOutsideLeafWindow(t *testing.T) {
+	env, _, fx, svopts := signedEnvelopeForAttest(t)
+	// Sign a binding stamped 48h out — past the leaf NotAfter (action+24h) —
+	// modeling post-expiry use of a later-obtained leaf key.
+	future := fx.actionTime.Add(48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	ev := signedEvidenceAt(t, env, fx, testSPIFFEID, future)
+	if _, err := VerifySVIDBinding(env, ev, svopts); !errors.Is(err, ErrSVIDBinding) {
+		t.Fatalf("issued_at after expiry: got %v, want ErrSVIDBinding", err)
 	}
 }
 
@@ -206,7 +263,7 @@ func TestSVID_UnsupportedLeafKeyType(t *testing.T) {
 	ev := SVIDEvidence{
 		Type: "x509", SPIFFEID: testSPIFFEID,
 		LeafDERB64: base64.StdEncoding.EncodeToString(leafDER),
-		Nonce:      testNonce, IssuedAt: bindingIssued,
+		Nonce:      testNonce, IssuedAt: now.UTC().Format(time.RFC3339Nano),
 		Binding: SVIDBinding{Alg: BindingAlgECDSAP256SHA256, Context: ContextSVIDBinding},
 	}
 	canonical, _ := bindingCanonical(env, ev)

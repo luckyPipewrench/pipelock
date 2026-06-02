@@ -25,9 +25,13 @@ const (
 	// ClaimMediatorKeyPinned: a verifying signature's key id is bound by a
 	// verifier-side trust entry to the asserted mediator identity (and role).
 	ClaimMediatorKeyPinned = "mediator_key_pinned"
-	// ClaimChainLinked: the envelope carries a well-formed Rung-1 chain link.
-	// Full stream linkage is confirmed by VerifyChain over the stream.
-	ClaimChainLinked = "chain_linked"
+	// ClaimChainLinkPresent: the envelope carries a signed, well-formed Rung-1
+	// chain link (a position in an issuer's stream). It does NOT assert that the
+	// stream is contiguous or untampered — single-envelope appraisal cannot prove
+	// that; contiguous-stream linkage is confirmed only by VerifyChain over the
+	// stream. The name says "present", not "linked/verified", to avoid implying a
+	// continuity guarantee a single envelope cannot give.
+	ClaimChainLinkPresent = "chain_link_present"
 )
 
 // docsNotAsserted is the fixed set of properties an AARP appraisal never

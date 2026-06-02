@@ -11,7 +11,7 @@
 
 AARP — Agent Action Receipt Profile — is **not a new receipt format**. It is an
 *appraisal profile*: a separate, independently-signed assurance artifact that
-sits **alongside** a frozen pipelock receipt and reports exactly what a verifier
+sits **alongside** a frozen Pipelock receipt and reports exactly what a verifier
 could cryptographically confirm versus what the producer merely claimed.
 
 The shipped receipts stay byte-for-byte frozen. AARP references them by digest
@@ -165,11 +165,19 @@ across every conforming verifier.
   unknown fields are ignored for backward compatibility and never counted as
   signed.
 - **Extension governance.** `crit` (per signature) and `crit_ext` (envelope)
-  list critical-extension names the verifier **must** understand. An unknown
-  critical extension rejects the whole envelope, fail-closed: a producer that
-  flags something critical is asserting it must be processed, and a verifier that
-  cannot process it cannot safely appraise the envelope. Unknown **non-critical**
-  extensions (`ext`) are ignored safely and are not part of the signed payload.
+  list critical-extension names the verifier **must** understand; an unknown one
+  fails closed. The *scope* of that failure follows what is signed. A per-
+  signature `crit` lives in one signature's protected header, and the signatures
+  array is not itself signed (it is appendable), so an unknown per-signature
+  `crit` makes only **that signature** unverifiable (`unknown_suite`) — it never
+  rejects an envelope that also carries a verifiable signature, so an appended
+  junk signature cannot deny a valid receipt. An unknown **envelope-level**
+  `crit_ext` is part of the signed payload (an attacker cannot append it without
+  breaking every signature), so it **rejects the whole envelope**. The same scope
+  rule applies to a signature's protected `profile`/`canon`: a mismatch is
+  per-signature `unknown_suite`, while the signed top-level `profile` is
+  envelope-fatal. Unknown **non-critical** extensions (`ext`) are ignored safely
+  and are not part of the signed payload.
 - **Exact digest targeting.** `subject.receipt_type` names which frozen receipt
   format the digests target (`action_record_sha256` is the v1 canonical
   ActionRecord digest or the v2 EvidenceReceipt signable-preimage digest, per
@@ -213,8 +221,14 @@ was made" never implies "action allowed", "policy passed", or "human approved".
 
 The fixed `does_not_assert` list is reported verbatim on every appraisal:
 `efficacy`, `absence_of_bypass`, `complete_mediation`, `policy_correctness`,
-`action_safety`. `complete_mediation` is **always** claim-only in v0.1: there is
+`action_safety`. Complete mediation is **always** claim-only in v0.1: there is
 no local evidence that proves the absence of an out-of-band path.
+
+Token spelling, to avoid confusion: the producer claim string placed in
+`assertion.claimed` is the hyphenated `complete-mediation`; the snake_case
+`complete_mediation` is the boolean field on the assertion and the entry in
+`does_not_assert`. All forms are claim-only; the verifier never moves complete
+mediation into `verified_claims`.
 
 ## Not externally registry-verifiable by default
 
@@ -267,7 +281,7 @@ standard-agnostic.
 An RFC 3161 Trusted Timestamping Authority token may be stapled to an envelope
 under a non-critical extension, with the TSA certificate bundled for offline
 verification. The slot is config-wired; the TSA is operated by an external party
-(no infrastructure for pipelock). Implementation may land later.
+(no infrastructure for Pipelock). Implementation may land later.
 
 ### Rung-3 transparency log
 

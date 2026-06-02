@@ -152,16 +152,27 @@ func TestAlgSubstitution_Fails(t *testing.T) {
 	}
 }
 
-func TestUnknownCriticalExtension_RejectsEnvelope(t *testing.T) {
+// TestUnknownCriticalExtension_PerSignature: an unknown critical extension in a
+// signature's protected header makes only that signature unverifiable, not the
+// whole envelope (the signatures array is appendable, so it must not be fatal).
+func TestUnknownCriticalExtension_PerSignature(t *testing.T) {
 	env, opts := signedEnvelope(t)
-	// Mark an extension critical that the verifier does not understand.
 	env.Signatures[0].Protected.Crit = []string{"x-attacker-ext"}
-	_, err := Verify(env, opts)
-	if !errors.Is(err, ErrUnknownCriticalExtension) {
-		t.Fatalf("Verify = %v, want ErrUnknownCriticalExtension", err)
+	ap, err := Verify(env, opts)
+	if err != nil {
+		t.Fatalf("Verify returned envelope error (want per-signature status): %v", err)
+	}
+	if ap.AssertionSigned {
+		t.Fatal("AssertionSigned = true despite the only signature having an unknown critical extension")
+	}
+	if ap.Signatures[0].Status != SigUnknownSuite {
+		t.Fatalf("status = %q, want unknown_suite", ap.Signatures[0].Status)
 	}
 }
 
+// TestEnvelopeLevelUnknownCriticalExtension_Rejects: an unknown ENVELOPE-level
+// critical extension is in the signed payload (not appendable) and stays
+// envelope-fatal.
 func TestEnvelopeLevelUnknownCriticalExtension_Rejects(t *testing.T) {
 	env, opts := signedEnvelope(t)
 	env.CritExt = []string{"x-envelope-crit"}
@@ -171,19 +182,54 @@ func TestEnvelopeLevelUnknownCriticalExtension_Rejects(t *testing.T) {
 	}
 }
 
-func TestProfileMismatch_Rejects(t *testing.T) {
+func TestProfileMismatch_PerSignature(t *testing.T) {
 	env, opts := signedEnvelope(t)
 	env.Signatures[0].Protected.Profile = "aarp/v9.9"
-	if _, err := Verify(env, opts); !errors.Is(err, ErrUnknownSuite) {
-		t.Fatalf("Verify = %v, want ErrUnknownSuite", err)
+	ap, err := Verify(env, opts)
+	if err != nil {
+		t.Fatalf("Verify returned envelope error (want per-signature status): %v", err)
+	}
+	if ap.AssertionSigned || ap.Signatures[0].Status != SigUnknownSuite {
+		t.Fatalf("profile mismatch: signed=%v status=%q, want signed=false status=unknown_suite", ap.AssertionSigned, ap.Signatures[0].Status)
 	}
 }
 
-func TestCanonMismatch_Rejects(t *testing.T) {
+func TestCanonMismatch_PerSignature(t *testing.T) {
 	env, opts := signedEnvelope(t)
 	env.Signatures[0].Protected.Canon = "weird-canon"
-	if _, err := Verify(env, opts); !errors.Is(err, ErrUnknownSuite) {
-		t.Fatalf("Verify = %v, want ErrUnknownSuite", err)
+	ap, err := Verify(env, opts)
+	if err != nil {
+		t.Fatalf("Verify returned envelope error (want per-signature status): %v", err)
+	}
+	if ap.AssertionSigned || ap.Signatures[0].Status != SigUnknownSuite {
+		t.Fatalf("canon mismatch: signed=%v status=%q, want signed=false status=unknown_suite", ap.AssertionSigned, ap.Signatures[0].Status)
+	}
+}
+
+// TestAppendedJunkSignature_DoesNotPoisonValidSig is the availability regression
+// for the per-signature rule: a MITM can append a signature (the array is not
+// signed), but a junk appended signature with a bogus protected suite must NOT
+// deny an envelope that carries a verifiable signature.
+func TestAppendedJunkSignature_DoesNotPoisonValidSig(t *testing.T) {
+	env, opts := signedEnvelope(t) // one valid mediator signature
+	env.Signatures = append(env.Signatures, Signature{
+		Protected: ProtectedHeader{
+			Profile: "aarp/v9.9", Canon: "weird-canon",
+			Alg: string(AlgEd25519), KeyType: "ed25519",
+			KeyID: "attacker", SignerRole: "mediator",
+			Crit: []string{"x-attacker-ext"},
+		},
+		Sig: "ed25519:AAAA",
+	})
+	ap, err := Verify(env, opts)
+	if err != nil {
+		t.Fatalf("appended junk signature rejected the envelope: %v", err)
+	}
+	if !ap.AssertionSigned {
+		t.Fatal("valid signature no longer verifies after a junk signature was appended")
+	}
+	if ap.Signatures[1].Status != SigUnknownSuite {
+		t.Errorf("appended junk signature status = %q, want unknown_suite", ap.Signatures[1].Status)
 	}
 }
 
@@ -275,6 +321,35 @@ func TestCritExtIsSigned(t *testing.T) {
 	}
 	if ap2.AssertionSigned {
 		t.Fatal("stripping signed crit_ext did not break the signature")
+	}
+}
+
+func TestSign_RejectsNilSigner(t *testing.T) {
+	// Untyped nil and a typed-nil *Ed25519Signer must both fail closed, not panic.
+	if _, err := Sign(baseEnvelope(), nil); !errors.Is(err, ErrSchema) {
+		t.Fatalf("Sign(nil) = %v, want ErrSchema", err)
+	}
+	var typedNil *Ed25519Signer
+	if _, err := Sign(baseEnvelope(), typedNil); !errors.Is(err, ErrSchema) {
+		t.Fatalf("Sign(typed-nil ed25519) = %v, want ErrSchema", err)
+	}
+	var pqNil *MLDSA65Signer
+	if _, err := Sign(baseEnvelope(), pqNil); !errors.Is(err, ErrSchema) {
+		t.Fatalf("Sign(typed-nil ml-dsa) = %v, want ErrSchema", err)
+	}
+}
+
+// TestMalformedCritPerSignature: a malformed per-signature crit list (duplicate
+// names) is reported SigMalformed for that signature, not envelope-fatal.
+func TestMalformedCritPerSignature(t *testing.T) {
+	env, opts := signedEnvelope(t)
+	env.Signatures[0].Protected.Crit = []string{"dup", "dup"}
+	ap, err := Verify(env, opts)
+	if err != nil {
+		t.Fatalf("Verify returned envelope error (want per-signature status): %v", err)
+	}
+	if ap.Signatures[0].Status != SigMalformed {
+		t.Fatalf("status = %q, want malformed", ap.Signatures[0].Status)
 	}
 }
 

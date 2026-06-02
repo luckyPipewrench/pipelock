@@ -161,19 +161,30 @@ type Envelope struct {
 // Signatures (signatures never sign each other) and Ext (non-critical
 // extensions are advisory and ignored safely).
 type payload struct {
-	Profile   string     `json:"profile"`
-	Subject   Subject    `json:"subject"`
-	Assertion Assertion  `json:"assertion"`
-	CritExt   []string   `json:"crit_ext,omitempty"`
-	Chain     *ChainLink `json:"chain,omitempty"`
+	Profile   string    `json:"profile"`
+	Subject   Subject   `json:"subject"`
+	Assertion Assertion `json:"assertion"`
+	// CritExt is NOT omitempty: an empty critical-extension list must serialize
+	// as "crit_ext": [] so the signed canonical bytes match an external
+	// implementation that faithfully emits []. With omitempty, a nil and an
+	// explicit [] would canonicalize differently across languages and break
+	// cross-implementation signature agreement.
+	CritExt []string   `json:"crit_ext"`
+	Chain   *ChainLink `json:"chain,omitempty"`
 }
 
 func (e Envelope) payload() payload {
+	// Normalize a nil critical-extension list to an empty slice so it always
+	// serializes as [] (never null) in the signed payload.
+	critExt := e.CritExt
+	if critExt == nil {
+		critExt = []string{}
+	}
 	return payload{
 		Profile:   e.Profile,
 		Subject:   e.Subject,
 		Assertion: e.Assertion,
-		CritExt:   e.CritExt,
+		CritExt:   critExt,
 		Chain:     e.Chain,
 	}
 }
@@ -260,32 +271,25 @@ func (e Envelope) validatePayloadParts() error {
 }
 
 // validateStructure runs the envelope-fatal schema checks that must hold before
-// any per-signature appraisal: the payload parts, a non-empty signature set, and
-// the envelope-wide invariants each protected header must satisfy (matching
-// profile and canonicalization, and only understood critical extensions).
+// any per-signature appraisal: the payload parts (which include the top-level
+// profile and the envelope-level critical-extension list) and a non-empty
+// signature set.
 //
-// Algorithm recognition, key trust, and signature validity are deliberately NOT
-// checked here: those are per-signature outcomes (a single unknown-suite or
-// untrusted signature must not reject an envelope that also carries a verifiable
-// one). An unknown critical extension or a profile/canon mismatch, by contrast,
-// means the verifier cannot safely interpret the envelope at all — fail closed.
+// Only fields inside the SIGNED payload are envelope-fatal here. Per-signature
+// suite fields (a signature's protected profile, canon, alg, key trust, and its
+// own critical-extension list) are deliberately NOT checked here: they are
+// per-signature outcomes appraised in appraiseSignature. The signatures array
+// is not itself signed, so a man-in-the-middle can append a junk signature; if a
+// bad protected header were envelope-fatal, that append would deny a
+// legitimately-signed envelope. Per-signature handling makes one unverifiable
+// signature inert instead of fatal, while the signed top-level profile and
+// crit_ext (which an append cannot forge) stay fatal.
 func (e Envelope) validateStructure() error {
 	if err := e.validatePayloadParts(); err != nil {
 		return err
 	}
 	if len(e.Signatures) == 0 {
 		return fmt.Errorf("%w: envelope has no signatures", ErrSchema)
-	}
-	for i, s := range e.Signatures {
-		if s.Protected.Profile != Profile {
-			return fmt.Errorf("%w: signature[%d] profile %q, want %q", ErrUnknownSuite, i, s.Protected.Profile, Profile)
-		}
-		if s.Protected.Canon != CanonID {
-			return fmt.Errorf("%w: signature[%d] canon %q, want %q", ErrUnknownSuite, i, s.Protected.Canon, CanonID)
-		}
-		if err := checkCriticalExtensions(s.Protected.Crit); err != nil {
-			return fmt.Errorf("signature[%d]: %w", i, err)
-		}
 	}
 	return nil
 }

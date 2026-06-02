@@ -5,6 +5,7 @@ package aarp
 
 import (
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 )
 
@@ -85,7 +86,10 @@ func Verify(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 			ap.addVerified(ClaimMediatorKeyPinned, AxisIdentity)
 		}
 		if e.Chain != nil {
-			ap.addVerified(ClaimChainLinked, AxisIntegrity)
+			// A signed chain link is present (its position is authenticated by
+			// the verified signature). Stream continuity is NOT asserted here;
+			// VerifyChain over the stream is the authority for that.
+			ap.addVerified(ClaimChainLinkPresent, AxisIntegrity)
 		}
 	} else {
 		// Without any verified signature, every producer claim is untrusted
@@ -102,6 +106,28 @@ func Verify(e Envelope, opts VerifyOptions) (*Appraisal, error) {
 // an untrusted key, or an invalid signature all yield verified=false.
 func appraiseSignature(s Signature, digest string, opts VerifyOptions) (SignatureResult, bool) {
 	res := SignatureResult{KeyID: s.Protected.KeyID, Alg: s.Protected.Alg, Role: s.Protected.SignerRole}
+
+	// Per-signature suite identity. A wrong profile/canon or an unknown critical
+	// extension in THIS signature's protected header makes only this signature
+	// unverifiable — it never rejects the envelope, so an appended junk signature
+	// cannot deny a verifiable sibling. (The signed top-level profile and
+	// crit_ext are checked envelope-fatal in validateStructure.)
+	if s.Protected.Profile != Profile {
+		res.Status, res.Reason = SigUnknownSuite, fmt.Sprintf("profile %q != %q", s.Protected.Profile, Profile)
+		return res, false
+	}
+	if s.Protected.Canon != CanonID {
+		res.Status, res.Reason = SigUnknownSuite, fmt.Sprintf("canon %q != %q", s.Protected.Canon, CanonID)
+		return res, false
+	}
+	if err := checkCriticalExtensions(s.Protected.Crit); err != nil {
+		if errors.Is(err, ErrUnknownCriticalExtension) {
+			res.Status, res.Reason = SigUnknownSuite, err.Error()
+		} else {
+			res.Status, res.Reason = SigMalformed, err.Error()
+		}
+		return res, false
+	}
 
 	if s.Protected.KeyID == "" {
 		res.Status, res.Reason = SigMalformed, "empty key_id"

@@ -158,8 +158,14 @@ func TestSign_RejectsNoSigners(t *testing.T) {
 
 func TestSign_RejectsDuplicateKeyID(t *testing.T) {
 	_, priv := genKey(t)
-	s1, _ := NewEd25519Signer(testKeyID, "mediator", priv)
-	s2, _ := NewEd25519Signer(testKeyID, "issuer", priv)
+	s1, err := NewEd25519Signer(testKeyID, "mediator", priv)
+	if err != nil {
+		t.Fatalf("NewEd25519Signer s1: %v", err)
+	}
+	s2, err := NewEd25519Signer(testKeyID, "issuer", priv)
+	if err != nil {
+		t.Fatalf("NewEd25519Signer s2: %v", err)
+	}
 	if _, err := Sign(baseEnvelope(), s1, s2); !errors.Is(err, ErrSchema) {
 		t.Fatalf("Sign with duplicate key_id = %v, want ErrSchema", err)
 	}
@@ -167,7 +173,10 @@ func TestSign_RejectsDuplicateKeyID(t *testing.T) {
 
 func TestSign_RejectsInvalidPayload(t *testing.T) {
 	_, priv := genKey(t)
-	signer, _ := NewEd25519Signer(testKeyID, "mediator", priv)
+	signer, err := NewEd25519Signer(testKeyID, "mediator", priv)
+	if err != nil {
+		t.Fatalf("NewEd25519Signer: %v", err)
+	}
 	bad := baseEnvelope()
 	bad.Subject.ActionRecordSHA256 = "not-a-digest"
 	if _, err := Sign(bad, signer); !errors.Is(err, ErrSchema) {

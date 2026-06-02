@@ -104,6 +104,22 @@ func (s *MLDSA65Signer) signInput([]byte) (string, error) {
 // optional Chain) must already be set and valid; existing Signatures are
 // replaced. At least one signer is required, and every signer's suite must be
 // shape-valid and implemented.
+// isNilSigner reports whether s is nil, including a typed-nil pointer wrapped in
+// the Signer interface (a non-nil interface holding a nil *Ed25519Signer or
+// *MLDSA65Signer). Calling a method on such a value would dereference nil.
+func isNilSigner(s Signer) bool {
+	switch v := s.(type) {
+	case nil:
+		return true
+	case *Ed25519Signer:
+		return v == nil
+	case *MLDSA65Signer:
+		return v == nil
+	default:
+		return false
+	}
+}
+
 func Sign(e Envelope, signers ...Signer) (Envelope, error) {
 	if len(signers) == 0 {
 		return Envelope{}, fmt.Errorf("%w: at least one signer is required", ErrSchema)
@@ -121,6 +137,11 @@ func Sign(e Envelope, signers ...Signer) (Envelope, error) {
 	sigs := make([]Signature, 0, len(signers))
 	seenKeyIDs := make(map[string]struct{}, len(signers))
 	for i, signer := range signers {
+		// Guard typed-nil and untyped-nil signers before any method call: a
+		// nil *Ed25519Signer / *MLDSA65Signer would panic on Header().
+		if isNilSigner(signer) {
+			return Envelope{}, fmt.Errorf("%w: signer[%d] is nil", ErrSchema, i)
+		}
 		h := signer.Header()
 		if err := h.validateSuiteShape(); err != nil {
 			return Envelope{}, fmt.Errorf("signer[%d]: %w", i, err)

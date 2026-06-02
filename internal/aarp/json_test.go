@@ -102,7 +102,10 @@ func TestUnmarshal_RejectsUnknownFieldInNestedObject(t *testing.T) {
 
 func TestUnmarshal_RejectsTrailingTokens(t *testing.T) {
 	env, _ := signedEnvelope(t)
-	raw, _ := Marshal(env)
+	raw, err := Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
 	withTrailer := append(append([]byte(nil), raw...), []byte(` {"x":1}`)...)
 	if _, err := Unmarshal(withTrailer); !errors.Is(err, ErrSchema) {
 		t.Fatalf("Unmarshal(trailing tokens) = %v, want ErrSchema", err)

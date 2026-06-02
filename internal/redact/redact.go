@@ -42,6 +42,8 @@ const (
 	ClassSentryAuthToken   Class = "sentry-auth-token"  //nolint:gosec // class label, not a secret value
 	ClassTelegramToken     Class = "telegram-bot-token" //nolint:gosec // class label, not a secret value
 	ClassDiscordToken      Class = "discord-bot-token"  //nolint:gosec // class label, not a secret value
+	ClassTwilioAPIKey      Class = "twilio-api-key"     //nolint:gosec // class label, not a secret value
+	ClassMailgunAPIKey     Class = "mailgun-api-key"    //nolint:gosec // class label, not a secret value
 	ClassDBConnString      Class = "db-connection-string"
 	ClassAzureStorageKey   Class = "azure-storage-key" //nolint:gosec // class label, not a secret value
 	ClassAzureSASToken     Class = "azure-sas-token"   //nolint:gosec // class label, not a secret value

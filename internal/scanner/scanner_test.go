@@ -3259,6 +3259,73 @@ func TestDLP_MailgunAPIKey(t *testing.T) {
 	}
 }
 
+// TestDLP_TwilioMailgunBoundaryFalsePositives proves the boundary tightening:
+// the short-prefix Twilio ("SK"+32 hex) and Mailgun ("key-"+32 alnum) patterns
+// no longer fire on opaque IDs that merely share the prefix shape. Hex values
+// stay under the 4.5 entropy threshold, and SSRF is disabled in testConfig, so
+// an unblocked URL isolates the DLP regex.
+func TestDLP_TwilioMailgunBoundaryFalsePositives(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	// Built at runtime to avoid gitleaks-style source scanning.
+	hex32 := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+	hex40 := hex32 + "a1b2c3d4e5f6a1b2"
+	alnum40 := hex32 + "wxyzWXYZ"
+
+	cases := []struct {
+		name  string
+		value string
+	}{
+		// "task"/"disk"/"risk" end in "sk"; without a word boundary the old
+		// pattern matched the trailing "sk" + a 32-hex digest.
+		{"twilio word ending in sk", "task" + hex32},
+		// SK + a longer hex blob is an opaque ID, not a 34-char Twilio SID.
+		{"twilio overlong hex", "SK" + hex40},
+		// "monkey-" embeds "key-" mid-word: no boundary before "key".
+		{"mailgun embedded in word", "monkey-" + hex32},
+		// "key-" + a longer opaque value is not a 36-char Mailgun key.
+		{"mailgun overlong value", "key-" + alnum40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://example.com/path?h="+tc.value)
+			if !result.Allowed {
+				t.Errorf("expected %q to be allowed (FP fixed), blocked by %s: %s",
+					tc.value, result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
+// TestDLP_TwilioMailgunStillBlockRealShape guards against a false-negative:
+// the tightened patterns must still block a genuinely-shaped key.
+func TestDLP_TwilioMailgunStillBlockRealShape(t *testing.T) {
+	s := New(testConfig())
+	defer s.Close()
+
+	hex32 := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"twilio real shape", "SK" + hex32},
+		{"mailgun real shape", "key-" + hex32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := s.Scan(context.Background(), "https://evil.com/collect?key="+tc.value)
+			if result.Allowed {
+				t.Errorf("expected %q to be blocked by DLP (no false-negative)", tc.value)
+			}
+			if result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP {
+				t.Errorf("expected %q to be blocked by DLP, got scanner %s: %s",
+					tc.value, result.Scanner, result.Reason)
+			}
+		})
+	}
+}
+
 // --- DLP expansion: URL-level tests for new patterns ---
 
 func TestDLP_HuggingFaceToken(t *testing.T) {

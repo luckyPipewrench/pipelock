@@ -170,21 +170,51 @@ func (et *EntropyTracker) currentUsageLocked(sessionKey string) float64 {
 	return total
 }
 
-// evictLRUSession removes the least-recently-used session.
-// Must be called with et.mu held.
+// evictionProtectFraction is the share of the entropy budget at or above which
+// a session counts as an in-progress (near-threshold) accumulation and is
+// protected from flood-to-evict. Eviction prefers low-progress sessions so an
+// attacker cannot flood the session cap with fresh dummy sessions to drop a
+// victim's accumulated entropy before the budget trips. Bounded memory is
+// preserved: when every session is near-threshold, eviction falls back to
+// global LRU.
+const evictionProtectFraction = 0.5
+
+// evictLRUSession removes a session to stay within the global cap. To resist
+// the flood-to-evict bypass, it evicts the least-recently-used session AMONG
+// those below the protection threshold; only if every session is near-threshold
+// does it fall back to evicting the global LRU. Must be called with et.mu held.
 func (et *EntropyTracker) evictLRUSession() {
-	var oldestKey string
-	var oldestTime time.Time
+	cutoff := time.Now().Add(-time.Duration(et.windowSecs) * time.Second)
+	protectAt := et.budget * evictionProtectFraction
+
+	var lruKey, lruProtectedKey string
+	var lruTime, lruProtectedTime time.Time
 
 	for key, sess := range et.sessions {
-		if oldestKey == "" || sess.lastAccess.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = sess.lastAccess
+		var usage float64
+		for _, e := range sess.entries {
+			if e.timestamp.After(cutoff) {
+				usage += e.bits
+			}
+		}
+		if usage >= protectAt {
+			// Near-threshold: only a candidate if no unprotected session exists.
+			if lruProtectedKey == "" || sess.lastAccess.Before(lruProtectedTime) {
+				lruProtectedKey, lruProtectedTime = key, sess.lastAccess
+			}
+			continue
+		}
+		if lruKey == "" || sess.lastAccess.Before(lruTime) {
+			lruKey, lruTime = key, sess.lastAccess
 		}
 	}
 
-	if oldestKey != "" {
-		delete(et.sessions, oldestKey)
+	victim := lruKey
+	if victim == "" {
+		victim = lruProtectedKey // all sessions near-threshold; bound memory anyway
+	}
+	if victim != "" {
+		delete(et.sessions, victim)
 	}
 }
 

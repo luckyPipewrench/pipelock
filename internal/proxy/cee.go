@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -25,8 +26,56 @@ import (
 
 // CeeSessionKey builds a consistent session identity for cross-request
 // exfiltration detection. Exported for use by the session reset admin API.
+//
+// This is the RAW constructor: it trusts the agent string as given. Request
+// handlers that accumulate CEE state must instead build the key via
+// ceeSessionKey, which folds attacker-controlled agent identities into the
+// client IP. CeeSessionKey is retained for the reset/terminate admin path,
+// which round-trips an already-stored key back through classifySessionKey, so
+// whatever (possibly folded) key was written is the key that gets cleared.
 func CeeSessionKey(agent, clientIP string) string {
 	return sessionKeyFor(agent, clientIP)
+}
+
+// ceeKeyAgent returns the agent-identity component that is safe to use for
+// namespacing CEE accumulation buckets (entropy tracker and fragment buffer).
+//
+// The X-Pipelock-Agent header and ?agent= query parameter are self-declared
+// and therefore attacker-controllable. If the agent name narrows the CEE
+// bucket below the client IP, an attacker can rotate the identifier per
+// request, sending each fragment of a split secret (or each high-entropy
+// payload) under a different agent name, so no single bucket ever holds two
+// fragments or exceeds the entropy budget. The secret then leaks split across
+// per-agent buckets. This is the "session-key partitioning" bypass.
+//
+// The client IP (RemoteAddr, with forwarded-header spoofing stripped on
+// egress) is the only trustworthy anchor. The agent name is trustworthy ONLY
+// when it is NOT attacker-variable:
+//   - ActorAuthBound: identity injected by infrastructure via a spoof-proof
+//     per-listener context override; the caller cannot change it.
+//   - ActorAuthConfigDefault: a single fixed value from config; constant per
+//     deployment, so it cannot be used to partition.
+//
+// ActorAuthMatched and ActorAuthSelfDeclared both originate from the request
+// header/query (matched merely means the supplied name equals a configured
+// profile, but it is still attacker-supplied), so they are folded to the empty
+// agent and the bucket key collapses to the client IP. Operators who need
+// spoof-proof per-agent CEE separation use per-listener binding
+// (ActorAuthBound), not header-based identity.
+func ceeKeyAgent(agent string, auth envelope.ActorAuth) string {
+	switch auth {
+	case envelope.ActorAuthBound, envelope.ActorAuthConfigDefault:
+		return agent
+	default:
+		return ""
+	}
+}
+
+// ceeSessionKey builds the partition-resistant CEE accumulation key. Untrusted
+// (attacker-variable) agent identities collapse to the client IP so a rotating
+// agent identifier cannot split a secret across buckets. See ceeKeyAgent.
+func ceeSessionKey(agent, clientIP string, auth envelope.ActorAuth) string {
+	return CeeSessionKey(ceeKeyAgent(agent, auth), clientIP)
 }
 
 // maxCaptureSessionKeyLen aliases the writer-side ceiling so the
@@ -432,4 +481,31 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
 		decide.RecordSignal(sess, session.SignalFragmentDLP, ep)
 	}
+}
+
+// ceeSignalParams groups the inputs for ceeRecordSignalsAndBlockAll. A struct
+// keeps the call sites readable and avoids a long positional signature (see the
+// options-struct convention in CLAUDE.md).
+type ceeSignalParams struct {
+	Result      ceeResult
+	Sessions    *SessionManager
+	SessionKey  string // the folded CEE key (see ceeSessionKey)
+	AdaptiveCfg *config.AdaptiveEnforcement
+	Logger      *audit.Logger
+	Metrics     *metrics.Metrics
+	ClientIP    string
+	RequestID   string
+}
+
+// ceeRecordSignalsAndBlockAll records CEE adaptive signals and checks session
+// deny against the same folded CEE key. Do not check a separately-created raw
+// per-agent recorder here: for self-declared agent names, CEE intentionally
+// collapses the key to client IP to prevent partitioning.
+func ceeRecordSignalsAndBlockAll(p ceeSignalParams) (session.Recorder, bool) {
+	if p.Sessions == nil || p.AdaptiveCfg == nil || !p.AdaptiveCfg.Enabled {
+		return nil, false
+	}
+	ceeRecordSignals(p.Result, p.Sessions, p.SessionKey, p.AdaptiveCfg.EscalationThreshold, p.Logger, p.Metrics, p.ClientIP, p.RequestID)
+	rec := p.Sessions.GetOrCreate(p.SessionKey)
+	return rec, decide.UpgradeAction("", rec.EscalationLevel(), p.AdaptiveCfg) == config.ActionBlock
 }

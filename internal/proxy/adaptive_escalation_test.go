@@ -2077,3 +2077,318 @@ func TestAdaptive_ProtectiveRateLimit_Transport(t *testing.T) {
 			levelBeforeRL, sess.EscalationLevel())
 	}
 }
+
+// --- ceeRecordSignalsAndBlockAll nil/disabled guard tests ---
+
+// TestCeeRecordSignalsAndBlockAll_NilGuard verifies the early-return guard at
+// cee.go:505-507. When Sessions is nil, AdaptiveCfg is nil, or adaptive
+// enforcement is disabled, the function returns (nil, false) without recording
+// any signals or checking block_all.
+func TestCeeRecordSignalsAndBlockAll_NilGuard(t *testing.T) {
+	tests := []struct {
+		name   string
+		params ceeSignalParams
+	}{
+		{
+			name: "nil_sessions",
+			params: ceeSignalParams{
+				Result:      ceeResult{FragmentHit: true},
+				Sessions:    nil,
+				SessionKey:  "test-key",
+				AdaptiveCfg: &config.AdaptiveEnforcement{Enabled: true, EscalationThreshold: adaptiveTestThreshold},
+				Logger:      audit.NewNop(),
+				Metrics:     metrics.New(),
+				ClientIP:    adaptiveSessionKeyHTTPTest,
+				RequestID:   "req-nil-sessions",
+			},
+		},
+		{
+			name: "nil_adaptive_cfg",
+			params: ceeSignalParams{
+				Result:      ceeResult{EntropyHit: true},
+				Sessions:    NewSessionManager(&config.SessionProfiling{Enabled: true, MaxSessions: 100, DomainBurst: 100, WindowMinutes: 5, SessionTTLMinutes: 30, CleanupIntervalSeconds: 600}, nil, metrics.New()),
+				SessionKey:  "test-key",
+				AdaptiveCfg: nil,
+				Logger:      audit.NewNop(),
+				Metrics:     metrics.New(),
+				ClientIP:    adaptiveSessionKeyHTTPTest,
+				RequestID:   "req-nil-cfg",
+			},
+		},
+		{
+			name: "adaptive_disabled",
+			params: ceeSignalParams{
+				Result:      ceeResult{FragmentHit: true, EntropyHit: true},
+				Sessions:    NewSessionManager(&config.SessionProfiling{Enabled: true, MaxSessions: 100, DomainBurst: 100, WindowMinutes: 5, SessionTTLMinutes: 30, CleanupIntervalSeconds: 600}, nil, metrics.New()),
+				SessionKey:  "test-key",
+				AdaptiveCfg: &config.AdaptiveEnforcement{Enabled: false},
+				Logger:      audit.NewNop(),
+				Metrics:     metrics.New(),
+				ClientIP:    adaptiveSessionKeyHTTPTest,
+				RequestID:   "req-disabled",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.params.Sessions != nil {
+				defer tc.params.Sessions.Close()
+			}
+			rec, blockAll := ceeRecordSignalsAndBlockAll(tc.params)
+			if rec != nil {
+				t.Errorf("expected nil recorder, got %v", rec)
+			}
+			if blockAll {
+				t.Error("expected blockAll=false for guarded early return")
+			}
+		})
+	}
+}
+
+// --- forward HTTP CEE block_all tests ---
+
+// TestForwardHTTP_CEE_BlockAllRecheck verifies the post-CEE block_all recheck
+// at forward.go:1412-1420. The URL scan must be clean (Allowed=true) so the
+// pre-CEE session-deny check does not fire. CEE entropy budget is set to 1 bit
+// (warn mode) so any query data triggers a CEE entropy hit. The session is
+// primed to 4.0 (below threshold 5.0, level 0). The CEE entropy hit
+// (+2 SignalEntropyBudget) pushes the score to 6.0, escalating to level 1
+// with block_all=true, and the ceeBlockAll branch fires.
+func TestForwardHTTP_CEE_BlockAllRecheck(t *testing.T) {
+	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprint(w, "ok")
+	}))
+	defer upstream.Close()
+
+	cfg := adaptiveConfigBlockAll()
+	// Enable CEE with very low entropy budget in warn mode.
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+	// Disable env leak scanning to prevent false DLP hits on query params.
+	cfg.DLP.ScanEnv = false
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Prime session to 4.0: four NearMiss (+1 each) keeps level=0 (below 5.0).
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("session manager not initialized")
+	}
+	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+
+	if rec.EscalationLevel() != 0 {
+		t.Fatalf("precondition: expected level 0 after priming, got %d", rec.EscalationLevel())
+	}
+
+	// Clean URL (no DLP patterns). The query has enough entropy to exceed
+	// the 1-bit budget, triggering a CEE entropy hit in warn mode.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/ok?x=abc123", nil)
+	w := httptest.NewRecorder()
+
+	handler := p.buildHandler(http.NewServeMux())
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 from post-CEE block_all recheck, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "session escalation level") {
+		t.Errorf("expected 'session escalation level' in body, got %q", w.Body.String())
+	}
+}
+
+// --- intercept CEE block_all tests ---
+
+// TestInterceptTunnel_CEE_BlockAllRecheck verifies the post-CEE block_all
+// recheck at intercept.go:1096-1115. Uses the newInterceptHandler directly
+// (no TLS, Proxy=nil) with CEE objects provided via InterceptContext fields.
+func TestInterceptTunnel_CEE_BlockAllRecheck(t *testing.T) {
+	cfg := adaptiveConfigBlockAll()
+	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
+	// Enable CEE with very low entropy budget in warn mode.
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+	cfg.DLP.ScanEnv = false
+
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	logger := audit.NewNop()
+	m := metrics.New()
+
+	// Create session manager and prime the session near threshold.
+	smCfg := &config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            100,
+		DomainBurst:            100,
+		WindowMinutes:          5,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 600,
+	}
+	smgr := NewSessionManager(smCfg, nil, m)
+	defer smgr.Close()
+
+	// The folded CEE key for anonymous agent + loopback IP is just the IP.
+	rec := smgr.GetOrCreate(adaptiveSessionKeyLoopback)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+
+	if rec.EscalationLevel() != 0 {
+		t.Fatalf("precondition: expected level 0 after priming, got %d", rec.EscalationLevel())
+	}
+
+	// Create entropy tracker and fragment buffer for CEE.
+	et := scanner.NewEntropyTracker(1.0, 300) // 1-bit budget
+	fb := scanner.NewFragmentBuffer(65536, 1000, 300)
+
+	// Mock transport returns a clean response.
+	mockRT := &interceptMockRT{
+		body:        "clean response",
+		contentType: "text/plain",
+	}
+
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost:     "127.0.0.1",
+		TargetPort:     "80",
+		Config:         cfg,
+		Scanner:        sc,
+		Logger:         logger,
+		Metrics:        m,
+		ClientIP:       "127.0.0.1",
+		RequestID:      "test-cee-blockall",
+		Agent:          agentAnonymous,
+		SessionMgr:     smgr,
+		Recorder:       rec,
+		EntropyTracker: et,
+		FragmentBuffer: fb,
+	}, mockRT)
+
+	// Clean URL with enough query entropy to exceed the 1-bit budget.
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://127.0.0.1:80/ok?x=abc123", nil)
+	req.Host = adaptiveInterceptTarget
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 from intercept post-CEE block_all, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "session escalation level") {
+		t.Errorf("expected 'session escalation level' in body, got %q", w.Body.String())
+	}
+}
+
+// --- WebSocket CEE block_all tests ---
+
+// TestWSRelay_CEE_BlockAll verifies the post-CEE block_all recheck at
+// websocket.go:1897-1916. A WS frame with enough entropy to exceed the 1-bit
+// budget triggers a CEE warn-mode hit, pushing the primed session over the
+// block_all threshold. The proxy closes the connection with a policy violation.
+func TestWSRelay_CEE_BlockAll(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+
+	// We need access to the session manager to prime the session, so we
+	// build the proxy manually instead of using setupWSProxy.
+	cfg := adaptiveConfigBlockAll()
+	cfg.WebSocketProxy.Enabled = true
+	cfg.WebSocketProxy.MaxMessageBytes = 1048576
+	cfg.WebSocketProxy.MaxConcurrentConnections = 128
+	cfg.WebSocketProxy.MaxConnectionSeconds = 10
+	cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+	// Enable CEE with very low entropy budget in warn mode.
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+	cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+	cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+	cfg.DLP.ScanEnv = false
+
+	logger := audit.NewNop()
+	sc := scanner.New(cfg)
+	defer sc.Close()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	defer p.Close()
+
+	// Start proxy server.
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	proxyAddr := ln.Addr().String()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/ws", p.handleWebSocket)
+		handler := p.buildHandler(mux)
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			BaseContext:       func(_ net.Listener) context.Context { return ctx },
+		}
+		_ = srv.Serve(ln)
+	}()
+
+	t.Cleanup(func() {
+		cancel()
+		_ = ln.Close()
+	})
+
+	// Prime the loopback session near threshold. WS relay reads the client
+	// IP from the TCP connection (127.0.0.1 for dialWS).
+	sm := p.sessionMgrPtr.Load()
+	if sm == nil {
+		t.Fatal("session manager not initialized")
+	}
+	rec := sm.GetOrCreate(adaptiveSessionKeyLoopback)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
+
+	if rec.EscalationLevel() != 0 {
+		t.Fatalf("precondition: expected level 0 after priming, got %d", rec.EscalationLevel())
+	}
+
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer conn.Close() //nolint:errcheck // test
+
+	// Send a text frame with enough entropy to exceed the 1-bit budget.
+	// The CEE entropy hit (+2 SignalEntropyBudget) pushes the session from
+	// score 4.0 to 6.0, crossing the 5.0 threshold into block_all level.
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("abc123def456")); err != nil {
+		t.Fatalf("write WS frame: %v", err)
+	}
+
+	// The proxy should close with a policy violation (CEE block_all).
+	_, _, err = wsutil.ReadServerData(conn)
+	if err == nil {
+		t.Fatal("expected connection close after CEE block_all, but read succeeded")
+	}
+	// Any read error is acceptable: the server sends a close frame with
+	// StatusPolicyViolation, which manifests as a read error.
+}

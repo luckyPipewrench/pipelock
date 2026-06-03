@@ -262,6 +262,49 @@ func TestCeeRecordSignals_NilSessionManager(t *testing.T) {
 	ceeRecordSignals(result, nil, testCEESessionKey, 5.0, nil, nil, testCEEClientIP, testCEERequestID)
 }
 
+func TestCEERecordSignalsAndBlockAll_UsesCEEKey(t *testing.T) {
+	cfg := &config.SessionProfiling{
+		Enabled:                true,
+		AnomalyAction:          "warn",
+		DomainBurst:            5,
+		WindowMinutes:          5,
+		VolumeSpikeRatio:       3.0,
+		MaxSessions:            100,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}
+	m := metrics.New()
+	sm := NewSessionManager(cfg, nil, m)
+	defer sm.Close()
+
+	adaptiveCfg := config.AdaptiveEnforcement{
+		Enabled:             true,
+		EscalationThreshold: 3.0,
+	}
+	adaptiveCfg.Levels.Elevated.BlockAll = ptrBool(true)
+
+	rawKey := CeeSessionKey("rotated-agent", testCEEClientIP)
+	foldedKey := testCEEClientIP
+	if rawKey == foldedKey {
+		t.Fatalf("test setup: raw and folded keys must differ")
+	}
+
+	rec, blocked := ceeRecordSignalsAndBlockAll(ceeSignalParams{
+		Result: ceeResult{FragmentHit: true}, Sessions: sm, SessionKey: foldedKey,
+		AdaptiveCfg: &adaptiveCfg, Logger: audit.NewNop(), Metrics: m,
+		ClientIP: testCEEClientIP, RequestID: testCEERequestID,
+	})
+	if !blocked {
+		t.Fatal("CEE fragment signal should escalate the folded session to block_all")
+	}
+	if recEscalationLevel(rec) == 0 {
+		t.Fatal("folded CEE recorder was not escalated")
+	}
+	if rawLevel := sm.GetOrCreate(rawKey).EscalationLevel(); rawLevel != 0 {
+		t.Fatalf("raw per-agent recorder should not receive folded CEE signals, got level %d", rawLevel)
+	}
+}
+
 // --- ceeAdmit unit tests ---
 
 func TestCeeAdmit_EmptyOutbound(t *testing.T) {

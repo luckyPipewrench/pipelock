@@ -1030,7 +1030,7 @@ func newInterceptHandler(
 				ceeSM = ic.Proxy.sessionMgrPtr.Load()
 			}
 
-			sessionKey := CeeSessionKey(ic.Agent, ic.ClientIP)
+			sessionKey := ceeSessionKey(ic.Agent, ic.ClientIP, ic.ActorAuth)
 			outbound := extractOutboundPayload(r)
 			keys := queryParamKeys(r.URL)
 
@@ -1065,9 +1065,11 @@ func newInterceptHandler(
 				})
 			}
 
-			if ceeSM != nil && ic.Config.AdaptiveEnforcement.Enabled {
-				ceeRecordSignals(ceeRes, ceeSM, sessionKey, ic.Config.AdaptiveEnforcement.EscalationThreshold, ic.Logger, ic.Metrics, ic.ClientIP, ic.RequestID)
-			}
+			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
+				Result: ceeRes, Sessions: ceeSM, SessionKey: sessionKey,
+				AdaptiveCfg: &ic.Config.AdaptiveEnforcement, Logger: ic.Logger, Metrics: ic.Metrics,
+				ClientIP: ic.ClientIP, RequestID: ic.RequestID,
+			})
 
 			if ceeRes.Blocked {
 				ic.Metrics.RecordTLSRequestBlocked("cross_request")
@@ -1085,6 +1087,30 @@ func newInterceptHandler(
 				writeBlockedError(w,
 					blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
 					"blocked: "+ceeRes.Reason, http.StatusForbidden)
+				return
+			}
+
+			// Re-check block_all after CEE may have escalated the folded CEE
+			// session. ic.Recorder is the raw per-agent recorder and does not
+			// necessarily receive CEE signals for self-declared agent names.
+			if ceeBlockAll {
+				level := recEscalationLevel(ceeRec)
+				recordAdaptiveUpgrade(ic.Logger, ic.Metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: ic.ClientIP, RequestID: ic.RequestID})
+				ic.Metrics.RecordTLSRequestBlocked("session_deny")
+				interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+					ActionID:  actionID,
+					Verdict:   config.ActionBlock,
+					Layer:     "session_deny",
+					Pattern:   "session escalation level " + session.EscalationLabel(level),
+					Transport: "intercept",
+					Method:    r.Method,
+					Target:    targetURL,
+					RequestID: ic.RequestID,
+					Agent:     ic.Agent,
+				}))
+				writeBlockedError(w,
+					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+					"blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
 				return
 			}
 		}

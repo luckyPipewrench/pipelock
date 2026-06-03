@@ -31,6 +31,7 @@ from .appraise import (
 )
 from .chain import comparable_chain, verify_chain
 from .envelope import unmarshal
+from .svid import SVIDConfigError, appraise_with_svid, load_svid_file
 
 ED25519_PUBLIC_KEY_SIZE = 32
 
@@ -158,12 +159,32 @@ def _run_aarp(
     trust_path: str,
     json_mode: bool,
     chain_mode: bool,
+    svid_path: str,
 ) -> int:
+    # --svid is single-envelope only; combining it with --chain is a usage error.
+    if chain_mode and svid_path != "":
+        stderr.write(
+            "--svid is single-envelope only and cannot be combined with --chain\n"
+        )
+        return EXIT_USAGE
+
     try:
         verify_opts = _load_trust_file(trust_path)
     except ConfigError as exc:
         stderr.write(f"load trust: {exc}\n")
         return EXIT_CONFIG
+
+    # Load the SVID sidecar (if any) before reading the envelope, so a malformed
+    # pinned bundle is reported as a config error (exit 2) rather than entangled
+    # with envelope appraisal.
+    svid_evidence: dict[str, Any] | None = None
+    svid_opts = None
+    if svid_path != "":
+        try:
+            svid_evidence, svid_opts = load_svid_file(svid_path)
+        except SVIDConfigError as exc:
+            stderr.write(f"load svid: {exc}\n")
+            return EXIT_CONFIG
 
     try:
         with open(target, "rb") as fh:
@@ -181,7 +202,10 @@ def _run_aarp(
         return _emit_fatal(stdout, stderr, json_mode, str(exc))
 
     try:
-        ap = verify(env, verify_opts)
+        if svid_evidence is not None:
+            ap = appraise_with_svid(env, svid_evidence, verify_opts, svid_opts)
+        else:
+            ap = verify(env, verify_opts)
     except Exception as exc:  # noqa: BLE001 - envelope-fatal appraisal failure
         return _emit_fatal(stdout, stderr, json_mode, str(exc))
 
@@ -223,6 +247,11 @@ def main(argv: list[str] | None = None) -> int:
     aarp_p.add_argument("path", help="path to a JSON envelope (or JSONL with --chain)")
     aarp_p.add_argument("--trust", default="", help="path to the pinned trust JSON")
     aarp_p.add_argument(
+        "--svid",
+        default="",
+        help="path to the SVID attestation JSON (evidence + pinned bundle/action-time)",
+    )
+    aarp_p.add_argument(
         "--json", action="store_true", help="emit the comparable appraisal JSON"
     )
     aarp_p.add_argument(
@@ -248,4 +277,5 @@ def main(argv: list[str] | None = None) -> int:
         args.trust,
         args.json,
         args.chain,
+        args.svid,
     )

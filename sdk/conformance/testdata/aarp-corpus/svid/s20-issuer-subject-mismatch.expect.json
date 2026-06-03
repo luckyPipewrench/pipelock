@@ -1,0 +1,8 @@
+{
+  "attack_class": "forked-bundle",
+  "category": "svid",
+  "description": "the leaf signature verifies under the pinned CA key but the issuer DN does not match the pinned CA subject; raw key checks must not inflate identity",
+  "fixture_id": "s20-issuer-subject-mismatch",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

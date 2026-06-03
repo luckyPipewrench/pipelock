@@ -26,7 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/aarp"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
-	"github.com/luckyPipewrench/pipelock/internal/svid"
+	"github.com/luckyPipewrench/pipelock/internal/svidsidecar"
 )
 
 // This file generates the SVID X.509 attestation arm of the AARP hostile corpus.
@@ -62,26 +62,9 @@ const (
 	leafKindEd25519   = "ed25519"
 )
 
-// svidSidecar is the on-disk SVID input. Its JSON shape MUST match the verifier
-// --svid loader (cmd/pipelock-verifier/aarp_svid.go svidFile): evidence decodes
-// straight into aarp.SVIDEvidence; verify carries the verifier-pinned context.
-type svidSidecar struct {
-	Evidence aarp.SVIDEvidence `json:"evidence"`
-	Verify   svidVerifyBlock   `json:"verify"`
-}
-
-type svidVerifyBlock struct {
-	TrustDomain      string          `json:"trust_domain"`
-	ActionTime       string          `json:"action_time"`
-	AllowedSPIFFEIDs []string        `json:"allowed_spiffe_ids,omitempty"`
-	Bundle           []svidBundleGen `json:"bundle"`
-}
-
-type svidBundleGen struct {
-	NotBefore         string   `json:"not_before"`
-	NotAfter          string   `json:"not_after,omitempty"`
-	AuthoritiesDERB64 []string `json:"authorities_der_b64"`
-}
+// The on-disk SVID sidecar schema (svidsidecar.Sidecar / VerifyBlock / BundleGen)
+// is shared with the cmd/pipelock-verifier --svid loader, so the bytes this
+// generator writes are exactly the bytes every reference verifier parses.
 
 // detReader is a deterministic, infinite byte stream seeded from a phrase:
 // block_i = sha256(seed_hash || big-endian uint64 counter). It makes every key,
@@ -272,10 +255,26 @@ type leaf struct {
 // Ed25519 CA), so a P-384 leaf still chains cleanly — its curve only matters to
 // the binding alg check (curve-confusion fixture).
 func (g *aarpGen) issueLeaf(ca *testCA, seed, kind string, notBefore, notAfter time.Time) leaf {
+	return g.issueLeafURI(ca, seed, kind, svidIDAgentA, notBefore, notAfter)
+}
+
+// issueLeafURI is issueLeaf with an explicit URI SAN, so a fixture can present a
+// leaf whose SAN is a malformed SPIFFE ID (e.g. a dot-segment path) to exercise
+// strict-vs-loose SPIFFE-ID grammar across the four verifiers.
+func (g *aarpGen) issueLeafURI(ca *testCA, seed, kind, spiffeURI string, notBefore, notAfter time.Time) leaf {
+	return g.issueLeafURIWithParent(ca, ca.cert, seed, kind, spiffeURI, notBefore, notAfter)
+}
+
+// issueLeafURIWithParent signs with ca.priv while letting the caller choose the
+// parent certificate whose Subject becomes the leaf Issuer. Passing a parent
+// with the same public key but a different Subject creates an issuer-linkage
+// mismatch: raw signature verification succeeds, but a real X.509 chain builder
+// rejects the leaf because issuer DN != pinned CA subject.
+func (g *aarpGen) issueLeafURIWithParent(ca *testCA, parent *x509.Certificate, seed, kind, spiffeURI string, notBefore, notAfter time.Time) leaf {
 	rdr := newDetReader("leaf/" + seed)
-	u, err := url.Parse(svidIDAgentA)
+	u, err := url.Parse(spiffeURI)
 	if err != nil {
-		g.t.Fatalf("parse spiffe id %q: %v", svidIDAgentA, err)
+		g.t.Fatalf("parse spiffe id %q: %v", spiffeURI, err)
 	}
 
 	var pub any
@@ -306,11 +305,18 @@ func (g *aarpGen) issueLeaf(ca *testCA, seed, kind string, notBefore, notAfter t
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 	}
-	der, err := x509.CreateCertificate(rdr, tmpl, ca.cert, pub, ca.priv)
+	der, err := x509.CreateCertificate(rdr, tmpl, parent, pub, ca.priv)
 	if err != nil {
 		g.t.Fatalf("create leaf certificate: %v", err)
 	}
 	return leaf{der: der, signer: signer}
+}
+
+func (g *aarpGen) parentWithSubject(ca *testCA, commonName string) *x509.Certificate {
+	cp := *ca.cert
+	cp.Subject = pkix.Name{CommonName: commonName}
+	cp.RawSubject = nil
+	return &cp
 }
 
 // svidBindingCanonical reproduces internal/aarp.bindingCanonical (which is
@@ -433,72 +439,26 @@ func flipB64Char(b64 string) string {
 // svidComparable mirrors the verifier --svid loader for generation: it returns
 // the authoritative ComparableAppraisal bytes (with trailing newline) every
 // verifier must match for an SVID fixture.
-func (g *aarpGen) svidComparable(body []byte, sc *svidSidecar) []byte {
+func (g *aarpGen) svidComparable(body []byte, sc *svidsidecar.Sidecar) []byte {
 	return append(svidComparableBytes(g.t, body, sc, g.verifyOpts), '\n')
-}
-
-// svidOptionsFromSidecar rebuilds the verifier-pinned SVID options (bundle
-// history + action time + allowed ids) from a sidecar's verify block. It mirrors
-// cmd/pipelock-verifier/aarp_svid.go loadSVIDFile exactly so the Go arm exercises
-// the same wire format the four-language gate feeds the verifiers.
-func svidOptionsFromSidecar(tb testing.TB, sc *svidSidecar) aarp.SVIDVerifyOptions {
-	tb.Helper()
-	gens := make([]svid.Generation, 0, len(sc.Verify.Bundle))
-	for i, b := range sc.Verify.Bundle {
-		notBefore, err := time.Parse(time.RFC3339Nano, b.NotBefore)
-		if err != nil {
-			tb.Fatalf("bundle[%d].not_before: %v", i, err)
-		}
-		var notAfter time.Time
-		if b.NotAfter != "" {
-			if notAfter, err = time.Parse(time.RFC3339Nano, b.NotAfter); err != nil {
-				tb.Fatalf("bundle[%d].not_after: %v", i, err)
-			}
-		}
-		auths := make([]*x509.Certificate, 0, len(b.AuthoritiesDERB64))
-		for _, derB64 := range b.AuthoritiesDERB64 {
-			der, err := base64.StdEncoding.DecodeString(derB64)
-			if err != nil {
-				tb.Fatalf("bundle[%d] authority b64: %v", i, err)
-			}
-			cert, err := x509.ParseCertificate(der)
-			if err != nil {
-				tb.Fatalf("bundle[%d] authority parse: %v", i, err)
-			}
-			auths = append(auths, cert)
-		}
-		gen, err := svid.NewGeneration(notBefore, notAfter, auths)
-		if err != nil {
-			tb.Fatalf("bundle[%d] new generation: %v", i, err)
-		}
-		gens = append(gens, gen)
-	}
-	history, err := svid.NewTrustBundleHistory(sc.Verify.TrustDomain, gens...)
-	if err != nil {
-		tb.Fatalf("new trust bundle history: %v", err)
-	}
-	actionTime, err := time.Parse(time.RFC3339Nano, sc.Verify.ActionTime)
-	if err != nil {
-		tb.Fatalf("action_time: %v", err)
-	}
-	return aarp.SVIDVerifyOptions{
-		TrustDomain:      sc.Verify.TrustDomain,
-		History:          history,
-		ActionTime:       actionTime,
-		AllowedSPIFFEIDs: sc.Verify.AllowedSPIFFEIDs,
-	}
 }
 
 // svidComparableBytes appraises an SVID fixture (envelope + sidecar) with the Go
 // reference AppraiseWithSVID and returns its ComparableAppraisal bytes (no
-// trailing newline). Shared by the generator and the Go-arm conformance test.
-func svidComparableBytes(tb testing.TB, body []byte, sc *svidSidecar, opts aarp.VerifyOptions) []byte {
+// trailing newline). It resolves the verifier-pinned options through the shared
+// svidsidecar package — the same path the CLI --svid loader takes — so the Go
+// arm exercises exactly the wire form the four-language gate feeds the verifiers.
+// Shared by the generator and the Go-arm conformance test.
+func svidComparableBytes(tb testing.TB, body []byte, sc *svidsidecar.Sidecar, opts aarp.VerifyOptions) []byte {
 	tb.Helper()
 	env, err := aarp.Unmarshal(body)
 	if err != nil {
 		tb.Fatalf("svid fixture failed to unmarshal: %v", err)
 	}
-	svidOpts := svidOptionsFromSidecar(tb, sc)
+	svidOpts, err := sc.Options()
+	if err != nil {
+		tb.Fatalf("svid fixture verify block: %v", err)
+	}
 	ev := sc.Evidence
 	ap, err := aarp.AppraiseWithSVID(env, &ev, opts, svidOpts)
 	if err != nil {

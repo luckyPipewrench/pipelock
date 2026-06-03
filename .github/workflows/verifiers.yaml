@@ -279,6 +279,10 @@ jobs:
 
       - name: Run AARP cross-language gate
         env:
+          # All four verifiers implement --svid; require four-way agreement on the
+          # svid/ attestation corpus too (default-on in the gate; explicit here so
+          # the CI surface documents the requirement).
+          AARP_GATE_INCLUDE_SVID: 1
           GO_AARP: ${{ runner.temp }}/pipelock-verifier aarp
           TS_AARP: node ${{ github.workspace }}/sdk/verifiers/ts/dist/src/cli.js aarp
           RUST_AARP: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs aarp

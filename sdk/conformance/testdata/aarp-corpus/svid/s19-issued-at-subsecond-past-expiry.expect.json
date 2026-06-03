@@ -1,0 +1,8 @@
+{
+  "attack_class": "post-expiry-key-use",
+  "category": "svid",
+  "description": "the leaf expires at the whole-second action time and issued_at is one nanosecond later; sub-second precision must reject the post-expiry binding",
+  "fixture_id": "s19-issued-at-subsecond-past-expiry",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

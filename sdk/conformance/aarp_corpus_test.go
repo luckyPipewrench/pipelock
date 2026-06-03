@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/aarp"
+	"github.com/luckyPipewrench/pipelock/internal/svidsidecar"
 )
 
 // This file is the GO arm of the four-language AARP conformance gate. It runs the
@@ -164,10 +165,12 @@ func runAARPSVIDFixture(t *testing.T, dir, base, sidecarPath string, exp aarpExp
 	if exp.Verdict != verdictAppraise {
 		t.Fatalf("svid fixture %s has verdict %q; SVID fixtures are always %q (an attack withholds claims, never fails the envelope)", base, exp.Verdict, verdictAppraise)
 	}
-	var sc svidSidecar
-	unmarshalJSONFile(t, sidecarPath, &sc)
+	sc, err := svidsidecar.Parse(readFixture(t, sidecarPath))
+	if err != nil {
+		t.Fatalf("parse svid sidecar %s: %v", base, err)
+	}
 	body := readFixture(t, filepath.Join(dir, base+".aarp.json"))
-	got := svidComparableBytes(t, body, &sc, opts)
+	got := svidComparableBytes(t, body, sc, opts)
 	want := readFixture(t, filepath.Join(dir, base+".appraisal.json"))
 	assertComparableMatch(t, base, got, want)
 }

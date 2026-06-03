@@ -1,0 +1,8 @@
+{
+  "attack_class": "expiry",
+  "category": "svid",
+  "description": "the pinned generation covers the action but the signing CA certificate expired before it; the chain does not validate point-in-time",
+  "fixture_id": "s18-ca-expired-at-action-time",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

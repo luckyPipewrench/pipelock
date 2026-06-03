@@ -15,6 +15,7 @@ base64 = "=0.22.1"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
 hex = "=0.4.3"
 jsonschema = { version = "=0.18.3", default-features = false, features = ["draft202012"] }
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "pkcs8"] }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.150", features = ["preserve_order", "unbounded_depth"] }
 sha2 = "=0.11.0"
@@ -22,3 +23,4 @@ thiserror = "=2.0.18"
 # NFC normalization to match Go's golang.org/x/text/unicode/norm in the AARP
 # JCS canonicalizer (byte-for-byte cross-language parity on string/key values).
 unicode-normalization = "=0.1.25"
+x509-parser = { version = "=0.18.1", default-features = false }

@@ -40,6 +40,7 @@ ED25519_SIGNATURE_SIZE = 64
 # Axis names grouping verified claims by the kind of proof they rest on.
 AXIS_IDENTITY = "identity"
 AXIS_INTEGRITY = "integrity"
+AXIS_FRESHNESS = "freshness"
 
 # Verified-claim names.
 CLAIM_ASSERTION_SIGNATURE_VALID = "assertion_signature_valid"

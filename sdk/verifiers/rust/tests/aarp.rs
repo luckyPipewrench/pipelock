@@ -69,6 +69,24 @@ fn run_aarp(fixture: &Path, chain: bool) -> RunResult {
     }
 }
 
+/// run_aarp_svid runs a single-envelope appraisal with a `--svid` sidecar.
+fn run_aarp_svid(fixture: &Path, svid: &Path) -> RunResult {
+    let output = Command::new(binary())
+        .arg("aarp")
+        .arg(fixture)
+        .arg("--trust")
+        .arg(trust_path())
+        .arg("--svid")
+        .arg(svid)
+        .arg("--json")
+        .output()
+        .expect("run verifier binary");
+    RunResult {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        code: output.status.code().unwrap_or(-1),
+    }
+}
+
 fn expect_field(expect: &str, key: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(expect).ok()?;
     value.get(key).and_then(|v| v.as_str()).map(str::to_string)
@@ -132,6 +150,113 @@ fn corpus_conformance() {
         checked >= 31,
         "expected at least 31 fixtures, got {checked}"
     );
+}
+
+/// The SVID conformance test: drive the built binary over every fixture in the
+/// `svid/` arm with `--svid` and assert byte-identical comparable output to the
+/// committed appraisal. s01 (P-256) and s02 (Ed25519) confirm all three SVID
+/// claims; every malicious fixture (s03–s21) appraises WITHOUT them (no
+/// inflation), and s13 (unsigned) reports assertion_signed false. s17 (malformed
+/// SPIFFE-ID dot-segment path) and s19 (issued_at one nanosecond past a
+/// whole-second leaf expiry) are the strict-grammar / full-precision-time
+/// regressions; s18 (signing CA expired at action time) withholds via the
+/// CA-window check.
+#[test]
+fn corpus_conformance_svid() {
+    let dir = corpus_dir().join("svid");
+    assert!(dir.exists(), "svid corpus dir missing at {}", dir.display());
+    let mut checked = 0;
+    for entry in fs::read_dir(&dir).expect("read svid dir") {
+        let path = entry.expect("dir entry").path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.ends_with(".expect.json") {
+            continue;
+        }
+        let base = name.trim_end_matches(".expect.json").to_string();
+        let expect = fs::read_to_string(&path).expect("read expect");
+        let verdict = expect_field(&expect, "verdict").expect("verdict");
+        // Every svid fixture appraises (the binding failures are appraisal-level,
+        // never envelope-fatal).
+        assert_eq!(verdict, "appraise", "{base}: svid fixtures must appraise");
+
+        let fixture = dir.join(format!("{base}.aarp.json"));
+        let svid = dir.join(format!("{base}.svid.json"));
+        assert!(fixture.exists(), "missing fixture {}", fixture.display());
+        assert!(svid.exists(), "missing svid sidecar {}", svid.display());
+
+        let result = run_aarp_svid(&fixture, &svid);
+        checked += 1;
+        assert_eq!(
+            result.code, 0,
+            "{base}: svid fixture must exit 0; stdout={}",
+            result.stdout
+        );
+        let want = fs::read_to_string(dir.join(format!("{base}.appraisal.json")))
+            .expect("read committed appraisal");
+        assert_eq!(
+            result.stdout.trim_end(),
+            want.trim_end(),
+            "{base}: svid comparable bytes diverge from committed appraisal"
+        );
+    }
+    assert_eq!(checked, 21, "expected 21 svid fixtures, got {checked}");
+}
+
+/// Without `--svid`, an SVID fixture appraises to exactly the envelope appraisal
+/// (the three SVID claims never appear), proving the layer is additive.
+#[test]
+fn svid_omitted_yields_plain_envelope_appraisal() {
+    let dir = corpus_dir().join("svid");
+    let fixture = dir.join("s01-valid-ecdsa-p256-baseline.aarp.json");
+    let result = run_aarp(&fixture, false);
+    assert_eq!(result.code, 0, "stdout={}", result.stdout);
+    // The SVID claims never appear in verified_claims or axes without --svid.
+    let value: serde_json::Value =
+        serde_json::from_str(result.stdout.trim_end()).expect("parse appraisal json");
+    let verified = value
+        .get("verified_claims")
+        .and_then(|v| v.as_array())
+        .expect("verified_claims array");
+    for claim in [
+        "workload_identity_verified",
+        "x509_svid_bound",
+        "svid_valid_at_action_time",
+    ] {
+        assert!(
+            !verified.iter().any(|c| c.as_str() == Some(claim)),
+            "without --svid the SVID claim {claim:?} must not be verified: {}",
+            result.stdout
+        );
+    }
+    // The producer claim stays in claimed_unverified without --svid.
+    assert!(
+        result
+            .stdout
+            .contains("\"claimed_unverified\":[\"workload_identity_verified\"]"),
+        "the producer claim stays in claimed_unverified without --svid: {}",
+        result.stdout
+    );
+}
+
+/// `--svid` combined with `--chain` is a usage error (exit 64): the SVID binding
+/// is single-envelope only.
+#[test]
+fn svid_with_chain_is_usage_error() {
+    let dir = corpus_dir().join("svid");
+    let fixture = dir.join("s01-valid-ecdsa-p256-baseline.aarp.json");
+    let svid = dir.join("s01-valid-ecdsa-p256-baseline.svid.json");
+    let output = Command::new(binary())
+        .arg("aarp")
+        .arg(&fixture)
+        .arg("--trust")
+        .arg(trust_path())
+        .arg("--svid")
+        .arg(&svid)
+        .arg("--chain")
+        .arg("--json")
+        .output()
+        .expect("run verifier");
+    assert_eq!(output.status.code(), Some(64));
 }
 
 #[test]

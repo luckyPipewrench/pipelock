@@ -30,6 +30,8 @@ import {
 // Axis names group verified claims by the kind of proof they rest on.
 export const AXIS_IDENTITY = "identity";
 export const AXIS_INTEGRITY = "integrity";
+// AXIS_FRESHNESS groups claims resting on point-in-time validity proof.
+export const AXIS_FRESHNESS = "freshness";
 
 // Verified-claim names.
 export const CLAIM_ASSERTION_SIGNATURE_VALID = "assertion_signature_valid";
@@ -40,6 +42,13 @@ export const CLAIM_MEDIATOR_KEY_PINNED = "mediator_key_pinned";
 // appraisal claim; the cross-envelope stream linkage ("chain_linked") is a
 // separate concept reported by verifyChain/comparableChain.
 export const CLAIM_CHAIN_LINK_PRESENT = "chain_link_present";
+
+// SVID workload-identity attestation claims (added only by the SVID layer in
+// svid.ts, never by core appraisal). Mirror Go's ClaimWorkloadIdentityVerified
+// / ClaimX509SVIDBound / ClaimSVIDValidAtActionTime.
+export const CLAIM_WORKLOAD_IDENTITY_VERIFIED = "workload_identity_verified";
+export const CLAIM_X509_SVID_BOUND = "x509_svid_bound";
+export const CLAIM_SVID_VALID_AT_ACTION_TIME = "svid_valid_at_action_time";
 
 // docsNotAsserted is the fixed set of properties an AARP appraisal never asserts.
 const docsNotAsserted = [
@@ -99,6 +108,10 @@ const claimVerifiedBy: Record<string, string[]> = {
   "complete-mediation": [],
   complete_mediation: [],
   transparency_inclusion: [],
+  // A producer that claims workload_identity_verified only has it confirmed when
+  // the SVID binding actually verified (svid.ts adds the verified claim). Without
+  // a verifying binding it is reported claimed-but-unverified, never inflated.
+  [CLAIM_WORKLOAD_IDENTITY_VERIFIED]: [CLAIM_WORKLOAD_IDENTITY_VERIFIED],
 };
 
 interface VerifiedSigner {
@@ -272,13 +285,21 @@ function newAppraisal(): Appraisal {
   };
 }
 
-function addVerified(ap: Appraisal, claim: string, axis: string): void {
+// addVerified records a confirmed claim under an axis (and in verified_claims).
+// Exported so the SVID layer (svid.ts) can attach its workload-identity claims
+// after core appraisal but before classifyClaims, mirroring Go's
+// AppraiseWithSVID ordering.
+export function addVerified(ap: Appraisal, claim: string, axis: string): void {
   ap.verified_claims.push(claim);
   if (ap.axes[axis] === undefined) ap.axes[axis] = [];
   (ap.axes[axis] as string[]).push(claim);
 }
 
-function classifyClaims(ap: Appraisal): void {
+// classifyClaims fills claimed_unverified from the producer claims the verified
+// set does not confirm. Exported so the SVID layer runs it as the final pass
+// after adding its claims (the SVID claims can flip workload_identity_verified
+// from claimed-unverified to confirmed).
+export function classifyClaims(ap: Appraisal): void {
   const verified = new Set(ap.verified_claims);
   const seenClaim = new Set<string>();
   for (const claimed of ap.assurance_claimed) {
@@ -299,10 +320,14 @@ function classifyClaims(ap: Appraisal): void {
   }
 }
 
-// verify appraises an AARP envelope. It throws an EnvelopeFatal-class error only
-// for envelope-fatal conditions; per-signature problems are reported in the
-// appraisal, never as a hard rejection.
-export function verify(e: Envelope, opts: VerifyOptions): Appraisal {
+// appraiseCore runs the full envelope appraisal EXCEPT the final claim
+// classification, mirroring Go's appraiseCore. verify finishes it with
+// classifyClaims; the SVID layer (appraiseWithSVID) adds its workload-identity
+// claims first, then runs classifyClaims, so a verifying binding can flip
+// workload_identity_verified from claimed-unverified to confirmed. It throws an
+// EnvelopeFatal-class error only for envelope-fatal conditions; per-signature
+// problems are reported in the appraisal, never as a hard rejection.
+export function appraiseCore(e: Envelope, opts: VerifyOptions): Appraisal {
   validateStructure(e);
   const digest = payloadDigest(e);
 
@@ -334,6 +359,14 @@ export function verify(e: Envelope, opts: VerifyOptions): Appraisal {
     );
   }
 
+  return ap;
+}
+
+// verify appraises an AARP envelope. It throws an EnvelopeFatal-class error only
+// for envelope-fatal conditions; per-signature problems are reported in the
+// appraisal, never as a hard rejection.
+export function verify(e: Envelope, opts: VerifyOptions): Appraisal {
+  const ap = appraiseCore(e, opts);
   classifyClaims(ap);
   return ap;
 }

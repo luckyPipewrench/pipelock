@@ -1,0 +1,8 @@
+{
+  "attack_class": "identity-substitution",
+  "category": "svid",
+  "description": "a leaf URI SAN with a dot-segment path is not a well-formed SPIFFE ID; a loose parser must not accept it and inflate identity",
+  "fixture_id": "s17-malformed-spiffe-path",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

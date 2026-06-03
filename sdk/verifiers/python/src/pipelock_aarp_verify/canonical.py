@@ -46,10 +46,7 @@ _SHORT_ESCAPES = {
 
 def _replace_surrogates(s: str) -> str:
     """Match Go encoding/json: unpaired UTF-16 surrogates decode as U+FFFD."""
-    return "".join(
-        "\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch
-        for ch in s
-    )
+    return "".join("\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in s)
 
 
 def _escape_string(s: str) -> str:

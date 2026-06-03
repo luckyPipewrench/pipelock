@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/aarp"
+	"github.com/luckyPipewrench/pipelock/internal/svidsidecar"
 )
 
 // updateAARP regenerates the AARP corpus when passed.
@@ -99,7 +100,7 @@ type aarpFixture struct {
 	// <name>.svid.json and fed to the verifier via --svid. SVID fixtures are
 	// always verdictAppraise: an SVID attack is never envelope-fatal, it merely
 	// withholds the workload-identity claims (no inflation).
-	svid *svidSidecar
+	svid *svidsidecar.Sidecar
 }
 
 // TestGenerateAARPCorpus writes the full hostile corpus when run with

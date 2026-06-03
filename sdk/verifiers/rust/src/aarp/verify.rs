@@ -16,6 +16,7 @@ use super::envelope::{classify_critical_extensions, CritError, Envelope, CANON_I
 // Axis names.
 pub const AXIS_IDENTITY: &str = "identity";
 pub const AXIS_INTEGRITY: &str = "integrity";
+pub const AXIS_FRESHNESS: &str = "freshness";
 
 // Verified-claim names.
 pub const CLAIM_ASSERTION_SIGNATURE_VALID: &str = "assertion_signature_valid";
@@ -111,7 +112,7 @@ impl Appraisal {
         }
     }
 
-    fn add_verified(&mut self, claim: &str, axis: &str) {
+    pub fn add_verified(&mut self, claim: &str, axis: &str) {
         self.verified_claims.push(claim.to_string());
         self.axes
             .entry(axis.to_string())
@@ -307,6 +308,16 @@ fn claim_required(claim: &str) -> Option<&'static [&'static str]> {
         "svid_valid_at_action_time" => Some(&["svid_valid_at_action_time"]),
         _ => None,
     }
+}
+
+/// reclassify_claims recomputes claimed_unverified from scratch. The SVID
+/// attestation layer adds verified claims AFTER the initial appraisal, so the
+/// producer claim `workload_identity_verified` must be reclassified (it moves
+/// from claimed_unverified to satisfied once the binding verifies). This mirrors
+/// the Go `AppraiseWithSVID` order: addSVIDClaims, then classifyClaims once.
+pub fn reclassify_claims(ap: &mut Appraisal) {
+    ap.claimed_unverified.clear();
+    classify_claims(ap);
 }
 
 /// classify_claims fills claimed_unverified from the producer claims the

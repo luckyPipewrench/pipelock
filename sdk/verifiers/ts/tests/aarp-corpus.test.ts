@@ -9,8 +9,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import assert from "node:assert/strict";
+import { comparableAppraisal } from "../src/aarp/appraise.js";
 import {
-  comparableAppraisal,
   comparableChain,
   loadTrustFile,
   unmarshal,
@@ -18,6 +18,7 @@ import {
   verifyChain,
 } from "../src/aarp/index.js";
 import type { Envelope } from "../src/aarp/index.js";
+import { appraiseWithSVID, loadSVIDFile } from "../src/aarp/svid.js";
 
 // Paths are relative to the test CWD (sdk/verifiers/ts), matching the existing
 // conformance-corpus.test.ts convention.
@@ -89,6 +90,29 @@ for (const category of ["golden", "malicious", "edge", "chain"]) {
       assert.equal(result.fatal, false, `${base} should appraise`);
       const want = readFileSync(`${dir}/${base}.appraisal.json`, "utf8").trim();
       assert.equal(result.bytes, want, `${base} comparable bytes mismatch`);
+    });
+  }
+}
+
+// SVID arm: each fixture is appraised with its per-fixture --svid sidecar and
+// must byte-match the committed .appraisal.json. A genuine baseline confirms the
+// three workload-identity claims; every attack appraises WITHOUT them (no
+// inflation). Mirrors the CLI single-envelope + --svid path.
+{
+  const dir = `${corpus}/svid`;
+  const expectFiles = readdirSync(dir).filter((f) => f.endsWith(".expect.json"));
+  for (const expectFile of expectFiles) {
+    const base = expectFile.replace(/\.expect\.json$/u, "");
+    const expect = JSON.parse(readFileSync(`${dir}/${expectFile}`, "utf8")) as ExpectFile;
+
+    test(`corpus svid/${base} (${expect.verdict})`, () => {
+      const env = unmarshal(readFileSync(`${dir}/${base}.aarp.json`, "utf8"));
+      const opts = loadTrustFile(trustPath);
+      const svid = loadSVIDFile(`${dir}/${base}.svid.json`);
+      const ap = appraiseWithSVID(env, svid.evidence, opts, svid.opts);
+      const bytes = comparableAppraisal(ap);
+      const want = readFileSync(`${dir}/${base}.appraisal.json`, "utf8").trim();
+      assert.equal(bytes, want, `${base} comparable bytes mismatch`);
     });
   }
 }

@@ -17,10 +17,10 @@
 # Each verifier command is the prefix up to and including the `aarp` subcommand;
 # the gate appends `<fixture> --trust <trust.json> [--chain] --json`.
 #
-# SVID fixtures are Go-reference complete in this checkpoint. The TS/Rust/Python
-# ports do not yet accept --svid, so the four-language gate skips svid/ by
-# default. Set AARP_GATE_INCLUDE_SVID=1 once all four ports implement --svid to
-# require four-way equality on the SVID attestation corpus too.
+# All four reference verifiers (Go, TypeScript, Rust, Python) implement --svid,
+# so the gate includes the svid/ attestation corpus by default and requires
+# four-way byte equality on it too. Set AARP_GATE_INCLUDE_SVID=0 to skip svid/
+# (e.g. when bisecting a non-SVID change against an older verifier).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,7 +79,7 @@ fails=0
 checked=0
 printf "%-42s %-9s %-4s %-4s %-4s %-4s %s\n" FIXTURE VERDICT GO TS RUST PY RESULT
 categories=(golden malicious edge chain)
-if [ "${AARP_GATE_INCLUDE_SVID:-0}" = "1" ]; then
+if [ "${AARP_GATE_INCLUDE_SVID:-1}" = "1" ]; then
   categories+=(svid)
 fi
 for category in "${categories[@]}"; do
@@ -134,8 +134,8 @@ done
 
 echo "----"
 echo "checked $checked AARP fixtures; $fails failure(s)"
-if [ "${AARP_GATE_INCLUDE_SVID:-0}" != "1" ]; then
-  echo "note: skipped svid/ fixtures in the four-language gate; set AARP_GATE_INCLUDE_SVID=1 after TS/Rust/Python implement --svid"
+if [ "${AARP_GATE_INCLUDE_SVID:-1}" != "1" ]; then
+  echo "note: skipped svid/ fixtures (AARP_GATE_INCLUDE_SVID=0); the four-language gate covers svid/ by default"
 fi
 if [ "$checked" -eq 0 ]; then
   echo "FATAL: no fixtures checked; corpus path wrong?" >&2

@@ -13,6 +13,7 @@
 pub mod chain;
 pub mod envelope;
 pub mod jcs;
+pub mod svid;
 pub mod verify;
 
 use std::collections::BTreeMap;
@@ -37,6 +38,7 @@ struct Outcome {
 struct AarpArgs {
     target: Option<String>,
     trust_path: String,
+    svid_path: String,
     json: bool,
     chain: bool,
 }
@@ -50,8 +52,28 @@ pub fn run_aarp(args: &[String]) -> Result<i32> {
         return Err(VerifierError::Usage(aarp_usage()));
     };
 
+    // --svid is single-envelope only; it cannot be combined with --chain.
+    if parsed.chain && !parsed.svid_path.is_empty() {
+        return Err(VerifierError::Usage(format!(
+            "--svid is single-envelope only and cannot be combined with --chain\n{}",
+            aarp_usage()
+        )));
+    }
+
     let opts = load_trust_file(&parsed.trust_path)
         .map_err(|err| VerifierError::Runtime(format!("load trust: {err}")))?;
+
+    // Load the SVID sidecar (if any) before reading the envelope, so a malformed
+    // operator-pinned bundle is reported as a config error (exit 2) rather than
+    // entangled with envelope appraisal.
+    let svid_input = if parsed.svid_path.is_empty() {
+        None
+    } else {
+        Some(
+            svid::load_svid_file(&parsed.svid_path)
+                .map_err(|err| VerifierError::Runtime(format!("load svid: {err}")))?,
+        )
+    };
 
     let data = fs::read_to_string(Path::new(target))
         .map_err(|err| VerifierError::Runtime(format!("read envelope: {err}")))?;
@@ -59,22 +81,37 @@ pub fn run_aarp(args: &[String]) -> Result<i32> {
     let outcome = if parsed.chain {
         run_chain(&data, parsed.json)
     } else {
-        run_single(&data, &opts, parsed.json)
+        run_single(&data, &opts, svid_input.as_ref(), parsed.json)
     };
 
     print!("{}", outcome.stdout);
     Ok(outcome.code)
 }
 
-fn run_single(data: &str, opts: &VerifyOptions, json_mode: bool) -> Outcome {
+fn run_single(
+    data: &str,
+    opts: &VerifyOptions,
+    svid_input: Option<&(svid::SvidEvidence, svid::PinnedTrust)>,
+    json_mode: bool,
+) -> Outcome {
     let env = match Envelope::unmarshal(data) {
         Ok(env) => env,
         Err(err) => return fatal(json_mode, &err.to_string()),
     };
-    let appraisal = match verify::verify(&env, opts) {
+    let mut appraisal = match verify::verify(&env, opts) {
         Ok(ap) => ap,
         Err(err) => return fatal(json_mode, &err),
     };
+    // With --svid, appraise the X.509-SVID binding on top of the envelope
+    // appraisal. The SVID claims attach only on a signed assertion whose binding
+    // verifies against the pinned bundle; otherwise nothing is added and the
+    // envelope appraisal is byte-identical. The producer claim
+    // workload_identity_verified moves from claimed_unverified to verified only
+    // when the binding verifies, so re-run the claim classification afterward.
+    if let Some((ev, trust)) = svid_input {
+        svid::add_svid_claims(&mut appraisal, &env, ev, trust);
+        verify::reclassify_claims(&mut appraisal);
+    }
     let comparable = match verify::comparable_appraisal(&appraisal) {
         Ok(bytes) => bytes,
         Err(err) => return fatal(json_mode, &format!("render appraisal: {err}")),
@@ -182,6 +219,18 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
             _ if arg.starts_with("--trust=") => {
                 parsed.trust_path = arg["--trust=".len()..].to_string();
             }
+            "--svid" => {
+                index += 1;
+                parsed.svid_path = args
+                    .get(index)
+                    .ok_or_else(|| {
+                        VerifierError::Usage(format!("--svid requires a value\n{}", aarp_usage()))
+                    })?
+                    .clone();
+            }
+            _ if arg.starts_with("--svid=") => {
+                parsed.svid_path = arg["--svid=".len()..].to_string();
+            }
             _ if arg.starts_with("--") => {
                 return Err(VerifierError::Usage(format!(
                     "unknown option {arg}\n{}",
@@ -204,7 +253,8 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
 }
 
 fn aarp_usage() -> String {
-    "Usage: pipelock-verifier-rs aarp PATH --trust TRUST_JSON [--chain] [--json]".to_string()
+    "Usage: pipelock-verifier-rs aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--json]"
+        .to_string()
 }
 
 // ---- trust file ----

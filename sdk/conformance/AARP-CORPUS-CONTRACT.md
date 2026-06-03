@@ -5,10 +5,9 @@ TypeScript, Rust, Python) MUST satisfy. The Go implementation in
 `internal/aarp/` is the reference; the other three port FROM it. The shared
 hostile corpus lives in `sdk/conformance/testdata/aarp-corpus/`. The
 cross-language gate (`aarp-corpus-gate.sh`) runs all four verifiers over that
-corpus and fails on **any** disagreement. In this Go-foundation checkpoint the
-SVID `svid/` arm is covered by the Go reference conformance test; the shell gate
-includes it when `AARP_GATE_INCLUDE_SVID=1`, after the TS/Rust/Python ports add
-`--svid`.
+corpus and fails on **any** disagreement. All four reference verifiers implement
+`--svid`, so the gate covers the SVID `svid/` arm by default (set
+`AARP_GATE_INCLUDE_SVID=0` to skip it) alongside the Go reference conformance test.
 
 The bug class this corpus exists to kill: **a claim one verifier inflates that
 another rejects.** Cross-language divergence IS the bug.
@@ -317,9 +316,14 @@ matrix (`svid/`) covers: valid ECDSA-P256 and Ed25519 baselines, replay across
 actions, expiry / not-yet-valid at action time, wrong leaf key, stale bundle,
 forked bundle root, trust-domain confusion, SPIFFE-ID substitution, P-384 curve
 confusion, short nonce, unsigned assertion, JWT-treated-as-verified, issued-at
-after leaf expiry, and a forged binding signature. The three Codex-finding fixtures
-are the valid baseline (`s01`), trust-domain confusion (`s09`), and
-issued-at-after-leaf-expiry (`s15`). Every malicious fixture appraises WITHOUT the
-three claims; the Go reference conformance test catches inflation now, and the
-four-language gate catches cross-language inflation once all ports implement
-`--svid` and run with `AARP_GATE_INCLUDE_SVID=1`.
+after leaf expiry, a forged binding signature, a malformed SPIFFE-ID path
+(dot-segment) that a loose parser would accept, a signing CA expired at action
+time while the pinned generation still covers it, and an `issued_at` one
+nanosecond past a whole-second leaf expiry (sub-second precision), an issuer-DN
+mismatch under the pinned CA key, and a binding signature with non-base64 junk
+that lenient decoders must not discard. The three
+regression-anchor fixtures are the valid baseline (`s01`), trust-domain confusion
+(`s09`), and issued-at-after-leaf-expiry (`s15`). Every malicious fixture appraises
+WITHOUT the three claims. All four reference verifiers implement `--svid`, so the
+shell gate covers `svid/` by default (`AARP_GATE_INCLUDE_SVID=0` skips it) and
+catches cross-language inflation alongside the Go reference conformance test.

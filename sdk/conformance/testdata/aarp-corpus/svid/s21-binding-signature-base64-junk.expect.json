@@ -1,0 +1,8 @@
+{
+  "attack_class": "malformed-evidence",
+  "category": "svid",
+  "description": "a binding signature with non-base64 junk is malformed evidence; lenient decoders must not discard the junk and verify it",
+  "fixture_id": "s21-binding-signature-base64-junk",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

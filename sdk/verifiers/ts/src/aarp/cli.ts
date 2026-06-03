@@ -1,9 +1,14 @@
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Apache-2.0
 
-// The `aarp` subcommand, ported from cmd/pipelock-verifier/aarp.go. Usage:
+// The `aarp` subcommand, ported from cmd/pipelock-verifier/aarp.go (+ the SVID
+// arm from aarp_svid.go). Usage:
 //
-//   pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--chain] [--json]
+//   pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--json]
+//
+// --svid attaches an X.509-SVID proof-of-possession appraisal to a single
+// envelope (never with --chain); without it the output is the plain envelope
+// appraisal, unchanged.
 //
 // Exit codes: 0 appraised (single) / linked (chain); 1 fatal (or chain not
 // linked); 2 I/O or trust-file error; 64 usage. On fatal with --json the
@@ -12,16 +17,11 @@
 
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { comparableAppraisal } from "./appraise.js";
 import { canonicalize } from "./canonical.js";
-import {
-  comparableAppraisal,
-  comparableChain,
-  loadTrustFile,
-  unmarshal,
-  verify,
-  verifyChain,
-} from "./index.js";
+import { comparableChain, loadTrustFile, unmarshal, verify, verifyChain } from "./index.js";
 import type { Envelope } from "./index.js";
+import { appraiseWithSVID, loadSVIDFile } from "./svid.js";
 
 // CodedError is anything carrying a numeric exit `code`. Our module errors all do.
 interface CodedError {
@@ -43,7 +43,8 @@ export class AARPUsageError extends Error {
   readonly code = 64;
 }
 
-const USAGE = "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--chain] [--json]";
+const USAGE =
+  "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--json]";
 
 // emitFatal prints the envelope-fatal marker (or human text) and returns 1.
 function emitFatal(jsonMode: boolean, cause: string): number {
@@ -91,6 +92,7 @@ export function runAARPCommand(args: string[]): number {
       allowPositionals: true,
       options: {
         trust: { type: "string", default: "" },
+        svid: { type: "string", default: "" },
         json: { type: "boolean", default: false },
         chain: { type: "boolean", default: false },
       },
@@ -103,8 +105,17 @@ export function runAARPCommand(args: string[]): number {
   }
   const target = parsed.positionals[0] as string;
   const trustPath = parsed.values.trust ?? "";
+  const svidPath = parsed.values.svid ?? "";
   const jsonMode = parsed.values.json === true;
   const chainMode = parsed.values.chain === true;
+
+  // An SVID binding appraises a single envelope; the chain arm verifies stream
+  // linkage and never attaches per-envelope SVID claims.
+  if (svidPath !== "" && chainMode) {
+    throw new AARPUsageError(
+      `${USAGE}\n--svid is single-envelope only and cannot combine with --chain`,
+    );
+  }
 
   // Trust-file and envelope read errors are exit-2 (I/O), propagated as coded
   // errors so the top-level handler maps them.
@@ -123,6 +134,11 @@ export function runAARPCommand(args: string[]): number {
     return runAARPChain(data, jsonMode);
   }
 
+  // A malformed --svid sidecar (bad pinned-bundle DER, inverted window, empty
+  // domain, unknown field) is an operator-config error (exit 2), propagated as a
+  // coded error before any envelope appraisal -- never a fixture verdict.
+  const svid = svidPath === "" ? null : loadSVIDFile(svidPath);
+
   let env: Envelope;
   try {
     env = unmarshal(data);
@@ -132,7 +148,8 @@ export function runAARPCommand(args: string[]): number {
 
   let appraisalBytes: string;
   try {
-    const ap = verify(env, opts);
+    const ap =
+      svid === null ? verify(env, opts) : appraiseWithSVID(env, svid.evidence, opts, svid.opts);
     appraisalBytes = comparableAppraisal(ap);
   } catch (err) {
     return emitFatal(jsonMode, isCodedError(err) ? err.message : String(err));

@@ -1,0 +1,8 @@
+{
+  "attack_class": "unsigned-assertion",
+  "category": "svid",
+  "description": "SVID evidence on an assertion not signed under trust attaches no workload-identity claim",
+  "fixture_id": "s13-unsigned-assertion",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

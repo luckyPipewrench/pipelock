@@ -1,0 +1,8 @@
+{
+  "attack_class": "trust-domain-confusion",
+  "category": "svid",
+  "description": "a valid SVID from one trust domain cannot back an assertion declaring another trust domain",
+  "fixture_id": "s09-trust-domain-confusion",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

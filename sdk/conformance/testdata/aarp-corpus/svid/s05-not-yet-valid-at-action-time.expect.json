@@ -1,0 +1,8 @@
+{
+  "attack_class": "expiry",
+  "category": "svid",
+  "description": "an SVID whose leaf is not yet valid at the action time does not validate point-in-time",
+  "fixture_id": "s05-not-yet-valid-at-action-time",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -1,0 +1,8 @@
+{
+  "attack_class": "identity-substitution",
+  "category": "svid",
+  "description": "the claimed spiffe_id does not match the SVID leaf URI SAN; identity cannot be substituted",
+  "fixture_id": "s10-spiffe-id-substitution",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

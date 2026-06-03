@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cross-language AARP assurance-envelope conformance gate.
 #
-# Runs the four reference verifiers (Go, TypeScript, Rust, Python) over every
-# fixture in the AARP hostile corpus and FAILS if:
+# Runs the four reference verifiers (Go, TypeScript, Rust, Python) over the
+# AARP hostile corpus and FAILS if:
 #
 #   1. for an "appraise" fixture, the four verifiers do not all emit the SAME
 #      comparable appraisal bytes (a cross-language differential — the exact bug
@@ -16,6 +16,11 @@
 #
 # Each verifier command is the prefix up to and including the `aarp` subcommand;
 # the gate appends `<fixture> --trust <trust.json> [--chain] --json`.
+#
+# SVID fixtures are Go-reference complete in this checkpoint. The TS/Rust/Python
+# ports do not yet accept --svid, so the four-language gate skips svid/ by
+# default. Set AARP_GATE_INCLUDE_SVID=1 once all four ports implement --svid to
+# require four-way equality on the SVID attestation corpus too.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,14 +42,19 @@ done
 [ "$missing" -eq 0 ] || exit 2
 [ -f "$TRUST" ] || { echo "FATAL: trust file missing: $TRUST" >&2; exit 2; }
 
-# run_verifier CMD... FIXTURE CHAINFLAG -> sets globals OUT (stdout) and RC (exit)
+# run_verifier FIXTURE CHAINFLAG SVIDPATH CMD... -> sets globals OUT and RC.
+# SVIDPATH (may be empty) adds --svid for the SVID attestation fixtures, which
+# carry a per-fixture sidecar (evidence + pinned bundle/action-time) alongside
+# the envelope.
 run_verifier() {
-  local fixture="$1"; local chainflag="$2"; shift 2
-  if [ "$chainflag" = "chain" ]; then
-    OUT="$("$@" "$fixture" --trust "$TRUST" --chain --json 2>/dev/null)"; RC=$?
-  else
-    OUT="$("$@" "$fixture" --trust "$TRUST" --json 2>/dev/null)"; RC=$?
-  fi
+  local fixture="$1"; local chainflag="$2"; local svidpath="$3"; shift 3
+  local extra=()
+  [ "$chainflag" = "chain" ] && extra+=(--chain)
+  [ -n "$svidpath" ] && extra+=(--svid "$svidpath")
+  # "${extra[@]+...}" guards the empty-array expansion: under `set -u`, a bare
+  # "${extra[@]}" on an empty array raises "unbound variable" on bash < 4.4
+  # (e.g. macOS's bash 3.2). The +alternate form expands to nothing when unset.
+  OUT="$("$@" "$fixture" --trust "$TRUST" ${extra[@]+"${extra[@]}"} --json 2>/dev/null)"; RC=$?
 }
 
 # field VALUE-of KEY from a flat expect.json (string values only).
@@ -54,7 +64,7 @@ expect_field() { grep -o "\"$2\": *\"[^\"]*\"" "$1" | head -1 | sed 's/.*"\([^"]
 smoke() {
   local label="$1"; shift
   local smoke_fixture="$CORPUS/golden/g01-single-ed25519-mediated.aarp.json"
-  run_verifier "$smoke_fixture" envelope "$@"
+  run_verifier "$smoke_fixture" envelope "" "$@"
   if [ "$RC" -ne 0 ]; then
     echo "FATAL: $label verifier failed smoke fixture (exit $RC); check command wiring" >&2
     exit 2
@@ -68,7 +78,11 @@ smoke Python $PY_AARP
 fails=0
 checked=0
 printf "%-42s %-9s %-4s %-4s %-4s %-4s %s\n" FIXTURE VERDICT GO TS RUST PY RESULT
-for category in golden malicious edge chain; do
+categories=(golden malicious edge chain)
+if [ "${AARP_GATE_INCLUDE_SVID:-0}" = "1" ]; then
+  categories+=(svid)
+fi
+for category in "${categories[@]}"; do
   for expfile in "$CORPUS/$category"/*.expect.json; do
     [ -f "$expfile" ] || continue
     base="$(basename "$expfile" .expect.json)"
@@ -83,10 +97,14 @@ for category in golden malicious edge chain; do
     fi
     [ -f "$fixture" ] || { echo "FATAL: missing fixture for $base" >&2; exit 2; }
 
-    run_verifier "$fixture" "$chainflag" $GO_AARP;   go_rc=$RC;   go_out="$OUT"
-    run_verifier "$fixture" "$chainflag" $TS_AARP;   ts_rc=$RC;   ts_out="$OUT"
-    run_verifier "$fixture" "$chainflag" $RUST_AARP; rs_rc=$RC;   rs_out="$OUT"
-    run_verifier "$fixture" "$chainflag" $PY_AARP;   py_rc=$RC;   py_out="$OUT"
+    # SVID fixtures carry a sidecar; pass it with --svid.
+    svidpath=""
+    [ -f "$CORPUS/$category/$base.svid.json" ] && svidpath="$CORPUS/$category/$base.svid.json"
+
+    run_verifier "$fixture" "$chainflag" "$svidpath" $GO_AARP;   go_rc=$RC;   go_out="$OUT"
+    run_verifier "$fixture" "$chainflag" "$svidpath" $TS_AARP;   ts_rc=$RC;   ts_out="$OUT"
+    run_verifier "$fixture" "$chainflag" "$svidpath" $RUST_AARP; rs_rc=$RC;   rs_out="$OUT"
+    run_verifier "$fixture" "$chainflag" "$svidpath" $PY_AARP;   py_rc=$RC;   py_out="$OUT"
     checked=$((checked + 1))
 
     # accept/reject summary per language for the matrix row.
@@ -116,6 +134,9 @@ done
 
 echo "----"
 echo "checked $checked AARP fixtures; $fails failure(s)"
+if [ "${AARP_GATE_INCLUDE_SVID:-0}" != "1" ]; then
+  echo "note: skipped svid/ fixtures in the four-language gate; set AARP_GATE_INCLUDE_SVID=1 after TS/Rust/Python implement --svid"
+fi
 if [ "$checked" -eq 0 ]; then
   echo "FATAL: no fixtures checked; corpus path wrong?" >&2
   exit 2

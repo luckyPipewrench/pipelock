@@ -1,0 +1,8 @@
+{
+  "attack_class": "post-expiry-key-use",
+  "category": "svid",
+  "description": "the chain validates at the action time but the binding issued_at is after the leaf expired: post-expiry key use is rejected",
+  "fixture_id": "s15-issued-at-after-leaf-expiry",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

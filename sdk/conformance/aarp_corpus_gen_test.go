@@ -47,6 +47,7 @@ const (
 	catMalicious = "malicious"
 	catEdge      = "edge"
 	catChain     = "chain"
+	catSVID      = "svid"
 )
 
 // Deterministic test-key seed phrases. Obviously test keys; never production.
@@ -94,6 +95,11 @@ type aarpFixture struct {
 	verdict     string // verdictAppraise or verdictFatal
 	isChain     bool
 	body        []byte // the fixture bytes (.aarp.json or .aarp.jsonl)
+	// svid, when non-nil, is the SVID attestation sidecar written as
+	// <name>.svid.json and fed to the verifier via --svid. SVID fixtures are
+	// always verdictAppraise: an SVID attack is never envelope-fatal, it merely
+	// withholds the workload-identity claims (no inflation).
+	svid *svidSidecar
 }
 
 // TestGenerateAARPCorpus writes the full hostile corpus when run with
@@ -293,6 +299,7 @@ func (g *aarpGen) allFixtures() []aarpFixture {
 	out = append(out, g.maliciousFixtures()...)
 	out = append(out, g.parserFixtures()...)
 	out = append(out, g.chainFixtures()...)
+	out = append(out, g.svidFixtures()...)
 	return out
 }
 
@@ -897,15 +904,24 @@ func (g *aarpGen) writeFixture(f aarpFixture) {
 	}
 	g.writeJSONAt(filepath.Join(dir, f.name+".expect.json"), expect)
 
+	// SVID fixtures carry a sidecar (evidence + pinned bundle/action-time) read
+	// by every verifier via --svid.
+	if f.svid != nil {
+		g.writeJSONAt(filepath.Join(dir, f.name+".svid.json"), f.svid)
+	}
+
 	// Appraise fixtures carry the authoritative comparable output.
 	if f.verdict != verdictAppraise {
 		return
 	}
-	if f.isChain {
+	switch {
+	case f.svid != nil:
+		g.writeRaw(filepath.Join(dir, f.name+".appraisal.json"), g.svidComparable(f.body, f.svid))
+	case f.isChain:
 		g.writeRaw(filepath.Join(dir, f.name+".appraisal.json"), g.chainComparable(f.body))
-		return
+	default:
+		g.writeRaw(filepath.Join(dir, f.name+".appraisal.json"), g.envelopeComparable(f.body))
 	}
-	g.writeRaw(filepath.Join(dir, f.name+".appraisal.json"), g.envelopeComparable(f.body))
 }
 
 // envelopeComparable runs the Go reference verifier over a single-envelope

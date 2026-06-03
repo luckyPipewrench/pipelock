@@ -1,0 +1,8 @@
+{
+  "attack_class": "replay",
+  "category": "svid",
+  "description": "a binding minted for one receipt does not verify when replayed onto a different action",
+  "fixture_id": "s03-replay-across-actions",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

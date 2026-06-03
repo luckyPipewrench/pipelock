@@ -22,6 +22,7 @@ import (
 // aarpOptions holds resolved CLI flags for the aarp subcommand.
 type aarpOptions struct {
 	trustPath  string
+	svidPath   string
 	jsonOutput bool
 	chain      bool
 }
@@ -82,6 +83,7 @@ the envelope is fatal).`,
 	cmd.SetFlagErrorFunc(usageFlagError)
 
 	cmd.Flags().StringVar(&opts.trustPath, "trust", "", "path to the pinned trust JSON (trusted_keys + trust_entries)")
+	cmd.Flags().StringVar(&opts.svidPath, "svid", "", "path to the SVID attestation JSON (evidence + pinned bundle/action-time); appraises the X.509-SVID binding")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit the comparable appraisal JSON on stdout")
 	cmd.Flags().BoolVar(&opts.chain, "chain", false, "PATH is a JSONL stream of envelopes; verify Rung-1 chain linkage")
 
@@ -89,9 +91,27 @@ the envelope is fatal).`,
 }
 
 func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
+	if opts.chain && opts.svidPath != "" {
+		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--svid is single-envelope only and cannot be combined with --chain"))
+	}
+
 	verifyOpts, err := loadTrustFile(opts.trustPath)
 	if err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("load trust: %w", err))
+	}
+
+	// Load the SVID attestation sidecar (if any) before reading the envelope, so
+	// a malformed pinned bundle is reported as a config error (exit 2) rather
+	// than entangled with envelope appraisal.
+	var (
+		svidEvidence *aarp.SVIDEvidence
+		svidOpts     aarp.SVIDVerifyOptions
+	)
+	if opts.svidPath != "" {
+		svidEvidence, svidOpts, err = loadSVIDFile(opts.svidPath)
+		if err != nil {
+			return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("load svid: %w", err))
+		}
 	}
 
 	clean := filepath.Clean(target)
@@ -109,7 +129,16 @@ func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
 		return emitFatal(stdout, stderr, opts.jsonOutput, err)
 	}
 
-	ap, err := aarp.Verify(env, verifyOpts)
+	// With --svid, appraise the X.509-SVID binding on top of the envelope
+	// appraisal; the SVID claims are added only when the binding verifies against
+	// the pinned bundle. Without it, the plain envelope appraisal is unchanged and
+	// byte-identical.
+	var ap *aarp.Appraisal
+	if svidEvidence != nil {
+		ap, err = aarp.AppraiseWithSVID(env, svidEvidence, verifyOpts, svidOpts)
+	} else {
+		ap, err = aarp.Verify(env, verifyOpts)
+	}
 	if err != nil {
 		return emitFatal(stdout, stderr, opts.jsonOutput, err)
 	}

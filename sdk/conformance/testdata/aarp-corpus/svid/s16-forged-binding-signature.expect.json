@@ -1,0 +1,8 @@
+{
+  "attack_class": "forged-binding",
+  "category": "svid",
+  "description": "a tampered binding signature does not verify under the leaf key; no workload-identity claim attaches",
+  "fixture_id": "s16-forged-binding-signature",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

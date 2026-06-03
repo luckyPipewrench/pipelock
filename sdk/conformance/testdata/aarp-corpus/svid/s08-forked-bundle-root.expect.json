@@ -1,0 +1,8 @@
+{
+  "attack_class": "forked-bundle",
+  "category": "svid",
+  "description": "the SVID chains to an issuer not present in the pinned bundle (a forked/foreign root)",
+  "fixture_id": "s08-forked-bundle-root",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

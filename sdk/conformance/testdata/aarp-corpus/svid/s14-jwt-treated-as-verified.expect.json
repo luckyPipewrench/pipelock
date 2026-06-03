@@ -1,0 +1,8 @@
+{
+  "attack_class": "jwt-as-verified",
+  "category": "svid",
+  "description": "a JWT-SVID is bearer-only in v0.1; a jwt-typed evidence object never counts as verified workload identity",
+  "fixture_id": "s14-jwt-treated-as-verified",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -1,0 +1,8 @@
+{
+  "attack_class": "canonicalization-astral",
+  "category": "golden",
+  "description": "an astral (supplementary-plane) code point in a signed field must be preserved, not mangled to U+FFFD",
+  "fixture_id": "g08-astral-mediator-id",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

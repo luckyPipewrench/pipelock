@@ -1,0 +1,8 @@
+{
+  "attack_class": "forged",
+  "category": "malicious",
+  "description": "a tampered signature does not verify; assertion_signed is false and no claim inflates",
+  "fixture_id": "m01-forged-signature",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

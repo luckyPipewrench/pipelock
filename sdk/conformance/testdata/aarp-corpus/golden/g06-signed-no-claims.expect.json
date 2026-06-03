@@ -1,0 +1,8 @@
+{
+  "attack_class": "baseline",
+  "category": "golden",
+  "description": "a signed assertion with no producer claims verifies the signature and asserts nothing else",
+  "fixture_id": "g06-signed-no-claims",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

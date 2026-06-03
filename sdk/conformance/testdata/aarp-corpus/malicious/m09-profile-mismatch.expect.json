@@ -1,0 +1,8 @@
+{
+  "attack_class": "profile-mismatch",
+  "category": "malicious",
+  "description": "an envelope profile the verifier does not implement is fatal: it is never appraised",
+  "fixture_id": "m09-profile-mismatch",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

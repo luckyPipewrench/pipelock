@@ -1,0 +1,8 @@
+{
+  "attack_class": "downgraded",
+  "category": "malicious",
+  "description": "a PQ-only envelope cannot verify: the PQ slot is unimplemented and there is no fallback",
+  "fixture_id": "m03-downgrade-pq-only",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

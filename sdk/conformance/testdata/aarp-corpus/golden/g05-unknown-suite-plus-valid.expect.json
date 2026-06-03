@@ -1,0 +1,8 @@
+{
+  "attack_class": "no-masking",
+  "category": "golden",
+  "description": "an unknown-suite parallel signature does not mask or poison the valid Ed25519 signature",
+  "fixture_id": "g05-unknown-suite-plus-valid",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

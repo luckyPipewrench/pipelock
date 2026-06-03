@@ -1,0 +1,8 @@
+{
+  "attack_class": "baseline-chain",
+  "category": "chain",
+  "description": "a contiguous, hash-linked, single-issuer stream verifies",
+  "fixture_id": "c01-valid-stream",
+  "input_format": "chain",
+  "verdict": "appraise"
+}

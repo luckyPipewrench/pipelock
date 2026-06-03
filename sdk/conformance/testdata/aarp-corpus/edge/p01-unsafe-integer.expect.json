@@ -1,0 +1,8 @@
+{
+  "attack_class": "number-safety",
+  "category": "edge",
+  "description": "a raw JSON integer above 2^53-1 is fatal: it would round to a float in some language parsers",
+  "fixture_id": "p01-unsafe-integer",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

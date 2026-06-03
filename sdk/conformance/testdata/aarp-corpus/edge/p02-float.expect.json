@@ -1,0 +1,8 @@
+{
+  "attack_class": "number-safety",
+  "category": "edge",
+  "description": "a raw JSON float is fatal: identity/amount fields must be typed strings",
+  "fixture_id": "p02-float",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

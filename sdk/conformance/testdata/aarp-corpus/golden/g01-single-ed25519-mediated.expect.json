@@ -1,0 +1,8 @@
+{
+  "attack_class": "baseline",
+  "category": "golden",
+  "description": "single Ed25519 signature by the pinned mediator key; mediated is confirmed",
+  "fixture_id": "g01-single-ed25519-mediated",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

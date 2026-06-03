@@ -1,0 +1,8 @@
+{
+  "attack_class": "no-inflation",
+  "category": "golden",
+  "description": "trusted key with no mediator trust entry: signature verifies, mediated is NOT pinned",
+  "fixture_id": "g04-signed-but-unpinned",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

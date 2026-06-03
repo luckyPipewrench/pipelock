@@ -1,0 +1,8 @@
+{
+  "attack_class": "reorder",
+  "category": "chain",
+  "description": "reordering two envelopes breaks the prior_hash linkage",
+  "fixture_id": "c02-reordered-stream",
+  "input_format": "chain",
+  "verdict": "fatal"
+}

@@ -1,0 +1,24 @@
+{
+  "keys": {
+    "k-issuer": {
+      "alg": "ed25519",
+      "public_key_hex": "64569652ab4ada59f5d70c6870ef650251968d1fa85d5370382f5efdeadca1af",
+      "seed_hex": "c485342ec5f03bb79eea09eaa7dc6140c3814fe6295f778908289eac653cce51",
+      "seed_phrase": "pipelock-aarp-corpus-issuer-key-v1"
+    },
+    "k-other": {
+      "alg": "ed25519",
+      "public_key_hex": "0b2b9d0e4a10f19993c1f70f5b28fcd00fa4aab3741d3fa9e8c3c4a1e47678c6",
+      "seed_hex": "06d1efc0af16e3ca8936ae654ae8264afb79a63dffb7fda14705f562161cf698",
+      "seed_phrase": "pipelock-aarp-corpus-untrusted-key-v1"
+    },
+    "k-signer": {
+      "alg": "ed25519",
+      "public_key_hex": "c7dee6a7b1f617b538c45865c9a8b348d6e3fdcf16b520a8b44f4ea2bf970f7c",
+      "seed_hex": "747ac8f0d512bf67905a8d243c14aa0558fb7d42d263a9c296fd581371310005",
+      "seed_phrase": "pipelock-aarp-corpus-signer-key-v1"
+    }
+  },
+  "note": "TEST KEYS ONLY. Derived from sha256(seed_phrase). Never use for production signing.",
+  "receipt_signer_key_hex": "849cce6da1654b4f2c2ca9b1dc71247c42fb3e83c37a353569f1c1e83c165129"
+}

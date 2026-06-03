@@ -1,0 +1,8 @@
+{
+  "attack_class": "downgraded",
+  "category": "malicious",
+  "description": "an unrecognized signature algorithm never verifies and never falls back to a known suite",
+  "fixture_id": "m04-unknown-suite-only",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -1,0 +1,8 @@
+{
+  "attack_class": "canon-mismatch",
+  "category": "malicious",
+  "description": "a signature naming a different canonicalization is reported unknown_suite per signature and never verifies",
+  "fixture_id": "m10-canon-mismatch",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

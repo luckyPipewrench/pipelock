@@ -1,0 +1,8 @@
+{
+  "attack_class": "backdate",
+  "category": "chain",
+  "description": "a non-incrementing sequence number signals backdating within the stream",
+  "fixture_id": "c04-backdated-stream",
+  "input_format": "chain",
+  "verdict": "fatal"
+}

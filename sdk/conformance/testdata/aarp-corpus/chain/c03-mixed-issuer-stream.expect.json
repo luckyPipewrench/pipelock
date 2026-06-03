@@ -1,0 +1,8 @@
+{
+  "attack_class": "insertion",
+  "category": "chain",
+  "description": "a stream that mixes two issuers is broken: a verified stream is single-issuer",
+  "fixture_id": "c03-mixed-issuer-stream",
+  "input_format": "chain",
+  "verdict": "fatal"
+}

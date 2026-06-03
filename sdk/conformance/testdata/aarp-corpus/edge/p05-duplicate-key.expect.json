@@ -1,0 +1,8 @@
+{
+  "attack_class": "parser-differential",
+  "category": "edge",
+  "description": "a duplicate object key is fatal: last-wins parser differentials are a smuggling vector",
+  "fixture_id": "p05-duplicate-key",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

@@ -1,0 +1,8 @@
+{
+  "attack_class": "replayed",
+  "category": "malicious",
+  "description": "a valid signature lifted from another envelope does not verify over this payload digest",
+  "fixture_id": "m02-replayed-signature",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -9,6 +9,11 @@ coverage:
         target: 75%
 ignore:
   - "tests/ws-helper/**"
+  # Golden-fixture generator for the verifiable-shadow-rollout example. It
+  # imports internal packages to deterministically emit a signed shadow bundle
+  # and is validated by running it and verifying the output through the
+  # standalone pipelock-verifier, not by unit tests.
+  - "tools/gen-shadow-example/**"
   # Agent-egress overhead benchmark: harness, mocks, and entry binary
   # orchestrate subprocesses, raw TCP sockets, and live metrics scraping
   # against a running pipelock process. Go's coverage tool cannot follow

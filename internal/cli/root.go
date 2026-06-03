@@ -115,6 +115,7 @@ Quick start:
 		runtime.HealthcheckCmd(),
 		// File injection scanning (invisible-Unicode / bidi)
 		scan.Cmd(),
+		skillScanCmd(),
 		// Session admin (airlock recovery)
 		session.AdaptiveCmd(),
 		session.Cmd(),

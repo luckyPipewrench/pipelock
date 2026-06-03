@@ -206,6 +206,19 @@ func TestRunAARPChain_MalformedLine(t *testing.T) {
 	}
 }
 
+func TestRunAARP_SVIDCannotCombineWithChain(t *testing.T) {
+	t.Parallel()
+	var out, errBuf bytes.Buffer
+	err := runAARP(&out, &errBuf, "ignored.jsonl", aarpOptions{
+		svidPath: "sidecar.svid.json",
+		chain:    true,
+	})
+	if err == nil {
+		t.Fatal("runAARP accepted --svid with --chain")
+	}
+	assertExitCode(t, err, exitUsage)
+}
+
 func TestLoadTrustFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

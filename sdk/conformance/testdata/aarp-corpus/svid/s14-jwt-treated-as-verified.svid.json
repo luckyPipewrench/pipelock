@@ -1,0 +1,27 @@
+{
+  "evidence": {
+    "type": "jwt",
+    "spiffe_id": "spiffe://example.org/workload/agent-a",
+    "leaf_der_b64": "MIIBrTCCAV+gAwIBAgIRAKAOCrZ5jjlgx/GS4NIZtqMwBQYDK2VwMB4xHDAaBgNVBAMTE0FBUlAgQ29ycHVzIFRlc3QgQ0EwHhcNMjYwMTAxMDAwMDAwWhcNMjcwMTAxMDAwMDAwWjAbMRkwFwYDVQQDExBhYXJwLWNvcnB1cy1sZWFmMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfAs9nyvtXoXTcw7zSKuAj6rojkOf9WacPn7QYSidALf/gVNS/WfcYAG0RoBI4CJ/rl+Wan6P6WIR/D+j3jlryaOBhTCBgjAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0lBBYwFAYIKwYBBQUHAwIGCCsGAQUFBwMBMB8GA1UdIwQYMBaAFF6FfTpQHqcvLfkEKY5VLhQpIhmaMDAGA1UdEQQpMCeGJXNwaWZmZTovL2V4YW1wbGUub3JnL3dvcmtsb2FkL2FnZW50LWEwBQYDK2VwA0EA7f2Z3FsWbUoD1qeTaLPhOSdH+OF5/rQcqgnrxXQFuOrqZzCyVxsjDzaRTtHnJc0tuUvV7oFX/wrqj49hkrmYBA==",
+    "nonce": "FmTiuGnOh9zasDTEvhRyXw",
+    "issued_at": "2026-04-15T12:00:00.000000000Z",
+    "binding": {
+      "alg": "ecdsa-p256-sha256",
+      "context": "pipelock-aarp-v0.1/svid-receipt-binding",
+      "payload_sha256": "a73f783b932615b9a1c834f43cf992ecead0b7cb4b0a0604e68c3d5d9211415c",
+      "signature_b64": "MEUCIQD3tQFeAR0d5+znuHWl3b5gFJQ8hW9EeKDZ1LB97mCk7QIgC6IN8WtdyiGep2iKDJ+BFZP8eP2UZHm/JhT6QLqmzSg="
+    }
+  },
+  "verify": {
+    "trust_domain": "example.org",
+    "action_time": "2026-04-15T12:00:00.000000000Z",
+    "bundle": [
+      {
+        "not_before": "2025-01-01T00:00:00Z",
+        "authorities_der_b64": [
+          "MIIBOzCB7qADAgECAhBTHWbAiSisCDUPlf7MKY7TMAUGAytlcDAeMRwwGgYDVQQDExNBQVJQIENvcnB1cyBUZXN0IENBMB4XDTI1MDEwMTAwMDAwMFoXDTM1MDEwMTAwMDAwMFowHjEcMBoGA1UEAxMTQUFSUCBDb3JwdXMgVGVzdCBDQTAqMAUGAytlcAMhAPz9+tNFQ4LOnzZd0jICh0qwJkmuMS3//UEJA7+eajYBo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0TAQH/BAUwAwEB/zAdBgNVHQ4EFgQUXoV9OlAepy8t+QQpjlUuFCkiGZowBQYDK2VwA0EAJqZK2/hMrvD6+1y+wtSwvdG6CEbbcrvai+k0wIPq7GUyh4fl7Nkef/PqorPm+K7taFwqAzCI5YNebMhB8UlHCw=="
+        ]
+      }
+    ]
+  }
+}

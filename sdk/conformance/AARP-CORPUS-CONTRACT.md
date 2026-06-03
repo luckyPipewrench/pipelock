@@ -5,7 +5,10 @@ TypeScript, Rust, Python) MUST satisfy. The Go implementation in
 `internal/aarp/` is the reference; the other three port FROM it. The shared
 hostile corpus lives in `sdk/conformance/testdata/aarp-corpus/`. The
 cross-language gate (`aarp-corpus-gate.sh`) runs all four verifiers over that
-corpus and fails on **any** disagreement.
+corpus and fails on **any** disagreement. In this Go-foundation checkpoint the
+SVID `svid/` arm is covered by the Go reference conformance test; the shell gate
+includes it when `AARP_GATE_INCLUDE_SVID=1`, after the TS/Rust/Python ports add
+`--svid`.
 
 The bug class this corpus exists to kill: **a claim one verifier inflates that
 another rejects.** Cross-language divergence IS the bug.
@@ -182,9 +185,141 @@ The wire form is `"<alg>:<standard-base64 signature>"`. Ed25519 verifies the
 canonical bytes directly. (ML-DSA-65 is a recognized but unimplemented slot:
 always `unimplemented`, never verified.)
 
-## SVID attestation (PR-B — added in the stacked follow-up)
+## SVID attestation
 
-The SVID X.509 proof-of-possession binding, its corpus fixtures, and the three
-Codex-finding fixtures (trust-domain confusion, issued-at-after-leaf-expiry,
-valid baseline) are specified and gated in the stacked attestation PR. This
-contract section will be extended there; the envelope contract above is frozen.
+The SVID layer appraises an X.509-SVID workload-identity **proof-of-possession
+binding** on top of the envelope appraisal. It is additive: it never changes the
+envelope contract above, never makes an envelope fatal, and never removes a core
+claim. A verifier that does not implement it MUST still produce the byte-identical
+envelope appraisal; a verifier that does implement it adds at most three claims.
+
+### CLI
+
+```text
+<verifier> aarp <PATH> --trust <TRUST_JSON> --svid <SVID_JSON> [--json]
+```
+
+`--svid` names a per-fixture sidecar. `--trust` carries the envelope-signing trust
+as elsewhere and stays optional, but it is what lets the SVID claims attach: an
+SVID binding only attaches to a **signed** assertion, so without trust that
+verifies a signature every signature is `unknown_key`, the assertion is unsigned,
+and no claim — including the three SVID claims — attaches. Without `--svid` the
+appraisal is exactly the envelope appraisal. SVID is single-envelope only (never
+combined with `--chain`).
+
+### `--svid` sidecar format
+
+```jsonc
+{
+  "evidence": {                         // producer-supplied; the X.509-SVID PoP
+    "type": "x509",                     // only "x509" counts; "jwt" is claim-only
+    "spiffe_id": "spiffe://example.org/workload/agent-a",
+    "leaf_der_b64": "<standard-base64 DER of the leaf SVID>",
+    "chain_der_b64": ["..."],           // optional intermediates, leaf->root
+    "nonce": "<base64url, no padding, >= 16 bytes decoded>",
+    "issued_at": "<RFC3339Nano>",
+    "binding": {
+      "alg": "ecdsa-p256-sha256" | "ed25519",
+      "context": "pipelock-aarp-v0.1/svid-receipt-binding",
+      "payload_sha256": "<lowercase-hex SHA-256 of canonical binding payload>",
+      "signature_b64": "<standard-base64 leaf-key signature over the binding>"
+    }
+  },
+  "verify": {                           // verifier-pinned context; never producer-controlled
+    "trust_domain": "example.org",
+    "action_time": "<RFC3339Nano>",     // the SVID is validated AT this time, offline
+    "allowed_spiffe_ids": ["..."],      // optional; empty permits any id in the domain
+    "bundle": [                         // pinned trust-bundle history, chronological
+      { "not_before": "<RFC3339Nano>", "not_after": "<RFC3339Nano|omitted=open>",
+        "authorities_der_b64": ["<standard-base64 DER of a CA cert>"] }
+    ]
+  }
+}
+```
+
+A malformed **pinned bundle** (bad DER, inverted window, empty domain) is an
+operator-configuration error (exit 2), not a fixture verdict — the bundle is
+trusted input. Everything an attacker controls lives in `evidence`, which the
+verifier appraises fail-closed.
+
+### SVID validation algorithm (must match the Go reference exactly)
+
+In order, fail-closed at the first failure (a failure adds NO claim and leaves the
+envelope appraisal untouched):
+
+1. `evidence.type` MUST be `"x509"` (a JWT-SVID is bearer-only in v0.1).
+2. `issued_at` MUST be a valid RFC3339Nano timestamp.
+3. `nonce` MUST be valid base64url (no padding) decoding to **>= 16 bytes**.
+4. `binding.context` MUST equal `pipelock-aarp-v0.1/svid-receipt-binding`.
+5. The leaf (+ any intermediates) MUST validate **offline at `action_time`**
+   (not "now") against the pinned bundle generation authoritative at
+   `action_time`. No generation covers `action_time` → reject (stale/forked
+   bundle). The leaf MUST carry exactly one well-formed SPIFFE URI SAN, and its
+   trust domain MUST equal `verify.trust_domain`.
+6. `evidence.spiffe_id` MUST equal the leaf's validated URI SAN (no substitution),
+   and MUST be permitted by `allowed_spiffe_ids` when that set is non-empty.
+7. The signed `assertion.trust_domain` MUST be present and MUST equal
+   `verify.trust_domain` (trust-domain confusion: a valid SVID from one domain
+   cannot back an assertion declaring another).
+8. `issued_at` MUST fall within the leaf's `[NotBefore, NotAfter]` window
+   (post-expiry key use is rejected even when the chain validates at action time).
+9. The proof-of-possession signature MUST verify under the **leaf** public key over
+   the canonical binding payload. ECDSA: `alg` MUST be `ecdsa-p256-sha256`, the
+   leaf key MUST be curve **P-256** (an explicit curve check — ECDSA ASN.1
+   verification is curve-agnostic, so a P-384/P-521 leaf under a P-256 alg id MUST
+   be rejected), and the signature is over `SHA-256(canonical)` as ASN.1. Ed25519:
+   `alg` MUST be `ed25519` and the signature is over the canonical bytes directly.
+
+### Canonical binding payload
+
+The message the leaf key signs is the JCS-canonical (RFC 8785, NFC) bytes of:
+
+```jsonc
+{
+  "action_record_sha256":       "<subject.action_record_sha256>",
+  "assurance_assertion_sha256": "<SHA-256 of the JCS-canonical signed payload>",
+  "context":                    "pipelock-aarp-v0.1/svid-receipt-binding",
+  "issued_at":                  "<evidence.issued_at>",
+  "mediator_id":                "<assertion.mediator_id>",
+  "nonce":                      "<evidence.nonce>",
+  "profile":                    "aarp/v0.1",
+  "receipt_envelope_sha256":    "<subject.receipt_envelope_sha256>",
+  "receipt_signer_key":         "<subject.receipt_signer_key>",
+  "spiffe_id":                  "<evidence.spiffe_id>"
+}
+```
+
+Binding to the action-record, receipt-envelope, and assurance-assertion digests is
+what defeats replay across actions; the nonce defeats replay within an action.
+
+### Verified-claim & axis additions
+
+When ALL of the above pass, exactly these three claims are added (only on a signed
+assertion):
+
+| Claim | Axis | Confirmed when |
+|-------|------|----------------|
+| `workload_identity_verified` | identity | the X.509-SVID PoP binding verified against the pinned bundle |
+| `x509_svid_bound` | identity | the SVID leaf key signed the receipt/assertion binding |
+| `svid_valid_at_action_time` | freshness | the SVID validated point-in-time at the action time |
+
+Producer claim → required verified claims: `workload_identity_verified` →
+`workload_identity_verified`. A producer that claims it without a verifying binding
+has it reported in `claimed_unverified` (no inflation). The comparable-output
+shape is unchanged; these claims simply appear in `verified_claims` and `axes`.
+
+### Corpus scope
+
+The SVID corpus uses a **single-CA, leaf-directly-under-root** chain (no
+intermediates) so the four languages' X.509 path validation stays byte-identical;
+multi-intermediate chains are a documented out-of-scope extension. The hostile
+matrix (`svid/`) covers: valid ECDSA-P256 and Ed25519 baselines, replay across
+actions, expiry / not-yet-valid at action time, wrong leaf key, stale bundle,
+forked bundle root, trust-domain confusion, SPIFFE-ID substitution, P-384 curve
+confusion, short nonce, unsigned assertion, JWT-treated-as-verified, issued-at
+after leaf expiry, and a forged binding signature. The three Codex-finding fixtures
+are the valid baseline (`s01`), trust-domain confusion (`s09`), and
+issued-at-after-leaf-expiry (`s15`). Every malicious fixture appraises WITHOUT the
+three claims; the Go reference conformance test catches inflation now, and the
+four-language gate catches cross-language inflation once all ports implement
+`--svid` and run with `AARP_GATE_INCLUDE_SVID=1`.

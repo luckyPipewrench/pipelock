@@ -6,6 +6,8 @@ package conformance_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +50,7 @@ func TestAARPCorpus(t *testing.T) {
 	opts := aarpCorpusVerifyOptions()
 
 	var checked int
-	for _, category := range []string{catGolden, catMalicious, catEdge, catChain} {
+	for _, category := range []string{catGolden, catMalicious, catEdge, catChain, catSVID} {
 		dir := filepath.Join(aarpCorpusDir, category)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -79,6 +81,19 @@ func runAARPCorpusFixture(t *testing.T, dir, base string, opts aarp.VerifyOption
 	if exp.InputFormat == "chain" {
 		runAARPChainFixture(t, dir, base, exp)
 		return
+	}
+
+	// SVID fixtures carry a sidecar and are appraised through AppraiseWithSVID.
+	// They are always verdictAppraise; the committed appraisal encodes whether the
+	// workload-identity claims attach (no inflation on the hostile fixtures).
+	sidecarPath := filepath.Join(dir, base+".svid.json")
+	if _, statErr := os.Stat(sidecarPath); statErr == nil {
+		runAARPSVIDFixture(t, dir, base, sidecarPath, exp, opts)
+		return
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		// A real filesystem error (e.g. permissions) must fail loudly, not be
+		// silently treated as "no sidecar" and fall through to the envelope path.
+		t.Fatalf("stat sidecar %s: %v", sidecarPath, statErr)
 	}
 
 	body := readFixture(t, filepath.Join(dir, base+".aarp.json"))
@@ -133,6 +148,26 @@ func runAARPChainFixture(t *testing.T, dir, base string, exp aarpExpect) {
 	if err != nil {
 		t.Fatalf("comparable chain %s: %v", base, err)
 	}
+	want := readFixture(t, filepath.Join(dir, base+".appraisal.json"))
+	assertComparableMatch(t, base, got, want)
+}
+
+// runAARPSVIDFixture appraises an SVID fixture through the Go reference
+// AppraiseWithSVID (envelope + sidecar) and asserts its ComparableAppraisal bytes
+// match the committed appraisal. The sidecar is loaded from its on-disk wire form
+// — the same bytes the four-language gate feeds every verifier via --svid.
+func runAARPSVIDFixture(t *testing.T, dir, base, sidecarPath string, exp aarpExpect, opts aarp.VerifyOptions) {
+	t.Helper()
+	// SVID attacks are never envelope-fatal: a failed/absent binding withholds the
+	// workload-identity claims, it never rejects the envelope. So every SVID
+	// fixture must be labeled appraise; a fatal label is a corpus authoring bug.
+	if exp.Verdict != verdictAppraise {
+		t.Fatalf("svid fixture %s has verdict %q; SVID fixtures are always %q (an attack withholds claims, never fails the envelope)", base, exp.Verdict, verdictAppraise)
+	}
+	var sc svidSidecar
+	unmarshalJSONFile(t, sidecarPath, &sc)
+	body := readFixture(t, filepath.Join(dir, base+".aarp.json"))
+	got := svidComparableBytes(t, body, &sc, opts)
 	want := readFixture(t, filepath.Join(dir, base+".appraisal.json"))
 	assertComparableMatch(t, base, got, want)
 }

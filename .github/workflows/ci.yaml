@@ -70,6 +70,7 @@ jobs:
             internal/signing/testdata/golden/
             internal/cli/hermes/testdata/hermes_e2e_driver.py
             internal/cli/hermes/hermes_e2e_test.go
+            sdk/conformance/testdata/aarp-corpus/
 
   test:
     needs: [security-scan]

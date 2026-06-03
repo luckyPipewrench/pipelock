@@ -1,0 +1,8 @@
+{
+  "attack_class": "weak-nonce",
+  "category": "svid",
+  "description": "a nonce below 128 bits is rejected; a producer cannot weaken cross-action replay resistance",
+  "fixture_id": "s12-short-nonce",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -1,0 +1,8 @@
+{
+  "attack_class": "forged-binding",
+  "category": "svid",
+  "description": "a binding signed by a key other than the SVID leaf does not verify",
+  "fixture_id": "s06-wrong-leaf-key",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -1,0 +1,8 @@
+{
+  "attack_class": "baseline-attestation",
+  "category": "svid",
+  "description": "a genuine Ed25519 X.509-SVID binding verifies and confirms the workload-identity claims",
+  "fixture_id": "s02-valid-ed25519-baseline",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

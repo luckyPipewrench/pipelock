@@ -1,0 +1,8 @@
+{
+  "attack_class": "stale-bundle",
+  "category": "svid",
+  "description": "no pinned bundle generation is authoritative at the action time; the SVID does not validate",
+  "fixture_id": "s07-stale-bundle",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

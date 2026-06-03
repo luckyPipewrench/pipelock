@@ -1,0 +1,8 @@
+{
+  "attack_class": "curve-confusion",
+  "category": "svid",
+  "description": "a P-384 leaf under the P-256 binding alg is rejected: the alg id names a curve the key is not",
+  "fixture_id": "s11-curve-confusion-p384",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

@@ -14,6 +14,8 @@ on:
     branches: [main]
     paths:
       - 'cmd/pipelock/**'
+      - 'cmd/pipelock-verifier/**'
+      - 'internal/aarp/**'
       - 'internal/jsonscan/**'
       - 'internal/receipt/**'
       - 'internal/recorder/**'
@@ -24,6 +26,8 @@ on:
   pull_request:
     paths:
       - 'cmd/pipelock/**'
+      - 'cmd/pipelock-verifier/**'
+      - 'internal/aarp/**'
       - 'internal/jsonscan/**'
       - 'internal/receipt/**'
       - 'internal/recorder/**'
@@ -208,3 +212,74 @@ jobs:
           RUST_VERIFY: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs receipt
           PY_VERIFY: python -m pipelock_verify
         run: bash sdk/conformance/corpus-gate.sh
+
+  # Cross-language AARP gate: builds all four AARP reference verifiers (Go,
+  # TypeScript, Rust, Python) and runs them over the AARP assurance-envelope
+  # hostile corpus under sdk/conformance/testdata/aarp-corpus. It fails if the
+  # four verifiers disagree on a fixture's comparable appraisal (a cross-language
+  # claim-inflation differential) or if any verifier fails to reject a fatal
+  # fixture. The Python verifier here is the in-repo sdk/verifiers/python package
+  # (distinct from the external v1 pyverify repo used by the conformance job).
+  #
+  # Security note: no run: step consumes untrusted github.event.* input.
+  aarp-conformance:
+    name: AARP cross-language gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout pipelock
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version: '1.26'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/verifiers/ts/package-lock.json
+
+      - name: Set up Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Build Go AARP verifier
+        run: go build -o "$RUNNER_TEMP/pipelock-verifier" ./cmd/pipelock-verifier
+
+      - name: Build TypeScript verifier
+        working-directory: sdk/verifiers/ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Rust verifier
+        working-directory: sdk/verifiers/rust
+        run: cargo build --release
+
+      - name: Install Python AARP verifier
+        working-directory: sdk/verifiers/python
+        # Hash-pinned dependency install (Scorecard Pinned-Dependencies): the
+        # crypto dependency is locked with --require-hashes, then the verifier is
+        # installed with --no-deps so no unpinned package is ever fetched.
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install --no-deps .
+
+      - name: Run AARP cross-language gate
+        env:
+          GO_AARP: ${{ runner.temp }}/pipelock-verifier aarp
+          TS_AARP: node ${{ github.workspace }}/sdk/verifiers/ts/dist/src/cli.js aarp
+          RUST_AARP: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs aarp
+          PY_AARP: python -m pipelock_aarp_verify aarp
+        run: bash sdk/conformance/aarp-corpus-gate.sh

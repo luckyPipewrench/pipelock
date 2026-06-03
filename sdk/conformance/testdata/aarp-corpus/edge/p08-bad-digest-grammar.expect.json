@@ -1,0 +1,8 @@
+{
+  "attack_class": "grammar",
+  "category": "edge",
+  "description": "an uppercase-hex digest is fatal: typed-string identity fields have a strict lowercase-hex grammar",
+  "fixture_id": "p08-bad-digest-grammar",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

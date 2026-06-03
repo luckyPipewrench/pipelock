@@ -1,0 +1,8 @@
+{
+  "attack_class": "number-safety",
+  "category": "edge",
+  "description": "a raw JSON number in exponent form is fatal: its value-vs-text relationship diverges across parsers",
+  "fixture_id": "p03-exponent",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

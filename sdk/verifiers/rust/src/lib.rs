@@ -1,3 +1,4 @@
+pub mod aarp;
 pub mod audit_packet;
 pub mod canonical;
 pub mod chain;

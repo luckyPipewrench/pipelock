@@ -1,0 +1,8 @@
+{
+  "attack_class": "unknown-critical-extension",
+  "category": "malicious",
+  "description": "an unknown per-signature critical extension is reported unknown_suite per signature, not envelope-fatal",
+  "fixture_id": "m12-sig-unknown-critical-extension",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

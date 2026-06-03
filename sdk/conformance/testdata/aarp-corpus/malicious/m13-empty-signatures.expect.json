@@ -1,0 +1,8 @@
+{
+  "attack_class": "schema",
+  "category": "malicious",
+  "description": "an envelope with no signatures is fatal: there is nothing to appraise",
+  "fixture_id": "m13-empty-signatures",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

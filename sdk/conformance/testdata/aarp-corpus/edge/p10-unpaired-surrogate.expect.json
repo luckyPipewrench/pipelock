@@ -1,0 +1,8 @@
+{
+  "attack_class": "parser-differential",
+  "category": "edge",
+  "description": "an unpaired JSON surrogate escape decodes to U+FFFD like Go encoding/json; it is appraised, not fatal",
+  "fixture_id": "p10-unpaired-surrogate",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

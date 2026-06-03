@@ -1,0 +1,8 @@
+{
+  "attack_class": "baseline-multisig",
+  "category": "golden",
+  "description": "parallel Ed25519 + ML-DSA-65; PQ slot is unimplemented and does not mask or break the good signature",
+  "fixture_id": "g02-multisig-ed25519-pq",
+  "input_format": "envelope",
+  "verdict": "appraise"
+}

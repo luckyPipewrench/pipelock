@@ -21,4 +21,4 @@ sha2 = "=0.11.0"
 thiserror = "=2.0.18"
 # NFC normalization to match Go's golang.org/x/text/unicode/norm in the AARP
 # JCS canonicalizer (byte-for-byte cross-language parity on string/key values).
-unicode-normalization = "=0.1.24"
+unicode-normalization = "=0.1.25"

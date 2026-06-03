@@ -3,9 +3,8 @@
 #
 # Scorecard "Pinned-Dependencies" requires CI pip installs to be hash-pinned.
 # Runtime dependency cryptography and its transitive tree are locked here.
-# The pinned verifier checkout is installed with --no-deps and
-# --no-build-isolation, so the setuptools build backend and wheel are also
-# pinned here instead of being fetched into an isolated build env.
+# The pinned verifier checkout is run directly from PYTHONPATH, so this file
+# locks only the runtime dependencies needed by that checkout.
 #
 # Regenerate after a cryptography/build-backend bump:
 #   uv pip compile --generate-hashes --no-header --annotation-style split \

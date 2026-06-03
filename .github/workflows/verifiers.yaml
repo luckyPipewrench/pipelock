@@ -204,7 +204,8 @@ jobs:
           GO_VERIFY: ${{ runner.temp }}/pipelock verify-receipt
           TS_VERIFY: node ${{ github.workspace }}/sdk/verifiers/ts/dist/src/cli.js receipt
           RUST_VERIFY: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs receipt
-          PY_VERIFY: python -m pipelock_verify
+          # -P keeps the repo root off sys.path so only the pinned checkout is used.
+          PY_VERIFY: python -P -m pipelock_verify
           # Run the verifier from its pinned checkout without installing it.
           PYTHONPATH: ${{ github.workspace }}/_pyverify
         run: bash sdk/conformance/corpus-gate.sh

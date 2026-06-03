@@ -1,0 +1,8 @@
+{
+  "attack_class": "number-safety",
+  "category": "edge",
+  "description": "raw negative zero is fatal: it is a distinct text with an ambiguous canonical form",
+  "fixture_id": "p04-negative-zero",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

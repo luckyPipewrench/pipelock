@@ -7,6 +7,7 @@ import { verifyChain } from "./chain.js";
 import { emitAuditPacket, emitChain, emitReceipt } from "./output.js";
 import { extractReceipts, extractReceiptsFromSessionDir } from "./recorder.js";
 import { runReceipt } from "./receipt.js";
+import { runAARPCommand } from "./aarp/cli.js";
 import { RuntimeError, UsageError, errorMessage, resolveSignerKey } from "./util.js";
 
 export interface ChainCommandReport {
@@ -29,7 +30,10 @@ function usage(command?: string): string {
   if (command === "receipt") {
     return "Usage: pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE]";
   }
-  return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt} PATH [flags]";
+  if (command === "aarp") {
+    return "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--chain] [--json]";
+  }
+  return "Usage: pipelock-verifier-ts {audit-packet|chain|receipt|aarp} PATH [flags]";
 }
 
 function requireOneArg(positionals: string[], command: string): string {
@@ -148,6 +152,8 @@ async function main(): Promise<number> {
       return runChainCommand(args);
     case "receipt":
       return runReceiptCommand(args);
+    case "aarp":
+      return runAARPCommand(args);
     default:
       throw new UsageError(`unknown command ${command}\n${usage()}`);
   }
@@ -167,6 +173,17 @@ main()
     if (err instanceof RuntimeError) {
       process.stderr.write(`${message}\n`);
       process.exitCode = 2;
+      return;
+    }
+    // Coded errors (e.g. the aarp subcommand's usage/IO/trust errors) carry an
+    // explicit numeric exit code; honor it.
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      typeof (err as { code?: unknown }).code === "number"
+    ) {
+      process.stderr.write(`${message}\n`);
+      process.exitCode = (err as { code: number }).code;
       return;
     }
     process.stderr.write(`${message}\n`);

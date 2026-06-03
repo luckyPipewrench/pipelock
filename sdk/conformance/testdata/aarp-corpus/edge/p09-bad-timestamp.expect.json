@@ -1,0 +1,8 @@
+{
+  "attack_class": "grammar",
+  "category": "edge",
+  "description": "a malformed issued_at is fatal: typed-time fields require an RFC3339Nano grammar",
+  "fixture_id": "p09-bad-timestamp",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

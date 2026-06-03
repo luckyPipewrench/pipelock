@@ -1,0 +1,8 @@
+{
+  "attack_class": "unknown-critical-extension",
+  "category": "malicious",
+  "description": "an unknown envelope-level critical extension is fatal: a flagged-critical name the verifier cannot process",
+  "fixture_id": "m11-unknown-critical-extension",
+  "input_format": "envelope",
+  "verdict": "fatal"
+}

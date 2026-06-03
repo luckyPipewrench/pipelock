@@ -1,0 +1,57 @@
+# Copyright 2026 Josh Waldrep
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipelock-aarp-verifier-py"
+version = "0.1.0"
+description = "In-repo AARP v0.1 envelope reference verifier (cross-language conformance only; not a published package)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+keywords = ["aarp", "agent", "receipt", "verifier", "ed25519", "jcs"]
+classifiers = [
+  "Programming Language :: Python :: 3.12",
+  # This is an IN-REPO REFERENCE verifier for the four-language conformance gate,
+  # parallel to sdk/verifiers/ts and sdk/verifiers/rust (which are likewise not
+  # published). The shipped, user-facing Python verifier is `pipelock-verify` on
+  # PyPI; AARP support is folded into that package separately. This classifier
+  # makes an accidental `twine upload` of this reference impl fail.
+  "Private :: Do Not Upload",
+]
+# The only runtime dependency is `cryptography` (Ed25519 verification). CI installs
+# the hash-pinned transitive tree from requirements.txt with --require-hashes.
+dependencies = ["cryptography>=46.0.0"]
+
+# No [project.scripts] console entry on purpose: this reference verifier is
+# invoked as `python -m pipelock_aarp_verify aarp` by the conformance gate and
+# CI, never installed as a user-facing command. The shipped CLI is pipelock-verify.
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+# This package targets the project's Python conventions; ruff is the chosen
+# formatter + linter (see README.md). Run `ruff format` then `ruff check`.
+target-version = "py312"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# A pragmatic, security-port-friendly rule set: pyflakes (F), pycodestyle (E/W),
+# isort (I), bugbear (B), comprehensions (C4), pyupgrade (UP), and naming (N).
+select = ["E", "W", "F", "I", "B", "C4", "UP", "N"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use assert and may have long literal fixtures.
+"tests/*" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

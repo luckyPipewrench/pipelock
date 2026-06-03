@@ -66,6 +66,7 @@ CI runner, an auditor's laptop, or an isolated environment.`,
 	root.AddCommand(newChainCmd())
 	root.AddCommand(newReceiptCmd())
 	root.AddCommand(newReplayCmd())
+	root.AddCommand(newAARPCmd())
 
 	return root
 }

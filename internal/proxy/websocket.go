@@ -59,6 +59,7 @@ type wsRelay struct {
 	cfg          *config.Config
 	redaction    *redactionRuntime
 	agent        string
+	actorAuth    envelope.ActorAuth // provenance of agent identity; gates CEE session-key namespacing
 	clientIP     string
 	requestID    string
 	targetURL    string
@@ -707,6 +708,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		cfg:          cfg,
 		redaction:    p.currentRedactionRuntimeFor(cfg),
 		agent:        agent,
+		actorAuth:    id.Auth,
 		clientIP:     clientIP,
 		requestID:    requestID,
 		targetURL:    targetURL,
@@ -1847,7 +1849,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// buffering only applies to text frames (DLP patterns match text).
 		if ceeCfg := ceeEffectiveConfig(r.cfg.CrossRequestDetection, r.cfg.EnforceEnabled()); ceeCfg.Enabled {
 			isText := frag.Opcode == ws.OpText || hdr.OpCode == ws.OpText
-			sessionKey := CeeSessionKey(r.agent, r.clientIP)
+			sessionKey := ceeSessionKey(r.agent, r.clientIP, r.actorAuth)
 
 			// Pass fragment buffer only for text frames; binary content
 			// doesn't match DLP text patterns.
@@ -1859,8 +1861,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			ceeRes := ceeAdmit(ctx, sessionKey, msg, nil, r.targetURL, r.agent, r.clientIP, r.requestID,
 				ceeCfg, r.proxy.entropyTrackerPtr.Load(), fb, r.scanner, r.proxy.logger, r.proxy.metrics)
 
-			if sm := r.proxy.sessionMgrPtr.Load(); sm != nil && r.cfg.AdaptiveEnforcement.Enabled {
-				ceeRecordSignals(ceeRes, sm, sessionKey, r.cfg.AdaptiveEnforcement.EscalationThreshold, r.proxy.logger, r.proxy.metrics, r.clientIP, r.requestID)
+			var ceeRec session.Recorder
+			var ceeBlockAll bool
+			if sm := r.proxy.sessionMgrPtr.Load(); sm != nil {
+				ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
+					Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
+					AdaptiveCfg: &r.cfg.AdaptiveEnforcement, Logger: r.proxy.logger, Metrics: r.proxy.metrics,
+					ClientIP: r.clientIP, RequestID: r.requestID,
+				})
 			}
 
 			if ceeRes.Blocked {
@@ -1879,6 +1887,31 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				})
 				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
+				blocked = true
+				return
+			}
+
+			// Re-check block_all against the folded CEE session after warn-mode
+			// CEE findings may have escalated it. r.rec is the raw per-agent
+			// recorder and may not receive CEE signals for self-declared names.
+			if ceeBlockAll {
+				level := recEscalationLevel(ceeRec)
+				recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: r.clientIP, RequestID: r.requestID})
+				r.terminalOnce.Do(func() {
+					r.proxy.emitReceipt(receipt.EmitOpts{
+						ActionID:  receipt.NewActionID(),
+						Verdict:   config.ActionBlock,
+						Layer:     "session_deny",
+						Pattern:   "session escalation",
+						Transport: TransportWS,
+						Method:    "WS",
+						Target:    r.targetURL,
+						RequestID: r.requestID,
+						Agent:     r.agent,
+					})
+				})
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "session escalation")
+				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "session escalation")
 				blocked = true
 				return
 			}

@@ -199,7 +199,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	connectSessionKey := CeeSessionKey(agent, clientIP)
+	connectSessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 	var connectRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		connectRec = sm.GetOrCreate(connectSessionKey)
@@ -368,7 +368,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// to block_all, permanently locking out legitimate agents.
 	// DLP, SSRF, and per-request entropy checks still run on the hostname.
 	if ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled()); ceeCfg.Enabled {
-		sessionKey := CeeSessionKey(agent, clientIP)
+		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 		if et := p.entropyTrackerPtr.Load(); et != nil && ceeCfg.EntropyBudget.Enabled {
 			// Skip: CONNECT hostname is NOT recorded to entropy budget.
 			// Only query values, request bodies, and MCP args contribute.
@@ -860,7 +860,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		DeferClean: true,
 	})
 
-	forwardSessionKey := CeeSessionKey(agent, clientIP)
+	forwardSessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 	var forwardRec session.Recorder
 	if sm := p.sessionMgrPtr.Load(); sm != nil {
 		forwardRec = sm.GetOrCreate(forwardSessionKey)
@@ -1354,7 +1354,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// URL path, query params, and request body as outbound data.
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if ceeCfg.Enabled {
-		sessionKey := CeeSessionKey(agent, clientIP)
+		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 		outbound := extractOutboundPayload(r)
 		keys := queryParamKeys(r.URL)
 
@@ -1391,20 +1391,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			hasFinding = true
 		}
 
-		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, p.logger, p.metrics, clientIP, requestID)
-
-			// Re-check block_all after CEE may have escalated the session. Use the
-			// live recorder so mid-request escalations are reflected immediately.
-			fwdRec := sm.GetOrCreate(sessionKey)
-			if decide.UpgradeAction("", fwdRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(fwdRec.EscalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
-				p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
-				writeBlockedError(w,
-					blockInfoFor(blockreason.EscalationLevel, "session_deny"),
-					"blocked: session escalation level "+session.EscalationLabel(fwdRec.EscalationLevel()), http.StatusForbidden)
-				return
-			}
+		var ceeRec session.Recorder
+		var ceeBlockAll bool
+		if sm := p.sessionMgrPtr.Load(); sm != nil {
+			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
+				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
+				AdaptiveCfg: &cfg.AdaptiveEnforcement, Logger: p.logger, Metrics: p.metrics,
+				ClientIP: clientIP, RequestID: requestID,
+			})
 		}
 
 		if ceeRes.Blocked {
@@ -1412,6 +1406,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			writeBlockedError(w,
 				blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
 				"blocked: "+ceeRes.Reason, http.StatusForbidden)
+			return
+		}
+
+		if ceeBlockAll {
+			level := recEscalationLevel(ceeRec)
+			recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+			p.metrics.RecordBlocked(r.URL.Hostname(), "session_deny", time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.EscalationLevel, "session_deny"),
+				"blocked: session escalation level "+session.EscalationLabel(level), http.StatusForbidden)
 			return
 		}
 	}

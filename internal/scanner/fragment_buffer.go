@@ -126,7 +126,7 @@ func (fb *FragmentBuffer) ScanForSecrets(ctx context.Context, sessionKey string,
 			activeCount++
 		}
 	}
-	if activeCount < 2 {
+	if activeCount < minFragmentsForMatch {
 		fb.mu.Unlock()
 		return nil
 	}
@@ -225,21 +225,48 @@ func (fb *FragmentBuffer) concatenateFragments(sb *sessionBuffer) []byte {
 	return buf
 }
 
-// evictLRUSession removes the least-recently-used session.
-// Must be called with fb.mu held.
+// minFragmentsForMatch is the minimum number of in-window fragments a session
+// must hold to be a candidate cross-request secret (a single fragment is a
+// one-request secret handled by body DLP). A session at or above this count is
+// an in-progress accumulation and is protected from flood-to-evict.
+const minFragmentsForMatch = 2
+
+// evictLRUSession removes a session to stay within the global cap. To resist
+// the flood-to-evict bypass, it evicts the least-recently-used session AMONG
+// those that are NOT an in-progress multi-fragment accumulation; only if every
+// session is in-progress does it fall back to evicting the global LRU. Bounded
+// memory is preserved either way. Must be called with fb.mu held.
 func (fb *FragmentBuffer) evictLRUSession() {
-	var oldestKey string
-	var oldestTime time.Time
+	cutoff := time.Now().Add(-time.Duration(fb.windowSecs) * time.Second)
+
+	var lruKey, lruProtectedKey string
+	var lruTime, lruProtectedTime time.Time
 
 	for key, sb := range fb.sessions {
-		if oldestKey == "" || sb.lastAccess.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = sb.lastAccess
+		active := 0
+		for _, f := range sb.fragments {
+			if !f.at.Before(cutoff) {
+				active++
+			}
+		}
+		if active >= minFragmentsForMatch {
+			// In-progress secret: only a candidate if nothing else can be evicted.
+			if lruProtectedKey == "" || sb.lastAccess.Before(lruProtectedTime) {
+				lruProtectedKey, lruProtectedTime = key, sb.lastAccess
+			}
+			continue
+		}
+		if lruKey == "" || sb.lastAccess.Before(lruTime) {
+			lruKey, lruTime = key, sb.lastAccess
 		}
 	}
 
-	if oldestKey != "" {
-		delete(fb.sessions, oldestKey)
+	victim := lruKey
+	if victim == "" {
+		victim = lruProtectedKey // all sessions in-progress; bound memory anyway
+	}
+	if victim != "" {
+		delete(fb.sessions, victim)
 	}
 }
 

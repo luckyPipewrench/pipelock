@@ -3483,7 +3483,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// GET-only so the outbound data is the target URL path and query values.
 	ceeCfg := ceeEffectiveConfig(cfg.CrossRequestDetection, cfg.EnforceEnabled())
 	if ceeCfg.Enabled {
-		sessionKey := CeeSessionKey(agent, clientIP)
+		sessionKey := ceeSessionKey(agent, clientIP, id.Auth)
 		outbound := urlPayload(parsed)
 		keys := queryParamKeys(parsed)
 
@@ -3516,8 +3516,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			Outcome:           captureOutcome(ceeAction, !ceeRes.Blocked && !ceeRes.EntropyHit && !ceeRes.FragmentHit),
 		})
 
-		if sm := p.sessionMgrPtr.Load(); sm != nil && cfg.AdaptiveEnforcement.Enabled {
-			ceeRecordSignals(ceeRes, sm, sessionKey, cfg.AdaptiveEnforcement.EscalationThreshold, log, p.metrics, clientIP, requestID)
+		var ceeRec session.Recorder
+		var ceeBlockAll bool
+		if sm := p.sessionMgrPtr.Load(); sm != nil {
+			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
+				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
+				AdaptiveCfg: &cfg.AdaptiveEnforcement, Logger: log, Metrics: p.metrics,
+				ClientIP: clientIP, RequestID: requestID,
+			})
 		}
 
 		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
@@ -3557,15 +3563,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Re-check block_all after CEE may have escalated the session. Use the
-		// live recorder so mid-request escalations are reflected immediately.
-		if fetchRec != nil && decide.UpgradeAction("", fetchRec.EscalationLevel(), &cfg.AdaptiveEnforcement) == config.ActionBlock {
-			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(fetchRec.EscalationLevel()), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
+		// Re-check block_all after CEE may have escalated the folded CEE
+		// session. Use the CEE recorder, not the raw per-agent recorder, so
+		// rotated self-declared agent names cannot dodge adaptive session deny.
+		if ceeBlockAll {
+			level := recEscalationLevel(ceeRec)
+			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: "", ToAction: config.ActionBlock, Scanner: "session_deny", ClientIP: clientIP, RequestID: requestID})
 			p.emitReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),
 				Verdict:             config.ActionBlock,
 				Layer:               "session_deny",
-				Pattern:             "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
+				Pattern:             "session escalation level " + session.EscalationLabel(level),
 				Transport:           "fetch",
 				Method:              http.MethodGet,
 				Target:              displayURL,
@@ -3587,7 +3595,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         displayURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: "session escalation level " + session.EscalationLabel(fetchRec.EscalationLevel()),
+					BlockReason: "session escalation level " + session.EscalationLabel(level),
 				})
 			return
 		}

@@ -545,6 +545,22 @@ function rfc3339ToUnixNanos(s: string): bigint {
   return nanos;
 }
 
+// certNotBeforeMs / certNotAfterMs read an X509Certificate's validity window as
+// epoch milliseconds. They parse the always-present `validFrom` / `validTo`
+// string properties rather than the `validFromDate` / `validToDate` Date
+// accessors: those Date accessors only exist on Node >= 22, so on Node 20 they
+// are `undefined` and `.getTime()` throws -- a cross-version differential that
+// withheld the claims on the valid baselines. X.509 validity windows are
+// whole-second, so millisecond precision is exact here; the sub-second issued_at
+// boundary is handled separately in nanoseconds (rfc3339ToUnixNanos).
+function certNotBeforeMs(cert: X509Certificate): number {
+  return new Date(cert.validFrom).getTime();
+}
+
+function certNotAfterMs(cert: X509Certificate): number {
+  return new Date(cert.validTo).getTime();
+}
+
 // validateSVID validates the leaf (single-CA, leaf-directly-under-root corpus)
 // offline at the action time against the pinned bundle authoritative then. It
 // mirrors internal/svid.ValidateSVID for the no-intermediate case: the leaf must
@@ -602,16 +618,20 @@ function validateSVID(
   const at = opts.actionTime.getTime();
   let chained = false;
   for (const ca of gen.authorities) {
-    if (at < ca.validFromDate.getTime() || at > ca.validToDate.getTime()) {
+    if (at < certNotBeforeMs(ca) || at > certNotAfterMs(ca)) {
       // CA outside its own window at the action time: skip it (do not chain to
       // an expired/not-yet-valid signing CA).
       continue;
     }
-    if (leaf.issuer !== ca.subject) {
+    if (!leaf.checkIssued(ca)) {
       // Node's leaf.verify(ca.publicKey) checks only the signature bytes. Go's
       // x509 path builder also requires issuer/subject linkage, so a leaf signed
       // by the same key but naming a different issuer must not chain to the
-      // pinned CA identity.
+      // pinned CA identity. Use the structural checkIssued() rather than comparing
+      // the formatted issuer/subject DN strings: Node's X509Certificate DN string
+      // rendering differs across Node versions (20 vs 22), so a string compare is
+      // a cross-version differential; checkIssued() compares at the certificate
+      // level and is stable.
       continue;
     }
     let sigOK = false;
@@ -633,7 +653,7 @@ function validateSVID(
   // [NotBefore, NotAfter]. Node has no point-in-time chain builder, so we check
   // the window manually against the action time (not "now"). `at` is the
   // action-time epoch ms already computed above for the CA-window check.
-  if (at < leaf.validFromDate.getTime() || at > leaf.validToDate.getTime()) {
+  if (at < certNotBeforeMs(leaf) || at > certNotAfterMs(leaf)) {
     throw new SVIDBindingError("not valid at the requested time");
   }
 
@@ -810,8 +830,8 @@ export function verifySVIDBinding(e: Envelope, ev: SVIDEvidence, opts: SVIDVerif
   //    spuriously accept. Leaf window bounds are whole seconds in the corpus, so
   //    ms*1e6 is their exact nanosecond value.
   const issuedAtNanos = rfc3339ToUnixNanos(ev.issued_at);
-  const leafNotBeforeNanos = BigInt(leaf.validFromDate.getTime()) * 1_000_000n;
-  const leafNotAfterNanos = BigInt(leaf.validToDate.getTime()) * 1_000_000n;
+  const leafNotBeforeNanos = BigInt(certNotBeforeMs(leaf)) * 1_000_000n;
+  const leafNotAfterNanos = BigInt(certNotAfterMs(leaf)) * 1_000_000n;
   if (issuedAtNanos < leafNotBeforeNanos || issuedAtNanos > leafNotAfterNanos) {
     throw new SVIDBindingError(
       `binding issued_at ${ev.issued_at} outside the SVID leaf validity window`,

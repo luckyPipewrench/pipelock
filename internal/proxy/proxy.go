@@ -3519,7 +3519,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		var ceeRec session.Recorder
 		var ceeBlockAll bool
 		if sm := p.sessionMgrPtr.Load(); sm != nil {
-			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeRes, sm, sessionKey, &cfg.AdaptiveEnforcement, log, p.metrics, clientIP, requestID)
+			ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
+				Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
+				AdaptiveCfg: &cfg.AdaptiveEnforcement, Logger: log, Metrics: p.metrics,
+				ClientIP: clientIP, RequestID: requestID,
+			})
 		}
 
 		if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {

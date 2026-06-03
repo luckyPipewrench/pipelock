@@ -1065,7 +1065,11 @@ func newInterceptHandler(
 				})
 			}
 
-			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeRes, ceeSM, sessionKey, &ic.Config.AdaptiveEnforcement, ic.Logger, ic.Metrics, ic.ClientIP, ic.RequestID)
+			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
+				Result: ceeRes, Sessions: ceeSM, SessionKey: sessionKey,
+				AdaptiveCfg: &ic.Config.AdaptiveEnforcement, Logger: ic.Logger, Metrics: ic.Metrics,
+				ClientIP: ic.ClientIP, RequestID: ic.RequestID,
+			})
 
 			if ceeRes.Blocked {
 				ic.Metrics.RecordTLSRequestBlocked("cross_request")

@@ -289,10 +289,11 @@ func TestCEERecordSignalsAndBlockAll_UsesCEEKey(t *testing.T) {
 		t.Fatalf("test setup: raw and folded keys must differ")
 	}
 
-	rec, blocked := ceeRecordSignalsAndBlockAll(
-		ceeResult{FragmentHit: true}, sm, foldedKey, &adaptiveCfg,
-		audit.NewNop(), m, testCEEClientIP, testCEERequestID,
-	)
+	rec, blocked := ceeRecordSignalsAndBlockAll(ceeSignalParams{
+		Result: ceeResult{FragmentHit: true}, Sessions: sm, SessionKey: foldedKey,
+		AdaptiveCfg: &adaptiveCfg, Logger: audit.NewNop(), Metrics: m,
+		ClientIP: testCEEClientIP, RequestID: testCEERequestID,
+	})
 	if !blocked {
 		t.Fatal("CEE fragment signal should escalate the folded session to block_all")
 	}

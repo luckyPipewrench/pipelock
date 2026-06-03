@@ -483,23 +483,29 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 	}
 }
 
+// ceeSignalParams groups the inputs for ceeRecordSignalsAndBlockAll. A struct
+// keeps the call sites readable and avoids a long positional signature (see the
+// options-struct convention in CLAUDE.md).
+type ceeSignalParams struct {
+	Result      ceeResult
+	Sessions    *SessionManager
+	SessionKey  string // the folded CEE key (see ceeSessionKey)
+	AdaptiveCfg *config.AdaptiveEnforcement
+	Logger      *audit.Logger
+	Metrics     *metrics.Metrics
+	ClientIP    string
+	RequestID   string
+}
+
 // ceeRecordSignalsAndBlockAll records CEE adaptive signals and checks session
 // deny against the same folded CEE key. Do not check a separately-created raw
 // per-agent recorder here: for self-declared agent names, CEE intentionally
 // collapses the key to client IP to prevent partitioning.
-func ceeRecordSignalsAndBlockAll(
-	result ceeResult,
-	sm *SessionManager,
-	sessionKey string,
-	adaptiveCfg *config.AdaptiveEnforcement,
-	logger *audit.Logger,
-	m *metrics.Metrics,
-	clientIP, requestID string,
-) (session.Recorder, bool) {
-	if sm == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled {
+func ceeRecordSignalsAndBlockAll(p ceeSignalParams) (session.Recorder, bool) {
+	if p.Sessions == nil || p.AdaptiveCfg == nil || !p.AdaptiveCfg.Enabled {
 		return nil, false
 	}
-	ceeRecordSignals(result, sm, sessionKey, adaptiveCfg.EscalationThreshold, logger, m, clientIP, requestID)
-	rec := sm.GetOrCreate(sessionKey)
-	return rec, decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock
+	ceeRecordSignals(p.Result, p.Sessions, p.SessionKey, p.AdaptiveCfg.EscalationThreshold, p.Logger, p.Metrics, p.ClientIP, p.RequestID)
+	rec := p.Sessions.GetOrCreate(p.SessionKey)
+	return rec, decide.UpgradeAction("", rec.EscalationLevel(), p.AdaptiveCfg) == config.ActionBlock
 }

@@ -142,15 +142,21 @@ func TestFragmentBuffer_EmptyAndSingleFragmentNoMatch(t *testing.T) {
 	defer sc.Close()
 	ctx := context.Background()
 
-	// Empty append must not panic or create a phantom match.
-	fb.Append(floodVictimKey, []byte{})
-	if matches := fb.ScanForSecrets(ctx, floodVictimKey, sc); len(matches) != 0 {
+	// Empty append must not panic or create a phantom match. Use a dedicated
+	// key so this check leaves no fragment behind in the single-fragment key
+	// below (which would otherwise make that session hold two fragments).
+	const emptyKey = "empty-only"
+	fb.Append(emptyKey, []byte{})
+	if matches := fb.ScanForSecrets(ctx, emptyKey, sc); len(matches) != 0 {
 		t.Fatalf("empty fragment produced %d matches, want 0", len(matches))
 	}
 
-	// A single fragment that IS a full key must not report a cross-request match.
-	fb.Append(floodVictimKey, []byte(floodAWSKeyPrefix+floodAWSKeyMid+floodAWSKeyTail))
-	if matches := fb.ScanForSecrets(ctx, floodVictimKey, sc); len(matches) != 0 {
+	// A single fragment that IS a full key must not report a cross-request
+	// match: with only one in-window fragment the scan returns on the
+	// activeCount < minFragmentsForMatch fast path (body DLP handles it).
+	const singleKey = "single-fragment"
+	fb.Append(singleKey, []byte(floodAWSKeyPrefix+floodAWSKeyMid+floodAWSKeyTail))
+	if matches := fb.ScanForSecrets(ctx, singleKey, sc); len(matches) != 0 {
 		t.Fatalf("single-fragment full key reported %d cross-request matches, want 0 (body DLP handles it)", len(matches))
 	}
 }

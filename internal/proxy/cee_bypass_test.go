@@ -325,28 +325,38 @@ func TestCEEBoundary_ExemptDomainIsEntropyOnly(t *testing.T) {
 // under the per-session entropy budget by spreading high-entropy payloads
 // across buckets.
 func TestCEEBypass_AgentRotationEntropyBudget(t *testing.T) {
-	// Small budget: two modest high-entropy query payloads in one bucket
-	// exceed it, but one alone does not.
-	et := scanner.NewEntropyTracker(120.0, 300)
-	defer et.Close()
+	// Drive the real /fetch request path with a rotating agent identity. One
+	// request's query payload stays under the entropy budget; two requests
+	// (folded onto the client IP) exceed it. Rotating the agent must not keep
+	// each request in its own under-budget bucket.
+	//
+	// The budget is derived from the fixed payload's entropy so the test is
+	// deterministic (ShannonEntropy is pure): set it between one and two
+	// payloads' worth of bits.
+	const payload = "q7w3e9r1t5y8u2i6o4p0a"
+	perReqBits := scanner.ShannonEntropy(payload) * float64(len(payload))
 
-	// Establish per-payload entropy ~ enough that 2 exceed 120 bits but 1 does
-	// not. Use distinct random-looking strings.
-	payloadA := []byte("Z7qLm2Xp9Rt4Vb1Nc")
-	payloadB := []byte("Kj8Hs3Wd6Fy0Gx5Qa")
-
-	folded1 := ceeSessionKey("rot-1", testCEEClientIP, envelope.ActorAuthSelfDeclared)
-	folded2 := ceeSessionKey("rot-2", testCEEClientIP, envelope.ActorAuthSelfDeclared)
-
-	et.Record(folded1, payloadA)
-	if et.BudgetExceeded(folded1) {
-		t.Skip("single payload already exceeds budget; adjust test fixture")
+	ceeCfg := config.CrossRequestDetection{
+		Enabled: true,
+		EntropyBudget: config.CrossRequestEntropyBudget{
+			Enabled:       true,
+			BitsPerWindow: perReqBits * 1.5, // one request under, two over
+			WindowMinutes: 5,
+			Action:        config.ActionBlock,
+		},
 	}
-	et.Record(folded2, payloadB)
+	ts, target := testCEEProxy(t, ceeCfg)
 
-	// After the fix both records land in the IP bucket, so the budget is
-	// exceeded. Pre-fix they live in agent|ip buckets and neither trips.
-	if !et.BudgetExceeded(folded2) {
-		t.Fatalf("BYPASS: rotating agent split entropy across buckets; budget never tripped")
+	// First request under a rotating agent: under budget, not blocked.
+	_, code1 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/a?p="+payload, "ent-rot-1")
+	if code1 == http.StatusForbidden {
+		t.Fatalf("first request should be under the entropy budget, got %d", code1)
+	}
+
+	// Second request under a DIFFERENT agent folds to the same client-IP
+	// bucket, so cumulative entropy exceeds the budget and the request blocks.
+	fr2, code2 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/b?p="+payload, "ent-rot-2")
+	if code2 != http.StatusForbidden || !fr2.Blocked {
+		t.Fatalf("BYPASS: rotating the agent split entropy across buckets; the budget never tripped (code=%d blocked=%v)", code2, fr2.Blocked)
 	}
 }

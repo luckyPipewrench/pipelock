@@ -1864,7 +1864,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			var ceeRec session.Recorder
 			var ceeBlockAll bool
 			if sm := r.proxy.sessionMgrPtr.Load(); sm != nil {
-				ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeRes, sm, sessionKey, &r.cfg.AdaptiveEnforcement, r.proxy.logger, r.proxy.metrics, r.clientIP, r.requestID)
+				ceeRec, ceeBlockAll = ceeRecordSignalsAndBlockAll(ceeSignalParams{
+					Result: ceeRes, Sessions: sm, SessionKey: sessionKey,
+					AdaptiveCfg: &r.cfg.AdaptiveEnforcement, Logger: r.proxy.logger, Metrics: r.proxy.metrics,
+					ClientIP: r.clientIP, RequestID: r.requestID,
+				})
 			}
 
 			if ceeRes.Blocked {

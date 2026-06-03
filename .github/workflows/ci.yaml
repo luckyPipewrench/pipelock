@@ -196,11 +196,20 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
-          # 1.26.3 patches GO-2026-4982 / GO-2026-4980 / GO-2026-4976
-          # in html/template + net/http/httputil. 1.26.2 was clean
-          # when this version was pinned; the advisories landed
-          # 2026-05-07.
-          go-version: '1.26.3'
+          # Float to the latest 1.26.x so the vulnerability scanner always
+          # runs on the newest patched standard library. Exact-pinning meant
+          # a manual bump on every Go stdlib advisory (1.26.3 for the
+          # 2026-05-07 html/template + net/http/httputil set; 1.26.4 for
+          # GO-2026-5039 net/textproto + GO-2026-5037 crypto/x509). govulncheck
+          # analyzes the active toolchain's stdlib (go env GOVERSION), so this
+          # is the lever, not the go.mod directive. check-latest forces a
+          # manifest check rather than satisfying the version from a stale
+          # runner tool cache.
+          go-version: '1.26'
+          check-latest: true
+
+      - name: Show Go version
+        run: go env GOVERSION
 
       - name: Install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4

@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +43,11 @@ var (
 func main() {
 	outDir := "examples/verifiable-shadow-rollout"
 	for i, arg := range os.Args[1:] {
-		if arg == outFlag && i+1 < len(os.Args)-1 {
+		if arg == outFlag {
+			if i+1 >= len(os.Args)-1 {
+				_, _ = fmt.Fprintf(os.Stderr, "gen-shadow-example: %s requires a value\n", outFlag)
+				os.Exit(2)
+			}
 			outDir = os.Args[i+2]
 		}
 	}
@@ -277,7 +282,7 @@ func buildCaptureEntry() recorder.Entry {
 		Profile:              "default",
 		TransformKind:        capture.TransformRaw,
 		Request: capture.CaptureRequest{
-			Method: "GET",
+			Method: http.MethodGet,
 			URL:    "https://api.vendor.example/repos/bar",
 		},
 		EffectiveAction: config.ActionAllow,
@@ -380,11 +385,11 @@ func extractReceipt(recorderDir string) ([]byte, error) {
 			}
 			detailBytes, marshalErr := json.Marshal(entry.Detail)
 			if marshalErr != nil {
-				continue
+				return fmt.Errorf("marshal evidence_receipt detail: %w", marshalErr)
 			}
 			var rcpt contractreceipt.EvidenceReceipt
 			if unmarshalErr := json.Unmarshal(detailBytes, &rcpt); unmarshalErr != nil {
-				continue
+				return fmt.Errorf("unmarshal evidence_receipt detail: %w", unmarshalErr)
 			}
 			if rcpt.PayloadKind == contractreceipt.PayloadShadowDelta {
 				receiptJSON = detailBytes

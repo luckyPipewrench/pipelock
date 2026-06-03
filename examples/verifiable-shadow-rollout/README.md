@@ -64,7 +64,7 @@ across runs. The recorder JSONL wrapper uses wall-clock timestamps from
 fully deterministic (fixed clock, fixed event IDs, deterministic Ed25519 seed).
 
 The deterministic receipt signer seed is:
-```
+```text
 sha256("pipelock deterministic shadow receipt signer")
 ```
 

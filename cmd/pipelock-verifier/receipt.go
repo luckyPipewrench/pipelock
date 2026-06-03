@@ -83,7 +83,14 @@ func runReceipt(stdout, stderr io.Writer, target string, opts receiptOptions) er
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("read receipt: %w", err))
 	}
 
-	switch detectSingleReceiptRecordType(data) {
+	recordType, detectErr := detectSingleReceiptRecordType(data)
+	if detectErr != nil {
+		report := receiptReport{Path: clean, Valid: false, Error: detectErr.Error()}
+		emitReceiptReport(stdout, stderr, report, opts.jsonOutput)
+		return cliutil.ExitCodeError(cliutil.ExitConfig, detectErr)
+	}
+
+	switch recordType {
 	case recordTypeEvidenceV2:
 		return runEvidenceReceipt(stdout, stderr, clean, data, keyHex, opts)
 	case recordTypeActionV1, "":

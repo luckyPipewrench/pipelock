@@ -61,21 +61,21 @@ func decodePinnedEvidenceKey(keyHex string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(raw), nil
 }
 
-func detectSingleReceiptRecordType(data []byte) string {
+func detectSingleReceiptRecordType(data []byte) (string, error) {
 	var probe struct {
 		RecordType string `json:"record_type"`
 		Version    int    `json:"version"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return ""
+		return "", fmt.Errorf("parse receipt JSON: %w", err)
 	}
 	if probe.RecordType != "" {
-		return probe.RecordType
+		return probe.RecordType, nil
 	}
 	if probe.Version == 1 {
-		return recordTypeActionV1
+		return recordTypeActionV1, nil
 	}
-	return ""
+	return "", nil
 }
 
 func decodeEvidenceReceipt(data []byte) (contractreceipt.EvidenceReceipt, error) {

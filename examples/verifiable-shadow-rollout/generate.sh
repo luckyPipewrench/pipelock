@@ -23,17 +23,21 @@ find "${OUT_DIR}" -mindepth 1 \
   ! -name generate.sh \
   ! -name README.md \
   -not -path "${OUT_DIR}" \
-  -delete 2>/dev/null || true
+  -delete
 
 cd "${REPO_ROOT}"
 
-# Build the generator tool.
+# Build the generator tool into a repo-local temp dir to avoid noexec /tmp.
+BUILD_DIR="$(mktemp -d "${REPO_ROOT}/.gen-shadow-XXXXXX")"
+cleanup_build() { rm -rf "${BUILD_DIR}"; }
+trap cleanup_build EXIT
+
 echo "--- building generator ---"
-go build -o /tmp/gen-shadow-example ./tools/gen-shadow-example
+go build -o "${BUILD_DIR}/gen-shadow-example" ./tools/gen-shadow-example
 
 # Run it.
 echo "--- generating artifacts ---"
-/tmp/gen-shadow-example --out "${OUT_DIR}"
+"${BUILD_DIR}/gen-shadow-example" --out "${OUT_DIR}"
 
 echo ""
 echo "=== Verification command ==="

@@ -51,3 +51,6 @@ pipelock-audit.log
 
 # ClawHub
 .clawdhub/
+
+# Temp build dir for generate.sh
+.gen-shadow-*

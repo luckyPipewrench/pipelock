@@ -155,8 +155,12 @@ func verifyActionChain(stdout, stderr io.Writer, label string, receipts []action
 	return nil
 }
 
-func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
-	receipts, err := contractreceipt.ExtractEvidenceReceipts(clean)
+// evidenceExtractorFunc is the signature for functions that extract evidence
+// receipts from a path. Both file-based and dir-based extractors conform.
+type evidenceExtractorFunc func() ([]contractreceipt.EvidenceReceipt, error)
+
+func runEvidenceChainWith(stdout, stderr io.Writer, label, keyHex string, opts chainOptions, extract evidenceExtractorFunc) (bool, error) {
+	receipts, err := extract()
 	if err != nil {
 		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract evidence receipts: %w", err))
 	}
@@ -166,15 +170,16 @@ func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex str
 	return true, verifyEvidenceChain(stdout, stderr, label, receipts, keyHex, opts)
 }
 
+func runEvidenceChainFromFile(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
+	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
+		return contractreceipt.ExtractEvidenceReceipts(clean)
+	})
+}
+
 func runEvidenceChainFromDir(stdout, stderr io.Writer, clean, label, keyHex string, opts chainOptions) (bool, error) {
-	receipts, err := contractreceipt.ExtractEvidenceReceiptsFromSessionDir(clean, opts.sessionID)
-	if err != nil {
-		return true, cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("extract evidence receipts: %w", err))
-	}
-	if len(receipts) == 0 {
-		return false, nil
-	}
-	return true, verifyEvidenceChain(stdout, stderr, label, receipts, keyHex, opts)
+	return runEvidenceChainWith(stdout, stderr, label, keyHex, opts, func() ([]contractreceipt.EvidenceReceipt, error) {
+		return contractreceipt.ExtractEvidenceReceiptsFromSessionDir(clean, opts.sessionID)
+	})
 }
 
 func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []contractreceipt.EvidenceReceipt, keyHex string, opts chainOptions) error {

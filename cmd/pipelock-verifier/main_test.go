@@ -128,8 +128,8 @@ func (f *evidenceFixture) writeEvidenceJSONL(t *testing.T, path string) {
 		if err != nil {
 			t.Fatalf("marshal evidence entry: %v", err)
 		}
-		buf.Write(line)
-		buf.WriteByte('\n')
+		_, _ = buf.Write(line)
+		_ = buf.WriteByte('\n')
 	}
 	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
 		t.Fatalf("write evidence jsonl: %v", err)
@@ -1343,5 +1343,363 @@ func TestAuditPacket_ReportContainsRunMetadata(t *testing.T) {
 	}
 	if report.Run.SHA == "" {
 		t.Errorf("sha missing")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage-raising tests for CodeRabbit review fixes
+// ---------------------------------------------------------------------------
+
+func TestReceipt_MalformedJSON_PropagatesParseError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Write something that is valid JSON but has a v2 record_type marker
+	// followed by invalid structure to trigger decodeEvidenceReceipt failure.
+	rPath := filepath.Join(dir, "bad-v2.json")
+	// Truncated JSON: record_type present but rest is garbage.
+	if err := os.WriteFile(rPath, []byte(`{"record_type":"evidence_receipt_v2","receipt_version":"not-an-int"}`), 0o600); err != nil {
+		t.Fatalf("write bad v2 receipt: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("malformed v2 receipt should fail, stderr=%q", stderr)
+	}
+	// Should surface a parse error, not a generic "require record_type" error.
+	if strings.Contains(stderr, "require record_type") {
+		t.Errorf("should surface parse error, not misroute to v1; stderr=%q", stderr)
+	}
+}
+
+func TestReceipt_TruncatedJSON_PropagatesDetectError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "truncated.json")
+	if err := os.WriteFile(rPath, []byte(`{"record_type": "evidence_re`), 0o600); err != nil {
+		t.Fatalf("write truncated: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("truncated JSON should fail, stderr=%q", stderr)
+	}
+	// The error should mention JSON parsing, not "require record_type".
+	if strings.Contains(stderr, "require record_type") {
+		t.Errorf("truncated JSON should surface parse error; stderr=%q", stderr)
+	}
+}
+
+func TestReceipt_UnsupportedRecordType(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "unknown.json")
+	if err := os.WriteFile(rPath, []byte(`{"record_type":"future_v99"}`), 0o600); err != nil {
+		t.Fatalf("write unknown type: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("unsupported record_type should fail, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "unsupported receipt record_type") {
+		t.Errorf("expected unsupported error, got stderr=%q", stderr)
+	}
+}
+
+func TestReceipt_V2DuplicateKeysRejected(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Inject a duplicate "record_type" key to trigger RejectDuplicateKeys.
+	dup := strings.Replace(string(data), `"record_type"`, `"record_type":"x","record_type"`, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "dup-keys.json")
+	if err := os.WriteFile(rPath, []byte(dup), 0o600); err != nil {
+		t.Fatalf("write dup: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("duplicate keys should be rejected, stderr=%q", stderr)
+	}
+	if !strings.Contains(stderr, "duplicate") {
+		t.Errorf("expected duplicate key error, got stderr=%q", stderr)
+	}
+}
+
+func TestChain_EvidenceV2MalformedLine(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 2)
+	dir := t.TempDir()
+	evidence := filepath.Join(dir, "evidence.jsonl")
+	fix.writeEvidenceJSONL(t, evidence)
+
+	// Append a malformed evidence line.
+	f, err := os.OpenFile(filepath.Clean(evidence), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	_, _ = f.WriteString(`{"type":"evidence_receipt","detail":"not-an-object"}` + "\n")
+	_ = f.Close()
+
+	_, stderr, code := runRoot(t, "chain", evidence)
+	if code == cliutil.ExitOK {
+		t.Fatalf("malformed evidence line should cause chain failure, stderr=%q", stderr)
+	}
+}
+
+func TestChain_EvidenceV2DirHappyPath(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 3)
+	dir := t.TempDir()
+	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
+
+	stdout, stderr, code := runRoot(t,
+		"chain", "--dir",
+		"--key", fix.keyHex,
+		"--expect-signer-id", v2SignerID,
+		dir,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("v2 dir happy path should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stdout, "signatures: verified") {
+		t.Errorf("expected signatures verified, got stdout=%q", stdout)
+	}
+}
+
+func TestChain_EvidenceV2DirMalformed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "evidence-proxy-0.jsonl")
+	if err := os.WriteFile(bad, []byte("not valid jsonl\n"), 0o600); err != nil {
+		t.Fatalf("write bad: %v", err)
+	}
+	_, stderr, code := runRoot(t, "chain", "--dir", dir)
+	if code == cliutil.ExitOK {
+		t.Fatalf("malformed dir evidence should fail, stderr=%q", stderr)
+	}
+}
+
+func TestChain_EvidenceV2ExpectMismatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "signer_id_mismatch",
+			args: []string{"--expect-signer-id", "wrong-signer"},
+		},
+		{
+			name: "contract_mismatch",
+			args: []string{"--expect-contract", "sha256:wrong"},
+		},
+		{
+			name: "manifest_mismatch",
+			args: []string{"--expect-manifest", "sha256:wrong"},
+		},
+		{
+			name: "payload_kind_mismatch",
+			args: []string{"--expect-payload-kind", "wrong_kind"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fix := newEvidenceFixture(t, 2)
+			dir := t.TempDir()
+			evidence := filepath.Join(dir, "evidence.jsonl")
+			fix.writeEvidenceJSONL(t, evidence)
+			args := append([]string{"chain", "--key", fix.keyHex}, tt.args...)
+			args = append(args, evidence)
+			_, stderr, code := runRoot(t, args...)
+			if code == cliutil.ExitOK {
+				t.Fatalf("expect mismatch should fail, stderr=%q", stderr)
+			}
+		})
+	}
+}
+
+func TestDecodePinnedEvidenceKey_Errors(t *testing.T) {
+	t.Parallel()
+	t.Run("invalid_hex", func(t *testing.T) {
+		t.Parallel()
+		_, err := decodePinnedEvidenceKey("not-hex")
+		if err == nil {
+			t.Fatal("expected error on invalid hex")
+		}
+	})
+	t.Run("wrong_length", func(t *testing.T) {
+		t.Parallel()
+		// Valid hex but wrong length (16 bytes instead of 32).
+		_, err := decodePinnedEvidenceKey(strings.Repeat("ab", 16))
+		if err == nil {
+			t.Fatal("expected error on wrong key length")
+		}
+		if !strings.Contains(err.Error(), "pinned key length") {
+			t.Errorf("expected pinned key length error, got %v", err)
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		t.Parallel()
+		key, err := decodePinnedEvidenceKey("")
+		if err != nil {
+			t.Fatalf("empty should succeed: %v", err)
+		}
+		if key != nil {
+			t.Errorf("empty should return nil key, got %v", key)
+		}
+	})
+}
+
+func TestDetectSingleReceiptRecordType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		data     string
+		wantType string
+		wantErr  bool
+	}{
+		{name: "v2", data: `{"record_type":"evidence_receipt_v2"}`, wantType: recordTypeEvidenceV2},
+		{name: "v1_explicit", data: `{"record_type":"action_receipt_v1"}`, wantType: recordTypeActionV1},
+		{name: "v1_implicit", data: `{"version":1}`, wantType: recordTypeActionV1},
+		{name: "empty_object", data: `{}`, wantType: ""},
+		{name: "invalid_json", data: `{not json`, wantErr: true},
+		{name: "truncated", data: `{"record_type":`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := detectSingleReceiptRecordType([]byte(tt.data))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantType {
+				t.Errorf("got %q, want %q", got, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestVerifyEvidenceReceipt_ValidateOnlyPath(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	// Without a pinned key, verifyEvidenceReceipt does validate + hash only.
+	sigVerified, err := verifyEvidenceReceipt(fix.receipts[0], "", evidenceBindingOptions{})
+	if err != nil {
+		t.Fatalf("validate-only should succeed: %v", err)
+	}
+	if sigVerified {
+		t.Error("without pinned key, sigVerified should be false")
+	}
+}
+
+func TestVerifyEvidenceReceipt_ManifestMismatch(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	_, err := verifyEvidenceReceipt(fix.receipts[0], fix.keyHex, evidenceBindingOptions{
+		expectManifestHash: "sha256:wrong-manifest",
+	})
+	if err == nil {
+		t.Fatal("expected manifest mismatch error")
+	}
+	if !strings.Contains(err.Error(), "active_manifest_hash") {
+		t.Errorf("expected manifest error, got %v", err)
+	}
+}
+
+func TestChainVerifyOptions_BadKey(t *testing.T) {
+	t.Parallel()
+	opts := evidenceBindingOptions{}
+	_, err := opts.chainVerifyOptions("not-valid-hex")
+	if err == nil {
+		t.Fatal("expected error on bad hex key")
+	}
+}
+
+func TestReceipt_EvidenceV2ExpectSignerIDMismatch(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "r.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", "--expect-signer-id", "wrong-signer", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("signer mismatch should fail, stderr=%q", stderr)
+	}
+}
+
+func TestReceipt_EvidenceV2ExpectManifestMismatch(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "r.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", "--expect-manifest", "sha256:wrong", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("manifest mismatch should fail, stderr=%q", stderr)
+	}
+}
+
+func TestReceipt_EvidenceV2ExpectPayloadKindMismatch(t *testing.T) {
+	t.Parallel()
+	fix := newEvidenceFixture(t, 1)
+	dir := t.TempDir()
+	rPath := filepath.Join(dir, "r.json")
+	data, err := json.Marshal(fix.receipts[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(rPath, data, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, stderr, code := runRoot(t, "receipt", "--expect-payload-kind", "wrong_kind", rPath)
+	if code == cliutil.ExitOK {
+		t.Fatalf("payload kind mismatch should fail, stderr=%q", stderr)
+	}
+}
+
+func TestVerifyEvidenceReceipt_ValidateError(t *testing.T) {
+	t.Parallel()
+	// Build a receipt with an empty EventID so Validate() fails.
+	fix := newEvidenceFixture(t, 1)
+	r := fix.receipts[0]
+	r.EventID = "" // Validate requires non-empty EventID
+	_, err := verifyEvidenceReceipt(r, "", evidenceBindingOptions{})
+	if err == nil {
+		t.Fatal("expected validate error for empty EventID")
+	}
+}
+
+func TestChain_EvidenceV2WithExpectFlagsOnV1Fails(t *testing.T) {
+	t.Parallel()
+	fix := newFixture(t, 2)
+	dir := t.TempDir()
+	fix.writePacketDir(t, dir, nil)
+	evidence := filepath.Join(dir, "evidence.jsonl")
+
+	// Pass --expect-signer-id on a v1 chain. The chain subcommand should
+	// reject the mismatch and exit non-zero.
+	_, _, code := runRoot(t, "chain", "--expect-signer-id", "some-id", evidence)
+	if code == cliutil.ExitOK {
+		t.Fatalf("v2 expect flags on v1 chain should fail")
 	}
 }

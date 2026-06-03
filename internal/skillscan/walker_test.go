@@ -79,8 +79,10 @@ func TestDiscoverDuplicateIDsAndDefaultPaths(t *testing.T) {
 	home := t.TempDir()
 	first := filepath.Join(home, ".claude", "skills", "dup")
 	second := filepath.Join(home, ".claude", "agents", "dup")
+	third := filepath.Join(home, ".codex", "agents")
 	writeSkill(t, filepath.Join(first, "SKILL.md"), "Clean\n")
 	writeSkill(t, filepath.Join(second, "SKILL.md"), "Clean\n")
+	writeSkill(t, filepath.Join(third, "dup.md"), "Clean\n")
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 
@@ -88,11 +90,11 @@ func TestDiscoverDuplicateIDsAndDefaultPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discoverSkills: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("discoverSkills len = %d, want 2", len(got))
+	if len(got) != 3 {
+		t.Fatalf("discoverSkills len = %d, want 3", len(got))
 	}
-	if got[0].id != "dup" || got[1].id != "dup-2" {
-		t.Fatalf("ids = %q, %q", got[0].id, got[1].id)
+	if got[0].id != "dup" || got[1].id != "dup-2" || got[2].id != "dup-3" {
+		t.Fatalf("ids = %q, %q, %q", got[0].id, got[1].id, got[2].id)
 	}
 }
 

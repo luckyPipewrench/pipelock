@@ -141,10 +141,11 @@ func discoverSkills(paths []string) ([]skillInput, error) {
 		if err != nil {
 			return nil, err
 		}
-		if n := usedIDs[input.id]; n > 0 {
-			input.id = fmt.Sprintf("%s-%d", input.id, n+1)
+		baseID := input.id
+		if n := usedIDs[baseID]; n > 0 {
+			input.id = fmt.Sprintf("%s-%d", baseID, n+1)
 		}
-		usedIDs[input.id]++
+		usedIDs[baseID]++
 		inputs = append(inputs, input)
 	}
 	return inputs, nil

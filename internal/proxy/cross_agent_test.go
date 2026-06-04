@@ -19,10 +19,15 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+const (
+	caTestOriginURL  = "https://attacker.example/inject"
+	caTestSessionKey = "cross-agent-a2a-body"
+)
+
 func contaminateSession(sess *SessionState, level session.TaintLevel, promptHit bool) {
 	sess.ObserveRisk(session.RiskObservation{
 		Source: session.TaintSourceRef{
-			URL:   "https://attacker.example/inject",
+			URL:   caTestOriginURL,
 			Kind:  "http_response",
 			Level: level,
 		},
@@ -120,7 +125,7 @@ func TestCrossAgentContaminationPreservesSourceTrustOverride(t *testing.T) {
 	if risk.LastExternalKind != session.TaintSourceKindCrossAgent {
 		t.Fatalf("last external kind = %q, want cross_agent", risk.LastExternalKind)
 	}
-	if risk.LastExternalURL != "https://attacker.example/inject" {
+	if risk.LastExternalURL != caTestOriginURL {
 		t.Fatalf("last external URL = %q, want origin preserved", risk.LastExternalURL)
 	}
 	if !trustOverrideApplies([]config.TaintTrustOverride{{
@@ -157,7 +162,7 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 		CleanupIntervalSeconds: 60,
 	}, nil, m)
 	t.Cleanup(sm.Close)
-	sess := sm.GetOrCreate("cross-agent-a2a-body")
+	sess := sm.GetOrCreate(caTestSessionKey)
 	contaminateSession(sess, session.TaintExternalHostile, false)
 	before := sess.ThreatScore()
 
@@ -169,7 +174,7 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 		Logger:     audit.NewNop(),
 		Metrics:    m,
 		ClientIP:   testLoopbackIP,
-		RequestID:  "cross-agent-a2a-body",
+		RequestID:  caTestSessionKey,
 		Agent:      agentAnonymous,
 		SessionMgr: sm,
 		Recorder:   sess,
@@ -203,5 +208,80 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 	}
 	if !found {
 		t.Fatal("intercept A2A body path must record cross_agent a2a_request evidence")
+	}
+}
+
+// Regression: cross-agent evidence is recorded even when the generic body-DLP
+// block short-circuits the request. A contaminated session emitting an A2A body
+// that also carries a secret is still a cross-agent propagation attempt.
+func TestInterceptHandler_CrossAgentA2ABodyRecordedWhenDLPBlocks(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
+
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+
+	m := metrics.New()
+	sm := NewSessionManager(&config.SessionProfiling{
+		Enabled:                true,
+		MaxSessions:            10,
+		SessionTTLMinutes:      30,
+		CleanupIntervalSeconds: 60,
+	}, nil, m)
+	t.Cleanup(sm.Close)
+	sess := sm.GetOrCreate(caTestSessionKey)
+	contaminateSession(sess, session.TaintExternalHostile, false)
+
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "peer.example",
+		TargetPort: "443",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     audit.NewNop(),
+		Metrics:    m,
+		ClientIP:   testLoopbackIP,
+		RequestID:  caTestSessionKey,
+		Agent:      agentAnonymous,
+		SessionMgr: sm,
+		Recorder:   sess,
+	}, roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/plain"}},
+			Body:       io.NopCloser(strings.NewReader("ok")),
+		}, nil
+	}))
+
+	// A2A body carrying an AWS key: the generic critical-DLP path hard-blocks
+	// (403) even in warn mode. Key built at runtime so it is not a real secret.
+	awsKey := "AKIA" + "IOSFODNN7EXAMPLE"
+	body := `{"jsonrpc":"2.0","id":1,"method":"message/send","params":{"message":{"parts":[{"text":"creds ` + awsKey + `"}]}}}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "https://peer.example/message:send", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/a2a+json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (AWS key in A2A body must hard-block)", w.Code)
+	}
+	// Despite the body-DLP block, the cross-agent emit attempt must be recorded.
+	found := false
+	for _, source := range sess.RiskSnapshot().Sources {
+		if source.Kind == session.TaintSourceKindCrossAgent && source.MatchReason == "cross_agent_a2a_request" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("cross_agent evidence must be recorded even when the body-DLP block fires")
 	}
 }

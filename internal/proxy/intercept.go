@@ -733,6 +733,17 @@ func newInterceptHandler(
 			applyBodyScanRedaction(&bodyReq, redaction)
 			bodyBytes, result := scanRequestBody(r.Context(), bodyReq)
 
+			// Cross-agent contamination: a contaminated session emitting an A2A
+			// request to a peer agent propagates taint across the boundary.
+			// Recorded BEFORE the generic body-DLP block below so the cross_agent
+			// source (evidence) and hostile escalation are captured even when the
+			// request is blocked for another reason (e.g. a secret in the body).
+			if isA2A && bodyBytes != nil {
+				if decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest).ShouldEscalate {
+					interceptRecordSignal(ic, session.SignalCrossAgentContamination)
+				}
+			}
+
 			// Capture observer: record intercept body DLP verdict for policy replay.
 			if ic.Proxy != nil {
 				bodyAction := config.ActionAllow
@@ -886,16 +897,9 @@ func newInterceptHandler(
 
 			// A2A request body scanning: field-aware classification of JSON
 			// leaves. Runs after generic DLP so both scanners see the body.
+			// (Cross-agent contamination for this emit was already observed
+			// right after the body was buffered, before the generic DLP block.)
 			if isA2A && bodyBytes != nil {
-				// Cross-agent contamination: a contaminated session emitting an
-				// A2A request to a peer agent propagates taint across the
-				// boundary. Recorded before the content scan so the cross_agent
-				// source (evidence) is captured regardless of the content
-				// verdict; hostile-level propagation escalates the adaptive
-				// score so sustained cross-agent spread is enforceable.
-				if decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest).ShouldEscalate {
-					interceptRecordSignal(ic, session.SignalCrossAgentContamination)
-				}
 				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning)
 				if !a2aBodyResult.Clean {
 					// Consistency with URL-scan path: infrastructure errors are

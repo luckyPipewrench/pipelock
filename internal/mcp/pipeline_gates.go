@@ -257,6 +257,16 @@ func EvaluateMCPInputGates(
 		}
 	}
 
+	// Cross-agent contamination for tools/call. A contaminated session emitting
+	// a tool call to a tool/peer agent propagates taint across the MCP boundary.
+	// Recorded BEFORE the short-circuiting DoW/binding/policy/chain/taint gates
+	// so the cross_agent evidence (and the escalation request the caller acts on)
+	// is captured even when a later gate blocks the emit. A2A-method emits are
+	// recorded in their own block above for the same reason.
+	if frame.IsToolsCall() {
+		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
+	}
+
 	// DoW. Only for tools/call with a tool name.
 	if opts.DoWCheck != nil && frame.IsToolsCall() && frame.ToolCallName != "" {
 		allowed, action, reason, budgetType := opts.DoWCheck(frame.ToolCallName, string(frame.Args))
@@ -323,11 +333,9 @@ func EvaluateMCPInputGates(
 	// inline approver dialog so HITL runs in the request-processing
 	// goroutine, matching the pre-refactor call site.
 	if frame.IsToolsCall() {
-		// Cross-agent contamination: a contaminated session emitting a tool
-		// call to a tool/peer agent propagates taint across the MCP boundary.
-		// Recorded before the taint snapshot below so the decision (and its
-		// receipt) carries the cross_agent source as evidence.
-		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
+		// Cross-agent contamination was already observed before the
+		// short-circuiting gates above; the cross_agent source is on the
+		// session, so the taint snapshot below still carries it as evidence.
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil
@@ -467,6 +475,14 @@ func EvaluateMCPInputGatesStdio(
 		toolCallName = frame.ToolCallName
 	}
 
+	// Cross-agent contamination for tools/call. Recorded BEFORE the
+	// short-circuiting DoW/binding/frozen/chain/taint gates so the cross_agent
+	// evidence and escalation request are captured even when a later gate
+	// blocks the emit.
+	if eval.ContentVerdict.Method == methodToolsCall {
+		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
+	}
+
 	// DoW. Only for tools/call with a tool name.
 	if opts.DoWCheck != nil && eval.ContentVerdict.Method == methodToolsCall && toolCallName != "" {
 		allowed, action, reason, budgetType := opts.DoWCheck(toolCallName, string(frame.Args))
@@ -539,11 +555,9 @@ func EvaluateMCPInputGatesStdio(
 	// inline approver dialog so HITL runs in the request-processing
 	// goroutine, matching the pre-refactor call site.
 	if eval.ContentVerdict.Method == methodToolsCall {
-		// Cross-agent contamination: a contaminated session emitting a tool
-		// call to a tool/peer agent propagates taint across the MCP boundary.
-		// Recorded before the taint snapshot below so the decision (and its
-		// receipt) carries the cross_agent source as evidence.
-		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
+		// Cross-agent contamination was already observed before the
+		// short-circuiting gates above; the cross_agent source is on the
+		// session, so the taint snapshot below still carries it as evidence.
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil

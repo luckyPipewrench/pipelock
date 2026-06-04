@@ -292,6 +292,68 @@ func TestForwardScannedInput_CrossAgentEscalationFires(t *testing.T) {
 	}
 }
 
+// Regression: cross-agent evidence + escalation must be recorded even when a
+// LATER short-circuit gate (here DoW) blocks the tool call. The contaminated
+// session still attempted cross-agent propagation, which is the security event.
+func TestEvaluateMCPInputGates_CrossAgentRecordedWhenLaterGateBlocks(t *testing.T) {
+	t.Parallel()
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	contaminateRecorder(rec, true) // hostile
+
+	// A DoW check that blocks every tool call — runs after the cross-agent
+	// observe and short-circuits the evaluation.
+	dow := func(_, _ string) (bool, string, string, string) {
+		return false, config.ActionBlock, "dow: budget exceeded", "calls"
+	}
+
+	msg := []byte(toolsCallReadMsg)
+	frame := ParseMCPFrame(msg)
+	eval := EvaluateMCPInputGates(context.Background(), frame, msg, "sess-1",
+		MCPProxyOpts{Scanner: sc, Rec: rec, TaintCfg: &cfg.Taint, DoWCheck: dow},
+		config.ActionWarn, config.ActionBlock, true)
+
+	if eval.BlockingGate != blockingGateDoW {
+		t.Fatalf("expected DoW block, got %q", eval.BlockingGate)
+	}
+	if len(crossAgentSources(rec)) != 1 {
+		t.Fatal("cross_agent evidence must be recorded even when a later gate blocks")
+	}
+	if !eval.CrossAgentEscalate {
+		t.Fatal("hostile cross-agent escalation must be set even when a later gate blocks")
+	}
+}
+
+// stdio parity for the later-gate-block regression.
+func TestEvaluateMCPInputGatesStdio_CrossAgentRecordedWhenLaterGateBlocks(t *testing.T) {
+	t.Parallel()
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := config.Defaults()
+	rec := &taintRecorder{}
+	contaminateRecorder(rec, true) // hostile
+
+	dow := func(_, _ string) (bool, string, string, string) {
+		return false, config.ActionBlock, "dow: budget exceeded", "calls"
+	}
+
+	msg := []byte(toolsCallReadMsg)
+	frame := ParseMCPFrame(msg)
+	eval := EvaluateMCPInputGatesStdio(context.Background(), frame, msg, msg, nil,
+		MCPProxyOpts{Scanner: sc, Rec: rec, TaintCfg: &cfg.Taint, DoWCheck: dow},
+		config.ActionWarn, config.ActionBlock)
+
+	if eval.BlockingGate != blockingGateDoW {
+		t.Fatalf("expected DoW block, got %q", eval.BlockingGate)
+	}
+	if len(crossAgentSources(rec)) != 1 {
+		t.Fatal("cross_agent evidence must be recorded even when a later gate blocks (stdio)")
+	}
+	if !eval.CrossAgentEscalate {
+		t.Fatal("hostile cross-agent escalation must be set even when a later gate blocks (stdio)")
+	}
+}
+
 // Control: a clean (uncontaminated) session never records cross-agent taint.
 func TestEvaluateMCPInputGates_CleanSessionNoCrossAgent(t *testing.T) {
 	t.Parallel()

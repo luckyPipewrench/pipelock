@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
@@ -150,6 +151,23 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		return ErrChainSealed
 	}
 
+	// Sanitize secret-bearing fields BEFORE signing. When redaction is enabled
+	// the recorder would otherwise redact target/pattern AFTER signing,
+	// desyncing the on-disk canonical bytes from both the signature and the
+	// recorded ReceiptHash (AARP) binding. Sanitizing pre-sign with the same
+	// DLP function makes the recorder's redaction a no-op, so the receipt
+	// verifies from the evidence file alone. The redactor is read from the
+	// recorder at emit time (not cached at construction) so it is always the
+	// exact function the recorder will apply, with no drift surface; it is nil
+	// when flight-recorder redaction is off, leaving targets unchanged.
+	target := opts.Target
+	pattern := opts.Pattern
+	if rf := e.recorder.ReceiptRedactor(); rf != nil {
+		clean := func(text string) bool { return rf(context.Background(), text).Clean }
+		target = sanitizeTarget(target, clean)
+		pattern = cleanOrRedacted(pattern, clean)
+	}
+
 	ar := ActionRecord{
 		Version:               ActionRecordVersion,
 		ActionID:              opts.ActionID,
@@ -159,7 +177,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Principal:             e.principal,
 		Actor:                 e.actorLabel(opts),
 		DelegationChain:       nil, // Populated when delegation tracking ships
-		Target:                opts.Target,
+		Target:                target,
 		SideEffectClass:       sideEffect,
 		Reversibility:         reversibility,
 		PolicyHash:            configHashString(e.configHash.Load()),
@@ -184,7 +202,7 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 		Transport:             opts.Transport,
 		Method:                opts.Method,
 		Layer:                 opts.Layer,
-		Pattern:               opts.Pattern,
+		Pattern:               pattern,
 		Severity:              opts.Severity,
 		Redaction:             redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
 		Shield:                cloneShieldSummary(opts.Shield),

@@ -83,6 +83,20 @@ func safeEvidenceFileMode(mode os.FileMode) bool {
 // RedactFunc is the signature for DLP redaction. Matches scanner.ScanTextForDLP.
 type RedactFunc func(ctx context.Context, text string) scanner.TextDLPResult
 
+// ReceiptRedactor returns the DLP function this recorder applies to receipts,
+// or nil when receipt redaction is disabled. Receipt emitters use it to
+// sanitize secret-bearing fields BEFORE signing with the exact same function
+// the recorder would apply AFTER signing, so the recorder's redaction pass
+// becomes a no-op and signed receipts verify from the evidence file alone.
+// Returning the recorder's own function (rather than re-deriving it) keeps the
+// emitter and recorder in lockstep across reloads.
+func (r *Recorder) ReceiptRedactor() RedactFunc {
+	if r == nil || !r.cfg.Redact {
+		return nil
+	}
+	return r.redactFn
+}
+
 // EntryObserver receives entries after they are durably flushed to the
 // recorder. Observer failures must be handled internally; recorder writes
 // cannot depend on optional downstream transports.
@@ -249,10 +263,12 @@ func (r *Recorder) Record(e Entry) error {
 		e.RawRef = filepath.Base(escrowPath)
 	}
 
-	// DLP redaction: receipts get selective field redaction (target, pattern
-	// only) to prevent plaintext secrets in evidence files while preserving
-	// receipt structure (signature, signer_key, verdict, action_type, transport).
-	// The raw escrow preserves originals for forensic replay regardless.
+	// DLP redaction: receipt emitters sanitize target/pattern before signing
+	// when recorder redaction is enabled, so receipt redaction is normally a
+	// no-op and on-disk receipts still verify. This pass remains fail-closed
+	// for malformed or legacy receipt details that still contain DLP hits.
+	// Raw escrow preserves the exact detail passed to the recorder for
+	// forensic replay.
 	if r.cfg.Redact && r.redactFn != nil {
 		if e.Type == recorderTypeReceipt {
 			e.Detail = r.redactReceiptDetail(e.Detail)
@@ -465,10 +481,11 @@ func (r *Recorder) redactDetail(detail any) any {
 }
 
 // redactReceiptDetail selectively redacts sensitive fields (target, pattern)
-// in a receipt entry while preserving the receipt structure. The signature
-// will not verify against redacted content -- the escrow preserves the
-// verifiable original. Returns the detail unchanged if it is not a receipt
-// or if no DLP patterns match.
+// in a receipt entry while preserving the receipt structure. Current receipt
+// emitters sanitize those fields before signing, so this should return the
+// detail unchanged for normal receipts. If a malformed, legacy, or unexpected
+// receipt still contains a DLP hit, fail closed rather than writing a secret
+// to the evidence file; that fallback may make that receipt unverifiable.
 func (r *Recorder) redactReceiptDetail(detail any) any {
 	if detail == nil {
 		return nil

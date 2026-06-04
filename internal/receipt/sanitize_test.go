@@ -193,7 +193,10 @@ func TestSanitizeTarget(t *testing.T) {
 // is supplied (redaction disabled): the target passes through untouched.
 func TestSanitizeTarget_NilClean(t *testing.T) {
 	t.Parallel()
-	in := credURL("api.vendor.example/x?token=abc")
+	// Userinfo (added by credURL) is the sanitize trigger under test; the query
+	// param is deliberately benign so pipelock's own credential-in-URL scanner
+	// does not flag this fixture line in the self-scan dogfood check.
+	in := credURL("api.vendor.example/x?ref=abc")
 	if got := sanitizeTarget(in, nil); got != in {
 		t.Errorf("sanitizeTarget with nil clean = %q, want unchanged %q", got, in)
 	}

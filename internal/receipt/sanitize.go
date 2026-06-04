@@ -8,20 +8,24 @@ import (
 	"strings"
 )
 
-// Placeholders used when sanitizing secret-bearing fields before signing.
-// They are chosen to be structurally obvious in an audit trail and to never
-// themselves match a DLP pattern.
+// Placeholders substituted into a target when sanitizing secret-bearing
+// components before signing. They share one consistent, self-describing
+// [redacted-<scope>] format and are deliberately distinct from the recorder's
+// own "[REDACTED]" field marker (recorder.go). That distinction matters in an
+// audit trail: a receipt carrying these markers was sanitized normally pre-sign
+// and still verifies, whereas a receipt carrying the recorder's "[REDACTED]"
+// means the fail-closed post-sign redaction fired (an unexpected secret-bearing
+// field) and that receipt no longer verifies. None of them match a DLP pattern.
 const (
 	// redactedTarget fully replaces a target whose secret cannot be isolated
-	// to userinfo, a query value, the path, or fragment. Mirrors the recorder's
-	// own coarse marker so operators see a consistent token.
-	redactedTarget = "[REDACTED]"
+	// to userinfo, a query value, the path, or fragment.
+	redactedTarget = "[redacted-target]"
 	// redactedValue replaces an individual secret-bearing query parameter value
 	// while preserving its key and the URL's overall shape.
-	redactedValue = "[redacted]"
+	redactedValue = "[redacted-value]"
 	// redactedSegment replaces a secret-bearing URL path while keeping the
 	// scheme and host meaningful for forensics.
-	redactedSegment = "[redacted]"
+	redactedSegment = "[redacted-path]"
 )
 
 // dlpClean reports whether text is free of DLP matches. It wraps the same

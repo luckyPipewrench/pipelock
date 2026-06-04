@@ -709,6 +709,14 @@ func TestEmitter_RecorderRedactionIsNoOpOnReceipts(t *testing.T) {
 
 	got := readReceiptsRaw(t, dir)[0]
 
+	// The on-disk target is exactly the emitter's pre-sign sanitized form (the
+	// secret query value swapped for the sanitizer's marker, structure intact),
+	// proving the recorder did not mutate the signed receipt.
+	wantTarget := "https://api.vendor.example/v1/keys?token=" + redactedValue
+	if got.ActionRecord.Target != wantTarget {
+		t.Errorf("on-disk target = %q, want %q", got.ActionRecord.Target, wantTarget)
+	}
+
 	// The whole on-disk receipt must be DLP-clean under the recorder's fn,
 	// which is exactly the precondition that makes redactReceiptDetail a no-op.
 	raw, err := Marshal(got)
@@ -718,7 +726,9 @@ func TestEmitter_RecorderRedactionIsNoOpOnReceipts(t *testing.T) {
 	if res := dlp(context.Background(), string(raw)); !res.Clean {
 		t.Errorf("on-disk receipt is not DLP-clean; recorder would have redacted it post-sign")
 	}
-	// And it must not carry the recorder's redaction marker.
+	// And it must not carry the recorder's distinct redaction marker. The
+	// sanitizer's markers are [redacted-<scope>]; the recorder's field marker
+	// is "[REDACTED]", so its presence would mean a post-sign redaction fired.
 	if strings.Contains(string(raw), "[REDACTED]") || strings.Contains(string(raw), "redacted_fields") {
 		t.Errorf("receipt was redacted by the recorder post-sign: %s", raw)
 	}

@@ -706,6 +706,10 @@ signed action receipts for MCP decisions.`,
 					ConfigHash: cfg.Hash(),
 					Principal:  "local",
 					Actor:      "pipelock",
+					// Same DLP fn the recorder uses: sanitize secret-bearing
+					// target/pattern before signing so the recorder's redaction
+					// is a no-op and receipts self-verify. nil when redact off.
+					RedactFn: rec.ReceiptRedactor(),
 				})
 
 				cmd.PrintErrf("  Recorder: %s (flight recorder enabled)\n", cfg.FlightRecorder.Dir)

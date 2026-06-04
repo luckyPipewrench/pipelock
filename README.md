@@ -452,8 +452,8 @@ Canonical comparison hub: [AI runtime security comparison](https://pipelab.org/c
 | ASI03 Identity & Privilege Abuse | **Strong:** capability separation + SSRF protection |
 | ASI04 Supply Chain Vulnerabilities | **Partial:** integrity monitoring + MCP scanning |
 | ASI05 Unexpected Code Execution | **Moderate:** HITL approval, fail-closed defaults |
-| ASI06 Memory & Context Poisoning | **Moderate:** injection detection on fetched content |
-| ASI07 Insecure Inter-Agent Communication | **Partial:** agent ID, integrity, signing |
+| ASI06 Memory & Context Poisoning | **Moderate:** injection detection + session taint propagation |
+| ASI07 Insecure Inter-Agent Communication | **Partial:** MCP/A2A scanning, agent ID, integrity, signing |
 | ASI08 Cascading Failures | **Moderate:** fail-closed architecture, rate limiting |
 | ASI09 Human-Agent Trust Exploitation | **Partial:** HITL modes, audit logging |
 | ASI10 Rogue Agents | **Strong:** domain allowlist + rate limiting + capability separation |

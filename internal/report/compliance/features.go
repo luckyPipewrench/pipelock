@@ -24,6 +24,7 @@ const (
 // package is the authoritative mapping surface - outside callers consume
 // the resulting Framework / ControlMapping values, not the raw strings.
 const (
+	featureA2AScanning           = "a2a_scanning"
 	featureAdaptiveEnforcement   = "adaptive_enforcement"
 	featureAddressProtection     = "address_protection"
 	featureAgents                = "agents"

@@ -887,6 +887,15 @@ func newInterceptHandler(
 			// A2A request body scanning: field-aware classification of JSON
 			// leaves. Runs after generic DLP so both scanners see the body.
 			if isA2A && bodyBytes != nil {
+				// Cross-agent contamination: a contaminated session emitting an
+				// A2A request to a peer agent propagates taint across the
+				// boundary. Recorded before the content scan so the cross_agent
+				// source (evidence) is captured regardless of the content
+				// verdict; hostile-level propagation escalates the adaptive
+				// score so sustained cross-agent spread is enforceable.
+				if decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest).ShouldEscalate {
+					interceptRecordSignal(ic, session.SignalCrossAgentContamination)
+				}
 				a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning)
 				if !a2aBodyResult.Clean {
 					// Consistency with URL-scan path: infrastructure errors are

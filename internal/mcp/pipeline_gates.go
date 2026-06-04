@@ -10,9 +10,22 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+// observeCrossAgentEmit records cross-agent taint propagation when a
+// contaminated session emits over an MCP/A2A boundary, folding the escalation
+// request into eval. The cross_agent taint source (evidence) is appended in
+// place so a later gate's taint snapshot — and any receipt built from it —
+// carries it. The adaptive escalation signal itself is recorded by the caller,
+// which owns the EscalationParams.
+func observeCrossAgentEmit(eval *MCPInputEvaluation, opts MCPProxyOpts, boundary session.CrossAgentBoundary) {
+	if decide.ObserveCrossAgentContamination(opts.Rec, opts.taintCfg(), boundary).ShouldEscalate {
+		eval.CrossAgentEscalate = true
+	}
+}
 
 // BlockingGate values identifying which inbound gate short-circuited.
 // Callers switch on these to build per-gate block dispatch responses.
@@ -135,6 +148,14 @@ type MCPInputEvaluation struct {
 	// FrozenToolName is the tool name that tripped the stdio frozen
 	// tool gate. Empty when the gate did not run or did not block.
 	FrozenToolName string
+
+	// CrossAgentEscalate is true when a contaminated session emitted across
+	// an agent boundary (A2A request or MCP tools/call) at hostile taint
+	// level, or when contamination state was indeterminate (fail-closed). The
+	// caller records SignalCrossAgentContamination on its adaptive path; the
+	// cross_agent taint source (evidence) is already appended in-gate so the
+	// taint snapshot and any receipt carry it.
+	CrossAgentEscalate bool
 }
 
 // EvaluateMCPInputGates runs the configured inbound gates for one
@@ -216,6 +237,11 @@ func EvaluateMCPInputGates(
 			}
 		}
 		if IsA2AMethod(method) {
+			// Cross-agent contamination: a contaminated session emitting an
+			// A2A request to a peer agent propagates taint across the boundary.
+			// Recorded before the A2A content scan so the evidence is captured
+			// regardless of the content verdict (the emit happened either way).
+			observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryA2ARequest)
 			eval.A2AResult = ScanA2ARequestBody(ctx, msg, sc, a2aCfg)
 			if !eval.A2AResult.Clean {
 				action := eval.A2AResult.Action
@@ -297,6 +323,11 @@ func EvaluateMCPInputGates(
 	// inline approver dialog so HITL runs in the request-processing
 	// goroutine, matching the pre-refactor call site.
 	if frame.IsToolsCall() {
+		// Cross-agent contamination: a contaminated session emitting a tool
+		// call to a tool/peer agent propagates taint across the MCP boundary.
+		// Recorded before the taint snapshot below so the decision (and its
+		// receipt) carries the cross_agent source as evidence.
+		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil
@@ -508,6 +539,11 @@ func EvaluateMCPInputGatesStdio(
 	// inline approver dialog so HITL runs in the request-processing
 	// goroutine, matching the pre-refactor call site.
 	if eval.ContentVerdict.Method == methodToolsCall {
+		// Cross-agent contamination: a contaminated session emitting a tool
+		// call to a tool/peer agent propagates taint across the MCP boundary.
+		// Recorded before the taint snapshot below so the decision (and its
+		// receipt) carries the cross_agent source as evidence.
+		observeCrossAgentEmit(&eval, opts, session.CrossAgentBoundaryMCPToolCall)
 		taintOpts := opts
 		taintOpts.TaintCfg = opts.taintCfg()
 		taintOpts.TaintCfgFn = nil

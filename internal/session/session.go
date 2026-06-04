@@ -28,6 +28,7 @@ const (
 	SignalIPDomainAnomaly                              // +3 - IP-level domain burst across agent identities
 	SignalDomainAnomalyCooperative                     // +0.4 - downweighted domain burst from cooperative tool UA
 	SignalIPDomainAnomalyCooperative                   // +0.6 - downweighted IP burst from cooperative tool UA
+	SignalCrossAgentContamination                      // +2 - contaminated session propagated taint across an agent boundary (A2A/MCP)
 )
 
 // SignalPoints maps signal types to their score contribution.
@@ -42,6 +43,7 @@ var SignalPoints = map[SignalType]float64{
 	SignalIPDomainAnomaly:            3.0,
 	SignalDomainAnomalyCooperative:   0.4,
 	SignalIPDomainAnomalyCooperative: 0.6,
+	SignalCrossAgentContamination:    2.0,
 }
 
 // escalationLabels maps escalation levels to human-readable names.

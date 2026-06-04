@@ -215,6 +215,13 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// a composite verdict and the first gate that short-circuited,
 	// preserving per-gate block semantics and ordering.
 	eval := EvaluateMCPInputGates(inputScanCtx, frame, msg, sessionKey, opts, action, onParseError, scanEnabled)
+	// Cross-agent contamination escalation. Fired regardless of the gate
+	// outcome: the contaminated session already emitted across the agent
+	// boundary, so the adaptive signal must accumulate even when the call is
+	// otherwise allowed.
+	if eval.CrossAgentEscalate {
+		recordAdaptiveSignal(session.SignalCrossAgentContamination)
+	}
 	verdict := eval.ContentVerdict
 	policyVerdict := eval.PolicyVerdict
 	receiptLayer, receiptPattern, receiptSeverity = pickAttribution(eval)

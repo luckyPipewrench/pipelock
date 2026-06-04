@@ -126,7 +126,6 @@ func TestEmitter_SecretTargetVerifiesAfterRedaction(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 		Actor:      testActor,
-		RedactFn:   dlp,
 	})
 	if e == nil {
 		t.Fatal("NewEmitter returned nil")
@@ -230,7 +229,6 @@ func TestEmitter_AdversarialSecretShapes_RealDLP(t *testing.T) {
 				ConfigHash: testConfigHash,
 				Principal:  testPrincipal,
 				Actor:      testActor,
-				RedactFn:   dlp,
 			})
 			if err := e.Emit(EmitOpts{
 				ActionID:  NewActionID(),
@@ -288,7 +286,6 @@ func TestEmitter_SplitQuerySecret_VerifiesAsRecorderNoOp(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 		Actor:      testActor,
-		RedactFn:   dlp,
 	})
 	if err := e.Emit(EmitOpts{
 		ActionID:  NewActionID(),
@@ -337,7 +334,6 @@ func TestEmitter_AARPDigestBindingHoldsAfterRedaction(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 		Actor:      testActor,
-		RedactFn:   dlp,
 	})
 	if err := e.Emit(EmitOpts{
 		ActionID:  NewActionID(),
@@ -436,7 +432,7 @@ func TestEmitter_EscrowStoresSanitizedReceipt(t *testing.T) {
 	}
 	e := NewEmitter(EmitterConfig{
 		Recorder: rec, PrivKey: priv, ConfigHash: testConfigHash,
-		Principal: testPrincipal, Actor: testActor, RedactFn: dlp,
+		Principal: testPrincipal, Actor: testActor,
 	})
 	if err := e.Emit(EmitOpts{
 		ActionID: NewActionID(), Target: target, Verdict: config.ActionBlock,
@@ -511,7 +507,7 @@ func TestEmitter_ResumeChainAfterRedactedRestart(t *testing.T) {
 	rec1 := newRedactingRecorder(t, dir, priv, dlp)
 	e1 := NewEmitter(EmitterConfig{
 		Recorder: rec1, PrivKey: priv, ConfigHash: testConfigHash,
-		Principal: testPrincipal, Actor: testActor, RedactFn: dlp,
+		Principal: testPrincipal, Actor: testActor,
 	})
 	if err := e1.Emit(EmitOpts{
 		ActionID: NewActionID(), Target: target, Verdict: config.ActionBlock,
@@ -528,7 +524,7 @@ func TestEmitter_ResumeChainAfterRedactedRestart(t *testing.T) {
 	rec2 := newRedactingRecorder(t, dir, priv, dlp)
 	e2 := NewEmitter(EmitterConfig{
 		Recorder: rec2, PrivKey: priv, ConfigHash: testConfigHash,
-		Principal: testPrincipal, Actor: testActor, RedactFn: dlp,
+		Principal: testPrincipal, Actor: testActor,
 	})
 	if e2 == nil {
 		t.Fatal("restarted emitter is nil")
@@ -560,9 +556,10 @@ func TestEmitter_ResumeChainAfterRedactedRestart(t *testing.T) {
 }
 
 // TestEmitter_RedactOff_TargetUnchanged proves done-state #6: with redaction
-// disabled (RedactFn nil), the emitter does NOT sanitize, so the full target is
-// preserved (no regression for redact:false deployments) and the receipt still
-// verifies. The recorder, also with redaction off, writes it unchanged.
+// disabled, the recorder's ReceiptRedactor() returns nil, so the emitter does
+// NOT sanitize and the full target is preserved (no regression for
+// redact:false deployments). The receipt still verifies and the recorder,
+// also with redaction off, writes it unchanged.
 func TestEmitter_RedactOff_TargetUnchanged(t *testing.T) {
 	t.Parallel()
 
@@ -571,8 +568,8 @@ func TestEmitter_RedactOff_TargetUnchanged(t *testing.T) {
 
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)
-	// Recorder with redaction OFF (matches newTestRecorder semantics) and a nil
-	// RedactFn on the emitter.
+	// Recorder with redaction OFF (newTestRecorder): ReceiptRedactor() is nil,
+	// so the emitter performs no sanitization.
 	rec := newTestRecorder(t, dir, priv)
 	e := NewEmitter(EmitterConfig{
 		Recorder:   rec,
@@ -580,7 +577,6 @@ func TestEmitter_RedactOff_TargetUnchanged(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 		Actor:      testActor,
-		// RedactFn intentionally omitted (nil): redaction disabled.
 	})
 	if err := e.Emit(EmitOpts{
 		ActionID:  NewActionID(),
@@ -626,7 +622,6 @@ func TestEmitter_PatternSanitizedBeforeSign(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 		Actor:      testActor,
-		RedactFn:   dlp,
 	})
 
 	// Receipt 1: benign rule-name pattern (the realistic case) survives intact.
@@ -697,7 +692,6 @@ func TestEmitter_RecorderRedactionIsNoOpOnReceipts(t *testing.T) {
 		ConfigHash: testConfigHash,
 		Principal:  testPrincipal,
 		Actor:      testActor,
-		RedactFn:   dlp,
 	})
 
 	if err := e.Emit(EmitOpts{

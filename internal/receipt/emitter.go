@@ -46,13 +46,6 @@ type Emitter struct {
 	chainStart    time.Time // timestamp of first receipt
 	chainEnd      time.Time // timestamp of most recent receipt
 	rootEmitted   bool      // true after EmitTranscriptRoot; prevents duplicate roots
-
-	// redactFn, when non-nil, is the same DLP function the recorder uses for
-	// receipt redaction. It is set only when flight-recorder redaction is on.
-	// The emitter sanitizes secret-bearing fields (target, pattern) before
-	// signing so the recorder's post-sign redaction is a no-op and the on-disk
-	// receipt stays byte-identical to the signed/hashed bytes. See sanitize.go.
-	redactFn recorder.RedactFunc
 }
 
 // EmitterConfig holds the configuration for creating an Emitter.
@@ -62,13 +55,6 @@ type EmitterConfig struct {
 	ConfigHash string
 	Principal  string
 	Actor      string
-	// RedactFn is the recorder's DLP redaction function. Pass the same value
-	// given to recorder.New (only set when flight-recorder redaction is
-	// enabled). When non-nil, the emitter sanitizes secret-bearing fields
-	// before signing so signed receipts survive the recorder's redaction pass
-	// and verify from the evidence file alone. When nil, targets pass through
-	// unchanged (matches redact:false behavior).
-	RedactFn recorder.RedactFunc
 }
 
 // NewEmitter creates a receipt emitter. Returns nil if the recorder is nil
@@ -86,7 +72,6 @@ func NewEmitter(cfg EmitterConfig) *Emitter {
 		principal:     cfg.Principal,
 		actor:         cfg.Actor,
 		chainPrevHash: GenesisHash,
-		redactFn:      cfg.RedactFn,
 	}
 	e.configHash.Store(cfg.ConfigHash)
 	e.initErr = e.resumeChain()
@@ -171,12 +156,14 @@ func (e *Emitter) Emit(opts EmitOpts) error {
 	// desyncing the on-disk canonical bytes from both the signature and the
 	// recorded ReceiptHash (AARP) binding. Sanitizing pre-sign with the same
 	// DLP function makes the recorder's redaction a no-op, so the receipt
-	// verifies from the evidence file alone. When redactFn is nil (redact off),
-	// targets pass through unchanged.
+	// verifies from the evidence file alone. The redactor is read from the
+	// recorder at emit time (not cached at construction) so it is always the
+	// exact function the recorder will apply, with no drift surface; it is nil
+	// when flight-recorder redaction is off, leaving targets unchanged.
 	target := opts.Target
 	pattern := opts.Pattern
-	if e.redactFn != nil {
-		clean := e.dlpClean()
+	if rf := e.recorder.ReceiptRedactor(); rf != nil {
+		clean := func(text string) bool { return rf(context.Background(), text).Clean }
 		target = sanitizeTarget(target, clean)
 		pattern = cleanOrRedacted(pattern, clean)
 	}
@@ -283,16 +270,6 @@ func (e *Emitter) classifyAction(opts EmitOpts) ActionType {
 		return ClassifyHTTP(opts.Method)
 	}
 	return ActionUnclassified
-}
-
-// dlpClean returns a closure that reports whether text is DLP-clean under the
-// emitter's redaction function. Used to gate pre-sign sanitization against the
-// exact same DLP the recorder applies, so the two can never disagree.
-func (e *Emitter) dlpClean() dlpClean {
-	rf := e.redactFn
-	return func(text string) bool {
-		return rf(context.Background(), text).Clean
-	}
 }
 
 func (e *Emitter) actorLabel(opts EmitOpts) string {

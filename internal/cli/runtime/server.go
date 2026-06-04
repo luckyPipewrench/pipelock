@@ -447,11 +447,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 			ConfigHash: cfg.Hash(),
 			Principal:  "local",
 			Actor:      "pipelock",
-			// Same DLP fn the recorder uses, so secret-bearing target/pattern
-			// are sanitized before signing and the recorder's redaction pass is
-			// a no-op (receipts verify from the evidence file alone). nil when
-			// redaction is off, preserving full targets.
-			RedactFn: rec.ReceiptRedactor(),
 		})
 		if s.receiptEmitter != nil {
 			proxyOpts = append(proxyOpts, proxy.WithReceiptEmitter(s.receiptEmitter))

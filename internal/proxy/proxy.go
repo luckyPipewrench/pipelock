@@ -1024,10 +1024,6 @@ func (p *Proxy) buildReceiptEmitter(cfg *config.Config) (receiptEmitterStage, er
 			ConfigHash: cfg.Hash(),
 			Principal:  "local",
 			Actor:      "pipelock",
-			// Sanitize secret-bearing target/pattern before signing using the
-			// recorder's own DLP fn, so the recorder's post-sign redaction is a
-			// no-op and reloaded emitters stay in lockstep with the recorder.
-			RedactFn: p.recorder.ReceiptRedactor(),
 		}),
 		keyPath: keyPath,
 	}, nil

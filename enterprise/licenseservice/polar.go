@@ -37,13 +37,6 @@ const (
 	EventOrderUpdated = "order.updated"
 )
 
-// Polar order status values.
-const (
-	orderStatusPaid              = "paid"
-	orderStatusRefunded          = "refunded"
-	orderStatusPartiallyRefunded = "partially_refunded"
-)
-
 // PolarWebhookEvent is the top-level envelope for all Polar webhook deliveries.
 type PolarWebhookEvent struct {
 	Type string          `json:"type"`

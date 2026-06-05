@@ -79,9 +79,12 @@ func (e *EmailSender) SendLicenseDelivery(ctx context.Context, to, licenseToken,
 
 	// Token validity description varies by tier.
 	var validityNote string
-	if tier == tierTrial {
+	switch tier {
+	case tierTrial:
 		validityNote = "This token is valid for 30 days. To continue using Pro features after the trial, subscribe at <a href=\"https://pipelab.org/pricing/\">pipelab.org/pricing</a>."
-	} else {
+	case tierEnterpriseEval:
+		validityNote = "This token is valid for 60 days. Enterprise Eval is a one-time evaluation license and is not automatically refreshed."
+	default:
 		validityNote = "This token is valid for 45 days and will be automatically refreshed before expiration."
 	}
 

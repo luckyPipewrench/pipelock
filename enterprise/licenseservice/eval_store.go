@@ -29,9 +29,9 @@ const (
 
 // Eval order revocation states.
 const (
-	revocationNone           = "none"
-	revocationPendingNoLicen = "pending_no_license"
-	revocationApplied        = "applied"
+	revocationNone             = "none"
+	revocationPendingNoLicense = "pending_no_license"
+	revocationApplied          = "applied"
 )
 
 // EvalOrder tracks the fulfillment + refund lifecycle of a one-time Enterprise
@@ -71,6 +71,13 @@ func upsertEvalOrder(ctx context.Context, exec entitlementExecer, eo *EvalOrder)
 	if eo.OrderID == "" {
 		return errors.New("eval order order_id is required")
 	}
+	if eo.NormalizedEmail == "" {
+		return errors.New("eval order normalized_email is required")
+	}
+	defaultEvalOrderStates(eo)
+	if err := validateEvalOrderStates(eo); err != nil {
+		return err
+	}
 	const query = `
 	INSERT INTO eval_orders (
 		order_id, normalized_email, product_id, total_amount, refunded_amount,
@@ -85,14 +92,30 @@ func upsertEvalOrder(ctx context.Context, exec entitlementExecer, eo *EvalOrder)
 		normalized_email   = excluded.normalized_email,
 		product_id         = excluded.product_id,
 		total_amount       = excluded.total_amount,
-		refunded_amount    = excluded.refunded_amount,
+		refunded_amount    = MAX(eval_orders.refunded_amount, excluded.refunded_amount),
 		currency           = excluded.currency,
-		polar_paid         = excluded.polar_paid,
-		refund_state       = excluded.refund_state,
-		fulfillment_state  = excluded.fulfillment_state,
-		revocation_state   = excluded.revocation_state,
+		polar_paid         = eval_orders.polar_paid OR excluded.polar_paid,
+		refund_state       = CASE
+			WHEN eval_orders.refund_state = 'full' OR excluded.refund_state = 'full' THEN 'full'
+			WHEN eval_orders.refund_state = 'partial' OR excluded.refund_state = 'partial' THEN 'partial'
+			ELSE excluded.refund_state
+		END,
+		fulfillment_state  = CASE
+			WHEN eval_orders.fulfillment_state = 'revoked' AND excluded.fulfillment_state != 'revoked' THEN eval_orders.fulfillment_state
+			WHEN eval_orders.revocation_state != 'none' AND excluded.fulfillment_state = 'minted' THEN eval_orders.fulfillment_state
+			ELSE excluded.fulfillment_state
+		END,
+		revocation_state   = CASE
+			WHEN eval_orders.revocation_state = 'applied' OR excluded.revocation_state = 'applied' THEN 'applied'
+			WHEN eval_orders.revocation_state = 'pending_no_license' OR excluded.revocation_state = 'pending_no_license' THEN 'pending_no_license'
+			ELSE excluded.revocation_state
+		END,
 		gate_denial_reason = excluded.gate_denial_reason,
-		license_id         = COALESCE(NULLIF(excluded.license_id, ''), eval_orders.license_id),
+		license_id         = CASE
+			WHEN eval_orders.revocation_state != 'none' AND excluded.fulfillment_state = 'minted' THEN eval_orders.license_id
+			WHEN eval_orders.fulfillment_state = 'revoked' AND excluded.fulfillment_state != 'revoked' THEN eval_orders.license_id
+			ELSE COALESCE(NULLIF(excluded.license_id, ''), eval_orders.license_id)
+		END,
 		updated_at         = datetime('now')
 	`
 	//nolint:gosec // G701 false positive: const query with parameterized placeholders
@@ -103,6 +126,37 @@ func upsertEvalOrder(ctx context.Context, exec entitlementExecer, eo *EvalOrder)
 	)
 	if err != nil {
 		return fmt.Errorf("upsert eval order %s: %w", eo.OrderID, err)
+	}
+	return nil
+}
+
+func defaultEvalOrderStates(eo *EvalOrder) {
+	if eo.RefundState == "" {
+		eo.RefundState = refundStateNone
+	}
+	if eo.FulfillmentState == "" {
+		eo.FulfillmentState = fulfillmentNone
+	}
+	if eo.RevocationState == "" {
+		eo.RevocationState = revocationNone
+	}
+}
+
+func validateEvalOrderStates(eo *EvalOrder) error {
+	switch eo.RefundState {
+	case refundStateNone, refundStatePartial, refundStateFull:
+	default:
+		return fmt.Errorf("eval order %s has invalid refund_state %q", eo.OrderID, eo.RefundState)
+	}
+	switch eo.FulfillmentState {
+	case fulfillmentNone, fulfillmentGatedDenied, fulfillmentMinted, fulfillmentRevoked:
+	default:
+		return fmt.Errorf("eval order %s has invalid fulfillment_state %q", eo.OrderID, eo.FulfillmentState)
+	}
+	switch eo.RevocationState {
+	case revocationNone, revocationPendingNoLicense, revocationApplied:
+	default:
+		return fmt.Errorf("eval order %s has invalid revocation_state %q", eo.OrderID, eo.RevocationState)
 	}
 	return nil
 }

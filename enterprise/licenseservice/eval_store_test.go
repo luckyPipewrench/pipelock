@@ -68,6 +68,103 @@ func TestEntitlementDB_EvalOrderUpsertAndGet(t *testing.T) {
 	}
 }
 
+func TestEntitlementDB_EvalOrderRefundBeforePaidBlocksStaleMintState(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+
+	const orderID = "order_refund_before_paid"
+	refundFirst := &EvalOrder{
+		OrderID:          orderID,
+		NormalizedEmail:  "buyer@example.com",
+		ProductID:        "prod_eval",
+		TotalAmount:      500000,
+		RefundedAmount:   500000,
+		Currency:         "usd",
+		PolarPaid:        false,
+		RefundState:      refundStateFull,
+		FulfillmentState: fulfillmentNone,
+		RevocationState:  revocationPendingNoLicense,
+	}
+	if err := db.UpsertEvalOrder(ctx, refundFirst); err != nil {
+		t.Fatalf("UpsertEvalOrder(refund first): %v", err)
+	}
+
+	stalePaidMint := &EvalOrder{
+		OrderID:          orderID,
+		NormalizedEmail:  "buyer@example.com",
+		ProductID:        "prod_eval",
+		TotalAmount:      500000,
+		RefundedAmount:   0,
+		Currency:         "usd",
+		PolarPaid:        true,
+		RefundState:      refundStateNone,
+		FulfillmentState: fulfillmentMinted,
+		RevocationState:  revocationNone,
+		LicenseID:        "lic_should_not_land",
+	}
+	if err := db.UpsertEvalOrder(ctx, stalePaidMint); err != nil {
+		t.Fatalf("UpsertEvalOrder(stale paid mint): %v", err)
+	}
+
+	got, err := db.GetEvalOrder(ctx, orderID)
+	if err != nil {
+		t.Fatalf("GetEvalOrder: %v", err)
+	}
+	if got == nil {
+		t.Fatal("eval order missing")
+	}
+	if got.RefundState != refundStateFull {
+		t.Errorf("RefundState = %q, want %q", got.RefundState, refundStateFull)
+	}
+	if got.RefundedAmount != 500000 {
+		t.Errorf("RefundedAmount = %d, want 500000", got.RefundedAmount)
+	}
+	if !got.PolarPaid {
+		t.Error("PolarPaid should remain true once a paid event is observed")
+	}
+	if got.FulfillmentState != fulfillmentNone {
+		t.Errorf("FulfillmentState = %q, want %q", got.FulfillmentState, fulfillmentNone)
+	}
+	if got.RevocationState != revocationPendingNoLicense {
+		t.Errorf("RevocationState = %q, want %q", got.RevocationState, revocationPendingNoLicense)
+	}
+	if got.LicenseID != "" {
+		t.Errorf("LicenseID = %q, want empty because refund-before-paid blocks stale mint state", got.LicenseID)
+	}
+}
+
+func TestEntitlementDB_EvalOrderDefaultsAndValidation(t *testing.T) {
+	db := openTestDB(t)
+	ctx := t.Context()
+
+	eo := &EvalOrder{
+		OrderID:         "order_defaults",
+		NormalizedEmail: "buyer@example.com",
+	}
+	if err := db.UpsertEvalOrder(ctx, eo); err != nil {
+		t.Fatalf("UpsertEvalOrder(defaults): %v", err)
+	}
+	got, err := db.GetEvalOrder(ctx, "order_defaults")
+	if err != nil {
+		t.Fatalf("GetEvalOrder(defaults): %v", err)
+	}
+	if got.RefundState != refundStateNone || got.FulfillmentState != fulfillmentNone ||
+		got.RevocationState != revocationNone {
+		t.Fatalf("defaults not applied: %+v", got)
+	}
+
+	if err := db.UpsertEvalOrder(ctx, &EvalOrder{OrderID: "order_no_email"}); err == nil {
+		t.Fatal("expected error for missing normalized email")
+	}
+	if err := db.UpsertEvalOrder(ctx, &EvalOrder{
+		OrderID:          "order_bad_state",
+		NormalizedEmail:  "buyer@example.com",
+		FulfillmentState: "minted_by_accident",
+	}); err == nil {
+		t.Fatal("expected error for invalid fulfillment state")
+	}
+}
+
 func TestEntitlementDB_WebhookDeliveryDedupe(t *testing.T) {
 	db := openTestDB(t)
 	ctx := t.Context()

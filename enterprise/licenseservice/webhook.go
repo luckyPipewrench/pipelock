@@ -504,6 +504,13 @@ func (h *WebhookHandler) HandleOrderEvent(ctx context.Context, event *PolarWebho
 		return fmt.Errorf("order %s product %s has unrecognized pipelock_tier %q",
 			order.ID, order.Product.ID, tier)
 	}
+	if tier == tierEnterpriseEval {
+		h.log.Info().
+			Str("order_id", order.ID).
+			Str("event_type", event.Type).
+			Msg("ignoring enterprise eval order in legacy order handler")
+		return nil
+	}
 
 	features, err := json.Marshal(h.tierToFeatures(tier))
 	if err != nil {

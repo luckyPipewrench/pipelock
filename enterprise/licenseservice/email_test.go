@@ -246,6 +246,7 @@ func TestTierDisplayName(t *testing.T) {
 		{tierTrial, "Pro Trial"},
 		{tierPro, "Pro"},
 		{tierEnterprise, "Enterprise"},
+		{tierEnterpriseEval, "Enterprise Eval"},
 		{"unknown", "unknown"},
 	}
 
@@ -285,6 +286,38 @@ func TestEmailSender_SendLicenseDelivery_TrialSubject(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, "Your Pipelock Pro Trial License") {
 		t.Errorf("trial email subject should be 'Your Pipelock Pro Trial License', body = %s", gotBody)
+	}
+}
+
+func TestEmailSender_SendLicenseDelivery_EnterpriseEvalValidity(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", testContentTypeJSON)
+		_, _ = w.Write([]byte(`{"id":"msg_eval"}`))
+	}))
+	defer srv.Close()
+
+	sender := &EmailSender{
+		apiKey:    "re_" + "test_eval",
+		fromEmail: "noreply@pipelock.dev",
+		client:    srv.Client(),
+		apiURL:    srv.URL,
+	}
+
+	_, err := sender.SendLicenseDelivery(t.Context(), testCustomerEmail, "token_eval", tierEnterpriseEval)
+	if err != nil {
+		t.Fatalf("SendLicenseDelivery enterprise eval: %v", err)
+	}
+	if !strings.Contains(gotBody, "Your Pipelock Enterprise Eval License") {
+		t.Errorf("enterprise eval subject missing, body = %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "valid for 60 days") {
+		t.Errorf("enterprise eval email should mention 60-day validity, body = %s", gotBody)
+	}
+	if strings.Contains(gotBody, "will be automatically refreshed before expiration") {
+		t.Errorf("enterprise eval email must not claim automatic refresh, body = %s", gotBody)
 	}
 }
 

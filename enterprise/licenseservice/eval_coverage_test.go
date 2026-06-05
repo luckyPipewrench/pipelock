@@ -167,6 +167,7 @@ func TestHandleOrderRefund_NonEvalOrderIgnored(t *testing.T) {
 	ctx := t.Context()
 	// Refunded order whose product is not in the eval allowlist.
 	body := strings.ReplaceAll(defaultEvalOrderJSON(orderStatusRefunded), testEvalProductID, "prod_other")
+	body = strings.ReplaceAll(body, `"pipelock_tier": "enterprise_eval"`, `"pipelock_tier": "pro"`)
 	s.orderJSON.Store(&body)
 	if err := s.handler.HandleOrderRefundEvent(ctx, evalRefundEvent(), "msg_refund"); err != nil {
 		t.Fatalf("refund: %v", err)
@@ -178,6 +179,35 @@ func TestHandleOrderRefund_NonEvalOrderIgnored(t *testing.T) {
 	committed, _ := s.db.WebhookCommitted(ctx, "msg_refund")
 	if !committed {
 		t.Error("non-eval refund webhook should still be marked committed")
+	}
+}
+
+func TestHandleOrderRefund_MetadataEvalRecordsPendingEvenWhenUnallowlisted(t *testing.T) {
+	s := newEvalTestSetup(t)
+	ctx := t.Context()
+
+	body := strings.ReplaceAll(defaultEvalOrderJSON(orderStatusRefunded), testEvalProductID, "prod_other")
+	s.orderJSON.Store(&body)
+	if err := s.handler.HandleOrderRefundEvent(ctx, evalRefundEvent(), "msg_refund"); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+
+	eo, _ := s.db.GetEvalOrder(ctx, testEvalOrderID)
+	if eo == nil {
+		t.Fatal("metadata-marked eval refund should record a pending eval_order")
+	}
+	if eo.RevocationState != revocationPendingNoLicense {
+		t.Errorf("RevocationState = %q, want %q", eo.RevocationState, revocationPendingNoLicense)
+	}
+
+	paid := strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), testEvalProductID, "prod_other")
+	s.orderJSON.Store(&paid)
+	if err := s.handler.HandleOrderPaidEvent(ctx, evalPaidEvent(), "msg_paid"); err != nil {
+		t.Fatalf("paid after refund: %v", err)
+	}
+	ent, _ := s.db.GetBySubscriptionID(ctx, testEvalOrderID)
+	if ent != nil {
+		t.Errorf("minted after metadata-marked refund-before-paid: %+v", ent)
 	}
 }
 

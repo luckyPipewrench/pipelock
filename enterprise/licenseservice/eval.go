@@ -235,14 +235,16 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 		return h.db.MarkWebhookCommitted(ctx, msgID, event.Type, order.ID)
 	}
 
-	// Only act on eval-related orders: an existing eval-order record, or a
-	// product in the eval allowlist (the refund-before-paid case has no record
-	// yet). Refunds of other one-time products are out of scope here.
+	// Only act on eval-related orders: an existing eval-order record, a product
+	// in the eval allowlist, or tier metadata explicitly marking the order as an
+	// Enterprise Eval. The metadata fallback is conservative for refund-before-
+	// paid races under allowlist/config drift: recording a pending revocation can
+	// only block a later stale mint.
 	existing, err := h.db.GetEvalOrder(ctx, order.ID)
 	if err != nil {
 		return fmt.Errorf("load eval order for refund: %w", err)
 	}
-	if existing == nil && !h.isEvalProduct(order.Product.ID) {
+	if existing == nil && !h.isEvalOrderCandidate(order) {
 		return h.db.MarkWebhookCommitted(ctx, msgID, event.Type, order.ID)
 	}
 
@@ -436,6 +438,10 @@ func (h *WebhookHandler) isEvalProduct(productID string) bool {
 		}
 	}
 	return false
+}
+
+func (h *WebhookHandler) isEvalOrderCandidate(order *PolarOrder) bool {
+	return h.isEvalProduct(order.Product.ID) || order.Product.Metadata["pipelock_tier"] == tierEnterpriseEval
 }
 
 // classifyRefund maps a Polar order's refund fields to a refund state.

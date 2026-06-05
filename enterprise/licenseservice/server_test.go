@@ -280,6 +280,20 @@ func TestServer_WebhookInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestServer_WebhookOversizedBodyRejected(t *testing.T) {
+	srv := newTestServer(t)
+
+	body := strings.Repeat("x", 1<<20+1)
+	req := signedWebhookRequest(t, srv, body)
+	w := httptest.NewRecorder()
+
+	srv.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("webhook status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
 func TestServer_WebhookNonSubscriptionEvent(t *testing.T) {
 	srv := newTestServer(t)
 

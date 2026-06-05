@@ -105,10 +105,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Cap request body to prevent memory exhaustion from oversized payloads.
 	const maxWebhookBody = 1 << 20 // 1 MiB: generous for any Polar webhook
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxWebhookBody+1))
 	if err != nil {
 		s.log.Error().Err(err).Msg("read webhook body")
 		http.Error(w, "failed to read body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > maxWebhookBody {
+		s.log.Warn().Int("bytes_read", len(body)).Msg("webhook body too large")
+		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 

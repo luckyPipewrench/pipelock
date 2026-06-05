@@ -245,6 +245,18 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "A2A Agent Card drift detection disabled",
 		})
 	}
+	if old.A2AScanning.RequireSignedAgentCards && !updated.A2AScanning.RequireSignedAgentCards {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.require_signed_agent_cards",
+			Message: "A2A require-signed-agent-cards disabled",
+		})
+	}
+	if len(updated.A2AScanning.TrustedAgentCardKeys) < len(old.A2AScanning.TrustedAgentCardKeys) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "a2a_scanning.trusted_agent_card_keys",
+			Message: "A2A trusted Agent Card keys reduced (signature verification weakened)",
+		})
+	}
 	if old.A2AScanning.SessionSmugglingDetection && !updated.A2AScanning.SessionSmugglingDetection {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "a2a_scanning.session_smuggling_detection",

@@ -149,7 +149,10 @@ const (
 	// Re-bumped again: the "Private Key Header" pattern now also matches PGP
 	// armor and the trailing BLOCK keyword, aligning DLP detection with the
 	// ssh-private-key redaction class.
-	goldenHashDefaults = "52a2300320f93c54c5304770196e95fad6e79663d96826f0e812aedcd5cc9822"
+	// Re-bumped for A2A Agent Card signature verification: a2a_scanning gained
+	// the require_signed_agent_cards and trusted_agent_card_keys policy fields,
+	// which are enforcement-relevant and so belong in the canonical policy hash.
+	goldenHashDefaults = "5a09097c241be07f591ed6bfd822cf697b95759d2c5c057177f8a789f1fc99e7"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -220,10 +223,12 @@ const (
 	// Bumped for fetch_proxy.monitoring.query_entropy_exclusions: see the
 	// goldenHashDefaults note above.
 	// Re-bumped for the file_sentry max_file_bytes field: see goldenHashDefaults note.
+	// Re-bumped for A2A Agent Card signature verification fields: see
+	// goldenHashDefaults note above.
 	// Re-bumped for the Twilio + Mailgun DLP boundary tightening and again for
 	// the secret-pattern expansion: see goldenHashDefaults note above. The rich
 	// fixture inherits the default DLP pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "67fed6b23291883c5b63ceb0c63726b8579e79d13d3171f549144426f0feb925"
+	goldenHashRichConfig = "8f23eec150093d1b246cdfe54336faa5ec652602d4c63f6db80aadce1b1af22b"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

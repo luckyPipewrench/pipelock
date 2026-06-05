@@ -344,6 +344,10 @@ func (h *Handler) serveControlHTTP(w http.ResponseWriter, r *http.Request) {
 	case AuditBatchesPath:
 		h.handleAuditBatch(w, r)
 	default:
+		if isAuditBatchSubroute(r.URL.Path) {
+			h.handleGetAuditBatch(w, r)
+			return
+		}
 		http.NotFound(w, r)
 	}
 }
@@ -393,12 +397,19 @@ func (h *Handler) recordRequest(r *http.Request, route string, status int, durat
 }
 
 func conductorRoute(path string) string {
+	if isAuditBatchSubroute(path) {
+		return AuditBatchesPath
+	}
 	switch path {
 	case HealthPath, HealthzPath, MetricsPath, ReadyzPath, conductor.CapabilitiesPath, EnrollmentTokensPath, EnrollPath, RemoteKillPath, RollbackAuthorizationsPath, PublishPolicyBundlePath, LatestPolicyBundlePath, AuditBatchesPath:
 		return path
 	default:
 		return "unknown"
 	}
+}
+
+func isAuditBatchSubroute(path string) bool {
+	return strings.HasPrefix(path, AuditBatchesPath+"/")
 }
 
 func conductorOperationOutcome(status int, success string) string {

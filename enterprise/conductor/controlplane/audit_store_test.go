@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,8 +91,26 @@ func TestSQLiteAuditStoreRejectsConflictingBatchID(t *testing.T) {
 		t.Fatalf("first put() error = %v", err)
 	}
 	conflict := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload2), testNow)
-	if _, err := store.put(context.Background(), conflict); !errors.Is(err, ErrAuditBatchConflict) {
-		t.Fatalf("conflicting put() error = %v, want ErrAuditBatchConflict", err)
+	if _, err := store.put(context.Background(), conflict); !errors.Is(err, ErrAuditForkDetected) {
+		t.Fatalf("conflicting put() error = %v, want ErrAuditForkDetected", err)
+	}
+}
+
+func TestSQLiteAuditStoreRejectsReusedBatchIDAcrossSeqRange(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	first := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(`{"event":"one"}`), testNow)
+	if _, err := store.put(context.Background(), first); err != nil {
+		t.Fatalf("first put() error = %v", err)
+	}
+
+	// detectAuditFork only sees sequence overlaps, so this non-overlap
+	// reaches the insert-conflict branch. The stored hash must still be
+	// compared before a reused batch_id can be treated as a duplicate.
+	reused := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 20, 20, []byte(testAuditPayload2), testNow.Add(time.Second))
+	if _, err := store.put(context.Background(), reused); !errors.Is(err, ErrAuditForkDetected) {
+		t.Fatalf("reused batch id put() error = %v, want ErrAuditForkDetected", err)
 	}
 }
 
@@ -128,6 +147,55 @@ func TestSQLiteAuditStoreReturnsExistingSummaryOnIdempotentRetry(t *testing.T) {
 	}
 	if second.BatchID != first.BatchID || second.EnvelopeHash != first.EnvelopeHash || second.SeqStart != first.SeqStart {
 		t.Fatalf("idempotent summary diverged: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestSQLiteAuditStoreConcurrentIdenticalRetryStoresOneRow(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	const workers = 16
+	var wg sync.WaitGroup
+	type ingestResult struct {
+		result AuditIngestResult
+		err    error
+	}
+	ingests := make(chan ingestResult, workers)
+	start := make(chan struct{})
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := store.IngestAuditBatch(context.Background(), batch)
+			ingests <- ingestResult{result: result, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(ingests)
+	statusCounts := map[AuditIngestStatus]int{}
+	for ingest := range ingests {
+		if ingest.err != nil {
+			t.Fatalf("concurrent IngestAuditBatch() error = %v", ingest.err)
+		}
+		statusCounts[ingest.result.Status]++
+	}
+	if statusCounts[AuditIngestStatusAccepted] != 1 || statusCounts[AuditIngestStatusDuplicate] != workers-1 {
+		t.Fatalf("status counts = %+v, want one accepted and %d duplicates", statusCounts, workers-1)
+	}
+	results, err := store.ListAuditBatches(context.Background(), AuditBatchQuery{
+		OrgID:      batch.Identity.OrgID,
+		FleetID:    batch.Identity.FleetID,
+		InstanceID: batch.Identity.InstanceID,
+		Limit:      workers,
+	})
+	if err != nil {
+		t.Fatalf("ListAuditBatches() error = %v", err)
+	}
+	if len(results) != 1 || results[0].EnvelopeHash != batch.EnvelopeHash {
+		t.Fatalf("stored rows = %+v, want one duplicate-collapsed row", results)
 	}
 }
 
@@ -183,10 +251,10 @@ func TestSQLiteAuditStorePrunesBatchesBeforeCutoff(t *testing.T) {
 	identity := defaultFollowerIdentity()
 	oldBatch := signedAcceptedAuditBatch(t, identity, "audit-old", 10, 10, []byte(testAuditPayload), testNow.Add(-48*time.Hour))
 	recentBatch := signedAcceptedAuditBatch(t, identity, "audit-recent", 11, 11, []byte(testAuditPayload2), testNow.Add(-time.Hour))
-	if err := store.IngestAuditBatch(context.Background(), oldBatch); err != nil {
+	if _, err := store.IngestAuditBatch(context.Background(), oldBatch); err != nil {
 		t.Fatalf("IngestAuditBatch(old) error = %v", err)
 	}
-	if err := store.IngestAuditBatch(context.Background(), recentBatch); err != nil {
+	if _, err := store.IngestAuditBatch(context.Background(), recentBatch); err != nil {
 		t.Fatalf("IngestAuditBatch(recent) error = %v", err)
 	}
 
@@ -222,7 +290,7 @@ func TestSQLiteAuditStoreRejectsNilContext(t *testing.T) {
 	if _, err := OpenSQLiteAuditStore(nilCtx, filepath.Join(t.TempDir(), "audit.db")); !errors.Is(err, ErrAuditSinkRequired) {
 		t.Fatalf("OpenSQLiteAuditStore(nil) error = %v, want ErrAuditSinkRequired", err)
 	}
-	if err := store.IngestAuditBatch(nilCtx, batch); !errors.Is(err, ErrAuditSinkRequired) {
+	if _, err := store.IngestAuditBatch(nilCtx, batch); !errors.Is(err, ErrAuditSinkRequired) {
 		t.Fatalf("IngestAuditBatch(nil) error = %v, want ErrAuditSinkRequired", err)
 	}
 	if _, err := store.ListAuditBatches(nilCtx, AuditBatchQuery{}); !errors.Is(err, ErrAuditSinkRequired) {
@@ -296,7 +364,7 @@ func TestSQLiteAuditStoreRevalidatesAcceptedBatchBoundary(t *testing.T) {
 
 			batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 			c.mutate(&batch)
-			if err := store.IngestAuditBatch(context.Background(), batch); !errors.Is(err, c.wantErr) {
+			if _, err := store.IngestAuditBatch(context.Background(), batch); !errors.Is(err, c.wantErr) {
 				t.Fatalf("IngestAuditBatch() error = %v, want %v", err, c.wantErr)
 			}
 		})
@@ -345,10 +413,10 @@ func TestHandlerListsAuditBatchSummaries(t *testing.T) {
 	identity := defaultFollowerIdentity()
 	first := signedAcceptedAuditBatch(t, identity, testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 	second := signedAcceptedAuditBatch(t, identity, "audit-batch-2", 11, 11, []byte(testAuditPayload2), testNow.Add(time.Second))
-	if err := store.IngestAuditBatch(context.Background(), first); err != nil {
+	if _, err := store.IngestAuditBatch(context.Background(), first); err != nil {
 		t.Fatalf("IngestAuditBatch(first) error = %v", err)
 	}
-	if err := store.IngestAuditBatch(context.Background(), second); err != nil {
+	if _, err := store.IngestAuditBatch(context.Background(), second); err != nil {
 		t.Fatalf("IngestAuditBatch(second) error = %v", err)
 	}
 	handler := newAuditQueryTestHandler(t, store)
@@ -372,6 +440,93 @@ func TestHandlerListsAuditBatchSummaries(t *testing.T) {
 	}
 	if got.Batches[0].BatchID != "audit-batch-2" || got.Batches[0].OrgID != identity.OrgID {
 		t.Fatalf("list batch = %+v", got.Batches[0])
+	}
+}
+
+func TestHandlerAuditBatchQueryRoundTrip(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+
+	identity := defaultFollowerIdentity()
+	first := signedAcceptedAuditBatch(t, identity, testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
+	second := signedAcceptedAuditBatch(t, identity, "audit-batch-2", 11, 11, []byte(testAuditPayload2), testNow.Add(time.Second))
+	if _, err := store.IngestAuditBatch(context.Background(), first); err != nil {
+		t.Fatalf("IngestAuditBatch(first) error = %v", err)
+	}
+	if _, err := store.IngestAuditBatch(context.Background(), second); err != nil {
+		t.Fatalf("IngestAuditBatch(second) error = %v", err)
+	}
+	handler := newAuditQueryTestHandler(t, store)
+
+	listReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1&limit=2", nil)
+	listReq.Header.Set("X-Pipelock-Auditor", "ok")
+	listResp := httptest.NewRecorder()
+	handler.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s, want 200", listResp.Code, listResp.Body.String())
+	}
+	var listed listAuditBatchesResponse
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listed.Batches) != 2 || listed.Batches[0].BatchID != "audit-batch-2" || listed.Batches[1].BatchID != testAuditBatchID {
+		t.Fatalf("list order = %+v, want newest first", listed.Batches)
+	}
+
+	getReq := httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"/"+testAuditBatchID+"?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1", nil)
+	getReq.Header.Set("X-Pipelock-Auditor", "ok")
+	getResp := httptest.NewRecorder()
+	handler.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s, want 200", getResp.Code, getResp.Body.String())
+	}
+	var got AuditBatchSummary
+	if err := json.Unmarshal(getResp.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if got.BatchID != testAuditBatchID || got.EnvelopeHash != first.EnvelopeHash {
+		t.Fatalf("get summary = %+v, want first batch", got)
+	}
+	if strings.Contains(getResp.Body.String(), testAuditPayload) {
+		t.Fatalf("get response leaked raw payload: %s", getResp.Body.String())
+	}
+}
+
+func TestHandlerGetAuditBatchValidationAndErrors(t *testing.T) {
+	store := openTestSQLiteAuditStore(t, filepath.Join(t.TempDir(), "audit.db"))
+	defer func() { _ = store.Close() }()
+	handler := newAuditQueryTestHandler(t, store)
+
+	cases := []struct {
+		name       string
+		method     string
+		target     string
+		auditor    string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "wrong method", method: http.MethodDelete, target: AuditBatchesPath + "/missing?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1", wantStatus: http.StatusMethodNotAllowed},
+		{name: "auditor required", method: http.MethodGet, target: AuditBatchesPath + "/missing?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1", wantStatus: http.StatusForbidden, wantBody: ErrAuditQueryForbidden.Error()},
+		{name: "namespace required", method: http.MethodGet, target: AuditBatchesPath + "/missing?org_id=org-main", auditor: "ok", wantStatus: http.StatusBadRequest},
+		{name: "unknown parameter", method: http.MethodGet, target: AuditBatchesPath + "/missing?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1&limit=1", auditor: "ok", wantStatus: http.StatusBadRequest},
+		{name: "nested id", method: http.MethodGet, target: AuditBatchesPath + "/missing/nested?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1", auditor: "ok", wantStatus: http.StatusNotFound, wantBody: ErrAuditBatchNotFound.Error()},
+		{name: "not found", method: http.MethodGet, target: AuditBatchesPath + "/missing?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1", auditor: "ok", wantStatus: http.StatusNotFound, wantBody: ErrAuditBatchNotFound.Error()},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), c.method, c.target, nil)
+			if c.auditor != "" {
+				req.Header.Set("X-Pipelock-Auditor", c.auditor)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != c.wantStatus {
+				t.Fatalf("status = %d body=%s, want %d", w.Code, w.Body.String(), c.wantStatus)
+			}
+			if c.wantBody != "" && !strings.Contains(w.Body.String(), c.wantBody) {
+				t.Fatalf("body = %s, want substring %q", w.Body.String(), c.wantBody)
+			}
+		})
 	}
 }
 
@@ -495,6 +650,13 @@ func TestHandlerListAuditBatchSurfacesSinkError(t *testing.T) {
 	if !strings.Contains(w.Body.String(), ErrAuditBatchConflict.Error()) {
 		t.Fatalf("body = %s, want sink error", w.Body.String())
 	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, AuditBatchesPath+"/audit-batch-1?org_id=org-main&fleet_id=prod&instance_id=pl-prod-1", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("get status = %d body=%s, want 409", w.Code, w.Body.String())
+	}
 }
 
 func openTestSQLiteAuditStore(t *testing.T, path string) *SQLiteAuditStore {
@@ -537,12 +699,16 @@ type failingAuditQuerySink struct {
 	err error
 }
 
-func (s failingAuditQuerySink) IngestAuditBatch(context.Context, AcceptedAuditBatch) error {
-	return nil
+func (s failingAuditQuerySink) IngestAuditBatch(context.Context, AcceptedAuditBatch) (AuditIngestResult, error) {
+	return AuditIngestResult{Status: AuditIngestStatusAccepted}, nil
 }
 
 func (s failingAuditQuerySink) ListAuditBatches(context.Context, AuditBatchQuery) ([]AuditBatchSummary, error) {
 	return nil, s.err
+}
+
+func (s failingAuditQuerySink) GetAuditBatch(context.Context, string, string, string, string) (AuditBatchSummary, bool, error) {
+	return AuditBatchSummary{}, false, s.err
 }
 
 func signedAcceptedAuditBatch(

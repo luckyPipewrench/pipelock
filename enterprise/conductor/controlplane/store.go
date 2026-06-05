@@ -66,6 +66,7 @@ var (
 	ErrAuditQueryForbidden  = errors.New("conductor audit query authorization failed")
 	ErrAuditSinkRequired    = errors.New("conductor audit sink required")
 	ErrAuditKeyRequired     = errors.New("conductor audit key resolver required")
+	ErrAuditBatchNotFound   = errors.New("conductor audit batch not found")
 	ErrAuditBatchConflict   = errors.New("conductor audit batch conflicts with accepted batch")
 	ErrAuditForkDetected    = errors.New("conductor audit sequence fork detected")
 	ErrUnsupportedRollback  = errors.New("conductor control plane rollback publication not implemented")

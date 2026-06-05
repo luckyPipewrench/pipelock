@@ -32,18 +32,24 @@ type AuditKeyResolver func(FollowerIdentity, string) (conductor.SignatureKey, er
 
 // AuditBatchSink receives audit batches after transport identity, payload hash,
 // clock skew, and follower audit-batch signature checks have all passed.
-//
-// This MVP layer does NOT deduplicate batches. A previously accepted signed
-// envelope presented again with the same authenticated follower identity can be
-// accepted up to [conductor.DefaultAuditMaxSkew] after its EmittedAt timestamp
-// (skew is the only at-this-layer replay defense).
-// Sinks that need exactly-once semantics, such as durable central storage, fork
-// detection, or indexing, MUST implement their own idempotency on
-// (BatchID, EnvelopeHash) or (OrgID, FleetID, InstanceID, SeqStart, SeqEnd).
+// Durable sinks MUST keep ingest idempotent for byte-identical retries while
+// rejecting same-identity divergent content as a fork or conflict.
 // Each accepted batch arrives with a fresh Payload copy detached from the
 // request body, so sinks may retain the slice without further copying.
 type AuditBatchSink interface {
-	IngestAuditBatch(context.Context, AcceptedAuditBatch) error
+	IngestAuditBatch(context.Context, AcceptedAuditBatch) (AuditIngestResult, error)
+}
+
+type AuditIngestStatus string
+
+const (
+	AuditIngestStatusAccepted  AuditIngestStatus = "accepted"
+	AuditIngestStatusDuplicate AuditIngestStatus = "duplicate"
+)
+
+type AuditIngestResult struct {
+	Status  AuditIngestStatus
+	Summary AuditBatchSummary
 }
 
 type AcceptedAuditBatch struct {
@@ -60,6 +66,7 @@ type ingestAuditBatchRequest struct {
 }
 
 type ingestAuditBatchResponse struct {
+	Status       string    `json:"status"`
 	BatchID      string    `json:"batch_id"`
 	EnvelopeHash string    `json:"envelope_hash"`
 	SeqStart     uint64    `json:"seq_start"`
@@ -106,22 +113,32 @@ func (h *Handler) handleAuditBatch(w http.ResponseWriter, r *http.Request) {
 		writeAuditIngestError(w, err)
 		return
 	}
-	if err := h.auditSink.IngestAuditBatch(r.Context(), AcceptedAuditBatch{
+	result, err := h.auditSink.IngestAuditBatch(r.Context(), AcceptedAuditBatch{
 		Identity:     identity,
 		Envelope:     req.Envelope,
 		EnvelopeHash: envelopeHash,
 		Payload:      append([]byte(nil), req.Payload...),
 		ReceivedAt:   acceptedAt,
-	}); err != nil {
+	})
+	if err != nil {
 		writeAuditSinkError(w, err)
 		return
 	}
+	status := result.Status
+	if status == "" {
+		status = AuditIngestStatusAccepted
+	}
+	responseAcceptedAt := acceptedAt
+	if !result.Summary.ReceivedAt.IsZero() {
+		responseAcceptedAt = result.Summary.ReceivedAt
+	}
 	writeJSON(w, http.StatusAccepted, ingestAuditBatchResponse{
+		Status:       string(status),
 		BatchID:      req.Envelope.BatchID,
 		EnvelopeHash: envelopeHash,
 		SeqStart:     req.Envelope.SeqStart,
 		SeqEnd:       req.Envelope.SeqEnd,
-		AcceptedAt:   acceptedAt,
+		AcceptedAt:   responseAcceptedAt,
 	})
 }
 

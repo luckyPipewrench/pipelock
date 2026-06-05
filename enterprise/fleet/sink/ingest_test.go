@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -269,6 +270,59 @@ func TestHandler_DetectsBatchIDConflict(t *testing.T) {
 	resp := postBatch(t, handler, second, secondPayload)
 	if resp.Code != http.StatusConflict {
 		t.Fatalf("conflict status = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), ErrForkDetected.Error()) {
+		t.Fatalf("conflict body = %s, want fork error", resp.Body.String())
+	}
+}
+
+func TestStore_ConcurrentIdenticalRetryStoresOneRow(t *testing.T) {
+	_, store, priv := testHandler(t)
+	payload := []byte(`{"events":[{"message":"clean audit event"}]}`)
+	env := signedEnvelope(t, "batch-race", 1, 1, payload, priv)
+	canonicalHash, err := env.CanonicalHash()
+	if err != nil {
+		t.Fatalf("CanonicalHash() error = %v", err)
+	}
+	batch := acceptedBatch{
+		Envelope:      env,
+		Payload:       payload,
+		ReceivedAt:    sinkTestNow,
+		CanonicalHash: canonicalHash,
+	}
+
+	const workers = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.Put(context.Background(), batch, nil)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Put() error = %v", err)
+		}
+	}
+	results, err := store.List(context.Background(), Query{
+		OrgID:      env.OrgID,
+		FleetID:    env.FleetID,
+		InstanceID: env.InstanceID,
+		Limit:      workers,
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(results) != 1 || results[0].CanonicalHash != canonicalHash {
+		t.Fatalf("stored rows = %+v, want one duplicate-collapsed row", results)
 	}
 }
 

@@ -231,31 +231,35 @@ func (s *SQLiteAuditStore) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *SQLiteAuditStore) IngestAuditBatch(ctx context.Context, batch AcceptedAuditBatch) error {
-	_, err := s.put(ctx, batch)
-	return err
+func (s *SQLiteAuditStore) IngestAuditBatch(ctx context.Context, batch AcceptedAuditBatch) (AuditIngestResult, error) {
+	return s.putResult(ctx, batch)
 }
 
 func (s *SQLiteAuditStore) put(ctx context.Context, batch AcceptedAuditBatch) (AuditBatchSummary, error) {
+	result, err := s.putResult(ctx, batch)
+	return result.Summary, err
+}
+
+func (s *SQLiteAuditStore) putResult(ctx context.Context, batch AcceptedAuditBatch) (AuditIngestResult, error) {
 	if s == nil || s.db == nil {
-		return AuditBatchSummary{}, ErrAuditSinkRequired
+		return AuditIngestResult{}, ErrAuditSinkRequired
 	}
 	if ctx == nil {
-		return AuditBatchSummary{}, fmt.Errorf("%w: context", ErrAuditSinkRequired)
+		return AuditIngestResult{}, fmt.Errorf("%w: context", ErrAuditSinkRequired)
 	}
 	if err := ctx.Err(); err != nil {
-		return AuditBatchSummary{}, err
+		return AuditIngestResult{}, err
 	}
 	if err := validateAcceptedAuditBatch(batch); err != nil {
-		return AuditBatchSummary{}, err
+		return AuditIngestResult{}, err
 	}
 	envelopeJSON, err := json.Marshal(batch.Envelope)
 	if err != nil {
-		return AuditBatchSummary{}, fmt.Errorf("marshal conductor audit envelope: %w", err)
+		return AuditIngestResult{}, fmt.Errorf("marshal conductor audit envelope: %w", err)
 	}
 	keyIDsJSON, err := json.Marshal(signatureKeyIDs(batch.Envelope.Signatures))
 	if err != nil {
-		return AuditBatchSummary{}, fmt.Errorf("marshal conductor audit signature key ids: %w", err)
+		return AuditIngestResult{}, fmt.Errorf("marshal conductor audit signature key ids: %w", err)
 	}
 	if batch.ReceivedAt.IsZero() {
 		batch.ReceivedAt = time.Now().UTC()
@@ -263,60 +267,49 @@ func (s *SQLiteAuditStore) put(ctx context.Context, batch AcceptedAuditBatch) (A
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return AuditBatchSummary{}, fmt.Errorf("begin conductor audit store transaction: %w", err)
+		return AuditIngestResult{}, fmt.Errorf("begin conductor audit store transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var existingEnvelopeHash, existingPayloadHash string
-	err = tx.QueryRowContext(ctx, `
-		SELECT envelope_hash, payload_sha256
-		FROM audit_batches
-		WHERE org_id = ? AND fleet_id = ? AND instance_id = ? AND batch_id = ?
-	`, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID).
-		Scan(&existingEnvelopeHash, &existingPayloadHash)
-	switch {
-	case err == nil:
-		if existingEnvelopeHash == batch.EnvelopeHash && strings.EqualFold(existingPayloadHash, batch.Envelope.PayloadSHA256) {
-			summary, getErr := auditSummaryByKey(ctx, tx, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID)
-			if getErr != nil {
-				return AuditBatchSummary{}, getErr
-			}
-			if commitErr := tx.Commit(); commitErr != nil {
-				return AuditBatchSummary{}, fmt.Errorf("commit duplicate conductor audit store transaction: %w", commitErr)
-			}
-			return summary, nil
-		}
-		return AuditBatchSummary{}, ErrAuditBatchConflict
-	case !errors.Is(err, sql.ErrNoRows):
-		return AuditBatchSummary{}, fmt.Errorf("check conductor audit duplicate: %w", err)
-	}
-
 	if err := detectAuditFork(ctx, tx, batch.Envelope); err != nil {
-		return AuditBatchSummary{}, err
+		return AuditIngestResult{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO audit_batches (
 			org_id, fleet_id, instance_id, batch_id, audit_schema_version,
 			seq_start, seq_end, event_count, payload_sha256, payload_bytes,
 			envelope_hash, segment_tail_hash, dropped_count, emitted_at,
 			received_at, signature_key_ids, envelope_json, payload_blob
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(org_id, fleet_id, instance_id, batch_id) DO NOTHING
 	`, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID,
 		batch.Envelope.AuditSchemaVersion, formatAuditUint(batch.Envelope.SeqStart), formatAuditUint(batch.Envelope.SeqEnd),
 		formatAuditUint(batch.Envelope.EventCount), batch.Envelope.PayloadSHA256, formatAuditUint(batch.Envelope.PayloadBytes),
 		batch.EnvelopeHash, batch.Envelope.Chain.SegmentTailHash, formatAuditUint(batch.Envelope.Dropped.Count),
 		batch.Envelope.EmittedAt.UTC(), batch.ReceivedAt.UTC(), string(keyIDsJSON), envelopeJSON,
-		append([]byte(nil), batch.Payload...)); err != nil {
-		return AuditBatchSummary{}, fmt.Errorf("insert conductor audit batch: %w", err)
+		append([]byte(nil), batch.Payload...))
+	if err != nil {
+		return AuditIngestResult{}, fmt.Errorf("insert conductor audit batch: %w", err)
+	}
+	rows, err := insertResult.RowsAffected()
+	if err != nil {
+		return AuditIngestResult{}, fmt.Errorf("count inserted conductor audit batch: %w", err)
 	}
 	summary, err := auditSummaryByKey(ctx, tx, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID)
 	if err != nil {
-		return AuditBatchSummary{}, err
+		return AuditIngestResult{}, err
+	}
+	status := AuditIngestStatusAccepted
+	if rows == 0 {
+		if summary.EnvelopeHash != batch.EnvelopeHash || !strings.EqualFold(summary.PayloadSHA256, batch.Envelope.PayloadSHA256) {
+			return AuditIngestResult{}, ErrAuditForkDetected
+		}
+		status = AuditIngestStatusDuplicate
 	}
 	if err := tx.Commit(); err != nil {
-		return AuditBatchSummary{}, fmt.Errorf("commit conductor audit store transaction: %w", err)
+		return AuditIngestResult{}, fmt.Errorf("commit conductor audit store transaction: %w", err)
 	}
-	return summary, nil
+	return AuditIngestResult{Status: status, Summary: summary}, nil
 }
 
 func validateAcceptedAuditBatch(batch AcceptedAuditBatch) error {

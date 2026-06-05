@@ -53,6 +53,9 @@ func TestHandlerIngestsSignedAuditBatch(t *testing.T) {
 	if resp.BatchID != got.Envelope.BatchID || resp.EnvelopeHash != got.EnvelopeHash || resp.SeqStart != 10 || resp.SeqEnd != 10 {
 		t.Fatalf("response = %+v, sink hash=%q", resp, got.EnvelopeHash)
 	}
+	if resp.Status != "accepted" {
+		t.Fatalf("response status = %q, want accepted", resp.Status)
+	}
 }
 
 func TestHandlerRejectsInvalidAuditBatch(t *testing.T) {
@@ -361,27 +364,46 @@ func TestAuditIngestIncompleteIdentityReturns401(t *testing.T) {
 	}
 }
 
-// TestAuditIngestReplayWithinSkewWindowSucceeds locks in the documented
-// behavior that this MVP layer does NOT deduplicate. Two identical signed
-// batches within the skew window both result in 202 + sink ingest. If a
-// future change ever wires per-handler dedup, that change must also revise
-// the AuditBatchSink doc comment (which currently tells sinks to handle
-// idempotency themselves).
-func TestAuditIngestReplayWithinSkewWindowSucceeds(t *testing.T) {
+func TestAuditIngestReplayWithinSkewWindowReportsDuplicate(t *testing.T) {
 	payload := []byte(`{"entry":"ok"}`)
 	pub, priv := testAuditSigner(t)
-	sink := &captureAuditSink{}
+	storedAt := testNow.Add(-time.Minute)
+	sink := &captureAuditSink{
+		results: []AuditIngestResult{
+			{Status: AuditIngestStatusAccepted},
+			{
+				Status:  AuditIngestStatusDuplicate,
+				Summary: AuditBatchSummary{ReceivedAt: storedAt},
+			},
+		},
+	}
 	handler := newAuditIngestTestHandler(t, sink, auditKeyResolverFor(pub), 0)
 	req := signedAuditIngestRequest(t, defaultFollowerIdentity(), payload, priv, testNow)
 
-	for i := range 3 {
+	for i, want := range []struct {
+		status     AuditIngestStatus
+		acceptedAt time.Time
+	}{
+		{status: AuditIngestStatusAccepted, acceptedAt: testNow},
+		{status: AuditIngestStatusDuplicate, acceptedAt: storedAt},
+	} {
 		w := postAuditBatch(t, handler, req)
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("replay #%d status = %d body=%s, want 202", i, w.Code, w.Body.String())
 		}
+		var got ingestAuditBatchResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode replay response: %v", err)
+		}
+		if got.Status != string(want.status) {
+			t.Fatalf("replay #%d status = %q, want %q", i, got.Status, want.status)
+		}
+		if !got.AcceptedAt.Equal(want.acceptedAt) {
+			t.Fatalf("replay #%d accepted_at = %s, want %s", i, got.AcceptedAt, want.acceptedAt)
+		}
 	}
-	if len(sink.batches) != 3 {
-		t.Fatalf("sink batch count after replays = %d, want 3 (this layer does not dedup)", len(sink.batches))
+	if len(sink.batches) != 2 {
+		t.Fatalf("sink batch count after replays = %d, want 2", len(sink.batches))
 	}
 }
 
@@ -438,29 +460,35 @@ func TestAuditIngestSinkCanRetainPayload(t *testing.T) {
 
 type nonCopyingAuditSink struct{ batches []AcceptedAuditBatch }
 
-func (s *nonCopyingAuditSink) IngestAuditBatch(_ context.Context, batch AcceptedAuditBatch) error {
+func (s *nonCopyingAuditSink) IngestAuditBatch(_ context.Context, batch AcceptedAuditBatch) (AuditIngestResult, error) {
 	s.batches = append(s.batches, batch)
-	return nil
+	return AuditIngestResult{Status: AuditIngestStatusAccepted}, nil
 }
 
 type discardAuditSink struct{}
 
-func (discardAuditSink) IngestAuditBatch(context.Context, AcceptedAuditBatch) error {
-	return nil
+func (discardAuditSink) IngestAuditBatch(context.Context, AcceptedAuditBatch) (AuditIngestResult, error) {
+	return AuditIngestResult{Status: AuditIngestStatusAccepted}, nil
 }
 
 type captureAuditSink struct {
 	batches []AcceptedAuditBatch
+	results []AuditIngestResult
 	err     error
 }
 
-func (s *captureAuditSink) IngestAuditBatch(_ context.Context, batch AcceptedAuditBatch) error {
+func (s *captureAuditSink) IngestAuditBatch(_ context.Context, batch AcceptedAuditBatch) (AuditIngestResult, error) {
 	if s.err != nil {
-		return s.err
+		return AuditIngestResult{}, s.err
 	}
 	batch.Payload = append([]byte(nil), batch.Payload...)
 	s.batches = append(s.batches, batch)
-	return nil
+	if len(s.results) > 0 {
+		result := s.results[0]
+		s.results = s.results[1:]
+		return result, nil
+	}
+	return AuditIngestResult{Status: AuditIngestStatusAccepted}, nil
 }
 
 func rejectingAuditKeyResolver(FollowerIdentity, string) (conductor.SignatureKey, error) {

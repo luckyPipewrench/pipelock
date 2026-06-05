@@ -22,7 +22,13 @@ const (
 	maxCRLFileSize = 256 * 1024
 )
 
-var ErrLicenseRevoked = errors.New("license revoked")
+var (
+	ErrLicenseRevoked = errors.New("license revoked")
+	// ErrIntermediateRevoked is returned when an intermediate signing
+	// certificate's serial appears in the CRL. Rotation revokes the prior
+	// intermediate, so any token signed by it must fail closed.
+	ErrIntermediateRevoked = errors.New("intermediate certificate revoked")
+)
 
 // RevokedLicense records one revoked license ID in a signed CRL.
 type RevokedLicense struct {
@@ -31,12 +37,26 @@ type RevokedLicense struct {
 	RevokedAt int64  `json:"revoked_at"`
 }
 
-// CRLPayload is the signed revocation-list payload.
+// RevokedIntermediate records one revoked intermediate signing certificate,
+// keyed by its serial / key id. Revoking an intermediate invalidates every
+// license token it signed - this is the rotation/compromise kill switch for the
+// intermediate-key PKI tier.
+type RevokedIntermediate struct {
+	Serial    string `json:"serial"`
+	Reason    string `json:"reason,omitempty"`
+	RevokedAt int64  `json:"revoked_at"`
+}
+
+// CRLPayload is the signed revocation-list payload. RevokedIntermediates is an
+// optional field added for the intermediate-key PKI tier; CRLs that predate it
+// simply carry an empty list, and the wire version stays 1 (a pre-PKI verifier
+// only does direct-root verification and never trusts an intermediate anyway).
 type CRLPayload struct {
-	Version   int              `json:"version"`
-	IssuedAt  int64            `json:"issued_at"`
-	ExpiresAt int64            `json:"expires_at"`
-	Revoked   []RevokedLicense `json:"revoked"`
+	Version              int                   `json:"version"`
+	IssuedAt             int64                 `json:"issued_at"`
+	ExpiresAt            int64                 `json:"expires_at"`
+	Revoked              []RevokedLicense      `json:"revoked"`
+	RevokedIntermediates []RevokedIntermediate `json:"revoked_intermediates,omitempty"`
 }
 
 // CRL is a signed license revocation list. The wire format stores the exact
@@ -48,6 +68,7 @@ type CRL struct {
 	SHA256    string         `json:"-"`
 	payload   []byte         `json:"-"`
 	index     map[string]int `json:"-"`
+	intIndex  map[string]int `json:"-"`
 }
 
 type crlWire struct {
@@ -205,6 +226,41 @@ func (c CRL) CheckLicense(lic License) error {
 	return fmt.Errorf("%w: %s (%s)", ErrLicenseRevoked, lic.ID, revoked.Reason)
 }
 
+// RevocationForIntermediate returns the revocation record for an intermediate
+// serial, if present.
+func (c CRL) RevocationForIntermediate(serial string) (RevokedIntermediate, bool) {
+	if c.intIndex != nil {
+		i, ok := c.intIndex[serial]
+		if !ok || i < 0 || i >= len(c.Payload.RevokedIntermediates) {
+			return RevokedIntermediate{}, false
+		}
+		return c.Payload.RevokedIntermediates[i], true
+	}
+	for _, revoked := range c.Payload.RevokedIntermediates {
+		if revoked.Serial == serial {
+			return revoked, true
+		}
+	}
+	return RevokedIntermediate{}, false
+}
+
+// CheckIntermediate returns ErrIntermediateRevoked when the given intermediate
+// serial is revoked. An empty serial is treated as revoked (fail closed): an
+// intermediate with no serial cannot be tracked for rotation.
+func (c CRL) CheckIntermediate(serial string) error {
+	if serial == "" {
+		return fmt.Errorf("%w: missing serial", ErrIntermediateRevoked)
+	}
+	revoked, ok := c.RevocationForIntermediate(serial)
+	if !ok {
+		return nil
+	}
+	if revoked.Reason == "" {
+		return fmt.Errorf("%w: %s", ErrIntermediateRevoked, serial)
+	}
+	return fmt.Errorf("%w: %s (%s)", ErrIntermediateRevoked, serial, revoked.Reason)
+}
+
 func VerifyWithCRL(token string, publicKey ed25519.PublicKey, crl *CRL) (License, error) {
 	lic, err := Verify(token, publicKey)
 	if err != nil {
@@ -250,6 +306,22 @@ func validateCRLPayload(payload CRLPayload, now time.Time) error {
 			return fmt.Errorf("CRL contains duplicate license id %s", ids[i])
 		}
 	}
+	serials := make([]string, 0, len(payload.RevokedIntermediates))
+	for _, revoked := range payload.RevokedIntermediates {
+		if revoked.Serial == "" {
+			return errors.New("CRL contains revoked intermediate with empty serial")
+		}
+		if revoked.RevokedAt <= 0 {
+			return fmt.Errorf("CRL intermediate revocation %s missing revoked_at", revoked.Serial)
+		}
+		serials = append(serials, revoked.Serial)
+	}
+	slices.Sort(serials)
+	for i := 1; i < len(serials); i++ {
+		if serials[i] == serials[i-1] {
+			return fmt.Errorf("CRL contains duplicate intermediate serial %s", serials[i])
+		}
+	}
 	return nil
 }
 
@@ -257,5 +329,9 @@ func (c *CRL) buildIndex() {
 	c.index = make(map[string]int, len(c.Payload.Revoked))
 	for i, revoked := range c.Payload.Revoked {
 		c.index[revoked.ID] = i
+	}
+	c.intIndex = make(map[string]int, len(c.Payload.RevokedIntermediates))
+	for i, revoked := range c.Payload.RevokedIntermediates {
+		c.intIndex[revoked.Serial] = i
 	}
 }

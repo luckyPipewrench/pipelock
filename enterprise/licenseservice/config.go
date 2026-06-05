@@ -117,8 +117,8 @@ func LoadConfig() (*Config, error) {
 	// Parse Enterprise Eval fulfillment config. Eval selling is opt-in: with no
 	// product IDs configured, eval orders are never fulfilled.
 	cfg.EvalProductIDs = splitAndTrim(os.Getenv("EVAL_PRODUCT_IDS"))
-	cfg.EvalCurrency = strings.ToLower(envOrDefault("EVAL_CURRENCY", defaultEvalCurrency))
-	if amountStr := os.Getenv("EVAL_AMOUNT_CENTS"); amountStr != "" {
+	cfg.EvalCurrency = strings.ToLower(strings.TrimSpace(envOrDefault("EVAL_CURRENCY", defaultEvalCurrency)))
+	if amountStr := strings.TrimSpace(os.Getenv("EVAL_AMOUNT_CENTS")); amountStr != "" {
 		amount, err := strconv.Atoi(amountStr)
 		if err != nil {
 			return nil, fmt.Errorf("parse EVAL_AMOUNT_CENTS: %w", err)

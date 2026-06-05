@@ -86,43 +86,48 @@ func NewPolarClient(apiToken, baseURL string) *PolarClient {
 	}
 }
 
-// GetSubscription fetches the current state of a subscription from Polar's API.
-// This is the source of truth: we always re-fetch after receiving a webhook
-// rather than trusting webhook payload data alone.
-func (p *PolarClient) GetSubscription(ctx context.Context, subscriptionID string) (*PolarSubscription, error) {
-	url := fmt.Sprintf("%s/v1/subscriptions/%s", p.baseURL, subscriptionID)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// getJSON performs an authenticated GET against a Polar API path and decodes the
+// JSON response into out. It is the shared fetch/read/status/decode flow for
+// GetSubscription and GetOrder, so their behavior (auth header, body cap, status
+// handling) cannot drift apart. label is used in error messages.
+func (p *PolarClient) getJSON(ctx context.Context, path, label string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create subscription request: %w", err)
+		return fmt.Errorf("create %s request: %w", label, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+p.apiToken)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch subscription %s: %w", subscriptionID, err)
+		return fmt.Errorf("fetch %s: %w", label, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Cap response body to prevent memory exhaustion from malformed responses.
-	// 1 MiB is generous for a single subscription JSON object.
+	// 1 MiB is generous for a single subscription/order JSON object.
 	const maxResponseBody = 1 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
-		return nil, fmt.Errorf("read subscription response: %w", err)
+		return fmt.Errorf("read %s response: %w", label, err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("polar API returned %d for subscription %s: %s",
-			resp.StatusCode, subscriptionID, string(body))
+		return fmt.Errorf("polar API returned %d for %s: %s", resp.StatusCode, label, string(body))
 	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return fmt.Errorf("parse %s response: %w", label, err)
+	}
+	return nil
+}
 
+// GetSubscription fetches the current state of a subscription from Polar's API.
+// This is the source of truth: we always re-fetch after receiving a webhook
+// rather than trusting webhook payload data alone.
+func (p *PolarClient) GetSubscription(ctx context.Context, subscriptionID string) (*PolarSubscription, error) {
 	var sub PolarSubscription
-	if err := json.Unmarshal(body, &sub); err != nil {
-		return nil, fmt.Errorf("parse subscription response: %w", err)
+	if err := p.getJSON(ctx, "/v1/subscriptions/"+subscriptionID, "subscription "+subscriptionID, &sub); err != nil {
+		return nil, err
 	}
-
 	return &sub, nil
 }
 
@@ -131,42 +136,13 @@ func (p *PolarClient) GetSubscription(ctx context.Context, subscriptionID string
 // order after a webhook rather than trusting the (spoofable, possibly-stale)
 // webhook payload for paid/refund state and amounts.
 func (p *PolarClient) GetOrder(ctx context.Context, orderID string) (*PolarOrder, error) {
-	url := fmt.Sprintf("%s/v1/orders/%s", p.baseURL, orderID)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create order request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+p.apiToken)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch order %s: %w", orderID, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Cap response body to prevent memory exhaustion from malformed responses.
-	// 1 MiB is generous for a single order JSON object.
-	const maxResponseBody = 1 << 20
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
-	if err != nil {
-		return nil, fmt.Errorf("read order response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("polar API returned %d for order %s: %s",
-			resp.StatusCode, orderID, string(body))
-	}
-
 	var order PolarOrder
-	if err := json.Unmarshal(body, &order); err != nil {
-		return nil, fmt.Errorf("parse order response: %w", err)
+	if err := p.getJSON(ctx, "/v1/orders/"+orderID, "order "+orderID, &order); err != nil {
+		return nil, err
 	}
 	if order.ID == "" {
 		return nil, fmt.Errorf("order ID is empty in API response for %s", orderID)
 	}
-
 	return &order, nil
 }
 

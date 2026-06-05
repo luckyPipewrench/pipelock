@@ -156,6 +156,24 @@ func TestLoadConfig_EvalConfigured(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_EvalTrimsWhitespace(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("EVAL_PRODUCT_IDS", "prod_eval_a")
+	t.Setenv("EVAL_AMOUNT_CENTS", "  500000  ")
+	t.Setenv("EVAL_CURRENCY", "  USD  ")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.EvalAmountCents != 500000 {
+		t.Errorf("EvalAmountCents = %d, want 500000 (padded value should trim+parse)", cfg.EvalAmountCents)
+	}
+	if cfg.EvalCurrency != "usd" {
+		t.Errorf("EvalCurrency = %q, want usd (padded value should trim+lowercase)", cfg.EvalCurrency)
+	}
+}
+
 func TestLoadConfig_EvalProductsRequireAmount(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("EVAL_PRODUCT_IDS", "prod_eval_a")

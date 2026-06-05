@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 )
@@ -19,6 +20,7 @@ import (
 // behind the storage backend's operator-controlled access boundary.
 type AuditBatchQuerier interface {
 	ListAuditBatches(ctx context.Context, q AuditBatchQuery) ([]AuditBatchSummary, error)
+	GetAuditBatch(ctx context.Context, orgID, fleetID, instanceID, batchID string) (AuditBatchSummary, bool, error)
 }
 
 type listAuditBatchesResponse struct {
@@ -53,6 +55,40 @@ func (h *Handler) handleListAuditBatches(w http.ResponseWriter, r *http.Request)
 		Batches: batches,
 		Count:   len(batches),
 	})
+}
+
+func (h *Handler) handleGetAuditBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	if h.auditQuerier == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("audit query not supported by configured audit sink"))
+		return
+	}
+	query, err := parseAuditBatchGetQuery(r)
+	if err != nil {
+		if errors.Is(err, ErrAuditBatchNotFound) {
+			writeError(w, http.StatusNotFound, ErrAuditBatchNotFound)
+			return
+		}
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := h.authorizeAuditQuery(r, query); err != nil {
+		writeError(w, http.StatusForbidden, ErrAuditQueryForbidden)
+		return
+	}
+	batch, ok, err := h.auditQuerier.GetAuditBatch(r.Context(), query.OrgID, query.FleetID, query.InstanceID, query.BatchID)
+	if err != nil {
+		writeAuditSinkError(w, err)
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, ErrAuditBatchNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, batch)
 }
 
 func parseAuditBatchQuery(r *http.Request) (AuditBatchQuery, error) {
@@ -97,6 +133,46 @@ func parseAuditBatchQuery(r *http.Request) (AuditBatchQuery, error) {
 			return AuditBatchQuery{}, fmt.Errorf("invalid limit query parameter: %q", rawLimit)
 		}
 		q.Limit = limit
+	}
+	return q, nil
+}
+
+func parseAuditBatchGetQuery(r *http.Request) (AuditBatchQuery, error) {
+	batchID := strings.TrimPrefix(r.URL.Path, AuditBatchesPath+"/")
+	if batchID == "" || strings.Contains(batchID, "/") {
+		return AuditBatchQuery{}, ErrAuditBatchNotFound
+	}
+	values := r.URL.Query()
+	for key, got := range values {
+		switch key {
+		case "org_id", "fleet_id", "instance_id":
+		default:
+			return AuditBatchQuery{}, fmt.Errorf("unknown query parameter: %s", key)
+		}
+		if len(got) > 1 {
+			return AuditBatchQuery{}, fmt.Errorf("duplicate query parameter: %s", key)
+		}
+	}
+	q := AuditBatchQuery{
+		OrgID:      values.Get("org_id"),
+		FleetID:    values.Get("fleet_id"),
+		InstanceID: values.Get("instance_id"),
+		BatchID:    batchID,
+	}
+	if q.OrgID == "" || q.FleetID == "" || q.InstanceID == "" {
+		return AuditBatchQuery{}, errors.New("org_id, fleet_id, and instance_id query parameters required")
+	}
+	for _, c := range []struct {
+		field, value string
+	}{
+		{"org_id", q.OrgID},
+		{"fleet_id", q.FleetID},
+		{"instance_id", q.InstanceID},
+		{"batch_id", q.BatchID},
+	} {
+		if err := conductor.ValidateIdentifier(c.field, c.value); err != nil {
+			return AuditBatchQuery{}, err
+		}
 	}
 	return q, nil
 }

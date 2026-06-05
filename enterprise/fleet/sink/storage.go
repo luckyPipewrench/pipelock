@@ -186,6 +186,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		ON audit_batches(org_id, fleet_id, instance_id, seq_start, seq_end);
 	CREATE INDEX IF NOT EXISTS idx_audit_batches_batch_id
 		ON audit_batches(batch_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_batches_canonical_hash
+		ON audit_batches(canonical_hash);
 	`
 	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("migrate fleet sink store: %w", err)
@@ -222,58 +224,47 @@ func (s *Store) Put(ctx context.Context, batch acceptedBatch, informational []st
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var existingHash, existingPayloadHash string
-	err = tx.QueryRowContext(ctx, `
-		SELECT canonical_hash, payload_sha256
-		FROM audit_batches
-		WHERE org_id = ? AND fleet_id = ? AND instance_id = ? AND batch_id = ?
-	`, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID).
-		Scan(&existingHash, &existingPayloadHash)
-	switch {
-	case err == nil:
-		if existingHash == batch.CanonicalHash && strings.EqualFold(existingPayloadHash, batch.Envelope.PayloadSHA256) {
-			summary, getErr := summaryByKey(ctx, tx, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID)
-			if getErr != nil {
-				return PutResult{}, getErr
-			}
-			if commitErr := tx.Commit(); commitErr != nil {
-				return PutResult{}, fmt.Errorf("commit duplicate fleet sink transaction: %w", commitErr)
-			}
-			return PutResult{Summary: summary, Duplicate: true}, nil
-		}
-		return PutResult{}, ErrBatchConflict
-	case !errors.Is(err, sql.ErrNoRows):
-		return PutResult{}, fmt.Errorf("check duplicate audit batch: %w", err)
-	}
-
 	if err := detectFork(ctx, tx, batch.Envelope); err != nil {
 		return PutResult{}, err
 	}
 
-	if _, err := tx.ExecContext(ctx, `
+	insertResult, err := tx.ExecContext(ctx, `
 		INSERT INTO audit_batches (
 			org_id, fleet_id, instance_id, batch_id, audit_schema_version,
 			seq_start, seq_end, event_count, payload_sha256, payload_bytes,
 			canonical_hash, segment_tail_hash, dropped_count, emitted_at,
 			received_at, signature_key_ids, informational_dlp, envelope_json, payload_blob
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(org_id, fleet_id, instance_id, batch_id) DO NOTHING
 	`, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID,
 		batch.Envelope.AuditSchemaVersion, formatUint(batch.Envelope.SeqStart), formatUint(batch.Envelope.SeqEnd),
 		formatUint(batch.Envelope.EventCount), batch.Envelope.PayloadSHA256, formatUint(batch.Envelope.PayloadBytes),
 		batch.CanonicalHash, batch.Envelope.Chain.SegmentTailHash, formatUint(batch.Envelope.Dropped.Count),
 		batch.Envelope.EmittedAt.UTC(), batch.ReceivedAt.UTC(), string(keyIDsJSON), string(informationalJSON),
-		envelopeJSON, batch.Payload); err != nil {
+		envelopeJSON, batch.Payload)
+	if err != nil {
 		return PutResult{}, fmt.Errorf("insert audit batch: %w", err)
+	}
+	rows, err := insertResult.RowsAffected()
+	if err != nil {
+		return PutResult{}, fmt.Errorf("count inserted audit batch: %w", err)
 	}
 
 	summary, err := summaryByKey(ctx, tx, batch.Envelope.OrgID, batch.Envelope.FleetID, batch.Envelope.InstanceID, batch.Envelope.BatchID)
 	if err != nil {
 		return PutResult{}, err
 	}
+	duplicate := false
+	if rows == 0 {
+		if summary.CanonicalHash != batch.CanonicalHash || !strings.EqualFold(summary.PayloadSHA256, batch.Envelope.PayloadSHA256) {
+			return PutResult{}, ErrForkDetected
+		}
+		duplicate = true
+	}
 	if err := tx.Commit(); err != nil {
 		return PutResult{}, fmt.Errorf("commit fleet sink store transaction: %w", err)
 	}
-	return PutResult{Summary: summary}, nil
+	return PutResult{Summary: summary, Duplicate: duplicate}, nil
 }
 
 func (s *Store) List(ctx context.Context, q Query) ([]BatchSummary, error) {

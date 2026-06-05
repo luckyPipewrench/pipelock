@@ -182,6 +182,34 @@ func (e *EntitlementDB) migrate(ctx context.Context) error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_license_issuances_subscription ON license_issuances(subscription_id);
+
+	CREATE TABLE IF NOT EXISTS eval_orders (
+		order_id           TEXT PRIMARY KEY,
+		normalized_email   TEXT NOT NULL,
+		product_id         TEXT NOT NULL DEFAULT '',
+		total_amount       INTEGER NOT NULL DEFAULT 0,
+		refunded_amount    INTEGER NOT NULL DEFAULT 0,
+		currency           TEXT NOT NULL DEFAULT '',
+		polar_paid         BOOLEAN NOT NULL DEFAULT 0,
+		refund_state       TEXT NOT NULL DEFAULT 'none',
+		fulfillment_state  TEXT NOT NULL DEFAULT 'none',
+		revocation_state   TEXT NOT NULL DEFAULT 'none',
+		gate_denial_reason TEXT NOT NULL DEFAULT '',
+		license_id         TEXT NOT NULL DEFAULT '',
+		created_at         DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at         DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_eval_orders_email ON eval_orders(normalized_email);
+
+	CREATE TABLE IF NOT EXISTS webhook_deliveries (
+		msg_id       TEXT PRIMARY KEY,
+		event_type   TEXT NOT NULL DEFAULT '',
+		resource_id  TEXT NOT NULL DEFAULT '',
+		status       TEXT NOT NULL DEFAULT 'committed',
+		committed_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		error_reason TEXT NOT NULL DEFAULT ''
+	);
 	`
 	_, err := e.db.ExecContext(ctx, ddl)
 	return err

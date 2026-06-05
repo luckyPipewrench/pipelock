@@ -329,7 +329,7 @@ func (h *WebhookHandler) handleActive(ctx context.Context, ent *Entitlement, exi
 	_ = h.ledger.LogLicenseIssued(ent.SubscriptionID, ent.CustomerEmail, lic.ID, ent.Tier, expiresAt)
 
 	// Attempt email delivery, update delivery status after.
-	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, ent.Tier)
+	msgID, emailErr := h.email.SendLicenseDelivery(ctx, ent.CustomerEmail, token, ent.Tier, string(h.cfg.IntermediateCert))
 	if emailErr != nil {
 		h.log.Error().Err(emailErr).
 			Str("subscription_id", ent.SubscriptionID).
@@ -453,6 +453,9 @@ func (h *WebhookHandler) revokeSubscriptionLicenses(ctx context.Context, ent, ex
 
 // SignedCRL returns the current signed license revocation list.
 func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.CRL, error) {
+	if len(h.cfg.CRLPrivateKey) != ed25519.PrivateKeySize {
+		return license.CRL{}, errors.New("license CRL signing key not configured")
+	}
 	records, err := h.db.ListLicenseRevocations(ctx)
 	if err != nil {
 		return license.CRL{}, fmt.Errorf("list license revocations: %w", err)
@@ -469,7 +472,7 @@ func (h *WebhookHandler) SignedCRL(ctx context.Context, now time.Time) (license.
 		IssuedAt:  now.UTC().Unix(),
 		ExpiresAt: now.UTC().Add(7 * 24 * time.Hour).Unix(),
 		Revoked:   revoked,
-	}, h.privateKey)
+	}, h.cfg.CRLPrivateKey)
 }
 
 // HandleOrderEvent processes a Polar order.created webhook event for

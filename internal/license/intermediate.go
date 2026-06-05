@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -371,4 +373,29 @@ func VerifyTokenWithOptionalIntermediate(token string, intermediateCert []byte, 
 		}
 	}
 	return VerifyChain(token, &im, rootPub, crl, now)
+}
+
+// LoadIntermediateCertFile reads an operator-configured intermediate
+// certificate file. The certificate is public, but this still rejects devices,
+// FIFOs, and oversized files so startup cannot hang or allocate unboundedly.
+func LoadIntermediateCertFile(path string) ([]byte, error) {
+	cleanPath := filepath.Clean(path)
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat license_intermediate_file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("license_intermediate_file must be a regular file")
+	}
+	if info.Size() > maxIntermediateBytes {
+		return nil, errors.New("license_intermediate_file exceeds maximum size")
+	}
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return nil, fmt.Errorf("read license_intermediate_file: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, errors.New("license_intermediate_file is empty")
+	}
+	return data, nil
 }

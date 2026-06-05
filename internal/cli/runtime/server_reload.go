@@ -156,7 +156,8 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 		licenseInputsChanged := oldCfg.LicenseKey != newCfg.LicenseKey ||
 			oldCfg.LicensePublicKey != newCfg.LicensePublicKey ||
 			oldCfg.LicenseFile != newCfg.LicenseFile ||
-			oldCfg.LicenseCRLFile != newCfg.LicenseCRLFile
+			oldCfg.LicenseCRLFile != newCfg.LicenseCRLFile ||
+			oldCfg.LicenseIntermediateFile != newCfg.LicenseIntermediateFile
 
 		if agentsRevokedByLicense {
 			// License gate disabled agents on reload. Shut down
@@ -177,8 +178,11 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			newCfg.LicenseKey = oldCfg.LicenseKey
 			newCfg.LicenseFile = oldCfg.LicenseFile
 			newCfg.LicenseCRLFile = oldCfg.LicenseCRLFile
+			newCfg.LicenseIntermediateFile = oldCfg.LicenseIntermediateFile
+			newCfg.LicenseIntermediateCert = append([]byte(nil), oldCfg.LicenseIntermediateCert...)
+			newCfg.LicenseIntermediateLoadError = oldCfg.LicenseIntermediateLoadError
 			newCfg.LicensePublicKey = oldCfg.LicensePublicKey
-			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: license key inputs changed (license_key, license_file, license_crl_file, or license_public_key) - requires restart for license re-verification\n")
+			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: license key inputs changed (license_key, license_file, license_crl_file, license_intermediate_file, or license_public_key) - requires restart for license re-verification\n")
 		} else if AgentListenersChanged(oldCfg, newCfg) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
 			PreserveAgentListeners(oldCfg, newCfg)

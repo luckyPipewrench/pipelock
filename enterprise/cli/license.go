@@ -272,6 +272,7 @@ type licenseStatusReport struct {
 	CRLConfigured  bool   `json:"crl_configured"`
 	CRLExpiresAt   string `json:"crl_expires_at,omitempty"`
 	CRLSHA256      string `json:"crl_sha256,omitempty"`
+	Intermediate   bool   `json:"intermediate_configured"`
 	Reason         string `json:"reason,omitempty"`
 }
 
@@ -328,6 +329,7 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 	if crlFile == "" {
 		crlFile = cfg.LicenseCRLFile
 	}
+	report.Intermediate = len(cfg.LicenseIntermediateCert) > 0
 	var crl *license.CRL
 	if crlFile != "" {
 		report.CRLConfigured = true
@@ -342,7 +344,7 @@ func buildLicenseStatusReport(configFile, crlFile string) (licenseStatusReport, 
 		report.CRLSHA256 = loaded.SHA256
 	}
 
-	lic, err := license.VerifyWithCRL(cfg.LicenseKey, pubKey, crl)
+	lic, err := license.VerifyTokenWithOptionalIntermediate(cfg.LicenseKey, cfg.LicenseIntermediateCert, pubKey, crl, time.Now())
 	report.LicenseID = lic.ID
 	report.Tier = lic.Tier
 	report.SubscriptionID = lic.SubscriptionID
@@ -425,6 +427,9 @@ func printLicenseStatus(cmd *cobra.Command, report licenseStatusReport) {
 		if report.CRLSHA256 != "" {
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  CRL SHA:  %s\n", report.CRLSHA256)
 		}
+	}
+	if report.Intermediate {
+		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Chain:    intermediate certificate configured\n")
 	}
 	if report.Reason != "" {
 		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  Reason:   %s\n", report.Reason)

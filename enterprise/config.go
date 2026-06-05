@@ -280,8 +280,9 @@ func EnforceLicenseGate(c *config.Config) {
 		return
 	}
 
-	// Verify the license token signature, expiration, and revocation status.
-	lic, err := license.VerifyWithCRL(c.LicenseKey, pubKey, crl)
+	// Verify the license token signature, expiration, optional intermediate
+	// chain, and revocation status.
+	lic, err := license.VerifyTokenWithOptionalIntermediate(c.LicenseKey, c.LicenseIntermediateCert, pubKey, crl, time.Now())
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license verification failed: %v\n"+
 			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)

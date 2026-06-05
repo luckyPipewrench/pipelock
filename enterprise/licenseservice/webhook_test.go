@@ -7,6 +7,7 @@ package licenseservice
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,6 +76,8 @@ func newTestSetup(t *testing.T) *testSetup {
 		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
+		IntermediateCert:    []byte(`{"payload":"test","signature":"test"}`),
+		CRLPrivateKey:       priv,
 		ResendAPIKey:        "re_" + "test_key",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "test.jsonl"),
@@ -1204,6 +1207,61 @@ func TestProcessSubscription_RevokesAllUnexpiredIssuedLicenses(t *testing.T) {
 		if revoked.Reason != "" {
 			t.Fatalf("public CRL should omit reason, got %+v", revoked)
 		}
+	}
+}
+
+// TestSignedCRL_NoSigningKeyFailsClosed proves SignedCRL refuses to produce a
+// CRL when the dedicated CRL signing key is absent. The token signing key
+// (h.privateKey, the intermediate key) must never be reused to sign CRLs:
+// clients verify CRLs against the ROOT key, so an intermediate-signed CRL would
+// be silently rejected. Failing closed here surfaces the misconfiguration
+// instead of emitting an unverifiable CRL.
+func TestSignedCRL_NoSigningKeyFailsClosed(t *testing.T) {
+	ts := newTestSetup(t)
+	ts.handler.cfg.CRLPrivateKey = nil
+
+	_, err := ts.handler.SignedCRL(t.Context(), time.Now())
+	if err == nil {
+		t.Fatal("SignedCRL must fail closed when CRL signing key is not configured")
+	}
+	if !strings.Contains(err.Error(), "CRL signing key not configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSignedCRL_UsesDedicatedSigningKey(t *testing.T) {
+	ts := newTestSetup(t)
+	ctx := t.Context()
+	now := time.Now().UTC()
+
+	crlPub, crlPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(CRL): %v", err)
+	}
+	ts.handler.cfg.CRLPrivateKey = crlPriv
+
+	if err := ts.db.UpsertLicenseRevocation(ctx, RevokedLicenseRecord{
+		LicenseID:      "lic_dedicated_crl_key",
+		SubscriptionID: "sub_dedicated_crl_key",
+		Reason:         "subscription_canceled",
+		RevokedAt:      now,
+	}); err != nil {
+		t.Fatalf("UpsertLicenseRevocation: %v", err)
+	}
+
+	crl, err := ts.handler.SignedCRL(ctx, now)
+	if err != nil {
+		t.Fatalf("SignedCRL: %v", err)
+	}
+	data, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatalf("Marshal CRL: %v", err)
+	}
+	if _, err := license.ParseAndVerifyCRL(data, crlPub, now); err != nil {
+		t.Fatalf("CRL should verify with dedicated CRL key: %v", err)
+	}
+	if _, err := license.ParseAndVerifyCRL(data, ts.publicKey, now); err == nil {
+		t.Fatal("CRL unexpectedly verified with token signing key")
 	}
 }
 

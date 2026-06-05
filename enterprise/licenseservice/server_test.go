@@ -70,6 +70,8 @@ func newTestServer(t *testing.T) *Server {
 		PolarWebhookSecret:  "whsec_" + secret,
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
+		IntermediateCert:    []byte(`{"payload":"server-test","signature":"server-test"}`),
+		CRLPrivateKey:       priv,
 		ResendAPIKey:        "re_" + "test_server_key",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "server-test.jsonl"),
@@ -131,6 +133,21 @@ func TestServer_HealthEndpoint(t *testing.T) {
 	ct := w.Header().Get("Content-Type")
 	if ct != testContentTypeJSON {
 		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+}
+
+func TestServer_IntermediateEndpoint(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/intermediate.json", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+	if !strings.Contains(rr.Body.String(), "server-test") {
+		t.Fatalf("body should contain configured intermediate certificate, got %q", rr.Body.String())
 	}
 }
 

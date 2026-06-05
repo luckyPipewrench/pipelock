@@ -376,12 +376,13 @@ type Config struct {
 	LearnLock                LearnLock               `yaml:"learn_lock" json:"-"` // operational lock-runtime config, excluded from canonical policy hash
 	Conductor                Conductor               `yaml:"conductor" json:"-"`  // follower control-plane config, excluded from canonical policy hash
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
-	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
-	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
-	LicenseKey               string                  `yaml:"license_key,omitempty"`                 // signed license token (from pipelock license issue)
-	LicenseFile              string                  `yaml:"license_file,omitempty"`                // path to file containing the license token (read at startup)
-	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`   // path to signed license revocation list (read at startup)
-	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`          // hex-encoded Ed25519 public key for license verification (dev builds only)
+	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`             // operator-configured agent name used when no stronger identity source resolves the caller
+	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"`        // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
+	LicenseKey               string                  `yaml:"license_key,omitempty"`                        // signed license token (from pipelock license issue)
+	LicenseFile              string                  `yaml:"license_file,omitempty"`                       // path to file containing the license token (read at startup)
+	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`          // path to signed license revocation list (read at startup)
+	LicenseIntermediateFile  string                  `yaml:"license_intermediate_file,omitempty" json:"-"` // path to root-signed intermediate license-signing certificate
+	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`                 // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal                 []string                `yaml:"internal"`
 	TrustedDomains           []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
 	SSRF                     SSRF                    `yaml:"ssrf"`
@@ -398,6 +399,11 @@ type Config struct {
 	LicenseCRLSHA256        string `yaml:"-" json:"-"`
 	LicenseRevoked          bool   `yaml:"-" json:"-"`
 	LicenseRevocationReason string `yaml:"-" json:"-"`
+	LicenseIntermediateCert []byte `yaml:"-" json:"-"`
+	// LicenseIntermediateLoadError records a configured cert file that could
+	// not be loaded. LicenseIntermediateCert stays non-empty in that state so
+	// verification fails closed instead of silently downgrading to root-only.
+	LicenseIntermediateLoadError string `yaml:"-" json:"-"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().

@@ -922,3 +922,40 @@ func TestServer_MCPListener_ResponseScanningFallback(t *testing.T) {
 		t.Errorf("listener mode must NOT run the response-scanning fallback; stderr: %q", stderr)
 	}
 }
+
+// TestServer_StartJoinsLicenseExpiryWatcher exercises the lifecycle join for
+// the license expiry watcher goroutine, which Start spawns whenever
+// cfg.LicenseExpiresAt > 0. A future expiry keeps the watcher selecting on
+// ctx.Done(); the WaitGroup must join it during shutdown so cleanup() does not
+// race the watcher's read of s.logger/s.sentry.
+func TestServer_StartJoinsLicenseExpiryWatcher(t *testing.T) {
+	s, _ := newTestServer(t, func(o *ServerOpts) {
+		o.Listen = newServerTestFreePort(t)
+		o.ListenChanged = true
+	})
+	// Set before launching Start: goroutine creation establishes the
+	// happens-before edge, so currentConfig() reads this value.
+	s.cfg.LicenseExpiresAt = time.Now().Add(time.Hour).Unix()
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		errCh <- s.Start(ctx)
+	}()
+
+	waitForServerCancel(t, s)
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("Start returned error after Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("Start did not return within 5s of Shutdown")
+	}
+}

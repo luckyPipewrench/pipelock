@@ -1209,8 +1209,6 @@ func TestRunCmd_EarlyBindErrorJoinsListenerGoroutines(t *testing.T) {
 	}))
 	defer mcpUpstream.Close()
 
-	mcpAddr := freePort(t)
-
 	cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
@@ -1233,7 +1231,11 @@ logging:
 	cmd.SetContext(ctx)
 	cmd.SetArgs([]string{
 		"--config", cfgPath,
-		"--mcp-listen", mcpAddr,
+		// Ephemeral MCP listen port: the test never dials it, it only needs
+		// the listener goroutine to spawn (and read s.logger) before the held
+		// fetch port forces the early-error return. :0 avoids the freePort
+		// close-then-reuse TOCTOU for a port that is never connected to.
+		"--mcp-listen", "127.0.0.1:0",
 		"--mcp-upstream", mcpUpstream.URL,
 	})
 	var stderr syncBuffer
@@ -1250,5 +1252,69 @@ logging:
 	}
 	if !strings.Contains(err.Error(), "proxy error") {
 		t.Errorf("expected proxy bind error, got: %v", err)
+	}
+}
+
+// TestRunCmd_MCPListenerAskModeShutdown exercises the MCP approver lifecycle.
+// With response_scanning action ask and an MCP listener configured, Start
+// creates a HITL approver and hands it to the MCP listener goroutine, which
+// closes it after the listener returns. This covers the approver creation and
+// its goroutine-scoped close on a clean shutdown (no approval is ever
+// triggered: the test only hits /health).
+func TestRunCmd_MCPListenerAskModeShutdown(t *testing.T) {
+	mainAddr := freePort(t)
+
+	mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mcpUpstream.Close()
+
+	cfgYAML := fmt.Sprintf(`version: 1
+mode: balanced
+response_scanning:
+  enabled: true
+  action: ask
+fetch_proxy:
+  listen: %q
+  timeout_seconds: 5
+logging:
+  format: json
+  output: stdout
+`, mainAddr)
+
+	cfgPath := filepath.Join(t.TempDir(), "pipelock-askmode.yaml")
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := RunCmd()
+	cmd.SetContext(ctx)
+	cmd.SetArgs([]string{
+		"--config", cfgPath,
+		"--mcp-listen", "127.0.0.1:0",
+		"--mcp-upstream", mcpUpstream.URL,
+	})
+	var stderr syncBuffer
+	cmd.SetErr(&stderr)
+	cmd.SetOut(&stderr)
+
+	cmdErr := make(chan error, 1)
+	go func() {
+		cmdErr <- cmd.Execute()
+	}()
+
+	waitForPort(t, mainAddr)
+
+	cancel()
+	select {
+	case err := <-cmdErr:
+		if err != nil {
+			t.Errorf("RunCmd returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunCmd did not exit within 5s")
 	}
 }

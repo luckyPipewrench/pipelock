@@ -44,14 +44,14 @@ func marshalIndentNoEscape(v any) ([]byte, error) {
 // command a visitor runs to reproduce it.
 func verifierText(cs *CapturedScenario) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Pipelock audit packet — receipt chain verification\n")
-	fmt.Fprintf(&b, "scenario: %s\n", cs.Scenario.ID)
-	fmt.Fprintf(&b, "receipts: %d\n", cs.ReceiptCount)
-	fmt.Fprintf(&b, "verdict: %s (trusted)\n", verifierVerdictTrusted)
-	fmt.Fprintf(&b, "root_hash: %s\n", cs.RootHash)
-	fmt.Fprintf(&b, "signer_key: %s\n", cs.SignerKeyHex)
-	fmt.Fprintf(&b, "\nVerify it yourself from this directory:\n")
-	fmt.Fprintf(&b, "  pipelock-verifier audit-packet . --key %s\n", cs.SignerKeyHex)
+	_, _ = fmt.Fprintf(&b, "Pipelock audit packet — receipt chain verification\n")
+	_, _ = fmt.Fprintf(&b, "scenario: %s\n", cs.Scenario.ID)
+	_, _ = fmt.Fprintf(&b, "receipts: %d\n", cs.ReceiptCount)
+	_, _ = fmt.Fprintf(&b, "verdict: %s (trusted)\n", verifierVerdictTrusted)
+	_, _ = fmt.Fprintf(&b, "root_hash: %s\n", cs.RootHash)
+	_, _ = fmt.Fprintf(&b, "signer_key: %s\n", cs.SignerKeyHex)
+	_, _ = fmt.Fprintf(&b, "\nVerify it yourself from this directory:\n")
+	_, _ = fmt.Fprintf(&b, "  pipelock-verifier audit-packet . --key %s\n", cs.SignerKeyHex)
 	return b.String()
 }
 
@@ -60,18 +60,18 @@ func summaryMarkdown(cs *CapturedScenario) string {
 	s := cs.Scenario
 	decisive := decisiveVerdict(cs)
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s\n\n", s.Title)
-	fmt.Fprintf(&b, "- **Category:** %s\n", s.Category)
-	fmt.Fprintf(&b, "- **Bench case:** `%s`\n", s.BenchCaseID)
-	fmt.Fprintf(&b, "- **Transport:** %s\n", s.Transport)
-	fmt.Fprintf(&b, "- **Destination:** %s\n", s.DestinationClass)
-	fmt.Fprintf(&b, "- **Decision:** %s\n", decisive)
-	fmt.Fprintf(&b, "- **Receipts:** %d (chain verifies)\n\n", cs.ReceiptCount)
-	fmt.Fprintf(&b, "## Without Pipelock\n\n%s\n\n", s.Without)
-	fmt.Fprintf(&b, "## With Pipelock\n\n%s\n\n", s.With)
-	fmt.Fprintf(&b, "These receipts record the *mediated decisions* Pipelock signed. ")
-	fmt.Fprintf(&b, "A verified chain proves those decisions were signed and untampered; ")
-	fmt.Fprintf(&b, "it does not prove session completeness or that no event was missed.\n")
+	_, _ = fmt.Fprintf(&b, "# %s\n\n", s.Title)
+	_, _ = fmt.Fprintf(&b, "- **Category:** %s\n", s.Category)
+	_, _ = fmt.Fprintf(&b, "- **Bench case:** `%s`\n", s.BenchCaseID)
+	_, _ = fmt.Fprintf(&b, "- **Transport:** %s\n", s.Transport)
+	_, _ = fmt.Fprintf(&b, "- **Destination:** %s\n", s.DestinationClass)
+	_, _ = fmt.Fprintf(&b, "- **Decision:** %s\n", decisive)
+	_, _ = fmt.Fprintf(&b, "- **Receipts:** %d (chain verifies)\n\n", cs.ReceiptCount)
+	_, _ = fmt.Fprintf(&b, "## Without Pipelock\n\n%s\n\n", s.Without)
+	_, _ = fmt.Fprintf(&b, "## With Pipelock\n\n%s\n\n", s.With)
+	_, _ = fmt.Fprintf(&b, "These receipts record the *mediated decisions* Pipelock signed. ")
+	_, _ = fmt.Fprintf(&b, "A verified chain proves those decisions were signed and untampered; ")
+	_, _ = fmt.Fprintf(&b, "it does not prove session completeness or that no event was missed.\n")
 	return b.String()
 }
 

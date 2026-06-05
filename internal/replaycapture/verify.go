@@ -33,6 +33,12 @@ func VerifyPacketDir(dir, keyHex string) error {
 		return fmt.Errorf("packet schema: %w", err)
 	}
 
+	// The evidence path comes from packet.json. Packet.Validate already rejects
+	// "../" artifact paths; this is defense-in-depth at the file-read trust
+	// boundary so a path-traversal value can never escape the packet directory.
+	if !filepath.IsLocal(pkt.Artifacts.Evidence) {
+		return fmt.Errorf("evidence path %q is not local to the packet directory", pkt.Artifacts.Evidence)
+	}
 	evidencePath := filepath.Join(dir, pkt.Artifacts.Evidence)
 	receipts, err := receipt.ExtractReceipts(evidencePath)
 	if err != nil {

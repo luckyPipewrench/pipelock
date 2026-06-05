@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -237,8 +238,21 @@ func driveScenario(ctx context.Context, s Scenario, h http.Handler) error {
 		if err != nil {
 			return err
 		}
-		forwardPostThrough(ctx, h, target, `{"query":"query { readRecord { id } }"}`)
-		forwardPostThrough(ctx, h, target, `{"query":"mutation { deleteRecord { id } }"}`)
+		readResp := forwardPostThrough(ctx, h, target, `{"query":"query { readRecord { id } }"}`)
+		if readResp.Code != http.StatusOK {
+			return fmt.Errorf("operation-aware safe read status = %d, want %d", readResp.Code, http.StatusOK)
+		}
+		if body := readResp.Body.String(); !strings.Contains(body, `"readRecord":{"id":"rec-001"}`) {
+			return fmt.Errorf("operation-aware safe read body missing expected record: %q", body)
+		}
+
+		blockResp := forwardPostThrough(ctx, h, target, `{"query":"mutation { deleteRecord { id } }"}`)
+		if blockResp.Code != http.StatusForbidden {
+			return fmt.Errorf("operation-aware mutation status = %d, want %d", blockResp.Code, http.StatusForbidden)
+		}
+		if got := blockResp.Header().Get("X-Pipelock-Block-Reason"); got != "request_policy_deny" {
+			return fmt.Errorf("operation-aware mutation block reason = %q, want request_policy_deny", got)
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown scenario id %q", s.ID)
@@ -273,11 +287,13 @@ func fetchThrough(ctx context.Context, h http.Handler, target string) {
 }
 
 // forwardPostThrough drives a JSON POST through the absolute-URI forward proxy.
-func forwardPostThrough(ctx context.Context, h http.Handler, target, body string) {
+func forwardPostThrough(ctx context.Context, h http.Handler, target, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(proxy.AgentHeader, labActor)
-	h.ServeHTTP(httptest.NewRecorder(), req)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
 }
 
 // newBenignBackend serves a harmless lab document for the allowed-read scenario.

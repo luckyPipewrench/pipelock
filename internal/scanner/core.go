@@ -703,7 +703,6 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		viewLabel string
 	}
 	targets := []dlpTarget{
-		{parsed.String(), dlpViewLabel("url")},
 		{parsed.Path, dlpViewLabel("url_path")},
 		{decodedQuery, dlpViewLabel("url_query")},
 	}
@@ -734,10 +733,14 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 		targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped")})
 	}
 
-	// Double-encoded raw path.
-	decodedPath := IterativeDecode(parsed.RawPath)
+	// Double-encoded escaped path.
+	rawPath := parsed.RawPath
+	if rawPath == "" {
+		rawPath = parsed.EscapedPath()
+	}
+	decodedPath := IterativeDecode(rawPath)
 	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path")})
+		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded")})
 	}
 
 	// Path segment decoding (hex/base64/base32).
@@ -757,6 +760,10 @@ func (s *Scanner) checkCoreDLP(parsed *url.URL) Result {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("query_concat_noise_stripped")})
 		}
 	}
+
+	// Coarse full-URL fallback runs after component targets so path/query spans
+	// keep their more precise view labels when both views match.
+	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url")})
 
 	for _, target := range targets {
 		if target.text == "" {

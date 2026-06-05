@@ -200,6 +200,8 @@ func TestHandleOrderPaid_RejectsInvalidOrders(t *testing.T) {
 		{name: "wrong currency", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"currency": "usd"`, `"currency": "eur"`)},
 		{name: "wrong product", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), testEvalProductID, "prod_not_allowlisted")},
 		{name: "fully refunded", body: defaultEvalOrderJSON(orderStatusRefunded)},
+		{name: "not a purchase", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"billing_reason": "purchase"`, `"billing_reason": "subscription_cycle"`)},
+		{name: "wrong tier metadata", body: strings.ReplaceAll(defaultEvalOrderJSON(orderStatusPaid), `"pipelock_tier": "enterprise_eval"`, `"pipelock_tier": "pro"`)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -265,9 +265,12 @@ func TestIsOrderEvent(t *testing.T) {
 		want      bool
 	}{
 		{EventOrderCreated, true},
+		{EventOrderPaid, true},
+		{EventOrderRefunded, true},
+		{EventOrderUpdated, true},
 		{EventSubscriptionCreated, false},
 		{"", false},
-		{"order.updated", false},
+		{"customer.created", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.eventType, func(t *testing.T) {

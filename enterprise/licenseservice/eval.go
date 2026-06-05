@@ -235,6 +235,17 @@ func (h *WebhookHandler) HandleOrderRefundEvent(ctx context.Context, event *Pola
 		return h.db.MarkWebhookCommitted(ctx, msgID, event.Type, order.ID)
 	}
 
+	// Only act on eval-related orders: an existing eval-order record, or a
+	// product in the eval allowlist (the refund-before-paid case has no record
+	// yet). Refunds of other one-time products are out of scope here.
+	existing, err := h.db.GetEvalOrder(ctx, order.ID)
+	if err != nil {
+		return fmt.Errorf("load eval order for refund: %w", err)
+	}
+	if existing == nil && !h.isEvalProduct(order.Product.ID) {
+		return h.db.MarkWebhookCommitted(ctx, msgID, event.Type, order.ID)
+	}
+
 	return h.revokeEvalForOrder(ctx, order, refundState, msgID, event.Type)
 }
 

@@ -321,6 +321,31 @@ func TestEmailSender_SendLicenseDelivery_EnterpriseEvalValidity(t *testing.T) {
 	}
 }
 
+// TestEmailSender_SendLicenseDelivery_EscapesToken proves the html/template
+// auto-escapes interpolated values, so a token (or any field) containing HTML
+// cannot inject markup/script into the delivered email.
+func TestEmailSender_SendLicenseDelivery_EscapesToken(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = w.Write([]byte(`{"id":"m"}`))
+	}))
+	defer srv.Close()
+
+	e := &EmailSender{apiKey: "k", fromEmail: "f@x.test", client: srv.Client(), apiURL: srv.URL}
+	maliciousToken := "pipelock_lic_" + "v1_" + `<script>alert(1)</script>` //nolint:gosec // not a credential, an XSS probe for the escaping test
+	if _, err := e.SendLicenseDelivery(t.Context(), "to@x.test", maliciousToken, tierEnterpriseEval); err != nil {
+		t.Fatalf("SendLicenseDelivery: %v", err)
+	}
+	if strings.Contains(gotBody, "<script>alert(1)</script>") {
+		t.Error("raw <script> survived into email body — template did not escape")
+	}
+	if !strings.Contains(gotBody, "lt;script") {
+		t.Errorf("expected escaped token in body, got: %s", gotBody)
+	}
+}
+
 func TestNewEmailSender(t *testing.T) {
 	sender := NewEmailSender("re_"+"test_new", "from@test.com")
 	if sender.apiKey != "re_"+"test_new" {

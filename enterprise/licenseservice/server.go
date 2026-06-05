@@ -130,9 +130,21 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this is an order event (one-time purchases like trials).
+	// Check if this is an order event (one-time purchases like trials and the
+	// Enterprise Eval). order.paid mints, order.refunded/order.updated revoke,
+	// order.created remains the legacy trial path. Return 500 on failure so Polar
+	// retries; the per-handler webhook-id dedupe prevents duplicate processing.
 	if isOrderEvent(event.Type) {
-		if err := s.handler.HandleOrderEvent(r.Context(), event); err != nil {
+		var err error
+		switch event.Type {
+		case EventOrderPaid:
+			err = s.handler.HandleOrderPaidEvent(r.Context(), event, msgID)
+		case EventOrderRefunded, EventOrderUpdated:
+			err = s.handler.HandleOrderRefundEvent(r.Context(), event, msgID)
+		default: // EventOrderCreated (legacy trial path)
+			err = s.handler.HandleOrderEvent(r.Context(), event)
+		}
+		if err != nil {
 			s.log.Error().Err(err).
 				Str("event_type", event.Type).
 				Msg("order webhook processing error")
@@ -265,5 +277,10 @@ func isSubscriptionEvent(eventType string) bool {
 
 // isOrderEvent returns true for Polar order event types (one-time purchases).
 func isOrderEvent(eventType string) bool {
-	return eventType == EventOrderCreated
+	switch eventType {
+	case EventOrderCreated, EventOrderPaid, EventOrderRefunded, EventOrderUpdated:
+		return true
+	default:
+		return false
+	}
 }

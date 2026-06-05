@@ -24,6 +24,7 @@ const (
 	testWebhookSecretB64 = "dGVzdC1zZWNyZXQta2V5LTEy" + "MzQ1Njc4OTA=" //nolint:gosec // gitleaks:allow
 
 	testSubscriptionID     = "sub_test123"
+	testOrderID            = "order_test789"
 	testWebhookMsgID       = "msg_test456"
 	testProductID          = "prod_abc"
 	testProductName        = "Pipelock Pro Monthly"
@@ -393,6 +394,128 @@ func TestPolarClient_GetSubscription(t *testing.T) {
 				t.Errorf("GetSubscription() status = %q, want %q", sub.Status, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestPolarClient_GetOrder(t *testing.T) {
+	tests := []struct {
+		name         string
+		statusCode   int
+		body         string
+		wantErr      bool
+		wantPaid     bool
+		wantStatus   string
+		wantRefunded int
+		wantTotal    int
+		wantCurrency string
+	}{
+		{
+			name:       "paid order",
+			statusCode: http.StatusOK,
+			body: `{
+				"id": "order_test789",
+				"status": "paid",
+				"paid": true,
+				"billing_reason": "purchase",
+				"total_amount": 500000,
+				"refunded_amount": 0,
+				"currency": "usd",
+				"customer": {"email": "buyer@example.com", "metadata": {}},
+				"product": {"id": "prod_eval", "name": "Enterprise Eval", "metadata": {"pipelock_tier": "enterprise_eval"}}
+			}`,
+			wantErr:      false,
+			wantPaid:     true,
+			wantStatus:   "paid",
+			wantRefunded: 0,
+			wantTotal:    500000,
+			wantCurrency: "usd",
+		},
+		{
+			name:       "partially refunded order",
+			statusCode: http.StatusOK,
+			body: `{
+				"id": "order_test789",
+				"status": "partially_refunded",
+				"paid": true,
+				"billing_reason": "purchase",
+				"total_amount": 500000,
+				"refunded_amount": 100000,
+				"currency": "usd",
+				"customer": {"email": "buyer@example.com", "metadata": {}},
+				"product": {"id": "prod_eval", "name": "Enterprise Eval", "metadata": {"pipelock_tier": "enterprise_eval"}}
+			}`,
+			wantErr:      false,
+			wantPaid:     true,
+			wantStatus:   "partially_refunded",
+			wantRefunded: 100000,
+			wantTotal:    500000,
+			wantCurrency: "usd",
+		},
+		{
+			name:       "404 not found",
+			statusCode: http.StatusNotFound,
+			body:       `{"error": "not found"}`,
+			wantErr:    true,
+		},
+		{
+			name:       "invalid json",
+			statusCode: http.StatusOK,
+			body:       `{not valid`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if auth := r.Header.Get("Authorization"); auth != "Bearer "+testPolarAPIToken {
+					t.Errorf("expected Bearer token, got %q", auth)
+				}
+				wantPath := fmt.Sprintf("/v1/orders/%s", testOrderID)
+				if r.URL.Path != wantPath {
+					t.Errorf("got path %q, want %q", r.URL.Path, wantPath)
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := NewPolarClient(testPolarAPIToken, srv.URL)
+			order, err := client.GetOrder(t.Context(), testOrderID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetOrder() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if order.Paid != tt.wantPaid {
+				t.Errorf("Paid = %v, want %v", order.Paid, tt.wantPaid)
+			}
+			if order.Status != tt.wantStatus {
+				t.Errorf("Status = %q, want %q", order.Status, tt.wantStatus)
+			}
+			if order.RefundedAmount != tt.wantRefunded {
+				t.Errorf("RefundedAmount = %d, want %d", order.RefundedAmount, tt.wantRefunded)
+			}
+			if order.TotalAmount != tt.wantTotal {
+				t.Errorf("TotalAmount = %d, want %d", order.TotalAmount, tt.wantTotal)
+			}
+			if order.Currency != tt.wantCurrency {
+				t.Errorf("Currency = %q, want %q", order.Currency, tt.wantCurrency)
+			}
+		})
+	}
+}
+
+func TestOrderEventConstants(t *testing.T) {
+	if EventOrderPaid != "order.paid" {
+		t.Errorf("EventOrderPaid = %q", EventOrderPaid)
+	}
+	if EventOrderRefunded != "order.refunded" {
+		t.Errorf("EventOrderRefunded = %q", EventOrderRefunded)
+	}
+	if EventOrderUpdated != "order.updated" {
+		t.Errorf("EventOrderUpdated = %q", EventOrderUpdated)
 	}
 }
 

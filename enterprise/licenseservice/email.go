@@ -64,6 +64,8 @@ func tierDisplayName(tier string) string {
 		return "Pro"
 	case tierEnterprise:
 		return "Enterprise"
+	case tierEnterpriseEval:
+		return "Enterprise Eval"
 	default:
 		return tier
 	}

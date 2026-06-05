@@ -26,6 +26,22 @@ const (
 	EventSubscriptionRevoked  = "subscription.revoked"
 	EventSubscriptionCanceled = "subscription.canceled"
 	EventOrderCreated         = "order.created"
+	// EventOrderPaid is the reliable fulfillment event for one-time purchases.
+	// order.created may fire before payment settles, so eval tokens mint on
+	// order.paid, never on order.created.
+	EventOrderPaid = "order.paid"
+	// EventOrderRefunded fires for full or partial refunds of an order.
+	EventOrderRefunded = "order.refunded"
+	// EventOrderUpdated fires on order state changes (including refund-state
+	// transitions); handled defensively alongside order.refunded.
+	EventOrderUpdated = "order.updated"
+)
+
+// Polar order status values.
+const (
+	orderStatusPaid              = "paid"
+	orderStatusRefunded          = "refunded"
+	orderStatusPartiallyRefunded = "partially_refunded"
 )
 
 // PolarWebhookEvent is the top-level envelope for all Polar webhook deliveries.
@@ -115,6 +131,50 @@ func (p *PolarClient) GetSubscription(ctx context.Context, subscriptionID string
 	}
 
 	return &sub, nil
+}
+
+// GetOrder fetches the current state of an order from Polar's API. Like
+// GetSubscription, this is the source of truth: eval fulfillment re-fetches the
+// order after a webhook rather than trusting the (spoofable, possibly-stale)
+// webhook payload for paid/refund state and amounts.
+func (p *PolarClient) GetOrder(ctx context.Context, orderID string) (*PolarOrder, error) {
+	url := fmt.Sprintf("%s/v1/orders/%s", p.baseURL, orderID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create order request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.apiToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch order %s: %w", orderID, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Cap response body to prevent memory exhaustion from malformed responses.
+	// 1 MiB is generous for a single order JSON object.
+	const maxResponseBody = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	if err != nil {
+		return nil, fmt.Errorf("read order response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("polar API returned %d for order %s: %s",
+			resp.StatusCode, orderID, string(body))
+	}
+
+	var order PolarOrder
+	if err := json.Unmarshal(body, &order); err != nil {
+		return nil, fmt.Errorf("parse order response: %w", err)
+	}
+	if order.ID == "" {
+		return nil, fmt.Errorf("order ID is empty in API response for %s", orderID)
+	}
+
+	return &order, nil
 }
 
 // webhookTimestampTolerance is the maximum age (or future drift) allowed
@@ -229,6 +289,14 @@ func ExtractSubscriptionID(data json.RawMessage) (string, error) {
 type PolarOrder struct {
 	ID            string `json:"id"`
 	BillingReason string `json:"billing_reason"` // "purchase", "subscription_create", "subscription_cycle", "subscription_update"
+
+	// Payment + refund state. Eval fulfillment trusts these only after a
+	// re-fetch from the Polar API (the webhook body is not authoritative).
+	Status         string `json:"status"`          // "paid", "refunded", "partially_refunded", …
+	Paid           bool   `json:"paid"`            // true once payment has settled
+	TotalAmount    int    `json:"total_amount"`    // order total in minor units (cents)
+	RefundedAmount int    `json:"refunded_amount"` // refunded so far in minor units (cents)
+	Currency       string `json:"currency"`        // ISO 4217, lowercase (e.g. "usd")
 
 	Customer struct {
 		Email    string            `json:"email"`

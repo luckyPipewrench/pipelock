@@ -215,6 +215,7 @@ func TestTierToFeatures(t *testing.T) {
 		{"pro", tierPro, []string{license.FeatureAgents}},
 		{"founding pro", tierFoundingPro, []string{license.FeatureAgents}},
 		{"enterprise", tierEnterprise, []string{license.FeatureAgents, license.FeatureFleet}},
+		{"enterprise eval", tierEnterpriseEval, []string{license.FeatureAgents, license.FeatureFleet}},
 		{"trial", tierTrial, []string{license.FeatureAgents}},
 		{"assess", tierAssess, []string{license.FeatureAssess}},
 		{"unknown returns nil (fail-closed)", "unknown", nil},
@@ -1759,6 +1760,7 @@ func TestTokenLifetimeForTier(t *testing.T) {
 		{"pro gets 45 days", tierPro, tokenLifetime},
 		{"founding pro gets 45 days", tierFoundingPro, tokenLifetime},
 		{"enterprise gets 45 days", tierEnterprise, tokenLifetime},
+		{"enterprise eval gets 60 days", tierEnterpriseEval, evalTokenLifetime},
 	}
 
 	for _, tt := range tests {

@@ -28,6 +28,11 @@ const tokenLifetime = 45 * 24 * time.Hour
 // 30 days matches the one-time purchase duration (no renewal).
 const trialTokenLifetime = 30 * 24 * time.Hour
 
+// evalTokenLifetime is the validity period for Enterprise Eval license tokens.
+// 60 days matches the paid one-time eval window (no renewal). When it expires,
+// Conductor refuses to start; Apache-tier security scanning is unaffected.
+const evalTokenLifetime = 60 * 24 * time.Hour
+
 // refreshLeadDays is how many days before a token expires we schedule
 // the next refresh. 15 days means monthly subscribers get refreshed
 // at day 30 (15 days before the 45-day expiry).
@@ -46,22 +51,24 @@ const (
 
 // Tier constants for Pipelock subscription levels.
 const (
-	tierFoundingPro = "founding_pro"
-	tierPro         = "pro"
-	tierEnterprise  = "enterprise"
-	tierTrial       = "trial"
-	tierAssess      = "assess"
+	tierFoundingPro    = "founding_pro"
+	tierPro            = "pro"
+	tierEnterprise     = "enterprise"
+	tierEnterpriseEval = "enterprise_eval"
+	tierTrial          = "trial"
+	tierAssess         = "assess"
 )
 
 // validTiers is the allowlist of accepted pipelock_tier metadata values.
 // Unknown tier values are rejected to prevent misconfigured Polar products
 // from silently granting paid features.
 var validTiers = map[string]bool{
-	tierFoundingPro: true,
-	tierPro:         true,
-	tierEnterprise:  true,
-	tierTrial:       true,
-	tierAssess:      true,
+	tierFoundingPro:    true,
+	tierPro:            true,
+	tierEnterprise:     true,
+	tierEnterpriseEval: true,
+	tierTrial:          true,
+	tierAssess:         true,
 }
 
 // WebhookHandler processes Polar webhook events and coordinates license
@@ -607,11 +614,13 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 	switch tier {
 	case tierFoundingPro, tierPro, tierTrial:
 		return []string{license.FeatureAgents}
-	case tierEnterprise:
-		// Enterprise tier carries the fleet control plane (Conductor + audit
-		// sink) on top of the Pro multi-agent profile feature. Add additional
-		// Enterprise-only features (hosted services, transparency log, …) to
-		// this slice as they ship.
+	case tierEnterprise, tierEnterpriseEval:
+		// Enterprise (and the time-boxed Enterprise Eval) carry the fleet control
+		// plane (Conductor + audit sink) on top of the Pro multi-agent profile
+		// feature. Eval gets the same capabilities as full Enterprise; the only
+		// difference is the 60-day, non-renewing token lifetime. Add additional
+		// Enterprise-only features (hosted services, transparency log, …) to this
+		// slice as they ship.
 		return []string{license.FeatureAgents, license.FeatureFleet}
 	case tierAssess:
 		return []string{license.FeatureAssess}
@@ -621,13 +630,17 @@ func (h *WebhookHandler) tierToFeatures(tier string) []string {
 }
 
 // tokenLifetimeForTier returns the token validity period for a given tier.
-// Trials get 30 days (one-time, no renewal). All other tiers get 45 days
-// with rolling refresh.
+// Trials get 30 days and Enterprise Eval gets 60 days (both one-time, no
+// renewal). All other tiers get 45 days with rolling refresh.
 func (h *WebhookHandler) tokenLifetimeForTier(tier string) time.Duration {
-	if tier == tierTrial {
+	switch tier {
+	case tierTrial:
 		return trialTokenLifetime
+	case tierEnterpriseEval:
+		return evalTokenLifetime
+	default:
+		return tokenLifetime
 	}
-	return tokenLifetime
 }
 
 // checkFoundingCap verifies that the Founding Pro cap has not been reached.

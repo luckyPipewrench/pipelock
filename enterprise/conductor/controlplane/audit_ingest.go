@@ -128,13 +128,17 @@ func (h *Handler) handleAuditBatch(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = AuditIngestStatusAccepted
 	}
+	responseAcceptedAt := acceptedAt
+	if !result.Summary.ReceivedAt.IsZero() {
+		responseAcceptedAt = result.Summary.ReceivedAt
+	}
 	writeJSON(w, http.StatusAccepted, ingestAuditBatchResponse{
 		Status:       string(status),
 		BatchID:      req.Envelope.BatchID,
 		EnvelopeHash: envelopeHash,
 		SeqStart:     req.Envelope.SeqStart,
 		SeqEnd:       req.Envelope.SeqEnd,
-		AcceptedAt:   acceptedAt,
+		AcceptedAt:   responseAcceptedAt,
 	})
 }
 

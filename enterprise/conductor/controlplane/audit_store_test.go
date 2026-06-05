@@ -157,24 +157,33 @@ func TestSQLiteAuditStoreConcurrentIdenticalRetryStoresOneRow(t *testing.T) {
 	batch := signedAcceptedAuditBatch(t, defaultFollowerIdentity(), testAuditBatchID, 10, 10, []byte(testAuditPayload), testNow)
 	const workers = 16
 	var wg sync.WaitGroup
-	errs := make(chan error, workers)
+	type ingestResult struct {
+		result AuditIngestResult
+		err    error
+	}
+	ingests := make(chan ingestResult, workers)
 	start := make(chan struct{})
 	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := store.put(context.Background(), batch)
-			errs <- err
+			result, err := store.IngestAuditBatch(context.Background(), batch)
+			ingests <- ingestResult{result: result, err: err}
 		}()
 	}
 	close(start)
 	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent put() error = %v", err)
+	close(ingests)
+	statusCounts := map[AuditIngestStatus]int{}
+	for ingest := range ingests {
+		if ingest.err != nil {
+			t.Fatalf("concurrent IngestAuditBatch() error = %v", ingest.err)
 		}
+		statusCounts[ingest.result.Status]++
+	}
+	if statusCounts[AuditIngestStatusAccepted] != 1 || statusCounts[AuditIngestStatusDuplicate] != workers-1 {
+		t.Fatalf("status counts = %+v, want one accepted and %d duplicates", statusCounts, workers-1)
 	}
 	results, err := store.ListAuditBatches(context.Background(), AuditBatchQuery{
 		OrgID:      batch.Identity.OrgID,

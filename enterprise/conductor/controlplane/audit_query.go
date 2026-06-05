@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -93,15 +94,8 @@ func (h *Handler) handleGetAuditBatch(w http.ResponseWriter, r *http.Request) {
 
 func parseAuditBatchQuery(r *http.Request) (AuditBatchQuery, error) {
 	values := r.URL.Query()
-	for key, got := range values {
-		switch key {
-		case "org_id", "fleet_id", "instance_id", "batch_id", "limit":
-		default:
-			return AuditBatchQuery{}, fmt.Errorf("unknown query parameter: %s", key)
-		}
-		if len(got) > 1 {
-			return AuditBatchQuery{}, fmt.Errorf("duplicate query parameter: %s", key)
-		}
+	if err := validateAuditQueryValues(values, "org_id", "fleet_id", "instance_id", "batch_id", "limit"); err != nil {
+		return AuditBatchQuery{}, err
 	}
 	q := AuditBatchQuery{
 		OrgID:      values.Get("org_id"),
@@ -112,20 +106,8 @@ func parseAuditBatchQuery(r *http.Request) (AuditBatchQuery, error) {
 	if q.OrgID == "" {
 		return AuditBatchQuery{}, errors.New("org_id query parameter required")
 	}
-	for _, c := range []struct {
-		field, value string
-	}{
-		{"org_id", q.OrgID},
-		{"fleet_id", q.FleetID},
-		{"instance_id", q.InstanceID},
-		{"batch_id", q.BatchID},
-	} {
-		if c.value == "" {
-			continue
-		}
-		if err := conductor.ValidateIdentifier(c.field, c.value); err != nil {
-			return AuditBatchQuery{}, err
-		}
+	if err := validateAuditQueryIdentifiers(q); err != nil {
+		return AuditBatchQuery{}, err
 	}
 	if rawLimit := values.Get("limit"); rawLimit != "" {
 		limit, err := strconv.Atoi(rawLimit)
@@ -143,15 +125,8 @@ func parseAuditBatchGetQuery(r *http.Request) (AuditBatchQuery, error) {
 		return AuditBatchQuery{}, ErrAuditBatchNotFound
 	}
 	values := r.URL.Query()
-	for key, got := range values {
-		switch key {
-		case "org_id", "fleet_id", "instance_id":
-		default:
-			return AuditBatchQuery{}, fmt.Errorf("unknown query parameter: %s", key)
-		}
-		if len(got) > 1 {
-			return AuditBatchQuery{}, fmt.Errorf("duplicate query parameter: %s", key)
-		}
+	if err := validateAuditQueryValues(values, "org_id", "fleet_id", "instance_id"); err != nil {
+		return AuditBatchQuery{}, err
 	}
 	q := AuditBatchQuery{
 		OrgID:      values.Get("org_id"),
@@ -162,6 +137,29 @@ func parseAuditBatchGetQuery(r *http.Request) (AuditBatchQuery, error) {
 	if q.OrgID == "" || q.FleetID == "" || q.InstanceID == "" {
 		return AuditBatchQuery{}, errors.New("org_id, fleet_id, and instance_id query parameters required")
 	}
+	if err := validateAuditQueryIdentifiers(q); err != nil {
+		return AuditBatchQuery{}, err
+	}
+	return q, nil
+}
+
+func validateAuditQueryValues(values url.Values, allowedKeys ...string) error {
+	allowed := make(map[string]struct{}, len(allowedKeys))
+	for _, key := range allowedKeys {
+		allowed[key] = struct{}{}
+	}
+	for key, got := range values {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unknown query parameter: %s", key)
+		}
+		if len(got) > 1 {
+			return fmt.Errorf("duplicate query parameter: %s", key)
+		}
+	}
+	return nil
+}
+
+func validateAuditQueryIdentifiers(q AuditBatchQuery) error {
 	for _, c := range []struct {
 		field, value string
 	}{
@@ -170,9 +168,12 @@ func parseAuditBatchGetQuery(r *http.Request) (AuditBatchQuery, error) {
 		{"instance_id", q.InstanceID},
 		{"batch_id", q.BatchID},
 	} {
+		if c.value == "" {
+			continue
+		}
 		if err := conductor.ValidateIdentifier(c.field, c.value); err != nil {
-			return AuditBatchQuery{}, err
+			return err
 		}
 	}
-	return q, nil
+	return nil
 }

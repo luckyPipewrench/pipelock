@@ -367,16 +367,26 @@ func TestAuditIngestIncompleteIdentityReturns401(t *testing.T) {
 func TestAuditIngestReplayWithinSkewWindowReportsDuplicate(t *testing.T) {
 	payload := []byte(`{"entry":"ok"}`)
 	pub, priv := testAuditSigner(t)
+	storedAt := testNow.Add(-time.Minute)
 	sink := &captureAuditSink{
 		results: []AuditIngestResult{
 			{Status: AuditIngestStatusAccepted},
-			{Status: AuditIngestStatusDuplicate},
+			{
+				Status:  AuditIngestStatusDuplicate,
+				Summary: AuditBatchSummary{ReceivedAt: storedAt},
+			},
 		},
 	}
 	handler := newAuditIngestTestHandler(t, sink, auditKeyResolverFor(pub), 0)
 	req := signedAuditIngestRequest(t, defaultFollowerIdentity(), payload, priv, testNow)
 
-	for i, wantStatus := range []AuditIngestStatus{AuditIngestStatusAccepted, AuditIngestStatusDuplicate} {
+	for i, want := range []struct {
+		status     AuditIngestStatus
+		acceptedAt time.Time
+	}{
+		{status: AuditIngestStatusAccepted, acceptedAt: testNow},
+		{status: AuditIngestStatusDuplicate, acceptedAt: storedAt},
+	} {
 		w := postAuditBatch(t, handler, req)
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("replay #%d status = %d body=%s, want 202", i, w.Code, w.Body.String())
@@ -385,8 +395,11 @@ func TestAuditIngestReplayWithinSkewWindowReportsDuplicate(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("decode replay response: %v", err)
 		}
-		if got.Status != string(wantStatus) {
-			t.Fatalf("replay #%d status = %q, want %q", i, got.Status, wantStatus)
+		if got.Status != string(want.status) {
+			t.Fatalf("replay #%d status = %q, want %q", i, got.Status, want.status)
+		}
+		if !got.AcceptedAt.Equal(want.acceptedAt) {
+			t.Fatalf("replay #%d accepted_at = %s, want %s", i, got.AcceptedAt, want.acceptedAt)
 		}
 	}
 	if len(sink.batches) != 2 {

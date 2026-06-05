@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -50,6 +51,21 @@ type Config struct {
 
 	// PolarAPIBase is the base URL for the Polar API. Defaults to production.
 	PolarAPIBase string
+
+	// EvalProductIDs is the allowlist of Polar product IDs that fulfill the
+	// Enterprise Eval. An order only mints an eval token if its product ID is in
+	// this list AND its tier metadata is enterprise_eval (defense in depth against
+	// metadata misconfiguration). Empty list disables eval fulfillment entirely.
+	EvalProductIDs []string
+
+	// EvalAmountCents is the exact expected order total (minor units) for an
+	// Enterprise Eval purchase. A paid order whose total differs is refused.
+	// Required (>0) whenever EvalProductIDs is non-empty.
+	EvalAmountCents int
+
+	// EvalCurrency is the expected ISO 4217 currency (lowercase) for an eval
+	// order. Defaults to usd.
+	EvalCurrency string
 }
 
 const (
@@ -60,6 +76,7 @@ const (
 	defaultLedgerPath       = "audit.jsonl"
 	defaultFromEmail        = "licenses@mail.pipelab.org"
 	defaultPolarAPIBase     = "https://api.polar.sh"
+	defaultEvalCurrency     = "usd"
 )
 
 // LoadConfig reads configuration from environment variables with sensible
@@ -97,6 +114,26 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.FoundingProDeadline = deadline
 
+	// Parse Enterprise Eval fulfillment config. Eval selling is opt-in: with no
+	// product IDs configured, eval orders are never fulfilled.
+	cfg.EvalProductIDs = splitAndTrim(os.Getenv("EVAL_PRODUCT_IDS"))
+	cfg.EvalCurrency = strings.ToLower(envOrDefault("EVAL_CURRENCY", defaultEvalCurrency))
+	if amountStr := os.Getenv("EVAL_AMOUNT_CENTS"); amountStr != "" {
+		amount, err := strconv.Atoi(amountStr)
+		if err != nil {
+			return nil, fmt.Errorf("parse EVAL_AMOUNT_CENTS: %w", err)
+		}
+		if amount < 0 {
+			return nil, fmt.Errorf("EVAL_AMOUNT_CENTS must be non-negative, got %d", amount)
+		}
+		cfg.EvalAmountCents = amount
+	}
+	// A configured eval product without a fixed expected amount would let any
+	// paid amount through, so require a positive amount when products are set.
+	if len(cfg.EvalProductIDs) > 0 && cfg.EvalAmountCents <= 0 {
+		return nil, fmt.Errorf("EVAL_AMOUNT_CENTS must be set (>0) when EVAL_PRODUCT_IDS is configured")
+	}
+
 	// Validate required secrets.
 	if cfg.PolarWebhookSecret == "" {
 		return nil, fmt.Errorf("POLAR_WEBHOOK_SECRET is required")
@@ -119,4 +156,20 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// splitAndTrim splits a comma-separated env value into trimmed, non-empty
+// entries. Returns nil for an empty/blank input.
+func splitAndTrim(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

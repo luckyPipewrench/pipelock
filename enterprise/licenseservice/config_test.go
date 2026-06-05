@@ -117,6 +117,66 @@ func TestLoadConfig_CustomValues(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_EvalDefaults(t *testing.T) {
+	setRequiredConfigEnv(t)
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// With no eval product IDs configured, eval selling is effectively disabled
+	// and currency defaults to usd. No amount requirement.
+	if len(cfg.EvalProductIDs) != 0 {
+		t.Errorf("EvalProductIDs = %v, want empty", cfg.EvalProductIDs)
+	}
+	if cfg.EvalCurrency != defaultEvalCurrency {
+		t.Errorf("EvalCurrency = %q, want %q", cfg.EvalCurrency, defaultEvalCurrency)
+	}
+}
+
+func TestLoadConfig_EvalConfigured(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("EVAL_PRODUCT_IDS", "prod_eval_a, prod_eval_b")
+	t.Setenv("EVAL_AMOUNT_CENTS", "500000")
+	t.Setenv("EVAL_CURRENCY", "USD")
+
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.EvalProductIDs) != 2 || cfg.EvalProductIDs[0] != "prod_eval_a" || cfg.EvalProductIDs[1] != "prod_eval_b" {
+		t.Errorf("EvalProductIDs = %v, want [prod_eval_a prod_eval_b] (trimmed)", cfg.EvalProductIDs)
+	}
+	if cfg.EvalAmountCents != 500000 {
+		t.Errorf("EvalAmountCents = %d, want 500000", cfg.EvalAmountCents)
+	}
+	// Currency is normalized to lowercase for comparison against Polar.
+	if cfg.EvalCurrency != "usd" {
+		t.Errorf("EvalCurrency = %q, want usd", cfg.EvalCurrency)
+	}
+}
+
+func TestLoadConfig_EvalProductsRequireAmount(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("EVAL_PRODUCT_IDS", "prod_eval_a")
+	// EVAL_AMOUNT_CENTS unset → must error: a configured eval product without a
+	// fixed expected amount would let any amount through.
+	_, err := LoadConfig()
+	if err == nil {
+		t.Error("expected error when eval products configured without EVAL_AMOUNT_CENTS")
+	}
+}
+
+func TestLoadConfig_EvalInvalidAmount(t *testing.T) {
+	setRequiredConfigEnv(t)
+	t.Setenv("EVAL_PRODUCT_IDS", "prod_eval_a")
+	t.Setenv("EVAL_AMOUNT_CENTS", "not-a-number")
+	_, err := LoadConfig()
+	if err == nil {
+		t.Error("expected error for invalid EVAL_AMOUNT_CENTS")
+	}
+}
+
 func TestLoadConfig_ZeroFoundingCap(t *testing.T) {
 	setRequiredConfigEnv(t)
 	t.Setenv("FOUNDING_PRO_CAP", "0")

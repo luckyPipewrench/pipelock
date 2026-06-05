@@ -164,6 +164,12 @@ func validateEvalOrderStates(eo *EvalOrder) error {
 // GetEvalOrder retrieves an eval order by Polar order ID. Returns nil, nil if
 // not found.
 func (e *EntitlementDB) GetEvalOrder(ctx context.Context, orderID string) (*EvalOrder, error) {
+	return getEvalOrder(ctx, e.db, orderID)
+}
+
+// getEvalOrder reads an eval order using the given queryer (the DB or a
+// transaction), so the mint path can re-check state inside its transaction.
+func getEvalOrder(ctx context.Context, q entitlementQueryer, orderID string) (*EvalOrder, error) {
 	const query = `
 	SELECT order_id, normalized_email, product_id, total_amount, refunded_amount,
 		currency, polar_paid, refund_state, fulfillment_state, revocation_state,
@@ -172,7 +178,7 @@ func (e *EntitlementDB) GetEvalOrder(ctx context.Context, orderID string) (*Eval
 	WHERE order_id = ?
 	`
 	eo := &EvalOrder{}
-	err := e.db.QueryRowContext(ctx, query, orderID).Scan(
+	err := q.QueryRowContext(ctx, query, orderID).Scan(
 		&eo.OrderID, &eo.NormalizedEmail, &eo.ProductID, &eo.TotalAmount, &eo.RefundedAmount,
 		&eo.Currency, &eo.PolarPaid, &eo.RefundState, &eo.FulfillmentState, &eo.RevocationState,
 		&eo.GateDenialReason, &eo.LicenseID, &eo.CreatedAt, &eo.UpdatedAt,
@@ -222,4 +228,87 @@ func (e *EntitlementDB) WebhookCommitted(ctx context.Context, msgID string) (boo
 		return false, fmt.Errorf("check webhook delivery %s: %w", msgID, err)
 	}
 	return true, nil
+}
+
+// CountActiveEvalForEmail returns the number of active, unexpired Enterprise
+// Eval entitlements for a normalized email. Used to enforce one active eval per
+// email at mint time.
+func (e *EntitlementDB) CountActiveEvalForEmail(ctx context.Context, normalizedEmail string, now time.Time) (int, error) {
+	const query = `
+	SELECT COUNT(*) FROM entitlements
+	WHERE tier = ? AND status = ? AND customer_email = ? AND current_period_end > ?
+	`
+	var count int
+	err := e.db.QueryRowContext(ctx, query, tierEnterpriseEval, statusActive, normalizedEmail, now.UTC()).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count active eval for %s: %w", normalizedEmail, err)
+	}
+	return count, nil
+}
+
+// ErrEvalOrderNotMintable means the eval order's persisted state changed (refund,
+// revocation, or an existing mint) between validation and the mint transaction,
+// so minting must be refused.
+var ErrEvalOrderNotMintable = errors.New("eval order is not mintable")
+
+// EvalMintParams carries everything the atomic eval mint commits together.
+type EvalMintParams struct {
+	Entitlement  *Entitlement
+	Issuance     LicenseIssuance
+	EvalOrder    *EvalOrder
+	WebhookMsgID string
+	EventType    string
+}
+
+// FulfillEvalMint atomically commits an eval token issuance: it re-checks the
+// eval order state inside the transaction (refusing if it became refunded,
+// revoked, or already minted), then writes the entitlement, license issuance,
+// eval-order (minted), and the webhook-committed marker as a single unit. Either
+// all of it commits or none of it does, so a crash cannot leave an entitlement
+// without its eval-order/dedupe record.
+func (e *EntitlementDB) FulfillEvalMint(ctx context.Context, p EvalMintParams) error {
+	if p.Entitlement == nil || p.EvalOrder == nil {
+		return errors.New("eval mint params incomplete")
+	}
+	tx, err := e.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin eval mint transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	existing, err := getEvalOrder(ctx, tx, p.EvalOrder.OrderID)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		if existing.FulfillmentState == fulfillmentMinted ||
+			existing.RefundState != refundStateNone ||
+			existing.RevocationState != revocationNone {
+			return ErrEvalOrderNotMintable
+		}
+	}
+
+	if err := upsertEntitlement(ctx, tx, p.Entitlement); err != nil {
+		return fmt.Errorf("upsert eval entitlement: %w", err)
+	}
+	if err := insertLicenseIssuance(ctx, tx, p.Issuance); err != nil {
+		return fmt.Errorf("insert eval issuance: %w", err)
+	}
+	if err := upsertEvalOrder(ctx, tx, p.EvalOrder); err != nil {
+		return fmt.Errorf("upsert eval order: %w", err)
+	}
+	if err := markWebhookCommitted(ctx, tx, p.WebhookMsgID, p.EventType, p.EvalOrder.OrderID); err != nil {
+		return fmt.Errorf("mark eval webhook committed: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit eval mint transaction: %w", err)
+	}
+	committed = true
+	return nil
 }

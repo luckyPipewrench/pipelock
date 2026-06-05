@@ -28,6 +28,11 @@ const (
 	AuditLicenseRevoked  = "license_revoked"
 	AuditFoundingCapHit  = "founding_cap_hit"
 	AuditError           = "error"
+
+	// Enterprise Eval fulfillment events.
+	AuditEvalMinted        = "eval_minted"
+	AuditEvalRefundRevoked = "eval_refund_revoked"
+	AuditEvalRejected      = "eval_rejected"
 )
 
 // AuditEntry is a single line in the append-only JSONL audit ledger.

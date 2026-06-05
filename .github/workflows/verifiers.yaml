@@ -268,14 +268,15 @@ jobs:
         working-directory: sdk/verifiers/rust
         run: cargo build --release
 
-      - name: Install Python AARP verifier
+      - name: Install Python AARP verifier dependencies (hash-pinned)
         working-directory: sdk/verifiers/python
-        # Hash-pinned dependency install (Scorecard Pinned-Dependencies): the
-        # crypto dependency is locked with --require-hashes, then the verifier is
-        # installed with --no-deps so no unpinned package is ever fetched.
-        run: |
-          pip install --require-hashes -r requirements.txt
-          pip install --no-deps .
+        # Scorecard Pinned-Dependencies: every dependency installed here is
+        # locked with --require-hashes. The verifier package itself is NOT
+        # pip-installed: a local `pip install .` cannot be hash-pinned, so
+        # Scorecard flags it on every run regardless of --no-deps. Instead the
+        # pure-Python package is run from its pinned checkout via PYTHONPATH in
+        # the conformance gate below, so no unpinned install command ever runs.
+        run: pip install --require-hashes -r requirements.txt
 
       - name: Run AARP cross-language gate
         env:
@@ -286,5 +287,6 @@ jobs:
           GO_AARP: ${{ runner.temp }}/pipelock-verifier aarp
           TS_AARP: node ${{ github.workspace }}/sdk/verifiers/ts/dist/src/cli.js aarp
           RUST_AARP: ${{ github.workspace }}/sdk/verifiers/rust/target/release/pipelock-verifier-rs aarp
+          PYTHONPATH: ${{ github.workspace }}/sdk/verifiers/python/src
           PY_AARP: python -m pipelock_aarp_verify aarp
         run: bash sdk/conformance/aarp-corpus-gate.sh

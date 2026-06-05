@@ -87,6 +87,13 @@ type TextDLPMatch struct {
 	Bundle        string `json:"bundle,omitempty"`
 	BundleVersion string `json:"bundle_version,omitempty"`
 	Warn          bool   `json:"warn,omitempty"` // true for warn-mode patterns (informational only)
+	span          MatchSpan
+}
+
+// Span returns retained coordinates for this match in the normalized scanner
+// view named by MatchSpan.ViewLabel. It never includes matched bytes.
+func (m TextDLPMatch) Span() MatchSpan {
+	return m.span
 }
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
@@ -126,6 +133,7 @@ func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPM
 		warns = append(warns, WarnMatch{
 			PatternName: m.PatternName,
 			Severity:    m.Severity,
+			span:        m.Span(),
 		})
 	}
 	s.emitDLPWarns(ctx, deduplicateWarnMatches(warns))
@@ -161,13 +169,14 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	if s.seedEnabled {
 		seedText := normalize.ForMatching(text)
 		type seedCandidate struct {
-			text    string
-			encoded string
+			text      string
+			encoded   string
+			viewLabel string
 		}
-		candidates := []seedCandidate{{seedText, ""}}
+		candidates := []seedCandidate{{seedText, "", ViewForMatching}}
 		// URL-decoded variant
 		if decoded := IterativeDecode(seedText); decoded != seedText {
-			candidates = append(candidates, seedCandidate{decoded, "url"})
+			candidates = append(candidates, seedCandidate{decoded, "url", spanViewLabel("url_decoded", ViewForMatching)})
 		}
 		// Base64-decoded variant
 		for _, enc := range []*base64.Encoding{
@@ -175,16 +184,16 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
 			if decoded, err := enc.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-				candidates = append(candidates, seedCandidate{string(decoded), "base64"})
+				candidates = append(candidates, seedCandidate{string(decoded), "base64", spanViewLabel("base64_decoded", ViewForMatching)})
 			}
 		}
 		// Hex-decoded variant
 		if decoded, err := hex.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-			candidates = append(candidates, seedCandidate{string(decoded), "hex"})
+			candidates = append(candidates, seedCandidate{string(decoded), "hex", spanViewLabel("hex_decoded", ViewForMatching)})
 		}
 		// Base32-decoded variant
 		if decoded, err := base32.StdEncoding.DecodeString(strings.TrimSpace(seedText)); err == nil && len(decoded) > 0 {
-			candidates = append(candidates, seedCandidate{string(decoded), "base32"})
+			candidates = append(candidates, seedCandidate{string(decoded), "base32", spanViewLabel("base32_decoded", ViewForMatching)})
 		}
 		// Segment-level decoding: split on the same delimiters as decodeTextSegments()
 		// to maintain parity. Catches encoded seed phrases embedded in URLs within
@@ -195,15 +204,24 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 				continue
 			}
 			for _, d := range decodeEncodings(seg) {
-				candidates = append(candidates, seedCandidate{d.text, d.encoding})
+				candidates = append(candidates, seedCandidate{d.text, d.encoding, spanViewLabel(d.encoding+"_decoded", "text_segment")})
 			}
 		}
 		for _, c := range candidates {
-			if seedMatches := seedprotect.Detect(c.text, s.seedMinWords, s.seedVerifyChecksum); len(seedMatches) > 0 {
+			if seedMatches := seedprotect.DetectSpans(c.text, s.seedMinWords, s.seedVerifyChecksum); len(seedMatches) > 0 {
+				span := seedMatches[0]
 				matches = append(matches, TextDLPMatch{
 					PatternName: "BIP-39 Seed Phrase",
 					Severity:    "critical",
 					Encoded:     c.encoded,
+					span: newMatchSpan(
+						span.Start,
+						span.End,
+						c.viewLabel,
+						"BIP-39 Seed Phrase",
+						"",
+						"",
+					),
 				})
 				break // one seed match per scan is sufficient
 			}
@@ -221,13 +239,14 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 	// This catches secrets that aren't URL-encoded.
 	for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 		p := s.dlpPatterns[idx]
-		if p.matches(cleaned) {
+		if start, end, ok := p.matchSpan(cleaned); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:   p.name,
 				Severity:      p.severity,
 				Bundle:        p.bundle,
 				BundleVersion: p.bundleVersion,
 				Warn:          p.warn,
+				span:          newMatchSpan(start, end, ViewDLPNormalized, p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -265,6 +284,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 				PatternName: textDLPHostnameExfil,
 				Severity:    "high",
 				Encoded:     "subdomain",
+				span:        newMatchSpan(0, len(host), "hostname_extracted", textDLPHostnameExfil, "", ""),
 			})
 			break // one hostname-exfil finding is sufficient
 		}
@@ -324,6 +344,7 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, emitWarns boo
 			warns = append(warns, WarnMatch{
 				PatternName: m.PatternName,
 				Severity:    m.Severity,
+				span:        m.Span(),
 			})
 		}
 		s.emitDLPWarns(ctx, deduplicateWarnMatches(warns))
@@ -403,7 +424,7 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
 		p := s.dlpPatterns[idx]
-		if p.matches(text) {
+		if start, end, ok := p.matchSpan(text); ok {
 			matches = append(matches, TextDLPMatch{
 				PatternName:   p.name,
 				Severity:      p.severity,
@@ -411,6 +432,7 @@ func (s *Scanner) matchDLPPatterns(text, encoding string) []TextDLPMatch {
 				Bundle:        p.bundle,
 				BundleVersion: p.bundleVersion,
 				Warn:          p.warn,
+				span:          newMatchSpan(start, end, dlpViewLabel(encoding), p.name, p.bundle, p.bundleVersion),
 			})
 		}
 	}
@@ -431,23 +453,24 @@ func compactTextDLPWhitespace(text string) string {
 
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).
 // If encodedOverride is non-empty, all matches use that as the Encoded field (e.g. "env").
-// Otherwise, the actual encoding label from matchSecretEncodings is used.
+// Otherwise, the actual encoding label from matchSecretEncodingSpan is used.
 func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encodedOverride string) []TextDLPMatch {
 	if len(secrets) == 0 {
 		return nil
 	}
 
-	texts := []string{text}
-	lowerTexts := []string{strings.ToLower(text)}
+	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
+	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 
 	for _, secret := range secrets {
-		if matched, enc := matchSecretEncodings(secret, texts, lowerTexts); matched {
+		if matched, enc, start, end, viewLabel := matchSecretEncodingSpan(secret, texts, lowerTexts); matched {
 			m := TextDLPMatch{PatternName: patternName, Severity: "critical"}
 			if encodedOverride != "" {
 				m.Encoded = encodedOverride
 			} else {
 				m.Encoded = enc
 			}
+			m.span = newMatchSpan(start, end, viewLabel, patternName, "", "")
 			return []TextDLPMatch{m}
 		}
 	}

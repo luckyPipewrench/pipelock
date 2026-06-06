@@ -8760,6 +8760,30 @@ func TestLicenseIntermediateFileConfigStates(t *testing.T) {
 			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
 		}
 	})
+
+	t.Run("invalid public key warns, does not block startup", func(t *testing.T) {
+		tmp := t.TempDir()
+		certPath := filepath.Join(tmp, "intermediate.json")
+		if err := os.WriteFile(certPath, cert, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfgPath := filepath.Join(tmp, "cfg.yaml")
+		cfgData := "mode: balanced\nlicense_public_key: not-hex\nlicense_intermediate_file: intermediate.json\n"
+		if err := os.WriteFile(cfgPath, []byte(cfgData), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgPath)
+		if err != nil {
+			t.Fatalf("invalid public key must not fail config load, got %v", err)
+		}
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("invalid public key must not be a fatal validate error, got %v", err)
+		}
+		if !hasLicenseIntermediateWarning(warnings) {
+			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
+		}
+	})
 }
 
 func hasLicenseIntermediateWarning(warnings []Warning) bool {

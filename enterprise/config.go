@@ -279,6 +279,12 @@ func EnforceLicenseGate(c *config.Config) {
 		stripNamedAgents(c)
 		return
 	}
+	if c.LicenseIntermediateLoadError != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license intermediate validation failed: %s\n"+
+			"Multi-agent profiles disabled. Single-agent protection is active.\n", c.LicenseIntermediateLoadError)
+		stripNamedAgents(c)
+		return
+	}
 
 	// Verify the license token signature, expiration, optional intermediate
 	// chain, and revocation status.

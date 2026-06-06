@@ -707,6 +707,25 @@ func TestEnforceLicenseGate_IntermediateChain(t *testing.T) {
 		}
 	})
 
+	t.Run("load error denies without direct root fallback", func(t *testing.T) {
+		token, pubHex := testLicenseKeyPair(t)
+		cfg := testConfigWithNamedAgent()
+		cfg.LicenseKey = token
+		cfg.LicensePublicKey = pubHex
+		cfg.LicenseIntermediateLoadError = "stat license_intermediate_file: no such file"
+
+		EnforceLicenseGate(cfg)
+		if cfg.Agents != nil {
+			t.Fatal("expected agents disabled when configured intermediate failed to load")
+		}
+		if cfg.LicenseID != "" {
+			t.Fatalf("license ID = %q, want empty for rejected intermediate load", cfg.LicenseID)
+		}
+		if cfg.LicenseRevoked {
+			t.Fatal("license should not be marked revoked for intermediate load failure")
+		}
+	})
+
 	t.Run("wrong root intermediate denies", func(t *testing.T) {
 		_, _, token, cert := testIntermediateLicenseBundle(t, "im_agents_wrong_root", now.Add(-time.Minute), now.Add(time.Hour))
 		wrongRootPub, _, err := ed25519.GenerateKey(rand.Reader)

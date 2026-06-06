@@ -77,6 +77,10 @@ func newTestSetup(t *testing.T) *testSetup {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	_, crlPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate CRL key: %v", err)
+	}
 
 	// Default Polar mock: returns an active pro subscription.
 	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -104,7 +108,7 @@ func newTestSetup(t *testing.T) *testSetup {
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
 		IntermediateCert:    testServiceIntermediateCert(t, pub),
-		CRLPrivateKey:       priv,
+		CRLPrivateKey:       crlPriv,
 		ResendAPIKey:        "re_" + "test_key",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "test.jsonl"),
@@ -1108,6 +1112,32 @@ func TestNewWebhookHandler_RejectsIntermediateSigningKeyMismatch(t *testing.T) {
 		t.Fatal("expected intermediate/signing key mismatch error")
 	}
 	if !strings.Contains(err.Error(), "intermediate certificate public key does not match") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewWebhookHandler_RejectsMalformedIntermediate(t *testing.T) {
+	db := openTestDB(t)
+	ledger, _ := openTestLedger(t)
+
+	_, signingPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(signing): %v", err)
+	}
+
+	cfg := &Config{
+		IntermediateCert:    []byte("{bad json"),
+		FoundingProCap:      50,
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+	}
+	polar := NewPolarClient("token", "http://localhost")
+	email := NewEmailSender("key", "from@test.com")
+
+	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, signingPriv, zerolog.Nop())
+	if err == nil {
+		t.Fatal("expected malformed intermediate error")
+	}
+	if !strings.Contains(err.Error(), "parse intermediate certificate public key") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

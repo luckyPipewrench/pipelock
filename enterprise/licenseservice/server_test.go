@@ -43,6 +43,10 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
+	_, crlPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate CRL key: %v", err)
+	}
 
 	// Polar mock returns active pro subscription.
 	polarSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -71,7 +75,7 @@ func newTestServer(t *testing.T) *Server {
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
 		IntermediateCert:    testServiceIntermediateCert(t, pub),
-		CRLPrivateKey:       priv,
+		CRLPrivateKey:       crlPriv,
 		ResendAPIKey:        "re_" + "test_server_key",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "server-test.jsonl"),
@@ -149,6 +153,50 @@ func TestServer_IntermediateEndpoint(t *testing.T) {
 	if strings.TrimSpace(rr.Body.String()) != string(srv.cfg.IntermediateCert) {
 		t.Fatalf("body should contain configured intermediate certificate, got %q", rr.Body.String())
 	}
+}
+
+func TestServer_IntermediateEndpointMissingCert(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.IntermediateCert = nil
+
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/intermediate.json", nil)
+	rr := httptest.NewRecorder()
+	srv.mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+}
+
+type flakyIntermediateWriter struct {
+	header    http.Header
+	failOn    int
+	writeCall int
+}
+
+func (w *flakyIntermediateWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *flakyIntermediateWriter) WriteHeader(int) {}
+
+func (w *flakyIntermediateWriter) Write([]byte) (int, error) {
+	w.writeCall++
+	if w.writeCall == w.failOn {
+		return 0, errors.New("write failed")
+	}
+	return 1, nil
+}
+
+func TestServer_IntermediateEndpointWriteErrors(t *testing.T) {
+	srv := newTestServer(t)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/intermediate.json", nil)
+
+	srv.handleIntermediate(&flakyIntermediateWriter{failOn: 1}, req)
+	srv.handleIntermediate(&flakyIntermediateWriter{failOn: 2}, req)
 }
 
 func TestServer_CRLEndpoint(t *testing.T) {

@@ -242,6 +242,20 @@ func TestVerifyFleetWithIntermediate_BadConfiguredCertFailsClosed(t *testing.T) 
 	}
 }
 
+func TestVerifyFleetWithIntermediate_LoadIntermediateErrorFailsClosed(t *testing.T) {
+	rootPub, rootPriv := newKeyPair(t)
+	tok := mustIssue(t, rootPriv, "lic_fleet_missing_im", []string{FeatureFleet})
+	intermediateFile := filepath.Join(t.TempDir(), "missing-intermediate.json")
+
+	_, err := VerifyFleetWithIntermediate(tok, hex.EncodeToString(rootPub), "", intermediateFile)
+	if !errors.Is(err, ErrFleetLicenseRequired) {
+		t.Fatalf("missing intermediate: want ErrFleetLicenseRequired, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "loading intermediate certificate") {
+		t.Fatalf("error should mention intermediate load failure, got %v", err)
+	}
+}
+
 func TestVerifyFleetWithIntermediate_ReadsIntermediateFromEnv(t *testing.T) {
 	rootPub, rootPriv := newKeyPair(t)
 	intermediatePub, intermediatePriv := newKeyPair(t)

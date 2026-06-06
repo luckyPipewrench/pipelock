@@ -140,7 +140,7 @@ func (serverConductorBlockingRunner) Run(ctx context.Context) error {
 
 func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
-		o.Listen = newServerTestFreePort(t)
+		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 	poller, err := emergency.NewRemoteKillPoller(emergency.RemoteKillPollerConfig{
@@ -180,7 +180,7 @@ func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
 
 func TestServer_StartRunsConductorBundlePoller(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
-		o.Listen = newServerTestFreePort(t)
+		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 	s.conductorBundle = serverConductorBlockingRunner{}

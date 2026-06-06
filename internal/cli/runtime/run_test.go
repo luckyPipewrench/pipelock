@@ -26,7 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
+	"github.com/luckyPipewrench/pipelock/internal/testport"
 )
 
 // syncBuffer is defined in helpers_test.go (no build constraint).
@@ -502,51 +502,38 @@ func TestBuildEmitSinks_AllThreeSinks(t *testing.T) {
 	}
 }
 
-// freePort returns a free TCP port on localhost.
-func freePort(t *testing.T) string {
-	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
-}
-
-// waitForPort polls a TCP address until it accepts connections or times out.
-func waitForPort(t *testing.T, addr string) {
-	t.Helper()
-	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-	testwait.For(t, 15*time.Second, func() bool {
-		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
-		if err == nil {
-			_ = conn.Close()
-			return true
-		}
-		return false
-	}, "port %s to accept connections", addr)
-}
-
-// waitForPortOrCommandExit polls a TCP address while also surfacing early
+// waitForPortOrCommandExitResult polls a TCP address while also surfacing early
 // command failures. It avoids hiding startup bind/config errors behind a
 // generic readiness timeout.
-func waitForPortOrCommandExit(t *testing.T, addr string, cmdErr <-chan error, stderr fmt.Stringer) {
-	t.Helper()
+func waitForPortOrCommandExitResult(addr string, cmdErr <-chan error, stderr fmt.Stringer) error {
 	dialer := &net.Dialer{Timeout: 50 * time.Millisecond}
-	testwait.For(t, 15*time.Second, func() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
 		select {
 		case err := <-cmdErr:
-			t.Fatalf("RunCmd exited before port %s was ready: %v\nstderr:\n%s", addr, err, stderr.String())
+			return fmt.Errorf("RunCmd exited before port %s was ready: %w\nstderr:\n%s", addr, err, stderr.String())
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for port %s to accept connections: %w\nstderr:\n%s", addr, ctx.Err(), stderr.String())
 		default:
 		}
 		conn, err := dialer.DialContext(context.Background(), "tcp4", addr)
 		if err == nil {
 			_ = conn.Close()
-			return true
+			return nil
 		}
-		return false
-	}, "port %s to accept connections\nstderr:\n%s", addr, stderr.String())
+		select {
+		case err := <-cmdErr:
+			return fmt.Errorf("RunCmd exited before port %s was ready: %w\nstderr:\n%s", addr, err, stderr.String())
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for port %s to accept connections: %w\nstderr:\n%s", addr, ctx.Err(), stderr.String())
+		case <-ticker.C:
+		}
+	}
 }
 
 // doGet issues a context-aware GET and fails the test on error.
@@ -564,10 +551,11 @@ func doGet(t *testing.T, client *http.Client, url string) *http.Response {
 }
 
 func TestRunCmd_MetricsPortIsolation(t *testing.T) {
-	mainAddr := freePort(t)
-	metricsAddr := freePort(t)
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		mainAddr := addrs[0]
+		metricsAddr := addrs[1]
 
-	cfgYAML := fmt.Sprintf(`version: 1
+		cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
 metrics_listen: %q
 fetch_proxy:
@@ -579,129 +567,138 @@ logging:
   output: stdout
 `, metricsAddr, mainAddr)
 
-	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
-	if err != nil {
-		t.Fatalf("create temp config: %v", err)
-	}
-	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	_ = tmpFile.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := RunCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"--config", tmpFile.Name()})
-	var stderr bytes.Buffer
-	cmd.SetErr(&stderr)
-	cmd.SetOut(&stderr)
-
-	cmdErr := make(chan error, 1)
-	go func() {
-		cmdErr <- cmd.Execute()
-	}()
-
-	// Wait for both ports.
-	waitForPort(t, mainAddr)
-	waitForPort(t, metricsAddr)
-
-	client := &http.Client{Timeout: 2 * time.Second}
-
-	// Main port: /health should work.
-	resp := doGet(t, client, "http://"+mainAddr+"/health")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/health: want 200, got %d", resp.StatusCode)
-	}
-
-	// Main port: /metrics should 404 (isolated to metrics port).
-	resp = doGet(t, client, "http://"+mainAddr+"/metrics")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("/metrics on main port: want 404, got %d", resp.StatusCode)
-	}
-
-	// Main port: /stats should 404.
-	resp = doGet(t, client, "http://"+mainAddr+"/stats")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("/stats on main port: want 404, got %d", resp.StatusCode)
-	}
-
-	// Metrics port: /metrics should 200.
-	resp = doGet(t, client, "http://"+metricsAddr+"/metrics")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/metrics on metrics port: want 200, got %d", resp.StatusCode)
-	}
-
-	// Metrics port: /stats should 200.
-	resp = doGet(t, client, "http://"+metricsAddr+"/stats")
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/stats on metrics port: want 200, got %d", resp.StatusCode)
-	}
-
-	// Shut down.
-	cancel()
-	select {
-	case err := <-cmdErr:
+		tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-*.yaml")
 		if err != nil {
-			t.Errorf("RunCmd returned error: %v", err)
+			t.Fatalf("create temp config: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunCmd did not exit within 5s")
-	}
+		if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		_ = tmpFile.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := RunCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"--config", tmpFile.Name()})
+		var stderr bytes.Buffer
+		cmd.SetErr(&stderr)
+		cmd.SetOut(&stderr)
+
+		cmdErr := make(chan error, 1)
+		go func() {
+			cmdErr <- cmd.Execute()
+		}()
+
+		// Wait for both ports.
+		if err := waitForPortOrCommandExitResult(mainAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForPortOrCommandExitResult(metricsAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+
+		client := &http.Client{Timeout: 2 * time.Second}
+
+		// Main port: /health should work.
+		resp := doGet(t, client, "http://"+mainAddr+"/health")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("/health: want 200, got %d", resp.StatusCode)
+		}
+
+		// Main port: /metrics should 404 (isolated to metrics port).
+		resp = doGet(t, client, "http://"+mainAddr+"/metrics")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("/metrics on main port: want 404, got %d", resp.StatusCode)
+		}
+
+		// Main port: /stats should 404.
+		resp = doGet(t, client, "http://"+mainAddr+"/stats")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("/stats on main port: want 404, got %d", resp.StatusCode)
+		}
+
+		// Metrics port: /metrics should 200.
+		resp = doGet(t, client, "http://"+metricsAddr+"/metrics")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("/metrics on metrics port: want 200, got %d", resp.StatusCode)
+		}
+
+		// Metrics port: /stats should 200.
+		resp = doGet(t, client, "http://"+metricsAddr+"/stats")
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("/stats on metrics port: want 200, got %d", resp.StatusCode)
+		}
+
+		// Shut down.
+		cancel()
+		select {
+		case err := <-cmdErr:
+			if err != nil {
+				t.Errorf("RunCmd returned error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("RunCmd did not exit within 5s")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_RedactionWiresMCPListenerAndReverseProxy(t *testing.T) {
-	mainAddr := freePort(t)
-	reverseAddr := freePort(t)
-	mcpAddr := freePort(t)
-	secret := "AKIA" + "IOSFODNN7EXAMPLE"
+	testport.WithRetry(t, 3, func(addrs []string) error {
+		mainAddr := addrs[0]
+		reverseAddr := addrs[1]
+		mcpAddr := addrs[2]
+		secret := "AKIA" + "IOSFODNN7EXAMPLE"
 
-	var reverseBody atomic.Value
-	reverseUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		reverseBody.Store(string(body))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	}))
-	defer reverseUpstream.Close()
+		var reverseBody atomic.Value
+		reverseUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			reverseBody.Store(string(body))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		}))
+		defer reverseUpstream.Close()
 
-	var mcpBody atomic.Value
-	mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		mcpBody.Store(string(body))
+		var mcpBody atomic.Value
+		mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			mcpBody.Store(string(body))
 
-		var request struct {
-			ID json.RawMessage `json:"id"`
-		}
-		if err := json.Unmarshal(body, &request); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
+			var request struct {
+				ID json.RawMessage `json:"id"`
+			}
+			if err := json.Unmarshal(body, &request); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 
-		w.Header().Set("Content-Type", "application/json")
-		response := map[string]any{
-			"jsonrpc": "2.0",
-			"id":      request.ID,
-			"result": map[string]any{
-				"content": []map[string]any{{
-					"type": "text",
-					"text": "ok",
-				}},
-			},
-		}
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			t.Fatalf("Encode(response): %v", err)
-		}
-	}))
-	defer mcpUpstream.Close()
+			w.Header().Set("Content-Type", "application/json")
+			response := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      request.ID,
+				"result": map[string]any{
+					"content": []map[string]any{{
+						"type": "text",
+						"text": "ok",
+					}},
+				},
+			}
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				t.Fatalf("Encode(response): %v", err)
+			}
+		}))
+		defer mcpUpstream.Close()
 
-	cfgYAML := fmt.Sprintf(`version: 1
+		cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
 enforce: false
 fetch_proxy:
@@ -732,93 +729,104 @@ logging:
   output: stdout
 `, mainAddr, reverseAddr, reverseUpstream.URL)
 
-	tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-redaction-*.yaml")
-	if err != nil {
-		t.Fatalf("create temp config: %v", err)
-	}
-	if _, err := tmpFile.WriteString(cfgYAML); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	_ = tmpFile.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := RunCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"--config", tmpFile.Name(),
-		"--mcp-listen", mcpAddr,
-		"--mcp-upstream", mcpUpstream.URL,
-	})
-	var stderr syncBuffer
-	cmd.SetErr(&stderr)
-	cmd.SetOut(&stderr)
-
-	cmdErr := make(chan error, 1)
-	go func() {
-		cmdErr <- cmd.Execute()
-	}()
-
-	waitForPortOrCommandExit(t, mainAddr, cmdErr, &stderr)
-	waitForPortOrCommandExit(t, reverseAddr, cmdErr, &stderr)
-	waitForPortOrCommandExit(t, mcpAddr, cmdErr, &stderr)
-
-	reverseReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+reverseAddr+"/api",
-		strings.NewReader(`{"prompt":"use `+secret+` to deploy"}`))
-	if err != nil {
-		t.Fatalf("new reverse request: %v", err)
-	}
-	reverseReq.Header.Set("Content-Type", "application/json")
-	reverseResp, err := http.DefaultClient.Do(reverseReq)
-	if err != nil {
-		t.Fatalf("reverse proxy POST: %v", err)
-	}
-	_ = reverseResp.Body.Close()
-	if reverseResp.StatusCode != http.StatusOK {
-		t.Fatalf("reverse proxy status = %d, want 200", reverseResp.StatusCode)
-	}
-
-	mcpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+mcpAddr+"/",
-		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use `+secret+` to deploy"}}}`))
-	if err != nil {
-		t.Fatalf("new mcp request: %v", err)
-	}
-	mcpReq.Header.Set("Content-Type", "application/json")
-	mcpResp, err := http.DefaultClient.Do(mcpReq)
-	if err != nil {
-		t.Fatalf("mcp listener POST: %v", err)
-	}
-	_ = mcpResp.Body.Close()
-	if mcpResp.StatusCode != http.StatusOK {
-		t.Fatalf("mcp listener status = %d, want 200", mcpResp.StatusCode)
-	}
-
-	gotReverse, _ := reverseBody.Load().(string)
-	if strings.Contains(gotReverse, secret) {
-		t.Fatalf("reverse upstream leaked secret: %s", gotReverse)
-	}
-	if !strings.Contains(gotReverse, "<pl:aws-access-key:1>") {
-		t.Fatalf("reverse upstream missing placeholder: %s", gotReverse)
-	}
-
-	gotMCP, _ := mcpBody.Load().(string)
-	if strings.Contains(gotMCP, secret) {
-		t.Fatalf("mcp upstream leaked secret: %s", gotMCP)
-	}
-	if !strings.Contains(gotMCP, "<pl:aws-access-key:1>") {
-		t.Fatalf("mcp upstream missing placeholder: %s", gotMCP)
-	}
-
-	cancel()
-	select {
-	case err := <-cmdErr:
+		tmpFile, err := os.CreateTemp(t.TempDir(), "pipelock-redaction-*.yaml")
 		if err != nil {
-			t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
+			t.Fatalf("create temp config: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunCmd did not exit within 5s")
-	}
+		if _, err := tmpFile.WriteString(cfgYAML); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		_ = tmpFile.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := RunCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"--config", tmpFile.Name(),
+			"--mcp-listen", mcpAddr,
+			"--mcp-upstream", mcpUpstream.URL,
+		})
+		var stderr syncBuffer
+		cmd.SetErr(&stderr)
+		cmd.SetOut(&stderr)
+
+		cmdErr := make(chan error, 1)
+		go func() {
+			cmdErr <- cmd.Execute()
+		}()
+
+		if err := waitForPortOrCommandExitResult(mainAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForPortOrCommandExitResult(reverseAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForPortOrCommandExitResult(mcpAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+
+		reverseReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+reverseAddr+"/api",
+			strings.NewReader(`{"prompt":"use `+secret+` to deploy"}`))
+		if err != nil {
+			t.Fatalf("new reverse request: %v", err)
+		}
+		reverseReq.Header.Set("Content-Type", "application/json")
+		reverseResp, err := http.DefaultClient.Do(reverseReq)
+		if err != nil {
+			t.Fatalf("reverse proxy POST: %v", err)
+		}
+		_ = reverseResp.Body.Close()
+		if reverseResp.StatusCode != http.StatusOK {
+			t.Fatalf("reverse proxy status = %d, want 200", reverseResp.StatusCode)
+		}
+
+		mcpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://"+mcpAddr+"/",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"prompt":"use `+secret+` to deploy"}}}`))
+		if err != nil {
+			t.Fatalf("new mcp request: %v", err)
+		}
+		mcpReq.Header.Set("Content-Type", "application/json")
+		mcpResp, err := http.DefaultClient.Do(mcpReq)
+		if err != nil {
+			t.Fatalf("mcp listener POST: %v", err)
+		}
+		_ = mcpResp.Body.Close()
+		if mcpResp.StatusCode != http.StatusOK {
+			t.Fatalf("mcp listener status = %d, want 200", mcpResp.StatusCode)
+		}
+
+		gotReverse, _ := reverseBody.Load().(string)
+		if strings.Contains(gotReverse, secret) {
+			t.Fatalf("reverse upstream leaked secret: %s", gotReverse)
+		}
+		if !strings.Contains(gotReverse, "<pl:aws-access-key:1>") {
+			t.Fatalf("reverse upstream missing placeholder: %s", gotReverse)
+		}
+
+		gotMCP, _ := mcpBody.Load().(string)
+		if strings.Contains(gotMCP, secret) {
+			t.Fatalf("mcp upstream leaked secret: %s", gotMCP)
+		}
+		if !strings.Contains(gotMCP, "<pl:aws-access-key:1>") {
+			t.Fatalf("mcp upstream missing placeholder: %s", gotMCP)
+		}
+
+		cancel()
+		select {
+		case err := <-cmdErr:
+			if err != nil {
+				t.Errorf("RunCmd returned error: %v\nstderr:\n%s", err, stderr.String())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("RunCmd did not exit within 5s")
+		}
+		return nil
+	})
 }
 
 func TestAgentHandler(t *testing.T) {
@@ -1233,8 +1241,8 @@ logging:
 		"--config", cfgPath,
 		// Ephemeral MCP listen port: the test never dials it, it only needs
 		// the listener goroutine to spawn (and read s.logger) before the held
-		// fetch port forces the early-error return. :0 avoids the freePort
-		// close-then-reuse TOCTOU for a port that is never connected to.
+		// fetch port forces the early-error return. :0 avoids close-then-reuse
+		// TOCTOU for a port that is never connected to.
 		"--mcp-listen", "127.0.0.1:0",
 		"--mcp-upstream", mcpUpstream.URL,
 	})
@@ -1262,14 +1270,15 @@ logging:
 // its goroutine-scoped close on a clean shutdown (no approval is ever
 // triggered: the test only hits /health).
 func TestRunCmd_MCPListenerAskModeShutdown(t *testing.T) {
-	mainAddr := freePort(t)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		mainAddr := addrs[0]
 
-	mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer mcpUpstream.Close()
+		mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer mcpUpstream.Close()
 
-	cfgYAML := fmt.Sprintf(`version: 1
+		cfgYAML := fmt.Sprintf(`version: 1
 mode: balanced
 response_scanning:
   enabled: true
@@ -1282,39 +1291,44 @@ logging:
   output: stdout
 `, mainAddr)
 
-	cfgPath := filepath.Join(t.TempDir(), "pipelock-askmode.yaml")
-	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := RunCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"--config", cfgPath,
-		"--mcp-listen", "127.0.0.1:0",
-		"--mcp-upstream", mcpUpstream.URL,
-	})
-	var stderr syncBuffer
-	cmd.SetErr(&stderr)
-	cmd.SetOut(&stderr)
-
-	cmdErr := make(chan error, 1)
-	go func() {
-		cmdErr <- cmd.Execute()
-	}()
-
-	waitForPort(t, mainAddr)
-
-	cancel()
-	select {
-	case err := <-cmdErr:
-		if err != nil {
-			t.Errorf("RunCmd returned error: %v", err)
+		cfgPath := filepath.Join(t.TempDir(), "pipelock-askmode.yaml")
+		if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("RunCmd did not exit within 5s")
-	}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := RunCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"--config", cfgPath,
+			"--mcp-listen", "127.0.0.1:0",
+			"--mcp-upstream", mcpUpstream.URL,
+		})
+		var stderr syncBuffer
+		cmd.SetErr(&stderr)
+		cmd.SetOut(&stderr)
+
+		cmdErr := make(chan error, 1)
+		go func() {
+			cmdErr <- cmd.Execute()
+		}()
+
+		if err := waitForPortOrCommandExitResult(mainAddr, cmdErr, &stderr); err != nil {
+			cancel()
+			return err
+		}
+
+		cancel()
+		select {
+		case err := <-cmdErr:
+			if err != nil {
+				t.Errorf("RunCmd returned error: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("RunCmd did not exit within 5s")
+		}
+		return nil
+	})
 }

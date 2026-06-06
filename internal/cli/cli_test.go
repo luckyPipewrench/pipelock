@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testport"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -79,7 +80,21 @@ func waitForRunHTTP(
 	label string,
 ) {
 	t.Helper()
-	waitForRunHTTPWithin(t, 5*time.Second, ctx, client, errCh, cancel, url, check, "%s", label)
+	if err := waitForRunHTTPResult(ctx, client, errCh, url, check, label); err != nil {
+		cancel()
+		t.Fatalf("run did not become ready: %v", err)
+	}
+}
+
+func waitForRunHTTPResult(
+	ctx context.Context,
+	client *http.Client,
+	errCh <-chan error,
+	url string,
+	check func(*http.Response) bool,
+	label string,
+) error {
+	return waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, url, check, "%s", label)
 }
 
 func waitForRunHTTPWithin(
@@ -95,39 +110,92 @@ func waitForRunHTTPWithin(
 	args ...any,
 ) {
 	t.Helper()
-	waitForRunRequestWithin(t, timeout, errCh, cancel, func() *http.Request {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	err := waitForRunHTTPWithinResult(timeout, ctx, client, errCh, url, check, format, args...)
+	if err != nil {
+		cancel()
+		t.Fatalf("run did not become ready: %v", err)
+	}
+}
+
+func waitForRunHTTPWithinResult(
+	timeout time.Duration,
+	ctx context.Context,
+	client *http.Client,
+	errCh <-chan error,
+	url string,
+	check func(*http.Response) bool,
+	format string,
+	args ...any,
+) error {
+	return waitForRunRequestWithinResult(ctx, timeout, errCh, func(reqCtx context.Context) *http.Request {
+		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 		return req
 	}, client, check, format, args...)
 }
 
 func waitForRunRequestWithin(
 	t *testing.T,
+	ctx context.Context,
 	timeout time.Duration,
 	errCh <-chan error,
 	cancel context.CancelFunc,
-	newReq func() *http.Request,
+	newReq func(context.Context) *http.Request,
 	client *http.Client,
 	check func(*http.Response) bool,
 	format string,
 	args ...any,
 ) {
 	t.Helper()
-	testwait.For(t, timeout, func() bool {
+	err := waitForRunRequestWithinResult(ctx, timeout, errCh, newReq, client, check, format, args...)
+	if err != nil {
+		cancel()
+		t.Fatalf("run did not become ready: %v", err)
+	}
+}
+
+func waitForRunRequestWithinResult(
+	parentCtx context.Context,
+	timeout time.Duration,
+	errCh <-chan error,
+	newReq func(context.Context) *http.Request,
+	client *http.Client,
+	check func(*http.Response) bool,
+	format string,
+	args ...any,
+) error {
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	detail := fmt.Sprintf(format, args...)
+	for {
 		select {
 		case cmdErr := <-errCh:
-			cancel()
-			t.Fatalf("run exited early: %v", cmdErr)
+			return fmt.Errorf("run exited early while waiting for %s: %w", detail, cmdErr)
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for %s: %w", detail, ctx.Err())
 		default:
 		}
-		req := newReq()
+		req := newReq(ctx)
 		resp, err := client.Do(req) //nolint:gosec // G704: test-only URL built from loopback listener.
-		if err != nil {
-			return false
+		if err == nil {
+			ok := check(resp)
+			_ = resp.Body.Close()
+			if ok {
+				return nil
+			}
 		}
-		defer func() { _ = resp.Body.Close() }()
-		return check(resp)
-	}, format, args...)
+
+		select {
+		case cmdErr := <-errCh:
+			return fmt.Errorf("run exited early while waiting for %s: %w", detail, cmdErr)
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for %s: %w", detail, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func TestRootCmd_Version(t *testing.T) {
@@ -676,20 +744,14 @@ func TestHealthcheckCmd_RegisteredInHelp(t *testing.T) {
 }
 
 func TestRunCmd_Integration(t *testing.T) {
-	// Find a free port
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	// Write a balanced config; the --mode flag will override to strict
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	logPath := filepath.Join(dir, "audit.log")
-	cfgContent := fmt.Sprintf(`version: 1
+		// Write a balanced config; the --mode flag will override to strict
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		logPath := filepath.Join(dir, "audit.log")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 api_allowlist:
   - "*.anthropic.com"
@@ -701,63 +763,71 @@ logging:
   output: file
   file: "%s"
 `, addr, logPath)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Inject a cancellable context so we can shut down the server
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath, "--mode", "strict"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
-
-	// Poll /health until the proxy is ready
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
-
-	// Verify the health response shows the flag override (strict, not balanced)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
-	if err != nil {
-		cancel()
-		t.Fatalf("health request failed: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var health map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		cancel()
-		t.Fatalf("decoding health response: %v", err)
-	}
-	if health["mode"] != config.ModeStrict {
-		t.Errorf("expected mode=strict (flag override), got %v", health["mode"])
-	}
-	if health["status"] != "healthy" {
-		t.Errorf("expected status=healthy, got %v", health["status"])
-	}
-
-	// Trigger graceful shutdown
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected run error: %v", err)
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run command did not shut down within timeout")
-	}
+
+		// Inject a cancellable context so we can shut down the server
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath, "--mode", "strict"})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
+
+		// Poll /health until the proxy is ready
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
+			return req
+		}, client, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
+
+		// Verify the health response shows the flag override (strict, not balanced)
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, err := client.Do(req) //nolint:gosec // G704: test-only, URL from httptest server
+		if err != nil {
+			cancel()
+			t.Fatalf("health request failed: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		var health map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+			cancel()
+			t.Fatalf("decoding health response: %v", err)
+		}
+		if health["mode"] != config.ModeStrict {
+			t.Errorf("expected mode=strict (flag override), got %v", health["mode"])
+		}
+		if health["status"] != "healthy" {
+			t.Errorf("expected status=healthy, got %v", health["status"])
+		}
+
+		// Trigger graceful shutdown
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected run error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run command did not shut down within timeout")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ListenFlag(t *testing.T) {
@@ -868,45 +938,47 @@ logging:
 }
 
 func TestRunCmd_ListenFlagOverride(t *testing.T) {
-	// Find a free port
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--listen", addr})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--listen", addr})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Poll /health until the proxy is ready
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
-
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected run error: %v", err)
+		// Poll /health until the proxy is ready
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
+			return req
+		}, client, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run command did not shut down within timeout")
-	}
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected run error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run command did not shut down within timeout")
+		}
+		return nil
+	})
 }
 
 func TestHealthcheckCmd_Unhealthy(t *testing.T) {
@@ -1032,93 +1104,92 @@ func TestGenerateDockerCompose_OpenhandsToStdout(t *testing.T) {
 }
 
 func TestRunCmd_WithAgentArgs(t *testing.T) {
-	// Find a free port.
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--listen", addr, "--", "some-agent", "--flag"})
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--listen", addr, "--", "some-agent", "--flag"})
 
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Poll until healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
-
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		// Poll until healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	// The run command completed without error, which means the agent args
-	// parsing path (dashIdx >= 0) was exercised.
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+
+		// The run command completed without error, which means the agent args
+		// parsing path (dashIdx >= 0) was exercised.
+		return nil
+	})
 }
 
 func TestRunCmd_DefaultMode(t *testing.T) {
 	// Run with no config, no flags - should use default balanced mode.
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--listen", addr})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--listen", addr})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait until healthy, then check mode.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		return health["mode"] == config.ModeBalanced
-	}, "balanced mode health")
-
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		// Wait until healthy, then check mode.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["mode"] == config.ModeBalanced
+		}, "balanced mode health"); err != nil {
+			cancel()
+			return err
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ConfigValidationError(t *testing.T) {
@@ -1148,93 +1219,91 @@ mode: "not-a-mode"
 
 func TestRunCmd_ModeFlag(t *testing.T) {
 	// Test that --mode strict works without a config file.
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--mode", "strict", "--listen", addr})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--mode", "strict", "--listen", addr})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		return health["mode"] == config.ModeStrict
-	}, "strict mode health")
-
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["mode"] == config.ModeStrict
+		}, "strict mode health"); err != nil {
+			cancel()
+			return err
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_WithConfigHotReload(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, addr)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Modify the config to trigger hot-reload via fsnotify.
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Modify the config to trigger hot-reload via fsnotify.
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
   - "api.example.com"
@@ -1242,25 +1311,27 @@ fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, addr)
-	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		return health["mode"] == config.ModeStrict
-	}, "strict mode after hot reload")
-
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+
+		waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["mode"] == config.ModeStrict
+		}, "strict mode after hot reload")
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_AuditLoggerError(t *testing.T) {
@@ -1291,52 +1362,50 @@ logging:
 }
 
 func TestRunCmd_ReloadToAskMode(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	// Start with balanced mode (no HITL approver created)
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		// Start with balanced mode (no HITL approver created)
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, addr)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Reload config to action: ask and audit mode. The mode change is the
-	// observable signal that the reload carrying ask-mode config landed.
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Reload config to action: ask and audit mode. The mode change is the
+		// observable signal that the reload carrying ask-mode config landed.
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: audit
 fetch_proxy:
   listen: "%s"
@@ -1345,45 +1414,42 @@ response_scanning:
   enabled: true
   action: ask
 `, addr)
-	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Reload observation needs a longer deadline than the initial health
-	// check: fsnotify delivery plus the 100ms debounce plus the atomic config
-	// swap lag well past 5s under the heavy -race CI job (config+cli+mcp+proxy
-	// in one process). The startup wait above stays snappy; only this
-	// reload-to-take-effect wait gets the longer ceiling.
-	waitForRunHTTPWithin(t, 20*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		return health["mode"] == config.ModeAudit
-	}, "%s", "audit ask-mode config after hot reload")
-
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+
+		// Reload observation needs a longer deadline than the initial health
+		// check: fsnotify delivery plus the 100ms debounce plus the atomic config
+		// swap lag well past 5s under the heavy -race CI job (config+cli+mcp+proxy
+		// in one process). The startup wait above stays snappy; only this
+		// reload-to-take-effect wait gets the longer ceiling.
+		waitForRunHTTPWithin(t, 20*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["mode"] == config.ModeAudit
+		}, "%s", "audit ask-mode config after hot reload")
+
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_WithAskModeApprover(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	// Start with ask mode so hasApprover=true and approver is created
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		// Start with ask mode so hasApprover=true and approver is created
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
@@ -1393,55 +1459,55 @@ response_scanning:
   action: ask
   ask_timeout_seconds: 1
 `, addr)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
-
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
-
-	// Proxy started with ask mode - approver was created. Shut down cleanly.
-	cancel()
-	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
+
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
+
+		// Proxy started with ask mode - approver was created. Shut down cleanly.
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ForwardProxyBanner(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
@@ -1451,76 +1517,76 @@ forward_proxy:
   max_tunnel_seconds: 10
   idle_timeout_seconds: 2
 `, addr)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var stderrBuf bytes.Buffer
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(&stderrBuf)
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
-
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
-
-	// Verify health shows forward_proxy_enabled=true
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		cancel()
-		t.Fatalf("health request failed: %v", err)
-	}
-	var health map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&health)
-	_ = resp.Body.Close()
-	if health["forward_proxy_enabled"] != true {
-		t.Errorf("expected forward_proxy_enabled=true, got %v", health["forward_proxy_enabled"])
-	}
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	// Check stderr banner printed the forward proxy line
-	if !strings.Contains(stderrBuf.String(), "forward proxy enabled") {
-		t.Errorf("expected forward proxy banner in stderr, got: %s", stderrBuf.String())
-	}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		var stderrBuf bytes.Buffer
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(&stderrBuf)
+
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
+
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
+
+		// Verify health shows forward_proxy_enabled=true
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			cancel()
+			t.Fatalf("health request failed: %v", err)
+		}
+		var health map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&health)
+		_ = resp.Body.Close()
+		if health["forward_proxy_enabled"] != true {
+			t.Errorf("expected forward_proxy_enabled=true, got %v", health["forward_proxy_enabled"])
+		}
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+
+		// Check stderr banner printed the forward proxy line
+		if !strings.Contains(stderrBuf.String(), "forward proxy enabled") {
+			t.Errorf("expected forward proxy banner in stderr, got: %s", stderrBuf.String())
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	logPath := filepath.Join(dir, "audit.log")
-	// Start with forward_proxy disabled
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		logPath := filepath.Join(dir, "audit.log")
+		// Start with forward_proxy disabled
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
@@ -1531,33 +1597,36 @@ logging:
   output: file
   file: "%s"
 `, addr, logPath)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Hot-reload: enable forward_proxy (should be rejected)
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Hot-reload: enable forward_proxy (should be rejected)
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
@@ -1570,39 +1639,41 @@ logging:
   output: file
   file: "%s"
 `, addr, logPath)
-	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	testwait.For(t, 5*time.Second, func() bool {
+		testwait.For(t, 5*time.Second, func() bool {
+			select {
+			case cmdErr := <-errCh:
+				cancel()
+				t.Fatalf("run exited before rejected reload log: %v", cmdErr)
+			default:
+			}
+			logBytes, err := os.ReadFile(filepath.Clean(logPath))
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("read audit log: %v", err)
+			}
+			return strings.Contains(string(logBytes), "forward proxy cannot be enabled via reload")
+		}, "rejected forward proxy reload log")
+
+		waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["forward_proxy_enabled"] == false
+		}, "forward proxy remains disabled after rejected reload")
+
+		cancel()
 		select {
 		case cmdErr := <-errCh:
-			cancel()
-			t.Fatalf("run exited before rejected reload log: %v", cmdErr)
-		default:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
 		}
-		logBytes, err := os.ReadFile(filepath.Clean(logPath))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("read audit log: %v", err)
-		}
-		return strings.Contains(string(logBytes), "forward proxy cannot be enabled via reload")
-	}, "rejected forward proxy reload log")
-
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		return health["forward_proxy_enabled"] == false
-	}, "forward proxy remains disabled after rejected reload")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+		return nil
+	})
 }
 
 func TestRunCmd_MCPListenRequiresUpstream(t *testing.T) {
@@ -1679,66 +1750,60 @@ func TestRunCmd_MCPListenInHelp(t *testing.T) {
 }
 
 func TestRunCmd_MCPListenBanner(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fetchAddr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		fetchAddr := addrs[0]
+		mcpAddr := addrs[1]
 
-	ln2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpAddr := ln2.Addr().String()
-	_ = ln2.Close()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"run",
+			"--listen", fetchAddr,
+			"--mcp-listen", mcpAddr,
+			"--mcp-upstream", "http://localhost:19999",
+		})
+		cmd.SetOut(io.Discard)
+		errBuf := &cliTestBuffer{}
+		cmd.SetErr(errBuf)
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"run",
-		"--listen", fetchAddr,
-		"--mcp-listen", mcpAddr,
-		"--mcp-upstream", "http://localhost:19999",
-	})
-	cmd.SetOut(io.Discard)
-	errBuf := &cliTestBuffer{}
-	cmd.SetErr(errBuf)
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
-
-	// Wait for fetch proxy health.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + fetchAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "fetch proxy health")
-
-	// Verify MCP listener health endpoint.
-	mcpHealthURL := "http://" + mcpAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, mcpHealthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "MCP listener health")
-
-	// Verify banner mentions MCP.
-	waitForCLIOutput(t, errBuf, errCh, cancel, "MCP:")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		// Wait for fetch proxy health.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + fetchAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "fetch proxy health"); err != nil {
+			cancel()
+			return err
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+
+		// Verify MCP listener health endpoint.
+		mcpHealthURL := "http://" + mcpAddr + "/health"
+		waitForRunHTTP(t, ctx, client, errCh, cancel, mcpHealthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "MCP listener health")
+
+		// Verify banner mentions MCP.
+		waitForCLIOutput(t, errBuf, errCh, cancel, "MCP:")
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_MCPListenStartupFailure(t *testing.T) {
@@ -1778,60 +1843,52 @@ func TestRunCmd_MCPListenStartupFailure(t *testing.T) {
 }
 
 func TestRunCmd_MCPListenReloadUsesResolvedConfigForWarnings(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fetchAddr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		fetchAddr := addrs[0]
+		mcpAddr := addrs[1]
 
-	ln2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpAddr := ln2.Addr().String()
-	_ = ln2.Close()
-
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, fetchAddr)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"run",
-		"--config", cfgPath,
-		"--mcp-listen", mcpAddr,
-		"--mcp-upstream", "http://localhost:19999",
-	})
-	cmd.SetOut(io.Discard)
-	var stderr bytes.Buffer
-	cmd.SetErr(&stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"run",
+			"--config", cfgPath,
+			"--mcp-listen", mcpAddr,
+			"--mcp-upstream", "http://localhost:19999",
+		})
+		cmd.SetOut(io.Discard)
+		var stderr bytes.Buffer
+		cmd.SetErr(&stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + fetchAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "fetch proxy health")
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + fetchAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "fetch proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	updatedCfg := fmt.Sprintf(`version: 1
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
   - "api.example.com"
@@ -1839,57 +1896,48 @@ fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, fetchAddr)
-	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	waitForRunHTTPWithin(t, 15*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		var health map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&health)
-		return health["mode"] == config.ModeStrict
-	}, "strict mode after hot reload")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	output := stderr.String()
-	for _, field := range []string{
-		"mcp_input_scanning.enabled",
-		"mcp_tool_scanning.enabled",
-		"mcp_tool_policy.enabled",
-	} {
-		if strings.Contains(output, field) {
-			t.Errorf("unexpected false-positive reload warning for %s:\n%s", field, output)
+		waitForRunHTTPWithin(t, 15*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["mode"] == config.ModeStrict
+		}, "strict mode after hot reload")
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
 		}
-	}
+
+		output := stderr.String()
+		for _, field := range []string{
+			"mcp_input_scanning.enabled",
+			"mcp_tool_scanning.enabled",
+			"mcp_tool_policy.enabled",
+		} {
+			if strings.Contains(output, field) {
+				t.Errorf("unexpected false-positive reload warning for %s:\n%s", field, output)
+			}
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_MCPListenReloadStrictAllowsKillSwitchAPIToken(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fetchAddr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		fetchAddr := addrs[0]
+		mcpAddr := addrs[1]
 
-	ln2, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mcpAddr := ln2.Addr().String()
-	_ = ln2.Close()
-
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
   - "api.example.com"
@@ -1897,50 +1945,53 @@ fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, fetchAddr)
-	if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
-		t.Fatal(err)
-	}
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{
-		"run",
-		"--config", cfgPath,
-		"--mcp-listen", mcpAddr,
-		"--mcp-upstream", "http://localhost:19999",
-	})
-	cmd.SetOut(io.Discard)
-	var stderr bytes.Buffer
-	cmd.SetErr(&stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{
+			"run",
+			"--config", cfgPath,
+			"--mcp-listen", mcpAddr,
+			"--mcp-upstream", "http://localhost:19999",
+		})
+		cmd.SetOut(io.Discard)
+		var stderr bytes.Buffer
+		cmd.SetErr(&stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + fetchAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "fetch proxy health")
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + fetchAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "fetch proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	statusURL := "http://" + fetchAddr + "/api/v1/killswitch/status"
-	statusReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-	statusReq.Header.Set("Authorization", "Bearer reload-token")
-	resp, err := client.Do(statusReq)
-	if err != nil {
-		cancel()
-		t.Fatalf("kill switch status request failed before reload: %v", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 before reload, got %d", resp.StatusCode)
-	}
+		statusURL := "http://" + fetchAddr + "/api/v1/killswitch/status"
+		statusReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		statusReq.Header.Set("Authorization", "Bearer reload-token")
+		resp, err := client.Do(statusReq)
+		if err != nil {
+			cancel()
+			t.Fatalf("kill switch status request failed before reload: %v", err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 before reload, got %d", resp.StatusCode)
+		}
 
-	updatedCfg := fmt.Sprintf(`version: 1
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
   - "api.example.com"
@@ -1950,52 +2001,54 @@ fetch_proxy:
 kill_switch:
   api_token: "reload-token"
 `, fetchAddr)
-	if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	lastReloadWrite := time.Now()
-	waitForRunRequestWithin(t, 15*time.Second, errCh, cancel, func() *http.Request {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-		req.Header.Set("Authorization", "Bearer reload-token")
-		return req
-	}, client, func(resp *http.Response) bool {
-		if resp.StatusCode == http.StatusOK {
-			return true
+		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		// /health can become reachable before the config watcher has armed.
-		// Rewriting the same target config gives the watcher another observable
-		// event without weakening the reload assertion.
-		if time.Since(lastReloadWrite) >= 250*time.Millisecond {
-			if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-				cancel()
-				t.Fatalf("rewrite updated config: %v", err)
+
+		lastReloadWrite := time.Now()
+		waitForRunRequestWithin(t, ctx, 15*time.Second, errCh, cancel, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, statusURL, nil)
+			req.Header.Set("Authorization", "Bearer reload-token")
+			return req
+		}, client, func(resp *http.Response) bool {
+			if resp.StatusCode == http.StatusOK {
+				return true
 			}
-			lastReloadWrite = time.Now()
-		}
-		return false
-	}, "kill switch API token after strict-mode reload")
+			// /health can become reachable before the config watcher has armed.
+			// Rewriting the same target config gives the watcher another observable
+			// event without weakening the reload assertion.
+			if time.Since(lastReloadWrite) >= 250*time.Millisecond {
+				if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+					cancel()
+					t.Fatalf("rewrite updated config: %v", err)
+				}
+				lastReloadWrite = time.Now()
+			}
+			return false
+		}, "kill switch API token after strict-mode reload")
 
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	output := stderr.String()
-	for _, field := range []string{
-		"mcp_input_scanning.enabled",
-		"mcp_tool_scanning.enabled",
-		"mcp_tool_policy.enabled",
-	} {
-		if strings.Contains(output, field) {
-			t.Errorf("unexpected false-positive reload warning for %s:\n%s", field, output)
+		output := stderr.String()
+		for _, field := range []string{
+			"mcp_input_scanning.enabled",
+			"mcp_tool_scanning.enabled",
+			"mcp_tool_policy.enabled",
+		} {
+			if strings.Contains(output, field) {
+				t.Errorf("unexpected false-positive reload warning for %s:\n%s", field, output)
+			}
 		}
-	}
+		return nil
+	})
 }
 
 func TestGenerateCmd_WriteError(t *testing.T) {
@@ -2058,325 +2111,314 @@ func TestGenerateDockerComposeCmd_WriteError(t *testing.T) {
 }
 
 func TestRunCmd_ReloadRejectsMetricsListenChange(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatal(listenErr)
-	}
-	ln2, listenErr2 := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr2 != nil {
-		_ = ln.Close()
-		t.Fatal(listenErr2)
-	}
-	mainAddr := ln.Addr().String()
-	metricsAddr := ln2.Addr().String()
-	_ = ln.Close()
-	_ = ln2.Close()
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		mainAddr := addrs[0]
+		metricsAddr := addrs[1]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 metrics_listen: "%s"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, metricsAddr, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+		if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + mainAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + mainAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Hot-reload: change metrics_listen (should be rejected).
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Hot-reload: change metrics_listen (should be rejected).
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
 metrics_listen: "127.0.0.1:19999"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-
-	waitForCLIOutput(t, stderr, errCh, cancel, "metrics_listen changed")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	// Safe to read stderr now that the command has exited.
-	if !stderr.contains("metrics_listen changed") {
-		t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
-	}
+		waitForCLIOutput(t, stderr, errCh, cancel, "metrics_listen changed")
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+
+		// Safe to read stderr now that the command has exited.
+		if !stderr.contains("metrics_listen changed") {
+			t.Errorf("expected metrics_listen reload warning, got:\n%s", stderr.String())
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ReloadLicenseKeyChange(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatal(listenErr)
-	}
-	mainAddr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		mainAddr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 license_key: "old-key"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+		if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + mainAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + mainAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Hot-reload: change license_key (should warn).
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Hot-reload: change license_key (should warn).
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
 license_key: "new-key"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-
-	waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	// Verify license change warning appeared.
-	if !stderr.contains("license key inputs changed") {
-		t.Errorf("expected license reload warning, got:\n%s", stderr.String())
-	}
+		waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+
+		// Verify license change warning appeared.
+		if !stderr.contains("license key inputs changed") {
+			t.Errorf("expected license reload warning, got:\n%s", stderr.String())
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ReloadLicenseNoSpuriousWarning(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatal(listenErr)
-	}
-	mainAddr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		mainAddr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 license_key: "same-key"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+		if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + mainAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + mainAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Hot-reload: same license_key, change something else (mode).
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Hot-reload: same license_key, change something else (mode).
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: audit
 license_key: "same-key"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-
-	waitForCLIOutput(t, stderr, errCh, cancel, "mode downgraded from balanced to audit")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	// Verify NO license warning appeared (same key, just mode change).
-	if stderr.contains("license") {
-		t.Errorf("unexpected license warning on non-license reload:\n%s", stderr.String())
-	}
+		waitForCLIOutput(t, stderr, errCh, cancel, "mode downgraded from balanced to audit")
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+
+		// Verify NO license warning appeared (same key, just mode change).
+		if stderr.contains("license") {
+			t.Errorf("unexpected license warning on non-license reload:\n%s", stderr.String())
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_ReloadLicenseFileChange(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatal(listenErr)
-	}
-	mainAddr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		mainAddr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+		if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + mainAddr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + mainAddr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	// Write a license token file so the config reload succeeds.
-	tokenPath := filepath.Join(dir, "license.token")
-	if writeErr := os.WriteFile(tokenPath, []byte("some-token"), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+		// Write a license token file so the config reload succeeds.
+		tokenPath := filepath.Join(dir, "license.token")
+		if writeErr := os.WriteFile(tokenPath, []byte("some-token"), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 
-	// Hot-reload: add license_file (should warn about license inputs change).
-	updatedCfg := fmt.Sprintf(`version: 1
+		// Hot-reload: add license_file (should warn about license inputs change).
+		updatedCfg := fmt.Sprintf(`version: 1
 mode: balanced
 license_file: "license.token"
 fetch_proxy:
   listen: "%s"
   timeout_seconds: 5
 `, mainAddr)
-	if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
-
-	waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
-
-	cancel()
-	select {
-	case cmdErr := <-errCh:
-		if cmdErr != nil {
-			t.Errorf("unexpected error: %v", cmdErr)
+		if writeErr := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
 
-	// Verify license change warning appeared from license_file addition.
-	if !stderr.contains("license key inputs changed") {
-		t.Errorf("expected license reload warning from license_file change, got:\n%s", stderr.String())
-	}
+		waitForCLIOutput(t, stderr, errCh, cancel, "license key inputs changed")
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				t.Errorf("unexpected error: %v", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+
+		// Verify license change warning appeared from license_file addition.
+		if !stderr.contains("license key inputs changed") {
+			t.Errorf("expected license reload warning from license_file change, got:\n%s", stderr.String())
+		}
+		return nil
+	})
 }
 
 func TestRunCmd_WebSocketBanner(t *testing.T) {
-	lc := net.ListenConfig{}
-	ln, listenErr := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if listenErr != nil {
-		t.Fatal(listenErr)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		addr := addrs[0]
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "test.yaml")
-	cfgContent := fmt.Sprintf(`version: 1
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
 mode: balanced
 fetch_proxy:
   listen: "%s"
@@ -2385,41 +2427,49 @@ websocket_proxy:
   enabled: true
   max_message_bytes: 65536
 `, addr)
-	if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
-		t.Fatal(writeErr)
-	}
+		if writeErr := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	cmd := rootCmd()
-	cmd.SetContext(ctx)
-	cmd.SetArgs([]string{"run", "--config", cfgPath})
-	stderr := &cliTestBuffer{}
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(stderr)
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Execute()
-	}()
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- cmd.Execute()
+		}()
 
-	// Wait for healthy.
-	client := &http.Client{Timeout: time.Second}
-	healthURL := "http://" + addr + "/health"
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
-		return resp.StatusCode == http.StatusOK
-	}, "proxy health")
+		// Wait for healthy.
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
 
-	waitForCLIOutput(t, stderr, errCh, cancel, "WebSocket proxy enabled")
-	if !stderr.contains("WebSocket proxy enabled") {
-		t.Errorf("expected WS banner, got:\n%s", stderr.String())
-	}
+		waitForCLIOutput(t, stderr, errCh, cancel, "WebSocket proxy enabled")
+		if !stderr.contains("WebSocket proxy enabled") {
+			t.Errorf("expected WS banner, got:\n%s", stderr.String())
+		}
 
-	cancel()
-	select {
-	case <-errCh:
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down")
-	}
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected run error: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
 }

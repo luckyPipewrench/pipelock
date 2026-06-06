@@ -2206,12 +2206,19 @@ a2a_scanning:
   max_contexts: 1000
   scan_raw_parts: true
   max_raw_size: 1048576
+  # Agent Card signature verification (independent attestation). See below.
+  require_signed_agent_cards: false
+  trusted_agent_card_keys:
+    - key_id: vendor-agent-v1
+      public_key: pipelock-ed25519-public-v1...   # or raw hex
+      allowed_origins:
+        - https://agent.example.com
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable A2A protocol detection and scanning |
-| `action` | `block` | Action on findings: `block` or `warn` |
+| `action` | `warn` | Action on findings: `block` or `warn` |
 | `scan_agent_cards` | `true` | Scan Agent Card skill descriptions for injection |
 | `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull) |
 | `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
@@ -2219,8 +2226,35 @@ a2a_scanning:
 | `max_contexts` | `1000` | Total tracked contexts |
 | `scan_raw_parts` | `true` | Decode and scan text-like `Part.raw` fields |
 | `max_raw_size` | `1048576` | Max encoded size for `Part.raw` decoding (bytes) |
+| `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |
+| `trusted_agent_card_keys` | _(none)_ | Operator-pinned Ed25519 signing keys, each scoped to one or more origins. When non-empty, signed cards are cryptographically verified. |
 
 A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and alerts on mid-session changes.
+
+### Agent Card Signature Verification
+
+An Agent Card may carry a JWS signature (RFC 7515) attesting that the card was published by a particular signer. Pipelock can independently verify that signature against keys **the operator trusts** — this is independent attestation, not vendor self-attestation. Detection and enforcement here are free-tier; no license is required.
+
+Configure one or more `trusted_agent_card_keys`:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `key_id` | yes | Operator label, unique. Matched against the JWS `kid` header as a lookup **hint only** — never as authority. |
+| `public_key` | yes | Ed25519 public key, `pipelock-ed25519-public-v1` form or raw hex. |
+| `allowed_origins` | yes | Origins (`scheme://host[:port]`, no path) this key may sign cards for. A signature is only accepted on a card fetched from a listed origin. |
+
+Behavior when at least one trusted key is configured:
+
+- **Signed card, signature verifies** against a trusted key scoped to the card's origin → allowed; a positive attestation receipt is emitted (`a2a_card_signature` layer).
+- **Signed card, no trusted-and-valid signature** (forged, wrong key, untrusted, substituted, origin mismatch, `alg: none`, non-EdDSA, empty/short signature, duplicate top-level keys, trailing tokens) → finding + receipt, **enforced at `a2a_scanning.action`**. Set `action: block` to reject. The preimage is the card with its `signatures` member removed, canonicalized per RFC 8785 (JCS).
+- **Unsigned card** → existing scan/drift behavior, unless `require_signed_agent_cards: true`, in which case it is a finding enforced at `action`.
+
+Notes and honest scope:
+
+- Only `EdDSA` (Ed25519) signatures are verified. Cards signed with other algorithms cannot match a trusted key and therefore fail verification when verification is active.
+- `require_signed_agent_cards: true` requires at least one trusted key (otherwise every card would be rejected); this combination is rejected at config load.
+- Verification fires on every surface that delivers an Agent Card as a single body: forward proxy (plain HTTP and CONNECT/TLS-intercept) and MCP HTTP. A2A SSE streams carry task/message events, not Agent Cards, so there is no card-signature step on the SSE path.
+- Revoking trust is a config edit: remove the key (or its origin) and reload. Hot reload swaps the trusted-key set atomically; a reduced key set logs a downgrade warning.
 
 ## MCP Binary Integrity (v2.1)
 

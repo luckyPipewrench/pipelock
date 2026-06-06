@@ -202,6 +202,7 @@ func (c *Config) policySemanticView() Config {
 	view.APIAllowlist = sortedCopy(view.APIAllowlist)
 	view.Internal = sortedCopy(view.Internal)
 	view.TrustedDomains = sortedCopy(view.TrustedDomains)
+	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
 	if view.Redaction.Enabled {
 		view.Redaction.AllowlistUnparseable = sortedCopy(view.Redaction.AllowlistUnparseable)
 	} else {
@@ -221,6 +222,29 @@ func (c *Config) policySemanticView() Config {
 	view.Learn.Inference.Normalization = view.Learn.Inference.Normalization.Resolved()
 
 	return view
+}
+
+func canonicalA2ATrustedCardKeys(keys []A2ATrustedCardKey) []A2ATrustedCardKey {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]A2ATrustedCardKey, len(keys))
+	for i, key := range keys {
+		out[i] = key
+		out[i].AllowedOrigins = sortedCopy(key.AllowedOrigins)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].KeyID != out[j].KeyID {
+			return out[i].KeyID < out[j].KeyID
+		}
+		if out[i].PublicKey != out[j].PublicKey {
+			return out[i].PublicKey < out[j].PublicKey
+		}
+		left, _ := json.Marshal(out[i].AllowedOrigins)
+		right, _ := json.Marshal(out[j].AllowedOrigins)
+		return string(left) < string(right)
+	})
+	return out
 }
 
 func canonicalUnparseableRoutes(enabled bool, routes []redact.UnparseableRouteSpec) []redact.UnparseableRouteSpec {

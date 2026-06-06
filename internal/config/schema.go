@@ -863,6 +863,36 @@ type A2AScanning struct {
 	MaxContexts               int    `yaml:"max_contexts"`                // total tracked contexts (default 1000)
 	ScanRawParts              bool   `yaml:"scan_raw_parts"`              // decode text-like Part.raw
 	MaxRawSize                int    `yaml:"max_raw_size"`                // encoded size cap for Part.raw decode (default 1MB)
+
+	// RequireSignedAgentCards, when true, treats an UNSIGNED Agent Card as a
+	// finding (enforced at Action). Default false: unsigned cards keep their
+	// existing scan/drift behavior. A card that carries a signature is always
+	// verified when TrustedAgentCardKeys is non-empty, regardless of this flag.
+	RequireSignedAgentCards bool `yaml:"require_signed_agent_cards"`
+
+	// TrustedAgentCardKeys lists the Ed25519 public keys pipelock will accept as
+	// authoritative signers of Agent Cards, each scoped to one or more origins.
+	// When non-empty, Agent Cards carrying a JWS signature are cryptographically
+	// verified against these keys; a card whose signature does not verify against
+	// a trusted key scoped to the card's origin fails closed at Action.
+	TrustedAgentCardKeys []A2ATrustedCardKey `yaml:"trusted_agent_card_keys"`
+}
+
+// A2ATrustedCardKey is one operator-pinned Agent Card signing key. A pinned key
+// authorizes a specific signer for specific card origins; it is not globally
+// trusted to sign any Agent Card. The JWS "kid" header is treated as a lookup
+// hint only — never as authority — so a card cannot select which key verifies it.
+type A2ATrustedCardKey struct {
+	// KeyID is the operator's label for this key. It is matched against the JWS
+	// "kid" header as a lookup hint. Must be non-empty and unique.
+	KeyID string `yaml:"key_id"`
+	// PublicKey is the Ed25519 public key, either pipelock-encoded
+	// (pipelock-ed25519-public-v1) or raw hex.
+	PublicKey string `yaml:"public_key"`
+	// AllowedOrigins scopes this key to specific card origins (scheme://host[:port]).
+	// A signature by this key is only accepted on a card fetched from a listed
+	// origin. Must be non-empty.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 // RequestBodyScanning configures DLP scanning of request bodies and headers

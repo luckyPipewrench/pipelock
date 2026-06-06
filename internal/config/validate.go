@@ -1284,7 +1284,12 @@ func (c *Config) validateMCPSessionBinding() error {
 }
 
 func (c *Config) validateA2AScanning() error {
-	// Validate A2A scanning config
+	// Validate trusted keys regardless of Enabled so malformed entries and
+	// require_signed_agent_cards-without-keys fail fast at load, not only on a
+	// later reload that turns A2A on. This also normalizes accepted entries.
+	if err := c.validateA2ATrustedCardKeys(); err != nil {
+		return err
+	}
 	if !c.A2AScanning.Enabled {
 		return nil
 	}
@@ -1304,6 +1309,124 @@ func (c *Config) validateA2AScanning() error {
 		c.A2AScanning.MaxRawSize = 1 << 20
 	}
 	return nil
+}
+
+// validateA2ATrustedCardKeys enforces the trust shape for Agent Card signature
+// verification: every pinned key needs a unique non-empty key_id, a parseable
+// Ed25519 public key, at least one well-formed origin, and no two keys may share
+// the same public key. require_signed_agent_cards is meaningless (it would block
+// every card) without at least one trusted key, so that combination is rejected.
+func (c *Config) validateA2ATrustedCardKeys() error {
+	keys := c.A2AScanning.TrustedAgentCardKeys
+	if c.A2AScanning.RequireSignedAgentCards && len(keys) == 0 {
+		return fmt.Errorf("a2a_scanning.require_signed_agent_cards requires at least one trusted_agent_card_keys entry")
+	}
+	seenID := make(map[string]struct{}, len(keys))
+	seenFP := make(map[string]string, len(keys))
+	for i, k := range keys {
+		id := strings.TrimSpace(k.KeyID)
+		if id == "" {
+			return fmt.Errorf("a2a_scanning.trusted_agent_card_keys[%d]: key_id is required", i)
+		}
+		c.A2AScanning.TrustedAgentCardKeys[i].KeyID = id
+		if _, dup := seenID[id]; dup {
+			return fmt.Errorf("a2a_scanning.trusted_agent_card_keys: duplicate key_id %q", id)
+		}
+		seenID[id] = struct{}{}
+
+		pub, err := signing.ParsePublicKey(k.PublicKey)
+		if err != nil {
+			return fmt.Errorf("a2a_scanning.trusted_agent_card_keys[%q]: invalid public_key: %w", id, err)
+		}
+		fp, err := signing.Fingerprint(pub)
+		if err != nil {
+			return fmt.Errorf("a2a_scanning.trusted_agent_card_keys[%q]: %w", id, err)
+		}
+		c.A2AScanning.TrustedAgentCardKeys[i].PublicKey = signing.EncodePublicKey(pub)
+		if other, dup := seenFP[fp]; dup {
+			return fmt.Errorf("a2a_scanning.trusted_agent_card_keys: key_id %q and %q share the same public key", other, id)
+		}
+		seenFP[fp] = id
+
+		if len(k.AllowedOrigins) == 0 {
+			return fmt.Errorf("a2a_scanning.trusted_agent_card_keys[%q]: allowed_origins is required", id)
+		}
+		for j, o := range k.AllowedOrigins {
+			origin, ok := canonicalCardOrigin(o)
+			if !ok {
+				return fmt.Errorf("a2a_scanning.trusted_agent_card_keys[%q]: invalid origin %q (want scheme://host[:port], no path)", id, o)
+			}
+			c.A2AScanning.TrustedAgentCardKeys[i].AllowedOrigins[j] = origin
+		}
+	}
+	return nil
+}
+
+// canonicalCardOrigin reports whether s is a well-formed Agent Card origin and
+// returns its normalized scheme://host[:port] form.
+//
+// This is intentionally STRICTER than mcp.CardOriginFromURL (which normalizes an
+// arbitrary fetch URL down to its origin by discarding the path). A configured
+// allowed_origins entry must already BE an origin, so anything carrying a path,
+// query, fragment, or userinfo is a likely operator mistake and is rejected here
+// rather than silently normalized away.
+func canonicalCardOrigin(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	if u.Host == "" || u.Hostname() == "" || u.User != nil {
+		return "", false
+	}
+	if !validOptionalCardOriginPort(u.Host, u.Port()) {
+		return "", false
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return "", false
+		}
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", false
+	}
+
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	return scheme + "://" + host, true
+}
+
+func validOptionalCardOriginPort(hostport, port string) bool {
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.LastIndex(hostport, "]")
+		if end < 0 || end == len(hostport)-1 {
+			return end == len(hostport)-1
+		}
+		return strings.HasPrefix(hostport[end+1:], ":") && port != ""
+	}
+	if strings.Count(hostport, ":") == 0 {
+		return true
+	}
+	if strings.Count(hostport, ":") > 1 {
+		return false
+	}
+	return port != ""
 }
 
 func (c *Config) validateRequestBodyScanning() error {

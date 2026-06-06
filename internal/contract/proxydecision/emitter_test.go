@@ -98,7 +98,7 @@ func spannedEvidenceFixture() []contractruntime.SourceSpanEvidence {
 			NormalizedView:       contractreceipt.NormalizedViewDLPNormalized,
 			PipelockBinaryDigest: testSpanDigest,
 			RulesBundleDigest:    testSpanDigest,
-			TransformProfile:     "nfkc+zero-width-strip",
+			TransformProfile:     "pipelock-transform-v1",
 			PolicyHash:           testSpanDigest,
 			RuleID:               "aws_access_key",
 			Bundle:               "builtin",

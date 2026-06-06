@@ -62,6 +62,8 @@ type SourceSpan struct {
 	Bundle        string `json:"bundle,omitempty"`
 	BundleVersion string `json:"bundle_version,omitempty"`
 
+	// CharOffset and CharLength are Unicode rune offsets into the named
+	// normalized/redacted view, not byte offsets into the raw source.
 	CharOffset *int `json:"char_offset,omitempty"`
 	CharLength *int `json:"char_length,omitempty"`
 

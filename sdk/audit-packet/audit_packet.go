@@ -201,21 +201,45 @@ type Verifier struct {
 // reading evidence.jsonl directly because that is the byte-for-byte signed
 // input to the verifier.
 type Receipt struct {
-	ActionID       string `json:"action_id"`
-	ReceiptHash    string `json:"receipt_hash"`
-	ChainSeq       int    `json:"chain_seq"`
-	ChainPrevHash  string `json:"chain_prev_hash"`
-	Timestamp      string `json:"timestamp,omitempty"`
-	ActionType     string `json:"action_type,omitempty"`
-	Verdict        string `json:"verdict"`
-	Transport      string `json:"transport,omitempty"`
-	Method         string `json:"method,omitempty"`
-	TargetRedacted string `json:"target_redacted,omitempty"`
-	Layer          string `json:"layer,omitempty"`
-	Pattern        string `json:"pattern,omitempty"`
-	Severity       string `json:"severity,omitempty"`
-	PolicyHash     string `json:"policy_hash"`
-	SignerKey      string `json:"signer_key,omitempty"`
+	ActionID       string       `json:"action_id"`
+	ReceiptHash    string       `json:"receipt_hash"`
+	ChainSeq       int          `json:"chain_seq"`
+	ChainPrevHash  string       `json:"chain_prev_hash"`
+	Timestamp      string       `json:"timestamp,omitempty"`
+	ActionType     string       `json:"action_type,omitempty"`
+	Verdict        string       `json:"verdict"`
+	Transport      string       `json:"transport,omitempty"`
+	Method         string       `json:"method,omitempty"`
+	TargetRedacted string       `json:"target_redacted,omitempty"`
+	Layer          string       `json:"layer,omitempty"`
+	Pattern        string       `json:"pattern,omitempty"`
+	Severity       string       `json:"severity,omitempty"`
+	PolicyHash     string       `json:"policy_hash"`
+	SignerKey      string       `json:"signer_key,omitempty"`
+	SourceSpans    []SourceSpan `json:"source_spans,omitempty"`
+}
+
+// SourceSpan is the inline audit-packet mirror of EvidenceReceipt v2
+// source_spans. Producers still verify the signed EvidenceReceipt bytes; this
+// optional copy lets packet consumers display span metadata without parsing the
+// receipt payload first.
+type SourceSpan struct {
+	SourceID             string `json:"source_id"`
+	SourceKind           string `json:"source_kind"`
+	NormalizedView       string `json:"normalized_view"`
+	PipelockBinaryDigest string `json:"pipelock_binary_digest"`
+	RulesBundleDigest    string `json:"rules_bundle_digest"`
+	TransformProfile     string `json:"transform_profile"`
+	PolicyHash           string `json:"policy_hash"`
+	RuleID               string `json:"rule_id"`
+	Bundle               string `json:"bundle,omitempty"`
+	BundleVersion        string `json:"bundle_version,omitempty"`
+	CharOffset           *int   `json:"char_offset,omitempty"`
+	CharLength           *int   `json:"char_length,omitempty"`
+	MatchHash            string `json:"match_hash"`
+	MatchHashAlg         string `json:"match_hash_alg"`
+	MatchClass           string `json:"match_class"`
+	RedactedSample       string `json:"redacted_sample,omitempty"`
 }
 
 // ScannerConfigSnapshot is the optional summary of the pipelock config that

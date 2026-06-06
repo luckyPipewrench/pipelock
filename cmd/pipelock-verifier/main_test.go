@@ -800,6 +800,38 @@ func TestReceipt_EvidenceV2WithoutKeyIsNotProvenance(t *testing.T) {
 	}
 }
 
+func TestReceipt_EvidenceV2RecheckSourceSpan(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("https://example.com/[redacted-value]"), 0o600); err != nil {
+		t.Fatalf("write recheck source: %v", err)
+	}
+	receiptPath := filepath.Clean(filepath.Join("..", "..", "internal", "contract", "testdata", "golden", "valid_evidence_receipt_proxy_decision_with_spans.json"))
+	keyHex := "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+	stdout, stderr, code := runRoot(t,
+		"receipt",
+		"--json",
+		"--key", keyHex,
+		"--expect-payload-kind", string(contractreceipt.PayloadProxyDecisionWithSpans),
+		"--recheck-source", sourcePath,
+		receiptPath,
+	)
+	if code != cliutil.ExitOK {
+		t.Fatalf("v2 recheck should pass, stdout=%q stderr=%q", stdout, stderr)
+	}
+	var rpt receiptReport
+	if err := json.Unmarshal([]byte(stdout), &rpt); err != nil {
+		t.Fatalf("parse json: %v", err)
+	}
+	if rpt.RecheckValid == nil || !*rpt.RecheckValid {
+		t.Fatalf("expected recheck_valid=true, got %+v", rpt)
+	}
+	if rpt.RecheckView != contractreceipt.NormalizedViewSanitizedTarget {
+		t.Fatalf("recheck_view=%q", rpt.RecheckView)
+	}
+}
+
 func TestReceipt_EvidenceV2RejectsWrongPinnedKey(t *testing.T) {
 	t.Parallel()
 	fix := newEvidenceFixture(t, 1)

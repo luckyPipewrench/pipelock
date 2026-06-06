@@ -1,6 +1,8 @@
 # Pipelock Rust Verifier
 
-`pipelock-verifier-rs` is the Rust reference verifier for Pipelock Audit Packet v0.
+`pipelock-verifier-rs` is the Rust reference verifier for Pipelock Audit Packet
+v0, ActionReceipt v1, and the EvidenceReceipt v2 spanned proxy-decision
+conformance fixture.
 
 It provides three commands:
 
@@ -17,6 +19,6 @@ Exit codes match the Go and TypeScript verifiers:
 - `2` runtime error
 - `64` usage error
 
-The verifier embeds the Audit Packet v0 schema at compile time, validates structural invariants, verifies Ed25519 receipt signatures, replays receipt chains with the `genesis` root, and cross-checks packet totals, receipt count, root hash, final sequence, and verdict consistency.
+The verifier embeds the Audit Packet v0 schema at compile time, validates structural invariants, verifies Ed25519 receipt signatures, replays receipt chains with the `genesis` root, and cross-checks packet totals, receipt count, root hash, final sequence, and verdict consistency. The `receipt` command also verifies EvidenceReceipt v2 `proxy_decision_with_spans` receipts with a pinned `--key`, including the JCS preimage and strict source-span payload shape.
 
 Signer keys may be raw 32-byte hex, the versioned `pipelock-ed25519-public-v1` text format, or a file containing either form.

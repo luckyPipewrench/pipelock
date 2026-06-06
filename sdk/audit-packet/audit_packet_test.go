@@ -113,6 +113,48 @@ func TestTotalsKeys(t *testing.T) {
 	}
 }
 
+func TestReceiptSourceSpansRoundTrip(t *testing.T) {
+	offset, length := 20, 16
+	p := auditpacket.Receipt{
+		ActionID:      "01F8MECHZX3TBDSZ7XRADM79ZS",
+		ReceiptHash:   strings.Repeat("a", 64),
+		ChainSeq:      1,
+		ChainPrevHash: "sha256:0",
+		Verdict:       "block",
+		PolicyHash:    strings.Repeat("b", 64),
+		SourceSpans: []auditpacket.SourceSpan{{
+			SourceID:             "request-url",
+			SourceKind:           "http_request_url",
+			NormalizedView:       "sanitized_target",
+			PipelockBinaryDigest: "sha256:" + strings.Repeat("1", 64),
+			RulesBundleDigest:    "sha256:" + strings.Repeat("2", 64),
+			TransformProfile:     "pipelock-transform-v1",
+			PolicyHash:           "sha256:" + strings.Repeat("3", 64),
+			RuleID:               "aws_access_key",
+			CharOffset:           &offset,
+			CharLength:           &length,
+			MatchHash:            "hmac-sha256:" + strings.Repeat("4", 64),
+			MatchHashAlg:         "hmac-sha256",
+			MatchClass:           "secret:aws_access_key",
+			RedactedSample:       "[redacted-value]",
+		}},
+	}
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got auditpacket.Receipt
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.SourceSpans) != 1 {
+		t.Fatalf("SourceSpans len = %d, want 1", len(got.SourceSpans))
+	}
+	if got.SourceSpans[0].MatchHashAlg != "hmac-sha256" {
+		t.Fatalf("MatchHashAlg = %q", got.SourceSpans[0].MatchHashAlg)
+	}
+}
+
 // TestValidate covers the validator's contract: valid packets pass, malformed
 // packets fail with informative errors. Each row is one mutation of the
 // golden packet.

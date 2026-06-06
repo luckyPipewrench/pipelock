@@ -11,8 +11,16 @@ export type JSONObject = { [key: string]: JSONValue };
 export interface Receipt {
   version?: number;
   action_record?: ActionRecord;
-  signature?: string;
+  signature?: string | JSONObject;
   signer_key?: string;
+  record_type?: string;
+  receipt_version?: number;
+  payload_kind?: string;
+  event_id?: string;
+  timestamp?: string;
+  chain_seq?: number;
+  chain_prev_hash?: string;
+  payload?: unknown;
   [key: string]: unknown;
 }
 

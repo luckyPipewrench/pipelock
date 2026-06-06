@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -656,6 +657,56 @@ func TestServer_Reload_DedupSkipsValidateWarnings(t *testing.T) {
 	}
 	if buf.contains("response_scanning.exempt_domains") {
 		t.Fatalf("deduped reload printed validation warning:\n%s", buf.String())
+	}
+}
+
+func TestServer_Reload_PreservesLicenseIntermediateOnContentChange(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.LicenseIntermediateFile = "/tmp/license-intermediate.json"
+	oldCfg.LicenseIntermediateCert = []byte("cert-v1")
+	oldCfg.LicenseIntermediateLoadError = ""
+
+	for _, tt := range []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantLog string
+	}{
+		{
+			name: "cert bytes changed",
+			mutate: func(c *config.Config) {
+				c.LicenseIntermediateCert = []byte("cert-v2")
+			},
+			wantLog: "license key inputs changed",
+		},
+		{
+			name: "cert load became stale",
+			mutate: func(c *config.Config) {
+				c.LicenseIntermediateCert = []byte("configured intermediate certificate unavailable")
+				c.LicenseIntermediateLoadError = "stat license_intermediate_file: missing"
+			},
+			wantLog: "license key inputs changed",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf.reset()
+			s.lastReloadAt = time.Time{}
+			newCfg := oldCfg.Clone()
+			tt.mutate(newCfg)
+			if err := s.Reload(newCfg); err != nil {
+				t.Fatalf("Reload: %v", err)
+			}
+			live := s.proxy.CurrentConfig()
+			if !bytes.Equal(live.LicenseIntermediateCert, []byte("cert-v1")) {
+				t.Fatalf("live intermediate cert = %q, want cert-v1", string(live.LicenseIntermediateCert))
+			}
+			if live.LicenseIntermediateLoadError != "" {
+				t.Fatalf("live intermediate load error = %q, want empty", live.LicenseIntermediateLoadError)
+			}
+			if !buf.contains(tt.wantLog) {
+				t.Fatalf("reload stderr missing %q:\n%s", tt.wantLog, buf.String())
+			}
+		})
 	}
 }
 

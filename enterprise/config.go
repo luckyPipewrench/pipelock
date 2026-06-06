@@ -499,6 +499,9 @@ func ValidateMergedAgent(name string, cfg *config.Config) error {
 // deepCopyConfig creates an independent deep copy of a Config via
 // YAML round-trip. This ensures no shared pointers between base and merged.
 func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
+	licenseIntermediateCert := append([]byte(nil), cfg.LicenseIntermediateCert...)
+	licenseIntermediateLoadError := cfg.LicenseIntermediateLoadError
+
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("deep copy marshal: %w", err)
@@ -507,5 +510,7 @@ func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
 	if err := yaml.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("deep copy unmarshal: %w", err)
 	}
+	out.LicenseIntermediateCert = licenseIntermediateCert
+	out.LicenseIntermediateLoadError = licenseIntermediateLoadError
 	return &out, nil
 }

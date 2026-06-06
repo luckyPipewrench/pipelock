@@ -5,6 +5,7 @@
 package licenseservice
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -105,6 +106,17 @@ func NewWebhookHandler(
 	privateKey ed25519.PrivateKey,
 	log zerolog.Logger,
 ) (*WebhookHandler, error) {
+	if len(cfg.IntermediateCert) > 0 {
+		certPub, err := license.ExtractIntermediatePublicKey(cfg.IntermediateCert)
+		if err != nil {
+			return nil, fmt.Errorf("parse intermediate certificate public key: %w", err)
+		}
+		signingPub, ok := privateKey.Public().(ed25519.PublicKey)
+		if !ok || !bytes.Equal(certPub, signingPub) {
+			return nil, errors.New("intermediate certificate public key does not match license signing private key")
+		}
+	}
+
 	// Load founding count from DB to initialize the in-memory counter.
 	count, err := db.CountFounding(context.Background())
 	if err != nil {

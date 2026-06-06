@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -157,7 +158,9 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 			oldCfg.LicensePublicKey != newCfg.LicensePublicKey ||
 			oldCfg.LicenseFile != newCfg.LicenseFile ||
 			oldCfg.LicenseCRLFile != newCfg.LicenseCRLFile ||
-			oldCfg.LicenseIntermediateFile != newCfg.LicenseIntermediateFile
+			oldCfg.LicenseIntermediateFile != newCfg.LicenseIntermediateFile ||
+			!bytes.Equal(oldCfg.LicenseIntermediateCert, newCfg.LicenseIntermediateCert) ||
+			oldCfg.LicenseIntermediateLoadError != newCfg.LicenseIntermediateLoadError
 
 		if agentsRevokedByLicense {
 			// License gate disabled agents on reload. Shut down

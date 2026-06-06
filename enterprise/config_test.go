@@ -1260,6 +1260,8 @@ func TestMergeAgentProfile_TrustedDomainsNilInherits(t *testing.T) {
 func TestDeepCopyConfig(t *testing.T) {
 	cfg := testConfig()
 	cfg.Mode = config.ModeStrict
+	cfg.LicenseIntermediateCert = []byte("intermediate-cert")
+	cfg.LicenseIntermediateLoadError = "load failed"
 
 	cloned, err := deepCopyConfig(cfg)
 	if err != nil {
@@ -1268,6 +1270,16 @@ func TestDeepCopyConfig(t *testing.T) {
 	cloned.Mode = config.ModeAudit
 	if cfg.Mode != config.ModeStrict {
 		t.Error("deep copy mutated original")
+	}
+	if string(cloned.LicenseIntermediateCert) != "intermediate-cert" {
+		t.Fatalf("runtime intermediate cert not preserved: %q", string(cloned.LicenseIntermediateCert))
+	}
+	if cloned.LicenseIntermediateLoadError != "load failed" {
+		t.Fatalf("runtime intermediate load error = %q", cloned.LicenseIntermediateLoadError)
+	}
+	cloned.LicenseIntermediateCert[0] = 'X'
+	if string(cfg.LicenseIntermediateCert) != "intermediate-cert" {
+		t.Fatal("deep copy aliased runtime intermediate cert bytes")
 	}
 }
 

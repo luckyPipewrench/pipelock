@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +37,32 @@ type testSetup struct {
 	emailSrv   *httptest.Server
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
+}
+
+func testServiceIntermediateCert(t *testing.T, intermediatePub ed25519.PublicKey) []byte {
+	t.Helper()
+	_, rootPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(root): %v", err)
+	}
+	now := time.Now().UTC()
+	im, err := license.SignIntermediate(license.IntermediatePayload{
+		Serial:    "im_service_test",
+		Purpose:   license.PurposeLicenseSigning,
+		Algorithm: license.AlgorithmEd25519,
+		PublicKey: hex.EncodeToString(intermediatePub),
+		NotBefore: now.Add(-time.Minute).Unix(),
+		NotAfter:  now.Add(time.Hour).Unix(),
+		IssuedAt:  now.Add(-time.Minute).Unix(),
+	}, rootPriv)
+	if err != nil {
+		t.Fatalf("SignIntermediate: %v", err)
+	}
+	data, err := json.Marshal(im)
+	if err != nil {
+		t.Fatalf("Marshal intermediate: %v", err)
+	}
+	return data
 }
 
 // newTestSetup creates a complete test environment. The Polar mock returns
@@ -76,7 +103,7 @@ func newTestSetup(t *testing.T) *testSetup {
 		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
-		IntermediateCert:    []byte(`{"payload":"test","signature":"test"}`),
+		IntermediateCert:    testServiceIntermediateCert(t, pub),
 		CRLPrivateKey:       priv,
 		ResendAPIKey:        "re_" + "test_key",
 		DBPath:              ":memory:",
@@ -1052,6 +1079,36 @@ func TestNewWebhookHandler_InitializesFoundingCount(t *testing.T) {
 
 	if handler.foundingCount != 3 {
 		t.Errorf("foundingCount = %d, want 3", handler.foundingCount)
+	}
+}
+
+func TestNewWebhookHandler_RejectsIntermediateSigningKeyMismatch(t *testing.T) {
+	db := openTestDB(t)
+	ledger, _ := openTestLedger(t)
+
+	certPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(cert): %v", err)
+	}
+	_, signingPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(signing): %v", err)
+	}
+
+	cfg := &Config{
+		IntermediateCert:    testServiceIntermediateCert(t, certPub),
+		FoundingProCap:      50,
+		FoundingProDeadline: time.Date(2099, 6, 30, 0, 0, 0, 0, time.UTC),
+	}
+	polar := NewPolarClient("token", "http://localhost")
+	email := NewEmailSender("key", "from@test.com")
+
+	_, err = NewWebhookHandler(cfg, db, polar, email, ledger, signingPriv, zerolog.Nop())
+	if err == nil {
+		t.Fatal("expected intermediate/signing key mismatch error")
+	}
+	if !strings.Contains(err.Error(), "intermediate certificate public key does not match") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -8756,7 +8756,7 @@ func TestLicenseIntermediateFileConfigStates(t *testing.T) {
 		if err != nil {
 			t.Fatalf("missing public key must not be a fatal validate error, got %v", err)
 		}
-		if license.EmbeddedPublicKey() == nil && !hasLicenseIntermediateWarning(warnings) {
+		if !hasLicenseIntermediateWarning(warnings) {
 			t.Fatalf("expected a license_intermediate_file warning, got %+v", warnings)
 		}
 	})

@@ -39,7 +39,7 @@ func newTestServer(t *testing.T) *Server {
 	db := openTestDB(t)
 	ledger, _ := openTestLedger(t)
 
-	_, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -70,7 +70,7 @@ func newTestServer(t *testing.T) *Server {
 		PolarWebhookSecret:  "whsec_" + secret,
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "test.key"),
-		IntermediateCert:    []byte(`{"payload":"server-test","signature":"server-test"}`),
+		IntermediateCert:    testServiceIntermediateCert(t, pub),
 		CRLPrivateKey:       priv,
 		ResendAPIKey:        "re_" + "test_server_key",
 		DBPath:              ":memory:",
@@ -146,7 +146,7 @@ func TestServer_IntermediateEndpoint(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
 	}
-	if !strings.Contains(rr.Body.String(), "server-test") {
+	if strings.TrimSpace(rr.Body.String()) != string(srv.cfg.IntermediateCert) {
 		t.Fatalf("body should contain configured intermediate certificate, got %q", rr.Body.String())
 	}
 }

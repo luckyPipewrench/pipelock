@@ -6,7 +6,6 @@ package runtime
 import (
 	"context"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -30,19 +29,6 @@ const (
 type stringerFunc func() string
 
 func (f stringerFunc) String() string { return f() }
-
-// newServerTestFreePort returns a free 127.0.0.1 TCP port by binding and
-// releasing it, same pattern used in run_test.go:freePort.
-func newServerTestFreePort(t *testing.T) string {
-	t.Helper()
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("free port: %v", err)
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr
-}
 
 func writeServerTestConfig(t *testing.T, content string) string {
 	t.Helper()
@@ -97,7 +83,7 @@ func waitForServerOutput(t *testing.T, buf *syncBuffer, want string) {
 // drive Mode and FetchProxy.Listen overrides on the loaded config. This is
 // the behavior RunCmd used to implement via cobra.Flag.Changed().
 func TestNewServer_AppliesCLIOverrides(t *testing.T) {
-	listenAddr := newServerTestFreePort(t)
+	listenAddr := serverTestEphemeralListen
 	s, _ := newTestServer(t, func(o *ServerOpts) {
 		o.Mode = config.ModeAudit
 		o.ModeChanged = true
@@ -142,7 +128,7 @@ func TestNewServer_ValidatesListenerFlagPairs(t *testing.T) {
 	}{
 		{
 			name: "mcp listen without upstream",
-			opts: ServerOpts{MCPListen: newServerTestFreePort(t)},
+			opts: ServerOpts{MCPListen: serverTestEphemeralListen},
 			want: "--mcp-listen requires --mcp-upstream",
 		},
 		{
@@ -152,7 +138,7 @@ func TestNewServer_ValidatesListenerFlagPairs(t *testing.T) {
 		},
 		{
 			name: "invalid mcp upstream",
-			opts: ServerOpts{MCPListen: newServerTestFreePort(t), MCPUpstream: "ftp://127.0.0.1:1"},
+			opts: ServerOpts{MCPListen: serverTestEphemeralListen, MCPUpstream: "ftp://127.0.0.1:1"},
 			want: "invalid --mcp-upstream",
 		},
 		{
@@ -332,7 +318,7 @@ func TestNewServer_FlightRecorderAndEnvelopeFromConfig(t *testing.T) {
 // "listener mode" notices to stderr.
 func TestNewServer_ResolveRuntimeRuns(t *testing.T) {
 	s, buf := newTestServer(t, func(o *ServerOpts) {
-		o.MCPListen = newServerTestFreePort(t)
+		o.MCPListen = serverTestEphemeralListen
 		o.MCPUpstream = serverTestUpstreamURL
 	})
 	if s.runtimeMode != config.RuntimeForwardWithMCPListener {
@@ -361,7 +347,7 @@ func TestNewServer_ResolveRuntimeRuns(t *testing.T) {
 // pipelock instance.
 func TestServer_StartShutdown(t *testing.T) {
 	s, _ := newTestServer(t, func(o *ServerOpts) {
-		o.Listen = newServerTestFreePort(t)
+		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 
@@ -404,7 +390,7 @@ func TestServer_StartArmsFileSentry(t *testing.T) {
 
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
-		o.Listen = newServerTestFreePort(t)
+		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 
@@ -905,7 +891,7 @@ func TestServer_MCPListener_ResponseScanningFallback(t *testing.T) {
 	// can verify listener mode does NOT silently re-enable it (that is
 	// MCP proxy mode's responsibility).
 	s, buf := newTestServer(t, func(o *ServerOpts) {
-		o.MCPListen = newServerTestFreePort(t)
+		o.MCPListen = serverTestEphemeralListen
 		o.MCPUpstream = serverTestUpstreamURL
 	})
 
@@ -930,7 +916,7 @@ func TestServer_MCPListener_ResponseScanningFallback(t *testing.T) {
 // race the watcher's read of s.logger/s.sentry.
 func TestServer_StartJoinsLicenseExpiryWatcher(t *testing.T) {
 	s, _ := newTestServer(t, func(o *ServerOpts) {
-		o.Listen = newServerTestFreePort(t)
+		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 	// Set before launching Start: goroutine creation establishes the

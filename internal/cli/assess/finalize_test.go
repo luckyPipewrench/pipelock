@@ -6,16 +6,21 @@ package assess
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/audit"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -65,6 +70,154 @@ func generateTestKeys(t *testing.T) (keystoreDir, agentName string) {
 	}
 
 	return keystoreDir, agentName
+}
+
+func TestCheckAssessLicenseFeatureGate(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %v", err)
+	}
+
+	t.Run("tokenless denies paid assessment", func(t *testing.T) {
+		runDir, _ := initTestRun(t)
+
+		if checkAssessLicense(runDir) {
+			t.Fatal("tokenless assess gate returned true")
+		}
+	})
+
+	t.Run("malformed token denies paid assessment", func(t *testing.T) {
+		runDir, cfgFile := initTestRun(t)
+		writeAssessLicenseConfig(t, cfgFile, "not-a-license-token", hex.EncodeToString(pub), "")
+
+		if checkAssessLicense(runDir) {
+			t.Fatal("malformed assess token returned true")
+		}
+	})
+
+	t.Run("unloadable CRL denies otherwise-valid assessment", func(t *testing.T) {
+		// A configured-but-broken CRL must fail closed: an unreadable
+		// revocation list means we cannot prove the license is unrevoked,
+		// so the paid path is denied rather than silently falling back to
+		// a no-revocation Verify.
+		runDir, cfgFile := initTestRun(t)
+		token, _ := issueAssessGateToken(t, priv, []string{license.FeatureAssess}, time.Now().Add(time.Hour), false)
+		missingCRL := filepath.Join(t.TempDir(), "nonexistent.crl.json")
+		writeAssessLicenseConfig(t, cfgFile, token, hex.EncodeToString(pub), missingCRL)
+
+		if checkAssessLicense(runDir) {
+			t.Fatal("assess gate returned true with an unloadable CRL; CRL-load failure must fail closed")
+		}
+	})
+
+	cases := []struct {
+		name      string
+		features  []string
+		expiresAt time.Time
+		revoked   bool
+		want      bool
+	}{
+		{
+			name:      "under-tier agents token denies paid assessment",
+			features:  []string{license.FeatureAgents},
+			expiresAt: time.Now().Add(time.Hour),
+			want:      false,
+		},
+		{
+			name:      "expired assess token denies paid assessment",
+			features:  []string{license.FeatureAssess},
+			expiresAt: time.Now().Add(-time.Hour),
+			want:      false,
+		},
+		{
+			name:      "revoked assess token denies paid assessment",
+			features:  []string{license.FeatureAssess},
+			expiresAt: time.Now().Add(time.Hour),
+			revoked:   true,
+			want:      false,
+		},
+		{
+			name:      "assess feature allows paid assessment",
+			features:  []string{license.FeatureAssess},
+			expiresAt: time.Now().Add(time.Hour),
+			want:      true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir, cfgFile := initTestRun(t)
+			token, crlFile := issueAssessGateToken(t, priv, tc.features, tc.expiresAt, tc.revoked)
+			writeAssessLicenseConfig(t, cfgFile, token, hex.EncodeToString(pub), crlFile)
+
+			if got := checkAssessLicense(runDir); got != tc.want {
+				t.Fatalf("checkAssessLicense() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func issueAssessGateToken(
+	t *testing.T,
+	priv ed25519.PrivateKey,
+	features []string,
+	expiresAt time.Time,
+	revoked bool,
+) (token, crlFile string) {
+	t.Helper()
+	now := time.Now().UTC()
+	lic := license.License{
+		ID:        "assess-gate-test",
+		Email:     "test@example.com",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: expiresAt.Unix(),
+		Features:  features,
+		Tier:      "test",
+	}
+	token, err := license.Issue(lic, priv)
+	if err != nil {
+		t.Fatalf("license.Issue: %v", err)
+	}
+	if !revoked {
+		return token, ""
+	}
+	crl, err := license.SignCRL(license.CRLPayload{
+		Version:   license.CRLVersion,
+		IssuedAt:  now.Add(-time.Minute).Unix(),
+		ExpiresAt: now.Add(time.Hour).Unix(),
+		Revoked: []license.RevokedLicense{{
+			ID:        lic.ID,
+			Reason:    "test revocation",
+			RevokedAt: now.Unix(),
+		}},
+	}, priv)
+	if err != nil {
+		t.Fatalf("license.SignCRL: %v", err)
+	}
+	data, err := json.Marshal(crl)
+	if err != nil {
+		t.Fatalf("json.Marshal(CRL): %v", err)
+	}
+	crlFile = filepath.Join(t.TempDir(), "license.crl.json")
+	if err := os.WriteFile(crlFile, data, 0o600); err != nil {
+		t.Fatalf("os.WriteFile(CRL): %v", err)
+	}
+	return token, crlFile
+}
+
+func writeAssessLicenseConfig(t *testing.T, cfgFile, token, publicKey, crlFile string) {
+	t.Helper()
+	lines := []string{
+		"mode: audit",
+		"license_key: " + strconv.Quote(token),
+		"license_public_key: " + strconv.Quote(publicKey),
+	}
+	if crlFile != "" {
+		lines = append(lines, "license_crl_file: "+strconv.Quote(crlFile))
+	}
+	if err := os.WriteFile(cfgFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(config): %v", err)
+	}
 }
 
 func TestAssessFinalize_Licensed_AutoSigns(t *testing.T) {

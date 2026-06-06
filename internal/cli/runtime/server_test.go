@@ -801,6 +801,34 @@ func TestServer_Reload_PreservesRestartOnlyFields(t *testing.T) {
 	}
 }
 
+func TestServer_ReloadLicenseRevocationStripsAgents(t *testing.T) {
+	s, buf := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	oldCfg.Agents = map[string]config.AgentProfile{
+		"agent-a": {Mode: config.ModeStrict},
+	}
+	oldCfg.LicenseKey = "old-agents-token"
+	oldCfg.LicensePublicKey = "old-public-key"
+	oldCfg.LicenseExpiresAt = time.Now().Add(time.Hour).Unix()
+
+	newCfg := oldCfg.Clone()
+	newCfg.Agents = nil
+	newCfg.LicenseKey = "revoked-agents-token"
+	newCfg.LicenseRevoked = true
+	newCfg.LicenseRevocationReason = "test revocation"
+
+	if err := s.Reload(newCfg); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	live := s.proxy.CurrentConfig()
+	if live.Agents != nil {
+		t.Fatalf("agents survived license revocation reload: %+v", live.Agents)
+	}
+	if !buf.contains("license revoked agents, shutting down agent listeners") {
+		t.Fatalf("stderr missing agents revocation warning:\n%s", buf.String())
+	}
+}
+
 // TestServer_Reload_ReverseProxyProfileOnlyIgnored isolates the profile-only
 // reload case. The previous field-by-field guard only preserved ReverseProxy
 // when listen/enabled/upstream changed, so a reload that flipped ONLY the

@@ -2149,6 +2149,32 @@ func isNonSecretEnvName(name string) bool {
 	return false
 }
 
+// envLeakMinEntropy is the Shannon-entropy floor (bits/char) above which an
+// env-variable value is treated as secret-shaped. Single source of truth shared
+// by extractEnvSecrets (whole-value filter) and looksLikeOpaqueToken (per-segment
+// guard) so the two stay consistent.
+const envLeakMinEntropy = 3.0
+
+// minOpaqueTokenLen is the component length at or above which a single-component,
+// slash-prefixed colon-list segment is treated as a possible opaque secret token
+// rather than a short directory name. Short PATH dirs (/bin, /sbin, /opt) fall
+// below it and stay recognised as path components.
+const minOpaqueTokenLen = 16
+
+// looksLikeOpaqueToken reports whether a colon-list segment (already known to
+// begin with "/") is shaped like an opaque secret token rather than a directory
+// component. A genuine directory entry is either multi-component (/usr/local/bin,
+// has an inner separator) or a short name (/bin, /sbin); a smuggled token is a
+// single long, high-entropy blob (/K7MDENGbPxRfiCYzQ). Used to stop a PATH-like
+// wrapper from skipping a value that the single-value branch would keep scannable.
+func looksLikeOpaqueToken(seg string) bool {
+	body := strings.TrimPrefix(seg, "/")
+	if strings.Contains(body, "/") {
+		return false // multi-component path, not a single opaque token
+	}
+	return len(body) >= minOpaqueTokenLen && ShannonEntropy(body) > envLeakMinEntropy
+}
+
 // isPathShapedValue reports whether an environment-variable value looks like a
 // multi-component filesystem path (or a colon-separated list of paths) rather
 // than a secret. extractEnvSecrets uses it to keep path-valued variables out of
@@ -2180,6 +2206,13 @@ func isPathShapedValue(value string) bool {
 			if seg == "" || !strings.HasPrefix(seg, "/") {
 				return false
 			}
+			// A slash-prefixed opaque token riding in a PATH-like wrapper
+			// (e.g. "/usr/bin:/K7MDENGbPxRfiCYzQ") must not be skipped: the
+			// single-value branch keeps such tokens scannable, so the list
+			// branch has to as well, or the wrapper becomes an exfil bypass.
+			if looksLikeOpaqueToken(seg) {
+				return false
+			}
 		}
 		return true
 	}
@@ -2202,8 +2235,6 @@ func isPathShapedValue(value string) bool {
 // path-shaped values (see isPathShapedValue) to avoid false positives on paths
 // and locale strings.
 func extractEnvSecrets(minLen int) []string {
-	const minEntropy = 3.0
-
 	if minLen <= 0 {
 		minLen = 16
 	}
@@ -2234,7 +2265,7 @@ func extractEnvSecrets(minLen int) []string {
 			continue
 		}
 
-		if ShannonEntropy(value) > minEntropy {
+		if ShannonEntropy(value) > envLeakMinEntropy {
 			secrets = append(secrets, value)
 		}
 	}

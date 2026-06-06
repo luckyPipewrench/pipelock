@@ -370,6 +370,18 @@ func TestClone_RawBytesCopiedNotAliased(t *testing.T) {
 	}
 }
 
+func TestClone_LicenseIntermediateCertCopiedNotAliased(t *testing.T) {
+	cfg := Defaults()
+	cfg.LicenseIntermediateCert = []byte("intermediate-cert")
+
+	clone := cfg.Clone()
+	clone.LicenseIntermediateCert[0] = 'X'
+
+	if got := string(cfg.LicenseIntermediateCert); got != "intermediate-cert" {
+		t.Fatalf("Clone aliased LicenseIntermediateCert; source changed to %q", got)
+	}
+}
+
 // TestClone_NilSafe: Clone on a nil receiver returns nil without panicking.
 // Defensive: some test paths pass optional configs as *Config.
 func TestClone_NilSafe(t *testing.T) {

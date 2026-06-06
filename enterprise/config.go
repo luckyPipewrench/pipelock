@@ -279,9 +279,16 @@ func EnforceLicenseGate(c *config.Config) {
 		stripNamedAgents(c)
 		return
 	}
+	if c.LicenseIntermediateLoadError != "" {
+		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license intermediate validation failed: %s\n"+
+			"Multi-agent profiles disabled. Single-agent protection is active.\n", c.LicenseIntermediateLoadError)
+		stripNamedAgents(c)
+		return
+	}
 
-	// Verify the license token signature, expiration, and revocation status.
-	lic, err := license.VerifyWithCRL(c.LicenseKey, pubKey, crl)
+	// Verify the license token signature, expiration, optional intermediate
+	// chain, and revocation status.
+	lic, err := license.VerifyTokenWithOptionalIntermediate(c.LicenseKey, c.LicenseIntermediateCert, pubKey, crl, time.Now())
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "WARNING: license verification failed: %v\n"+
 			"Multi-agent profiles disabled. Single-agent protection is active.\n", err)
@@ -498,6 +505,9 @@ func ValidateMergedAgent(name string, cfg *config.Config) error {
 // deepCopyConfig creates an independent deep copy of a Config via
 // YAML round-trip. This ensures no shared pointers between base and merged.
 func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
+	licenseIntermediateCert := append([]byte(nil), cfg.LicenseIntermediateCert...)
+	licenseIntermediateLoadError := cfg.LicenseIntermediateLoadError
+
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("deep copy marshal: %w", err)
@@ -506,5 +516,7 @@ func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
 	if err := yaml.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("deep copy unmarshal: %w", err)
 	}
+	out.LicenseIntermediateCert = licenseIntermediateCert
+	out.LicenseIntermediateLoadError = licenseIntermediateLoadError
 	return &out, nil
 }

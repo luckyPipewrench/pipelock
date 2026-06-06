@@ -325,6 +325,13 @@ type AgentCardScanResult struct {
 	DriftDetected bool
 	FirstSeen     bool
 	Findings      A2AScanResult // field-level scan findings
+
+	// SignatureVerified is true when the card carried a signature that verified
+	// against a trusted key scoped to the card's origin. SignatureKeyID is the
+	// verifying key_id, for the positive attestation receipt. A signature that
+	// failed to verify is reported via Clean=false + Reason, not these fields.
+	SignatureVerified bool
+	SignatureKeyID    string
 }
 
 // ScanAgentCard parses and scans an Agent Card response for skill poisoning
@@ -339,12 +346,18 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		// Unparseable card: fail closed for card-specific checks,
 		// but still run generic field scanning.
 		findings := scanA2ABody(ctx, body, sc, cfg)
-		return AgentCardScanResult{
+		unparseable := AgentCardScanResult{
 			Clean:    findings.Clean,
 			Action:   findings.Action,
 			Reason:   "a2a: unparseable Agent Card",
 			Findings: findings,
 		}
+		// Still enforce signature policy: an unparseable body is not a validly
+		// signed card, so require_signed_agent_cards (and any claimed-but-
+		// invalid signature) must fail closed here too, not be skipped by the
+		// early return.
+		applyCardSignatureVerification(&unparseable, body, key, cfg)
+		return unparseable
 	}
 
 	result := AgentCardScanResult{Clean: true}
@@ -378,7 +391,47 @@ func ScanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		}
 	}
 
+	// Independent attestation: cryptographically verify the card's signature
+	// against the operator's trusted, origin-scoped keys. This runs in addition
+	// to (not instead of) content scanning and drift detection.
+	applyCardSignatureVerification(&result, body, key, cfg)
+
 	return result
+}
+
+// applyCardSignatureVerification verifies the card's signature (when verification
+// is active) and updates result in place. It is fail-closed: a claimed-but-
+// invalid signature blocks; an unsigned card blocks only when
+// require_signed_agent_cards is set; a verified signature records the attesting
+// key_id. Called from both the normal and unparseable-card paths so the
+// require-signed invariant cannot be skipped by an early return.
+func applyCardSignatureVerification(result *AgentCardScanResult, body []byte, key cardCacheKey, cfg *config.A2AScanning) {
+	if !CardSignatureVerificationActive(cfg) {
+		return
+	}
+	switch sig := VerifyAgentCardSignatures(body, CardOriginFromURL(key.cardURL), cfg); sig.Outcome {
+	case SigOutcomeVerified:
+		result.SignatureVerified = true
+		result.SignatureKeyID = sig.KeyID
+	case SigOutcomeFailed:
+		result.Clean = false
+		if result.Action == "" {
+			result.Action = cfg.Action
+		}
+		if result.Reason == "" {
+			result.Reason = sig.Reason
+		}
+	case SigOutcomeUnsigned:
+		if cfg.RequireSignedAgentCards {
+			result.Clean = false
+			if result.Action == "" {
+				result.Action = cfg.Action
+			}
+			if result.Reason == "" {
+				result.Reason = "a2a: unsigned Agent Card rejected (require_signed_agent_cards)"
+			}
+		}
+	}
 }
 
 // --- Context Tracking (Session Smuggling Detection) ---

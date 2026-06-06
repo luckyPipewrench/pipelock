@@ -1651,6 +1651,8 @@ If defined, `_default` applies to any request that does not match a named agent.
 
 Multi-agent profiles (the `agents:` section) require a signed license token. The token is an Ed25519-signed JWT-like string issued by `pipelock license issue`. At startup, pipelock verifies the signature, checks expiration, and confirms the token includes the `agents` feature. If any check fails, agent profiles are disabled with a warning. All single-agent protection remains active.
 
+New deployments may receive a root-signed intermediate certificate alongside the token. When `license_intermediate_file` is configured, Pipelock verifies the token through `token -> intermediate -> embedded root public key` and fails closed if the intermediate is malformed, expired, signed by the wrong root, or revoked by the CRL. Omitting `license_intermediate_file` preserves legacy direct-root token verification.
+
 ### Loading Sources
 
 Pipelock checks three sources for the license token, in priority order:
@@ -1691,6 +1693,7 @@ license_key: "pipelock_lic_v1_eyJ..."
 license_key: "pipelock_lic_v1_eyJ..."        # inline token (lowest priority)
 license_file: "/etc/pipelock/license.token"  # file path (medium priority)
 license_crl_file: "/etc/pipelock/license.crl" # signed revocation list
+license_intermediate_file: "/etc/pipelock/license-intermediate.json" # root-signed intermediate cert
 license_public_key: "a1b2c3d4..."            # hex-encoded Ed25519 public key (dev builds only)
 ```
 
@@ -1711,6 +1714,7 @@ Or mount the Secret as a file and reference it in config:
 
 ```yaml
 license_file: /etc/pipelock/license/token
+license_intermediate_file: /etc/pipelock/license/intermediate.json
 ```
 
 ### Key Verification
@@ -1718,6 +1722,8 @@ license_file: /etc/pipelock/license/token
 Official release builds embed the signing public key at compile time via ldflags. The embedded key takes priority over `license_public_key` and cannot be overridden by config, preventing self-signing bypasses. The `license_public_key` config field is only used in development builds where no key is embedded.
 
 `license_crl_file` points at a signed license revocation list. It is read and verified at startup and on config reload; a revoked active license is disabled immediately. The CRL file should be mounted from trusted operator-controlled storage, not written by the agent.
+
+`license_intermediate_file` points at the root-signed intermediate license-signing certificate. It is public cert material, not a secret, but it controls the active signing chain and should still come from trusted operator-controlled storage. Relative paths resolve against the config file directory. A configured intermediate certificate is checked at startup: a missing, unreadable, malformed, expired, or wrong-root cert emits a startup warning and disables licensed features such as multi-agent profiles and Assess signing, rather than silently downgrading to direct-root verification. It never blocks startup or single-agent protection — a licensing-tier misconfiguration must not take the proxy down, and a short-lived intermediate's expiry must not crash-loop it. Changing this field requires a restart for the new license chain to take effect.
 
 ### CLI Commands
 
@@ -2200,12 +2206,19 @@ a2a_scanning:
   max_contexts: 1000
   scan_raw_parts: true
   max_raw_size: 1048576
+  # Agent Card signature verification (independent attestation). See below.
+  require_signed_agent_cards: false
+  trusted_agent_card_keys:
+    - key_id: vendor-agent-v1
+      public_key: pipelock-ed25519-public-v1...   # or raw hex
+      allowed_origins:
+        - https://agent.example.com
 ```
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable A2A protocol detection and scanning |
-| `action` | `block` | Action on findings: `block` or `warn` |
+| `action` | `warn` | Action on findings: `block` or `warn` |
 | `scan_agent_cards` | `true` | Scan Agent Card skill descriptions for injection |
 | `detect_card_drift` | `true` | Detect Agent Card modification mid-session (rug-pull) |
 | `session_smuggling_detection` | `true` | Track contextId to detect session smuggling |
@@ -2213,8 +2226,35 @@ a2a_scanning:
 | `max_contexts` | `1000` | Total tracked contexts |
 | `scan_raw_parts` | `true` | Decode and scan text-like `Part.raw` fields |
 | `max_raw_size` | `1048576` | Max encoded size for `Part.raw` decoding (bytes) |
+| `require_signed_agent_cards` | `false` | Treat an **unsigned** Agent Card as a finding (enforced at `action`). When `false`, unsigned cards keep their existing scan/drift behavior. |
+| `trusted_agent_card_keys` | _(none)_ | Operator-pinned Ed25519 signing keys, each scoped to one or more origins. When non-empty, signed cards are cryptographically verified. |
 
 A2A detection works on the forward proxy (CONNECT and plain HTTP) and MCP HTTP proxy paths. Agent Cards are scanned for skill description poisoning. Card drift detection tracks cards by URL + auth fingerprint and alerts on mid-session changes.
+
+### Agent Card Signature Verification
+
+An Agent Card may carry a JWS signature (RFC 7515) attesting that the card was published by a particular signer. Pipelock can independently verify that signature against keys **the operator trusts** — this is independent attestation, not vendor self-attestation. Detection and enforcement here are free-tier; no license is required.
+
+Configure one or more `trusted_agent_card_keys`:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `key_id` | yes | Operator label, unique. Matched against the JWS `kid` header as a lookup **hint only** — never as authority. |
+| `public_key` | yes | Ed25519 public key, `pipelock-ed25519-public-v1` form or raw hex. |
+| `allowed_origins` | yes | Origins (`scheme://host[:port]`, no path) this key may sign cards for. A signature is only accepted on a card fetched from a listed origin. |
+
+Behavior when at least one trusted key is configured:
+
+- **Signed card, signature verifies** against a trusted key scoped to the card's origin → allowed; a positive attestation receipt is emitted (`a2a_card_signature` layer).
+- **Signed card, no trusted-and-valid signature** (forged, wrong key, untrusted, substituted, origin mismatch, `alg: none`, non-EdDSA, empty/short signature, duplicate top-level keys, trailing tokens) → finding + receipt, **enforced at `a2a_scanning.action`**. Set `action: block` to reject. The preimage is the card with its `signatures` member removed, canonicalized per RFC 8785 (JCS).
+- **Unsigned card** → existing scan/drift behavior, unless `require_signed_agent_cards: true`, in which case it is a finding enforced at `action`.
+
+Notes and honest scope:
+
+- Only `EdDSA` (Ed25519) signatures are verified. Cards signed with other algorithms cannot match a trusted key and therefore fail verification when verification is active.
+- `require_signed_agent_cards: true` requires at least one trusted key (otherwise every card would be rejected); this combination is rejected at config load.
+- Verification fires on every surface that delivers an Agent Card as a single body: forward proxy (plain HTTP and CONNECT/TLS-intercept) and MCP HTTP. A2A SSE streams carry task/message events, not Agent Cards, so there is no card-signature step on the SSE path.
+- Revoking trust is a config edit: remove the key (or its origin) and reload. Hot reload swaps the trusted-key set atomically; a reduced key set logs a downgrade warning.
 
 ## MCP Binary Integrity (v2.1)
 

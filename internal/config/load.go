@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/license"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,6 +63,7 @@ func Load(path string) (*Config, error) {
 	if err := cfg.resolveLicenseKey(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("license key: %w", err)
 	}
+	cfg.resolveLicenseIntermediate(filepath.Dir(path))
 
 	// Soft-gate premium features: disable agents section if no license key.
 	if EnforceLicenseGateFunc != nil {
@@ -126,6 +128,33 @@ func Load(path string) (*Config, error) {
 	_ = cfg.CanonicalPolicyHash()
 
 	return cfg, nil
+}
+
+// resolveLicenseIntermediate populates LicenseIntermediateCert from
+// license_intermediate_file, resolving relative paths against configDir.
+// Empty/omitted means legacy direct-root verification.
+func (c *Config) resolveLicenseIntermediate(configDir string) {
+	if strings.TrimSpace(c.LicenseIntermediateFile) == "" {
+		c.LicenseIntermediateFile = ""
+		c.LicenseIntermediateCert = nil
+		c.LicenseIntermediateLoadError = ""
+		return
+	}
+	p := c.LicenseIntermediateFile
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(configDir, p)
+	}
+	p = filepath.Clean(p)
+	data, err := license.LoadIntermediateCertFile(p)
+	if err != nil {
+		c.LicenseIntermediateFile = p
+		c.LicenseIntermediateLoadError = err.Error()
+		c.LicenseIntermediateCert = []byte("configured intermediate certificate unavailable")
+		return
+	}
+	c.LicenseIntermediateFile = p
+	c.LicenseIntermediateCert = data
+	c.LicenseIntermediateLoadError = ""
 }
 
 // resolveLicenseKey populates LicenseKey from the highest-priority source:

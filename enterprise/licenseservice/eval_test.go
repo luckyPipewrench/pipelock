@@ -76,6 +76,7 @@ func newEvalTestSetup(t *testing.T) *evalTestSetup {
 		PolarWebhookSecret:  "whsec_" + "dGVzdA==",
 		PolarAPIToken:       testPolarAPIToken,
 		PrivateKeyPath:      filepath.Join(t.TempDir(), "k"),
+		IntermediateCert:    testServiceIntermediateCert(t, pub),
 		ResendAPIKey:        "re_" + "test",
 		DBPath:              ":memory:",
 		LedgerPath:          filepath.Join(t.TempDir(), "l.jsonl"),

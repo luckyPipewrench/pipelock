@@ -376,12 +376,13 @@ type Config struct {
 	LearnLock                LearnLock               `yaml:"learn_lock" json:"-"` // operational lock-runtime config, excluded from canonical policy hash
 	Conductor                Conductor               `yaml:"conductor" json:"-"`  // follower control-plane config, excluded from canonical policy hash
 	Agents                   map[string]AgentProfile `yaml:"agents,omitempty"`
-	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`      // operator-configured agent name used when no stronger identity source resolves the caller
-	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"` // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
-	LicenseKey               string                  `yaml:"license_key,omitempty"`                 // signed license token (from pipelock license issue)
-	LicenseFile              string                  `yaml:"license_file,omitempty"`                // path to file containing the license token (read at startup)
-	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`   // path to signed license revocation list (read at startup)
-	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`          // hex-encoded Ed25519 public key for license verification (dev builds only)
+	DefaultAgentIdentity     string                  `yaml:"default_agent_identity,omitempty"`             // operator-configured agent name used when no stronger identity source resolves the caller
+	BindDefaultAgentIdentity bool                    `yaml:"bind_default_agent_identity,omitempty"`        // when true, ignore self-declared header/query identities and bind requests to default_agent_identity
+	LicenseKey               string                  `yaml:"license_key,omitempty"`                        // signed license token (from pipelock license issue)
+	LicenseFile              string                  `yaml:"license_file,omitempty"`                       // path to file containing the license token (read at startup)
+	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`          // path to signed license revocation list (read at startup)
+	LicenseIntermediateFile  string                  `yaml:"license_intermediate_file,omitempty" json:"-"` // path to root-signed intermediate license-signing certificate
+	LicensePublicKey         string                  `yaml:"license_public_key,omitempty"`                 // hex-encoded Ed25519 public key for license verification (dev builds only)
 	Internal                 []string                `yaml:"internal"`
 	TrustedDomains           []string                `yaml:"trusted_domains"` // domains exempt from SSRF internal-IP check (wildcard supported)
 	SSRF                     SSRF                    `yaml:"ssrf"`
@@ -398,6 +399,11 @@ type Config struct {
 	LicenseCRLSHA256        string `yaml:"-" json:"-"`
 	LicenseRevoked          bool   `yaml:"-" json:"-"`
 	LicenseRevocationReason string `yaml:"-" json:"-"`
+	LicenseIntermediateCert []byte `yaml:"-" json:"-"`
+	// LicenseIntermediateLoadError records a configured cert file that could
+	// not be loaded. LicenseIntermediateCert stays non-empty in that state so
+	// verification fails closed instead of silently downgrading to root-only.
+	LicenseIntermediateLoadError string `yaml:"-" json:"-"`
 
 	// rawBytes stores the original config file bytes for deterministic hashing.
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
@@ -857,6 +863,36 @@ type A2AScanning struct {
 	MaxContexts               int    `yaml:"max_contexts"`                // total tracked contexts (default 1000)
 	ScanRawParts              bool   `yaml:"scan_raw_parts"`              // decode text-like Part.raw
 	MaxRawSize                int    `yaml:"max_raw_size"`                // encoded size cap for Part.raw decode (default 1MB)
+
+	// RequireSignedAgentCards, when true, treats an UNSIGNED Agent Card as a
+	// finding (enforced at Action). Default false: unsigned cards keep their
+	// existing scan/drift behavior. A card that carries a signature is always
+	// verified when TrustedAgentCardKeys is non-empty, regardless of this flag.
+	RequireSignedAgentCards bool `yaml:"require_signed_agent_cards"`
+
+	// TrustedAgentCardKeys lists the Ed25519 public keys pipelock will accept as
+	// authoritative signers of Agent Cards, each scoped to one or more origins.
+	// When non-empty, Agent Cards carrying a JWS signature are cryptographically
+	// verified against these keys; a card whose signature does not verify against
+	// a trusted key scoped to the card's origin fails closed at Action.
+	TrustedAgentCardKeys []A2ATrustedCardKey `yaml:"trusted_agent_card_keys"`
+}
+
+// A2ATrustedCardKey is one operator-pinned Agent Card signing key. A pinned key
+// authorizes a specific signer for specific card origins; it is not globally
+// trusted to sign any Agent Card. The JWS "kid" header is treated as a lookup
+// hint only — never as authority — so a card cannot select which key verifies it.
+type A2ATrustedCardKey struct {
+	// KeyID is the operator's label for this key. It is matched against the JWS
+	// "kid" header as a lookup hint. Must be non-empty and unique.
+	KeyID string `yaml:"key_id"`
+	// PublicKey is the Ed25519 public key, either pipelock-encoded
+	// (pipelock-ed25519-public-v1) or raw hex.
+	PublicKey string `yaml:"public_key"`
+	// AllowedOrigins scopes this key to specific card origins (scheme://host[:port]).
+	// A signature by this key is only accepted on a card fetched from a listed
+	// origin. Must be non-empty.
+	AllowedOrigins []string `yaml:"allowed_origins"`
 }
 
 // RequestBodyScanning configures DLP scanning of request bodies and headers

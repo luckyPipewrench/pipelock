@@ -49,6 +49,15 @@ var ErrInvalidNumber = errors.New("invalid JSON number")
 // valid Unicode. RFC 8785 requires this to fail instead of being repaired.
 var ErrInvalidUnicode = errors.New("invalid Unicode in JSON string data")
 
+// ErrMaxDepth indicates JSON nesting exceeded maxParseDepth. Bounding recursion
+// keeps a deeply nested attacker payload from overflowing the stack (callers
+// feed untrusted input; a panic would violate the never-panic-on-input rule).
+var ErrMaxDepth = errors.New("JSON nesting too deep")
+
+// maxParseDepth bounds object/array recursion depth. Far deeper than any real
+// Agent Card or JWS header.
+const maxParseDepth = 512
+
 // Canonicalize parses raw JSON strictly and returns its RFC 8785 canonical form.
 func Canonicalize(raw []byte) ([]byte, error) {
 	v, err := Parse(raw)
@@ -71,7 +80,7 @@ func Parse(raw []byte) (any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	v, err := parseValue(dec)
+	v, err := parseValue(dec, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -155,15 +164,18 @@ func parseHex4(b []byte) (rune, bool) {
 	return v, true
 }
 
-func parseValue(dec *json.Decoder) (any, error) {
+func parseValue(dec *json.Decoder, depth int) (any, error) {
+	if depth > maxParseDepth {
+		return nil, fmt.Errorf("%w: exceeds %d", ErrMaxDepth, maxParseDepth)
+	}
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
-	return parseFrom(dec, tok)
+	return parseFrom(dec, tok, depth)
 }
 
-func parseFrom(dec *json.Decoder, tok json.Token) (any, error) {
+func parseFrom(dec *json.Decoder, tok json.Token, depth int) (any, error) {
 	switch t := tok.(type) {
 	case json.Delim:
 		switch t {
@@ -181,7 +193,7 @@ func parseFrom(dec *json.Decoder, tok json.Token) (any, error) {
 				if _, exists := obj[key]; exists {
 					return nil, fmt.Errorf("%w: %q", ErrDuplicateKey, key)
 				}
-				val, err := parseValue(dec)
+				val, err := parseValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -194,7 +206,7 @@ func parseFrom(dec *json.Decoder, tok json.Token) (any, error) {
 		case '[':
 			arr := []any{}
 			for dec.More() {
-				val, err := parseValue(dec)
+				val, err := parseValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}

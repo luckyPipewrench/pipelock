@@ -127,6 +127,20 @@ func TestVerify_MalformedDetection(t *testing.T) {
 	}
 }
 
+// TestVerify_DeeplyNestedCardNoPanic proves the signature-claim detector bounds
+// recursion: a card with deeply nested JSON before the signatures key returns a
+// safe outcome (no stack-overflow panic).
+func TestVerify_DeeplyNestedCardNoPanic(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	deep := strings.Repeat("[", 2000) + strings.Repeat("]", 2000)
+	body := `{"a":` + deep + `,"signatures":[{"protected":"YQ","signature":"Yg"}]}`
+	// Must not panic; detection bails out safely on the over-deep field.
+	res := VerifyAgentCardSignatures([]byte(body), testCardOrigin, trustCfg(t, pub))
+	if res.Outcome == SigOutcomeVerified {
+		t.Fatalf("deeply nested card must not verify, got %v", res.Outcome)
+	}
+}
+
 // cardWithProtected builds a card whose single signature carries the given
 // protected header object (signature bytes are a zero placeholder).
 func cardWithProtected(t *testing.T, hdr map[string]any) []byte {

@@ -57,6 +57,13 @@ const (
 	// malicious card cannot force unbounded Ed25519 verifications. Real cards
 	// carry one or two signatures.
 	maxCardSignatures = 16
+
+	// maxJSONNesting bounds recursion depth while skipping nested JSON during
+	// signature-claim detection, so a deeply nested attacker payload returns an
+	// error instead of overflowing the stack (cards are runtime input; a panic
+	// would violate the never-panic-on-input rule). 512 is far deeper than any
+	// real Agent Card.
+	maxJSONNesting = 512
 )
 
 // trustedCardKey is a parsed, origin-scoped trusted signing key.
@@ -184,14 +191,20 @@ func topLevelHasSignaturesField(rawCard []byte) bool {
 		if key == a2aSignaturesField {
 			return true
 		}
-		if err := skipJSONValue(dec); err != nil {
+		if err := skipJSONValue(dec, 0); err != nil {
 			return false
 		}
 	}
 	return false
 }
 
-func skipJSONValue(dec *json.Decoder) error {
+// skipJSONValue consumes one JSON value from the decoder without materializing
+// it. depth bounds recursion (maxJSONNesting) so deeply nested input returns an
+// error rather than overflowing the stack.
+func skipJSONValue(dec *json.Decoder, depth int) error {
+	if depth > maxJSONNesting {
+		return fmt.Errorf("json nesting exceeds %d", maxJSONNesting)
+	}
 	tok, err := dec.Token()
 	if err != nil {
 		return err
@@ -206,7 +219,7 @@ func skipJSONValue(dec *json.Decoder) error {
 			if _, err := dec.Token(); err != nil {
 				return err
 			}
-			if err := skipJSONValue(dec); err != nil {
+			if err := skipJSONValue(dec, depth+1); err != nil {
 				return err
 			}
 		}
@@ -214,7 +227,7 @@ func skipJSONValue(dec *json.Decoder) error {
 		return err
 	case '[':
 		for dec.More() {
-			if err := skipJSONValue(dec); err != nil {
+			if err := skipJSONValue(dec, depth+1); err != nil {
 				return err
 			}
 		}

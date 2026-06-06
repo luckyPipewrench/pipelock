@@ -105,6 +105,20 @@ func TestParseAcceptsEscapedBackslashThenU(t *testing.T) {
 	}
 }
 
+// TestParseRejectsDeepNesting proves recursion is bounded: a payload nested past
+// maxParseDepth returns ErrMaxDepth instead of overflowing the stack.
+func TestParseRejectsDeepNesting(t *testing.T) {
+	deep := strings.Repeat("[", 600) + strings.Repeat("]", 600)
+	if _, err := Canonicalize([]byte(deep)); !errors.Is(err, ErrMaxDepth) {
+		t.Fatalf("expected ErrMaxDepth, got %v", err)
+	}
+	// A nesting depth within the bound still parses.
+	ok := strings.Repeat("[", 100) + strings.Repeat("]", 100)
+	if _, err := Canonicalize([]byte(ok)); err != nil {
+		t.Fatalf("within-bound nesting should parse: %v", err)
+	}
+}
+
 // TestKeyOrderingPrefix covers the lessUTF16 length tiebreak ("a" < "ab").
 func TestKeyOrderingPrefix(t *testing.T) {
 	got, err := Canonicalize([]byte(`{"ab":1,"a":2}`))

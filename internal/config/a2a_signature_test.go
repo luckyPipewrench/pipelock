@@ -401,10 +401,33 @@ func TestReloadWarnings_A2ASignature(t *testing.T) {
 		}
 	})
 
-	t.Run("keys_reduced", func(t *testing.T) {
-		warns := ValidateReload(mk(false, 2), mk(false, 1))
+	t.Run("keys_removed_to_zero_warns", func(t *testing.T) {
+		// Verification turning off (non-empty -> empty) is the genuine downgrade.
+		warns := ValidateReload(mk(false, 2), mk(false, 0))
 		if !hasWarning(warns, "a2a_scanning.trusted_agent_card_keys") {
-			t.Fatalf("expected trusted-keys-reduced warning, got %+v", warns)
+			t.Fatalf("expected trusted-keys-removed warning, got %+v", warns)
+		}
+	})
+
+	t.Run("keys_reduced_revocation_no_warning", func(t *testing.T) {
+		// Removing one of several keys is revocation (stricter), not a downgrade.
+		// Flagging it would block emergency revocation under strict-mode reload.
+		warns := ValidateReload(mk(false, 2), mk(false, 1))
+		if hasWarning(warns, "a2a_scanning.trusted_agent_card_keys") {
+			t.Fatalf("key revocation must NOT warn, got %+v", warns)
+		}
+	})
+
+	t.Run("disabled_no_signature_warnings", func(t *testing.T) {
+		// When A2A scanning is off in the new config, signature sub-warnings are
+		// suppressed (the top-level "A2A scanning disabled" warning covers it) so
+		// strict-mode reload is not rejected for an unrelated downgrade.
+		oldCfg := mk(true, 2)
+		newCfg := mk(false, 0)
+		newCfg.A2AScanning.Enabled = false
+		warns := ValidateReload(oldCfg, newCfg)
+		if hasWarning(warns, "a2a_scanning.require_signed_agent_cards") || hasWarning(warns, "a2a_scanning.trusted_agent_card_keys") {
+			t.Fatalf("disabled A2A must not emit signature sub-warnings, got %+v", warns)
 		}
 	})
 

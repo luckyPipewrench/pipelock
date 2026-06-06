@@ -4,17 +4,103 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jcs"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+const interceptCardHost = "agent.example.com"
+
+// interceptCardCfg builds a config that verifies Agent Card signatures, scoped
+// to the intercept test host.
+func interceptCardCfg(pub ed25519.PublicKey) *config.Config {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.A2AScanning.Enabled = true
+	cfg.A2AScanning.Action = config.ActionBlock
+	cfg.A2AScanning.ScanAgentCards = false
+	cfg.A2AScanning.DetectCardDrift = false
+	cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{
+		KeyID:          "k1",
+		PublicKey:      signing.EncodePublicKey(pub),
+		AllowedOrigins: []string{"https://" + interceptCardHost},
+	}}
+	return cfg
+}
+
+// runInterceptCard drives a card body back through the TLS-intercept handler and
+// returns the status code the agent would see.
+func runInterceptCard(t *testing.T, cfg *config.Config, card []byte) int {
+	t.Helper()
+	sc := scanner.New(cfg)
+	t.Cleanup(sc.Close)
+	logger := audit.NewNop()
+	m := metrics.New()
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("proxy.New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	rt := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"application/a2a+json"}},
+			Body:          io.NopCloser(bytes.NewReader(card)),
+			ContentLength: int64(len(card)),
+		}, nil
+	})
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: interceptCardHost,
+		TargetPort: "443",
+		Config:     cfg,
+		Scanner:    sc,
+		Logger:     logger,
+		Metrics:    m,
+		ClientIP:   testLoopbackIP,
+		RequestID:  "intercept-card",
+		Agent:      "test-agent",
+		Proxy:      p,
+	}, rt)
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+		"https://"+interceptCardHost+agentCardPath, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	return w.Code
+}
+
+// TestIntercept_AgentCardSignature_ForgedBlocked proves CONNECT/TLS-intercept
+// parity with the forward path: a forged Agent Card signature is blocked (403).
+func TestIntercept_AgentCardSignature_ForgedBlocked(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	if code := runInterceptCard(t, interceptCardCfg(pub), e2eSignedCard(t, priv, true)); code != http.StatusForbidden {
+		t.Fatalf("forged Agent Card over intercept must be blocked (403), got %d", code)
+	}
+}
+
+// TestIntercept_AgentCardSignature_ValidAllowed proves a validly signed card
+// passes through the intercept path (200).
+func TestIntercept_AgentCardSignature_ValidAllowed(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	if code := runInterceptCard(t, interceptCardCfg(pub), e2eSignedCard(t, priv, false)); code != http.StatusOK {
+		t.Fatalf("validly signed Agent Card over intercept must pass (200), got %d", code)
+	}
+}
 
 const agentCardPath = "/.well-known/agent-card.json"
 

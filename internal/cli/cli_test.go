@@ -127,25 +127,26 @@ func waitForRunHTTPWithinResult(
 	format string,
 	args ...any,
 ) error {
-	return waitForRunRequestWithinResult(timeout, errCh, func() *http.Request {
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	return waitForRunRequestWithinResult(ctx, timeout, errCh, func(reqCtx context.Context) *http.Request {
+		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 		return req
 	}, client, check, format, args...)
 }
 
 func waitForRunRequestWithin(
 	t *testing.T,
+	ctx context.Context,
 	timeout time.Duration,
 	errCh <-chan error,
 	cancel context.CancelFunc,
-	newReq func() *http.Request,
+	newReq func(context.Context) *http.Request,
 	client *http.Client,
 	check func(*http.Response) bool,
 	format string,
 	args ...any,
 ) {
 	t.Helper()
-	err := waitForRunRequestWithinResult(timeout, errCh, newReq, client, check, format, args...)
+	err := waitForRunRequestWithinResult(ctx, timeout, errCh, newReq, client, check, format, args...)
 	if err != nil {
 		cancel()
 		t.Fatalf("run did not become ready: %v", err)
@@ -153,15 +154,16 @@ func waitForRunRequestWithin(
 }
 
 func waitForRunRequestWithinResult(
+	parentCtx context.Context,
 	timeout time.Duration,
 	errCh <-chan error,
-	newReq func() *http.Request,
+	newReq func(context.Context) *http.Request,
 	client *http.Client,
 	check func(*http.Response) bool,
 	format string,
 	args ...any,
 ) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parentCtx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(5 * time.Millisecond)
@@ -176,7 +178,7 @@ func waitForRunRequestWithinResult(
 			return fmt.Errorf("timed out waiting for %s: %w", detail, ctx.Err())
 		default:
 		}
-		req := newReq()
+		req := newReq(ctx)
 		resp, err := client.Do(req) //nolint:gosec // G704: test-only URL built from loopback listener.
 		if err == nil {
 			ok := check(resp)
@@ -783,8 +785,8 @@ logging:
 		// Poll /health until the proxy is ready
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunRequestWithinResult(5*time.Second, errCh, func() *http.Request {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
 			return req
 		}, client, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
@@ -956,8 +958,8 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 		// Poll /health until the proxy is ready
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunRequestWithinResult(5*time.Second, errCh, func() *http.Request {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
 			return req
 		}, client, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
@@ -2004,8 +2006,8 @@ kill_switch:
 		}
 
 		lastReloadWrite := time.Now()
-		waitForRunRequestWithin(t, 15*time.Second, errCh, cancel, func() *http.Request {
-			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		waitForRunRequestWithin(t, ctx, 15*time.Second, errCh, cancel, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, statusURL, nil)
 			req.Header.Set("Authorization", "Bearer reload-token")
 			return req
 		}, client, func(resp *http.Response) bool {
@@ -2461,7 +2463,10 @@ websocket_proxy:
 
 		cancel()
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("unexpected run error: %v", err)
+			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
 		}

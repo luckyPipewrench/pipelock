@@ -1349,11 +1349,16 @@ response_scanning:
 		t.Fatal(err)
 	}
 
-	waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+	// Reload observation needs a longer deadline than the initial health
+	// check: fsnotify delivery plus the 100ms debounce plus the atomic config
+	// swap lag well past 5s under the heavy -race CI job (config+cli+mcp+proxy
+	// in one process). The startup wait above stays snappy; only this
+	// reload-to-take-effect wait gets the longer ceiling.
+	waitForRunHTTPWithin(t, 20*time.Second, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
 		var health map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&health)
 		return health["mode"] == config.ModeAudit
-	}, "audit ask-mode config after hot reload")
+	}, "%s", "audit ask-mode config after hot reload")
 
 	cancel()
 	select {
